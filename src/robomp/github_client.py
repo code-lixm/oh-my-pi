@@ -65,6 +65,21 @@ class PullRequestInfo:
     state: str
 
 
+@dataclass(slots=True, frozen=True)
+class IssueSummary:
+    """Lightweight projection of an issue for list views (no body)."""
+    repo: str
+    number: int
+    title: str
+    state: str
+    author: str
+    labels: tuple[str, ...]
+    comments: int
+    updated_at: str
+    created_at: str
+    html_url: str
+
+
 def _parse_retry_after(resp: httpx.Response) -> float | None:
     ra = resp.headers.get("retry-after")
     if ra:
@@ -154,6 +169,50 @@ class GitHubClient:
     async def get_issue(self, repo: str, number: int) -> IssueInfo:
         data = await self.request("GET", f"/repos/{repo}/issues/{number}")
         return _issue_from_payload(repo, data)
+
+    async def list_issues(
+        self,
+        repo: str,
+        *,
+        state: str = "open",
+        limit: int = 30,
+    ) -> list[IssueSummary]:
+        """List recent issues for `repo`, newest-updated first. Excludes pull requests.
+
+        `state` is one of `open`, `closed`, `all`. `limit` is capped at 100 by the
+        GitHub `per_page`; we don't paginate here — the dashboard browse view shows
+        a recent slice, not every issue ever.
+        """
+        if state not in ("open", "closed", "all"):
+            raise ValueError(f"invalid state: {state!r}")
+        per_page = max(1, min(int(limit), 100))
+        data = await self.request(
+            "GET",
+            f"/repos/{repo}/issues",
+            params={"state": state, "per_page": per_page, "sort": "updated", "direction": "desc"},
+        )
+        out: list[IssueSummary] = []
+        for item in data or []:
+            if "pull_request" in item:
+                continue  # GitHub's /issues endpoint also returns PRs; skip them.
+            user = item.get("user") or {}
+            labels_raw = item.get("labels") or []
+            out.append(IssueSummary(
+                repo=repo,
+                number=int(item["number"]),
+                title=str(item.get("title") or ""),
+                state=str(item.get("state") or "open"),
+                author=str(user.get("login") or ""),
+                labels=tuple(
+                    str(lbl["name"]) if isinstance(lbl, dict) else str(lbl)
+                    for lbl in labels_raw
+                ),
+                comments=int(item.get("comments") or 0),
+                updated_at=str(item.get("updated_at") or ""),
+                created_at=str(item.get("created_at") or ""),
+                html_url=str(item.get("html_url") or ""),
+            ))
+        return out
 
     async def list_comments(self, repo: str, number: int) -> list[CommentInfo]:
         data = await self.request("GET", f"/repos/{repo}/issues/{number}/comments", params={"per_page": 100})
@@ -305,6 +364,7 @@ __all__ = [
     "GitHubClient",
     "GitHubError",
     "IssueInfo",
+    "IssueSummary",
     "PullRequestInfo",
     "RepoInfo",
     "parse_issue_payload",

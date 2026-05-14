@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -204,6 +205,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "trigger disabled (set ROBOMP_REPLAY_TOKEN to enable)")
         if token != cfg.replay_token.get_secret_value():
             raise HTTPException(401, "invalid replay token")
+
+    @app.get("/api/github/issues")
+    async def api_github_issues(
+        request: Request,
+        state: str = "open",
+        limit: int = 30,
+        x_robomp_token: str | None = Header(None, alias="X-Robomp-Replay-Token"),
+    ) -> dict[str, Any]:
+        """Browse issues across `ROBOMP_REPO_ALLOWLIST` for the trigger picker.
+
+        Token-gated identically to `/api/trigger`: this hits the live GitHub API
+        with the bot's PAT and would otherwise leak titles from private repos.
+        """
+        bag = request.app.state.bag
+        cfg: Settings = bag["settings"]
+        _require_trigger_token(cfg, x_robomp_token)
+
+        if state not in ("open", "closed", "all"):
+            raise HTTPException(400, "state must be open|closed|all")
+        capped = max(1, min(int(limit), 100))
+        github: GitHubClient = bag["github"]
+        repos = sorted(cfg.repo_allowlist)
+        if not repos:
+            return {"issues": [], "errors": [], "repos": []}
+
+        # Fan out across allowlisted repos; per-repo failures don't take down the panel.
+        async def _one(repo: str) -> tuple[str, list, str | None]:
+            try:
+                items = await github.list_issues(repo, state=state, limit=capped)
+                return repo, items, None
+            except Exception as exc:  # GitHubError, network, etc.
+                log.warning("list_issues failed", extra={"repo": repo, "err": str(exc)})
+                return repo, [], str(exc)
+
+        results = await asyncio.gather(*(_one(r) for r in repos))
+        merged = []
+        errors = []
+        for repo, items, err in results:
+            if err is not None:
+                errors.append({"repo": repo, "error": err})
+            merged.extend(items)
+        # Newest-updated first across all repos.
+        merged.sort(key=lambda s: s.updated_at, reverse=True)
+        merged = merged[:capped]
+        return {
+            "issues": [
+                {
+                    "repo": s.repo,
+                    "number": s.number,
+                    "title": s.title,
+                    "state": s.state,
+                    "author": s.author,
+                    "labels": list(s.labels),
+                    "comments": s.comments,
+                    "updated_at": s.updated_at,
+                    "created_at": s.created_at,
+                    "html_url": s.html_url,
+                }
+                for s in merged
+            ],
+            "errors": errors,
+            "repos": repos,
+        }
 
     @app.post("/api/trigger")
     async def api_trigger(

@@ -156,6 +156,26 @@ INDEX_HTML = """<!doctype html>
   .trigger-status { padding: 0 14px 12px; font-size: 12px; min-height: 18px; }
   .trigger-status.err { color: var(--err); }
   .trigger-status.ok  { color: var(--ok); }
+  .trigger-toolbar { display: flex; gap: 10px; padding: 0 14px 10px; align-items: center;
+    flex-wrap: wrap; }
+  .trigger-toolbar select, .trigger-toolbar input[type=text] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font: inherit; }
+  .trigger-toolbar input[type=text] { flex: 1 1 240px; min-width: 200px; }
+  .browse-list { max-height: 40vh; overflow: auto; border-top: 1px solid var(--border); }
+  .browse-list .empty { padding: 14px; color: var(--muted); font-style: italic; }
+  .browse-row { display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid #1a1d22; align-items: start; }
+  .browse-row:hover { background: #161a1f; }
+  .browse-row:last-child { border-bottom: none; }
+  .browse-row .title { font-weight: 500; }
+  .browse-row .meta { color: var(--muted); font-size: 11px; margin-top: 2px;
+    display: flex; gap: 12px; flex-wrap: wrap; }
+  .browse-row .meta .label { background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 6px; color: #b6bcc6; }
+  .browse-row .actions { display: flex; gap: 6px; }
+  .browse-err { padding: 6px 14px; color: var(--err); font-size: 12px;
+    border-bottom: 1px solid #1a1d22; background: rgba(248,113,113,0.06); }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -184,6 +204,18 @@ INDEX_HTML = """<!doctype html>
       <input id="t-token" type="password" placeholder="X-Robomp-Replay-Token" autocomplete="off" />
     </div>
     <div class="trigger-status" id="t-status"></div>
+    <div class="trigger-toolbar">
+      <span class="row-label">browse</span>
+      <select id="b-state">
+        <option value="open" selected>open</option>
+        <option value="closed">closed</option>
+        <option value="all">all</option>
+      </select>
+      <input id="b-filter" type="text" placeholder="filter title or repo" autocomplete="off" />
+      <button id="b-refresh">Refresh</button>
+      <span class="muted" id="b-meta"></span>
+    </div>
+    <div id="b-list" class="browse-list"></div>
   </section>
 
   <section class="full">
@@ -454,6 +486,87 @@ $("events").addEventListener("click", (ev) => {
   if (!btn) return;
   postTrigger({ mode: "retry", delivery_id: btn.dataset.retry });
 });
+
+// ----- browse -----
+let browseCache = { issues: [], errors: [], repos: [], when: 0 };
+
+function authHeaders() {
+  const token = $("t-token").value.trim();
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  return token ? { "X-Robomp-Replay-Token": token } : {};
+}
+
+async function loadBrowse() {
+  const state = $("b-state").value;
+  $("b-meta").textContent = "loading…";
+  try {
+    const resp = await fetch("api/github/issues?state=" + encodeURIComponent(state) + "&limit=50",
+      { headers: authHeaders() });
+    if (!resp.ok) {
+      let detail = resp.statusText;
+      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      $("b-meta").textContent = `error ${resp.status}: ${detail}`;
+      $("b-list").innerHTML = '<div class="empty">' + esc(detail) + '</div>';
+      return;
+    }
+    browseCache = await resp.json();
+    browseCache.when = Date.now();
+    renderBrowse();
+  } catch (err) {
+    $("b-meta").textContent = "network error: " + err.message;
+  }
+}
+
+function renderBrowse() {
+  const { issues, errors, repos } = browseCache;
+  const filter = $("b-filter").value.trim().toLowerCase();
+  const filtered = filter
+    ? issues.filter((i) => (i.repo + " " + i.title + " #" + i.number).toLowerCase().includes(filter))
+    : issues;
+  const errBlocks = errors.map((e) =>
+    `<div class="browse-err">${esc(e.repo)}: ${esc(e.error)}</div>`).join("");
+  if (!filtered.length) {
+    $("b-list").innerHTML = errBlocks + '<div class="empty">no issues</div>';
+  } else {
+    const rows = filtered.map((i) => {
+      const labels = (i.labels || []).slice(0, 6).map((l) =>
+        `<span class="label">${esc(l)}</span>`).join("");
+      const ref = `${i.repo}#${i.number}`;
+      return `<div class="browse-row">
+        <div>
+          <div class="title"><a href="${esc(i.html_url)}" target="_blank" rel="noopener">${esc(ref)}</a> ${esc(i.title)}</div>
+          <div class="meta">
+            <span><span class="pill ${i.state === "open" ? "queued" : "done"}">${esc(i.state)}</span></span>
+            <span>by ${esc(i.author || "—")}</span>
+            <span>updated ${esc(fmtAge(i.updated_at))}</span>
+            <span>${i.comments} comments</span>
+            ${labels}
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary small" data-triage="${esc(ref)}">Triage</button>
+          <button class="small" data-retry-issue="${esc(ref)}">Retry</button>
+        </div>
+      </div>`;
+    }).join("");
+    $("b-list").innerHTML = errBlocks + rows;
+  }
+  const repoLabel = repos.length ? repos.join(", ") : "(allowlist empty)";
+  const age = browseCache.when ? fmtDuration((Date.now() - browseCache.when) / 1000) + " ago" : "";
+  $("b-meta").textContent = `${filtered.length}/${issues.length} from ${repoLabel}${age ? " · loaded " + age : ""}`;
+}
+
+$("b-refresh").addEventListener("click", loadBrowse);
+$("b-state").addEventListener("change", loadBrowse);
+$("b-filter").addEventListener("input", renderBrowse);
+$("b-list").addEventListener("click", (ev) => {
+  const tri = ev.target.closest("button[data-triage]");
+  const ret = ev.target.closest("button[data-retry-issue]");
+  if (tri) { $("t-issue").value = tri.dataset.triage; postTrigger({ mode: "triage", issue: tri.dataset.triage }); }
+  else if (ret) { $("t-issue").value = ret.dataset.retryIssue; postTrigger({ mode: "retry", issue: ret.dataset.retryIssue }); }
+});
+// Kick off the browse list as soon as the dashboard mounts.
+loadBrowse();
 
 $("log-level").addEventListener("change", tick);
 $("log-filter").addEventListener("input", tick);
