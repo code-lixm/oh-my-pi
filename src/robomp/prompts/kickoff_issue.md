@@ -12,21 +12,20 @@
 
 ---
 
-Your worktree is at the current directory; the branch above is checked out
-and ready for commits **if** the classification calls for a code change. Drive
-the todo list to completion:
+Worktree is at cwd; the branch above is checked out and ready for commits **if**
+the classification calls for code. Drive the todo list to completion:
 
-1. **Triage first.** Read the issue body and any comments via `read` /
-   `fetch_issue_thread` if needed, then call
+1. **Triage first.** Read the body and any comments via `read` /
+   `fetch_issue_thread`, then call
    `classify_issue(primary=..., priority=..., functional=[...], rationale=...)`.
-   Do NOT post any comment, push, or open a PR before this step.
+   You NEVER post a comment, push, or open a PR before this step.
 
-2. **Follow the workflow branch** the classification dictates (see the system
-   prompt for the full per-type behavior):
-   - `bug` / `documentation` → ack comment, reproduce, fix, PR.
-   - `question` → answer in one comment, then stop.
+2. **Follow the workflow branch** the classification dictates — see the system
+   prompt for the full per-type behavior:
+   - `bug` / `documentation` → ack comment → reproduce → fix → PR.
+   - `question` → one comment, then stop.
    - `enhancement` / `proposal` → one thoughtful comment, then stop.
    - `invalid` / `duplicate` → one brief comment, then stop.
 
 3. If `bug` and you cannot reproduce after a real attempt, call
-   `mark_unable_to_reproduce` — do NOT guess at fixes.
+   `mark_unable_to_reproduce`. You NEVER guess at fixes.
