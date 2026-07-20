@@ -1,4 +1,5 @@
 import { Container, Text } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { formatDiagnostics } from "../../tools/render-utils";
 import { getLanguageFromPath, theme } from "../theme/theme";
 
@@ -52,7 +53,7 @@ export class LateDiagnosticsMessageComponent extends Container {
 			this.#expanded,
 			theme,
 			fp => theme.getLangIcon(getLanguageFromPath(fp)),
-			{ title: "Late diagnostics" },
+			{ title: tSettingsUi("Late diagnostics") },
 		);
 		const body = text.replace(/^\n+/, "");
 		if (body) this.addChild(new Text(body, 1, 0));

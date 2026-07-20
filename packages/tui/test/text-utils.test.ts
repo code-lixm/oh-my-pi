@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	anchorRightBorder,
 	encodeTextSized,
 	extractSegments,
 	sliceWithWidth,
@@ -140,5 +141,14 @@ describe("text utils", () => {
 		expect(result.after).toBe("H");
 		expect(result.afterWidth).toBe(1);
 		expect(result.after.includes("\x1b]66")).toBe(false);
+	});
+
+	it("keeps the stripped text of an anchored row identical to the plain frame row", () => {
+		const rowWithoutRight = "\x1b[31mL\x1b[39m    \x1b[1C";
+		const rightBorder = "\x1b[34m|\x1b[39m";
+
+		expect(Bun.stripANSI(anchorRightBorder(rowWithoutRight, rightBorder, 6))).toBe(
+			Bun.stripANSI(`${rowWithoutRight}${rightBorder}`),
+		);
 	});
 });

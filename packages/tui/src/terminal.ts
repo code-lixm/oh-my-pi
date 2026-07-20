@@ -24,6 +24,7 @@ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 const WINDOWS_TERMINAL_OSC11_POLL_MS = 30_000;
+const OSC11_SENTINEL_GRACE_MS = 100;
 // Hangul Compatibility Jamo (U+3131..=U+318E) render width is terminal-dependent:
 // Ghostty follows UAX#11 (2 cells); Terminal.app and iTerm2 render narrow (1),
 // matching the macOS platform default. Override only for terminals known to
@@ -511,6 +512,7 @@ export class ProcessTerminal implements Terminal {
 	#osc11Pending = false;
 	#osc11QueryQueued = false;
 	#osc11ResponseBuffer = "";
+	#osc11SentinelGraceTimer?: Timer;
 	#osc99PendingId: string | undefined;
 	#osc99ResponseBuffer = "";
 	#osc99Capabilities = new Map<string, string>();
@@ -911,20 +913,14 @@ export class ProcessTerminal implements Terminal {
 				switch (owner.kind) {
 					case "osc11": {
 						if (this.#osc11Pending) {
-							// DA1 arrived before the OSC 11 reply: terminal does not support OSC 11.
-							this.#osc11Pending = false;
-							this.#osc11ResponseBuffer = "";
+							// Some terminals (observed intermittently in Ghostty) answer the
+							// synchronous DA1 sentinel before their asynchronous color lookup.
+							// Keep this query alive briefly so that late OSC 11 response still
+							// establishes the startup appearance instead of leaving auto-theme
+							// on its dark fallback for the entire session.
+							this.#scheduleOsc11SentinelGrace();
 						}
-						// Start a queued OSC 11 query once the prior cycle is fully drained.
-						if (
-							this.#osc11QueryQueued &&
-							!this.#osc11Pending &&
-							!this.#da1SentinelOwners.some(o => o.kind === "osc11") &&
-							!this.#dead
-						) {
-							this.#osc11QueryQueued = false;
-							this.#startOsc11Query();
-						}
+						this.#startQueuedOsc11QueryIfReady();
 						break;
 					}
 					case "privateMode": {
@@ -1003,9 +999,9 @@ export class ProcessTerminal implements Terminal {
 					const osc11Match = this.#osc11ResponseBuffer.match(osc11ResponsePattern);
 					if (!osc11Match) return;
 					const [, rHex, gHex, bHex] = osc11Match;
-					this.#osc11Pending = false;
-					this.#osc11ResponseBuffer = "";
+					this.#completeOsc11Query();
 					this.#handleOsc11Response(rHex!, gHex!, bHex!);
+					this.#startQueuedOsc11QueryIfReady();
 					return;
 				}
 			}
@@ -1053,10 +1049,46 @@ export class ProcessTerminal implements Terminal {
 		};
 	}
 
+	/** Finish the active OSC 11 query and cancel any post-sentinel grace window. */
+	#completeOsc11Query(): void {
+		if (this.#osc11SentinelGraceTimer) {
+			clearTimeout(this.#osc11SentinelGraceTimer);
+			this.#osc11SentinelGraceTimer = undefined;
+		}
+		this.#osc11Pending = false;
+		this.#osc11ResponseBuffer = "";
+	}
+
+	/** Start a coalesced re-query only after both the active query and its sentinel settle. */
+	#startQueuedOsc11QueryIfReady(): void {
+		if (
+			this.#osc11QueryQueued &&
+			!this.#osc11Pending &&
+			!this.#da1SentinelOwners.some(owner => owner.kind === "osc11") &&
+			!this.#dead
+		) {
+			this.#osc11QueryQueued = false;
+			this.#startOsc11Query();
+		}
+	}
+
+	/** Allow an asynchronous color reply to arrive just after its synchronous DA1 sentinel. */
+	#scheduleOsc11SentinelGrace(): void {
+		clearTimeout(this.#osc11SentinelGraceTimer);
+		this.#osc11SentinelGraceTimer = setTimeout(() => {
+			this.#osc11SentinelGraceTimer = undefined;
+			if (!this.#osc11Pending) return;
+			this.#osc11Pending = false;
+			this.#osc11ResponseBuffer = "";
+			this.#startQueuedOsc11QueryIfReady();
+		}, OSC11_SENTINEL_GRACE_MS);
+		this.#osc11SentinelGraceTimer.unref?.();
+	}
+
 	/**
-	 * Send OSC 11 background color query followed by DA1 sentinel.
-	 * DA1 avoids indefinite hangs: if DA1 response arrives before OSC 11,
-	 * the terminal does not support OSC 11.
+	 * Send an OSC 11 background color query followed by a DA1 sentinel.
+	 * DA1 bounds unsupported terminals; a short grace window handles terminals
+	 * whose asynchronous color lookup completes just after the sentinel reply.
 	 */
 	#queryBackgroundColor(): void {
 		if (this.#dead) return;
@@ -1072,6 +1104,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#startOsc11Query(): void {
+		this.#completeOsc11Query();
 		this.#osc11Pending = true;
 		this.#osc11ResponseBuffer = "";
 		this.#da1SentinelOwners.push({ kind: "osc11" });
@@ -1393,6 +1426,10 @@ export class ProcessTerminal implements Terminal {
 		if (this.#mode2031DebounceTimer) {
 			clearTimeout(this.#mode2031DebounceTimer);
 			this.#mode2031DebounceTimer = undefined;
+		}
+		if (this.#osc11SentinelGraceTimer) {
+			clearTimeout(this.#osc11SentinelGraceTimer);
+			this.#osc11SentinelGraceTimer = undefined;
 		}
 		this.#appearanceCallbacks = [];
 		this.#osc11Pending = false;

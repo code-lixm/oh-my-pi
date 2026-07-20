@@ -1,8 +1,9 @@
 // Gallery fixtures for the agentic orchestration tools (task, hub, goal).
 import type { Usage } from "@oh-my-pi/pi-ai";
+import { HubActivityGroupComponent } from "../../modes/components/hub-activity-group";
 import type { TaskToolDetails } from "../../task/types";
 import type { HubDetails } from "../../tools/hub";
-import type { GalleryFixture } from "./types";
+import type { GalleryFixture, GalleryFixtureState, GalleryResult } from "./types";
 
 /** Message/activity timestamps are offsets from load time so gallery ages stay plausible. */
 const FIXTURE_NOW = Date.now();
@@ -16,6 +17,116 @@ const fixtureUsage = (tokens: { input: number; output: number }, costTotal: numb
 	totalTokens: tokens.input + tokens.output,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costTotal },
 });
+
+function hubActivityResult(details: HubDetails, text: string, isError = false): GalleryResult {
+	return { content: [{ type: "text", text }], details, isError };
+}
+
+function renderHubActivityState(state: GalleryFixtureState, width: number, expanded: boolean): readonly string[] {
+	const component = new HubActivityGroupComponent();
+	component.setExpanded(expanded);
+	component.updateArgs(
+		{ op: "send", to: "AuthLoader", message: "Please verify the session-cookie boundary before I edit auth.ts." },
+		"send-auth",
+	);
+	if (state === "streaming") return component.render(width);
+
+	component.updateResult(
+		hubActivityResult(
+			{ op: "send", to: "AuthLoader", receipts: [{ to: "AuthLoader", outcome: "injected" }] },
+			"Delivered to AuthLoader.",
+		),
+		false,
+		"send-auth",
+	);
+	component.updateArgs({ op: "wait", ids: ["job_auth"] }, "wait-auth");
+	component.updateResult(
+		hubActivityResult(
+			{
+				op: "wait",
+				jobs: [
+					{
+						id: "job_auth",
+						type: "task",
+						status: "running",
+						label: "Review session-cookie boundary",
+						durationMs: 4_200,
+					},
+				],
+			},
+			"Auth review is still running.",
+		),
+		true,
+		"wait-auth",
+	);
+	component.appendIrcEvent({
+		kind: "incoming",
+		from: "RateLimiter",
+		body: "I am only touching rate-limit.ts; auth.ts is clear.",
+		timestamp: FIXTURE_NOW - 8_000,
+	});
+	if (state === "progress") return component.render(width);
+
+	if (state === "error") {
+		component.updateResult(
+			hubActivityResult({ op: "wait", jobs: [] }, "AuthLoader exited before replying.", true),
+			false,
+			"wait-auth",
+		);
+		component.finalize();
+		return component.render(width);
+	}
+
+	component.updateResult(
+		hubActivityResult(
+			{
+				op: "wait",
+				jobs: [
+					{
+						id: "job_auth",
+						type: "task",
+						status: "completed",
+						label: "Review session-cookie boundary",
+						durationMs: 12_600,
+					},
+				],
+			},
+			"Auth review completed.",
+		),
+		false,
+		"wait-auth",
+	);
+	component.appendIrcEvent({
+		kind: "autoreply",
+		to: "AuthLoader",
+		body: "Proceeding with the 401 path now.",
+		timestamp: FIXTURE_NOW - 3_000,
+	});
+	component.updateArgs({ op: "list" }, "list-agents");
+	component.updateResult(
+		hubActivityResult(
+			{
+				op: "list",
+				peers: [
+					{
+						id: "AuthLoader",
+						displayName: "AuthLoader",
+						kind: "sub",
+						status: "idle",
+						unread: 0,
+						lastActivity: FIXTURE_NOW - 2_000,
+						activity: "Session-cookie review complete",
+					},
+				],
+			},
+			"1 peer available.",
+		),
+		false,
+		"list-agents",
+	);
+	component.finalize();
+	return component.render(width);
+}
 
 export const agenticFixtures: Record<string, GalleryFixture> = {
 	task: {
@@ -140,6 +251,13 @@ export const agenticFixtures: Record<string, GalleryFixture> = {
 				],
 			} satisfies TaskToolDetails,
 		},
+	},
+
+	hub_activity: {
+		label: "Hub activity",
+		renderState: renderHubActivityState,
+		args: { op: "list" },
+		result: hubActivityResult({ op: "list", peers: [] }, "Hub activity fixture completed."),
 	},
 
 	hub_send: {

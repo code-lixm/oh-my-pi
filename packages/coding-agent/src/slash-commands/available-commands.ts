@@ -4,6 +4,7 @@ import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { getSkillSlashCommandName, type Skill } from "../extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { ACP_BUILTIN_RESERVED_NAMES, isAcpBuiltinShadowedName } from "./acp-builtins";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "./builtin-registry";
 
@@ -46,9 +47,13 @@ export async function buildAvailableSlashCommands(
 		appendCommand({
 			name: command.name,
 			aliases: command.aliases,
-			description: command.acpDescription ?? command.description,
-			input: hint ? { hint } : undefined,
-			subcommands: command.subcommands,
+			description: tSettingsUi(command.acpDescription ?? command.description),
+			input: hint ? { hint: tSettingsUi(hint) } : undefined,
+			subcommands: command.subcommands?.map(subcommand => ({
+				...subcommand,
+				description: subcommand.description ? tSettingsUi(subcommand.description) : undefined,
+				usage: subcommand.usage ? tSettingsUi(subcommand.usage) : undefined,
+			})),
 			source: "builtin",
 		});
 	}

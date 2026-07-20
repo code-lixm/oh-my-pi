@@ -3,6 +3,8 @@
  */
 import { APP_NAME, CONFIG_DIR_NAME, logger } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { tSettingsUi } from "../i18n/settings-locale";
+
 import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
 import { BUILTIN_TOOL_NAMES, HIDDEN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
@@ -22,6 +24,7 @@ export interface Args {
 	profile?: string;
 	alias?: string;
 	allowHome?: boolean;
+	sandbox?: boolean;
 	provider?: string;
 	model?: string;
 	config?: string[];
@@ -213,6 +216,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.version = true;
 		} else if (arg === "--allow-home") {
 			result.allowHome = true;
+		} else if (arg === "--sandbox") {
+			result.sandbox = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			// Normally stripped by `extractProfileFlags` before parseArgs sees it;
 			// kept here as a fallback for direct parseArgs callers.
@@ -306,8 +311,11 @@ export function reportUnrecognizedFlags(
 	if (args.unrecognizedFlags.length === 0) return false;
 	const flags = args.unrecognizedFlags;
 	const plural = flags.length === 1 ? "" : "s";
-	write(`${chalk.red(`Error: unknown flag${plural}: ${flags.join(", ")}`)}\n`);
-	write(`Run \`${APP_NAME} --help\` for available flags.\n`);
+	write(
+		`${chalk.red(`${tSettingsUi("Error:")} ${tSettingsUi(`unknown flag{plural}: {flags}`, { plural, flags: flags.join(", ") })}`)}\n`,
+	);
+	write(`${tSettingsUi("Run `{command}` for available flags.", { command: `${APP_NAME} --help` })}\n`);
+
 	return true;
 }
 
@@ -317,101 +325,101 @@ export function reportCliUsageError(
 	write: (text: string) => void = text => process.stderr.write(text),
 ): boolean {
 	if (!(error instanceof CliUsageError)) return false;
-	write(`${chalk.red(`Error: ${error.message}`)}\n`);
-	write(`Run \`${APP_NAME} --help\` for available flags.\n`);
+	write(`${chalk.red(`${tSettingsUi("Error:")} ${error.message}`)}\n`);
+	write(`${tSettingsUi("Run `{command}` for available flags.", { command: `${APP_NAME} --help` })}\n`);
 	return true;
 }
 
 export function getExtraHelpText(): string {
-	return `${chalk.bold("Environment Variables:")}
-  ${chalk.dim("# Core Providers")}
-  ANTHROPIC_API_KEY          - Anthropic Claude models
-  ANTHROPIC_OAUTH_TOKEN      - Anthropic OAuth (takes precedence over API key)
-  CLAUDE_CODE_USE_FOUNDRY    - Enable Anthropic Foundry mode (uses Foundry endpoint + mTLS)
-  FOUNDRY_BASE_URL           - Anthropic Foundry base URL (e.g., https://<foundry-host>)
-  ANTHROPIC_FOUNDRY_API_KEY  - Anthropic token used as Authorization: Bearer <token> in Foundry mode
-  ANTHROPIC_CUSTOM_HEADERS   - Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")
-  CLAUDE_CODE_CLIENT_CERT    - Client certificate (PEM path or inline PEM) for mTLS
-  CLAUDE_CODE_CLIENT_KEY     - Client private key (PEM path or inline PEM) for mTLS
-  NODE_EXTRA_CA_CERTS        - CA bundle path (or inline PEM) for server certificate validation
-  OPENAI_API_KEY             - OpenAI GPT models
-  GEMINI_API_KEY             - Google Gemini models
-  COPILOT_GITHUB_TOKEN      - GitHub Copilot
+	return `${chalk.bold(tSettingsUi("Environment Variables:"))}
+  ${chalk.dim(`# ${tSettingsUi("Core Providers")}`)}
+  ANTHROPIC_API_KEY          - ${tSettingsUi("Anthropic Claude models")}
+  ANTHROPIC_OAUTH_TOKEN      - ${tSettingsUi("Anthropic OAuth (takes precedence over API key)")}
+  CLAUDE_CODE_USE_FOUNDRY    - ${tSettingsUi("Enable Anthropic Foundry mode (uses Foundry endpoint + mTLS)")}
+  FOUNDRY_BASE_URL           - ${tSettingsUi("Anthropic Foundry base URL (e.g., https://<foundry-host>)")}
+  ANTHROPIC_FOUNDRY_API_KEY  - ${tSettingsUi("Anthropic token used as Authorization: Bearer <token> in Foundry mode")}
+  ANTHROPIC_CUSTOM_HEADERS   - ${tSettingsUi('Extra headers for Foundry or any custom ANTHROPIC_BASE_URL gateway (e.g., "user-id: USERNAME")')}
+  CLAUDE_CODE_CLIENT_CERT    - ${tSettingsUi("Client certificate (PEM path or inline PEM) for mTLS")}
+  CLAUDE_CODE_CLIENT_KEY     - ${tSettingsUi("Client private key (PEM path or inline PEM) for mTLS")}
+  NODE_EXTRA_CA_CERTS        - ${tSettingsUi("CA bundle path (or inline PEM) for server certificate validation")}
+  OPENAI_API_KEY             - ${tSettingsUi("OpenAI GPT models")}
+  GEMINI_API_KEY             - ${tSettingsUi("Google Gemini models")}
+  COPILOT_GITHUB_TOKEN      - ${tSettingsUi("GitHub Copilot")}
 
-  ${chalk.dim("# Additional LLM Providers")}
-  AZURE_OPENAI_API_KEY       - Azure OpenAI models
-  GROQ_API_KEY               - Groq models
-  CEREBRAS_API_KEY           - Cerebras models
-  XAI_API_KEY                - xAI Grok models
-  OPENROUTER_API_KEY         - OpenRouter aggregated models
-  KILO_API_KEY               - Kilo Gateway models
-  MISTRAL_API_KEY            - Mistral models
-  ZAI_API_KEY                - z.ai models (ZhipuAI/GLM)
-  UMANS_AI_CODING_PLAN_API_KEY - Umans AI Coding Plan models
-  UMANS_WEBSEARCH_PROVIDER    - Umans gateway web search backend (native or exa)
-  MINIMAX_API_KEY            - MiniMax models
-  OPENCODE_API_KEY           - OpenCode Zen/OpenCode Go models
-  CURSOR_ACCESS_TOKEN        - Cursor AI models
-  AI_GATEWAY_API_KEY         - Vercel AI Gateway
-  WAFER_SERVERLESS_API_KEY   - Wafer Serverless (pay-as-you-go)
+  ${chalk.dim(`# ${tSettingsUi("Additional LLM Providers")}`)}
+  AZURE_OPENAI_API_KEY       - ${tSettingsUi("Azure OpenAI models")}
+  GROQ_API_KEY               - ${tSettingsUi("Groq models")}
+  CEREBRAS_API_KEY           - ${tSettingsUi("Cerebras models")}
+  XAI_API_KEY                - ${tSettingsUi("xAI Grok models")}
+  OPENROUTER_API_KEY         - ${tSettingsUi("OpenRouter aggregated models")}
+  KILO_API_KEY               - ${tSettingsUi("Kilo Gateway models")}
+  MISTRAL_API_KEY            - ${tSettingsUi("Mistral models")}
+  ZAI_API_KEY                - ${tSettingsUi("z.ai models (ZhipuAI/GLM)")}
+  UMANS_AI_CODING_PLAN_API_KEY - ${tSettingsUi("Umans AI Coding Plan models")}
+  UMANS_WEBSEARCH_PROVIDER    - ${tSettingsUi("Umans gateway web search backend (native or exa)")}
+  MINIMAX_API_KEY            - ${tSettingsUi("MiniMax models")}
+  OPENCODE_API_KEY           - ${tSettingsUi("OpenCode Zen/OpenCode Go models")}
+  CURSOR_ACCESS_TOKEN        - ${tSettingsUi("Cursor AI models")}
+  AI_GATEWAY_API_KEY         - ${tSettingsUi("Vercel AI Gateway")}
+  WAFER_SERVERLESS_API_KEY   - ${tSettingsUi("Wafer Serverless (pay-as-you-go)")}
 
-  ${chalk.dim("# Cloud Providers")}
-  AWS_PROFILE                - AWS Bedrock (or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)
-  GOOGLE_CLOUD_PROJECT       - Google Vertex AI (requires GOOGLE_CLOUD_LOCATION)
-  GOOGLE_APPLICATION_CREDENTIALS - Service account for Vertex AI
+  ${chalk.dim(`# ${tSettingsUi("Cloud Providers")}`)}
+  AWS_PROFILE                - ${tSettingsUi("AWS Bedrock (or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)")}
+  GOOGLE_CLOUD_PROJECT       - ${tSettingsUi("Google Vertex AI (requires GOOGLE_CLOUD_LOCATION)")}
+  GOOGLE_APPLICATION_CREDENTIALS - ${tSettingsUi("Service account for Vertex AI")}
 
-  ${chalk.dim("# Search & Tools")}
-  EXA_API_KEY                - Exa web search
-  BRAVE_API_KEY              - Brave web search
-  PERPLEXITY_API_KEY         - Perplexity web search API key (optional; anonymous fallback)
-  PERPLEXITY_COOKIES         - Perplexity web search (session cookie)
-  TAVILY_API_KEY             - Tavily web search
-  TINYFISH_API_KEY           - TinyFish web search
-  FIRECRAWL_API_KEY          - Firecrawl web search
-  ANTHROPIC_SEARCH_API_KEY   - Anthropic web search (override; isolates search from main ANTHROPIC_API_KEY)
-  ANTHROPIC_SEARCH_BASE_URL  - Anthropic web search base URL (override; pairs with ANTHROPIC_SEARCH_API_KEY)
+  ${chalk.dim(`# ${tSettingsUi("Search & Tools")}`)}
+  EXA_API_KEY                - ${tSettingsUi("Exa web search")}
+  BRAVE_API_KEY              - ${tSettingsUi("Brave web search")}
+  PERPLEXITY_API_KEY         - ${tSettingsUi("Perplexity web search API key (optional; anonymous fallback)")}
+  PERPLEXITY_COOKIES         - ${tSettingsUi("Perplexity web search (session cookie)")}
+  TAVILY_API_KEY             - ${tSettingsUi("Tavily web search")}
+  TINYFISH_API_KEY           - ${tSettingsUi("TinyFish web search")}
+  FIRECRAWL_API_KEY          - ${tSettingsUi("Firecrawl web search")}
+  ANTHROPIC_SEARCH_API_KEY   - ${tSettingsUi("Anthropic web search (override; isolates search from main ANTHROPIC_API_KEY)")}
+  ANTHROPIC_SEARCH_BASE_URL  - ${tSettingsUi("Anthropic web search base URL (override; pairs with ANTHROPIC_SEARCH_API_KEY)")}
 
-  ${chalk.dim("# Configuration")}
-  OMP_PROFILE                 - Named profile for isolated agent state (same as --profile)
-  Use \`omp --profile <name> --alias <command>\` to create a shell shortcut for a profile
-  PI_CODING_AGENT_DIR        - Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)
-  PI_PACKAGE_DIR             - Override package directory (for Nix/Guix store paths)
-  PI_SMOL_MODEL              - Override smol/fast model (see --smol)
-  PI_SLOW_MODEL              - Override slow/reasoning model (see --slow)
-  PI_PLAN_MODEL              - Override planning model (see --plan)
-  PI_NO_PTY                  - Disable PTY-based interactive bash execution
-  For complete environment variable reference, see:
+  ${chalk.dim(`# ${tSettingsUi("Configuration")}`)}
+  OMP_PROFILE                 - ${tSettingsUi("Named profile for isolated agent state (same as --profile)")}
+  ${tSettingsUi("Use `{command}` to create a shell shortcut for a profile", { command: `omp --profile <name> --alias <command>` })}
+  PI_CODING_AGENT_DIR        - ${tSettingsUi(`Session storage directory (default: ~/${CONFIG_DIR_NAME}/agent)`)}
+  PI_PACKAGE_DIR             - ${tSettingsUi("Override package directory (for Nix/Guix store paths)")}
+  PI_SMOL_MODEL              - ${tSettingsUi("Override smol/fast model (see --smol)")}
+  PI_SLOW_MODEL              - ${tSettingsUi("Override slow/reasoning model (see --slow)")}
+  PI_PLAN_MODEL              - ${tSettingsUi("Override planning model (see --plan)")}
+  PI_NO_PTY                  - ${tSettingsUi("Disable PTY-based interactive bash execution")}
+  ${tSettingsUi("For complete environment variable reference, see:")}
   ${chalk.dim("docs/environment-variables.md")}
-${chalk.bold("Available Tools (default-enabled unless noted):")}
-  read          - Read file contents
-  bash          - Execute bash commands
-  edit          - Edit files with find/replace
-  write         - Write files (creates/overwrites)
-  grep          - Search file contents
-  glob          - Find files by glob pattern
-  lsp           - Language server protocol (code intelligence)
-  python        - Execute Python code (requires: ${APP_NAME} setup python)
-  notebook      - Edit Jupyter notebooks
-  inspect_image - Analyze images with a vision model
-  browser       - Browser automation (Puppeteer)
-  task          - Launch sub-agents for parallel tasks
-  todo          - Manage todo/task lists
-  web_search    - Search the web
-  ask           - Ask user questions (interactive mode only)
+${chalk.bold(tSettingsUi("Available Tools (default-enabled unless noted):"))}
+  read          - ${tSettingsUi("Read file contents")}
+  bash          - ${tSettingsUi("Execute bash commands")}
+  edit          - ${tSettingsUi("Edit files with find/replace")}
+  write         - ${tSettingsUi("Write files (creates/overwrites)")}
+  grep          - ${tSettingsUi("Search file contents")}
+  glob          - ${tSettingsUi("Find files by glob pattern")}
+  lsp           - ${tSettingsUi("Language server protocol (code intelligence)")}
+  python        - ${tSettingsUi(`Execute Python code (requires: ${APP_NAME} setup python)`)}
+  notebook      - ${tSettingsUi("Edit Jupyter notebooks")}
+  inspect_image - ${tSettingsUi("Analyze images with a vision model")}
+  browser       - ${tSettingsUi("Browser automation (Puppeteer)")}
+  task          - ${tSettingsUi("Launch sub-agents for parallel tasks")}
+  todo          - ${tSettingsUi("Manage todo/task lists")}
+  web_search    - ${tSettingsUi("Search the web")}
+  ask           - ${tSettingsUi("Ask user questions (interactive mode only)")}
 
-${chalk.bold("Plugin Options:")}
-  --plugin-dir <path>        Load plugin from directory (repeatable)
+${chalk.bold(tSettingsUi("Plugin Options:"))}
+  --plugin-dir <path>        ${tSettingsUi("Load plugin from directory (repeatable)")}
 
-${chalk.bold("Useful Commands:")}
-  omp agents unpack           - Export bundled subagents to ~/.omp/agent/agents (default)
-  omp agents unpack --project - Export bundled subagents to ./.omp/agents`;
+${chalk.bold(tSettingsUi("Useful Commands:"))}
+  omp agents unpack           - ${tSettingsUi("Export bundled subagents to ~/.omp/agent/agents (default)")}
+  omp agents unpack --project - ${tSettingsUi("Export bundled subagents to ./.omp/agents")}`;
 }
 
 export function printHelp(): void {
 	process.stdout.write(
-		`${chalk.bold(APP_NAME)} - AI coding assistant\n\n` +
-			`Run ${APP_NAME} --help for full command and option details.\n` +
-			`Run ${APP_NAME} <command> --help for command-specific help.\n\n` +
+		`${chalk.bold(APP_NAME)} - ${tSettingsUi("AI coding assistant")}\n\n` +
+			`${tSettingsUi("Run {command} for full command and option details.", { command: `${APP_NAME} --help` })}\n` +
+			`${tSettingsUi("Run {command} for command-specific help.", { command: `${APP_NAME} <command> --help` })}\n\n` +
 			`${getExtraHelpText()}\n`,
 	);
 }

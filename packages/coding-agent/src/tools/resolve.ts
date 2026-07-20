@@ -18,9 +18,12 @@ import type { AgentToolResult, CustomMessage } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { parseXdUrl, XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import resolveReminderPrompt from "../prompts/system/resolve-device-reminder.md" with { type: "text" };
+import resolveReminderPromptZh from "../prompts/system/resolve-device-reminder.zh-CN.md" with { type: "text" };
 import { Ellipsis, padToWidth, renderStatusLine, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { replaceTabs } from "./render-utils";
@@ -204,7 +207,7 @@ export function buildResolveReminderMessage(sourceToolName: string): CustomMessa
 	return {
 		role: "custom",
 		customType: "resolve-reminder",
-		content: resolveReminderPrompt.trim(),
+		content: selectPrompt(resolveReminderPrompt, resolveReminderPromptZh).trim(),
 		display: false,
 		details: { toolName: sourceToolName },
 		attribution: "agent",
@@ -354,10 +357,11 @@ export const resolveRenderer = {
 		const text = renderStatusLine(
 			{
 				icon: "pending",
-				title: "Resolve",
+				title: tSettingsUi("Resolve"),
 				description: args.action,
 				badge: {
-					label: args.action === "apply" ? "proposed -> resolved" : "proposed -> rejected",
+					label:
+						args.action === "apply" ? tSettingsUi("proposed -> resolved") : tSettingsUi("proposed -> rejected"),
 					color: args.action === "apply" ? "success" : "warning",
 				},
 				meta: reason ? [uiTheme.fg("muted", reason)] : undefined,
@@ -373,8 +377,8 @@ export const resolveRenderer = {
 		uiTheme: Theme,
 	): Component {
 		const details = result.details;
-		const label = replaceTabs(details?.label ?? "pending action");
-		const reason = replaceTabs(details?.reason?.trim() || "No reason provided");
+		const label = replaceTabs(details?.label ?? tSettingsUi("pending action"));
+		const reason = replaceTabs(details?.reason?.trim() || tSettingsUi("No reason provided"));
 		const action = details?.action ?? "apply";
 		const isApply = action === "apply" && !result.isError;
 		const isFailedApply = action === "apply" && result.isError;
@@ -383,7 +387,7 @@ export const resolveRenderer = {
 		// reset (styledSymbol/status glyphs carry their own \x1b[39m) would drop the
 		// inverse block back to the default background mid-line.
 		const icon = uiTheme.symbol(isApply ? "tool.resolve" : "status.error");
-		const verb = isApply ? "Accept" : isFailedApply ? "Failed" : "Discard";
+		const verb = isApply ? tSettingsUi("Accept") : isFailedApply ? tSettingsUi("Failed") : tSettingsUi("Discard");
 		const separator = ": ";
 		const separatorIndex = label.indexOf(separator);
 		const sourceLabel = separatorIndex > 0 ? label.slice(0, separatorIndex).trim() : undefined;

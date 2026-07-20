@@ -173,7 +173,7 @@ describe("TUI overlays", () => {
 		// A resize on Warp takes the in-place path (no ED3), so neutralize the
 		// ambient terminal identity to keep the direct-terminal resize/scrollback
 		// assertions below deterministic on any dev machine.
-		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"]) {
+		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"]) {
 			savedTerminalEnv[key] = Bun.env[key];
 			delete Bun.env[key];
 		}

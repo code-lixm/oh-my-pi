@@ -43,6 +43,132 @@ export class CliUsageError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Shared CLI i18n boundary (help chrome + helper-emitted stderr errors)
+// ---------------------------------------------------------------------------
+
+/**
+ * Supported CLI locales. The English table is the byte-identical baseline
+ * every existing CLI test depends on; `zh-CN` is the localized chrome. Other
+ * inputs fall back to English without throwing so a non-UTF-8 or unknown
+ * locale never crashes help rendering.
+ */
+export const CLI_LOCALES = ["en", "zh-CN"] as const;
+export type CliLocale = (typeof CLI_LOCALES)[number];
+
+/**
+ * Translation table for the chrome strings this module owns. Only the chrome
+ * is translated; dynamic values (command names, flag names, version strings,
+ * paths, URLs, OS/arch) are interpolated verbatim.
+ */
+const CLI_MESSAGES: Record<CliLocale, Record<string, string>> = {
+	en: {
+		"cli.section.usage": "USAGE",
+		"cli.section.arguments": "ARGUMENTS",
+		"cli.section.flags": "FLAGS",
+		"cli.section.examples": "EXAMPLES",
+		"cli.section.commands": "COMMANDS",
+		"cli.unknown_command": "Unknown command: {id}",
+		"cli.error.command_not_found": "Error: command {id} not found",
+		"cli.error.run_help": "Run `{bin} --help` for available commands.",
+		"cli.error.expected_integer": 'Expected integer for --{name}, got "{value}"',
+		"cli.error.expected_options": 'Expected --{name} to be one of: {options}; got "{value}"',
+		"cli.error.missing_flag": "Missing required flag: --{name}",
+		"cli.error.missing_argument": "Missing required argument: {name}",
+		"cli.error.expected_arg_options": 'Expected {name} to be one of: {options}; got "{value}"',
+	},
+	"zh-CN": {
+		"cli.section.usage": "用法",
+		"cli.section.arguments": "参数",
+		"cli.section.flags": "选项",
+		"cli.section.examples": "示例",
+		"cli.section.commands": "命令",
+		"cli.unknown_command": "未知命令：{id}",
+		"cli.error.command_not_found": "错误：未找到命令 {id}",
+		"cli.error.run_help": "运行 `{bin} --help` 查看可用命令。",
+		"cli.error.expected_integer": "--{name} 需要为整数，得到 “{value}”",
+		"cli.error.expected_options": "--{name} 必须是以下取值之一：{options}；得到 “{value}”",
+		"cli.error.missing_flag": "缺少必需选项：--{name}",
+		"cli.error.missing_argument": "缺少必需参数：{name}",
+		"cli.error.expected_arg_options": "{name} 必须是以下取值之一：{options}；得到 “{value}”",
+	},
+};
+
+function interpolate(template: string, params?: Record<string, string | number>): string {
+	if (!params) return template;
+	return template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+		const value = params[key];
+		return value === undefined ? `{${key}}` : String(value);
+	});
+}
+
+/** Normalize an arbitrary locale token to a supported {@link CliLocale}. */
+export function normalizeCliLocale(value: unknown): CliLocale {
+	if (typeof value !== "string") return "en";
+	// POSIX locales commonly carry an encoding suffix (`zh_CN.UTF-8`,
+	// `en_US.utf8`); strip it before matching the language tag.
+	const lower = value.trim().toLowerCase().replace(/_/g, "-").split(".")[0]?.split("-")[0] ?? "";
+	if (lower === "zh") return "zh-CN";
+	if (lower === "en") return "en";
+	return "en";
+}
+
+let currentCliLocale: CliLocale = "en";
+
+/** Override the resolved CLI locale (used by callers that want to flip chrome without touching env). */
+export function setCliLocale(value: unknown): void {
+	currentCliLocale = normalizeCliLocale(value);
+}
+
+/** Get the active CLI locale (may differ from the initial env-derived default). */
+export function getCliLocale(): CliLocale {
+	return currentCliLocale;
+}
+
+/**
+ * Resolve the CLI locale for a given environment snapshot. Precedence:
+ * explicit env key > `LC_ALL` > `LANG` > "en". Pure so the bootstrap import
+ * graph stays free of side effects and so callers (tests, downstream tools)
+ * can pass a custom env without mutating `process.env`.
+ */
+export function resolveCliLocale(
+	env: {
+		OMP_LOCALE?: string | undefined;
+		PI_LOCALE?: string | undefined;
+		LC_ALL?: string | undefined;
+		LANG?: string | undefined;
+	} = process.env as never,
+): CliLocale {
+	if (env.OMP_LOCALE) return normalizeCliLocale(env.OMP_LOCALE);
+	if (env.PI_LOCALE) return normalizeCliLocale(env.PI_LOCALE);
+	if (env.LC_ALL) return normalizeCliLocale(env.LC_ALL);
+	if (env.LANG) return normalizeCliLocale(env.LANG);
+	return "en";
+}
+
+/**
+ * Translate a CLI chrome key into the active locale. Falls back to English
+ * then to the raw key, so a missing translation never crashes help rendering.
+ */
+export function tCli(
+	key: string,
+	params?: Record<string, string | number>,
+	locale: CliLocale = currentCliLocale,
+): string {
+	const table = CLI_MESSAGES[locale] ?? CLI_MESSAGES.en;
+	const template = table[key] ?? CLI_MESSAGES.en[key] ?? key;
+	return interpolate(template, params);
+}
+
+/** Inject/override messages for a locale (testing or downstream customizations). */
+export function setCliMessages(locale: CliLocale, messages: Record<string, string>): void {
+	CLI_MESSAGES[locale] = { ...CLI_MESSAGES[locale], ...messages };
+}
+
+// Pick up env at module load. Subsequent overrides must go through
+// `setCliLocale` so tests can flip back to English without mutating process.env.
+currentCliLocale = resolveCliLocale();
+
+// ---------------------------------------------------------------------------
 // Flag & Arg descriptors
 // ---------------------------------------------------------------------------
 
@@ -152,6 +278,19 @@ export interface CliConfig {
 	commands: Map<string, CommandCtor>;
 }
 
+/**
+ * Format the expected-options error message in the active locale. Exposed so
+ * callers wiring parse errors into their own reporter get the same chrome
+ * without having to inspect the {@link CLI_MESSAGES} table directly.
+ */
+function formatOptionsError(name: string, value: unknown, options: readonly string[]): string {
+	return tCli("cli.error.expected_options", {
+		name,
+		options: [...options].join(", "),
+		value: String(value),
+	});
+}
+
 /** Minimal Command base matching the oclif surface we use. */
 export abstract class Command {
 	argv: string[];
@@ -227,7 +366,7 @@ export abstract class Command {
 				} else {
 					const n = Number.parseInt(raw as string, 10);
 					if (Number.isNaN(n)) {
-						throw new CliUsageError(`Expected integer for --${name}, got "${raw}"`);
+						throw new CliUsageError(tCli("cli.error.expected_integer", { name, value: String(raw) }));
 					}
 					flags[name] = n;
 				}
@@ -240,16 +379,14 @@ export abstract class Command {
 				// Validate options constraint
 				if (val !== undefined && desc.options && !Array.isArray(val)) {
 					if (!desc.options.includes(val as string)) {
-						throw new CliUsageError(
-							`Expected --${name} to be one of: ${[...desc.options].join(", ")}; got "${val}"`,
-						);
+						throw new CliUsageError(formatOptionsError(name, val, desc.options));
 					}
 				}
 				flags[name] = val;
 			}
 			// Validate required
 			if (desc.required && flags[name] === undefined) {
-				throw new CliUsageError(`Missing required flag: --${name}`);
+				throw new CliUsageError(tCli("cli.error.missing_flag", { name }));
 			}
 		}
 
@@ -268,14 +405,18 @@ export abstract class Command {
 			}
 			// Validate required
 			if (desc.required && args[argName] === undefined) {
-				throw new CliUsageError(`Missing required argument: ${argName}`);
+				throw new CliUsageError(tCli("cli.error.missing_argument", { name: argName }));
 			}
 			// Validate options constraint
 			const argVal = args[argName];
 			if (argVal !== undefined && desc.options && typeof argVal === "string") {
 				if (!desc.options.includes(argVal)) {
 					throw new CliUsageError(
-						`Expected ${argName} to be one of: ${[...desc.options].join(", ")}; got "${argVal}"`,
+						tCli("cli.error.expected_arg_options", {
+							name: argName,
+							options: [...desc.options].join(", "),
+							value: argVal,
+						}),
 					);
 				}
 			}
@@ -294,7 +435,7 @@ export function renderRootHelp(config: CliConfig): void {
 	const { bin, version, commands } = config;
 	const lines: string[] = [];
 	lines.push(`${bin} v${version}\n`);
-	lines.push("USAGE");
+	lines.push(tCli("cli.section.usage"));
 	lines.push(`  $ ${bin} [COMMAND]\n`);
 
 	// Show the default command's flags/args/examples inline.
@@ -307,7 +448,7 @@ export function renderRootHelp(config: CliConfig): void {
 	// List visible subcommands
 	const visible = [...commands.entries()].filter(([, C]) => !C.hidden);
 	if (visible.length > 0) {
-		lines.push("COMMANDS");
+		lines.push(tCli("cli.section.commands"));
 		const maxLen = Math.max(...visible.map(([n]) => n.length));
 		for (const [name, C] of visible.sort((a, b) => a[0].localeCompare(b[0]))) {
 			lines.push(`  ${name.padEnd(maxLen + 2)}${C.description ?? ""}`);
@@ -344,10 +485,20 @@ export function commandUsageLine(bin: string, id: string, Cmd: CommandCtor): str
 export function renderCommandHelp(bin: string, id: string, Cmd: CommandCtor): void {
 	const lines: string[] = [];
 	if (Cmd.description) lines.push(`${Cmd.description}\n`);
-	lines.push("USAGE");
+	lines.push(tCli("cli.section.usage"));
 	lines.push(`  ${commandUsageLine(bin, id, Cmd)}\n`);
 	renderCommandBody(lines, Cmd);
 	process.stdout.write(lines.join("\n"));
+}
+
+/** Render a localized stderr error for an unknown subcommand. */
+export function formatUnknownCommand(id: string, bin: string, locale: CliLocale = currentCliLocale): string {
+	return `${tCli("cli.unknown_command", { id }, locale)}\n${tCli("cli.error.run_help", { bin }, locale)}\n`;
+}
+
+/** Render a localized stderr error for an unresolvable command-line entry. */
+export function formatCommandNotFound(id: string, bin: string, locale: CliLocale = currentCliLocale): string {
+	return `${tCli("cli.error.command_not_found", { id }, locale)}\n${tCli("cli.error.run_help", { bin }, locale)}\n`;
 }
 
 function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
@@ -357,7 +508,7 @@ function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
 	// Arguments
 	const argEntries = Object.entries(argDefs);
 	if (argEntries.length > 0) {
-		lines.push("ARGUMENTS");
+		lines.push(tCli("cli.section.arguments"));
 		const maxLen = Math.max(...argEntries.map(([n]) => n.length));
 		for (const [name, desc] of argEntries) {
 			const parts = [name.toUpperCase().padEnd(maxLen + 2)];
@@ -371,7 +522,7 @@ function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
 	// Flags
 	const flagEntries = Object.entries(flagDefs);
 	if (flagEntries.length > 0) {
-		lines.push("FLAGS");
+		lines.push(tCli("cli.section.flags"));
 		const formatted: [string, string][] = [];
 		for (const [name, desc] of flagEntries) {
 			const charPart = desc.char ? `-${desc.char}, ` : "    ";
@@ -388,7 +539,7 @@ function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
 
 	// Examples
 	if (Cmd.examples && Cmd.examples.length > 0) {
-		lines.push("EXAMPLES");
+		lines.push(tCli("cli.section.examples"));
 		for (const ex of Cmd.examples) {
 			for (const line of ex.split("\n")) {
 				lines.push(`  ${line}`);
@@ -461,7 +612,7 @@ export async function run(opts: RunOptions): Promise<void> {
 			const Cmd = await loadEntry(entry);
 			renderCommandHelp(bin, entry.name, Cmd);
 		} else {
-			process.stderr.write(`Unknown command: ${commandId}\n`);
+			process.stderr.write(formatUnknownCommand(commandId, bin));
 		}
 		return;
 	}
@@ -470,7 +621,7 @@ export async function run(opts: RunOptions): Promise<void> {
 	const entry = findEntry(opts.commands, commandId);
 
 	if (!entry) {
-		process.stderr.write(`Error: command ${commandId} not found\n`);
+		process.stderr.write(formatCommandNotFound(commandId, bin));
 		process.exitCode = 1;
 		return;
 	}

@@ -1,36 +1,98 @@
 #!/usr/bin/env bun
 import { type ClaudeTraceCommandArgs, runClaudeTraceCommand } from "../packages/coding-agent/src/cli/claude-trace-cli";
 
-const HELP = `Usage: bun scripts/claude-trace.ts [options]
+// Minimal in-script i18n. Locale resolution: explicit OMP_LOCALE / PI_LOCALE >
+// LC_ALL > LANG; anything starting with "zh" maps to zh-CN, otherwise English.
+// Keep flag names, file paths, and dynamic error messages untouched.
+type Locale = "en" | "zh-CN";
+const MESSAGES: Record<string, Record<string, string>> = {
+	en: {
+		help_title: "Usage: bun scripts/claude-trace.ts [options]",
+		help_summary:
+			'Runs Claude Code in a headless PTY behind a local HTTPS proxy, sends "hi", and\nprints the first /v1/messages request/response headers and bodies.',
+		help_options: "Options:",
+		opt_command: "  --command <cmd>          Command to run in the virtual TUI (default: claude)",
+		opt_message: "  --message <text>         Message to send (default: hi)",
+		opt_cwd: "  --cwd <path>             Working directory for the Claude process",
+		opt_host: "  --host <host>            Proxy bind host (default: 127.0.0.1)",
+		opt_port: "  --port <port>            Proxy bind port (default: 8080; use 0 for random)",
+		opt_timeout: "  --timeout <ms>           Overall timeout in milliseconds (default: 120000)",
+		opt_input_delay: "  --input-delay <ms>       Delay before sending input (default: 1000)",
+		opt_json: "  --json                   Print JSON instead of Markdown-ish text",
+		opt_upstream_insecure: "  --upstream-insecure      Disable TLS verification for the upstream server",
+		opt_help: "  -h, --help               Show this help",
+		err_requires_value: "{name} requires a value",
+		err_non_negative_integer: "{name} must be a non-negative integer",
+		err_unknown_option: "Unknown option: {item}",
+	},
+	"zh-CN": {
+		help_title: "用法：bun scripts/claude-trace.ts [选项]",
+		help_summary:
+			'在本地 HTTPS 代理后以无头 PTY 方式运行 Claude Code，发送 "hi"，\n并打印首个 /v1/messages 请求与响应的头部与正文。',
+		help_options: "选项：",
+		opt_command: "  --command <cmd>          在虚拟 TUI 中执行的命令（默认：claude）",
+		opt_message: "  --message <text>         要发送的消息（默认：hi）",
+		opt_cwd: "  --cwd <path>             Claude 进程的工作目录",
+		opt_host: "  --host <host>            代理绑定主机（默认：127.0.0.1）",
+		opt_port: "  --port <port>            代理绑定端口（默认：8080；传 0 表示随机）",
+		opt_timeout: "  --timeout <ms>           总超时（毫秒，默认：120000）",
+		opt_input_delay: "  --input-delay <ms>       发送输入前的延迟（默认：1000）",
+		opt_json: "  --json                   改用 JSON 而非 Markdown 风格输出",
+		opt_upstream_insecure: "  --upstream-insecure      关闭上游服务器的 TLS 校验",
+		opt_help: "  -h, --help               显示此帮助",
+		err_requires_value: "{name} 需要一个值",
+		err_non_negative_integer: "{name} 必须是非负整数",
+		err_unknown_option: "未知选项：{item}",
+	},
+};
 
-Runs Claude Code in a headless PTY behind a local HTTPS proxy, sends "hi", and
-prints the first /v1/messages request/response headers and bodies.
+function detectLocale(): Locale {
+	const source =
+		[Bun.env.OMP_LOCALE, Bun.env.PI_LOCALE, Bun.env.LC_ALL, Bun.env.LANG].find(
+			(value): value is string => typeof value === "string" && value.length > 0,
+		) ?? "";
+	return source.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+}
 
-Options:
-  --command <cmd>          Command to run in the virtual TUI (default: claude)
-  --message <text>         Message to send (default: hi)
-  --cwd <path>             Working directory for the Claude process
-  --host <host>            Proxy bind host (default: 127.0.0.1)
-  --port <port>            Proxy bind port (default: 8080; use 0 for random)
-  --timeout <ms>           Overall timeout in milliseconds (default: 120000)
-  --input-delay <ms>       Delay before sending input (default: 1000)
-  --json                   Print JSON instead of Markdown-ish text
-  --upstream-insecure      Disable TLS verification for the upstream server
-  -h, --help               Show this help
-`;
+function t(key: string, params?: Record<string, string>): string {
+	const locale = detectLocale();
+	const table = MESSAGES[locale] ?? MESSAGES.en;
+	const template = table[key] ?? MESSAGES.en[key] ?? key;
+	if (!params) return template;
+	return template.replace(/\{(\w+)\}/g, (match, name) => params[name] ?? match);
+}
+
+function buildHelp(): string {
+	const keys = [
+		"help_title",
+		"help_summary",
+		"help_options",
+		"opt_command",
+		"opt_message",
+		"opt_cwd",
+		"opt_host",
+		"opt_port",
+		"opt_timeout",
+		"opt_input_delay",
+		"opt_json",
+		"opt_upstream_insecure",
+		"opt_help",
+	] as const;
+	return `${keys.map(k => t(k)).join("\n")}\n`;
+}
 
 function readOptionValue(argv: readonly string[], index: number, name: string): { value: string; nextIndex: number } {
 	const inlinePrefix = `${name}=`;
 	const current = argv[index] ?? "";
 	if (current.startsWith(inlinePrefix)) return { value: current.slice(inlinePrefix.length), nextIndex: index };
 	const value = argv[index + 1];
-	if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+	if (!value || value.startsWith("--")) throw new Error(t("err_requires_value", { name }));
 	return { value, nextIndex: index + 1 };
 }
 
 function parseIntegerOption(value: string, name: string): number {
 	const parsed = Number.parseInt(value, 10);
-	if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(t("err_non_negative_integer", { name }));
 	return parsed;
 }
 
@@ -89,7 +151,7 @@ export function parseClaudeTraceScriptArgs(argv: readonly string[]): ClaudeTrace
 			i = parsed.nextIndex;
 			continue;
 		}
-		throw new Error(`Unknown option: ${item}`);
+		throw new Error(t("err_unknown_option", { item }));
 	}
 	return args;
 }
@@ -97,7 +159,7 @@ export function parseClaudeTraceScriptArgs(argv: readonly string[]): ClaudeTrace
 export async function runClaudeTraceScript(argv: readonly string[] = Bun.argv.slice(2)): Promise<void> {
 	const parsed = parseClaudeTraceScriptArgs(argv);
 	if (parsed === "help") {
-		process.stdout.write(HELP);
+		process.stdout.write(buildHelp());
 		return;
 	}
 	await runClaudeTraceCommand(parsed);

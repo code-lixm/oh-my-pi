@@ -2,6 +2,8 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommand, CustomCommandAPI } from "../../../../extensibility/custom-commands/types";
 import type { HookCommandContext } from "../../../../extensibility/hooks/types";
 import ciGreenRequestTemplate from "../../../../prompts/ci-green-request.md" with { type: "text" };
+import ciGreenRequestTemplateZh from "../../../../prompts/ci-green-request.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../../../../prompts/prompt-locale";
 import * as git from "../../../../utils/git";
 
 async function getHeadTag(api: CustomCommandAPI): Promise<string | undefined> {
@@ -49,6 +51,6 @@ export class GreenCommand implements CustomCommand {
 
 	async execute(_args: string[], _ctx: HookCommandContext): Promise<string> {
 		const { headTag, branch, remote } = await getHeadTagContext(this.api);
-		return prompt.render(ciGreenRequestTemplate, { headTag, branch, remote });
+		return prompt.render(selectPrompt(ciGreenRequestTemplate, ciGreenRequestTemplateZh), { headTag, branch, remote });
 	}
 }

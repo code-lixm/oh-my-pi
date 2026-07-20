@@ -10,6 +10,7 @@ import { Text } from "@oh-my-pi/pi-tui";
 import type { AsyncJob, AsyncJobManager } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
@@ -431,23 +432,34 @@ function flattenStructuredPreview(text: string): string {
 }
 
 function describeTarget(args: JobRenderArgs | undefined): string {
-	if (args?.list) return "background jobs";
+	if (args?.list) return tSettingsUi("background jobs");
 	const poll = args?.poll ?? [];
 	const cancel = args?.cancel ?? [];
 	const parts: string[] = [];
 	if (cancel.length > 0) {
-		parts.push(cancel.length === 1 ? `cancel ${cancel[0]}` : `cancel ${cancel.length} jobs`);
+		parts.push(
+			cancel.length === 1
+				? tSettingsUi("cancel {id}", { id: cancel[0] ?? "" })
+				: tSettingsUi("cancel {count} jobs", { count: cancel.length }),
+		);
 	}
 	if (poll.length > 0) {
-		parts.push(poll.length === 1 ? `poll ${poll[0]}` : `poll ${poll.length} jobs`);
+		parts.push(
+			poll.length === 1
+				? tSettingsUi("poll {id}", { id: poll[0] ?? "" })
+				: tSettingsUi("poll {count} jobs", { count: poll.length }),
+		);
 	}
-	if (parts.length === 0) return "all running jobs";
+	if (parts.length === 0) return tSettingsUi("all running jobs");
 	return parts.join(", ");
 }
 
 /** Pending-call frame for job ops (wait/cancel/jobs). */
 export function jobsRenderCall(args: HubRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-	const text = renderStatusLine({ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || "Job" }, uiTheme);
+	const text = renderStatusLine(
+		{ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || tSettingsUi("Job") },
+		uiTheme,
+	);
 	return new Text(text, 0, 0);
 }
 
@@ -463,8 +475,8 @@ export function jobsRenderResult(
 	const agents = result.details?.agents ?? [];
 
 	if (jobs.length === 0 && agents.length === 0) {
-		const fallback = result.content?.find(c => c.type === "text")?.text || "No jobs to process";
-		const header = renderStatusLine({ icon: "warning", title: describeTarget(args) || "Job" }, uiTheme);
+		const fallback = result.content?.find(c => c.type === "text")?.text || tSettingsUi("No jobs to process");
+		const header = renderStatusLine({ icon: "warning", title: describeTarget(args) || tSettingsUi("Job") }, uiTheme);
 		return new Text([header, formatEmptyMessage(fallback, uiTheme)].join("\n"), 0, 0);
 	}
 
@@ -486,24 +498,36 @@ export function jobsRenderResult(
 	// The title already carries the running count, so meta lists only the
 	// settled categories — "waiting on 19 of 19 · 19 running" read awkward.
 	const meta: string[] = [];
-	if (counts.completed > 0) meta.push(uiTheme.fg("success", `${counts.completed} done`));
-	if (counts.failed > 0) meta.push(uiTheme.fg("error", `${counts.failed} failed`));
-	if (counts.cancelled > 0) meta.push(uiTheme.fg("warning", `${counts.cancelled} cancelled`));
+	if (counts.completed > 0) meta.push(uiTheme.fg("success", tSettingsUi("{count} done", { count: counts.completed })));
+	if (counts.failed > 0) meta.push(uiTheme.fg("error", tSettingsUi("{count} failed", { count: counts.failed })));
+	if (counts.cancelled > 0)
+		meta.push(uiTheme.fg("warning", tSettingsUi("{count} cancelled", { count: counts.cancelled })));
 	if (agents.length > 0 && jobs.length > 0) {
-		meta.push(uiTheme.fg("accent", `${agents.length} agent${agents.length === 1 ? "" : "s"}`));
+		meta.push(
+			uiTheme.fg(
+				"accent",
+				tSettingsUi(agents.length === 1 ? "{count} agent" : "{count} agents", { count: agents.length }),
+			),
+		);
 	}
 
 	const headerIcon: ToolUIStatus =
 		counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
-	const jobsNoun = jobs.length === 1 ? "job" : "jobs";
 	const description =
 		jobs.length === 0
-			? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
+			? tSettingsUi(agents.length === 1 ? "{count} running agent — no jobs" : "{count} running agents — no jobs", {
+					count: agents.length,
+				})
 			: counts.running > 0
 				? counts.running === jobs.length
-					? `waiting on ${jobs.length} ${jobsNoun}`
-					: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
-				: `${jobs.length} ${jobsNoun} settled`;
+					? tSettingsUi(jobs.length === 1 ? "waiting on {count} job" : "waiting on {count} jobs", {
+							count: jobs.length,
+						})
+					: tSettingsUi(
+							jobs.length === 1 ? "waiting on {running} of {total} job" : "waiting on {running} of {total} jobs",
+							{ running: counts.running, total: jobs.length },
+						)
+				: tSettingsUi(jobs.length === 1 ? "{count} job settled" : "{count} jobs settled", { count: jobs.length });
 
 	const header = renderStatusLine(
 		{
@@ -560,7 +584,7 @@ export function jobsRenderResult(
 						// Task jobs label themselves with their agent id, which is also
 						// the job id — drop the id column instead of stuttering it twice.
 						const idPart = job.label.trim() === job.id ? "" : ` ${uiTheme.fg("muted", job.id)}`;
-						const rawLabelLines = (job.label || "(no label)").split(/\r?\n/);
+						const rawLabelLines = (job.label || tSettingsUi("(no label)")).split(/\r?\n/);
 						const maxLabelLines = expanded ? LABEL_LINES_EXPANDED : LABEL_LINES_COLLAPSED;
 						const visibleLabelLines = rawLabelLines
 							.slice(0, maxLabelLines)
@@ -632,7 +656,7 @@ export function jobsRenderResult(
 								itemType: "agent",
 								renderItem: agent => {
 									const icon = formatStatusIcon("running", uiTheme, options.spinnerFrame);
-									const badge = formatBadge("agent", "accent", uiTheme);
+									const badge = formatBadge(tSettingsUi("agent"), "accent", uiTheme);
 									const gist = agent.activity
 										? ` ${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(agent.activity), LABEL_MAX_WIDTH, Ellipsis.Unicode))}`
 										: "";

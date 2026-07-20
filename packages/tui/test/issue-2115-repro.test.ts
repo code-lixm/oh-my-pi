@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type Component, type RenderScheduler, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -13,6 +13,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 // replay crossed ~1-2 MiB.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+const MULTIPLEXER_ENV_KEYS = ["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"] as const;
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -86,7 +87,20 @@ class ManualRenderScheduler implements RenderScheduler {
 }
 
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
+	let savedMultiplexerEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		for (const key of MULTIPLEXER_ENV_KEYS) {
+			savedMultiplexerEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
+	});
 	afterEach(() => {
+		for (const key in savedMultiplexerEnv) {
+			const value = savedMultiplexerEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedMultiplexerEnv = {};
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
 		vi.restoreAllMocks();
 	});

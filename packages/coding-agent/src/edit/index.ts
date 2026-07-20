@@ -7,9 +7,13 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
+import { selectPrompt } from "../prompts/prompt-locale";
 import applyPatchDescription from "../prompts/tools/apply-patch.md" with { type: "text" };
+import applyPatchDescriptionZh from "../prompts/tools/apply-patch.zh-CN.md" with { type: "text" };
 import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
+import patchDescriptionZh from "../prompts/tools/patch.zh-CN.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
+import replaceDescriptionZh from "../prompts/tools/replace.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { isInternalUrlPath } from "../tools/path-utils";
@@ -482,7 +486,7 @@ export class EditTool implements AgentTool<TInput> {
 	#getModeDefinition(): EditModeDefinition {
 		return {
 			patch: {
-				description: () => prompt.render(patchDescription),
+				description: () => prompt.render(selectPrompt(patchDescription, patchDescriptionZh)),
 				parameters: patchEditSchema,
 				examples: [
 					{
@@ -546,7 +550,7 @@ export class EditTool implements AgentTool<TInput> {
 				},
 			},
 			apply_patch: {
-				description: () => prompt.render(applyPatchDescription),
+				description: () => prompt.render(selectPrompt(applyPatchDescription, applyPatchDescriptionZh)),
 				parameters: applyPatchSchema,
 				examples: [
 					{
@@ -607,7 +611,7 @@ export class EditTool implements AgentTool<TInput> {
 				},
 			},
 			replace: {
-				description: () => prompt.render(replaceDescription),
+				description: () => prompt.render(selectPrompt(replaceDescription, replaceDescriptionZh)),
 				parameters: replaceEditSchema,
 				execute: (
 					tool: EditTool,

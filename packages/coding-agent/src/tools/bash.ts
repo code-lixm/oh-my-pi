@@ -12,10 +12,13 @@ import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
+import bashDescriptionZh from "../prompts/tools/bash.zh-CN.md" with { type: "text" };
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
@@ -331,7 +334,7 @@ function formatExitCodeNotice(exitCode: number): string {
 }
 
 function formatBackgroundNotice(jobId: string): string {
-	return `Backgrounded as job ${jobId}; result will be delivered automatically.`;
+	return tSettingsUi("Backgrounded as job {jobId}; result will be delivered automatically.", { jobId });
 }
 
 /**
@@ -378,21 +381,21 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const rawCommand = (args as Partial<BashToolInput>).command;
 		const command = typeof rawCommand === "string" ? rawCommand : "";
 		if (command !== "" && CRITICAL_BASH_PATTERNS.some(pattern => pattern.test(command))) {
-			return { tier: "exec", override: true, reason: "Critical pattern detected" };
+			return { tier: "exec", override: true, reason: tSettingsUi("Critical pattern detected") };
 		}
 		return "exec";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
-		const command = typeof rawCommand === "string" ? rawCommand : "(missing)";
-		return [`Command: ${truncateForPrompt(command)}`];
+		const command = typeof rawCommand === "string" ? rawCommand : tSettingsUi("(missing)");
+		return [tSettingsUi("Command: {command}", { command: truncateForPrompt(command) })];
 	};
 	readonly label = "Bash";
 	readonly loadMode = "essential";
 	get description(): string {
 		const evalBackends = resolveEvalBackends(this.session);
 		const isToolActive = (name: string, fallback: boolean): boolean => this.session.isToolActive?.(name) ?? fallback;
-		return prompt.render(bashDescription, {
+		return prompt.render(selectPrompt(bashDescription, bashDescriptionZh), {
 			asyncEnabled: this.#asyncEnabled,
 			autoBackgroundEnabled: this.#autoBackgroundEnabled,
 			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
@@ -1366,23 +1369,26 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						statsParts.push(`Backgrounded: ${details.async.jobId}`);
 					}
 					if (wallTimeMs !== undefined) {
-						statsParts.push(`Wall: ${formatWallTimeSeconds(wallTimeMs)}s`);
+						statsParts.push(tSettingsUi("Wall: {seconds}s", { seconds: formatWallTimeSeconds(wallTimeMs) }));
 					}
 					if (timeoutDisabled) {
-						statsParts.push("Timeout: disabled");
+						statsParts.push(tSettingsUi("Timeout: disabled"));
 					}
 					if (typeof timeoutSeconds === "number") {
 						statsParts.push(
 							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
-								: `Timeout: ${timeoutSeconds}s`,
+								? tSettingsUi("Timeout: {seconds}s (requested {requestedSeconds}s clamped)", {
+										seconds: timeoutSeconds,
+										requestedSeconds: requestedTimeoutSeconds,
+									})
+								: tSettingsUi("Timeout: {seconds}s", { seconds: timeoutSeconds }),
 						);
 					}
 					if (rawOutputArtifact.artifactId) {
-						statsParts.push(`Artifact: ${rawOutputArtifact.artifactId}`);
+						statsParts.push(tSettingsUi("Artifact: {artifactId}", { artifactId: rawOutputArtifact.artifactId }));
 					}
 					if (isError && typeof details?.exitCode === "number") {
-						statsParts.push(`Exit: ${details.exitCode}`);
+						statsParts.push(tSettingsUi("Exit: {exitCode}", { exitCode: details.exitCode }));
 					}
 					const timeoutLine =
 						statsParts.length > 0
@@ -1428,7 +1434,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								outputLines.push(
 									uiTheme.fg(
 										"dim",
-										`… (${result.skippedCount} earlier lines, showing ${result.visualLines.length} of ${result.skippedCount + result.visualLines.length}) (ctrl+o to expand)`,
+										tSettingsUi("… ({earlier} earlier lines, showing {shown} of {total}) ({key} to expand)", {
+											earlier: result.skippedCount,
+											shown: result.visualLines.length,
+											total: result.skippedCount + result.visualLines.length,
+											key: "ctrl+o",
+										}),
 									),
 								);
 							}
@@ -1448,7 +1459,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 									// render identically; only ctrl+o uncaps.
 									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
 								},
-								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
+								{ label: uiTheme.fg("toolTitle", tSettingsUi("Output")), lines: outputLines },
 							],
 							width,
 						},
@@ -1482,7 +1493,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 }
 
 export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
-	resolveTitle: () => "Bash",
+	resolveTitle: () => tSettingsUi("Bash"),
 	resolveCommand: args => args?.command,
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,

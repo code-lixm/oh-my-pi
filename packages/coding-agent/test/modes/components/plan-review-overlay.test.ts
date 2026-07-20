@@ -5,6 +5,7 @@ import type { HookSelectorSlider } from "@oh-my-pi/pi-coding-agent/modes/compone
 import { PlanReviewOverlay } from "@oh-my-pi/pi-coding-agent/modes/components/plan-review-overlay";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../../../src/i18n/settings-locale";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -16,6 +17,7 @@ const SHIFT_DOWN = "\x1b[1;2B";
 const CANCEL = "\x07"; // ctrl+g, remapped to tui.select.cancel below
 
 let darkTheme = await getThemeByName("dark");
+let previousSettingsUiLocale = getSettingsUiLocale();
 
 function render(component: PlanReviewOverlay): string {
 	return stripVTControlCharacters(component.render(80).join("\n"));
@@ -35,6 +37,7 @@ describe("PlanReviewOverlay", () => {
 	});
 
 	beforeEach(() => {
+		previousSettingsUiLocale = getSettingsUiLocale();
 		setThemeInstance(darkTheme!);
 		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
 	});
@@ -42,6 +45,7 @@ describe("PlanReviewOverlay", () => {
 	afterEach(() => {
 		setKeybindings(KeybindingsManager.inMemory());
 		vi.restoreAllMocks();
+		setSettingsUiLocale(previousSettingsUiLocale);
 	});
 
 	it("renders the plan body, prompt, options and footer inside one outlined box", () => {
@@ -61,6 +65,20 @@ describe("PlanReviewOverlay", () => {
 		expect(out).toContain(theme.boxRound.topLeft);
 		expect(out).toContain("│");
 		expect(out).toContain(theme.boxRound.bottomLeft);
+	});
+
+	it("uses the current zh-CN locale for the default cancel footer after module load", () => {
+		setSettingsUiLocale("en");
+		setSettingsUiLocale("zh-CN");
+		const overlay = new PlanReviewOverlay(
+			"plan body text",
+			{ promptTitle: "next", options: APPROVAL_OPTIONS },
+			{ onPick: vi.fn(), onCancel: vi.fn() },
+		);
+
+		const out = render(overlay);
+		expect(out).toContain(tSettingsUi("esc cancel"));
+		expect(out).not.toContain("esc cancel");
 	});
 
 	it("confirms the highlighted option on Enter", () => {

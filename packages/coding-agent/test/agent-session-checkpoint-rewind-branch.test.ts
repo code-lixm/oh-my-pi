@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message, ThinkingContent } from "@oh-my-pi/pi-ai";
@@ -12,9 +12,10 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { RewindTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { CheckpointTool, RewindTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../src/i18n/settings-locale";
 
 const checkpointSchema = z.object({ goal: z.string() });
 const rewindSchema = z.object({ report: z.string() });
@@ -88,6 +89,12 @@ type Harness = {
 
 const activeHarnesses: Harness[] = [];
 
+let previousLocale = getSettingsUiLocale();
+
+beforeEach(() => {
+	previousLocale = getSettingsUiLocale();
+});
+
 afterEach(async () => {
 	while (activeHarnesses.length > 0) {
 		const harness = activeHarnesses.pop();
@@ -98,6 +105,7 @@ afterEach(async () => {
 		harness?.authStorage.close();
 		harness?.tempDir.removeSync();
 	}
+	setSettingsUiLocale(previousLocale);
 });
 
 function signedThinking(thinking: string, thinkingSignature: string): MockContent {
@@ -461,6 +469,38 @@ describe("AgentSession checkpoint rewind branch context", () => {
 
 		expect(harness.session.getLastCompletedRewind()).toBeUndefined();
 		await expectNoActiveCheckpointError(harness.session);
+	});
+	it("derives its rewinding intent from the settings UI locale", () => {
+		const tool = new RewindTool(createToolSession());
+
+		setSettingsUiLocale("en");
+		expect(tool.intent()).toBe("rewinding");
+
+		setSettingsUiLocale("zh-CN");
+		expect(tool.intent()).toBe(tSettingsUi("rewinding"));
+		expect(tool.intent()).not.toBe("rewinding");
+	});
+	it("derives its checkpointing intent (no args) from the settings UI locale", () => {
+		const tool = new CheckpointTool(createToolSession());
+
+		setSettingsUiLocale("en");
+		expect(tool.intent({})).toBe("checkpointing");
+
+		setSettingsUiLocale("zh-CN");
+		expect(tool.intent({})).toBe(tSettingsUi("checkpointing"));
+		expect(tool.intent({})).not.toBe("checkpointing");
+	});
+	it("derives its checkpointing intent (with goal) from the settings UI locale", () => {
+		const tool = new CheckpointTool(createToolSession());
+
+		setSettingsUiLocale("en");
+		expect(tool.intent({ goal: "investigate auth bug" })).toBe("checkpointing: investigate auth bug");
+
+		setSettingsUiLocale("zh-CN");
+		expect(tool.intent({ goal: "investigate auth bug" })).toBe(
+			tSettingsUi("checkpointing: {goal}", { goal: "investigate auth bug" }),
+		);
+		expect(tool.intent({ goal: "investigate auth bug" })).not.toContain("checkpointing:");
 	});
 	it("tells the model to continue when rewind is repeated after completion", async () => {
 		const tool = new RewindTool(

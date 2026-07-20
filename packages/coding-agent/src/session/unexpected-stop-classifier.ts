@@ -4,11 +4,13 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import unexpectedStopClassifierPrompt from "../prompts/system/unexpected-stop-classifier.md" with { type: "text" };
+import unexpectedStopClassifierPromptZh from "../prompts/system/unexpected-stop-classifier.zh-CN.md" with {
+	type: "text",
+};
 import { isTinyMemoryLocalModelKey, ONLINE_MEMORY_MODEL_KEY } from "../tiny/models";
 import { tinyModelClient } from "../tiny/title-client";
-
-const CLASSIFIER_SYSTEM_PROMPT = prompt.render(unexpectedStopClassifierPrompt);
 
 /**
  * The answer is a single word. OpenAI-compatible endpoints reject values below
@@ -82,7 +84,7 @@ async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): P
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: [CLASSIFIER_SYSTEM_PROMPT],
+			systemPrompt: [prompt.render(selectPrompt(unexpectedStopClassifierPrompt, unexpectedStopClassifierPromptZh))],
 			messages: [{ role: "user", content: text, timestamp: Date.now() }],
 		},
 		{
@@ -113,7 +115,9 @@ async function classifyLocal(
 	if (!isTinyMemoryLocalModelKey(modelKey)) {
 		throw new Error(`unexpected-stop: unsupported local classifier model: ${modelKey}`);
 	}
-	const builtPrompt = prompt.render(unexpectedStopClassifierPrompt, { message: text });
+	const builtPrompt = prompt.render(selectPrompt(unexpectedStopClassifierPrompt, unexpectedStopClassifierPromptZh), {
+		message: text,
+	});
 	const output = await tinyModelClient.complete(modelKey, builtPrompt, {
 		maxTokens: ANSWER_MAX_TOKENS,
 		signal: deps.signal,

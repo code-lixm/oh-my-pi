@@ -107,8 +107,12 @@ describe("gallery harness", () => {
 		const fixture = resolveFixture("read_group");
 		const success = Bun.stripANSI((await renderGalleryState("read_group", fixture, "success", 140)).join("\n"));
 		const renderPathMatches = success.match(/packages\/coding-agent\/src\/task\/render\.ts/g) ?? [];
+		const header = success
+			.split("\n")
+			.find(line => line.includes("Read "))
+			?.trim();
 
-		expect(success).toContain("Read (4)");
+		expect(header).toBe(`${theme.symbol("icon.file")} Read 4 paths`);
 		expect(renderPathMatches).toHaveLength(1);
 		expect(success).toContain("packages/coding-agent/src/task/render.ts:507-605,1070-1194,…,1270-1274");
 		expect(success).not.toContain("1210-1240");

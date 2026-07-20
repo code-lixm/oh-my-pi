@@ -24,9 +24,10 @@ const NO_MULTIPLEXER_ENV: Record<string, string | undefined> = {
 	CMUX_WORKSPACE_ID: undefined,
 	CMUX_SURFACE_ID: undefined,
 	CMUX_REMOTE_TRANSPORT: undefined,
-	// Pin terminal identity so the alt-screen fast-path assertions below are
-	// deterministic even when the suite runs inside Warp (which otherwise takes
-	// the in-place path — see the Warp describe block at the bottom).
+	// Pin terminal identity so resize classification — and the alt-screen
+	// fast-path assertions below — are deterministic even when the suite runs
+	// inside Warp (which otherwise takes the debounced in-place path — see the
+	// Warp describe block at the bottom).
 	TERM_PROGRAM: undefined,
 	PI_TUI_RESIZE_IN_PLACE: undefined,
 };

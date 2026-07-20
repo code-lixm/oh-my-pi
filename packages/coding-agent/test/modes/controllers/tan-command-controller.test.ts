@@ -225,6 +225,43 @@ describe("TanCommandController", () => {
 		expect(harness.ctx.showStatus).toHaveBeenCalledWith("Dispatched background tan job-123");
 	});
 
+	it("localizes the dispatched breadcrumb at call time while preserving job id and work text", async () => {
+		type DispatchPayload = { customType: string; content: string; details?: { jobId: string; work: string } };
+		const harness = createContext();
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const sendCustomMessageSpy = vi.spyOn(harness.ctx.session, "sendCustomMessage");
+		const controller = new TanCommandController(harness.ctx);
+		const work = "write the 发布说明";
+
+		harness.ctx.settings.set("displayLanguage", "en");
+		await controller.start(work);
+		const englishMessage = sendCustomMessageSpy.mock.calls.at(-1)?.[0] as DispatchPayload | undefined;
+		expect(englishMessage).toBeDefined();
+		expect(englishMessage).toMatchObject({
+			customType: "background-tan-dispatch",
+			details: { jobId: "job-123", work },
+		});
+		if (!englishMessage) throw new Error("missing English dispatch breadcrumb");
+		expect(englishMessage.content).toContain("The user launched a tangential task");
+		expect(englishMessage.content).toContain("background task (job-123) completes");
+		expect(englishMessage.content).toContain(work);
+		expect(englishMessage.content).not.toContain("用户启动了一个旁支任务");
+
+		harness.ctx.settings.set("displayLanguage", "zh-CN");
+		await controller.start(work);
+		const chineseMessage = sendCustomMessageSpy.mock.calls.at(-1)?.[0] as DispatchPayload | undefined;
+		expect(chineseMessage).toBeDefined();
+		expect(chineseMessage).toMatchObject({
+			customType: "background-tan-dispatch",
+			details: { jobId: "job-123", work },
+		});
+		if (!chineseMessage) throw new Error("missing zh-CN dispatch breadcrumb");
+		expect(chineseMessage.content).toContain("用户启动了一个旁支任务");
+		expect(chineseMessage.content).toContain("后台任务（job-123）完成");
+		expect(chineseMessage.content).toContain(work);
+		expect(chineseMessage.content).not.toContain("The user launched a tangential task");
+	});
+
 	it("aborts the cloned agent when the background job signal aborts", async () => {
 		const harness = createContext({ agentId: MAIN_AGENT_ID });
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);

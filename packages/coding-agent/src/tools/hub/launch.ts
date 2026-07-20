@@ -10,6 +10,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
 import { renderTerminalOutput } from "../../launch/terminal-output";
@@ -23,9 +24,7 @@ import {
 	DEFAULT_TERMINAL_PREVIEW_LINES,
 	formatDuration,
 	formatExpandHint,
-	formatMoreItems,
 	PREVIEW_LIMITS,
-	pluralize,
 	previewLine,
 	replaceTabs,
 	shortenPath,
@@ -340,18 +339,25 @@ function stateColor(state: DaemonState): ThemeColor {
 
 /** Compact `state · pid · uptime` fragments for the status-line meta slot. */
 function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
-	const meta = [theme.fg(stateColor(daemon.state), daemon.state)];
-	if (daemon.readyPending?.length) meta.push(theme.fg("warning", `waiting on ${daemon.readyPending.join("+")}`));
+	const meta = [theme.fg(stateColor(daemon.state), tSettingsUi(daemon.state))];
+	if (daemon.readyPending?.length)
+		meta.push(theme.fg("warning", tSettingsUi("waiting on {items}", { items: daemon.readyPending.join("+") })));
 	if (daemon.exitCode !== undefined) {
-		meta.push(theme.fg(daemon.exitCode === 0 ? "muted" : "error", `exit ${daemon.exitCode}`));
+		meta.push(
+			theme.fg(daemon.exitCode === 0 ? "muted" : "error", tSettingsUi("exit {code}", { code: daemon.exitCode })),
+		);
 	} else if (daemon.pid !== undefined) {
-		meta.push(`pid ${daemon.pid}`);
+		meta.push(tSettingsUi("pid {pid}", { pid: daemon.pid }));
 	}
 	const lifespan = formatDuration((daemon.exitedAt ?? Date.now()) - daemon.startedAt);
-	meta.push(daemon.exitedAt === undefined ? `up ${lifespan}` : `ran ${lifespan}`);
-	if (daemon.restartCount > 0) meta.push(`restarts ${daemon.restartCount}`);
-	if (daemon.detached) meta.push("detached");
-	else if (daemon.persist) meta.push("persistent");
+	meta.push(
+		daemon.exitedAt === undefined
+			? tSettingsUi("up {duration}", { duration: lifespan })
+			: tSettingsUi("ran {duration}", { duration: lifespan }),
+	);
+	if (daemon.restartCount > 0) meta.push(tSettingsUi("restarts {count}", { count: daemon.restartCount }));
+	if (daemon.detached) meta.push(tSettingsUi("detached"));
+	else if (daemon.persist) meta.push(tSettingsUi("persistent"));
 	return meta;
 }
 
@@ -363,11 +369,15 @@ function callMeta(args: LaunchRenderArgs): string[] {
 			if (args.application) meta.push([args.application, ...(args.args ?? [])].join(" "));
 			break;
 		case "logs":
-			if (args.follow) meta.push("follow");
-			if (args.grep) meta.push(`grep /${args.grep}/`);
+			if (args.follow) meta.push(tSettingsUi("follow"));
+			if (args.grep) meta.push(tSettingsUi("grep /{pattern}/", { pattern: args.grep }));
 			break;
 		case "wait":
-			meta.push(args.pattern ? `for /${args.pattern}/` : `for ${args.for ?? "exit"}`);
+			meta.push(
+				args.pattern
+					? tSettingsUi("for /{pattern}/", { pattern: args.pattern })
+					: tSettingsUi("for {condition}", { condition: args.for ?? "exit" }),
+			);
 			break;
 		case "send":
 			if (args.signal) meta.push(args.signal);
@@ -385,7 +395,7 @@ export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOp
 		{
 			icon: options.spinnerFrame !== undefined ? "running" : "pending",
 			spinnerFrame: options.spinnerFrame,
-			title: `Launch ${args.op ?? "…"}`,
+			title: `${tSettingsUi("Launch")} ${args.op ?? "…"}`,
 			description: target ? replaceTabs(target) : undefined,
 			meta: callMeta(args),
 		},
@@ -424,7 +434,8 @@ export function launchRenderResult(
 			case "start": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (daemon?.readyMatch) body.push(theme.fg("dim", `log matched: ${replaceTabs(daemon.readyMatch)}`));
+				if (daemon?.readyMatch)
+					body.push(theme.fg("dim", tSettingsUi("log matched: {text}", { text: replaceTabs(daemon.readyMatch) })));
 				if (daemon?.state === "failed" && daemon.exitReason)
 					body.push(theme.fg("error", replaceTabs(daemon.exitReason)));
 				if (details?.timedOut) {
@@ -433,8 +444,8 @@ export function launchRenderResult(
 						theme.fg(
 							"warning",
 							pending.length > 0
-								? `Not ready — ${pending.join("; ")}. Still running.`
-								: "Readiness timed out; the process is still running.",
+								? tSettingsUi("Not ready — {pending}. Still running.", { pending: pending.join("; ") })
+								: tSettingsUi("Readiness timed out; the process is still running."),
 						),
 					);
 				}
@@ -451,15 +462,16 @@ export function launchRenderResult(
 			case "wait": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(details.matched)}`));
+				if (details?.matched)
+					body.push(theme.fg("dim", tSettingsUi("matched: {text}", { text: replaceTabs(details.matched) })));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon) : [];
 					body.push(
 						theme.fg(
 							"warning",
 							pending.length > 0
-								? `Wait timed out — still waiting on ${pending.join("; ")}.`
-								: "Wait timed out.",
+								? tSettingsUi("Wait timed out — still waiting on {pending}.", { pending: pending.join("; ") })
+								: tSettingsUi("Wait timed out."),
 						),
 					);
 				}
@@ -467,7 +479,9 @@ export function launchRenderResult(
 			}
 			case "list": {
 				const daemons = details?.daemons ?? [];
-				description = `${daemons.length || "no"} ${pluralize("process", daemons.length)}`;
+				description = tSettingsUi(daemons.length === 1 ? "{count} process" : "{count} processes", {
+					count: daemons.length,
+				});
 				for (const item of daemons) {
 					body.push(
 						`${theme.fg("accent", replaceTabs(item.name))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
@@ -476,9 +490,9 @@ export function launchRenderResult(
 				break;
 			}
 			case "logs": {
-				if (details?.state) meta.push(theme.fg(stateColor(details.state), details.state));
-				if (details?.cursor !== undefined) meta.push(`cursor ${details.cursor}`);
-				if (details?.timedOut) meta.push(theme.fg("warning", "follow timed out"));
+				if (details?.state) meta.push(theme.fg(stateColor(details.state), tSettingsUi(details.state)));
+				if (details?.cursor !== undefined) meta.push(tSettingsUi("cursor {count}", { count: details.cursor }));
+				if (details?.timedOut) meta.push(theme.fg("warning", tSettingsUi("follow timed out")));
 				// Strip the trailing `[name: state; cursor=N]` status suffix `toolContent` appends.
 				const logText = text.replace(/\n?\[[^\n]*\]$/, "").trimEnd();
 				const terminalRows = details?.terminalRows;
@@ -494,10 +508,13 @@ export function launchRenderResult(
 				const spec = details?.spec;
 				if (spec) {
 					body.push(theme.fg("toolOutput", replaceTabs([spec.application, ...spec.args].join(" "))));
-					body.push(theme.fg("dim", `cwd ${shortenPath(spec.cwd)}`));
-					const flags = [`pty ${spec.pty}`, `restart ${spec.restart}`];
-					if (spec.detached) flags.push("detached");
-					else if (spec.persist) flags.push("persistent");
+					body.push(theme.fg("dim", tSettingsUi("cwd {path}", { path: shortenPath(spec.cwd) })));
+					const flags = [
+						tSettingsUi("pty {value}", { value: String(spec.pty) }),
+						tSettingsUi("restart {value}", { value: spec.restart }),
+					];
+					if (spec.detached) flags.push(tSettingsUi("detached"));
+					else if (spec.persist) flags.push(tSettingsUi("persistent"));
 					body.push(theme.fg("dim", flags.join(theme.sep.dot)));
 				}
 				break;
@@ -516,7 +533,7 @@ export function launchRenderResult(
 				: options.isPartial
 					? { icon: "pending" as const }
 					: { iconOverride: theme.styledSymbol("tool.launch", "accent") }),
-			title: `Launch ${op ?? ""}`.trimEnd(),
+			title: `${tSettingsUi("Launch")} ${op ?? ""}`.trimEnd(),
 			description: description ? replaceTabs(description) : undefined,
 			meta,
 		},
@@ -532,7 +549,7 @@ export function launchRenderResult(
 				state: options.isPartial ? "pending" : failed ? "error" : "success",
 				sections: [
 					{
-						label: theme.fg("toolTitle", "Output"),
+						label: theme.fg("toolTitle", tSettingsUi("Output")),
 						lines: capPreviewLines(rows, theme, {
 							expanded: options.expanded,
 							max: DEFAULT_TERMINAL_PREVIEW_LINES,
@@ -552,7 +569,10 @@ export function launchRenderResult(
 				const remaining = body.length - PREVIEW_LIMITS.COLLAPSED_ITEMS;
 				visible = [
 					...body.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS),
-					theme.fg("dim", `${formatMoreItems(remaining, "process")} ${formatExpandHint(theme, false, true)}`),
+					theme.fg(
+						"dim",
+						`${tSettingsUi(remaining === 1 ? "… {count} more process" : "… {count} more processes", { count: remaining })} ${formatExpandHint(theme, false, true)}`,
+					),
 				];
 			}
 			return [header, ...visible].map(line => truncateToWidth(line, width));

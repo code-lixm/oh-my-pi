@@ -1,5 +1,6 @@
 import { type Component, padding, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine } from "../tui";
 import type {
@@ -50,8 +51,8 @@ const OP_TITLES: Record<string, string> = {
 };
 
 function formatOpTitle(op: string | undefined): string {
-	if (op && OP_TITLES[op]) return OP_TITLES[op];
-	return "GitHub";
+	if (op && OP_TITLES[op]) return tSettingsUi(OP_TITLES[op]);
+	return tSettingsUi("GitHub");
 }
 
 function extractIssueId(value: string | undefined): string | undefined {
@@ -119,22 +120,18 @@ function buildOpMeta(args: GithubToolRenderArgs): string[] {
 function getWatchHeader(watch: GhRunWatchViewDetails): string {
 	if (watch.mode === "run" && watch.run) {
 		if (watch.state === "watching") {
-			return `watching run #${watch.run.id} on ${watch.repo}`;
+			return tSettingsUi("watching run #{id} on {repo}", { id: watch.run.id, repo: watch.repo });
 		}
 
-		return `run #${watch.run.id} on ${watch.repo}`;
+		return tSettingsUi("run #{id} on {repo}", { id: watch.run.id, repo: watch.repo });
 	}
 
-	const shortSha = formatShortSha(watch.headSha) ?? "this commit";
+	const shortSha = formatShortSha(watch.headSha) ?? tSettingsUi("this commit");
 	if (watch.state === "watching") {
-		return `watching ${shortSha} on ${watch.repo}`;
+		return tSettingsUi("watching {sha} on {repo}", { sha: shortSha, repo: watch.repo });
 	}
 
-	return `workflow runs for ${shortSha} on ${watch.repo}`;
-}
-
-function getRunLabel(run: GhRunWatchRunDetails): string {
-	return replaceTabs(run.workflowName ?? run.displayTitle ?? "GitHub Actions");
+	return tSettingsUi("workflow runs for {sha} on {repo}", { sha: shortSha, repo: watch.repo });
 }
 
 function getRunMeta(run: GhRunWatchRunDetails): string[] {
@@ -149,7 +146,9 @@ function getRunMeta(run: GhRunWatchRunDetails): string[] {
 }
 
 function formatRunLine(run: GhRunWatchRunDetails, theme: Theme): string {
-	const title = theme.fg("accent", getRunLabel(run));
+	const fallback = run.workflowName ?? run.displayTitle;
+	const label = replaceTabs(fallback ?? tSettingsUi("GitHub Actions"));
+	const title = theme.fg("accent", label);
 	const metaParts = getRunMeta(run);
 	const meta = metaParts.map((part, index) =>
 		index === metaParts.length - 1 ? theme.fg("muted", part) : theme.fg("text", part),
@@ -219,7 +218,7 @@ function renderJobLine(job: GhRunWatchJobDetails, width: number, theme: Theme): 
 function renderRunBlock(run: GhRunWatchRunDetails, width: number, theme: Theme): string[] {
 	const lines = [formatRunLine(run, theme)];
 	if (run.jobs.length === 0) {
-		lines.push(theme.fg("dim", "waiting for workflow jobs..."));
+		lines.push(theme.fg("dim", tSettingsUi("waiting for workflow jobs...")));
 		return lines;
 	}
 
@@ -247,7 +246,7 @@ function renderFailedLogs(
 		);
 
 		if (!entry.available || !entry.tail) {
-			lines.push(theme.fg("dim", "  log tail unavailable"));
+			lines.push(theme.fg("dim", tSettingsUi("  log tail unavailable")));
 			continue;
 		}
 
@@ -261,7 +260,11 @@ function renderFailedLogs(
 
 		if (!expanded && tailLines.length > previewLimit) {
 			const remaining = tailLines.length - previewLimit;
-			lines.push(theme.fg("dim", `  … ${remaining} more log lines ${formatExpandHint(theme, false, true)}`));
+			const overflow =
+				remaining === 1
+					? tSettingsUi("… 1 more log line")
+					: tSettingsUi("… {count} more log lines", { count: remaining });
+			lines.push(theme.fg("dim", `  ${overflow} ${formatExpandHint(theme, false, true)}`));
 		}
 	}
 
@@ -285,7 +288,7 @@ function buildWatchSections(
 	} else if (watch.mode === "commit") {
 		const runs = watch.runs ?? [];
 		if (runs.length === 0) {
-			main.push(theme.fg("dim", "waiting for workflow runs..."));
+			main.push(theme.fg("dim", tSettingsUi("waiting for workflow runs...")));
 		} else {
 			runs.forEach((run, index) => {
 				if (index > 0) {
@@ -303,7 +306,7 @@ function buildWatchSections(
 
 	const failed = renderFailedLogs(watch.failedLogs ?? [], width, theme, options.expanded);
 	if (failed.length > 0) {
-		sections.push({ label: "failed logs", lines: failed });
+		sections.push({ label: tSettingsUi("failed logs"), lines: failed });
 	}
 
 	return sections;
@@ -346,7 +349,7 @@ function renderFallbackComponent(
 	);
 
 	if (!text) {
-		const empty = isError ? "request failed" : "no output";
+		const empty = isError ? tSettingsUi("request failed") : tSettingsUi("no output");
 		return new Text(`${header}\n${theme.fg("dim", empty)}`, 0, 0);
 	}
 
@@ -400,18 +403,18 @@ function renderWatchCall(args: GithubToolRenderArgs, options: RenderResultOption
 	const runId = typeof args.run === "string" && args.run.trim().length > 0 ? args.run.trim() : undefined;
 	const branch = typeof args.branch === "string" && args.branch.trim().length > 0 ? args.branch.trim() : undefined;
 
-	const titleText = theme.fg("accent", "GitHub Run Watch");
+	const titleText = theme.fg("accent", tSettingsUi("GitHub Run Watch"));
 	let metaText: string;
 	if (runId) {
 		metaText = theme.fg("muted", `#${runId}`);
 	} else if (branch) {
 		metaText = theme.fg("text", branch);
 	} else {
-		metaText = theme.fg("muted", "current HEAD");
+		metaText = theme.fg("muted", tSettingsUi("current HEAD"));
 	}
 
 	const header = `${icon} ${titleText}  ${metaText}`;
-	const wait = theme.fg("dim", "waiting for workflow data...");
+	const wait = theme.fg("dim", tSettingsUi("waiting for workflow data..."));
 	return new Text(`${header}\n${wait}`, 0, 0);
 }
 
@@ -451,13 +454,13 @@ export const githubToolRenderer = {
 				isError
 					? {
 							icon: "error",
-							title: "GitHub Run Watch",
+							title: tSettingsUi("GitHub Run Watch"),
 							titleColor: "error",
 							meta: [getWatchHeader(watch)],
 						}
 					: {
 							iconOverride: uiTheme.styledSymbol("tool.gh", "accent"),
-							title: "GitHub Run Watch",
+							title: tSettingsUi("GitHub Run Watch"),
 							titleColor: "accent",
 							meta: [getWatchHeader(watch)],
 						},

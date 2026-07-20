@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
+import { tSettingsUi } from "../../i18n/settings-locale";
 
 /** A fenced code block extracted from assistant markdown. */
 export interface CodeBlock {
@@ -202,12 +203,12 @@ function assistantText(msg: AgentMessage): string | undefined {
 
 function pluralLines(text: string): string {
 	const count = text.length === 0 ? 0 : text.split("\n").length;
-	return `${count} line${count === 1 ? "" : "s"}`;
+	return tSettingsUi("{count} line{plural}", { count, plural: count === 1 ? "" : "s" });
 }
 
 function blockHint(block: CodeBlock): string {
 	const lines = pluralLines(block.code);
-	return block.lang ? `${block.lang} · ${lines}` : lines;
+	return block.lang ? tSettingsUi("{lang} · {lines}", { lang: block.lang, lines }) : lines;
 }
 
 /** First non-empty line, whitespace-collapsed, used as a message label. */
@@ -222,8 +223,8 @@ function firstLine(text: string): string {
 /** "<n> lines · <c> code · <q> quote" — omitting block kinds that are absent. */
 function blockSummaryHint(text: string, codeCount: number, quoteCount: number): string {
 	const parts = [pluralLines(text)];
-	if (codeCount > 0) parts.push(`${codeCount} code`);
-	if (quoteCount > 0) parts.push(`${quoteCount} quote`);
+	if (codeCount > 0) parts.push(tSettingsUi("{codeCount} code", { codeCount }));
+	if (quoteCount > 0) parts.push(tSettingsUi("{quoteCount} quote", { quoteCount }));
 	return parts.join(" · ");
 }
 
@@ -234,7 +235,8 @@ function messageTarget(text: string, rank: number): CopyTarget {
 	const id = `msg:${rank}`;
 	const label = firstLine(text);
 	const blocks = extractBlocks(text);
-	const messageCopy = rank === 1 ? "Copied last message to clipboard" : "Copied message to clipboard";
+	const messageCopy =
+		rank === 1 ? tSettingsUi("Copied last message to clipboard") : tSettingsUi("Copied message to clipboard");
 
 	if (blocks.length === 0) {
 		return { id, label, hint: pluralLines(text), preview: text, content: text, copyMessage: messageCopy };
@@ -251,23 +253,23 @@ function messageTarget(text: string, rank: number): CopyTarget {
 			codeBlocks.push(block);
 			children.push({
 				id: `${id}:code:${j}`,
-				label: `Block ${j + 1}`,
+				label: tSettingsUi("Block {index}", { index: j + 1 }),
 				hint: blockHint(block),
 				preview: block.code,
 				language: block.lang || undefined,
 				content: block.code,
-				copyMessage: `Copied code block ${j + 1} to clipboard`,
+				copyMessage: tSettingsUi("Copied code block {index} to clipboard", { index: j + 1 }),
 			});
 		} else {
 			const j = quoteBlocks.length;
 			quoteBlocks.push(block);
 			children.push({
 				id: `${id}:quote:${j}`,
-				label: `Quote ${j + 1}`,
+				label: tSettingsUi("Quote {index}", { index: j + 1 }),
 				hint: pluralLines(block.text),
 				preview: block.text,
 				content: block.text,
-				copyMessage: `Copied quote block ${j + 1} to clipboard`,
+				copyMessage: tSettingsUi("Copied quote block {index} to clipboard", { index: j + 1 }),
 			});
 		}
 	}
@@ -276,22 +278,22 @@ function messageTarget(text: string, rank: number): CopyTarget {
 		const combined = codeBlocks.map(b => b.code).join("\n\n");
 		children.push({
 			id: `${id}:all`,
-			label: `All ${codeBlocks.length} blocks`,
+			label: tSettingsUi("All {count} blocks", { count: codeBlocks.length }),
 			hint: pluralLines(combined),
 			preview: combined,
 			content: combined,
-			copyMessage: `Copied ${codeBlocks.length} code blocks to clipboard`,
+			copyMessage: tSettingsUi("Copied {count} code blocks to clipboard", { count: codeBlocks.length }),
 		});
 	}
 	if (quoteBlocks.length > 1) {
 		const combined = quoteBlocks.map(b => b.text).join("\n\n");
 		children.push({
 			id: `${id}:all-quotes`,
-			label: `All ${quoteBlocks.length} quotes`,
+			label: tSettingsUi("All {count} quotes", { count: quoteBlocks.length }),
 			hint: pluralLines(combined),
 			preview: combined,
 			content: combined,
-			copyMessage: `Copied ${quoteBlocks.length} quote blocks to clipboard`,
+			copyMessage: tSettingsUi("Copied {count} quote blocks to clipboard", { count: quoteBlocks.length }),
 		});
 	}
 
@@ -300,7 +302,7 @@ function messageTarget(text: string, rank: number): CopyTarget {
 }
 
 function commandTitle(command: LastCommand): string {
-	return command.kind === "bash" ? "Bash command" : "Eval code";
+	return command.kind === "bash" ? tSettingsUi("Bash command") : tSettingsUi("Eval code");
 }
 
 function commandTarget(command: LastCommand, rank: number): CopyTarget {
@@ -312,7 +314,9 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 		preview: command.code,
 		language: command.language,
 		content: command.code,
-		copyMessage: `Copied ${command.kind === "bash" ? "bash command" : "eval code"} to clipboard`,
+		copyMessage: tSettingsUi("Copied {commandType} to clipboard", {
+			commandType: tSettingsUi(command.kind === "bash" ? "bash command" : "eval code"),
+		}),
 	};
 }
 
@@ -364,11 +368,11 @@ export function buildCopyTargets(source: CopySource): CopyTarget[] {
 		if (handoff) {
 			targets.unshift({
 				id: "handoff",
-				label: "Handoff context",
+				label: tSettingsUi("Handoff context"),
 				hint: pluralLines(handoff),
 				preview: handoff,
 				content: handoff,
-				copyMessage: "Copied handoff context to clipboard",
+				copyMessage: tSettingsUi("Copied handoff context to clipboard"),
 			});
 		}
 		appendCommands(pendingCommands);

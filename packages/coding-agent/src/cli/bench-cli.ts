@@ -29,6 +29,8 @@ import {
 import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import { Settings } from "../config/settings";
 import benchPrompt from "../prompts/bench.md" with { type: "text" };
+import benchPromptZh from "../prompts/bench.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import {
 	concreteThinkingLevel,
@@ -41,7 +43,6 @@ const DEFAULT_RUNS = 10;
 const DEFAULT_PAR = 4;
 const DEFAULT_MAX_TOKENS = 512;
 const ERROR_WIDTH = 110;
-const BENCH_PROMPT = benchPrompt.trim();
 
 export interface BenchCommandArgs {
 	models: string[];
@@ -485,7 +486,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 	const maxTokens = normalizePositiveInteger("max-tokens", command.flags.maxTokens, DEFAULT_MAX_TOKENS);
 	const par =
 		command.flags.par !== undefined ? normalizePositiveInteger("par", command.flags.par, DEFAULT_PAR) : DEFAULT_PAR;
-	const prompt = command.flags.prompt?.trim() || BENCH_PROMPT;
+	const prompt = command.flags.prompt?.trim() || selectPrompt(benchPrompt, benchPromptZh).trim();
 	const json = command.flags.json === true;
 	const randomSessionId = deps.randomSessionId ?? (() => Bun.randomUUIDv7());
 	const writeStdout = deps.writeStdout ?? ((text: string) => process.stdout.write(text));

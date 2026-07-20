@@ -20,9 +20,10 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import speechRewritePrompt from "../prompts/system/speech-rewrite.md" with { type: "text" };
+import speechRewritePromptZh from "../prompts/system/speech-rewrite.zh-CN.md" with { type: "text" };
 
-const SYSTEM_PROMPT = prompt.render(speechRewritePrompt);
 // Rewrite budget: a paragraph in, a spoken paragraph (usually shorter) out.
 // Always reserve enough room to survive backends that ignore `disableReasoning`
 // (e.g. Qwen3 via llama.cpp catalogued `reasoning: false` but still emitting
@@ -86,7 +87,7 @@ export class SpeechEnhancer {
 			const response = await completeSimple(
 				model,
 				{
-					systemPrompt: [SYSTEM_PROMPT],
+					systemPrompt: [prompt.render(selectPrompt(speechRewritePrompt, speechRewritePromptZh))],
 					messages: [{ role: "user", content: boundBlock(block), timestamp: Date.now() }],
 				},
 				{

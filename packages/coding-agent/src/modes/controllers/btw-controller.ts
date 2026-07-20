@@ -1,6 +1,9 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../i18n/settings-locale";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text" };
+import btwUserPromptZh from "../../prompts/system/btw-user.zh-CN.md" with { type: "text" };
 import { copyToClipboard } from "../../utils/clipboard";
 import { BtwPanelComponent } from "../components/btw-panel";
 import type { InteractiveModeContext } from "../types";
@@ -72,7 +75,7 @@ export class BtwController {
 		this.#copyInFlight = true;
 		try {
 			await copyToClipboard(this.#lastCopyText);
-			this.ctx.showStatus("Copied /btw answer to clipboard");
+			this.ctx.showStatus(tSettingsUi("Copied /btw answer to clipboard"));
 			return true;
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -106,13 +109,13 @@ export class BtwController {
 	async start(question: string): Promise<void> {
 		const trimmedQuestion = question.trim();
 		if (!trimmedQuestion) {
-			this.ctx.showStatus("Usage: /btw <question>");
+			this.ctx.showStatus(tSettingsUi("Usage: /btw <question>"));
 			return;
 		}
 
 		const model = this.ctx.session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /btw.");
+			this.ctx.showError(tSettingsUi("No active model available for /btw."));
 			return;
 		}
 
@@ -133,7 +136,7 @@ export class BtwController {
 
 	async #runRequest(request: BtwRequest): Promise<void> {
 		try {
-			const promptText = prompt.render(btwUserPrompt, { question: request.question });
+			const promptText = prompt.render(selectPrompt(btwUserPrompt, btwUserPromptZh), { question: request.question });
 			const { replyText, assistantMessage } = await this.ctx.session.runEphemeralTurn({
 				promptText,
 				onTextDelta: delta => {

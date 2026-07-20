@@ -28,6 +28,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import {
 	matchesAppExternalEditor,
@@ -110,9 +111,6 @@ export interface PlanReviewOverlayOptions {
 	externalEditorLabel?: string;
 }
 
-/** Default trailing footer hint when the caller supplies none. */
-const DEFAULT_HELP_SUFFIX = "esc cancel";
-
 export class PlanReviewOverlay implements Component {
 	#mdTheme: MarkdownTheme;
 	#scrollView: ScrollView;
@@ -171,7 +169,7 @@ export class PlanReviewOverlay implements Component {
 		this.#disabled = new Set(
 			(options.disabledIndices ?? []).filter(i => Number.isInteger(i) && i >= 0 && i < this.#options.length),
 		);
-		this.#helpSuffix = options.helpText ?? DEFAULT_HELP_SUFFIX;
+		this.#helpSuffix = options.helpText ?? tSettingsUi("esc cancel");
 		this.#externalEditorLabel = options.externalEditorLabel;
 		this.#promptTitle = options.promptTitle;
 		this.#selectedIndex = this.#coerceIndex(options.initialIndex ?? 0);
@@ -747,7 +745,7 @@ export class PlanReviewOverlay implements Component {
 					for (let j = 0; j < noteLines.length; j++) {
 						const prefix =
 							j === 0
-								? `${theme.fg("warning", "▎ ")}${theme.fg("dim", "note: ")}`
+								? `${theme.fg("warning", "▎ ")}${theme.fg("dim", tSettingsUi("note: "))}`
 								: `${theme.fg("warning", "▎ ")}${theme.fg("dim", "      ")}`;
 						lines.push(`${prefix}${theme.fg("accent", noteLines[j] ?? "")}`);
 					}
@@ -805,7 +803,7 @@ export class PlanReviewOverlay implements Component {
 		const indent = " ".repeat(Math.max(0, section.level - this.#tocBaseLevel));
 		const ann = section.annotations.length > 0 ? " ✎" : "";
 		const avail = Math.max(0, width - 1 - indent.length - visibleWidth(ann));
-		const title = truncateToWidth(section.title || "(untitled)", avail, Ellipsis.Unicode);
+		const title = truncateToWidth(section.title || tSettingsUi("(untitled)"), avail, Ellipsis.Unicode);
 		const body = indent + title + ann;
 		// Single-column gutter glyph: a cursor `›` on the focused selection, an
 		// accent bar `▎` on the current scrolled section, otherwise blank. The
@@ -822,9 +820,9 @@ export class PlanReviewOverlay implements Component {
 		if (this.#annotating) {
 			const section = this.#sections[this.#toc[this.#tocCursor]!];
 			const title = section?.title ?? "";
-			const caption = `${theme.fg("dim", "Annotate")} ${theme.fg("accent", `‹${title}›`)}`;
-			const hintParts = ["enter save", "esc cancel"];
-			if (this.#externalEditorLabel) hintParts.push(`${this.#externalEditorLabel} editor`);
+			const caption = `${theme.fg("dim", tSettingsUi("Annotate"))} ${theme.fg("accent", `‹${title}›`)}`;
+			const hintParts = [tSettingsUi("enter save"), tSettingsUi("esc cancel")];
+			if (this.#externalEditorLabel) hintParts.push(`${this.#externalEditorLabel} ${tSettingsUi("editor")}`);
 			return [caption, this.#input.render(innerWidth)[0] ?? "", theme.fg("dim", hintParts.join(" · "))];
 		}
 		return [theme.fg("dim", this.#buildHelp())];

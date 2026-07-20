@@ -6,6 +6,7 @@
 import * as os from "node:os";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { theme } from "../../../modes/theme/theme";
 import { shortenPath } from "../../../tools/render-utils";
 import type { Extension, ExtensionState } from "./types";
@@ -21,7 +22,10 @@ export class InspectorPanel implements Component {
 
 	render(width: number): readonly string[] {
 		if (!this.#extension) {
-			return [theme.fg("muted", "Select an extension"), theme.fg("dim", "to view details")];
+			return [
+				theme.fg("muted", tSettingsUi("Select an extension")),
+				theme.fg("dim", tSettingsUi("to view details")),
+			];
 		}
 
 		const ext = this.#extension;
@@ -32,7 +36,7 @@ export class InspectorPanel implements Component {
 		lines.push("");
 
 		// Kind badge
-		lines.push(theme.fg("muted", "Type: ") + this.#getKindBadge(ext.kind));
+		lines.push(theme.fg("muted", tSettingsUi("Type: ")) + this.#getKindBadge(ext.kind));
 		lines.push("");
 
 		// Description (wrapped)
@@ -51,8 +55,13 @@ export class InspectorPanel implements Component {
 		}
 
 		// Origin
-		lines.push(theme.fg("muted", "Origin:"));
-		const levelLabel = ext.source.level === "user" ? "User" : ext.source.level === "project" ? "Project" : "Native";
+		lines.push(theme.fg("muted", tSettingsUi("Origin:")));
+		const levelLabel =
+			ext.source.level === "user"
+				? tSettingsUi("User")
+				: ext.source.level === "project"
+					? tSettingsUi("Project")
+					: tSettingsUi("Native");
 		lines.push(`  ${theme.italic(`via ${ext.source.providerName} (${levelLabel})`)}`);
 		const shortened = shortenPath(ext.path, os.homedir());
 		// If path is very long, show just the last parts
@@ -64,7 +73,7 @@ export class InspectorPanel implements Component {
 		lines.push("");
 
 		// Status badge
-		lines.push(theme.fg("muted", "Status:"));
+		lines.push(theme.fg("muted", tSettingsUi("Status:")));
 		lines.push(`  ${this.#getStatusBadge(ext.state, ext.disabledReason, ext.shadowedBy)}`);
 		lines.push("");
 
@@ -106,12 +115,12 @@ export class InspectorPanel implements Component {
 
 	#renderFilePreview(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
-		lines.push(theme.fg("muted", "Preview:"));
+		lines.push(theme.fg("muted", tSettingsUi("Preview:")));
 		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
 
 		const content = this.#getContextFileContent(raw);
 		if (!content) {
-			lines.push(theme.fg("dim", "  (no content)"));
+			lines.push(theme.fg("dim", `  ${tSettingsUi("(no content)")}`));
 			lines.push("");
 			return lines;
 		}
@@ -123,7 +132,7 @@ export class InspectorPanel implements Component {
 		}
 
 		if (fileLines.length > 20) {
-			lines.push(theme.fg("dim", "(truncated at line 20)"));
+			lines.push(theme.fg("dim", tSettingsUi("(truncated at line 20)")));
 		}
 
 		lines.push("");
@@ -164,7 +173,7 @@ export class InspectorPanel implements Component {
 
 	#renderToolArgs(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
-		lines.push(theme.fg("muted", "Arguments:"));
+		lines.push(theme.fg("muted", tSettingsUi("Arguments:")));
 		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
 
 		try {
@@ -175,7 +184,7 @@ export class InspectorPanel implements Component {
 			const params = paramSchema?.properties || inputSchema?.properties || {};
 
 			if (Object.keys(params).length === 0) {
-				lines.push(theme.fg("dim", "  (no arguments)"));
+				lines.push(theme.fg("dim", `  ${tSettingsUi("(no arguments)")}`));
 			} else {
 				const required = new Set(paramSchema?.required || inputSchema?.required || []);
 
@@ -188,16 +197,16 @@ export class InspectorPanel implements Component {
 					const nameCol = theme.fg("accent", name.padEnd(12));
 					const typeCol = theme.fg("muted", type.padEnd(10));
 					const reqCol = isRequired
-						? theme.fg("warning", "Required")
+						? theme.fg("warning", tSettingsUi("Required"))
 						: defaultVal
 							? theme.fg("dim", defaultVal)
-							: theme.fg("dim", "Optional");
+							: theme.fg("dim", tSettingsUi("Optional"));
 
 					lines.push(`  ${nameCol} ${typeCol} ${reqCol}`);
 				}
 			}
 		} catch {
-			lines.push(theme.fg("dim", "  (unable to parse tool definition)"));
+			lines.push(theme.fg("dim", `  ${tSettingsUi("(unable to parse tool definition)")}`));
 		}
 
 		lines.push("");
@@ -206,7 +215,7 @@ export class InspectorPanel implements Component {
 
 	#renderSkillContent(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
-		lines.push(theme.fg("muted", "Instruction:"));
+		lines.push(theme.fg("muted", tSettingsUi("Instruction:")));
 		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
 
 		try {
@@ -214,7 +223,7 @@ export class InspectorPanel implements Component {
 			const instruction = skill?.prompt || skill?.instruction || skill?.content || "";
 
 			if (!instruction) {
-				lines.push(theme.fg("dim", "  (no instruction text)"));
+				lines.push(theme.fg("dim", `  ${tSettingsUi("(no instruction text)")}`));
 			} else {
 				const instructionLines = instruction.split("\n").slice(0, 15);
 				for (const line of instructionLines) {
@@ -222,11 +231,11 @@ export class InspectorPanel implements Component {
 				}
 
 				if (instruction.split("\n").length > 15) {
-					lines.push(theme.fg("dim", "(truncated at line 15)"));
+					lines.push(theme.fg("dim", tSettingsUi("(truncated at line 15)")));
 				}
 			}
 		} catch {
-			lines.push(theme.fg("dim", "  (unable to parse skill content)"));
+			lines.push(theme.fg("dim", `  ${tSettingsUi("(unable to parse skill content)")}`));
 		}
 
 		lines.push("");
@@ -235,7 +244,7 @@ export class InspectorPanel implements Component {
 
 	#renderMcpDetails(raw: unknown, width: number): string[] {
 		const lines: string[] = [];
-		lines.push(theme.fg("muted", "Connection:"));
+		lines.push(theme.fg("muted", tSettingsUi("Connection:")));
 		lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
 
 		try {
@@ -244,25 +253,27 @@ export class InspectorPanel implements Component {
 			const command = mcp?.command || mcp?.cmd || "";
 			const args = mcp?.args || mcp?.arguments || [];
 
-			lines.push(`  ${theme.fg("muted", "Transport:")}  ${theme.fg("accent", transport)}`);
+			lines.push(`  ${theme.fg("muted", tSettingsUi("Transport:"))}  ${theme.fg("accent", transport)}`);
 
 			if (command) {
-				lines.push(`  ${theme.fg("muted", "Command:")}    ${theme.fg("success", command)}`);
+				lines.push(`  ${theme.fg("muted", tSettingsUi("Command:"))}    ${theme.fg("success", command)}`);
 			}
 
 			if (Array.isArray(args) && args.length > 0) {
-				lines.push(`  ${theme.fg("muted", "Args:")}       ${theme.fg("dim", args.join(" "))}`);
+				lines.push(`  ${theme.fg("muted", tSettingsUi("Args:"))}       ${theme.fg("dim", args.join(" "))}`);
 			}
 
 			// Environment variables if present
 			if (mcp?.env && typeof mcp.env === "object") {
 				const envCount = Object.keys(mcp.env).length;
 				if (envCount > 0) {
-					lines.push(`  ${theme.fg("muted", "Env vars:")}   ${theme.fg("dim", `${envCount} defined`)}`);
+					lines.push(
+						`  ${theme.fg("muted", tSettingsUi("Env vars:"))}   ${theme.fg("dim", tSettingsUi("{count} defined", { count: envCount }))}`,
+					);
 				}
 			}
 		} catch {
-			lines.push(theme.fg("dim", "  (unable to parse MCP configuration)"));
+			lines.push(theme.fg("dim", `  ${tSettingsUi("(unable to parse MCP configuration)")}`));
 		}
 
 		lines.push("");
@@ -274,7 +285,7 @@ export class InspectorPanel implements Component {
 
 		// Show trigger pattern if present
 		if (ext.trigger) {
-			lines.push(theme.fg("muted", "Trigger:"));
+			lines.push(theme.fg("muted", tSettingsUi("Trigger:")));
 			lines.push(theme.fg("dim", theme.boxRound.horizontal.repeat(Math.min(width - 2, 40))));
 			lines.push(`  ${theme.fg("accent", ext.trigger)}`);
 			lines.push("");

@@ -1,4 +1,5 @@
 import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
@@ -13,8 +14,8 @@ export class ShowImagesSelectorComponent extends Container {
 		super();
 
 		const items: SelectItem[] = [
-			{ value: "yes", label: "Yes", description: "Show images inline in terminal" },
-			{ value: "no", label: "No", description: "Show text placeholder instead" },
+			{ value: "yes", label: tSettingsUi("Yes"), description: tSettingsUi("Show images inline in terminal") },
+			{ value: "no", label: tSettingsUi("No"), description: tSettingsUi("Show text placeholder instead") },
 		];
 
 		// Add top border

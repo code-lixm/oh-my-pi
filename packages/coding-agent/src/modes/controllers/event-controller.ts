@@ -7,8 +7,14 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
+import {
+	HubActivityGroupComponent,
+	isHubActivityRoutePending,
+	isHubGroupedActivityArgs,
+} from "../../modes/components/hub-activity-group";
 import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
@@ -20,7 +26,9 @@ import { TtsrNotificationComponent } from "../../modes/components/ttsr-notificat
 import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
+import idleRecapPromptZh from "../../prompts/system/recap-user.zh-CN.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -32,9 +40,12 @@ import { canonicalizeMessage } from "../../utils/thinking-display";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import {
+	type AssistantErrorAggregation,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
+	buildIrcActivityEvent,
 	splitAssistantMessageToolTimeline,
+	updateAssistantErrorAggregation,
 } from "../utils/transcript-render-helpers";
 import { isWarpCliAgentProtocolActive } from "../warp-events";
 import { StreamingRevealController } from "./streaming-reveal";
@@ -43,16 +54,7 @@ import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-arg
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
 const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
-/**
- * Concurrent IRC cards allowed in the transcript's live region. Cards land
- * below a still-live block (a running task), where they cannot commit to
- * native scrollback (commits are prefix-only) — every visible card inflates
- * the live region and pushes the live block's uncommitted rows above the
- * window top, where they are neither on screen nor in history. A swarm burst
- * (several agents coordinating at once) must therefore stay bounded: the
- * oldest live-region card retires as soon as a new one would exceed the cap.
- */
-const MAX_LIVE_IRC_CARDS = 4;
+const MAX_LIVE_IRC_MESSAGES = 4;
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
@@ -71,6 +73,7 @@ type AgentSessionEventHandlers = {
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
+	#hubActivityGroup: HubActivityGroupComponent | undefined;
 	// Count of visible assistant content blocks (rendered non-empty text/thinking)
 	// already seen in the current streaming message. A newly appearing one breaks
 	// the read run: the rendered reasoning/answer is a visual separator, so reads
@@ -93,15 +96,14 @@ export class EventController {
 	#pinnedErrorComponent: AssistantMessageComponent | undefined = undefined;
 	#retrySupersededAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#retrySupersededAssistantQueue: AssistantMessageComponent[] = [];
+	#errorAggregation: AssistantErrorAggregation<AssistantMessageComponent> | undefined;
 	#idleCompactionTimer?: NodeJS.Timeout;
 	#idleRecapTimer?: NodeJS.Timeout;
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
 	// activity (new turn, compaction, editor draft) supersedes the idle recap.
 	#idleRecapAbort?: AbortController;
 	#ircExpiryTimers = new Map<string, NodeJS.Timeout>();
-	// Insertion-ordered IRC cards not yet retired; values are the transcript
-	// components each card contributed (see #retireIrcCard for the guard).
-	#liveIrcCards = new Map<string, Component[]>();
+	#liveIrcEvents = new Map<string, { group: HubActivityGroupComponent; eventId: string }>();
 	// Most recent `hub` tool block whose result still had every watched job
 	// running. Kept un-finalized (live) so the next `hub` call displaces it —
 	// one persistent poll instead of a stack of "waiting on N jobs" frames —
@@ -203,11 +205,60 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
-		for (const timer of this.#ircExpiryTimers.values()) {
-			clearTimeout(timer);
-		}
+		for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
 		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
+		this.#liveIrcEvents.clear();
+		this.#hubActivityGroup?.seal();
+		this.#hubActivityGroup = undefined;
+	}
+
+	#finalizeHubActivityGroup(): void {
+		this.#hubActivityGroup?.finalize();
+		this.#hubActivityGroup = undefined;
+	}
+
+	#getHubActivityGroup(): HubActivityGroupComponent {
+		if (!this.#hubActivityGroup?.canAppend) {
+			this.#hubActivityGroup = new HubActivityGroupComponent();
+			this.#hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
+			this.ctx.chatContainer.addChild(this.#hubActivityGroup);
+		}
+		return this.#hubActivityGroup;
+	}
+
+	inheritHubActivityGroup(component: HubActivityGroupComponent | null | undefined): void {
+		const inherited = component?.canAppend ? component : undefined;
+		this.#hubActivityGroup = inherited;
+		if (!inherited) {
+			for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
+			this.#ircExpiryTimers.clear();
+			this.#liveIrcEvents.clear();
+			return;
+		}
+
+		const refs = new Map(inherited.getIrcEventRefs().map(ref => [ref.sourceId, ref]));
+		for (const [signature, tracked] of this.#liveIrcEvents) {
+			const ref = refs.get(signature);
+			if (ref) {
+				inherited.markIrcEventLive(ref.eventId);
+				tracked.group = inherited;
+				tracked.eventId = ref.eventId;
+				refs.delete(signature);
+				continue;
+			}
+			clearTimeout(this.#ircExpiryTimers.get(signature));
+			this.#ircExpiryTimers.delete(signature);
+			this.#liveIrcEvents.delete(signature);
+		}
+
+		for (const [signature, ref] of refs) {
+			if (ref.timestamp === undefined) continue;
+			const remainingMs = IRC_MESSAGE_VISIBLE_TTL_MS - Math.max(0, Date.now() - ref.timestamp);
+			if (remainingMs <= 0) continue;
+			inherited.markIrcEventLive(ref.eventId);
+			this.#scheduleIrcExpiry(signature, inherited, ref.eventId, remainingMs);
+			this.#enforceIrcEventCap(signature);
+		}
 	}
 
 	#resetReadGroup(): void {
@@ -278,6 +329,7 @@ export class EventController {
 		segment: AssistantMessage | undefined,
 	): AssistantMessageComponent | undefined {
 		if (!segment || !assistantHasVisibleContent(segment)) return undefined;
+		this.#finalizeHubActivityGroup();
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
 			existing.updateContent(segment);
@@ -316,6 +368,11 @@ export class EventController {
 	 */
 	resetTranscriptAnchors(): void {
 		this.#resetReadGroup();
+		this.#hubActivityGroup?.seal();
+		this.#hubActivityGroup = undefined;
+		for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
+		this.#ircExpiryTimers.clear();
+		this.#liveIrcEvents.clear();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
@@ -328,11 +385,6 @@ export class EventController {
 		this.#pinnedErrorComponent = undefined;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
-		for (const timer of this.#ircExpiryTimers.values()) {
-			clearTimeout(timer);
-		}
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcCards.clear();
 		this.#displaceablePollComponent = undefined;
 		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
@@ -435,13 +487,25 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
-			if (this.#renderedCustomMessages.has(signature)) {
-				return;
-			}
+			if (this.#renderedCustomMessages.has(signature)) return;
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
-			this.ctx.addMessageToChat(event.message);
-			// Queued custom-message chips are derived from the agent queue; refresh the
+			if (
+				event.message.display &&
+				(event.message.customType === "irc:incoming" ||
+					event.message.customType === "irc:autoreply" ||
+					event.message.customType === "irc:relay")
+			) {
+				const group = this.#getHubActivityGroup();
+				const eventId = group.appendIrcEvent(buildIrcActivityEvent(event.message), false);
+				if (eventId) {
+					this.#scheduleIrcExpiry(signature, group, eventId);
+					this.#enforceIrcEventCap(signature);
+				}
+			} else {
+				if (event.message.display) this.#finalizeHubActivityGroup();
+				this.ctx.addMessageToChat(event.message);
+			}
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.
 			if (event.message.role === "custom" && readQueueChipText(event.message.details)) {
@@ -463,6 +527,8 @@ export class EventController {
 			const signature = `${textContent}\u0000${imageCount}`;
 
 			this.#resetReadGroup();
+			this.#finalizeHubActivityGroup();
+			this.#errorAggregation = undefined;
 			this.#resolveDisplaceablePoll();
 			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
@@ -498,6 +564,7 @@ export class EventController {
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
+			this.#finalizeHubActivityGroup();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
@@ -515,61 +582,57 @@ export class EventController {
 
 	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
 		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
-		if (this.#renderedCustomMessages.has(signature)) {
-			return;
-		}
+		if (this.#renderedCustomMessages.has(signature)) return;
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
-		const components = this.ctx.addMessageToChat(event.message);
-		this.#scheduleIrcExpiry(signature, components);
-		this.#enforceIrcCardCap(signature);
+		const group = this.#getHubActivityGroup();
+		const eventId = group.appendIrcEvent(buildIrcActivityEvent(event.message), false);
+		if (eventId) {
+			this.#scheduleIrcExpiry(signature, group, eventId);
+			this.#enforceIrcEventCap(signature);
+		}
+		this.ctx.ui.requestRender();
+	}
+	#scheduleIrcExpiry(
+		signature: string,
+		group: HubActivityGroupComponent,
+		eventId: string,
+		delayMs = IRC_MESSAGE_VISIBLE_TTL_MS,
+	): void {
+		if (this.#ircExpiryTimers.has(signature)) return;
+		const timer = setTimeout(() => {
+			this.#ircExpiryTimers.delete(signature);
+			this.#retireIrcEvent(signature);
+		}, delayMs);
+		timer.unref?.();
+		this.#ircExpiryTimers.set(signature, timer);
+		this.#liveIrcEvents.set(signature, { group, eventId });
+	}
+
+	#retireIrcEvent(signature: string): void {
+		const tracked = this.#liveIrcEvents.get(signature);
+		this.#liveIrcEvents.delete(signature);
+		if (!tracked) return;
+		if (!this.ctx.chatContainer.isBlockUncommitted(tracked.group)) {
+			tracked.group.settleIrcEvent(tracked.eventId);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		if (!tracked.group.removeIrcEvent(tracked.eventId)) return;
+		if (tracked.group.isEmpty) {
+			this.ctx.chatContainer.removeChild(tracked.group);
+			if (this.#hubActivityGroup === tracked.group) this.#hubActivityGroup = undefined;
+		}
 		this.ctx.ui.requestRender();
 	}
 
-	#scheduleIrcExpiry(signature: string, components: Component[]): void {
-		if (components.length === 0 || this.#ircExpiryTimers.has(signature)) return;
-		const timer = setTimeout(() => {
-			this.#ircExpiryTimers.delete(signature);
-			this.#retireIrcCard(signature);
-		}, IRC_MESSAGE_VISIBLE_TTL_MS);
-		timer.unref?.();
-		this.#ircExpiryTimers.set(signature, timer);
-		this.#liveIrcCards.set(signature, components);
-	}
-
-	/**
-	 * Remove an expired/evicted IRC card — but only while it still sits below a
-	 * live block, where its rows cannot have entered native scrollback. Once
-	 * everything above it has finalized, its rows may already be committed;
-	 * removing them then is an interior deletion of the committed prefix, which
-	 * the engine can only repair by recommitting every row below the gap —
-	 * exactly the duplicated-block artifact this guard exists to prevent. Such
-	 * a card simply stays: it is final history, and the window scrolls past it.
-	 */
-	#retireIrcCard(signature: string): void {
-		const components = this.#liveIrcCards.get(signature);
-		this.#liveIrcCards.delete(signature);
-		if (!components) return;
-		let removed = false;
-		for (const component of components) {
-			if (!this.ctx.chatContainer.isBlockUncommitted(component)) continue;
-			this.ctx.chatContainer.removeChild(component);
-			removed = true;
-		}
-		if (removed) this.ctx.ui.requestRender();
-	}
-
-	/** Evict oldest live-region cards beyond {@link MAX_LIVE_IRC_CARDS}. */
-	#enforceIrcCardCap(latestSignature: string): void {
-		while (this.#liveIrcCards.size > MAX_LIVE_IRC_CARDS) {
-			const oldest = this.#liveIrcCards.keys().next().value;
+	#enforceIrcEventCap(latestSignature: string): void {
+		while (this.#liveIrcEvents.size > MAX_LIVE_IRC_MESSAGES) {
+			const oldest = this.#liveIrcEvents.keys().next().value;
 			if (oldest === undefined || oldest === latestSignature) return;
-			const timer = this.#ircExpiryTimers.get(oldest);
-			if (timer) {
-				clearTimeout(timer);
-				this.#ircExpiryTimers.delete(oldest);
-			}
-			this.#retireIrcCard(oldest);
+			clearTimeout(this.#ircExpiryTimers.get(oldest));
+			this.#ircExpiryTimers.delete(oldest);
+			this.#retireIrcEvent(oldest);
 		}
 	}
 
@@ -703,6 +766,7 @@ export class EventController {
 			).length;
 			if (visibleBlockCount > this.#lastVisibleBlockCount) {
 				this.#resetReadGroup();
+				this.#finalizeHubActivityGroup();
 				this.#lastVisibleBlockCount = visibleBlockCount;
 			}
 
@@ -720,6 +784,7 @@ export class EventController {
 			}
 			for (const content of this.ctx.streamingMessage.content) {
 				if (content.type !== "toolCall") continue;
+				if (content.name !== "hub") this.#finalizeHubActivityGroup();
 				if (content.name === "read") {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
@@ -764,6 +829,21 @@ export class EventController {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
 				}
+				if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
+				if (content.name === "hub" && isHubGroupedActivityArgs(renderArgs)) {
+					this.#resolveDisplaceablePoll(content.name);
+					this.#resetReadGroup();
+					const group = this.#getHubActivityGroup();
+					group.displaceWaitingPoll(content.id);
+					group.updateArgs(renderArgs, content.id);
+					this.ctx.pendingTools.set(content.id, group);
+					this.#toolTimelineComponents.set(content.id, group);
+					this.#toolArgsReveal.bind(content.id, group);
+					const afterToolSegment = timeline.afterToolCalls.get(content.id);
+					if (afterToolSegment && assistantHasVisibleContent(afterToolSegment)) this.#finalizeHubActivityGroup();
+					continue;
+				}
+				this.#finalizeHubActivityGroup();
 				if (!this.ctx.pendingTools.has(content.id)) {
 					this.#resolveDisplaceablePoll(content.name);
 					this.#resetReadGroup();
@@ -884,7 +964,10 @@ export class EventController {
 				// and freeze instead of pinning the transcript live region while a retry
 				// streams fresh blocks below them. Background task calls keep updating.
 				for (const [toolCallId, component] of this.ctx.pendingTools.entries()) {
-					if (!this.#backgroundTaskCallIds.has(toolCallId) && component instanceof ToolExecutionComponent) {
+					if (
+						!this.#backgroundTaskCallIds.has(toolCallId) &&
+						(component instanceof ToolExecutionComponent || component instanceof HubActivityGroupComponent)
+					) {
 						component.seal();
 					}
 				}
@@ -910,6 +993,12 @@ export class EventController {
 				if (component) lastPostToolAssistantComponent = component;
 			}
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
+			this.#errorAggregation = updateAssistantErrorAggregation(
+				this.#errorAggregation,
+				event.message,
+				this.#lastAssistantComponent,
+				(target, repeatCount, suppressed) => target.setErrorAggregation(repeatCount, suppressed),
+			);
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(event.message.usage, event.message.duration, event.message.ttft),
@@ -922,9 +1011,12 @@ export class EventController {
 			// turn's agent_start. Suppress the transcript's inline `Error: …` line for
 			// the same message while pinned so the error isn't rendered twice.
 			if (event.message.stopReason === "error" && event.message.errorMessage && !isSilentAbort(event.message)) {
-				this.#lastAssistantComponent?.setErrorPinned(true);
-				this.#pinnedErrorComponent = this.#lastAssistantComponent;
-				this.ctx.showPinnedError(event.message.errorMessage);
+				const leader = this.#errorAggregation?.leader ?? this.#lastAssistantComponent;
+				leader?.setErrorPinned(true);
+				this.#pinnedErrorComponent = leader;
+				const repeatCount = this.#errorAggregation?.repeatCount ?? 1;
+				const repeatSuffix = repeatCount > 1 ? ` × ${repeatCount}` : "";
+				this.ctx.showPinnedError(`${event.message.errorMessage}${repeatSuffix}`);
 			}
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
@@ -936,6 +1028,7 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
 		this.#resolveDisplaceablePoll(event.toolName);
+		if (event.toolName !== "hub") this.#finalizeHubActivityGroup();
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
@@ -952,6 +1045,21 @@ export class EventController {
 				return;
 			}
 
+			if (event.toolName === "hub" && isHubGroupedActivityArgs(event.args)) {
+				const group =
+					this.ctx.pendingTools.get(event.toolCallId) instanceof HubActivityGroupComponent
+						? (this.ctx.pendingTools.get(event.toolCallId) as HubActivityGroupComponent)
+						: this.#getHubActivityGroup();
+				group.displaceWaitingPoll(event.toolCallId);
+				group.updateArgs(event.args, event.toolCallId);
+				group.setArgsComplete(event.toolCallId);
+				this.ctx.pendingTools.set(event.toolCallId, group);
+				this.#toolTimelineComponents.set(event.toolCallId, group);
+				this.#toolArgsReveal.bind(event.toolCallId, group);
+				this.ctx.ui.requestRender();
+				return;
+			}
+			this.#finalizeHubActivityGroup();
 			this.#resetReadGroup();
 			const tool = this.ctx.viewSession.getToolByName(event.toolName);
 			const component = new ToolExecutionComponent(
@@ -1102,7 +1210,9 @@ export class EventController {
 				(content: { type: string; text?: string }) => content.type === "text",
 			)?.text;
 			this.ctx.showWarning(
-				`Todo update failed${textContent ? `: ${textContent}` : ". Progress may be stale until todo succeeds."}`,
+				textContent
+					? tSettingsUi("Todo update failed: {message}", { message: textContent })
+					: tSettingsUi("Todo update failed. Progress may be stale until todo succeeds."),
 			);
 		}
 		// Plan approval rides a `write` to xd://propose: the dispatch metadata on
@@ -1169,7 +1279,11 @@ export class EventController {
 				// A foreground read still pending at turn end shares a group component
 				// keyed by every read's id; seal it too so a never-delivered read does
 				// not keep the group live (and pinning the live region) indefinitely.
-				if (component instanceof ToolExecutionComponent || component instanceof ReadToolGroupComponent) {
+				if (
+					component instanceof ToolExecutionComponent ||
+					component instanceof ReadToolGroupComponent ||
+					component instanceof HubActivityGroupComponent
+				) {
 					component.seal();
 				}
 				this.ctx.pendingTools.delete(toolCallId);
@@ -1230,7 +1344,7 @@ export class EventController {
 	 * label carries no dangling whitespace.
 	 */
 	#maintenanceEscHint(): string {
-		return this.ctx.focusedAgentId ? "" : " (esc to cancel)";
+		return this.ctx.focusedAgentId ? "" : tSettingsUi(" (esc to cancel)");
 	}
 
 	async #handleAutoCompactionStart(
@@ -1243,20 +1357,20 @@ export class EventController {
 		this.ctx.statusContainer.disposeChildren();
 		const reasonText =
 			event.reason === "overflow"
-				? "Context overflow detected, "
+				? tSettingsUi("Context overflow detected, ")
 				: event.reason === "incomplete"
-					? "Response incomplete, "
+					? tSettingsUi("Response incomplete, ")
 					: event.reason === "idle"
-						? "Idle "
+						? tSettingsUi("Idle ")
 						: "";
 		const actionLabel =
 			event.action === "handoff"
-				? "Auto-handoff"
+				? tSettingsUi("Auto-handoff")
 				: event.action === "shake"
-					? "Auto-shake"
+					? tSettingsUi("Auto-shake")
 					: event.action === "snapcompact"
-						? "Auto-snapcompact"
-						: "Auto context-full maintenance";
+						? tSettingsUi("Auto-snapcompact")
+						: tSettingsUi("Auto context-full maintenance");
 		this.ctx.autoCompactionLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
@@ -1283,12 +1397,12 @@ export class EventController {
 		if (event.aborted) {
 			this.ctx.showStatus(
 				isHandoffAction
-					? "Auto-handoff cancelled"
+					? tSettingsUi("Auto-handoff cancelled")
 					: isShakeAction
-						? "Auto-shake cancelled"
+						? tSettingsUi("Auto-shake cancelled")
 						: isSnapcompactAction
-							? "Auto-snapcompact cancelled"
-							: "Auto context-full maintenance cancelled",
+							? tSettingsUi("Auto-snapcompact cancelled")
+							: tSettingsUi("Auto context-full maintenance cancelled"),
 			);
 		} else if (isShakeAction) {
 			// Shake produces no CompactionResult; rebuild on success, suppress benign skips.
@@ -1307,7 +1421,7 @@ export class EventController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
-				this.ctx.showStatus("Auto-shake completed");
+				this.ctx.showStatus(tSettingsUi("Auto-shake completed"));
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
@@ -1335,14 +1449,14 @@ export class EventController {
 			this.ctx.statusLine.invalidate();
 			await this.ctx.reloadTodos();
 			this.ctx.ui.requestRender(true, { clearScrollback: true });
-			this.ctx.showStatus("Auto-handoff completed");
+			this.ctx.showStatus(tSettingsUi("Auto-handoff completed"));
 		} else if (event.skipped) {
 			// Benign skip: no model selected, no candidate models available, or nothing
 			// to compact yet. Not a failure — suppress the warning.
 		} else if (isSnapcompactAction) {
-			this.ctx.showWarning("Auto-snapcompact maintenance failed; continuing without maintenance");
+			this.ctx.showWarning(tSettingsUi("Auto-snapcompact maintenance failed; continuing without maintenance"));
 		} else {
-			this.ctx.showWarning("Auto context-full maintenance failed; continuing without maintenance");
+			this.ctx.showWarning(tSettingsUi("Auto context-full maintenance failed; continuing without maintenance"));
 		}
 		await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
 		this.#ensureWorkingLoaderWhileStreaming();
@@ -1365,7 +1479,12 @@ export class EventController {
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
-			`Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s…${this.#maintenanceEscHint()}`,
+			tSettingsUi("Retrying ({attempt}/{maxAttempts}) in {delaySeconds}s…{cancelHint}", {
+				attempt: event.attempt,
+				maxAttempts: event.maxAttempts,
+				delaySeconds,
+				cancelHint: this.#maintenanceEscHint(),
+			}),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
@@ -1393,7 +1512,12 @@ export class EventController {
 			this.#clearRetrySupersededAssistantComponents();
 		} else {
 			this.#clearRetrySupersededAssistantComponents();
-			this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+			this.ctx.showError(
+				tSettingsUi("Retry failed after {attempt} attempts: {finalError}", {
+					attempt: event.attempt,
+					finalError: event.finalError || tSettingsUi("Unknown error"),
+				}),
+			);
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.ctx.ui.requestRender();
@@ -1402,13 +1526,13 @@ export class EventController {
 	async #handleRetryFallbackApplied(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>,
 	): Promise<void> {
-		this.ctx.showWarning(`Fallback: ${event.from} -> ${event.to}`);
+		this.ctx.showWarning(tSettingsUi("Fallback: {from} -> {to}", { from: event.from, to: event.to }));
 	}
 
 	async #handleRetryFallbackSucceeded(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>,
 	): Promise<void> {
-		this.ctx.showStatus(`Fallback succeeded on ${event.model}`);
+		this.ctx.showStatus(tSettingsUi("Fallback succeeded on {model}", { model: event.model }));
 	}
 
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {
@@ -1521,7 +1645,7 @@ export class EventController {
 		if (!this.ctx.viewSession.model) return;
 		if (this.ctx.viewSession.messages.length === 0) return;
 
-		const promptText = prompt.render(idleRecapPrompt, {
+		const promptText = prompt.render(selectPrompt(idleRecapPrompt, idleRecapPromptZh), {
 			goal: this.#idleRecapGoalText() ?? "",
 			task: nextActionableTask(this.ctx.todoPhases)?.content ?? "",
 		});
@@ -1533,7 +1657,7 @@ export class EventController {
 			if (this.#idleRecapAbort !== abort || abort.signal.aborted || !this.#idleConditionsHold()) return;
 			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);
 			if (!recap) return;
-			this.ctx.showStatus(theme.fg("dim", theme.italic(`※ recap: ${recap}`)), { dim: false });
+			this.ctx.showStatus(theme.fg("dim", theme.italic(tSettingsUi("※ recap: {recap}", { recap }))), { dim: false });
 		} catch (error) {
 			if (!abort.signal.aborted) logger.debug("Idle recap turn failed", { error: String(error) });
 		} finally {

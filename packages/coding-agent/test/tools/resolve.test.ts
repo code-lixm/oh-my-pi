@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -13,11 +13,13 @@ import {
 	REJECT_DEVICE_PATH,
 	RESOLVE_DEVICE_NAME,
 	RESOLVE_DEVICE_PATH,
+	type ResolveDetails,
 	resolutionDeviceUsage,
 	resolveRenderer,
 	writeDeviceDispatch,
 } from "@oh-my-pi/pi-coding-agent/tools/resolve";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 function createSession(
 	options: {
@@ -190,6 +192,124 @@ describe("device tool-call predicates", () => {
 		expect(isProposeToolCall({ name: "write", arguments: { path: PROPOSE_DEVICE_PATH } })).toBe(true);
 		expect(isProposeToolCall({ name: "write", arguments: { path: RESOLVE_DEVICE_PATH } })).toBe(false);
 		expect(isProposeToolCall({ name: "ask", arguments: {} })).toBe(false);
+	});
+});
+
+describe("resolveRenderer locale", () => {
+	let previousLocale: string;
+
+	beforeEach(() => {
+		previousLocale = getSettingsUiLocale();
+	});
+
+	afterEach(() => {
+		setSettingsUiLocale(previousLocale);
+	});
+
+	async function renderSummary(details: ResolveDetails): Promise<string> {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		return sanitizeText(
+			resolveRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "" }],
+						details,
+					},
+					{ expanded: false, isPartial: false },
+					theme!,
+				)
+				.render(90)
+				.join("\n"),
+		);
+	}
+
+	it("renders apply summaries in both locales and falls back to the no-reason line", async () => {
+		const details: ResolveDetails = {
+			action: "apply",
+			reason: "",
+			sourceToolName: "ast_edit",
+			label: "AST Edit: 2 replacements in 1 file",
+		};
+
+		setSettingsUiLocale("en");
+		const english = await renderSummary(details);
+		expect(english).toContain("Accept: 2 replacements in 1 file");
+		expect(english).toContain("AST Edit");
+		expect(english).toContain("No reason provided");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = await renderSummary(details);
+		expect(chinese).toContain("接受: 2 replacements in 1 file");
+		expect(chinese).toContain("AST Edit");
+		expect(chinese).toContain("未提供原因");
+		expect(chinese).not.toContain("Accept: 2 replacements in 1 file");
+	});
+
+	it("renders apply reasons in both locales without reviving legacy accepting text", async () => {
+		const details: ResolveDetails = {
+			action: "apply",
+			reason: "looks good",
+			sourceToolName: "ast_edit",
+			label: "AST Edit: 2 replacements in 1 file",
+		};
+
+		setSettingsUiLocale("en");
+		const english = await renderSummary(details);
+		expect(english).toContain("Accept: 2 replacements in 1 file");
+		expect(english).toContain("looks good");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = await renderSummary({ ...details, reason: "看起来正确" });
+		expect(chinese).toContain("接受: 2 replacements in 1 file");
+		expect(chinese).toContain("AST Edit");
+		expect(chinese).toContain("看起来正确");
+		expect(chinese).not.toContain("accepting changes");
+		expect(chinese).not.toContain("Accept: 2 replacements in 1 file");
+	});
+
+	it("renders discard summaries in both locales and falls back to the no-reason line", async () => {
+		const details: ResolveDetails = {
+			action: "discard",
+			reason: "",
+			sourceToolName: "ast_edit",
+			label: "AST Edit: 2 replacements in 1 file",
+		};
+
+		setSettingsUiLocale("en");
+		const english = await renderSummary(details);
+		expect(english).toContain("Discard: 2 replacements in 1 file");
+		expect(english).toContain("AST Edit");
+		expect(english).toContain("No reason provided");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = await renderSummary(details);
+		expect(chinese).toContain("丢弃: 2 replacements in 1 file");
+		expect(chinese).toContain("AST Edit");
+		expect(chinese).toContain("未提供原因");
+		expect(chinese).not.toContain("Discard: 2 replacements in 1 file");
+	});
+
+	it("renders discard reasons in both locales without reviving legacy discarding text", async () => {
+		const details: ResolveDetails = {
+			action: "discard",
+			reason: "wrong file",
+			sourceToolName: "ast_edit",
+			label: "AST Edit: 2 replacements in 1 file",
+		};
+
+		setSettingsUiLocale("en");
+		const english = await renderSummary(details);
+		expect(english).toContain("Discard: 2 replacements in 1 file");
+		expect(english).toContain("wrong file");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = await renderSummary({ ...details, reason: "文件不对" });
+		expect(chinese).toContain("丢弃: 2 replacements in 1 file");
+		expect(chinese).toContain("AST Edit");
+		expect(chinese).toContain("文件不对");
+		expect(chinese).not.toContain("discarding changes");
+		expect(chinese).not.toContain("Discard: 2 replacements in 1 file");
 	});
 });
 

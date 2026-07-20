@@ -1,4 +1,6 @@
 import type React from "react";
+import { t } from "../locale/catalog";
+import { useLocale } from "../useLocale";
 
 export interface DataTableColumn<T> {
 	key: string;
@@ -23,8 +25,11 @@ export function DataTable<T>({
 	keyExtractor,
 	onRowClick,
 	renderMobileCard,
-	emptyText = "No data available",
+	emptyText,
 }: DataTableProps<T>) {
+	useLocale();
+	const resolvedEmptyText = emptyText ?? t("state.table.empty.default");
+
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLTableRowElement>, item: T) => {
 		if (onRowClick && (e.key === "Enter" || e.key === " ")) {
 			e.preventDefault();
@@ -33,7 +38,7 @@ export function DataTable<T>({
 	};
 
 	if (data.length === 0) {
-		return <div className="stats-table-empty">{emptyText}</div>;
+		return <div className="stats-table-empty">{resolvedEmptyText}</div>;
 	}
 
 	return (

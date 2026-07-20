@@ -1,4 +1,5 @@
 import { Container, matchesKey, ScrollView, Spacer, TruncatedText } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { ResetUsageAccount } from "../../slash-commands/helpers/reset-usage";
@@ -30,7 +31,7 @@ export class ResetUsageSelectorComponent extends Container {
 
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-		this.addChild(new TruncatedText(theme.bold("Spend a saved rate-limit reset:")));
+		this.addChild(new TruncatedText(theme.bold(tSettingsUi("Spend a saved rate-limit reset:"))));
 		this.addChild(new Spacer(1));
 		this.#listContainer = new Container();
 		this.addChild(this.#listContainer);
@@ -64,7 +65,7 @@ export class ResetUsageSelectorComponent extends Container {
 				: redeemable
 					? theme.fg("success", countLabel)
 					: theme.fg("dim", countLabel);
-			const activeTag = account.active ? theme.fg("muted", " (active)") : "";
+			const activeTag = account.active ? theme.fg("muted", ` ${tSettingsUi("(active)")}`) : "";
 			if (isSelected) {
 				const name = redeemable ? theme.fg("accent", account.label) : theme.fg("dim", account.label);
 				rows.push(`${theme.fg("accent", `${theme.nav.cursor} `)}${name}${activeTag}  ${countText}`);
@@ -87,14 +88,17 @@ export class ResetUsageSelectorComponent extends Container {
 
 		if (total === 0) {
 			this.#listContainer.addChild(
-				new TruncatedText(theme.fg("muted", "  No Codex accounts with saved resets"), 0, 0),
+				new TruncatedText(theme.fg("muted", `  ${tSettingsUi("No Codex accounts with saved resets")}`), 0, 0),
 			);
 		}
 
 		const pending = this.#pendingIndex !== null ? this.#accounts[this.#pendingIndex] : undefined;
 		const hint = pending
-			? theme.fg("warning", `  Press Enter again to spend 1 reset for ${pending.label}, Esc to cancel`)
-			: theme.fg("muted", "  ↑/↓ select · ↵ spend a reset · Esc cancel");
+			? theme.fg(
+					"warning",
+					`  ${tSettingsUi("Press Enter again to spend 1 reset for {label}, Esc to cancel", { label: pending.label })}`,
+				)
+			: theme.fg("muted", `  ${tSettingsUi("↑/↓ select · ↵ spend a reset · Esc cancel")}`);
 		this.#listContainer.addChild(new TruncatedText(hint, 0, 0));
 
 		if (this.#statusMessage) {
@@ -145,7 +149,7 @@ export class ResetUsageSelectorComponent extends Container {
 			const account = this.#accounts[this.#selectedIndex];
 			if (!account) return;
 			if (account.availableCount <= 0) {
-				this.#statusMessage = "That account has no saved resets to spend.";
+				this.#statusMessage = tSettingsUi("That account has no saved resets to spend.");
 				this.#updateList();
 				return;
 			}

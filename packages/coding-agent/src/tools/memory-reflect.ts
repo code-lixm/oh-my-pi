@@ -2,7 +2,9 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { ensureBankExists } from "../hindsight/bank";
+import { selectPrompt } from "../prompts/prompt-locale";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
+import reflectDescriptionZh from "../prompts/tools/reflect.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const memoryReflectSchema = type({
@@ -16,7 +18,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 	readonly name = "reflect";
 	readonly approval = "read" as const;
 	readonly label = "Reflect";
-	readonly description = reflectDescription;
+	readonly description = selectPrompt(reflectDescription, reflectDescriptionZh);
 	readonly parameters = memoryReflectSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";

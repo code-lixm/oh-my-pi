@@ -36,12 +36,15 @@ import {
 import { normalizeToLF } from "../edit/normalize";
 import { isNotebookPath, readEditableNotebookText } from "../edit/notebook";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from "../internal-urls";
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
+import readDescriptionZh from "../prompts/tools/read.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
 	DEFAULT_MAX_BYTES,
@@ -908,7 +911,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			Math.min(session.settings.get("read.defaultLimit") ?? DEFAULT_MAX_LINES, DEFAULT_MAX_LINES),
 		);
 		this.#inspectImageEnabled = session.settings.get("inspect_image.enabled");
-		this.description = prompt.render(readDescription, {
+		this.description = prompt.render(selectPrompt(readDescription, readDescriptionZh), {
 			DEFAULT_LIMIT: String(this.#defaultLimit),
 			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
 			IS_HL_MODE: displayMode.hashLines,
@@ -3330,6 +3333,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 interface ReadRenderArgs {
 	path?: unknown;
 	file_path?: unknown;
+	selector?: unknown;
 	// Legacy fields from old schema — tolerated for in-flight tool calls during transition
 	offset?: number;
 	limit?: number;
@@ -3344,6 +3348,15 @@ function splitReadRenderPath(rawPath: string): { path: string; sel?: string } {
 		if (internal.sel) return internal;
 	}
 	return splitPathAndSel(rawPath);
+}
+
+function readRenderPath(args: ReadRenderArgs | undefined): string {
+	const rawPath =
+		typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
+	if (typeof args?.selector !== "string" || args.selector.length === 0 || splitReadRenderPath(rawPath).sel) {
+		return rawPath;
+	}
+	return `${rawPath}:${args.selector}`;
 }
 
 function firstReadSelectorLine(sel: string | undefined): number | undefined {
@@ -3393,8 +3406,7 @@ function formatReadPathLink(
 
 export const readToolRenderer = {
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const rawPath =
-			typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : "";
+		const rawPath = readRenderPath(args);
 		if (isReadableUrlPath(rawPath)) {
 			return renderReadUrlCall({ path: rawPath, raw: args.raw }, _options, uiTheme);
 		}
@@ -3409,7 +3421,10 @@ export const readToolRenderer = {
 			pathDisplay += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 		}
 
-		const text = renderStatusLine({ icon: "pending", title: "Read", description: pathDisplay }, uiTheme);
+		const text = renderStatusLine(
+			{ icon: "pending", title: tSettingsUi("Read"), titleColor: "toolTitle", description: pathDisplay },
+			uiTheme,
+		);
 		return new Text(text, 0, 0);
 	},
 
@@ -3436,13 +3451,12 @@ export const readToolRenderer = {
 
 		if (result.isError) {
 			const rawErrorText = result.content?.find(c => c.type === "text")?.text ?? "";
-			const errorText = (rawErrorText || "Unknown error").replace(/^Error:\s*/, "");
-			const rawPath =
-				typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
+			const errorText = (rawErrorText || tSettingsUi("Unknown error")).replace(/^Error:\s*/, "");
+			const rawPath = readRenderPath(args);
 			const filePath =
 				formatReadPathLink(rawPath, { offset: args?.offset, sourcePath: readSourceFsPath(result.details) }) ||
 				shortenPath(rawPath);
-			let title = filePath ? `Read ${filePath}` : "Read";
+			let title = filePath ? tSettingsUi("Read {path}", { path: filePath }) : tSettingsUi("Read");
 			if (args?.offset !== undefined || args?.limit !== undefined) {
 				const startLine = args.offset ?? 1;
 				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
@@ -3465,8 +3479,7 @@ export const readToolRenderer = {
 		// echo next to the styled warning line below.
 		const contentText = details?.displayContent?.text ?? stripOutputNotice(rawText, details?.meta);
 		const imageContent = result.content?.find(c => c.type === "image");
-		const rawPath =
-			typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
+		const rawPath = readRenderPath(args);
 		const renderPath = splitReadRenderPath(rawPath);
 		const lang = getLanguageFromPath(renderPath.path);
 
@@ -3474,11 +3487,18 @@ export const readToolRenderer = {
 		const truncation = details?.meta?.truncation;
 		const fallback = details?.truncation;
 		if (details?.resolvedPath) {
-			warningLines.push(uiTheme.fg("dim", wrapBrackets(`Resolved path: ${details.resolvedPath}`, uiTheme)));
+			warningLines.push(
+				uiTheme.fg(
+					"dim",
+					wrapBrackets(tSettingsUi("Resolved path: {path}", { path: details.resolvedPath }), uiTheme),
+				),
+			);
 		}
 		if (truncation) {
 			if (fallback?.firstLineExceedsLimit) {
-				let warning = `First line exceeds ${formatBytes(fallback.outputBytes ?? fallback.totalBytes)} limit`;
+				let warning = tSettingsUi("First line exceeds {limit} limit", {
+					limit: formatBytes(fallback.outputBytes ?? fallback.totalBytes),
+				});
 				if (truncation.artifactId) {
 					warning += `. ${formatFullOutputReference(truncation.artifactId)}`;
 				}
@@ -3495,11 +3515,18 @@ export const readToolRenderer = {
 				resolvedPath: details?.resolvedPath,
 				sourcePath: readSourceFsPath(details),
 				suffixResolution: suffix,
-				fallbackLabel: "image",
+				fallbackLabel: tSettingsUi("image"),
 			});
-			const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
+			const correction = suffix
+				? ` ${uiTheme.fg("dim", tSettingsUi("(corrected from {path})", { path: shortenPath(suffix.from) }))}`
+				: "";
 			const header = renderStatusLine(
-				{ icon: suffix ? "warning" : "success", title: "Read", description: `${displayPath}${correction}` },
+				{
+					icon: suffix ? "warning" : undefined,
+					iconOverride: suffix ? undefined : uiTheme.fg("toolTitle", uiTheme.symbol("icon.file")),
+					title: tSettingsUi("Read"),
+					description: `${displayPath}${correction}`,
+				},
 				uiTheme,
 			);
 			const detailLines = contentText ? contentText.split("\n").map(line => uiTheme.fg("toolOutput", line)) : [];
@@ -3513,8 +3540,8 @@ export const readToolRenderer = {
 							state: "success",
 							sections: [
 								{
-									label: uiTheme.fg("toolTitle", "Details"),
-									lines: lines.length > 0 ? lines : [uiTheme.fg("dim", "(image)")],
+									label: uiTheme.fg("toolTitle", tSettingsUi("Details")),
+									lines: lines.length > 0 ? lines : [uiTheme.fg("dim", tSettingsUi("(image)"))],
 								},
 							],
 							width,
@@ -3536,19 +3563,23 @@ export const readToolRenderer = {
 			suffixResolution: suffix,
 			offset: args?.offset,
 		});
-		const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
-		let title = displayPath ? `Read ${displayPath}${correction}` : "Read";
+		const correction = suffix
+			? ` ${uiTheme.fg("dim", tSettingsUi("(corrected from {path})", { path: shortenPath(suffix.from) }))}`
+			: "";
+		let title = displayPath
+			? tSettingsUi("Read {path}", { path: `${displayPath}${correction}` })
+			: tSettingsUi("Read");
 		if (args?.offset !== undefined || args?.limit !== undefined) {
 			const startLine = args.offset ?? 1;
 			const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
 			title += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 		}
 		if (details?.summary) {
-			title += ` (summary: ${details.summary.elidedSpans} elided span${details.summary.elidedSpans === 1 ? "" : "s"})`;
+			title += ` ${tSettingsUi(details.summary.elidedSpans === 1 ? "(summary: {count} elided span)" : "(summary: {count} elided spans)", { count: details.summary.elidedSpans })}`;
 		}
 		if (details?.conflictCount && details.conflictCount > 0) {
 			const n = details.conflictCount;
-			title += ` ${uiTheme.fg("warning", `(⚠ ${n} conflict${n === 1 ? "" : "s"})`)}`;
+			title += ` ${uiTheme.fg("warning", tSettingsUi(n === 1 ? "(⚠ {count} conflict)" : "(⚠ {count} conflicts)", { count: n }))}`;
 		}
 		const rawRequested = args?.raw === true || isRawSelector(parseSel(renderPath.sel));
 		const isMarkdown = details?.contentType === "text/markdown" && !rawRequested;

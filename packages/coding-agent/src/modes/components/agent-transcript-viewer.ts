@@ -19,6 +19,7 @@ import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, typ
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
@@ -125,13 +126,13 @@ function sentinelsFromFile(file: string, size: number): LocalTranscriptSentinel[
 function statusBadge(status: AgentStatus): string {
 	switch (status) {
 		case "running":
-			return theme.fg("success", "running");
+			return theme.fg("success", tSettingsUi("running"));
 		case "idle":
-			return theme.fg("accent", "idle");
+			return theme.fg("accent", tSettingsUi("idle"));
 		case "parked":
-			return theme.fg("muted", "parked");
+			return theme.fg("muted", tSettingsUi("parked"));
 		case "aborted":
-			return theme.fg("error", "aborted");
+			return theme.fg("error", tSettingsUi("aborted"));
 	}
 }
 
@@ -592,9 +593,12 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#headerLines(status: AgentStatus | undefined, kind: string | undefined, parentId: string | undefined): string[] {
-		const lines = [theme.fg("accent", `Agent Hub ${theme.sep.dot} ${this.deps.agentId}`)];
+		const lines = [theme.fg("accent", `${tSettingsUi("Agent Hub")} ${theme.sep.dot} ${this.deps.agentId}`)];
 		if (status && kind) {
-			const kindTag = theme.fg("dim", ` ${parentId ? `${kind} ${theme.sep.dot} of ${parentId}` : kind}`);
+			const kindTag = theme.fg(
+				"dim",
+				` ${parentId ? `${kind} ${theme.sep.dot} ${tSettingsUi("of {parentId}", { parentId })}` : kind}`,
+			);
 			const modelLabel = this.#model ? theme.fg("muted", `${theme.sep.dot}${this.#model}`) : "";
 			lines.push(`${theme.bold(this.deps.agentId)} ${statusBadge(status)}${kindTag}${modelLabel}`);
 		}
@@ -606,8 +610,12 @@ export class AgentTranscriptViewer implements Component {
 		const statsLine = this.#statsLine();
 		if (statsLine) lines.push(` ${statsLine}`);
 		const hint = this.#editor
-			? `Enter:send  Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  empty input → j/k:scroll  g/G:top/bottom`
-			: `Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  j/k:scroll  g/G:top/bottom`;
+			? tSettingsUi("Enter:send  Esc:close  {expandKey}:expand  empty input → j/k:scroll  g/G:top/bottom", {
+					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
+				})
+			: tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
+					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
+				});
 		lines.push(` ${theme.fg("dim", hint)}`);
 		return lines;
 	}
@@ -640,10 +648,10 @@ export class AgentTranscriptViewer implements Component {
 	#placeholder(maxWidth: number): string {
 		if (this.deps.remote) {
 			if (this.#remoteError) return sanitizeErrorLine(this.#remoteError, maxWidth);
-			if (this.#remoteUnavailable) return "Transcript lives on the host — not available.";
-			return this.#hasRemoteData ? "No messages yet." : "Loading transcript from host…";
+			if (this.#remoteUnavailable) return tSettingsUi("Transcript lives on the host — not available.");
+			return this.#hasRemoteData ? tSettingsUi("No messages yet.") : tSettingsUi("Loading transcript from host…");
 		}
-		if (!this.deps.registry.get(this.deps.agentId)?.sessionFile) return "No session file available yet.";
-		return "No messages yet.";
+		if (!this.deps.registry.get(this.deps.agentId)?.sessionFile) return tSettingsUi("No session file available yet.");
+		return tSettingsUi("No messages yet.");
 	}
 }

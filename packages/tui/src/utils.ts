@@ -209,6 +209,31 @@ export function padding(n: number): string {
 	return " ".repeat(n);
 }
 
+const SAVE_CURSOR_POSITION = "\x1b[s";
+const RESTORE_CURSOR_POSITION = "\x1b[u";
+
+/**
+ * Draw a frame row's right border at a cursor-relative fixed column.
+ *
+ * Unicode cell-width policies differ between applications and terminals for
+ * ambiguous graphemes. Padding alone therefore cannot guarantee that a suffix
+ * border lands in the same column as the corners. Saving the real cursor at
+ * the row's left edge and restoring it before the suffix makes frame geometry
+ * independent of the terminal's width decision for the row content. The
+ * source still contains `rowWithoutRight + rightBorder` in logical order, so
+ * ANSI stripping, wrapping, copying, and non-terminal renderers keep the same
+ * plain-text representation.
+ * The caller must emit the returned row from the frame's left edge; TUI paint
+ * paths satisfy this by carriage-returning before every rewritten row.
+ */
+export function anchorRightBorder(rowWithoutRight: string, rightBorder: string, frameWidth: number): string {
+	const safeWidth = Number.isFinite(frameWidth) ? Math.max(0, Math.trunc(frameWidth)) : 0;
+	const rightWidth = visibleWidth(rightBorder);
+	const offset = Math.max(0, safeWidth - rightWidth);
+	const moveRight = offset > 0 ? `\x1b[${offset}C` : "";
+	return `${SAVE_CURSOR_POSITION}${rowWithoutRight}${RESTORE_CURSOR_POSITION}${moveRight}${rightBorder}`;
+}
+
 // Grapheme segmenter (shared instance)
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 

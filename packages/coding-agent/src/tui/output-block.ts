@@ -2,8 +2,8 @@
  * Bordered output container with optional header and sections.
  */
 import type { Component } from "@oh-my-pi/pi-tui";
-import { ImageProtocol, padding, TERMINAL, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import type { Theme, ThemeColor } from "../modes/theme/theme";
+import { anchorRightBorder, ImageProtocol, padding, TERMINAL, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { theme as activeTheme, getThemeEpoch, type Theme, type ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
@@ -20,9 +20,19 @@ export interface OutputBlockOptions {
 	/** Override the state-derived border color. Used for muted "legacy" tool
 	 * frames that should not visually compete with framed-output tools. */
 	borderColor?: ThemeColor;
+	/** Per-block layout override. Omit to use the configured global style. */
+	borderStyle?: OutputBlockBorderStyle;
 }
 
 const FRAMED_BLOCK_COMPONENT = Symbol("framedBlockComponent");
+
+export type OutputBlockBorderStyle = "full" | "horizontal";
+
+let outputBlockBorderStyle: OutputBlockBorderStyle = "full";
+
+export function setOutputBlockBorderStyle(style: OutputBlockBorderStyle): void {
+	outputBlockBorderStyle = style;
+}
 
 export type FramedBlockComponent = Component & { [FRAMED_BLOCK_COMPONENT]?: true };
 
@@ -46,24 +56,35 @@ function normalizeContentPaddingLeft(value: number | undefined): number {
 	return Math.max(0, Math.floor(value));
 }
 
+function shouldApplyStateBg(state: State | undefined, override: boolean | undefined): boolean {
+	return override ?? (state === "pending" || state === "running" || state === "error");
+}
+
 /**
- * Inner content width that {@link renderOutputBlock} wraps its body to, for a
- * given outer `width`: both vertical borders (1 cell each) plus the left
- * content padding. Renderers that size a tail window MUST budget visual rows
- * against this, not the outer width — otherwise the block re-wraps their lines
- * into more rows than they counted and the box overflows its intended height.
+ * Content width used by {@link renderOutputBlock}. Full borders reserve one
+ * cell on each side; horizontal-only blocks expose those cells to content.
+ * Renderers that size a tail window MUST use this helper so their visual-row
+ * budget matches the active layout.
  */
-export function outputBlockContentWidth(width: number, contentPaddingLeft?: number): number {
-	return Math.max(1, width - 2 - normalizeContentPaddingLeft(contentPaddingLeft));
+export function outputBlockContentWidth(
+	width: number,
+	contentPaddingLeft?: number,
+	borderStyle: OutputBlockBorderStyle = outputBlockBorderStyle,
+): number {
+	const borderWidth = borderStyle === "full" ? 2 : 0;
+	return Math.max(1, width - borderWidth - normalizeContentPaddingLeft(contentPaddingLeft));
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
-	const { header, headerMeta, state, sections = [], width, applyBg = true } = options;
+	const { header, headerMeta, state, sections = [], width } = options;
+	const applyBg = shouldApplyStateBg(state, options.applyBg);
+	const horizontalOnly = (options.borderStyle ?? outputBlockBorderStyle) === "horizontal";
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h.repeat(3);
 	const lineWidth = Math.max(0, width);
-	// Border colors: running/pending use accent, success uses dim (gray), error/warning keep their colors
+	// Border colors: running/pending use accent, errors and warnings keep their
+	// semantic colors, and ordinary completed blocks share one neutral token.
 	const borderColor: ThemeColor =
 		options.borderColor ??
 		(state === "error"
@@ -72,7 +93,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				? "warning"
 				: state === "running" || state === "pending"
 					? "accent"
-					: "dim");
+					: "borderMuted");
 	const border = (text: string) => theme.fg(borderColor, text);
 	const bgFn = (() => {
 		if (!state || !applyBg) return undefined;
@@ -88,7 +109,8 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	})();
 
 	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
-	const contentWidth = Math.max(0, lineWidth - visibleWidth(v) - contentPaddingLeft - visibleWidth(v));
+	const borderWidth = horizontalOnly ? 0 : visibleWidth(v) * 2;
+	const contentWidth = Math.max(0, lineWidth - borderWidth - contentPaddingLeft);
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
 
 	// ── Layout pass: collect row descriptors before emitting the bordered lines. ──
@@ -142,12 +164,11 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const H = rows.length;
 
 	const renderBar = (row: { leftChar: string; rightChar: string; label?: string; meta?: string }): string => {
-		const leftGlyphs = `${row.leftChar}${cap}`;
-		const rightGlyph = row.rightChar;
+		const leftGlyphs = horizontalOnly ? cap : `${row.leftChar}${cap}`;
+		const rightGlyph = horizontalOnly ? "" : row.rightChar;
 		if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
 		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
 		if (!labelText) {
-			// No header: draw a clean, continuous top/separator bar (no 1-col gap).
 			const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
 			return `${border(leftGlyphs)}${border(h.repeat(fillCount))}${border(rightGlyph)}`;
 		}
@@ -163,6 +184,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	};
 
 	const renderBottom = (row: { leftChar: string; rightChar: string }): string => {
+		if (horizontalOnly) return border(h.repeat(lineWidth));
 		const leftGlyphs = `${row.leftChar}${cap}`;
 		const rightGlyph = row.rightChar;
 		const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
@@ -170,7 +192,10 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		return `${border(leftGlyphs)}${border(fillGlyphs)}${border(rightGlyph)}`;
 	};
 
-	const renderContent = (inner: string): string => `${border(v)}${contentLeftPadding}${inner}${border(v)}`;
+	const renderContent = (inner: string): string =>
+		horizontalOnly
+			? `${contentLeftPadding}${inner}`
+			: anchorRightBorder(`${border(v)}${contentLeftPadding}${inner}`, border(v), lineWidth);
 
 	const lines: string[] = [];
 	for (let r = 0; r < H; r++) {
@@ -196,30 +221,35 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
  */
 export class CachedOutputBlock {
 	#cache?: RenderCache;
+	#theme?: Theme;
 
 	/** Render with caching. Returns the cached (shared, caller-immutable) lines if options haven't changed. */
 	render(options: OutputBlockOptions, theme: Theme): readonly string[] {
 		const key = this.#buildKey(options);
-		if (this.#cache?.key === key) return this.#cache.lines;
+		if (this.#cache?.key === key && this.#theme === theme) return this.#cache.lines;
 		const lines = renderOutputBlock(options, theme);
 		this.#cache = { key, lines };
+		this.#theme = theme;
 		return lines;
 	}
 
 	/** Invalidate the cache, forcing a rebuild on next render. */
 	invalidate(): void {
 		this.#cache = undefined;
+		this.#theme = undefined;
 	}
 
 	#buildKey(options: OutputBlockOptions): bigint {
 		const h = new Hasher();
+		h.u32(getThemeEpoch());
 		h.u32(options.width);
 		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft));
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.state);
 		h.optional(options.borderColor);
-		h.bool(options.applyBg ?? true);
+		h.bool(shouldApplyStateBg(options.state, options.applyBg));
+		h.str(options.borderStyle ?? outputBlockBorderStyle);
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);
@@ -241,11 +271,13 @@ export class CachedOutputBlock {
  */
 export function framedBlock(theme: Theme, build: (width: number) => OutputBlockOptions): Component {
 	const block = new CachedOutputBlock();
+	const followsActiveTheme = theme === activeTheme;
 	// Marked so the tool-execution container treats it as self-framing (renders
 	// flush, no extra padding/background) the same way `markFramedBlockComponent`
 	// blocks are treated.
 	return markFramedBlockComponent({
-		render: (width: number): readonly string[] => block.render(build(width), theme),
+		render: (width: number): readonly string[] =>
+			block.render(build(width), followsActiveTheme ? activeTheme : theme),
 		invalidate: () => block.invalidate(),
 	});
 }

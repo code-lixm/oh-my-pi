@@ -6,11 +6,19 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
+import { $which, prompt, ptree, truncate } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { readEditableNotebookText } from "../edit/notebook";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { type Theme, theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
+import fetchImageContentPrompt from "../prompts/tools/fetch-image-content.md" with { type: "text" };
+import fetchImageContentPromptZh from "../prompts/tools/fetch-image-content.zh-CN.md" with { type: "text" };
+import fetchImageNotePrompt from "../prompts/tools/fetch-image-note.md" with { type: "text" };
+import fetchImageNotePromptZh from "../prompts/tools/fetch-image-note.zh-CN.md" with { type: "text" };
+import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { AgentStorage } from "../session/agent-storage";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
@@ -299,6 +307,25 @@ function resolveImageMimeType(mime: string, extensionHint: string): string | nul
 
 function isInlineImageMimeTypeSupported(mimeType: string): boolean {
 	return SUPPORTED_INLINE_IMAGE_MIME_TYPES.has(mimeType);
+}
+type FetchImageContentPromptParams =
+	| { variant: "summary"; mimeType: string; dimensionNote?: string }
+	| { variant: "tooLarge"; mimeType: string }
+	| { variant: "invalidBytes"; mimeType: string };
+
+type FetchImageNotePromptParams =
+	| { variant: "unsupportedMime"; mimeType: string }
+	| { variant: "fallbackTextual" }
+	| { variant: "sourceLimit" | "outputLimit"; actualBytes: number; maxBytes: number }
+	| { variant: "invalidImage"; mimeType: string }
+	| { variant: "binaryFailed"; error?: string };
+
+function renderFetchImageContent(params: FetchImageContentPromptParams): string {
+	return prompt.render(selectPrompt(fetchImageContentPrompt, fetchImageContentPromptZh), params).trim();
+}
+
+function renderFetchImageNote(params: FetchImageNotePromptParams): string {
+	return prompt.render(selectPrompt(fetchImageNotePrompt, fetchImageNotePromptZh), params).trim();
 }
 
 /**
@@ -1120,10 +1147,8 @@ async function renderUrl(
 	let skipConvertibleBinaryRetry = false;
 	if (imageMimeType) {
 		if (!isInlineImageMimeTypeSupported(imageMimeType)) {
-			notes.push(
-				`Image MIME type ${imageMimeType} is unsupported for inline model serialization; returning text metadata only`,
-			);
-			notes.push("Falling back to textual rendering from initial response");
+			notes.push(renderFetchImageNote({ variant: "unsupportedMime", mimeType: imageMimeType }));
+			notes.push(renderFetchImageNote({ variant: "fallbackTextual" }));
 			skipConvertibleBinaryRetry = true;
 		} else {
 			const binary = await fetchBinary(finalUrl, timeout, signal);
@@ -1132,11 +1157,13 @@ async function renderUrl(
 
 				if (binary.buffer.byteLength > MAX_INLINE_IMAGE_SOURCE_BYTES) {
 					notes.push(
-						`Image exceeds inline source limit (${binary.buffer.byteLength} bytes > ${MAX_INLINE_IMAGE_SOURCE_BYTES} bytes)`,
+						renderFetchImageNote({
+							variant: "sourceLimit",
+							actualBytes: binary.buffer.byteLength,
+							maxBytes: MAX_INLINE_IMAGE_SOURCE_BYTES,
+						}),
 					);
-					const output = finalizeOutput(
-						`Fetched image content (${imageMimeType}), but it is too large to inline render.`,
-					);
+					const output = finalizeOutput(renderFetchImageContent({ variant: "tooLarge", mimeType: imageMimeType }));
 					return {
 						url,
 						finalUrl,
@@ -1156,9 +1183,11 @@ async function renderUrl(
 				const isDecodedImage =
 					resized.originalWidth > 0 && resized.originalHeight > 0 && resized.width > 0 && resized.height > 0;
 				if (!isDecodedImage) {
-					notes.push(`Fetched payload could not be decoded as ${imageMimeType}; returning text metadata only`);
+					notes.push(renderFetchImageNote({ variant: "invalidImage", mimeType: imageMimeType }));
 					const output = finalizeOutput(
-						rawContent ?? `Fetched payload was labeled ${imageMimeType}, but bytes were not a valid image.`,
+						rawContent?.trim()
+							? rawContent
+							: renderFetchImageContent({ variant: "invalidBytes", mimeType: imageMimeType }),
 					);
 					return {
 						url,
@@ -1173,11 +1202,13 @@ async function renderUrl(
 				}
 				if (resized.buffer.length > MAX_INLINE_IMAGE_OUTPUT_BYTES) {
 					notes.push(
-						`Image exceeds inline output limit after resize (${resized.buffer.length} bytes > ${MAX_INLINE_IMAGE_OUTPUT_BYTES} bytes)`,
+						renderFetchImageNote({
+							variant: "outputLimit",
+							actualBytes: resized.buffer.length,
+							maxBytes: MAX_INLINE_IMAGE_OUTPUT_BYTES,
+						}),
 					);
-					const output = finalizeOutput(
-						`Fetched image content (${imageMimeType}), but it is too large to inline render.`,
-					);
+					const output = finalizeOutput(renderFetchImageContent({ variant: "tooLarge", mimeType: imageMimeType }));
 					return {
 						url,
 						finalUrl,
@@ -1190,12 +1221,12 @@ async function renderUrl(
 					};
 				}
 
-				const dimensionNote = formatDimensionNote(resized);
-				let imageSummary = `Fetched image content (${resized.mimeType}).`;
-				if (dimensionNote) {
-					imageSummary += `\n${dimensionNote}`;
-				}
-				const output = finalizeOutput(imageSummary);
+				const dimensionNote = formatDimensionNote(resized, {
+					format: params => prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+				});
+				const output = finalizeOutput(
+					renderFetchImageContent({ variant: "summary", mimeType: resized.mimeType, dimensionNote }),
+				);
 				return {
 					url,
 					finalUrl,
@@ -1211,8 +1242,8 @@ async function renderUrl(
 					},
 				};
 			}
-			notes.push(binary.error ? `Binary fetch failed: ${binary.error}` : "Binary fetch failed");
-			notes.push("Falling back to textual rendering from initial response");
+			notes.push(renderFetchImageNote({ variant: "binaryFailed", error: binary.error }));
+			notes.push(renderFetchImageNote({ variant: "fallbackTextual" }));
 			skipConvertibleBinaryRetry = true;
 		}
 	}
@@ -1770,8 +1801,8 @@ export function renderReadUrlCall(
 	const url = args.path ?? args.url ?? "";
 	const description = formatReadUrlDescription(url);
 	const meta: string[] = [];
-	if (args.raw) meta.push("raw");
-	const text = renderStatusLine({ icon: "pending", title: "Read", description, meta }, uiTheme);
+	if (args.raw) meta.push(tSettingsUi("raw"));
+	const text = renderStatusLine({ icon: "pending", title: tSettingsUi("read"), description, meta }, uiTheme);
 	return new Text(text, 0, 0);
 }
 
@@ -1785,10 +1816,10 @@ export function renderReadUrlResult(
 
 	if (result.isError || !details) {
 		const rawErrorText = result.content?.find(c => c.type === "text")?.text ?? "";
-		const errorText = (rawErrorText || "No response data").replace(/^Error:\s*/, "");
+		const errorText = (rawErrorText || tSettingsUi("No response data")).replace(/^Error:\s*/, "");
 		const urlText = details?.finalUrl ?? details?.url ?? "";
 		const description = urlText ? formatReadUrlDescription(urlText) : undefined;
-		const header = renderStatusLine({ icon: "error", title: "Read", description }, uiTheme);
+		const header = renderStatusLine({ icon: "error", title: tSettingsUi("read"), description }, uiTheme);
 		const errorLines = errorText.split("\n").map(line => uiTheme.fg("error", replaceTabs(line)));
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
@@ -1807,7 +1838,7 @@ export function renderReadUrlResult(
 	const header = renderStatusLine(
 		{
 			icon: truncated ? "warning" : "success",
-			title: "Read",
+			title: tSettingsUi("read"),
 			description,
 		},
 		uiTheme,
@@ -1822,23 +1853,23 @@ export function renderReadUrlResult(
 	const contentLines = contentBody.split("\n").filter(l => l.trim());
 
 	const metadataLines: string[] = [
-		`${uiTheme.fg("muted", "Content-Type:")} ${details.contentType || "unknown"}`,
-		`${uiTheme.fg("muted", "Method:")} ${details.method}`,
+		`${uiTheme.fg("muted", tSettingsUi("Content-Type:"))} ${details.contentType || tSettingsUi("unknown")}`,
+		`${uiTheme.fg("muted", tSettingsUi("Method:"))} ${details.method}`,
 	];
 	if (hasRedirect) {
 		metadataLines.push(
-			`${uiTheme.fg("muted", "Final URL:")} ${formatReadUrlMetadataValue(details.finalUrl, uiTheme)}`,
+			`${uiTheme.fg("muted", tSettingsUi("Final URL:"))} ${formatReadUrlMetadataValue(details.finalUrl, uiTheme)}`,
 		);
 	}
-	const lineLabel = `${lineCount} line${lineCount === 1 ? "" : "s"}`;
-	metadataLines.push(`${uiTheme.fg("muted", "Lines:")} ${lineLabel}`);
-	metadataLines.push(`${uiTheme.fg("muted", "Chars:")} ${charCount}`);
+	const lineLabel = tSettingsUi(lineCount === 1 ? "{count} line" : "{count} lines", { count: lineCount });
+	metadataLines.push(`${uiTheme.fg("muted", tSettingsUi("Lines:"))} ${lineLabel}`);
+	metadataLines.push(`${uiTheme.fg("muted", tSettingsUi("Chars:"))} ${charCount}`);
 	if (truncated) {
-		metadataLines.push(uiTheme.fg("warning", `${uiTheme.status.warning} Output truncated`));
+		metadataLines.push(uiTheme.fg("warning", `${uiTheme.status.warning} ${tSettingsUi("Output truncated")}`));
 		if (truncation?.artifactId) metadataLines.push(formatStyledArtifactReference(truncation.artifactId, uiTheme));
 	}
 	if (hasNotes) {
-		metadataLines.push(`${uiTheme.fg("muted", "Notes:")} ${details.notes.join("; ")}`);
+		metadataLines.push(`${uiTheme.fg("muted", tSettingsUi("Notes:"))} ${details.notes.join("; ")}`);
 	}
 
 	const outputBlock = new CachedOutputBlock();
@@ -1857,10 +1888,15 @@ export function renderReadUrlResult(
 				contentPreviewLines =
 					previewLines.length > 0
 						? previewLines.map(line => uiTheme.fg("dim", line))
-						: [uiTheme.fg("dim", "(no content)")];
+						: [uiTheme.fg("dim", tSettingsUi("(no content)"))];
 				if (remaining > 0) {
 					const hint = formatExpandHint(uiTheme, expanded, true);
-					contentPreviewLines.push(uiTheme.fg("muted", `… ${remaining} more lines${hint ? ` ${hint}` : ""}`));
+					contentPreviewLines.push(
+						uiTheme.fg(
+							"muted",
+							`${tSettingsUi(remaining === 1 ? "… {count} more line" : "… {count} more lines", { count: remaining })}${hint ? ` ${hint}` : ""}`,
+						),
+					);
 				}
 				lastExpanded = expanded;
 				outputBlock.invalidate();
@@ -1871,8 +1907,8 @@ export function renderReadUrlResult(
 					header,
 					state: truncated ? "warning" : "success",
 					sections: [
-						{ label: uiTheme.fg("toolTitle", "Metadata"), lines: metadataLines },
-						{ label: uiTheme.fg("toolTitle", "Content Preview"), lines: contentPreviewLines },
+						{ label: uiTheme.fg("toolTitle", tSettingsUi("Metadata")), lines: metadataLines },
+						{ label: uiTheme.fg("toolTitle", tSettingsUi("Content Preview")), lines: contentPreviewLines },
 					],
 					width,
 					applyBg: false,

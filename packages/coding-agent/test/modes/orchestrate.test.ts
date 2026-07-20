@@ -1,16 +1,29 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import {
 	containsOrchestrate,
 	highlightOrchestrate,
-	ORCHESTRATE_NOTICE,
+	renderOrchestrateNotice,
 } from "@oh-my-pi/pi-coding-agent/modes/orchestrate";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { containsUltrathink, highlightUltrathink } from "@oh-my-pi/pi-coding-agent/modes/ultrathink";
+import {
+	containsUltrathink,
+	highlightUltrathink,
+	renderUltrathinkNotice,
+} from "@oh-my-pi/pi-coding-agent/modes/ultrathink";
 import { clearBundledCommandsCache, loadBundledCommands } from "@oh-my-pi/pi-coding-agent/task/commands";
+import { setPromptLocale } from "../../src/prompts/prompt-locale";
 
 beforeAll(() => {
 	// highlightOrchestrate/highlightUltrathink read the global theme's color mode.
 	initTheme();
+});
+
+beforeEach(() => {
+	setPromptLocale("en");
+});
+
+afterEach(() => {
+	setPromptLocale("en");
 });
 
 describe("orchestrate keyword detection", () => {
@@ -83,13 +96,40 @@ describe("orchestrate keyword highlighting", () => {
 	});
 });
 
-describe("orchestrate notice", () => {
-	it("is a self-contained system notice carrying the orchestration contract", () => {
-		expect(ORCHESTRATE_NOTICE.startsWith("<system-notice>")).toBe(true);
-		expect(ORCHESTRATE_NOTICE.endsWith("</system-notice>")).toBe(true);
-		expect(ORCHESTRATE_NOTICE).toContain("orchestrator");
-		// The contract must not retain the slash-command input placeholder.
-		expect(ORCHESTRATE_NOTICE).not.toContain("$@");
+describe("keyword notices", () => {
+	it("renders the orchestrate notice as a self-contained system notice and switches locale at call time", () => {
+		setPromptLocale("en");
+		const english = renderOrchestrateNotice();
+
+		setPromptLocale("zh-CN");
+		const chinese = renderOrchestrateNotice();
+
+		expect(english.startsWith("<system-notice>")).toBe(true);
+		expect(english.endsWith("</system-notice>")).toBe(true);
+		expect(english).toContain("orchestrator");
+		expect(english).not.toContain("$@");
+		expect(english).not.toContain("编排请求");
+
+		expect(chinese.startsWith("<system-notice>")).toBe(true);
+		expect(chinese.endsWith("</system-notice>")).toBe(true);
+		expect(chinese).toContain("编排请求");
+		expect(chinese).not.toContain("$@");
+		expect(chinese).not.toContain("orchestrator");
+		expect(chinese).not.toBe(english);
+	});
+
+	it("renders the ultrathink notice in the active locale at call time", () => {
+		setPromptLocale("en");
+		const english = renderUltrathinkNotice();
+
+		setPromptLocale("zh-CN");
+		const chinese = renderUltrathinkNotice();
+
+		expect(english).toContain("multi-step reasoning");
+		expect(english).not.toContain("多步推理");
+		expect(chinese).toContain("多步推理");
+		expect(chinese).not.toContain("multi-step reasoning");
+		expect(chinese).not.toBe(english);
 	});
 });
 

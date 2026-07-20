@@ -10,15 +10,15 @@ import type { ModelRegistry } from "../config/model-registry";
 
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
-import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
-import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
+import titleMarkerInstructionEn from "../prompts/system/title-marker-instruction.md" with { type: "text" };
+import titleMarkerInstructionZh from "../prompts/system/title-marker-instruction.zh-CN.md" with { type: "text" };
+import titleSystemPromptEn from "../prompts/system/title-system.md" with { type: "text" };
+import titleSystemPromptZh from "../prompts/system/title-system.zh-CN.md" with { type: "text" };
 import { formatTitleUserMessage } from "../tiny/message-preproc";
 import { isTinyTitleLocalModelKey, ONLINE_TINY_TITLE_MODEL_KEY } from "../tiny/models";
 import { isLowSignalTitleInput, normalizeGeneratedTitle } from "../tiny/text";
 import { tinyTitleClient } from "../tiny/title-client";
-
-const TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
-const TITLE_MARKER_INSTRUCTION = prompt.render(titleMarkerInstruction);
 
 const DEFAULT_TERMINAL_TITLE = "π";
 const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -119,18 +119,11 @@ export async function generateSessionTitle(
 		return null;
 	}
 	try {
-		let localTitle: string | null;
-		if (signal) {
-			localTitle = await tinyTitleClient.generate(
-				tinyModel,
-				firstMessage,
-				titleSystemPrompt ? { signal, systemPrompt: titleSystemPrompt } : { signal },
-			);
-		} else if (titleSystemPrompt) {
-			localTitle = await tinyTitleClient.generate(tinyModel, firstMessage, { systemPrompt: titleSystemPrompt });
-		} else {
-			localTitle = await tinyTitleClient.generate(tinyModel, firstMessage);
-		}
+		const localSystemPrompt =
+			titleSystemPrompt ?? prompt.render(selectPrompt(titleSystemPromptEn, titleSystemPromptZh));
+		const localTitle = signal
+			? await tinyTitleClient.generate(tinyModel, firstMessage, { signal, systemPrompt: localSystemPrompt })
+			: await tinyTitleClient.generate(tinyModel, firstMessage, { systemPrompt: localSystemPrompt });
 		if (!localTitle) {
 			logger.warn("title-generator: local tiny model produced no title; skipping (no online fallback)", {
 				sessionId,
@@ -172,7 +165,9 @@ export async function generateTitleOnline(
 	// scheme, but hosts that ignore or reject forced `tool_choice` then echoed
 	// the prompt's `{"title": ...}` JSON example verbatim as the session title;
 	// markers work uniformly everywhere.
-	const systemPrompt = titleSystemPrompt ? [titleSystemPrompt, TITLE_MARKER_INSTRUCTION] : [TITLE_SYSTEM_PROMPT];
+	const systemPrompt = titleSystemPrompt
+		? [titleSystemPrompt, prompt.render(selectPrompt(titleMarkerInstructionEn, titleMarkerInstructionZh))]
+		: [prompt.render(selectPrompt(titleSystemPromptEn, titleSystemPromptZh))];
 	const userMessage = formatTitleUserMessage(firstMessage);
 	const modelName = `${model.provider}/${model.id}`;
 	const modelContext = {

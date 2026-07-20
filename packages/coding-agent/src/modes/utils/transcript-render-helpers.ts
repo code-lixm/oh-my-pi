@@ -7,6 +7,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -16,6 +17,7 @@ import {
 import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
+import type { HubIrcActivityEvent } from "../components/hub-activity-group";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
 
@@ -50,11 +52,11 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptB
 				];
 	const block = new TranscriptBlock();
 	for (const job of jobs) {
-		const jobId = job.jobId ?? "unknown";
-		const typeLabel = job.type ? `[${job.type}]` : "[job]";
+		const jobId = job.jobId ?? tSettingsUi("unknown");
+		const typeLabel = job.type ? `[${job.type}]` : tSettingsUi("[job]");
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
 		const line = [
-			theme.fg("success", `${theme.status.done} Background job completed`),
+			theme.fg("success", `${theme.status.done} ${tSettingsUi("Background job completed")}`),
 			theme.fg("dim", typeLabel),
 			theme.fg("accent", jobId),
 			duration ? theme.fg("dim", `(${duration})`) : undefined,
@@ -66,12 +68,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptB
 	return block;
 }
 
-/**
- * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
- * `irc:relay`) as a transcript card. `getExpanded` supplies the live
- * expanded-state getter for the cached card.
- */
-export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
+export function buildIrcActivityEvent(message: CustomOrHookMessage): HubIrcActivityEvent {
 	const details = (
 		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>
 	).details;
@@ -81,18 +78,24 @@ export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: (
 			: message.customType === "irc:autoreply"
 				? ("autoreply" as const)
 				: ("relay" as const);
-	return createIrcMessageCard(
-		{
-			kind,
-			from: details?.from,
-			to: details?.to,
-			body: kind === "incoming" ? details?.message : details?.body,
-			replyTo: details?.replyTo,
-			timestamp: message.timestamp,
-		},
-		getExpanded,
-		theme,
-	);
+	return {
+		kind,
+		from: details?.from,
+		to: details?.to,
+		body: kind === "incoming" ? details?.message : details?.body,
+		replyTo: details?.replyTo,
+		timestamp: message.timestamp,
+		sourceId: `${message.role}:${message.customType}:${message.timestamp}`,
+	};
+}
+
+/**
+ * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
+ * `irc:relay`) as a transcript card. `getExpanded` supplies the live
+ * expanded-state getter for the cached card.
+ */
+export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
+	return createIrcMessageCard(buildIrcActivityEvent(message), getExpanded, theme);
 }
 
 /**
@@ -107,15 +110,18 @@ export function buildFileMentionBlock(files: FileMentionMessage["files"], indent
 		let suffix: string;
 		if (file.skippedReason === "tooLarge" || file.skippedReason === "binary") {
 			const size = typeof file.byteSize === "number" ? formatBytes(file.byteSize) : "unknown size";
-			suffix = file.skippedReason === "binary" ? `(skipped: binary, ${size})` : `(skipped: ${size})`;
+			suffix =
+				file.skippedReason === "binary"
+					? tSettingsUi("(skipped: binary, {size})", { size })
+					: tSettingsUi("(skipped: {size})", { size });
 		} else {
 			suffix = file.image
 				? "(image)"
 				: file.lineCount === undefined
-					? "(unknown lines)"
-					: `(${file.lineCount} lines)`;
+					? tSettingsUi("(unknown lines)")
+					: tSettingsUi("({lineCount} lines)", { lineCount: file.lineCount });
 		}
-		const text = `${theme.fg("dim", `${theme.tree.last} `)}${theme.fg("muted", "Read")} ${theme.fg(
+		const text = `${theme.fg("dim", `${theme.tree.last} `)}${theme.fg("muted", "read")} ${theme.fg(
 			"accent",
 			file.path,
 		)} ${theme.fg("dim", suffix)}`;
@@ -199,20 +205,51 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 	return args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 }
 
+export interface AssistantErrorAggregation<T> {
+	errorMessage: string;
+	leader: T;
+	repeatCount: number;
+}
+
+/**
+ * Fold an adjacent run of identical assistant failures into its first rendered
+ * component. Callers keep the returned state while replaying or streaming a
+ * retry run; a successful/different assistant turn starts a new run.
+ */
+export function updateAssistantErrorAggregation<T>(
+	previous: AssistantErrorAggregation<T> | undefined,
+	message: AssistantAgentMessage,
+	component: T,
+	apply: (target: T, repeatCount: number, suppressed: boolean) => void,
+): AssistantErrorAggregation<T> | undefined {
+	if (message.stopReason !== "error" || !message.errorMessage) return undefined;
+	if (previous?.errorMessage === message.errorMessage) {
+		const repeatCount = previous.repeatCount + 1;
+		apply(previous.leader, repeatCount, false);
+		apply(component, repeatCount, true);
+		return { ...previous, repeatCount };
+	}
+	apply(component, 1, false);
+	return { errorMessage: message.errorMessage, leader: component, repeatCount: 1 };
+}
+
 export type AssistantErrorPresentation =
 	| { kind: "none" }
 	| { kind: "full"; text: string; isError: true }
 	| { kind: "compact-recovered"; text: string; isError: false };
 
-function sanitizeRecoveredRetryNote(note: string): string {
-	const normalized = replaceTabs(note).replace(/\s+/g, " ").trim();
-	return truncateToWidth(normalized || "retried", TRUNCATE_LENGTHS.CONTENT);
+function sanitizeRecoveredError(message: AssistantAgentMessage): string {
+	const normalized = replaceTabs(message.errorMessage ?? "Error")
+		.replace(/\s+/g, " ")
+		.trim();
+	return truncateToWidth(normalized || "Error", TRUNCATE_LENGTHS.CONTENT);
 }
 
 /**
- * Resolve the turn-ending assistant error presentation, if any.
- * Silent and user-interrupt aborts yield no label. Recovered auto-retry errors
- * collapse to a single non-error note; terminal errors keep the full red presentation.
+ * Resolve the turn-ending assistant error presentation, if any. Silent and
+ * user-interrupt aborts yield no label. Recovered auto-retry errors collapse to
+ * the original error text for a non-error strikethrough; terminal
+ * errors keep the full red presentation.
  */
 export function resolveAssistantErrorPresentation(
 	message: AssistantAgentMessage,
@@ -221,7 +258,7 @@ export function resolveAssistantErrorPresentation(
 	if (message.retryRecovery?.status === "recovered") {
 		return {
 			kind: "compact-recovered",
-			text: sanitizeRecoveredRetryNote(message.retryRecovery.note),
+			text: sanitizeRecoveredError(message),
 			isError: false,
 		};
 	}

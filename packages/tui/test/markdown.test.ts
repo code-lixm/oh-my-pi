@@ -38,6 +38,60 @@ describe("renderInlineMarkdown", () => {
 
 describe("Markdown component", () => {
 	describe("Nested lists", () => {
+		function renderPlainMarkdown(text: string, width: number): { raw: readonly string[]; plain: string[] } {
+			const raw = new Markdown(text, 0, 0, defaultMarkdownTheme).render(width);
+			return {
+				raw,
+				plain: raw.map(line => stripVTControlCharacters(line).trimEnd()),
+			};
+		}
+
+		function expectRenderedWidth(lines: readonly string[], width: number): void {
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+
+		function collectListItemLines(
+			plainLines: readonly string[],
+			startPrefix: string,
+			nextPrefixes: readonly string[] = [],
+		): string[] {
+			const start = plainLines.findIndex(line => line.startsWith(startPrefix));
+			expect(start, `Expected list item starting with ${startPrefix}`).toBeGreaterThanOrEqual(0);
+
+			const itemLines = [plainLines[start]!];
+			for (let i = start + 1; i < plainLines.length; i++) {
+				const line = plainLines[i]!;
+				if (nextPrefixes.some(prefix => line.startsWith(prefix))) break;
+				itemLines.push(line);
+			}
+
+			return itemLines;
+		}
+
+		function expectHangingWrap(
+			itemLines: readonly string[],
+			firstPrefix: string,
+			continuationPrefix: string,
+			text: string,
+		): void {
+			expect(itemLines.length).toBeGreaterThanOrEqual(2);
+			expect(itemLines[0]!.startsWith(firstPrefix)).toBeTruthy();
+
+			for (const line of itemLines.slice(1)) {
+				expect(line.startsWith(continuationPrefix)).toBeTruthy();
+				expect(line[continuationPrefix.length]).not.toBe(" ");
+			}
+
+			const rejoined = [
+				itemLines[0]!.slice(firstPrefix.length),
+				...itemLines.slice(1).map(line => line.slice(continuationPrefix.length)),
+			]
+				.join("")
+				.replace(/ /g, "");
+			expect(rejoined).toBe(text.replace(/ /g, ""));
+		}
 		it("should render simple nested list", () => {
 			const markdown = new Markdown(
 				`- Item 1
@@ -125,6 +179,42 @@ describe("Markdown component", () => {
 			expect(plainLines.some(line => line.includes("2. Second ordered"))).toBeTruthy();
 		});
 
+		it("hangs wrapped unordered continuations under the item text on narrow widths", () => {
+			const width = 18;
+			const itemText = "alpha bravo charlie delta echo foxtrot";
+			const { raw, plain } = renderPlainMarkdown(`- ${itemText}`, width);
+
+			expectHangingWrap(plain, "- ", "  ", itemText);
+			expectRenderedWidth(raw, width);
+		});
+
+		it("uses the actual ordered-marker width when wrapping from 9. to 10.", () => {
+			const width = 18;
+			const ninthText = "nine alpha bravo charlie delta";
+			const tenthText = "ten alpha bravo charlie delta";
+			const markdown = `9. ${ninthText}\n10. ${tenthText}`;
+			const { raw, plain } = renderPlainMarkdown(markdown, width);
+
+			const ninthItem = collectListItemLines(plain, "9. ", ["10. "]);
+			const tenthItem = collectListItemLines(plain, "10. ");
+
+			expectHangingWrap(ninthItem, "9. ", "   ", ninthText);
+			expectHangingWrap(tenthItem, "10. ", "    ", tenthText);
+			expectRenderedWidth(raw, width);
+		});
+
+		it("keeps nested wrapped continuations at the nested item text column", () => {
+			const width = 18;
+			const nestedText = "nested alpha bravo charlie delta echo";
+			const markdown = `- Parent\n  - ${nestedText}`;
+			const { raw, plain } = renderPlainMarkdown(markdown, width);
+
+			const nestedItem = collectListItemLines(plain, "  - ");
+
+			expectHangingWrap(nestedItem, "  - ", "    ", nestedText);
+			expectRenderedWidth(raw, width);
+		});
+
 		it("should maintain numbering when code blocks are not indented (LLM output)", () => {
 			// When code blocks aren't indented, marked parses each item as a separate list.
 			// We use token.start to preserve the original numbering.
@@ -164,6 +254,104 @@ describe("Markdown component", () => {
 	});
 
 	describe("Tables", () => {
+		function renderTablePlainLines(
+			text: string,
+			width: number,
+			themeOverrides: Partial<typeof defaultMarkdownTheme> = {},
+		): string[] {
+			return new Markdown(text, 0, 0, { ...defaultMarkdownTheme, ...themeOverrides })
+				.render(width)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+		}
+
+		it("renders horizontal tables with only a header underline and space-aligned columns", () => {
+			const lines = renderTablePlainLines(
+				`| Name | Value |
+| --- | --- |
+| A | 1 |
+| BB | 22 |`,
+				80,
+				{ tableBorderStyle: "horizontal" },
+			);
+
+			expect(lines).toHaveLength(4);
+			const [header, separator, firstRow, secondRow] = lines;
+			expect(header).toContain("Name");
+			expect(header).toContain("Value");
+			expect(firstRow).toContain("A");
+			expect(firstRow).toContain("1");
+			expect(secondRow).toContain("BB");
+			expect(secondRow).toContain("22");
+			for (const line of [header, firstRow, secondRow]) {
+				expect(line.includes("|")).toBe(false);
+				expect(line.includes("+")).toBe(false);
+			}
+			expect(separator).toMatch(/^-+$/);
+			expect(lines.filter(line => /^-+$/.test(line))).toHaveLength(1);
+			expect(separator.length).toBe(header.length);
+
+			const valueColumn = header.indexOf("Value");
+			expect(valueColumn).toBeGreaterThan(0);
+			expect(firstRow.indexOf("1")).toBe(valueColumn);
+			expect(secondRow.indexOf("22")).toBe(valueColumn);
+		});
+
+		it("uses the horizontal layout at narrow widths instead of falling back to raw markdown", () => {
+			const lines = renderTablePlainLines(
+				`| A | B |
+| --- | --- |
+| 1 | 2 |`,
+				5,
+				{ tableBorderStyle: "horizontal" },
+			);
+
+			expect(lines).toHaveLength(3);
+			const [header, separator, row] = lines;
+			expect(header).toContain("A");
+			expect(header).toContain("B");
+			expect(row).toContain("1");
+			expect(row).toContain("2");
+			for (const line of lines) {
+				expect(line.length).toBeLessThanOrEqual(5);
+				expect(line.includes("|")).toBe(false);
+				expect(line.includes("+")).toBe(false);
+			}
+			expect(separator).toMatch(/^-+$/);
+			expect(lines.filter(line => /^-+$/.test(line))).toHaveLength(1);
+			expect(header.indexOf("B")).toBe(row.indexOf("2"));
+			expect(lines.join("\n")).not.toContain("| A | B |");
+		});
+
+		it("keeps the full grid when tableBorderStyle is unset or full", () => {
+			const table = `| Name | Value |
+| --- | --- |
+| A | 1 |
+| BB | 22 |`;
+			const unset = renderTablePlainLines(table, 80);
+			const explicitFull = renderTablePlainLines(table, 80, { tableBorderStyle: "full" });
+
+			expect(explicitFull).toEqual(unset);
+			expect(unset).toHaveLength(7);
+
+			const [topBorder, header, headerDivider, firstRow, rowDivider, secondRow, bottomBorder] = unset;
+			expect(topBorder).toMatch(/^\+-+\+-+\+$/);
+			expect(headerDivider).toBe(topBorder);
+			expect(rowDivider).toBe(topBorder);
+			expect(bottomBorder).toBe(topBorder);
+
+			for (const line of [header, firstRow, secondRow]) {
+				expect(line.startsWith("| ")).toBe(true);
+				expect(line.endsWith(" |")).toBe(true);
+				expect((line.match(/\|/g) ?? []).length).toBe(3);
+			}
+
+			expect(header).toContain("Name");
+			expect(header).toContain("Value");
+			expect(firstRow).toContain("A");
+			expect(firstRow).toContain("1");
+			expect(secondRow).toContain("BB");
+			expect(secondRow).toContain("22");
+		});
 		it("should render simple table", () => {
 			const markdown = new Markdown(
 				`| Name | Age |
@@ -2282,5 +2470,95 @@ describe("Math rendering", () => {
 		expect(lines.join("\n")).not.toContain("begin{cases}");
 		// The cases body follows immediately: folding the lhs in avoids a blank-line paragraph split.
 		expect(lines[fxIdx + 1]).toContain("x > 0");
+	});
+});
+describe("MarkdownTheme headingStyle", () => {
+	describe("compact", () => {
+		const compactTheme: typeof defaultMarkdownTheme = { ...defaultMarkdownTheme, headingStyle: "compact" };
+
+		function renderCompact(source: string): { raw: readonly string[]; plain: string[] } {
+			const raw = new Markdown(source, 0, 0, compactTheme).render(80);
+			return {
+				raw,
+				plain: raw.map(line => stripVTControlCharacters(line).trimEnd()),
+			};
+		}
+
+		it("H1–H6 hide `#` markers and reuse one compact heading color style", () => {
+			const rendered = ["# X", "## X", "### X", "#### X", "##### X", "###### X"].map(source => {
+				const { raw } = renderCompact(source);
+				const line = raw.find(candidate => stripVTControlCharacters(candidate).trimEnd() !== "");
+				expect(line, `${source} must render a heading line`).toBeDefined();
+				expect(stripVTControlCharacters(line ?? "").trimEnd(), `${source} must not have # prefix`).toBe("X");
+				return { source, line: line ?? "" };
+			});
+
+			const baseline = rendered[0]?.line;
+			expect(baseline, "Should capture the baseline compact heading style").toBeDefined();
+			for (const { source, line } of rendered) {
+				expect(line, `${source} must reuse the same compact heading style`).toBe(baseline);
+			}
+		});
+
+		it("keeps exactly one blank line around compact headings between paragraphs regardless of source blank lines", () => {
+			for (const [label, source] of [
+				["with-source-blank-lines", "Intro.\n\n# Title\n\nOutro."],
+				["without-source-blank-lines", "Intro.\n# Title\nOutro."],
+			] as const) {
+				expect(renderCompact(source).plain, `[${label}] compact heading spacing drifted`).toEqual([
+					"Intro.",
+					"",
+					"Title",
+					"",
+					"Outro.",
+				]);
+			}
+		});
+
+		it("keeps exactly one blank line before and after a compact heading that follows a list", () => {
+			expect(renderCompact("- Item\n# Title\nAfter.").plain).toEqual(["- Item", "", "Title", "", "After."]);
+		});
+
+		it("keeps exactly one border-only blank line around compact headings inside blockquotes", () => {
+			const rendered = renderCompact("> Intro.\n>\n> ### Title\n>\n> Outro.");
+			expect(rendered.plain).toEqual(["│ Intro.", "│", "│ Title", "│", "│ Outro."]);
+			expect(rendered.plain[2], "Blockquote heading should not retain ### marker").not.toContain("###");
+		});
+
+		it("transient streaming preserves one blank line before a compact heading and no trailing blank line", () => {
+			const md = new Markdown("Intro.\n\n#", 0, 0, compactTheme);
+			md.transientRenderCache = true;
+			md.render(80);
+			expect(
+				md.getLastRenderSettledRows(),
+				"Should expose a settled frozen prefix after the initial render",
+			).toBeGreaterThan(0);
+
+			md.setText("Intro.\n\n# Title");
+			const plain = md.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+			expect(plain).toEqual(["Intro.", "", "Title"]);
+		});
+	});
+
+	describe("hierarchical", () => {
+		const hierarchicalTheme: typeof defaultMarkdownTheme = { ...defaultMarkdownTheme, headingStyle: "hierarchical" };
+
+		it("H3 retains `###` prefix and renders with exactly one blank line after", () => {
+			const source = "### Section\n\nA paragraph.";
+			const md = new Markdown(source, 0, 0, hierarchicalTheme);
+			const plain = md.render(80).map(l => stripVTControlCharacters(l).trimEnd());
+			expect(
+				plain.some(l => l.includes("###")),
+				`Output must contain ###: ${JSON.stringify(plain)}`,
+			).toBe(true);
+			const headingIdx = plain.findIndex(l => l.includes("Section"));
+			expect(headingIdx !== -1, "Should find heading").toBe(true);
+			const after = plain.slice(headingIdx + 1);
+			const firstNonEmpty = after.findIndex(l => l !== "");
+			expect(
+				firstNonEmpty,
+				`Expected 1 blank line after heading; got ${firstNonEmpty}. After: ${JSON.stringify(after.slice(0, 4))}`,
+			).toBe(1);
+		});
 	});
 });

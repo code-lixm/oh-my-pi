@@ -3,10 +3,11 @@ import type { AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../i18n/settings-locale";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../modes/theme/theme";
@@ -3808,22 +3809,143 @@ describe("advisor", () => {
 	});
 
 	describe("createAdvisorMessageCard", () => {
-		const strip = (lines: readonly string[]): string => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		const stripAnsi = (text: string): string => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
+		const strip = (lines: readonly string[]): string => lines.map(stripAnsi).join("\n");
 
-		it("renders the advisor header, severity badge, and note text", async () => {
+		const innerLines = (lines: readonly string[], uiTheme: { symbol(name: string): string }): string[] => {
+			const plainLines = lines.map(stripAnsi);
+			const vertical = uiTheme.symbol("boxRound.vertical");
+			return plainLines.slice(1, -1).map(line => {
+				const start = line.indexOf(vertical);
+				const end = line.lastIndexOf(vertical);
+				return start >= 0 && end > start ? line.slice(start + vertical.length, end).trimEnd() : "";
+			});
+		};
+
+		const rawInnerLines = (lines: readonly string[], uiTheme: { symbol(name: string): string }): string[] => {
+			const vertical = uiTheme.symbol("boxRound.vertical");
+			return lines.slice(1, -1).map(line => {
+				const start = line.indexOf(vertical);
+				const end = line.lastIndexOf(vertical);
+				return start >= 0 && end > start ? line.slice(start + vertical.length, end).trimEnd() : "";
+			});
+		};
+
+		const nonEmptyContentLines = (lines: readonly string[], uiTheme: { symbol(name: string): string }): string[] =>
+			innerLines(lines, uiTheme).filter(line => line.trim().length > 0);
+
+		const countMatches = (text: string, pattern: RegExp): number => text.match(pattern)?.length ?? 0;
+
+		it("renders blocker-only cards with an info icon, no duplicate blocker count, and no blocker badge", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
-			const card = createAdvisorMessageCard(
-				{ notes: [{ note: "deleting the wrong file", severity: "blocker" }, { note: "watch the empty case" }] },
-				() => true,
-				uiTheme,
-			);
-			const text = strip(card.render(80));
-			expect(text).toContain("Advisor");
-			expect(text).toContain("2 notes");
-			expect(text).toContain("blocker");
-			expect(text).toContain("deleting the wrong file");
-			expect(text).toContain("watch the empty case");
+			const note = "deleting the wrong file";
+			const lines = createAdvisorMessageCard({ notes: [{ note, severity: "blocker" }] }, uiTheme).render(80);
+			const plainLines = lines.map(stripAnsi);
+			const topBorder = plainLines[0]!.trim();
+			const bottomBorder = plainLines.at(-1)!.trim();
+			const text = plainLines.join("\n");
+			const advisorBg = uiTheme.getBgAnsi("toolErrorBg");
+
+			expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(80));
+			expect(lines.every(line => line.includes(advisorBg))).toBe(true);
+			expect(
+				topBorder.startsWith(`${uiTheme.symbol("boxRound.topLeft")}${uiTheme.symbol("boxRound.horizontal")}`),
+			).toBe(true);
+			expect(topBorder).toContain("Advisor");
+			expect(topBorder).toContain("1 blocker");
+			expect(lines[0]!).toContain(uiTheme.styledSymbol("status.info", "accent"));
+			expect(topBorder).toContain(uiTheme.status.info);
+			expect(topBorder.endsWith(uiTheme.symbol("boxRound.topRight"))).toBe(true);
+			expect(bottomBorder.startsWith(uiTheme.symbol("boxRound.bottomLeft"))).toBe(true);
+			expect(bottomBorder.endsWith(uiTheme.symbol("boxRound.bottomRight"))).toBe(true);
+			expect(topBorder).not.toContain("1 note");
+			expect(topBorder).not.toContain("·");
+			expect(countMatches(text, /blocker/gu)).toBe(1);
+			expect(nonEmptyContentLines(lines, uiTheme).map(line => line.trim())).toEqual([note]);
+			expect(text).not.toContain("⟦");
+		});
+
+		it("renders mixed blocker and ordinary-note counts exactly once per rendered note", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const notes = [
+				{ note: "deleting the wrong file", severity: "blocker" as const },
+				{ note: "watch the empty case" },
+			];
+			const lines = createAdvisorMessageCard({ notes }, uiTheme).render(80);
+			const topBorder = stripAnsi(lines[0]!).trim();
+			const text = strip(lines);
+
+			expect(topBorder).toContain("Advisor found 2 issues");
+			expect(topBorder).not.toContain("1 note · 1 blocker");
+			expect(lines[0]!).toContain(uiTheme.styledSymbol("status.info", "accent"));
+			expect(countMatches(text, /blocker/gu)).toBe(0);
+			expect(nonEmptyContentLines(lines, uiTheme).map(line => line.trim())).toEqual(notes.map(note => note.note));
+		});
+
+		it("renders note-only cards with the info icon and no blocker count", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const notes = [{ note: "watch the empty case" }, { note: "keep prompt text literal" }];
+			const lines = createAdvisorMessageCard({ notes }, uiTheme).render(80);
+			const topBorder = stripAnsi(lines[0]!).trim();
+			const text = strip(lines);
+
+			expect(topBorder).toContain("Advisor found 2 nits");
+			expect(lines[0]!).toContain(uiTheme.styledSymbol("status.info", "accent"));
+			expect(topBorder).toContain(uiTheme.status.info);
+			expect(topBorder).not.toContain("blocker");
+			expect(countMatches(text, /blocker/gu)).toBe(0);
+			expect(nonEmptyContentLines(lines, uiTheme).map(line => line.trim())).toEqual(notes.map(note => note.note));
+		});
+
+		it("localizes zh-CN advisor titles for concern, nit, blocker, and mixed summaries without reviving note counts", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const previousLocale = getSettingsUiLocale();
+			setSettingsUiLocale("zh-CN");
+			try {
+				for (const testCase of [
+					{
+						name: "single concern",
+						notes: [{ note: "watch null locale branch", severity: "concern" as const }],
+						expectedTitle: "审阅助手 发现 1 条隐患",
+					},
+					{
+						name: "single nit",
+						notes: [{ note: "rename helper only", severity: "nit" as const }],
+						expectedTitle: "审阅助手 发现 1 条小建议",
+					},
+					{
+						name: "single blocker",
+						notes: [{ note: "delete tmp/cache manually", severity: "blocker" as const }],
+						expectedTitle: "审阅助手 发现 1 个阻断问题",
+					},
+					{
+						name: "mixed summary",
+						notes: [
+							{ note: "delete tmp/cache manually", severity: "blocker" as const },
+							{ note: "watch null locale branch", severity: "concern" as const },
+							{ note: "rename helper only", severity: "nit" as const },
+						],
+						expectedTitle: "审阅助手 发现 3 条问题",
+					},
+				]) {
+					const lines = createAdvisorMessageCard({ notes: testCase.notes }, uiTheme).render(80);
+					const topBorder = stripAnsi(lines[0]!).trim();
+					const text = strip(lines);
+
+					expect(topBorder).toContain(testCase.expectedTitle);
+					expect(topBorder).not.toContain("备注");
+					for (const note of testCase.notes) {
+						expect(text).toContain(note.note);
+					}
+				}
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
+			expect(getSettingsUiLocale()).toBe(previousLocale);
 		});
 
 		it("prefixes the note with a named-advisor label, but not for the default advisor", async () => {
@@ -3836,7 +3958,6 @@ describe("advisor", () => {
 						{ note: "default-advisor note", advisor: "default" },
 					],
 				},
-				() => true,
 				uiTheme,
 			);
 			const text = strip(card.render(80));
@@ -3846,35 +3967,413 @@ describe("advisor", () => {
 			expect(text).not.toContain("[default]");
 		});
 
-		it("collapses to the first notes with an overflow hint", async () => {
+		it("renders note bodies without severity badges in en and zh-CN while keeping named advisor labels", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const previousLocale = getSettingsUiLocale();
+			try {
+				const notes = [
+					{ note: "watch null locale branch", severity: "concern" as const, advisor: "Architecture" },
+					{ note: "rename helper only", severity: "nit" as const },
+					{ note: "delete tmp/cache manually", severity: "blocker" as const },
+				];
+				for (const locale of ["en", "zh-CN"] as const) {
+					setSettingsUiLocale(locale);
+					const lines = createAdvisorMessageCard({ notes }, uiTheme).render(80);
+					const text = strip(lines);
+					const content = nonEmptyContentLines(lines, uiTheme).map(line => line.trim());
+
+					expect(content).toEqual([
+						"[Architecture]",
+						"watch null locale branch",
+						"rename helper only",
+						"delete tmp/cache manually",
+					]);
+					expect(text).toContain("[Architecture]");
+					expect(text).not.toContain("⟦");
+					expect(text).not.toContain("⟨");
+				}
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
+			expect(getSettingsUiLocale()).toBe(previousLocale);
+		});
+
+		it("renders all notes with no collapsed overflow hint", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			const notes = Array.from({ length: 5 }, (_, i) => ({ note: `note ${i}` }));
-			const card = createAdvisorMessageCard({ notes }, () => false, uiTheme);
-			const text = strip(card.render(80));
-			expect(text).toContain("note 0");
-			expect(text).toContain("+2 more");
-			expect(text).not.toContain("note 4");
+			const text = strip(createAdvisorMessageCard({ notes }, uiTheme).render(80));
+
+			for (const note of notes) {
+				expect(text).toContain(note.note);
+			}
+			expect(text).not.toContain("+2 more");
 		});
 
-		it("wraps long notes across multiple lines based on render width instead of truncating them", async () => {
+		it("renders content lines at exactly the assigned width with no extra paddingX", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			// Width 30 exercises a tight inner content area. Width 80 exercises a wide one.
+			for (const width of [30, 80] as const) {
+				const lines = createAdvisorMessageCard(
+					{ notes: [{ note: "short note", severity: "blocker" }] },
+					uiTheme,
+				).render(width);
+				// Frame glyphs sit at column 0 — no leading spaces — on every line.
+				// topLeft/topRight for header, vertical for content, bottomLeft/bottomRight for footer.
+				const plainLines = lines.map(stripAnsi);
+				const frameGlyphs = new Set([
+					uiTheme.symbol("boxRound.topLeft"),
+					uiTheme.symbol("boxRound.topRight"),
+					uiTheme.symbol("boxRound.bottomLeft"),
+					uiTheme.symbol("boxRound.bottomRight"),
+					uiTheme.symbol("boxRound.vertical"),
+				]);
+				expect(plainLines.every(line => frameGlyphs.has(line[0]!))).toBe(true);
+				expect(plainLines[0]![0]).toBe(uiTheme.symbol("boxRound.topLeft"));
+				// Every line is exactly the assigned width.
+				expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(width));
+			}
+		});
+
+		it("note body contains no advisor.rail or md.quoteBorder glyphs", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const lines = createAdvisorMessageCard(
+				{ notes: [{ note: "test body with no quote marks", severity: "concern" }] },
+				uiTheme,
+			).render(60);
+			const plainLines = lines.map(stripAnsi);
+			const v = uiTheme.symbol("boxRound.vertical");
+			const railSymbol = uiTheme.symbol("advisor.rail");
+			const quoteSymbol = uiTheme.md.quoteBorder;
+			const contentLines = plainLines.slice(1, -1);
+			for (const line of contentLines) {
+				const start = line.indexOf(v);
+				const end = line.lastIndexOf(v);
+				// Inner = content between the two vertical border chars.
+				const inner = start >= 0 && end > start ? line.slice(start + v.length, end) : "";
+				// Strip the badge (⟦…⟧) and any advisor-name prefix so only the raw body remains.
+				const body = inner.replace(/^⟦[^⟧]+⟧\s*/u, "").replace(/^\[[^\]]+\]\s*/u, "");
+				expect(body).not.toContain(railSymbol);
+				expect(body).not.toContain(quoteSymbol);
+			}
+		});
+
+		it("preserves all note text through narrow-width wrap without loss", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			const note =
 				"This is a very long advisor note that will definitely exceed the restricted width constraint of thirty characters and should therefore wrap across multiple lines rather than getting truncated.";
-			const card = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, () => true, uiTheme);
-			const text = strip(card.render(30));
-			expect(text).toContain("truncated.");
+			const width = 30;
+			const lines = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, uiTheme).render(width);
+			const plainLines = lines.map(stripAnsi);
+			const v = uiTheme.symbol("boxRound.vertical");
+			// contentWidth = outputBlockContentWidth(width) = width - 2.
+			// Strip the 1-cell contentLeftPadding from each inner row so visibleWidth(row) === contentWidth.
+			const contentWidth = width - 2;
+			// Separate the label row from the body rows.
+			const allInner = plainLines.slice(1, -1).map(line => {
+				const start = line.indexOf(v);
+				const end = line.lastIndexOf(v);
+				return start >= 0 && end > start ? line.slice(start + v.length + 1, end) : "";
+			});
+			const bodyRows = allInner.filter(l => l.trim() !== "");
+
+			// Concern rows now render body-only markdown: no severity badge row, and long notes still wrap.
+			expect(allInner.some(l => l.includes("⟦"))).toBe(false);
+			expect(bodyRows.length).toBeGreaterThan(1);
+
+			// Body lines never exceed contentWidth — the full column budget is available (no prefix).
+			// Wrapped lines shorter than contentWidth pass because each row is padded to at most contentWidth.
+			for (const row of bodyRows) {
+				expect(visibleWidth(row.trimEnd())).toBeLessThanOrEqual(contentWidth);
+			}
+
+			// Reconstruct the body text and verify it matches the original note.
+			const noteBody = allInner
+				.map(line => line.replace(/^⟦[^⟧]+⟧\s*/u, ""))
+				.filter(line => line.trim() !== "")
+				.join(" ")
+				.replace(/\s+/g, " ")
+				.trim();
+			expect(noteBody).toBe(note);
 		});
 
-		it("wraps long notes even when the message card is collapsed", async () => {
+		it("continuation lines align under the list-bullet body column, including long numbered markers", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
+			// Items 1–10 in order so item 10 renders with literal "10. " (4 cells).
+			// Item 10's body is long enough to force a continuation line at width 40.
+			const note = [
+				"1. aaaa",
+				"2. bbbb cccc dddd eeee ffff gggg",
+				"3. hhhh iiii jjjj kkkk llll mmmm",
+				"4. nnnn oooo pppp qqqq rrrr ssss",
+				"5. tttt uuuu vvvv wwww xxxx yyyy",
+				"6. zzzz aaaa bbbb cccc dddd eeee",
+				"7. ffff gggg hhhh iiii jjjj kkkk",
+				"8. llll mmmm nnnn oooo pppp qqqq",
+				"9. rrrr ssss tttt uuuu vvvv wwww",
+				"10. xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx xxx",
+			].join("\n");
+			const lines = createAdvisorMessageCard({ notes: [{ note }] }, uiTheme).render(40);
+			const plainLines = lines.map(stripAnsi);
+			const v = uiTheme.symbol("boxRound.vertical");
+			// Extract inner content (between the two vertical border chars) for each content line.
+			const innerLines = plainLines.slice(1, -1).map(line => {
+				const start = line.indexOf(v);
+				const end = line.lastIndexOf(v);
+				return start >= 0 && end > start ? line.slice(start + v.length, end) : "";
+			});
+			// Markdown's marked normalises sequential numbering, so the 10th item
+			// is rendered as "10." (not "3."). We track by ordinal position.
+			let currentItemIndex = -1;
+			for (const line of innerLines) {
+				// Inner content starts at "│ " so strip leading space before matching bullet.
+				const trimmed = line.trimStart();
+				const bulletMatch = /^\d+\.\s/.exec(trimmed);
+				if (bulletMatch) {
+					currentItemIndex++;
+				} else if (trimmed !== "") {
+					// Continuation line: its indent (minus the block's 1-cell left padding)
+					// must equal the markdown bullet body indent: String(N).length + 2 for "N. ".
+					expect(currentItemIndex).toBeGreaterThanOrEqual(0);
+					// contentPaddingLeft=1 adds one leading space inside the frame; strip it.
+					const rawSpaces = line.match(/^ +/)?.[0]?.length ?? 0;
+					const leadingSpaces = rawSpaces - 1;
+					const expectedIndent = String(currentItemIndex + 1).length + 2;
+					expect(leadingSpaces).toBe(expectedIndent);
+				}
+			}
+		});
+
+		it("named-advisor label stays on its own line and the body wraps at full contentWidth without a severity badge", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			// Long note: markdown will wrap to multiple body lines; only the named-advisor label precedes it.
 			const note =
-				"This is a very long advisor note that will definitely exceed the restricted width constraint of thirty characters and should therefore wrap across multiple lines rather than getting truncated.";
-			const card = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, () => false, uiTheme);
-			const text = strip(card.render(30));
-			expect(text).toContain("truncated.");
+				"This is a long advisory note with a named advisor that will need multiple lines when rendered at a narrow width, and the continuation lines must line up under the body of the first line.";
+			const width = 50;
+			const lines = createAdvisorMessageCard(
+				{ notes: [{ note, severity: "concern", advisor: "Architecture" }] },
+				uiTheme,
+			).render(width);
+			const plainLines = lines.map(stripAnsi);
+			const v = uiTheme.symbol("boxRound.vertical");
+
+			// contentWidth = outputBlockContentWidth(width) = width - 2.
+			// Strip the 1-cell contentLeftPadding from each inner row so visibleWidth(row) matches contentWidth.
+			const contentWidth = width - 2;
+
+			// Extract inner content between the two vertical border chars.
+			const allInner = plainLines.slice(1, -1).map(line => {
+				const start = line.indexOf(v);
+				const end = line.lastIndexOf(v);
+				return start >= 0 && end > start ? line.slice(start + v.length + 1, end) : "";
+			});
+
+			// First non-empty line is the named-advisor label only — concern badges no longer render in the body.
+			const firstContent = allInner.find(l => l.trim() !== "");
+			expect(firstContent?.trim()).toBe("[Architecture]");
+
+			// All remaining non-empty lines are pure markdown body; no prefix consumes columns.
+			// Wrapped body lines may be shorter than contentWidth — the invariant is they never exceed it.
+			const bodyRows = allInner.filter(l => l.trim() !== "" && l.trim() !== firstContent?.trim());
+			expect(bodyRows.length).toBeGreaterThan(0);
+			for (const row of bodyRows) {
+				expect(visibleWidth(row.trimEnd())).toBeLessThanOrEqual(contentWidth);
+			}
+		});
+
+		it("blocker named-advisor notes: advisor label on its own line, no blocker badge, body at full contentWidth", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			// Long note forces markdown to wrap; advisor label is isolated on its own row.
+			const note =
+				"This is a long advisory note with a named advisor that will need multiple lines when rendered at a narrow width, and the continuation lines must line up under the body of the first line.";
+			const width = 50;
+			const lines = createAdvisorMessageCard(
+				{ notes: [{ note, severity: "blocker", advisor: "Architecture" }] },
+				uiTheme,
+			).render(width);
+			const plainLines = lines.map(stripAnsi);
+			const v = uiTheme.symbol("boxRound.vertical");
+
+			// contentWidth = outputBlockContentWidth(width) = width - 2.
+			// Strip the 1-cell contentLeftPadding from each inner row so visibleWidth(row) matches contentWidth.
+			const contentWidth = width - 2;
+
+			const allInner = plainLines.slice(1, -1).map(line => {
+				const start = line.indexOf(v);
+				const end = line.lastIndexOf(v);
+				return start >= 0 && end > start ? line.slice(start + v.length + 1, end) : "";
+			});
+
+			// First non-empty line is the advisor label only — no blocker badge anywhere.
+			const firstContent = allInner.find(l => l.trim() !== "");
+			expect(firstContent?.trim()).toBe("[Architecture]");
+			expect(firstContent).not.toContain("⟦");
+			expect(firstContent).not.toContain("blocker");
+
+			// All remaining non-empty lines are pure markdown body; no prefix consumes columns.
+			// Wrapped body lines may be shorter than contentWidth — the invariant is they never exceed it.
+			const bodyRows = allInner.filter(l => l.trim() !== "" && l.trim() !== firstContent?.trim());
+			expect(bodyRows.length).toBeGreaterThan(0);
+			for (const row of bodyRows) {
+				expect(visibleWidth(row.trimEnd())).toBeLessThanOrEqual(contentWidth);
+			}
+		});
+
+		it("stays within the assigned width on extremely narrow renders", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const lines = createAdvisorMessageCard(
+				{ notes: [{ note: "narrow width safety check", severity: "concern" }] },
+				uiTheme,
+			).render(7);
+
+			expect(lines.every(line => visibleWidth(line) <= 7)).toBe(true);
+		});
+
+		it("single-note cards contain zero tee-row separators", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const teeRight = uiTheme.symbol("boxSharp.teeRight");
+			for (const noteCount of [1]) {
+				const notes = Array.from({ length: noteCount }, (_, i) => ({
+					note: `note ${i}`,
+					severity: "concern" as const,
+				}));
+				const lines = createAdvisorMessageCard({ notes }, uiTheme).render(60);
+				const plainLines = lines.map(stripAnsi);
+				// Header row starts with boxRound topLeft (╭), footer with bottomLeft (╰),
+				// content with vertical (│), tee separators start with boxSharp teeRight (├).
+				const teeRows = plainLines.filter(l => l.trimStart().startsWith(teeRight));
+				expect(teeRows).toHaveLength(0);
+			}
+		});
+
+		it("multi-note cards keep tee-row separators at zero for 2, 3, and 5 notes", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const teeRight = uiTheme.symbol("boxSharp.teeRight");
+			for (const noteCount of [2, 3, 5] as const) {
+				const notes = Array.from({ length: noteCount }, (_, i) => ({
+					note: `note ${i}`,
+					severity: "concern" as const,
+				}));
+				const lines = createAdvisorMessageCard({ notes }, uiTheme).render(60);
+				const plainLines = lines.map(stripAnsi);
+				const teeRows = plainLines.filter(l => l.trimStart().startsWith(teeRight));
+				expect(teeRows).toHaveLength(0);
+			}
+		});
+
+		it("maps single-severity cards to the expected frame/body ANSI and only blocker gets a semantic background", async () => {
+			type SingleSeverityCase = {
+				name: string;
+				note: string;
+				severity?: "blocker" | "concern" | "nit";
+				bgKey?: "toolErrorBg";
+				frameColor: "error" | "warning" | "customMessageLabel";
+				bodyColor: "error" | "warning" | "customMessageLabel";
+			};
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const semanticBackgrounds = [
+				uiTheme.getBgAnsi("toolErrorBg"),
+				uiTheme.getBgAnsi("toolPendingBg"),
+				uiTheme.getBgAnsi("toolSuccessBg"),
+			];
+			const cases: SingleSeverityCase[] = [
+				{
+					name: "single blocker",
+					note: "blocker body",
+					severity: "blocker",
+					bgKey: "toolErrorBg",
+					frameColor: "error",
+					bodyColor: "error",
+				},
+				{
+					name: "single concern",
+					note: "concern body",
+					severity: "concern",
+					frameColor: "warning",
+					bodyColor: "warning",
+				},
+				{
+					name: "explicit nit",
+					note: "nit body",
+					severity: "nit",
+					frameColor: "customMessageLabel",
+					bodyColor: "customMessageLabel",
+				},
+				{
+					name: "implicit nit",
+					note: "implicit nit body",
+					frameColor: "customMessageLabel",
+					bodyColor: "customMessageLabel",
+				},
+			];
+
+			for (const { name, note, severity, bgKey, frameColor, bodyColor } of cases) {
+				const notes = [severity === undefined ? { note } : { note, severity }];
+				const lines = createAdvisorMessageCard({ notes }, uiTheme).render(80);
+				const inner = rawInnerLines(lines, uiTheme);
+				const renderedLine = inner.find(line => stripAnsi(line).includes(note));
+				if (!renderedLine) throw new Error(`missing rendered note line for ${name}`);
+
+				if (bgKey) {
+					expect(lines.every(line => line.includes(uiTheme.getBgAnsi(bgKey)))).toBe(true);
+				} else {
+					expect(lines.every(line => semanticBackgrounds.every(background => !line.includes(background)))).toBe(
+						true,
+					);
+				}
+
+				expect(lines[0]!.includes(uiTheme.getFgAnsi(frameColor))).toBe(true);
+				expect(lines.at(-1)!.includes(uiTheme.getFgAnsi(frameColor))).toBe(true);
+				expect(stripAnsi(renderedLine)).toContain(note);
+				expect(renderedLine.includes(uiTheme.getFgAnsi(bodyColor))).toBe(true);
+			}
+		});
+
+		it("uses borderMuted for mixed cards while each body keeps its normalized severity color", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const notes = [
+				{ note: "blocker body", severity: "blocker" as const },
+				{ note: "concern body", severity: "concern" as const },
+				{ note: "nit body", severity: "nit" as const },
+				{ note: "implicit nit body" },
+			];
+			const lines = createAdvisorMessageCard({ notes }, uiTheme).render(80);
+			const inner = rawInnerLines(lines, uiTheme);
+			const neutralBorder = uiTheme.getFgAnsi("borderMuted");
+			const forbiddenBackgrounds = [
+				uiTheme.getBgAnsi("toolErrorBg"),
+				uiTheme.getBgAnsi("toolPendingBg"),
+				uiTheme.getBgAnsi("toolSuccessBg"),
+			];
+			const expectedBodies = [
+				{ note: "blocker body", color: "error" as const },
+				{ note: "concern body", color: "warning" as const },
+				{ note: "nit body", color: "customMessageLabel" as const },
+				{ note: "implicit nit body", color: "customMessageLabel" as const },
+			];
+
+			expect(lines.every(line => forbiddenBackgrounds.every(background => !line.includes(background)))).toBe(true);
+			expect(lines[0]!.includes(neutralBorder)).toBe(true);
+			expect(lines.at(-1)!.includes(neutralBorder)).toBe(true);
+
+			for (const { note, color } of expectedBodies) {
+				const renderedLine = inner.find(line => stripAnsi(line).includes(note));
+				if (!renderedLine) throw new Error(`missing rendered note line for ${note}`);
+				expect(stripAnsi(renderedLine)).toContain(note);
+				expect(renderedLine.includes(uiTheme.getFgAnsi(color))).toBe(true);
+			}
 		});
 	});
 
@@ -3889,7 +4388,6 @@ describe("advisor", () => {
 	// post-turn unwind. Only a running core loop consumes a steer; in the unwind
 	// window (`streaming: false`) a suppressed note must `preserve`, never `steer`,
 	// or it strands and #drainStrandedQueuedMessages auto-resumes it. Do not swap
-	// the call site back to session `isStreaming`.
 	describe("resolveAdvisorDeliveryChannel", () => {
 		it("preserves every severity when a headless drain forbids primary turns", () => {
 			for (const severity of [undefined, "nit", "concern", "blocker"] as const) {
@@ -4107,6 +4605,33 @@ describe("advisor", () => {
 			expect(text).toContain("read, grep, glob (default)");
 		});
 
+		it("renders zh-CN overlay chrome, default-tool suffix, and preview overflow marker", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const previousLocale = getSettingsUiLocale();
+			setSettingsUiLocale("zh-CN");
+			try {
+				setThemeInstance(uiTheme);
+				const overlay = make({
+					advisors: [
+						{
+							name: "Architecture",
+							instructions: Array.from({ length: fullHeight + 8 }, (_, i) => `line ${i + 1}`).join("\n"),
+						},
+					],
+				});
+				const text = strip(overlay.render(200));
+				expect(text).toContain("审阅助手配置");
+				expect(text).toContain("+ 添加审阅助手");
+				expect(text).toContain("保存并应用");
+				expect(text).toContain("read, grep, glob （默认）");
+				expect(text).toMatch(/还有 \d+ 个/);
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
+			expect(getSettingsUiLocale()).toBe(previousLocale);
+		});
+
 		it("renders an explicit no-tools advisor distinctly from the omitted default", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
@@ -4118,6 +4643,25 @@ describe("advisor", () => {
 			const text = strip(overlay.render(200));
 			expect(text.toLowerCase()).toContain("no tools");
 			expect(text).not.toContain("read, grep, glob (default)");
+		});
+
+		it("shows a zh-CN unsaved title after adding an advisor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const previousLocale = getSettingsUiLocale();
+			setSettingsUiLocale("zh-CN");
+			try {
+				setThemeInstance(uiTheme);
+				const overlay = make({ advisors: [{ name: "Architecture" }] });
+				overlay.render(120);
+				overlay.handleInput("\x1b[<0;4;3M");
+				const text = strip(overlay.render(120));
+				expect(text).toContain("审阅助手配置");
+				expect(text).toContain("未保存");
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
+			expect(getSettingsUiLocale()).toBe(previousLocale);
 		});
 
 		it("moves the preview with keyboard selection and preserves an explicit tool set", async () => {

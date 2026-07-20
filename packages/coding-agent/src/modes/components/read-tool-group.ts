@@ -1,11 +1,12 @@
 import * as path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
 import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
-import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
+import { fileHyperlink, renderCodeCell, renderStatusLine, tryResolveInternalUrlSync } from "../../tui";
 import type { ToolExecutionHandle } from "./tool-execution";
 
 /**
@@ -42,7 +43,16 @@ export function readArgsCollapseIntoGroup(args: unknown): boolean {
 type ReadRenderArgs = {
 	path?: string;
 	file_path?: string;
+	selector?: unknown;
 };
+
+function readRenderPath(args: ReadRenderArgs): string {
+	const rawPath = args.file_path || args.path || "";
+	if (typeof args.selector !== "string" || args.selector.length === 0 || splitPathAndSel(rawPath).sel) {
+		return rawPath;
+	}
+	return `${rawPath}:${args.selector}`;
+}
 
 type ReadToolSuffixResolution = {
 	from: string;
@@ -296,7 +306,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	// A read group accretes entries across multiple assistant completions for as
 	// long as the run of reads is uninterrupted. While it is the active group it
 	// must stay in the transcript's repaintable live region — its header line
-	// re-layouts from `Read <path>` to `Read (N)` + tree as entries arrive, so a
+	// re-layouts from `read <path>` to `read (N)` + tree as entries arrive, so a
 	// frozen snapshot taken on a risk terminal would strand the single-entry form
 	// (see TranscriptContainer / NativeScrollbackLiveRegion). The controller calls
 	// `finalize()` once the run breaks so the block can commit to native scrollback.
@@ -308,7 +318,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
 		this.#showContentPreview = options.showContentPreview ?? false;
-		this.#text = new Text("", 0, 0);
+		this.#text = new Text("", 1, 0);
 		this.addChild(this.#text);
 		this.#updateDisplay();
 	}
@@ -346,7 +356,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	updateArgs(args: ReadRenderArgs, toolCallId?: string): void {
 		if (!toolCallId) return;
-		const rawPath = args.file_path || args.path || "";
+		const rawPath = readRenderPath(args);
 		const entry: ReadEntry = this.#entries.get(toolCallId) ?? {
 			toolCallId,
 			path: rawPath,
@@ -414,10 +424,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 		// Clear previous children and rebuild the summary and preview blocks.
 		this.clear();
-		this.#text = new Text("", 0, 0);
+		this.#text = new Text("", 1, 0);
 
 		if (displayRows.length === 0) {
-			this.#text.setText(` ${theme.format.bullet} ${theme.fg("toolTitle", theme.bold("Read"))}`);
+			this.#text.setText(
+				renderStatusLine({ icon: "pending", title: tSettingsUi("Read"), titleColor: "toolTitle" }, theme),
+			);
 			this.addChild(this.#text);
 			return;
 		}
@@ -425,11 +437,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (displayRows.length === 1) {
 			const row = displayRows[0]!;
 			if (!this.#shouldRenderPreviewRow(row)) {
-				const statusSymbol = this.#formatStatus(this.#statusForTargets(row.targets));
+				const status = this.#statusForTargets(row.targets);
 				const pathDisplay = this.#formatRowPath(row);
-				this.#text.setText(
-					` ${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd(),
-				);
+				this.#text.setText(this.#renderHeader(status, pathDisplay));
 				this.addChild(this.#text);
 			}
 			for (const entry of this.#previewEntriesForRow(row)) {
@@ -438,8 +448,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return;
 		}
 
-		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${displayRows.length})`)}`;
-		const lines = [` ${theme.format.bullet} ${header}`];
+		const status = this.#statusForTargets(displayTargets);
+		const lines = [
+			this.#renderHeader(status, undefined, [tSettingsUi("{count} paths", { count: displayRows.length })]),
+		];
 		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
 		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
 		const rows = this.#buildSummaryRows(summaryTargets);
@@ -598,7 +610,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			pathDisplay += theme.fg("accent", selectorSuffix);
 		}
 		if (options.correctedFrom) {
-			pathDisplay += theme.fg("dim", ` (corrected from ${shortenPath(options.correctedFrom)})`);
+			pathDisplay += theme.fg(
+				"dim",
+				tSettingsUi("(corrected from {path})", { path: shortenPath(options.correctedFrom) }),
+			);
 		}
 		pathDisplay += this.#formatConflictBadge(options.conflictCount);
 		return pathDisplay;
@@ -606,8 +621,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#formatConflictBadge(conflictCount: number | undefined): string {
 		if (!conflictCount || conflictCount <= 0) return "";
-		const n = conflictCount;
-		return ` ${theme.fg("warning", `(⚠ ${n} conflict${n === 1 ? "" : "s"})`)}`;
+		return ` ${theme.fg(
+			"warning",
+			conflictCount === 1
+				? tSettingsUi("(⚠ {count} conflict)", { count: conflictCount })
+				: tSettingsUi("(⚠ {count} conflicts)", { count: conflictCount }),
+		)}`;
 	}
 
 	/**
@@ -627,7 +646,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 					linkPath: readTargetLinkPath(split.path, entry.linkPath),
 				})
 			: "";
-		const title = pathDisplay ? `Read ${pathDisplay}` : "Read";
+		const title = pathDisplay ? `${tSettingsUi("Read")} ${pathDisplay}` : tSettingsUi("Read");
 		let cachedWidth: number | undefined;
 		let cachedLines: string[] | undefined;
 		const expanded = this.#expanded;
@@ -661,6 +680,21 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#shouldRenderPreview(entry: ReadEntry): boolean {
 		return this.#showContentPreview && entry.contentText !== undefined;
+	}
+
+	#renderHeader(status: ReadEntry["status"], description?: string, meta?: string[]): string {
+		const iconOverride = status === "success" ? theme.fg("toolTitle", theme.symbol("icon.file")) : undefined;
+		return renderStatusLine(
+			{
+				icon: iconOverride ? undefined : status,
+				iconOverride,
+				title: tSettingsUi("Read"),
+				titleColor: "toolTitle",
+				description,
+				meta,
+			},
+			theme,
+		);
 	}
 
 	#formatStatus(status: ReadEntry["status"]): string {

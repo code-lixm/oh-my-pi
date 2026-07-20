@@ -1,4 +1,5 @@
 import { Text } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { BackgroundTanDispatchDetails, CustomMessage } from "../../session/messages";
 import { replaceTabs } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
@@ -20,11 +21,11 @@ function previewWork(work: string): string {
  */
 export function createBackgroundTanDispatchBlock(message: CustomMessage<unknown>): TranscriptBlock {
 	const details = (message as CustomMessage<Partial<BackgroundTanDispatchDetails>>).details;
-	const jobId = details?.jobId ?? "unknown";
+	const jobId = details?.jobId ?? tSettingsUi("unknown");
 	const work = details?.work ? previewWork(details.work) : undefined;
 	const line = [
-		theme.fg("muted", `${theme.icon.output} Tangent dispatched`),
-		theme.fg("dim", "[task]"),
+		theme.fg("muted", `${theme.icon.output} ${tSettingsUi("Tangent dispatched")}`),
+		theme.fg("dim", tSettingsUi("[task]")),
 		theme.fg("accent", jobId),
 		work ? theme.fg("dim", `${theme.format.dash} ${work}`) : undefined,
 	]

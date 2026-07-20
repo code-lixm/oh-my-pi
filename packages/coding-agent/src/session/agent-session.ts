@@ -254,10 +254,10 @@ import { IrcBus, type IrcMessage } from "../irc/bus";
 import { resolveMemoryBackend } from "../memory-backend";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
-import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
+import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
-import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
+import { containsUltrathink, renderUltrathinkNotice } from "../modes/ultrathink";
 import {
 	computeNonMessageBreakdown,
 	computeNonMessageTokens,
@@ -268,35 +268,66 @@ import { resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
+import advisorSystemPromptZh from "../prompts/advisor/system.zh-CN.md" with { type: "text" };
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
+import goalModeContextPromptZh from "../prompts/goals/goal-mode-context.zh-CN.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
+import goalTodoContextPromptZh from "../prompts/goals/goal-todo-context.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
+import parentIrcSteerTemplateZh from "../prompts/steering/parent-irc.zh-CN.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import autoContinuePromptZh from "../prompts/system/auto-continue.zh-CN.md" with { type: "text" };
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
+import eagerTaskPromptZh from "../prompts/system/eager-task.zh-CN.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
+import eagerTodoPromptZh from "../prompts/system/eager-todo.zh-CN.md" with { type: "text" };
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
+import emptyStopRetryTemplateZh from "../prompts/system/empty-stop-retry.zh-CN.md" with { type: "text" };
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import geminiToolReminderTemplateZh from "../prompts/system/gemini-tool-call-reminder.zh-CN.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
+import interruptedThinkingTemplateZh from "../prompts/system/interrupted-thinking.zh-CN.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
+import ircAutoReplyTemplateZh from "../prompts/system/irc-autoreply.zh-CN.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
+import ircIncomingTemplateZh from "../prompts/system/irc-incoming.zh-CN.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
+import midRunTodoNudgePromptZh from "../prompts/system/mid-run-todo-nudge.zh-CN.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
+import planModeActivePromptZh from "../prompts/system/plan-mode-active.zh-CN.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
+import planModeReferencePromptZh from "../prompts/system/plan-mode-reference.zh-CN.md" with { type: "text" };
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
+import planModeToolDecisionReminderPromptZh from "../prompts/system/plan-mode-tool-decision-reminder.zh-CN.md" with {
+	type: "text",
+};
 import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with { type: "text" };
+import planYoloHandoffPromptZh from "../prompts/system/plan-yolo-handoff.zh-CN.md" with { type: "text" };
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
+import prewalkChecklistPromptZh from "../prompts/system/prewalk-checklist.zh-CN.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
+import prewalkContinuePromptZh from "../prompts/system/prewalk-continue.zh-CN.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
+import prewalkPlanPromptZh from "../prompts/system/prewalk-plan.zh-CN.md" with { type: "text" };
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
+import rewindReportTemplateZh from "../prompts/system/rewind-report.zh-CN.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import sideChannelNoToolsReminderZh from "../prompts/system/side-channel-no-tools.zh-CN.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
+import thinkingLoopRedirectTemplateZh from "../prompts/system/thinking-loop-redirect.zh-CN.md" with { type: "text" };
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
+import toolCallLoopRedirectTemplateZh from "../prompts/system/tool-call-loop-redirect.zh-CN.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
+import ttsrInterruptTemplateZh from "../prompts/system/ttsr-interrupt.zh-CN.md" with { type: "text" };
 import ttsrToolReminderTemplate from "../prompts/system/ttsr-tool-reminder.md" with { type: "text" };
+import ttsrToolReminderTemplateZh from "../prompts/system/ttsr-tool-reminder.zh-CN.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
+import unexpectedStopRetryTemplateZh from "../prompts/system/unexpected-stop-retry.zh-CN.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
+import vibeModeActivePromptZh from "../prompts/system/vibe-mode-active.zh-CN.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import { AgentRegistry } from "../registry/agent-registry";
 import {
@@ -2419,7 +2450,7 @@ export class AgentSession {
 			this.agent.steer({
 				role: "custom",
 				customType: PREWALK_CONTINUE_MESSAGE_TYPE,
-				content: prewalkContinuePrompt,
+				content: selectPrompt(prewalkContinuePrompt, prewalkContinuePromptZh),
 				attribution: "agent",
 				display: false,
 				timestamp: Date.now(),
@@ -2445,7 +2476,7 @@ export class AgentSession {
 				this.agent.steer({
 					role: "custom",
 					customType: PREWALK_PLAN_MESSAGE_TYPE,
-					content: prewalkPlanPrompt,
+					content: selectPrompt(prewalkPlanPrompt, prewalkPlanPromptZh),
 					display: false,
 					attribution: "agent",
 					timestamp: Date.now(),
@@ -2477,7 +2508,7 @@ export class AgentSession {
 		this.agent.steer({
 			role: "custom",
 			customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
-			content: prewalkChecklistPrompt,
+			content: selectPrompt(prewalkChecklistPrompt, prewalkChecklistPromptZh),
 			attribution: "agent",
 			display: false,
 			timestamp: Date.now(),
@@ -2506,7 +2537,7 @@ export class AgentSession {
 		this.agent.steer({
 			role: "custom",
 			customType: PREWALK_PLAN_MESSAGE_TYPE,
-			content: prewalkPlanPrompt,
+			content: selectPrompt(prewalkPlanPrompt, prewalkPlanPromptZh),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -2612,7 +2643,10 @@ export class AgentSession {
 		this.agent.steer({
 			role: "custom",
 			customType: PLAN_YOLO_HANDOFF_MESSAGE_TYPE,
-			content: prompt.render(planYoloHandoffPrompt, { planFilePath, title: resolvedTitle }),
+			content: prompt.render(selectPrompt(planYoloHandoffPrompt, planYoloHandoffPromptZh), {
+				planFilePath,
+				title: resolvedTitle,
+			}),
 			attribution: "agent",
 			display: false,
 			timestamp: Date.now(),
@@ -3112,7 +3146,7 @@ export class AgentSession {
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
-			const systemPrompt = [advisorSystemPrompt];
+			const systemPrompt = [selectPrompt(advisorSystemPrompt, advisorSystemPromptZh)];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
 			if (this.#advisorSharedInstructions) systemPrompt.push(this.#advisorSharedInstructions);
@@ -4439,7 +4473,9 @@ export class AgentSession {
 		return {
 			role: "custom",
 			customType: INTERRUPTED_THINKING_MESSAGE_TYPE,
-			content: prompt.render(interruptedThinkingTemplate, { reasoning: demoted.reasoning }),
+			content: prompt.render(selectPrompt(interruptedThinkingTemplate, interruptedThinkingTemplateZh), {
+				reasoning: demoted.reasoning,
+			}),
 			display: false,
 			details: {
 				interruptedAt,
@@ -5281,11 +5317,11 @@ export class AgentSession {
 			await this.#promptWithMessage(
 				{
 					role: "developer",
-					content: [{ type: "text", text: autoContinuePrompt }],
+					content: [{ type: "text", text: selectPrompt(autoContinuePrompt, autoContinuePromptZh) }],
 					attribution: "agent",
 					timestamp: Date.now(),
 				},
-				autoContinuePrompt,
+				selectPrompt(autoContinuePrompt, autoContinuePromptZh),
 				{
 					skipPostPromptRecoveryWait: true,
 					prependMessages: eagerNudges.length > 0 ? eagerNudges : undefined,
@@ -5374,7 +5410,7 @@ export class AgentSession {
 		const rules = this.#pendingTtsrInjections;
 		const content = rules
 			.map(r =>
-				prompt.render(ttsrInterruptTemplate, {
+				prompt.render(selectPrompt(ttsrInterruptTemplate, ttsrInterruptTemplateZh), {
 					name: r.name,
 					path: this.#displayRulePath(r.path),
 					content: r.content,
@@ -5473,7 +5509,7 @@ export class AgentSession {
 		this.#perToolTtsrInjections.delete(ctx.toolCall.id);
 		const reminder = rules
 			.map(r =>
-				prompt.render(ttsrToolReminderTemplate, {
+				prompt.render(selectPrompt(ttsrToolReminderTemplate, ttsrToolReminderTemplateZh), {
 					name: r.name,
 					path: this.#displayRulePath(r.path),
 					content: r.content,
@@ -5936,7 +5972,7 @@ export class AgentSession {
 	}
 
 	#maybeInjectToolCallLoopRedirect(messages: AgentMessage[], detection: RepeatedToolCallDetection): void {
-		const content = prompt.render(toolCallLoopRedirectTemplate, {
+		const content = prompt.render(selectPrompt(toolCallLoopRedirectTemplate, toolCallLoopRedirectTemplateZh), {
 			tool_name: detection.toolName,
 			count: detection.count,
 			arguments_summary: detection.argumentsSummary,
@@ -6042,7 +6078,9 @@ export class AgentSession {
 				(m): m is AssistantMessage => m.role === "assistant" && m.timestamp === targetTimestamp,
 			);
 			if (aborted) this.#discardAssistantTurn(aborted);
-			const content = prompt.render(geminiToolReminderTemplate, { count: headerCount });
+			const content = prompt.render(selectPrompt(geminiToolReminderTemplate, geminiToolReminderTemplateZh), {
+				count: headerCount,
+			});
 			const details = { headers: headerCount };
 			this.agent.appendMessage({
 				role: "custom",
@@ -8341,7 +8379,7 @@ export class AgentSession {
 			throw error;
 		}
 
-		const content = prompt.render(planModeReferencePrompt, {
+		const content = prompt.render(selectPrompt(planModeReferencePrompt, planModeReferencePromptZh), {
 			planFilePath,
 		});
 
@@ -8371,7 +8409,7 @@ export class AgentSession {
 				: sessionPlanUrl;
 
 		const planExists = fs.existsSync(resolvedPlanPath);
-		const content = prompt.render(planModeActivePrompt, {
+		const content = prompt.render(selectPrompt(planModeActivePrompt, planModeActivePromptZh), {
 			planFilePath: displayPlanPath,
 			planExists,
 			askToolName: "ask",
@@ -8399,7 +8437,10 @@ export class AgentSession {
 		return {
 			role: "custom",
 			customType: "goal-mode-context",
-			content: prompt.render(goalModeContextPrompt, { goalContext: content, todoContext }),
+			content: prompt.render(selectPrompt(goalModeContextPrompt, goalModeContextPromptZh), {
+				goalContext: content,
+				todoContext,
+			}),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -8411,7 +8452,7 @@ export class AgentSession {
 		return {
 			role: "custom",
 			customType: "vibe-mode-context",
-			content: prompt.render(vibeModeActivePrompt),
+			content: prompt.render(selectPrompt(vibeModeActivePrompt, vibeModeActivePromptZh)),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -8450,7 +8491,7 @@ export class AgentSession {
 			}),
 		}));
 
-		return prompt.render(goalTodoContextPrompt, {
+		return prompt.render(selectPrompt(goalTodoContextPrompt, goalTodoContextPromptZh), {
 			canCallTodoTool,
 			closed: String(closed),
 			open: String(open),
@@ -8553,7 +8594,7 @@ export class AgentSession {
 			keywordNotices.push({
 				role: "custom",
 				customType: "ultrathink-notice",
-				content: ULTRATHINK_NOTICE,
+				content: renderUltrathinkNotice(),
 				display: false,
 				attribution: "user",
 				timestamp,
@@ -8563,7 +8604,7 @@ export class AgentSession {
 			keywordNotices.push({
 				role: "custom",
 				customType: "orchestrate-notice",
-				content: ORCHESTRATE_NOTICE,
+				content: renderOrchestrateNotice(),
 				display: false,
 				attribution: "user",
 				timestamp,
@@ -12124,7 +12165,7 @@ export class AgentSession {
 	}
 
 	#emptyStopRetryReminder(): string {
-		return prompt.render(emptyStopRetryTemplate, {
+		return prompt.render(selectPrompt(emptyStopRetryTemplate, emptyStopRetryTemplateZh), {
 			retryCount: this.#emptyStopRetryCount,
 			maxRetries: EMPTY_STOP_MAX_RETRIES,
 		});
@@ -12189,7 +12230,7 @@ export class AgentSession {
 	}
 
 	#unexpectedStopRetryReminder(): string {
-		return prompt.render(unexpectedStopRetryTemplate, {
+		return prompt.render(selectPrompt(unexpectedStopRetryTemplate, unexpectedStopRetryTemplateZh), {
 			retryCount: this.#unexpectedStopRetryCount,
 			maxRetries: UNEXPECTED_STOP_MAX_RETRIES,
 		});
@@ -12417,7 +12458,7 @@ export class AgentSession {
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
 		this.sessionManager.appendCustomMessageEntry(
 			"rewind-report",
-			prompt.render(rewindReportTemplate, { report }),
+			prompt.render(selectPrompt(rewindReportTemplate, rewindReportTemplateZh), { report }),
 			false,
 			details,
 			"agent",
@@ -12490,9 +12531,12 @@ export class AgentSession {
 		this.#planModeReminderCount++;
 		this.#planModeReminderAwaitingProgress = true;
 		this.#toolChoiceQueue.pushOnce("required", { label: "plan-mode-decision" });
-		const reminder = prompt.render(planModeToolDecisionReminderPrompt, {
-			askToolName: "ask",
-		});
+		const reminder = prompt.render(
+			selectPrompt(planModeToolDecisionReminderPrompt, planModeToolDecisionReminderPromptZh),
+			{
+				askToolName: "ask",
+			},
+		);
 		const reminderMessage: Message = {
 			role: "developer",
 			content: [{ type: "text", text: reminder }],
@@ -12576,7 +12620,10 @@ export class AgentSession {
 		const message: AgentMessage = {
 			role: "custom",
 			customType: "eager-todo-prelude",
-			content: prompt.render(eagerTodoPrompt, { ...this.#buildEagerPreludeContext(), forced: mode === "always" }),
+			content: prompt.render(selectPrompt(eagerTodoPrompt, eagerTodoPromptZh), {
+				...this.#buildEagerPreludeContext(),
+				forced: mode === "always",
+			}),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -12622,7 +12669,7 @@ export class AgentSession {
 		return {
 			role: "custom",
 			customType: "eager-task-prelude",
-			content: prompt.render(eagerTaskPrompt, this.#buildEagerPreludeContext()),
+			content: prompt.render(selectPrompt(eagerTaskPrompt, eagerTaskPromptZh), this.#buildEagerPreludeContext()),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
@@ -12819,7 +12866,7 @@ export class AgentSession {
 		this.#midRunNudgeCount++;
 
 		const { toolRefs } = this.#buildEagerPreludeContext();
-		const reminder = prompt.render(midRunTodoNudgePrompt, {
+		const reminder = prompt.render(selectPrompt(midRunTodoNudgePrompt, midRunTodoNudgePromptZh), {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,
@@ -15570,14 +15617,14 @@ export class AgentSession {
 		this.agent.appendMessage({
 			role: "custom",
 			customType: THINKING_LOOP_REDIRECT_TYPE,
-			content: thinkingLoopRedirectTemplate,
+			content: selectPrompt(thinkingLoopRedirectTemplate, thinkingLoopRedirectTemplateZh),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),
 		});
 		this.sessionManager.appendCustomMessageEntry(
 			THINKING_LOOP_REDIRECT_TYPE,
-			thinkingLoopRedirectTemplate,
+			selectPrompt(thinkingLoopRedirectTemplate, thinkingLoopRedirectTemplateZh),
 			false,
 			undefined,
 			"agent",
@@ -16220,7 +16267,7 @@ export class AgentSession {
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
-			content: prompt.render(ircIncomingTemplate, {
+			content: prompt.render(selectPrompt(ircIncomingTemplate, ircIncomingTemplateZh), {
 				from: msg.from,
 				message: msg.body,
 				replyTo: msg.replyTo ?? "",
@@ -16238,7 +16285,10 @@ export class AgentSession {
 			if (recipientParentId === msg.from) {
 				this.agent.steer({
 					role: "user",
-					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(selectPrompt(parentIrcSteerTemplate, parentIrcSteerTemplateZh), {
+						from: msg.from,
+						message: msg.body,
+					}),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,
@@ -16279,7 +16329,7 @@ export class AgentSession {
 	async #runIrcAutoReply(msg: IrcMessage): Promise<void> {
 		try {
 			const { replyText } = await this.runEphemeralTurn({
-				promptText: prompt.render(ircAutoReplyTemplate, {
+				promptText: prompt.render(selectPrompt(ircAutoReplyTemplate, ircAutoReplyTemplateZh), {
 					from: msg.from,
 					message: msg.body,
 					replyTo: msg.replyTo ?? "",
@@ -16461,7 +16511,7 @@ export class AgentSession {
 		}
 		messages.push({
 			role: "developer",
-			content: [{ type: "text", text: sideChannelNoToolsReminder }],
+			content: [{ type: "text", text: selectPrompt(sideChannelNoToolsReminder, sideChannelNoToolsReminderZh) }],
 			attribution: "agent",
 			timestamp: Date.now(),
 		});

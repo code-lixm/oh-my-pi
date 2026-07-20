@@ -1,0 +1,24 @@
+还在打“keep going”？直接发一个 `.` 就行
+你可以用 /btw 提一个旁支问题
+用 /tan 把当前对话分叉到一个后台代理里
+Ctrl+D 可以退出，而且会保留你的草稿！
+想知道你最“情绪化折磨”的模型是哪个？运行 `omp stats`
+试试 task isolation 来创建 CoW worktree
+需要一个便宜的嵌套模型调用？用 `completion(x...)`。任务很多？让 clanker 用它！
+代码像意面？试试用 /omfg 吐槽
+知道吗？每个 kitty/tmux/cmux/zellij/wezterm 分屏都有自己的会话，`omp -c` 会恢复正确那个
+在消息里加上 `ultrathink`，就能触发更强的多步推理，还会看到彩虹高亮
+在消息里说 `orchestrate`，可以用并行子代理驱动多阶段任务，还会看到高亮
+在消息里说 `workflowz`，可以在 eval 里用并行子代理驱动任务，还会看到高亮
+同一 provider 可以登录多个账号，再执行一次 `/login`，omp 会自动做负载均衡
+运行一次 `omp auth-broker serve`，其他机器就能通过网络拉实时 token，刷新密钥不会离开主机；`omp auth-gateway` 还能把它包装成任何 OpenAI 兼容客户端都能访问的代理
+按 alt+p（或 /switch）切 provider，按 ctrl+p 循环切换 role model：smol -> slow -> 等等
+按 ctrl+r 搜索你的提示词历史，复用以前发过的消息
+`/force read` 可以把下一轮钉死在某个工具上，当模型老是选错工具时很好用
+`/copy code` 会把最后一个代码块复制到剪贴板，`/copy cmd` 会复制最后一个 shell/python 命令
+`/shake` 可以把重型工具结果从上下文里扯出去回收 token，不用完整 /compact；`/shake images` 只丢图片
+实时协作：`/collab` 通过端到端加密中继链接共享你的会话，队友运行 `/join <link>` 就能一边看工具调用流，一边从自己的 omp 提示代理
+按 ← ← 可以钻进一个正在运行或已经结束的代理里，查看它的工具调用和 transcript
+碰到 Codex 限流？`/usage reset` 可以消耗一个保存的 reset credit，立刻恢复额度
+没有原生 tool_calling？推理提供方解析得一团糟？`PI_DIALECT=glm|kimi|anthropic…` 可以在本地帮它兜住！
+打开 `/advisor` 可以挂一个第二模型，它会复查每一轮并悄悄注入建议 [NEW]

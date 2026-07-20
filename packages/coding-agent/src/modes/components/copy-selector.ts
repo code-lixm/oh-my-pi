@@ -1,4 +1,5 @@
 import { type Component, matchesKey, padding, Text, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { replaceTabs } from "../../tools/render-utils";
 import { highlightCode, theme } from "../theme/theme";
 import type { CopyTarget } from "../utils/copy-targets";
@@ -147,7 +148,7 @@ export class CopySelectorComponent implements Component {
 	#renderPreview(width: number, target: CopyTarget | undefined, rows: number): string[] {
 		const out: string[] = [];
 		const hint = target?.hint;
-		out.push(row(theme.fg("dim", `Preview${hint ? ` · ${hint}` : ""}`), width));
+		out.push(row(theme.fg("dim", `${tSettingsUi("Preview")}${hint ? ` · ${hint}` : ""}`), width));
 
 		const contentRows = rows - 1;
 		if (!target || contentRows <= 0) {
@@ -177,7 +178,9 @@ export class CopySelectorComponent implements Component {
 			if (k < visibleCount) {
 				out.push(row(isCode ? wrapped[k]! : theme.fg("muted", wrapped[k]!), width));
 			} else if (k === visibleCount && hasMore) {
-				out.push(row(theme.fg("dim", `… ${wrapped.length - visibleCount} more lines`), width));
+				out.push(
+					row(theme.fg("dim", tSettingsUi("{count} more lines", { count: wrapped.length - visibleCount })), width),
+				);
 			} else {
 				out.push(row("", width));
 			}
@@ -206,7 +209,7 @@ export class CopySelectorComponent implements Component {
 		].join(theme.fg("dim", " · "));
 
 		return [
-			topBorder(width, "Copy to clipboard"),
+			topBorder(width, tSettingsUi("Copy to clipboard")),
 			...this.#renderTree(width, flat, cursorIdx, treeRows),
 			divider(width),
 			...this.#renderPreview(width, selected, previewRows),

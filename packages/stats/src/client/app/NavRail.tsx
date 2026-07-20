@@ -1,3 +1,5 @@
+import { t } from "../locale/catalog";
+import { useLocale } from "../useLocale";
 import { type DashboardSection, routes } from "./routes";
 
 export interface NavRailProps {
@@ -7,12 +9,16 @@ export interface NavRailProps {
 }
 
 export function NavRail({ activeSection, onSectionChange, className = "" }: NavRailProps) {
+	// Subscribe so labels re-render when the locale changes (the t() helper
+	// itself is sync and can be called anywhere, but this re-render is what
+	// makes the nav reflect the active locale when the cycle button flips).
+	useLocale();
 	return (
 		<aside className={`stats-nav-rail ${className}`}>
 			<div className="stats-nav-rail-header">
 				<div className="stats-logo-container">
 					<span className="stats-logo-text">OH MY PI</span>
-					<span className="stats-logo-subtext">Observability</span>
+					<span className="stats-logo-subtext">{t("layout.logo.subtext")}</span>
 				</div>
 			</div>
 
@@ -30,7 +36,7 @@ export function NavRail({ activeSection, onSectionChange, className = "" }: NavR
 							aria-current={isActive ? "page" : undefined}
 						>
 							<Icon size={16} className="stats-nav-rail-item-icon" />
-							<span className="stats-nav-rail-item-label">{route.label}</span>
+							<span className="stats-nav-rail-item-label">{t(`nav.${route.id}`)}</span>
 						</button>
 					);
 				})}

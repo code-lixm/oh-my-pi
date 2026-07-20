@@ -106,8 +106,11 @@ import {
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import type { MnemopiSessionState } from "./mnemopi/state";
+import { selectPrompt } from "./prompts/prompt-locale";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
+import asyncResultTemplateZh from "./prompts/tools/async-result.zh-CN.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
+import lateDiagnosticTemplateZh from "./prompts/tools/lsp-late-diagnostic.zh-CN.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
@@ -244,7 +247,7 @@ function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessag
 	return {
 		role: "custom",
 		customType: "async-result",
-		content: prompt.render(asyncResultTemplate, {
+		content: prompt.render(selectPrompt(asyncResultTemplate, asyncResultTemplateZh), {
 			multiple: jobs.length > 1,
 			jobs,
 		}),
@@ -280,7 +283,7 @@ function buildLateDiagnosticsBatchMessage(
 	return {
 		role: "custom",
 		customType: LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
-		content: prompt.render(lateDiagnosticTemplate, {
+		content: prompt.render(selectPrompt(lateDiagnosticTemplate, lateDiagnosticTemplateZh), {
 			multiple: files.length > 1,
 			files,
 		}),
@@ -1276,7 +1279,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const slashCommandsPromise = options.slashCommands
 		? Promise.resolve(options.slashCommands)
 		: logger.time("discoverSlashCommands", discoverSlashCommands, cwd);
-	slashCommandsPromise.catch(() => {});
 	const skillsSettings = settings.getGroup("skills");
 	const disabledExtensionIds = settings.get("disabledExtensions") ?? [];
 	const discoveredSkillsPromise =

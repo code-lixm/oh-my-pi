@@ -18,6 +18,7 @@ import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/extensions";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { discoverAuthStorage } from "../sdk";
 import { EventBus } from "../utils/event-bus";
 
@@ -85,7 +86,7 @@ function writeLine(line = ""): void {
 }
 
 function writeModelsConfigError(error: Error): void {
-	writeLine(chalk.yellow("Warning: models.yml validation failed — custom providers disabled"));
+	writeLine(chalk.yellow(tSettingsUi("Warning: models.yml validation failed — custom providers disabled")));
 	for (const line of error.message.split("\n")) {
 		writeLine(`  ${line}`);
 	}
@@ -200,7 +201,7 @@ function renderProviderModels(
 	if (json) {
 		if (configError) {
 			process.stderr.write(
-				`Warning: models.yml validation failed — custom providers disabled\n${configError.message}\n`,
+				`${tSettingsUi("Warning: models.yml validation failed — custom providers disabled")}\n${configError.message}\n`,
 			);
 		}
 		const output: ModelsJson = { models: filtered.slice().sort(byProviderThenId).map(toModelJson) };
@@ -213,11 +214,11 @@ function renderProviderModels(
 	}
 
 	if (available.length === 0) {
-		writeLine("No models available. Set API keys in environment variables.");
+		writeLine(tSettingsUi("No models available. Set API keys in environment variables."));
 		return;
 	}
 	if (filtered.length === 0) {
-		writeLine(`No models matching "${pattern}"`);
+		writeLine(tSettingsUi('No models matching "{pattern}"', { pattern: pattern ?? "" }));
 		return;
 	}
 
@@ -241,16 +242,16 @@ function renderProviderModels(
 			model.id,
 			formatLimit(model.contextWindow),
 			formatLimit(model.maxTokens),
-			model.thinking ? getSupportedEfforts(model).join(",") : model.reasoning ? "yes" : "-",
-			model.input.includes("image") ? "yes" : "no",
+			model.thinking ? getSupportedEfforts(model).join(",") : model.reasoning ? tSettingsUi("yes") : "-",
+			model.input.includes("image") ? tSettingsUi("yes") : tSettingsUi("no"),
 		]);
 		for (const line of boxTable(
 			[
-				{ header: "model" },
-				{ header: "context", align: "right" },
-				{ header: "max-out", align: "right" },
-				{ header: "thinking" },
-				{ header: "images" },
+				{ header: tSettingsUi("model") },
+				{ header: tSettingsUi("context"), align: "right" },
+				{ header: tSettingsUi("max-out"), align: "right" },
+				{ header: tSettingsUi("thinking") },
+				{ header: tSettingsUi("images") },
 			],
 			rows,
 		)) {
@@ -305,7 +306,7 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 			);
 
 	for (const { path: extPath, error } of extensionsResult.errors) {
-		process.stderr.write(`Failed to load extension: ${extPath}: ${error}\n`);
+		process.stderr.write(`${tSettingsUi("Failed to load extension: {path}: {error}", { path: extPath, error })}\n`);
 	}
 
 	// Mirror sdk.ts: drain pending provider registrations into the registry.
@@ -334,7 +335,9 @@ export async function runModelsCommand(command: ModelsCommandArgs): Promise<void
 	const json = command.flags.json ?? false;
 
 	if (action === "find" && (!pattern || pattern.trim().length === 0)) {
-		process.stderr.write("`omp models find` requires a search substring, e.g. `omp models find minimax`\n");
+		process.stderr.write(
+			`${tSettingsUi("`omp models find` requires a search substring, e.g. `omp models find minimax`")}\n`,
+		);
 		process.exitCode = 1;
 		return;
 	}
@@ -346,7 +349,7 @@ export async function runModelsCommand(command: ModelsCommandArgs): Promise<void
 		const modelRegistry = new ModelRegistry(authStorage);
 
 		if (action === "refresh" && !json && process.stderr.isTTY) {
-			process.stderr.write("Refreshing models from all providers…\n");
+			process.stderr.write(`${tSettingsUi("Refreshing models from all providers…")}\n`);
 		}
 		await modelRegistry.refresh(action === "refresh" ? "online" : "online-if-uncached");
 

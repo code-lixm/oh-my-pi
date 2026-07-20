@@ -4,10 +4,11 @@
  * inner <output>/<preview> body, while non-envelope result text (bash jobs)
  * passes through unchanged.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 import taskSummaryTemplate from "../src/prompts/tools/task-summary.md" with { type: "text" };
 import { hubToolRenderer } from "../src/tools/hub";
 
@@ -45,6 +46,12 @@ describe("job renderer task-result preview", () => {
 
 	afterAll(() => {
 		resetSettingsForTest();
+	});
+
+	const initialSettingsUiLocale = getSettingsUiLocale();
+
+	afterEach(() => {
+		setSettingsUiLocale(initialSettingsUiLocale);
 	});
 
 	it("previews the envelope body, not the wrapper markup", () => {
@@ -156,6 +163,27 @@ describe("job renderer task-result preview", () => {
 			expect(output).toContain("waiting on 2 of 3 jobs");
 		});
 
+		it("localizes the zh-CN waiting header and done count while preserving job labels", () => {
+			setSettingsUiLocale("zh-CN");
+			const result = {
+				content: [{ type: "text" as const, text: "" }],
+				details: { op: "wait" as const, jobs: jobsData },
+			};
+			const component = hubToolRenderer.renderResult(
+				result,
+				{ expanded: true, isPartial: true } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				theme,
+				{ op: "wait", ids: [] },
+			);
+			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
+
+			expect(output).toContain("等待 2/3 个任务完成");
+			expect(output).toContain("1 个已完成");
+			expect(output).not.toContain("waiting on 2 of 3 jobs");
+			expect(output).not.toContain("1 done");
+			expect(output).toContain("Job2 completed");
+		});
+
 		it("shows only finished jobs when isPartial is false and it is a poll call", () => {
 			const result = {
 				content: [{ type: "text" as const, text: "" }],
@@ -172,6 +200,47 @@ describe("job renderer task-result preview", () => {
 			expect(output).toContain("Job2 completed");
 			expect(output).not.toContain("Job3 running");
 			expect(output).toContain("1 job settled");
+		});
+
+		it("localizes the zh-CN settled header and done count for multiple completed jobs", () => {
+			setSettingsUiLocale("zh-CN");
+			const result = {
+				content: [{ type: "text" as const, text: "" }],
+				details: {
+					op: "wait" as const,
+					jobs: [
+						{
+							id: "JobA",
+							type: "task" as const,
+							status: "completed" as const,
+							label: "Label α",
+							durationMs: 3400,
+						},
+						{
+							id: "JobB",
+							type: "task" as const,
+							status: "completed" as const,
+							label: "Label β",
+							durationMs: 2800,
+						},
+						{ id: "JobC", type: "task" as const, status: "running" as const, label: "Label γ", durationMs: 1200 },
+					],
+				},
+			};
+			const component = hubToolRenderer.renderResult(
+				result,
+				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				theme,
+				{ op: "wait", ids: [] },
+			);
+			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
+
+			expect(output).toContain("2 个任务已结束");
+			expect(output).toContain("2 个已完成");
+			expect(output).not.toContain("2 jobs settled");
+			expect(output).not.toContain("2 done");
+			expect(output).toContain("Label α");
+			expect(output).toContain("Label β");
 		});
 
 		it("shows nothing when isPartial is false and all jobs are running and it is a poll call", () => {
@@ -251,6 +320,30 @@ describe("job renderer task-result preview", () => {
 			);
 			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
 			expect(output).toContain("1 running agent — no jobs");
+			expect(output).toContain("Worker");
+			expect(output).toContain("grepping the tree");
+		});
+
+		it("localizes the zh-CN running-agent header while preserving agent activity", () => {
+			setSettingsUiLocale("zh-CN");
+			const result = {
+				content: [{ type: "text" as const, text: "" }],
+				details: {
+					op: "jobs" as const,
+					jobs: [],
+					agents: [{ id: "Worker", parentId: "Main", activity: "grepping the tree", ageMs: 65_000 }],
+				},
+			};
+			const component = hubToolRenderer.renderResult(
+				result,
+				{ expanded: true, isPartial: false } as Parameters<typeof hubToolRenderer.renderResult>[1],
+				theme,
+				{ op: "jobs" },
+			);
+			const output = Bun.stripANSI((component.render(120) as readonly string[]).join("\n"));
+
+			expect(output).toContain("1 个正在运行的代理 — 无任务");
+			expect(output).not.toContain("1 running agent — no jobs");
 			expect(output).toContain("Worker");
 			expect(output).toContain("grepping the tree");
 		});

@@ -223,7 +223,7 @@ describe("TUI terminal-state regressions", () => {
 		// Resize classification now depends on TERM_PROGRAM (Warp takes the
 		// in-place path), so neutralize the ambient terminal identity to keep
 		// these direct-terminal assertions deterministic on any dev machine.
-		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"]) {
+		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"]) {
 			savedTerminalEnv[key] = Bun.env[key];
 			delete Bun.env[key];
 		}
@@ -4215,8 +4215,13 @@ describe("TUI terminal-state regressions", () => {
 });
 
 describe("foreground-tool streaming on ED3-risk terminals", () => {
+	let savedTerminalEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
 		let monotonicNow = 0;
+		for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"]) {
+			savedTerminalEnv[key] = Bun.env[key];
+			delete Bun.env[key];
+		}
 		vi.spyOn(performance, "now").mockImplementation(() => {
 			monotonicNow += 20;
 			return monotonicNow;
@@ -4224,6 +4229,12 @@ describe("foreground-tool streaming on ED3-risk terminals", () => {
 	});
 
 	afterEach(() => {
+		for (const key in savedTerminalEnv) {
+			const value = savedTerminalEnv[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+		savedTerminalEnv = {};
 		vi.restoreAllMocks();
 	});
 

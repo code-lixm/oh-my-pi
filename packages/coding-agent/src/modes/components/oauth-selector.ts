@@ -11,6 +11,7 @@ import {
 	TruncatedText,
 } from "@oh-my-pi/pi-tui";
 import { settings } from "../../config/settings";
+import { getSettingsUiLocale, tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { AuthStorage, CredentialOriginKind } from "../../session/auth-storage";
@@ -38,8 +39,8 @@ function getDisabledProviderIds(): ReadonlySet<string> {
  */
 const LIST_ROW_OFFSET = 4;
 
-/** Compact, human-readable tag for each credential-origin leg. */
-const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
+/** English locale keys for each credential-origin leg; translate at render time. */
+const ORIGIN_LABEL_KEYS: Record<CredentialOriginKind, string> = {
 	runtime: "--api-key",
 	config: "config",
 	oauth: "login",
@@ -47,6 +48,7 @@ const ORIGIN_LABELS: Record<CredentialOriginKind, string> = {
 	env: "env",
 	fallback: "custom provider",
 };
+
 /**
  * Component that renders an OAuth provider selector.
  */
@@ -71,6 +73,7 @@ export class OAuthSelectorComponent extends Container {
 	#spinnerFrame: number = 0;
 	#spinnerInterval?: NodeJS.Timeout;
 	#validationGeneration: number = 0;
+	#lastRenderLocale = getSettingsUiLocale();
 	constructor(
 		mode: "login" | "logout",
 		authStorage: AuthStorage,
@@ -93,7 +96,8 @@ export class OAuthSelectorComponent extends Container {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		// Add title
-		const title = mode === "login" ? "Select provider to login:" : "Select provider to logout:";
+		const title =
+			mode === "login" ? tSettingsUi("Select provider to login:") : tSettingsUi("Select provider to logout:");
 		this.addChild(new TruncatedText(theme.bold(title)));
 		this.addChild(new Spacer(1));
 		// Create list container
@@ -203,7 +207,10 @@ export class OAuthSelectorComponent extends Container {
 	#getSourceLabel(providerId: string): string {
 		const origin = this.#authStorage.getCredentialOrigin(providerId);
 		if (!origin) return "";
-		const detail = origin.kind === "env" && origin.envVar ? `env: ${origin.envVar}` : ORIGIN_LABELS[origin.kind];
+		const detail =
+			origin.kind === "env" && origin.envVar
+				? `${tSettingsUi(ORIGIN_LABEL_KEYS.env)}: ${origin.envVar}`
+				: tSettingsUi(ORIGIN_LABEL_KEYS[origin.kind]);
 		return theme.fg("muted", ` (${detail})`);
 	}
 
@@ -213,16 +220,16 @@ export class OAuthSelectorComponent extends Container {
 		if (state === "checking") {
 			const frameCount = theme.spinnerFrames.length;
 			const spinner = frameCount > 0 ? theme.spinnerFrames[this.#spinnerFrame % frameCount] : theme.status.pending;
-			return theme.fg("warning", ` ${spinner} checking`) + source;
+			return theme.fg("warning", ` ${spinner} ${tSettingsUi("checking")}`) + source;
 		}
 		if (state === "invalid") {
-			return theme.fg("error", ` ${theme.status.error} invalid`) + source;
+			return theme.fg("error", ` ${theme.status.error} ${tSettingsUi("invalid")}`) + source;
 		}
 		if (state === "valid") {
-			return theme.fg("success", ` ${theme.status.enabled} logged in`) + source;
+			return theme.fg("success", ` ${theme.status.enabled} ${tSettingsUi("logged in")}`) + source;
 		}
 		return this.#hasSelectableAuth(providerId)
-			? theme.fg("success", ` ${theme.status.enabled} logged in`) + source
+			? theme.fg("success", ` ${theme.status.enabled} ${tSettingsUi("logged in")}`) + source
 			: "";
 	}
 
@@ -236,7 +243,9 @@ export class OAuthSelectorComponent extends Container {
 
 	#renderStatusLine(_total: number): string {
 		const query = this.#searchQuery.trim();
-		const suffix = query ? `Search: ${this.#searchQuery}` : "Type to search";
+		const suffix = query
+			? tSettingsUi("Search: {query}", { query: this.#searchQuery })
+			: tSettingsUi("Type to search");
 		return theme.fg("muted", `  ${suffix}`);
 	}
 
@@ -244,7 +253,7 @@ export class OAuthSelectorComponent extends Container {
 		let text = `${provider.name} ${provider.id}`;
 		const origin = this.#authStorage.getCredentialOrigin(provider.id);
 		if (origin) {
-			text += ` logged in authenticated ${ORIGIN_LABELS[origin.kind]}`;
+			text += ` logged in authenticated ${tSettingsUi(ORIGIN_LABEL_KEYS[origin.kind])}`;
 			if (origin.envVar) text += ` ${origin.envVar}`;
 		}
 		if (!provider.available) {
@@ -338,15 +347,23 @@ export class OAuthSelectorComponent extends Container {
 			const message =
 				this.#allProviders.length === 0
 					? this.#mode === "login"
-						? "No OAuth providers available"
-						: "No stored provider credentials to log out"
-					: "No matching providers";
+						? tSettingsUi("No OAuth providers available")
+						: tSettingsUi("No stored provider credentials to log out")
+					: tSettingsUi("No matching providers");
 			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", `  ${message}`), 0, 0));
 		}
 		if (this.#statusMessage) {
 			this.#listContainer.addChild(new Spacer(1));
 			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", `  ${this.#statusMessage}`), 0, 0));
 		}
+	}
+	override render(width: number): readonly string[] {
+		const locale = getSettingsUiLocale();
+		if (locale !== this.#lastRenderLocale) {
+			this.#lastRenderLocale = locale;
+			this.#updateList();
+		}
+		return super.render(width);
 	}
 	handleInput(keyData: string): void {
 		// Escape or Ctrl+C
@@ -411,7 +428,7 @@ export class OAuthSelectorComponent extends Container {
 			this.stopValidation();
 			this.#onSelectCallback(selectedProvider.id);
 		} else if (selectedProvider) {
-			this.#statusMessage = "Provider unavailable in this environment.";
+			this.#statusMessage = tSettingsUi("Provider unavailable in this environment.");
 			this.#updateList();
 		}
 	}

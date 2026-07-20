@@ -68,6 +68,20 @@ export interface SettingsListOptions {
 	typeToSearch?: boolean;
 	/** Text shown when the list has no items at all. */
 	emptyText?: string;
+	/** Text shown when filtering removes every item. */
+	noMatchText?: string;
+	/** Localized label prefix for an active search query. Defaults to "Search". */
+	searchLabel?: string;
+	/**
+	 * Localized active-search status prefix (with trailing space). Defaults to "Search: ".
+	 * When provided, supersedes {@link searchLabel} so callers can pick the exact punctuation
+	 * and word ordering for their locale (e.g. "搜索： ").
+	 */
+	searchPrefix?: string;
+	/** Localized idle search prompt. Defaults to "Type to search". */
+	searchPlaceholder?: string;
+	/** Localized helper shown when filtering matches nothing. */
+	noMatchHint?: string;
 	/**
 	 * Footer hint line (hint-styled, replaces the default navigation hint).
 	 * An empty string removes the hint row and its leading blank entirely —
@@ -409,7 +423,9 @@ export class SettingsList implements Component {
 
 	#renderSearchStatus(width: number): string {
 		const query = sanitizeSingleLine(this.#filterQuery);
-		const statusText = query ? `  Search: ${query}` : "  Type to search";
+		const statusText = query
+			? `  ${this.#options.searchPrefix ?? `${this.#options.searchLabel ?? "Search"}: `}${query}`
+			: `  ${this.#options.searchPlaceholder ?? "Type to search"}`;
 		return this.#theme.hint(truncateToWidth(statusText, width, Ellipsis.Omit));
 	}
 
@@ -531,9 +547,14 @@ export class SettingsList implements Component {
 			if (this.#shouldRenderSearchStatus()) {
 				lines.push(this.#renderSearchStatus(width));
 			}
-			lines.push(this.#theme.hint("  No matching settings"));
+			lines.push(this.#theme.hint(`  ${this.#options.noMatchText ?? "No matching settings"}`));
 			lines.push("");
-			lines.push(truncateToWidth(this.#theme.hint("  Backspace to edit search · Esc to cancel"), width));
+			lines.push(
+				truncateToWidth(
+					this.#theme.hint(`  ${this.#options.noMatchHint ?? "Backspace to edit search · Esc to cancel"}`),
+					width,
+				),
+			);
 			return lines;
 		}
 

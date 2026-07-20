@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,9 +7,11 @@ import { AgentDashboard } from "@oh-my-pi/pi-coding-agent/modes/components/agent
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../src/i18n/settings-locale";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const tempDirs: string[] = [];
+let previousSettingsUiLocale = getSettingsUiLocale();
 
 const settingsStub = {
 	get: (_key: string) => undefined,
@@ -54,9 +56,13 @@ function stubStdoutGeometry(cols: number): { setRows(n: number): void; restore()
 	};
 }
 
+beforeEach(() => {
+	previousSettingsUiLocale = getSettingsUiLocale();
+});
 afterEach(async () => {
 	vi.restoreAllMocks();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
+	setSettingsUiLocale(previousSettingsUiLocale);
 });
 
 describe("AgentDashboard create editor", () => {
@@ -168,7 +174,7 @@ describe("AgentDashboard layout", () => {
 			// past it (which is what pushed the controls into scrollback).
 			expect(lines.length).toBe(30);
 			expect(plain).toContain("Agent Control Center");
-			expect(plain).toContain("Esc: close");
+			expect(plain).toMatch(/Esc:\s*close/);
 		} finally {
 			geo.restore();
 		}
@@ -186,7 +192,7 @@ describe("AgentDashboard layout", () => {
 			const shrunk = dashboard.render(100);
 			expect(shrunk.length).toBe(18);
 			// Footer survives the shrink instead of being clipped off the bottom.
-			expect(shrunk.map(line => line.replace(ANSI_PATTERN, "")).join("\n")).toContain("Esc: close");
+			expect(shrunk.map(line => line.replace(ANSI_PATTERN, "")).join("\n")).toMatch(/Esc:\s*close/);
 		} finally {
 			geo.restore();
 		}
@@ -231,6 +237,42 @@ describe("AgentDashboard tab navigation", () => {
 			const back = strip();
 			expect(back).toContain("proj-agent");
 			expect(back).not.toContain("bundled-agent");
+		} finally {
+			geo.restore();
+		}
+	});
+	test("renders zh-CN source labels and footer after switching locale at runtime", async () => {
+		await initTheme(false);
+		setSettingsUiLocale("en");
+		setSettingsUiLocale("zh-CN");
+		vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
+			projectAgentsDir: null,
+			agents: [
+				{ name: "alpha", description: "p", systemPrompt: "", source: "project" },
+				{ name: "beta", description: "u", systemPrompt: "", source: "user" },
+				{ name: "gamma", description: "b", systemPrompt: "", source: "bundled" },
+			],
+		});
+		const geo = stubStdoutGeometry(160);
+		try {
+			geo.setRows(30);
+			const dashboard = await AgentDashboard.create(await makeTempCwd(), settingsStub, 30, {});
+			const plain = dashboard.render(160).join("\n").replace(ANSI_PATTERN, "");
+
+			expect(plain).toContain(tSettingsUi("Project"));
+			expect(plain).toContain(tSettingsUi("User"));
+			expect(plain).toContain(tSettingsUi("Bundled"));
+			expect(plain).toContain(
+				tSettingsUi(
+					"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close",
+				),
+			);
+			expect(plain).not.toContain("Project");
+			expect(plain).not.toContain("User");
+			expect(plain).not.toContain("Bundled");
+			expect(plain).not.toContain(
+				"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close",
+			);
 		} finally {
 			geo.restore();
 		}

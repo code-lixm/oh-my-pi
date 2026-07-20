@@ -1,10 +1,19 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
+import { formatDimensionNote, resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
+import { prompt } from "@oh-my-pi/pi-utils";
+import { getPromptLocale, selectPrompt, setPromptLocale } from "../../src/prompts/prompt-locale";
+import imageDimensionNote from "../../src/prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../../src/prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 
 // 1x1 red PNG (69 bytes) — used as a Bun.Image seed to synthesize larger fixtures
 // without checking binary blobs into the repo.
 const RED_1X1_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+const initialPromptLocale = getPromptLocale();
+afterEach(() => {
+	setPromptLocale(initialPromptLocale);
+});
 
 async function makeRedPng(width: number, height: number): Promise<string> {
 	const seed = Buffer.from(RED_1X1_PNG_BASE64, "base64");
@@ -244,5 +253,67 @@ describe("resizeImage env wiring", () => {
 		Bun.env.OMP_NO_WEBP = "0";
 		const zero = await resizeImage({ type: "image", data: smallWebp, mimeType: "image/webp" });
 		expect(zero.mimeType).toBe("image/webp");
+	});
+});
+
+describe("formatDimensionNote", () => {
+	it("keeps the legacy English note text for resized images", () => {
+		const note = formatDimensionNote({
+			buffer: new Uint8Array(),
+			mimeType: "image/png",
+			originalWidth: 400,
+			originalHeight: 300,
+			width: 200,
+			height: 150,
+			wasResized: true,
+			get data() {
+				return "";
+			},
+		});
+
+		expect(note).toBe(
+			"[Image: original 400x300, displayed at 200x150. Multiply coordinates by 2.00 to map to original image.]",
+		);
+	});
+
+	it("renders the zh-CN prompt-locale note with the real prompt template and exact dynamic values", () => {
+		setPromptLocale("zh-CN");
+
+		const note = formatDimensionNote(
+			{
+				buffer: new Uint8Array(),
+				mimeType: "image/png",
+				originalWidth: 400,
+				originalHeight: 300,
+				width: 200,
+				height: 150,
+				wasResized: true,
+				get data() {
+					return "";
+				},
+			},
+			{
+				format: params => prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+			},
+		);
+
+		expect(note).toBe("[图像：原始尺寸 400x300，当前显示为 200x150。将坐标乘以 2.00 以映射回原图。]");
+	});
+
+	it("returns undefined when nothing was resized", () => {
+		expect(
+			formatDimensionNote({
+				buffer: new Uint8Array(),
+				mimeType: "image/png",
+				originalWidth: 400,
+				originalHeight: 300,
+				width: 400,
+				height: 300,
+				wasResized: false,
+				get data() {
+					return "";
+				},
+			}),
+		).toBeUndefined();
 	});
 });

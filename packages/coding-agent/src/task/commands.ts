@@ -7,10 +7,19 @@ import * as path from "node:path";
 import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { type SlashCommand, slashCommandCapability } from "../capability/slash-command";
 import { loadCapability } from "../discovery";
-// Embed command markdown files at build time
 import initMd from "../prompts/agents/init.md" with { type: "text" };
+import initMdZh from "../prompts/agents/init.zh-CN.md" with { type: "text" };
+// Embed command markdown files at build time
+import { selectPrompt } from "../prompts/prompt-locale";
 
-const EMBEDDED_COMMANDS: { name: string; content: string }[] = [{ name: "init.md", content: prompt.render(initMd) }];
+const EMBEDDED_COMMANDS: { name: string; content: string }[] = [
+	{
+		name: "init.md",
+		get content() {
+			return prompt.render(selectPrompt(initMd, initMdZh));
+		},
+	},
+];
 
 export const EMBEDDED_COMMAND_TEMPLATES: ReadonlyArray<{ name: string; content: string }> = EMBEDDED_COMMANDS;
 

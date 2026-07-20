@@ -24,6 +24,7 @@ import {
 import { createTinyTitleSubprocess, tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import type { Subprocess } from "bun";
+import { setPromptLocale } from "../src/prompts/prompt-locale";
 
 function getModelOrThrow(id: string): Model<Api> {
 	const model = getBundledModel("anthropic", id);
@@ -93,6 +94,7 @@ beforeAll(() => {
 });
 
 afterEach(() => {
+	setPromptLocale("en");
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
@@ -114,7 +116,7 @@ describe("tiny title generator routing", () => {
 		expect(online).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses the local client for selected local models", async () => {
+	it("uses the local client with the default English system prompt for selected local models", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Local Title");
 		const online = mockOnlineTitle("Online Title");
@@ -126,7 +128,32 @@ describe("tiny title generator routing", () => {
 		);
 
 		expect(title).toBe("Local Title");
-		expect(local).toHaveBeenCalledWith("lfm2-350m", "Investigate routing");
+		expect(local).toHaveBeenCalledWith(
+			"lfm2-350m",
+			"Investigate routing",
+			expect.objectContaining({
+				systemPrompt: expect.stringContaining("Write a 3-7 word title for the task in `<user>`."),
+			}),
+		);
+		expect(online).not.toHaveBeenCalled();
+	});
+
+	it("switches the local worker default system prompt when the prompt locale changes", async () => {
+		setPromptLocale("zh-CN");
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("本地标题");
+		const online = mockOnlineTitle("Online Title");
+
+		const title = await generateSessionTitle(
+			"Investigate routing",
+			createRegistry(model),
+			createSettings(model, "lfm2-350m"),
+		);
+
+		expect(title).toBe("本地标题");
+		const runtimeOptions = local.mock.calls[0]?.[2];
+		expect(runtimeOptions?.systemPrompt).toContain("为 `<user>` 中的任务编写一个 3-7 个词的标题。");
+		expect(runtimeOptions?.systemPrompt).not.toContain("Write a 3-7 word title for the task in `<user>`.");
 		expect(online).not.toHaveBeenCalled();
 	});
 

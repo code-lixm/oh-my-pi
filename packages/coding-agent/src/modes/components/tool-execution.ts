@@ -16,6 +16,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
+import { getSettingsUiLocaleEpoch, tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
@@ -879,7 +880,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
 		// here for the same reason markdown.ts keys its render cache on it.
-		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozen}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
+		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${getSettingsUiLocaleEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozen}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
 
@@ -950,10 +951,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
 		// Non-self-framing tools (custom/extension renderers and the generic
-		// fallback) get a padded, state-tinted block — built-ins that draw their
-		// own frame opt out below via the framed-component mark.
-		const stateBgKey = this.#isPartial ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
-		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
+		// fallback) retain backgrounds only while pending or after an error.
+		// Completed success stays unfilled so persistent transcript history does
+		// not become a wall of tinted cards.
+		const stateBgKey = this.#isPartial ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : undefined;
+		const stateBgFn = stateBgKey ? (text: string) => theme.bg(stateBgKey, text) : undefined;
 
 		// Check for custom tool rendering
 		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
@@ -1183,6 +1185,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					}
 				}
 			}
+			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
+			this.#contentBox.setPaddingX(builtInFramed ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
@@ -1372,7 +1376,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		if (this.#expanded && this.#args !== undefined) {
 			lines.push("");
-			lines.push(theme.fg("dim", "Args"));
+			lines.push(theme.fg("dim", tSettingsUi("Args")));
 			const tree = renderJsonTreeLines(
 				this.#args,
 				theme,

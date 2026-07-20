@@ -1,6 +1,23 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
-import { assistantUsageIsBilled } from "./transcript-render-helpers";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../i18n/settings-locale";
+import type { FileMentionMessage } from "../../session/messages";
+import { initTheme } from "../theme/theme";
+import { assistantUsageIsBilled, buildFileMentionBlock } from "./transcript-render-helpers";
+
+let previousLocale = getSettingsUiLocale();
+
+beforeAll(async () => {
+	await initTheme(false);
+});
+
+beforeEach(() => {
+	previousLocale = getSettingsUiLocale();
+});
+
+afterEach(() => {
+	setSettingsUiLocale(previousLocale);
+});
 
 function usage(overrides: Partial<Usage> = {}): Usage {
 	return {
@@ -13,6 +30,22 @@ function usage(overrides: Partial<Usage> = {}): Usage {
 		...overrides,
 	};
 }
+
+describe("buildFileMentionBlock", () => {
+	it("keeps transcript read summaries on the literal lowercase tool name in en and zh-CN", () => {
+		const files = [{ path: "src/example.ts", lineCount: 12 }] as FileMentionMessage["files"];
+
+		setSettingsUiLocale("en");
+		const english = Bun.stripANSI(buildFileMentionBlock(files, 0).render(80).join("\n"));
+		expect(english).toContain("read src/example.ts");
+		expect(english).not.toContain("Read src/example.ts");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = Bun.stripANSI(buildFileMentionBlock(files, 0).render(80).join("\n"));
+		expect(chinese).toContain("read src/example.ts");
+		expect(chinese).not.toContain("读取 src/example.ts");
+	});
+});
 
 describe("assistantUsageIsBilled", () => {
 	it("suppresses the token badge only for turns that consumed nothing", () => {

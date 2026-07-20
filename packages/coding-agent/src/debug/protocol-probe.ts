@@ -27,6 +27,7 @@ import {
 	Text,
 	type TextSizingScale,
 } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { DynamicBorder } from "../modes/components/dynamic-border";
 import { theme } from "../modes/theme/theme";
 
@@ -148,24 +149,24 @@ function truecolorBar(cells: number): string {
 function notifyProtocolLabel(): string {
 	switch (TERMINAL.notifyProtocol) {
 		case NotifyProtocol.Osc99:
-			return "OSC 99 (kitty)";
+			return tSettingsUi("OSC 99 (kitty)");
 		case NotifyProtocol.Osc9:
-			return "OSC 9 (iTerm2/WezTerm)";
+			return tSettingsUi("OSC 9 (iTerm2/WezTerm)");
 		default:
-			return "BEL";
+			return tSettingsUi("BEL");
 	}
 }
 
 function imageProtocolLabel(): string {
 	switch (TERMINAL.imageProtocol) {
 		case ImageProtocol.Kitty:
-			return "Kitty graphics";
+			return tSettingsUi("Kitty graphics");
 		case ImageProtocol.Iterm2:
-			return "iTerm2 inline images";
+			return tSettingsUi("iTerm2 inline images");
 		case ImageProtocol.Sixel:
-			return "Sixel";
+			return tSettingsUi("Sixel");
 		default:
-			return "none — text fallback";
+			return tSettingsUi("none — text fallback");
 	}
 }
 
@@ -197,27 +198,33 @@ export class ProtocolProbeComponent extends Container {
 		super();
 		const hyperlinksOn = TERMINAL.hyperlinks;
 		const sizingOn = TERMINAL.textSizing;
-		const yesNo = (on: boolean) => (on ? theme.fg("success", "supported") : theme.fg("muted", "unsupported"));
+		const hyperlinksStatus = hyperlinksOn
+			? theme.fg("success", tSettingsUi("supported"))
+			: theme.fg("muted", tSettingsUi("unsupported"));
+		const sizingStatus = sizingOn
+			? theme.fg("success", tSettingsUi("supported"))
+			: theme.fg("muted", tSettingsUi("unsupported"));
+		const notifyStatus = options.notificationSuppressed
+			? theme.fg("warning", tSettingsUi("suppressed (PI_NOTIFICATIONS)"))
+			: theme.fg("success", tSettingsUi("sent — check your desktop / titlebar"));
 
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", "Terminal Protocol Test")), 1, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("Terminal Protocol Test"))), 1, 0));
 
-		// Styling: SGR attributes, themed foregrounds, and a truecolor sweep.
 		const styling = [
-			theme.fg("muted", "Styling (SGR)"),
-			`  ${theme.bold("bold")}  ${theme.italic("italic")}  ${theme.underline("underline")}  ${theme.strikethrough("strike")}  ${theme.inverse(" inverse ")}  ${theme.fg("dim", "dim")}`,
-			`  ${theme.fg("accent", "accent")}  ${theme.fg("success", "success")}  ${theme.fg("warning", "warning")}  ${theme.fg("error", "error")}`,
-			`  truecolor: ${truecolorBar(32)} (${theme.fg("muted", `24-bit ${TERMINAL.trueColor ? "on" : "off"}`)})`,
+			theme.fg("muted", tSettingsUi("Styling (SGR)")),
+			`  ${theme.bold(tSettingsUi("bold"))}  ${theme.italic(tSettingsUi("italic"))}  ${theme.underline(tSettingsUi("underline"))}  ${theme.strikethrough(tSettingsUi("strike"))}  ${theme.inverse(` ${tSettingsUi("inverse")} `)}  ${theme.fg("dim", tSettingsUi("dim"))}`,
+			`  ${theme.fg("accent", tSettingsUi("accent"))}  ${theme.fg("success", tSettingsUi("success"))}  ${theme.fg("warning", tSettingsUi("warning"))}  ${theme.fg("error", tSettingsUi("error"))}`,
+			`  ${tSettingsUi("truecolor")}: ${truecolorBar(32)} (${theme.fg("muted", TERMINAL.trueColor ? tSettingsUi("24-bit on") : tSettingsUi("24-bit off"))})`,
 		].join("\n");
 		this.addChild(new Text(styling, 1, 0));
 		this.addChild(new Spacer(1));
 
-		// Hyperlinks: OSC 8. Renders as plain text where unsupported.
 		this.addChild(
 			new Text(
 				[
-					`${theme.fg("muted", "Hyperlinks (OSC 8)")} — ${yesNo(hyperlinksOn)}`,
-					`  \x1b]8;;https://github.com/can1357/oh-my-pi\x07oh-my-pi repo\x1b]8;;\x07`,
+					`${theme.fg("muted", tSettingsUi("Hyperlinks (OSC 8)"))} — ${hyperlinksStatus}`,
+					`  \x1b]8;;https://github.com/can1357/oh-my-pi\x07${tSettingsUi("oh-my-pi repo")}\x1b]8;;\x07`,
 				].join("\n"),
 				1,
 				0,
@@ -225,39 +232,37 @@ export class ProtocolProbeComponent extends Container {
 		);
 		this.addChild(new Spacer(1));
 
-		// Text sizing: OSC 66.
-		this.addChild(new Text(`${theme.fg("muted", "Text sizing (OSC 66)")} — ${yesNo(sizingOn)}`, 1, 0));
+		this.addChild(new Text(`${theme.fg("muted", tSettingsUi("Text sizing (OSC 66)"))} — ${sizingStatus}`, 1, 0));
 		if (sizingOn) {
 			this.addChild(new RawLines(buildLargeTextLines()));
 		} else {
 			this.addChild(
-				new Text(theme.fg("dim", "  (enable via the tui.textSizing setting on a Kitty terminal)"), 1, 0),
+				new Text(
+					theme.fg("dim", `  (${tSettingsUi("enable via the tui.textSizing setting on a Kitty terminal")})`),
+					1,
+					0,
+				),
 			);
 		}
 		this.addChild(new Spacer(1));
 
-		// Graphics: Kitty / iTerm2 / Sixel, with a text fallback baked into Image.
-		this.addChild(new Text(`${theme.fg("muted", "Graphics")} — ${theme.fg("dim", imageProtocolLabel())}`, 1, 0));
+		this.addChild(
+			new Text(`${theme.fg("muted", tSettingsUi("Graphics"))} — ${theme.fg("dim", imageProtocolLabel())}`, 1, 0),
+		);
 		this.addChild(
 			new Image(
 				options.image.base64,
 				options.image.mimeType,
 				{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
-				// Fixed modest caps (not the user's inline-image setting) keep the
-				// swatch a crisp, bounded preview rather than an upscaled wall.
 				{ maxWidthCells: 20, maxHeightCells: 16, budget: options.imageBudget },
 				options.image.dimensions,
 			),
 		);
 		this.addChild(new Spacer(1));
 
-		// Notifications: fired by the caller; this line reports the outcome.
-		const notifyStatus = options.notificationSuppressed
-			? theme.fg("warning", "suppressed (PI_NOTIFICATIONS)")
-			: theme.fg("success", "sent — check your desktop / titlebar");
 		this.addChild(
 			new Text(
-				`${theme.fg("muted", "Notification")} (${theme.fg("dim", notifyProtocolLabel())}) — ${notifyStatus}`,
+				`${theme.fg("muted", tSettingsUi("Notification"))} (${theme.fg("dim", notifyProtocolLabel())}) — ${notifyStatus}`,
 				1,
 				0,
 			),

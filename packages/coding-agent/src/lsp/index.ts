@@ -10,7 +10,9 @@ import type {
 import { logger, once, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 import { type Theme, theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
+import lspDescriptionZh from "../prompts/tools/lsp.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
@@ -1550,7 +1552,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(lspDescription);
+		this.description = prompt.render(selectPrompt(lspDescription, lspDescriptionZh));
 	}
 
 	static createIf(session: ToolSession): LspTool | null {

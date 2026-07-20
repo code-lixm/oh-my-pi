@@ -16,8 +16,10 @@ import {
 import { formatCost } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildCostSummary } from "../data/view-models";
+import { t } from "../locale/catalog";
 import type { CostTimeSeriesPoint, TimeRange } from "../types";
 import { AsyncBoundary, Panel, SegmentedControl } from "../ui";
+import { useLocale } from "../useLocale";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface CostsRouteProps {
@@ -27,6 +29,7 @@ export interface CostsRouteProps {
 }
 
 export function CostsRoute({ active, range, refreshTrigger }: CostsRouteProps) {
+	useLocale();
 	const {
 		data: costStats,
 		error,
@@ -54,10 +57,10 @@ function CostOverviewPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }
 	const summary = useMemo(() => buildCostSummary(costSeries), [costSeries]);
 
 	const cards = [
-		{ label: "Total Cost", value: formatCost(summary.totalCost) },
-		{ label: "Average / Day", value: formatCost(summary.avgDailyCost) },
+		{ label: t("costs.card.totalCost"), value: formatCost(summary.totalCost) },
+		{ label: t("costs.card.avgPerDay"), value: formatCost(summary.avgDailyCost) },
 		{
-			label: "Top Model",
+			label: t("costs.card.topModel"),
 			value: summary.topModelName || "—",
 			sub: summary.topModelName ? formatCost(summary.topModelCost) : undefined,
 		},
@@ -71,7 +74,11 @@ function CostOverviewPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }
 					<p className="text-2xl font-bold stats-text-primary truncate" title={card.value}>
 						{card.value}
 					</p>
-					{card.sub && <p className="text-xs stats-text-muted mt-1 font-medium">Total spent: {card.sub}</p>}
+					{card.sub && (
+						<p className="text-xs stats-text-muted mt-1 font-medium">
+							{t("costs.card.totalSpentSuffix", { value: card.sub })}
+						</p>
+					)}
 				</Panel>
 			))}
 		</div>
@@ -130,25 +137,29 @@ function CostTrendPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }) {
 				bucketToValue: bucket => bucket.total,
 			});
 		}
-		return buildAggregateTimeSeries<CostTimeSeriesPoint, { total: number }>(costSeries, "Cost", {
-			initBucket: () => ({ total: 0 }),
-			accumulate: (bucket, point) => {
-				bucket.total += point.cost;
+		return buildAggregateTimeSeries<CostTimeSeriesPoint, { total: number }>(
+			costSeries,
+			t("costs.trend.dataset.cost"),
+			{
+				initBucket: () => ({ total: 0 }),
+				accumulate: (bucket, point) => {
+					bucket.total += point.cost;
+				},
+				bucketToValue: bucket => bucket.total,
 			},
-			bucketToValue: bucket => bucket.total,
-		});
+		);
 	}, [costSeries, byModel]);
 
 	const sharedPlugins = useMemo(() => {
 		return buildSharedPlugins({
 			chartTheme,
 			showLegend: byModel,
-			defaultLabel: "Cost",
+			defaultLabel: t("costs.trend.dataset.cost"),
 			formatValue: v => `$${v.toFixed(2)}`,
 			footer: items => {
 				if (!byModel || items.length < 2) return undefined;
 				const total = items.reduce((sum, item) => sum + (item.parsed.y ?? 0), 0);
-				return `Total: $${total.toFixed(2)}`;
+				return t("costs.trend.totalFooter", { value: total.toFixed(2) });
 			},
 		});
 	}, [chartTheme, byModel]);
@@ -208,20 +219,20 @@ function CostTrendPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }) {
 	}, [sharedPlugins, sharedScaleBase, yScale]);
 
 	const toggleOptions = [
-		{ value: false, label: "All Models" },
-		{ value: true, label: "By Model" },
+		{ value: false, label: t("costs.trend.allModels") },
+		{ value: true, label: t("costs.trend.byModel") },
 	];
 
 	return (
 		<Panel
-			title="Daily Cost"
-			subtitle="API spending over time"
+			title={t("costs.trend.title")}
+			subtitle={t("costs.trend.subtitle")}
 			actions={<SegmentedControl options={toggleOptions} value={byModel} onChange={setByModel} />}
 		>
 			<div className="h-[300px]">
 				{chartData.labels.length === 0 ? (
 					<div className="h-full flex items-center justify-center text-stats-muted text-sm">
-						No cost data available
+						{t("costs.trend.empty")}
 					</div>
 				) : byModel && lineData ? (
 					<Line data={lineData} options={lineOptions} />

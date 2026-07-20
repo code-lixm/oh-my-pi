@@ -1,4 +1,5 @@
 import {
+	anchorRightBorder,
 	padding,
 	routeSelectListMouse,
 	type SelectItem,
@@ -69,8 +70,16 @@ function renderMockEditor(width: number): string[] {
 	const hint = theme.fg("dim", "enter send · shift+enter newline · / commands");
 	return [
 		top,
-		`${theme.fg("borderAccent", box.vertical)}${fitLine(prompt, innerWidth)}${theme.fg("borderAccent", box.vertical)}`,
-		`${theme.fg("borderMuted", box.vertical)}${fillStyledLine(hint, innerWidth)}${theme.fg("borderMuted", box.vertical)}`,
+		anchorRightBorder(
+			`${theme.fg("borderAccent", box.vertical)}${fitLine(prompt, innerWidth)}`,
+			theme.fg("borderAccent", box.vertical),
+			width,
+		),
+		anchorRightBorder(
+			`${theme.fg("borderMuted", box.vertical)}${fillStyledLine(hint, innerWidth)}`,
+			theme.fg("borderMuted", box.vertical),
+			width,
+		),
 		bottom,
 	];
 }

@@ -2,7 +2,9 @@ import { Clock, Coins, Gauge, Hash, Star, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getRequestDetails } from "../api";
 import { formatCost, formatDurationMs, formatInteger } from "../data/formatters";
+import { t } from "../locale/catalog";
 import type { RequestDetails } from "../types";
+import { useLocale } from "../useLocale";
 import { JsonBlock } from "./JsonBlock";
 import { Skeleton } from "./Skeleton";
 import { StatusPill } from "./StatusPill";
@@ -13,6 +15,7 @@ export interface RequestDrawerProps {
 }
 
 export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
+	useLocale();
 	const [details, setDetails] = useState<RequestDetails | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<Error | null>(null);
@@ -77,19 +80,19 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 
 	return (
 		<div className="stats-drawer-overlay" onClick={handleOverlayClick} role="presentation">
-			<div className="stats-drawer" role="dialog" aria-modal="true" aria-label="Request details">
+			<div className="stats-drawer" role="dialog" aria-modal="true" aria-label={t("requestDrawer.dialogAria")}>
 				{/* Drawer Header */}
 				<div className="stats-drawer-header">
 					<div className="stats-drawer-header-left">
-						<h2 className="stats-drawer-title">Request Details</h2>
-						{details && <span className="stats-drawer-id">ID: {id}</span>}
+						<h2 className="stats-drawer-title">{t("requestDrawer.title")}</h2>
+						{details && <span className="stats-drawer-id">{t("requestDrawer.id", { id })}</span>}
 					</div>
 					<button
 						ref={closeButtonRef}
 						type="button"
 						onClick={onClose}
 						className="stats-drawer-close-btn"
-						aria-label="Close request details"
+						aria-label={t("requestDrawer.closeAria")}
 					>
 						<X size={18} />
 					</button>
@@ -107,7 +110,7 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 
 					{error && (
 						<div className="stats-drawer-error">
-							<p className="stats-drawer-error-title">Failed to load request details</p>
+							<p className="stats-drawer-error-title">{t("requestDrawer.errorTitle")}</p>
 							<p className="stats-drawer-error-message">{error.message}</p>
 						</div>
 					)}
@@ -122,12 +125,14 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 										<div className="stats-drawer-provider">{details.provider}</div>
 									</div>
 									<StatusPill variant={details.errorMessage ? "danger" : "success"}>
-										{details.errorMessage ? "Error" : "Success"}
+										{details.errorMessage
+											? t("requestDrawer.status.error")
+											: t("requestDrawer.status.success")}
 									</StatusPill>
 								</div>
 								{details.errorMessage && (
 									<div className="stats-drawer-error-block">
-										<div className="stats-drawer-error-label">Error Message</div>
+										<div className="stats-drawer-error-label">{t("requestDrawer.errorMessage")}</div>
 										<div className="stats-drawer-error-text">{details.errorMessage}</div>
 									</div>
 								)}
@@ -160,7 +165,10 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 									</div>
 									<div className="stats-drawer-metric-value">{formatInteger(details.usage.totalTokens)}</div>
 									<div className="stats-drawer-metric-sub">
-										{formatInteger(details.usage.input)} in · {formatInteger(details.usage.output)} out
+										{t("requestDrawer.tokenSub.inOut", {
+											in: formatInteger(details.usage.input),
+											out: formatInteger(details.usage.output),
+										})}
 									</div>
 								</div>
 
@@ -196,8 +204,12 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 
 							{/* JSON blocks */}
 							<div className="stats-drawer-json-blocks">
-								<JsonBlock data={details.output} title="Output Payload" initialCollapsed={false} />
-								<JsonBlock data={details} title="Raw Request Metadata" initialCollapsed={true} />
+								<JsonBlock
+									data={details.output}
+									title={t("requestDrawer.json.output")}
+									initialCollapsed={false}
+								/>
+								<JsonBlock data={details} title={t("requestDrawer.json.raw")} initialCollapsed={true} />
 							</div>
 						</div>
 					)}

@@ -6,7 +6,9 @@ import type {
 	StoppingCriteria as TransformersStoppingCriteria,
 } from "@huggingface/transformers";
 import { getTinyModelsCacheDir, prompt } from "@oh-my-pi/pi-utils";
+import { selectPrompt } from "../prompts/prompt-locale";
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
+import titleSystemPromptZh from "../prompts/system/title-system.zh-CN.md" with { type: "text" };
 import {
 	errorMessage,
 	errorText,
@@ -37,7 +39,6 @@ const TITLE_MAX_NEW_TOKENS = 20;
 const STOP_DECODE_WINDOW_TOKENS = 32;
 const MEMORY_COMPLETION_DEFAULT_MAX_NEW_TOKENS = 256;
 const COMPLETION_MAX_NEW_TOKENS = 1024;
-const TINY_TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
 
 const tinyModelDevicePreference = resolveTinyModelDevicePreference();
 const tinyModelDtypeOverride = resolveTinyModelDtypeOverride();
@@ -215,7 +216,8 @@ async function loadPipeline(
 }
 
 function buildPrompt(generator: TextGenerationPipeline, message: string, systemPrompt?: string): string {
-	const selectedSystemPrompt = systemPrompt?.trim() || TINY_TITLE_SYSTEM_PROMPT;
+	const selectedSystemPrompt =
+		systemPrompt?.trim() || prompt.render(selectPrompt(titleSystemPrompt, titleSystemPromptZh));
 	const chat = [
 		{ role: "system", content: selectedSystemPrompt },
 		{ role: "user", content: formatTitleUserMessage(message) },

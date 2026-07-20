@@ -15,13 +15,21 @@ import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile
 import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
+import { selectPrompt } from "./prompts/prompt-locale";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
+import activeRepoContextTemplateZh from "./prompts/system/active-repo-context.zh-CN.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import customSystemPromptTemplateZh from "./prompts/system/custom-system-prompt.zh-CN.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
+import defaultPersonalityZh from "./prompts/system/personalities/default.zh-CN.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
+import friendlyPersonalityZh from "./prompts/system/personalities/friendly.zh-CN.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
+import pragmaticPersonalityZh from "./prompts/system/personalities/pragmatic.zh-CN.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
+import projectPromptTemplateZh from "./prompts/system/project-prompt.zh-CN.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import systemPromptTemplateZh from "./prompts/system/system-prompt.zh-CN.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { shortenPath } from "./tools/render-utils";
@@ -31,10 +39,22 @@ import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 /** Bundled personality specs, keyed by the `personality` setting value. */
-const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, string> = {
-	default: defaultPersonality,
-	friendly: friendlyPersonality,
-	pragmatic: pragmaticPersonality,
+const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, { readonly value: string }> = {
+	default: {
+		get value() {
+			return selectPrompt(defaultPersonality, defaultPersonalityZh);
+		},
+	},
+	friendly: {
+		get value() {
+			return selectPrompt(friendlyPersonality, friendlyPersonalityZh);
+		},
+	},
+	pragmatic: {
+		get value() {
+			return selectPrompt(pragmaticPersonality, pragmaticPersonalityZh);
+		},
+	},
 };
 
 interface AlwaysApplyRule {
@@ -98,7 +118,7 @@ function firstNonEmpty(...values: (string | undefined | null)[]): string | null 
 function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | null): string {
 	if (!activeRepoContext) return "";
 	return prompt
-		.render(activeRepoContextTemplate, {
+		.render(selectPrompt(activeRepoContextTemplate, activeRepoContextTemplateZh), {
 			relativeRepoRoot: normalizePromptPath(activeRepoContext.relativeRepoRoot),
 		})
 		.trim();
@@ -630,13 +650,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 				? logger.time("buildWorkspaceTree", () =>
 						buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
 					)
-				: Promise.resolve({
-						rootPath: resolvedCwd,
-						rendered: "",
-						truncated: false,
-						totalLines: 0,
-						agentsMdFiles: [],
-					});
+				: Promise.resolve(prepDefaults.workspaceTree);
 	const skillsPromise: Promise<readonly Skill[]> =
 		providedSkills !== undefined
 			? Promise.resolve(providedSkills)
@@ -797,7 +811,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd: promptCwd,
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
-		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].trim(),
+		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].value.trim(),
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		eagerTasks,
@@ -814,12 +828,20 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		xdevDocs,
 		autoQaEnabled,
 	};
-	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
+	const rendered = prompt.render(
+		resolvedCustomPrompt
+			? selectPrompt(customSystemPromptTemplate, customSystemPromptTemplateZh)
+			: selectPrompt(systemPromptTemplate, systemPromptTemplateZh),
+		data,
+	);
 	const systemPrompt = [rendered];
 	// Custom prompt templates already render context files and append text; the
 	// project footer still carries environment, cwd, workspace, and dir-context.
 	const projectPrompt = prompt
-		.render(projectPromptTemplate, resolvedCustomPrompt ? { ...data, contextFiles: [], appendPrompt: "" } : data)
+		.render(
+			selectPrompt(projectPromptTemplate, projectPromptTemplateZh),
+			resolvedCustomPrompt ? { ...data, contextFiles: [], appendPrompt: "" } : data,
+		)
 		.trim();
 	if (projectPrompt) {
 		systemPrompt.push(projectPrompt);

@@ -12,8 +12,11 @@ import { ModelRegistry } from "../../config/model-registry";
 import { settings } from "../../config/settings";
 import type { CustomTool, CustomToolContext, RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import webSearchSystemPrompt from "../../prompts/system/web-search.md" with { type: "text" };
+import webSearchSystemPromptZh from "../../prompts/system/web-search.zh-CN.md" with { type: "text" };
 import webSearchDescription from "../../prompts/tools/web-search.md" with { type: "text" };
+import webSearchDescriptionZh from "../../prompts/tools/web-search.zh-CN.md" with { type: "text" };
 import { discoverAuthStorage } from "../../sdk";
 import type { ToolSession } from "../../tools";
 import { formatAge } from "../../tools/render-utils";
@@ -186,7 +189,7 @@ async function executeSearch(
 				query: params.query,
 				limit: params.limit,
 				recency: params.recency,
-				systemPrompt: webSearchSystemPrompt,
+				systemPrompt: selectPrompt(webSearchSystemPrompt, webSearchSystemPromptZh),
 				maxOutputTokens: params.max_tokens,
 				numSearchResults: params.num_search_results,
 				temperature: params.temperature,
@@ -292,7 +295,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 
 	constructor(session: ToolSession) {
 		this.#session = session;
-		this.description = prompt.render(webSearchDescription);
+		this.description = prompt.render(selectPrompt(webSearchDescription, webSearchDescriptionZh));
 	}
 
 	async execute(
@@ -317,7 +320,9 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRenderDetails> = {
 	name: "web_search",
 	label: "Web Search",
-	description: prompt.render(webSearchDescription),
+	get description() {
+		return prompt.render(selectPrompt(webSearchDescription, webSearchDescriptionZh));
+	},
 	parameters: webSearchSchema,
 
 	approval: "read",

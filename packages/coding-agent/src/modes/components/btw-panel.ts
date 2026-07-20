@@ -1,4 +1,5 @@
 import { type Component, Container, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
@@ -99,24 +100,29 @@ export class BtwPanelComponent extends Container {
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", "Esc cancel /btw");
+				return theme.fg("muted", tSettingsUi("Esc cancel /btw"));
 			case "complete":
-				return theme.fg("muted", this.isCopyable() ? "c copy · b branch to chat · Esc dismiss" : "Esc dismiss");
+				return theme.fg(
+					"muted",
+					this.isCopyable() ? tSettingsUi("c copy · b branch to chat · Esc dismiss") : tSettingsUi("Esc dismiss"),
+				);
 			case "aborted":
-				return theme.fg("warning", `${theme.status.warning} Cancelled · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} ${tSettingsUi("Cancelled · Esc dismiss")}`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} Error · Esc dismiss`);
+				return theme.fg("error", `${theme.status.error} ${tSettingsUi("Error · Esc dismiss")}`);
 		}
 	}
 
 	#contentComponent(): Component {
 		if (this.#state === "error") {
-			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? "Unknown error")), 1, 0);
+			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? tSettingsUi("Unknown error"))), 1, 0);
 		}
 		const text = this.#visibleAnswer;
 		if (!text) {
 			const waiting =
-				this.#state === "running" ? `${theme.status.pending} Waiting for response…` : "No text returned.";
+				this.#state === "running"
+					? `${theme.status.pending} ${tSettingsUi("Waiting for response…")}`
+					: tSettingsUi("No text returned.");
 			return new Text(theme.fg("dim", waiting), 1, 0);
 		}
 		return new Markdown(text, 1, 0, getMarkdownTheme());

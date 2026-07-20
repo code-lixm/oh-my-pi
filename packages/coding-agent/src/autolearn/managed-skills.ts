@@ -12,6 +12,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { tSettingsUi } from "../i18n/settings-locale";
 
 /** Provider id stamped on discovered managed skills (distinguishes them from authored). */
 export const MANAGED_SKILLS_PROVIDER_ID = "omp-managed";
@@ -35,7 +36,10 @@ export function sanitizeSkillName(raw: string): string {
 	const name = raw.trim().toLowerCase();
 	if (!SKILL_NAME_PATTERN.test(name)) {
 		throw new Error(
-			`Invalid skill name "${raw}". Use lowercase letters, digits, and hyphens (1-64 chars, starting with a letter or digit).`,
+			tSettingsUi(
+				'Invalid skill name "{name}". Use lowercase letters, digits, and hyphens (1-64 chars, starting with a letter or digit).',
+				{ name: raw },
+			),
 		);
 	}
 	return name;
@@ -120,7 +124,9 @@ async function assertManagedRootSafe(): Promise<void> {
 		throw err;
 	});
 	if (rootStat?.isSymbolicLink()) {
-		throw new Error("The managed-skills root is a symlink; refusing to operate outside the managed directory.");
+		throw new Error(
+			tSettingsUi("The managed-skills root is a symlink; refusing to operate outside the managed directory."),
+		);
 	}
 }
 
@@ -128,11 +134,16 @@ const UPDATE_FILE_OPEN_FLAGS = fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
 
 function assertManagedSkillFileSafeForUpdate(name: string, fileStat: Stats): void {
 	if (!fileStat.isFile()) {
-		throw new Error(`Managed skill "${name}" SKILL.md is not a regular file; refusing to overwrite it.`);
+		throw new Error(
+			tSettingsUi('Managed skill "{name}" SKILL.md is not a regular file; refusing to overwrite it.', { name }),
+		);
 	}
 	if (fileStat.nlink > 1) {
 		throw new Error(
-			`Managed skill "${name}" SKILL.md has ${fileStat.nlink} hard links; refusing to overwrite a file that may be user-authored elsewhere.`,
+			tSettingsUi(
+				'Managed skill "{name}" SKILL.md has {count} hard links; refusing to overwrite a file that may be user-authored elsewhere.',
+				{ name, count: fileStat.nlink },
+			),
 		);
 	}
 }
@@ -142,7 +153,9 @@ async function openManagedSkillFileForUpdate(name: string, file: string) {
 		return await fs.open(file, UPDATE_FILE_OPEN_FLAGS);
 	} catch (err) {
 		if ((err as { code?: string }).code === "ELOOP") {
-			throw new Error(`Managed skill "${name}" SKILL.md is a symlink; refusing to overwrite it.`);
+			throw new Error(
+				tSettingsUi('Managed skill "{name}" SKILL.md is a symlink; refusing to overwrite it.', { name }),
+			);
 		}
 		throw err;
 	}
@@ -157,10 +170,10 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 	// and the `requireDescription` discovery scan then silently drops the skill,
 	// so the tool would report success for a skill that never appears.
 	if (!description) {
-		throw new Error(`Managed skill "${name}" needs a non-empty description.`);
+		throw new Error(tSettingsUi('Managed skill "{name}" needs a non-empty description.', { name }));
 	}
 	if (!body) {
-		throw new Error(`Managed skill "${name}" needs a non-empty body.`);
+		throw new Error(tSettingsUi('Managed skill "{name}" needs a non-empty body.', { name }));
 	}
 	const content = `${toSkillFrontmatter(name, description)}\n${body}\n`;
 	// Cap the UTF-8 byte size of the FINAL file (body + description + frontmatter),
@@ -168,7 +181,10 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 	const bytes = Buffer.byteLength(content, "utf8");
 	if (bytes > MAX_MANAGED_SKILL_BYTES) {
 		throw new Error(
-			`Managed skill is ${bytes} bytes; the limit is ${MAX_MANAGED_SKILL_BYTES}. Trim the body or description.`,
+			tSettingsUi("Managed skill is {bytes} bytes; the limit is {limit}. Trim the body or description.", {
+				bytes,
+				limit: MAX_MANAGED_SKILL_BYTES,
+			}),
 		);
 	}
 	return serializeSkillMutation(name, async () => {
@@ -184,7 +200,10 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 		});
 		if (dirStat?.isSymbolicLink()) {
 			throw new Error(
-				`Managed skill "${name}" resolves through a symlink; refusing to write outside the managed directory.`,
+				tSettingsUi(
+					'Managed skill "{name}" resolves through a symlink; refusing to write outside the managed directory.',
+					{ name },
+				),
 			);
 		}
 		if (input.action === "create") {
@@ -195,7 +214,9 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 				await fs.writeFile(file, content, { flag: "wx" });
 			} catch (err) {
 				if ((err as { code?: string }).code === "EEXIST") {
-					throw new Error(`Managed skill "${name}" already exists. Use action "update" to change it.`);
+					throw new Error(
+						tSettingsUi('Managed skill "{name}" already exists. Use action "update" to change it.', { name }),
+					);
 				}
 				throw err;
 			}
@@ -210,10 +231,14 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 			throw err;
 		});
 		if (fileStat === null) {
-			throw new Error(`Managed skill "${name}" does not exist. Use action "create" to add it.`);
+			throw new Error(
+				tSettingsUi('Managed skill "{name}" does not exist. Use action "create" to add it.', { name }),
+			);
 		}
 		if (fileStat.isSymbolicLink()) {
-			throw new Error(`Managed skill "${name}" SKILL.md is a symlink; refusing to overwrite it.`);
+			throw new Error(
+				tSettingsUi('Managed skill "{name}" SKILL.md is a symlink; refusing to overwrite it.', { name }),
+			);
 		}
 		assertManagedSkillFileSafeForUpdate(name, fileStat);
 		const handle = await openManagedSkillFileForUpdate(name, file);
@@ -241,13 +266,17 @@ export async function deleteManagedSkill(name: string): Promise<void> {
 			throw err;
 		});
 		if (dirStat?.isSymbolicLink()) {
-			throw new Error(`Managed skill "${safe}" is a symlink; refusing to delete outside the managed directory.`);
+			throw new Error(
+				tSettingsUi('Managed skill "{name}" is a symlink; refusing to delete outside the managed directory.', {
+					name: safe,
+				}),
+			);
 		}
 		try {
 			await fs.rm(dir, { recursive: true });
 		} catch (err) {
 			if (isEnoent(err)) {
-				throw new Error(`Managed skill "${safe}" does not exist.`);
+				throw new Error(tSettingsUi('Managed skill "{name}" does not exist.', { name: safe }));
 			}
 			throw err;
 		}

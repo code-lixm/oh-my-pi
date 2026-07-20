@@ -326,7 +326,7 @@ describe("InspectImageTool", () => {
 		expect(resultOutput).toContain("Question:");
 		expect(resultOutput).toContain("What error text is visible?");
 		expect(resultOutput).toContain("openai/gpt-4o");
-		expect(resultOutput).toContain("more lines");
+		expect(resultOutput).toContain("1 more line");
 	});
 
 	it("schema rejects unknown parameters", () => {

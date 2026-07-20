@@ -14,6 +14,7 @@ import { getKeybindings, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { settings } from "../config/settings";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { Hasher } from "../tui/utils";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
@@ -177,7 +178,7 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
 	if (expanded) return "";
 	if (hasMore === false) return "";
-	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Expand`, theme));
+	return theme.fg("dim", wrapBrackets(tSettingsUi("{key}: Expand", { key: expandKeyHint() }), theme));
 }
 
 /**
@@ -250,11 +251,11 @@ export function formatMeta(meta: string[], theme: Theme): string {
 
 function sanitizeErrorText(message: string | undefined): string {
 	const clean = (message ?? "").replace(/^Error:\s*/, "").trim();
-	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : "Unknown error";
+	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : tSettingsUi("Unknown error");
 }
 
 export function formatErrorMessage(message: string | undefined, theme: Theme): string {
-	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${sanitizeErrorText(message)}`)}`;
+	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `${tSettingsUi("Error:")} ${sanitizeErrorText(message)}`)}`;
 }
 
 /**
@@ -752,7 +753,10 @@ export function formatParseErrors(errors: string[], total?: number): string[] {
 	if (deduped.length === 0) return [];
 	const fullCount = total ?? deduped.length;
 	const capped = deduped.slice(0, PARSE_ERRORS_LIMIT);
-	const header = fullCount > capped.length ? `Parse issues (${capped.length} / ${fullCount}):` : "Parse issues:";
+	const header =
+		fullCount > capped.length
+			? tSettingsUi("Parse issues ({shown} / {total}):", { shown: capped.length, total: fullCount })
+			: tSettingsUi("Parse issues:");
 	return [header, ...capped.map(err => `- ${err}`)];
 }
 
@@ -878,7 +882,15 @@ export function appendParseErrorsBulletList(
 		lines.push(theme.fg("warning", `  - ${err}`));
 	}
 	if (fullCount > capped.length) {
-		lines.push(theme.fg("dim", `  … ${fullCount - capped.length} more`));
+		const remaining = fullCount - capped.length;
+		lines.push(
+			theme.fg(
+				"dim",
+				remaining === 1
+					? tSettingsUi("… 1 more parse issue")
+					: tSettingsUi("… {count} more parse issues", { count: remaining }),
+			),
+		);
 	}
 }
 
@@ -889,8 +901,10 @@ export function appendParseErrorsBulletList(
 export function formatParseErrorsCountLabel(parseErrors: readonly string[], total?: number): string {
 	const fullCount = total ?? parseErrors.length;
 	return fullCount > PARSE_ERRORS_LIMIT
-		? `${PARSE_ERRORS_LIMIT} / ${fullCount} parse issues`
-		: `${fullCount} parse issue${fullCount !== 1 ? "s" : ""}`;
+		? tSettingsUi("{limit} / {total} parse issues", { limit: PARSE_ERRORS_LIMIT, total: fullCount })
+		: fullCount === 1
+			? tSettingsUi("{n} parse issue", { n: fullCount })
+			: tSettingsUi("{n} parse issues", { n: fullCount });
 }
 
 // =============================================================================

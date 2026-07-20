@@ -9,6 +9,7 @@ import { resolveSegmentPalette } from "@oh-my-pi/pi-coding-agent/modes/component
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ResolvedRoleModel } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function normalize(lines: readonly string[]): string {
 	return stripVTControlCharacters(lines.join("\n")).replace(/\s+/g, " ").trim();
@@ -203,5 +204,56 @@ describe("ModelPicker", () => {
 
 		picker.handleInput(ESC);
 		expect(onCancel).toHaveBeenCalledTimes(1);
+	});
+	test("renders zh-CN hints after locale is switched at runtime", () => {
+		const prev = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("en");
+			const { picker } = createPicker({ models: [makeModel("test", "model-a")], scoped: true });
+			const english = normalize(picker.render(220));
+			expect(english).toContain("Session-only switch");
+
+			setSettingsUiLocale("zh-CN");
+			const chinese = normalize(picker.render(220));
+			expect(chinese).not.toContain("Session-only switch");
+			expect(chinese).toContain("仅限当前会话的切换");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
+	});
+	test("renders zh-CN quick-role status and footer hints after locale is switched at runtime", () => {
+		const smol = makeModel("test", "smol-model");
+		const slow = makeModel("test", "slow-model");
+		const prev = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("en");
+			const { picker } = createPicker({
+				models: [smol, slow],
+				scoped: true,
+				picker: {
+					quickRoles: [
+						{ role: "smol", model: smol, explicitThinkingLevel: false },
+						{ role: "slow", model: slow, explicitThinkingLevel: false },
+					],
+					quickRoleOrder: ["smol", "slow"],
+					currentQuickRole: "slow",
+				},
+			});
+			picker.handleInput("@");
+			const english = normalize(picker.render(220));
+			// QUICK_ROLE_STATUS_HINT + QUICK_ROLE_FOOTER_HINT in English
+			expect(english).toContain("Quick role switch");
+			expect(english).toContain("Enter apply role model");
+
+			setSettingsUiLocale("zh-CN");
+			const chinese = normalize(picker.render(220));
+			// Both quick-role hints rendered in zh-CN; no English literals remain
+			expect(chinese).not.toContain("Quick role switch");
+			expect(chinese).not.toContain("Enter apply role model");
+			expect(chinese).toContain("快捷角色切换");
+			expect(chinese).toContain("Enter 应用角色模型");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
 	});
 });

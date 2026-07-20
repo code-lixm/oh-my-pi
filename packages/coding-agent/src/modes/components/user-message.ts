@@ -1,6 +1,7 @@
 import { Container, Markdown } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
-import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
+import { framedBlock, outputBlockContentWidth } from "../../tui";
+import { hasImageMarker, imageReferenceHyperlink, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers
@@ -23,6 +24,7 @@ export class UserMessageComponent extends Container {
 
 	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
 		super();
+		const framedImageMessage = hasImageMarker(text);
 		const bgColor = (value: string) => theme.bg("userMessageBg", value);
 		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
 		// bubble too — matching the live editor glow. The Markdown component routes code spans and
@@ -42,12 +44,23 @@ export class UserMessageComponent extends Container {
 						? imageReferenceHyperlink(label, index, imageLinks, imageLabel)
 						: theme.fg("accent", `\x1b[1m${label}\x1b[22m`),
 			});
-		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
-			bgColor,
+		const md = new Markdown(text, framedImageMessage ? 0 : 1, framedImageMessage ? 0 : 1, getMarkdownTheme(), {
+			bgColor: framedImageMessage ? undefined : bgColor,
 			color,
 		});
 		md.setIgnoreTight(true);
-		this.addChild(md);
+		if (framedImageMessage) {
+			this.addChild(
+				framedBlock(theme, width => ({
+					sections: [{ lines: [...md.render(outputBlockContentWidth(width))] }],
+					borderColor: "borderMuted",
+					applyBg: false,
+					width,
+				})),
+			);
+		} else {
+			this.addChild(md);
+		}
 	}
 
 	override render(width: number): readonly string[] {

@@ -13,7 +13,9 @@ import type {
 import { getWorktreeDir, hashPath, isEnoent, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import githubDescription from "../prompts/tools/github.md" with { type: "text" };
+import githubDescriptionZh from "../prompts/tools/github.zh-CN.md" with { type: "text" };
 import * as git from "../utils/git";
 import type { ToolSession } from ".";
 import { formatShortSha } from "./gh-format";
@@ -2460,7 +2462,7 @@ export class GithubTool implements AgentTool<typeof githubSchema, GhToolDetails>
 	readonly summary = "Interact with GitHub repositories, files, pull requests, and Actions";
 	readonly loadMode = "discoverable";
 	readonly label = "GitHub";
-	readonly description = prompt.render(githubDescription);
+	readonly description = prompt.render(selectPrompt(githubDescription, githubDescriptionZh));
 	readonly parameters = githubSchema;
 	readonly strict = true;
 

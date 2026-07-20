@@ -758,6 +758,34 @@ describe("selector setting side effects", () => {
 		}
 	});
 
+	it("rebuilds the transcript and resets the display when markdown heading style changes", () => {
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const controller = new SelectorController({
+			rebuildChatFromMessages,
+			ui: { resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.markdownHeadingStyle", "hierarchical");
+
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("rebuilds the transcript and resets the display when display language changes", () => {
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const controller = new SelectorController({
+			rebuildChatFromMessages,
+			ui: { resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("displayLanguage", "zh-CN");
+
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("replaces malformed default retry fallback chains from the model selector action", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");

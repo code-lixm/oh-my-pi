@@ -79,6 +79,31 @@ function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null 
 	};
 }
 
+describe("pi status-line segment", () => {
+	it("shows the focused subagent display name as Main › name", () => {
+		const ctx: SegmentContext = {
+			...createCtx(),
+			focusedAgentId: "Worker-7",
+			focusedAgentDisplayName: "Plan reviewer",
+		};
+		const result = renderSegment("pi", ctx);
+
+		expect(result.visible).toBe(true);
+		expect(result.content).toContain("Main › Plan reviewer ");
+	});
+
+	it("falls back to the focused subagent id when no display name is available", () => {
+		const ctx: SegmentContext = {
+			...createCtx(),
+			focusedAgentId: "Worker-7",
+		};
+		const result = renderSegment("pi", ctx);
+
+		expect(result.visible).toBe(true);
+		expect(result.content).toContain("Main › Worker-7 ");
+	});
+});
+
 function createStatusLineSession(sessionName: string, modelName?: string) {
 	const model = modelName ? { name: modelName, contextWindow: 128000 } : undefined;
 	return {

@@ -13,6 +13,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 interface GeometryStub {
 	setRows(n: number): void;
@@ -65,9 +66,11 @@ function renderedAgentIds(hub: AgentHubOverlayComponent): string[] {
 
 describe("Agent hub row ordering", () => {
 	let geometry: GeometryStub | undefined;
+	let previousLocale: string;
 
 	beforeAll(async () => {
 		await initTheme();
+		previousLocale = getSettingsUiLocale();
 	});
 
 	afterEach(() => {
@@ -77,6 +80,7 @@ describe("Agent hub row ordering", () => {
 		geometry?.restore();
 		geometry = undefined;
 		AgentRegistry.resetGlobalForTests();
+		setSettingsUiLocale(previousLocale);
 	});
 
 	it("freezes the initial lastActivity order while the hub is open", () => {
@@ -162,7 +166,51 @@ describe("Agent hub row ordering", () => {
 			const width = visibleWidth(line);
 			expect(width).toBeLessThanOrEqual(78);
 		}
-
 		hub.dispose();
+	});
+
+	it("switches summary status labels to zh-CN at runtime without localizing agent ids", () => {
+		geometry = stubStdoutGeometry(120);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		for (const [id, displayName, status] of [
+			["job-17", "Alpha", "running"],
+			["job-18", "Beta", "idle"],
+			["job-19", "Gamma", "parked"],
+			["job-20", "Delta", "aborted"],
+		] as const) {
+			agents.register({ id, displayName, kind: "sub", session: {} as AgentSession, status });
+		}
+
+		const hub = makeHub(agents);
+		try {
+			const english = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(english).toContain("running");
+			expect(english).toContain("idle");
+			expect(english).toContain("parked");
+			expect(english).toContain("aborted");
+			expect(english).not.toContain("运行中");
+			expect(english).not.toContain("空闲");
+			expect(english).not.toContain("已停放");
+			expect(english).not.toContain("已中止");
+
+			setSettingsUiLocale("zh-CN");
+			const chinese = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(chinese).toContain("运行中");
+			expect(chinese).toContain("空闲");
+			expect(chinese).toContain("已停放");
+			expect(chinese).toContain("已中止");
+			expect(chinese).not.toContain("running");
+			expect(chinese).not.toContain("idle");
+			expect(chinese).not.toContain("parked");
+			expect(chinese).not.toContain("aborted");
+
+			for (const id of ["job-17", "job-18", "job-19", "job-20"]) {
+				expect(english).toContain(id);
+				expect(chinese).toContain(id);
+			}
+		} finally {
+			hub.dispose();
+		}
 	});
 });

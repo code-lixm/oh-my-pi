@@ -12,6 +12,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import type { TreeFilterMode } from "../../config/settings-schema";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { SessionTreeNode } from "../../session/session-entries";
@@ -452,11 +453,21 @@ class TreeList implements Component {
 			//    `model_change` + `thinking_level_change` (both hidden by the default filter)
 			//    read as "broken /tree" — see #1909.
 			if (this.#flatNodes.length === 0) {
-				lines.push(truncateToWidth(theme.fg("muted", "  No entries found"), width));
+				lines.push(truncateToWidth(theme.fg("muted", `  ${tSettingsUi("No entries found")}`), width));
 				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.#getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
-				lines.push(truncateToWidth(theme.fg("muted", `  No entries match search "${this.#searchQuery}"`), width));
-				lines.push(truncateToWidth(theme.fg("muted", "  Press Backspace to clear the search"), width));
+				lines.push(
+					truncateToWidth(
+						theme.fg(
+							"muted",
+							`  ${tSettingsUi('No entries match search "{query}"', { query: this.#searchQuery })}`,
+						),
+						width,
+					),
+				);
+				lines.push(
+					truncateToWidth(theme.fg("muted", `  ${tSettingsUi("Press Backspace to clear the search")}`), width),
+				);
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -464,11 +475,19 @@ class TreeList implements Component {
 				const filterLabel = this.#getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
-						theme.fg("muted", `  ${this.#flatNodes.length} entries hidden by the current filter ${filterLabel}`),
+						theme.fg(
+							"muted",
+							`  ${tSettingsUi("{count} entries hidden by the current filter {filter}", { count: this.#flatNodes.length, filter: filterLabel })}`,
+						),
 						width,
 					),
 				);
-				lines.push(truncateToWidth(theme.fg("muted", "  Press Alt+A to show all, Alt+D for default"), width));
+				lines.push(
+					truncateToWidth(
+						theme.fg("muted", `  ${tSettingsUi("Press Alt+A to show all, Alt+D for default")}`),
+						width,
+					),
+				);
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -610,28 +629,29 @@ class TreeList implements Component {
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = normalize(this.#extractContent(msgWithContent.content));
-					result = theme.fg("accent", "user: ") + content;
+					result = theme.fg("accent", tSettingsUi("user:")) + content;
 				} else if (role === "developer") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = normalize(this.#extractContent(msgWithContent.content));
-					result = theme.fg("dim", "developer: ") + theme.fg("muted", content);
+					result = theme.fg("dim", tSettingsUi("developer:")) + theme.fg("muted", content);
 				} else if (role === "assistant") {
 					const presentation = resolveAssistantErrorPresentation(msg);
 					if (presentation.kind === "compact-recovered") {
-						result = theme.fg("success", "assistant: ") + theme.fg("dim", presentation.text);
+						result = theme.fg("success", tSettingsUi("assistant:")) + theme.fg("dim", presentation.text);
 						break;
 					}
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
 					const textContent = normalize(this.#extractContent(msgWithContent.content));
 					if (textContent) {
-						result = theme.fg("success", "assistant: ") + textContent;
+						result = theme.fg("success", tSettingsUi("assistant:")) + textContent;
 					} else if (presentation.kind === "full") {
 						result =
 							theme.fg("success", "assistant: ") + theme.fg("error", normalize(presentation.text).slice(0, 80));
 					} else if (msgWithContent.stopReason === "aborted") {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(aborted)");
+						result = theme.fg("success", tSettingsUi("assistant:")) + theme.fg("muted", tSettingsUi("(aborted)"));
 					} else {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(no content)");
+						result =
+							theme.fg("success", tSettingsUi("assistant:")) + theme.fg("muted", tSettingsUi("(no content)"));
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };
@@ -868,9 +888,9 @@ class SearchLine implements Component {
 	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
 		if (query) {
-			return [truncateToWidth(`  ${theme.fg("muted", "Search:")} ${theme.fg("accent", query)}`, width)];
+			return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))} ${theme.fg("accent", query)}`, width)];
 		}
-		return [truncateToWidth(`  ${theme.fg("muted", "Search:")}`, width)];
+		return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))}`, width)];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -898,9 +918,9 @@ class LabelInput implements Component {
 		const lines: string[] = [];
 		const indent = "  ";
 		const availableWidth = width - indent.length;
-		lines.push(truncateToWidth(`${indent}${theme.fg("muted", "Label (empty to remove):")}`, width));
+		lines.push(truncateToWidth(`${indent}${theme.fg("muted", tSettingsUi("Label (empty to remove):"))}`, width));
 		lines.push(...this.#input.render(availableWidth).map(line => truncateToWidth(`${indent}${line}`, width)));
-		lines.push(truncateToWidth(`${indent}${theme.fg("dim", "enter: save  esc: cancel")}`, width));
+		lines.push(truncateToWidth(`${indent}${theme.fg("dim", tSettingsUi("enter: save  esc: cancel"))}`, width));
 		return lines;
 	}
 
@@ -949,12 +969,14 @@ export class TreeSelectorComponent extends Container {
 
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
+		this.addChild(new Text(theme.bold(`  ${tSettingsUi("Session Tree")}`), 1, 0));
 		this.addChild(
 			new TruncatedText(
 				theme.fg(
 					"muted",
-					"Enter: switch. Shift+Enter: summarize & switch. Shift+L: label. Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					tSettingsUi(
+						"Enter: switch. Shift+Enter: summarize & switch. Up/Down: move. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					),
 				),
 				0,
 				0,

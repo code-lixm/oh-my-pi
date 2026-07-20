@@ -1328,3 +1328,52 @@
     transition: none;
   }
 }
+
+/* ==========================================================================
+   Locale toggle (English / 中文) — same chrome as the theme toggle: a
+   square button with a small label badge in front of the icon. The chip
+   gives the toggle a discoverable target name on both desktop and narrow
+   screens; reduced-motion just kills the transition (matches theme toggle).
+   ========================================================================== */
+.stats-locale-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 8px 0 6px;
+	height: 32px;
+	flex-shrink: 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	transition: color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+}
+
+.stats-locale-toggle:hover {
+	color: var(--text);
+	border-color: var(--border-strong);
+}
+
+.stats-locale-toggle[data-locale="zh-CN"] {
+	font-family:
+		"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+		system-ui, sans-serif;
+}
+
+@media (max-width: 640px) {
+	.stats-locale-toggle {
+		padding: 0 6px;
+		gap: 2px;
+		font-size: 11px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.stats-locale-toggle {
+		transition: none;
+	}
+}

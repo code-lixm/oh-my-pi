@@ -14,8 +14,10 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type * as XtermModule from "@xterm/headless";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Settings } from "../config/settings";
-import type { Theme } from "../modes/theme/theme";
+import { tSettingsUi } from "../i18n/settings-locale";
+import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
+import type { OutputBlockBorderStyle } from "../tui/output-block";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
@@ -104,7 +106,7 @@ function normalizeInputForPty(data: string, applicationCursorKeysMode: boolean):
 	}
 	return data;
 }
-class BashInteractiveOverlayComponent implements Component {
+export class BashInteractiveOverlayComponent implements Component {
 	#terminal: XtermTerminalType;
 	#state: "running" | "complete" | "timed_out" | "killed" = "running";
 	#exitCode: number | undefined;
@@ -123,6 +125,7 @@ class BashInteractiveOverlayComponent implements Component {
 		private readonly command: string,
 		private readonly uiTheme: Theme,
 		private readonly getTerminalRows: () => number,
+		private readonly borderStyle: OutputBlockBorderStyle,
 		terminalCtor: typeof XtermModule.Terminal,
 	) {
 		this.#terminal = new terminalCtor({
@@ -216,24 +219,35 @@ class BashInteractiveOverlayComponent implements Component {
 		this.#onInput(normalizedInput);
 	}
 	#stateText(): string {
-		if (this.#state === "running") return this.uiTheme.fg("warning", "running");
-		if (this.#state === "timed_out") return this.uiTheme.fg("warning", "timed out");
-		if (this.#state === "killed") return this.uiTheme.fg("warning", "killed");
-		if (this.#exitCode === 0) return this.uiTheme.fg("success", "exit 0");
-		if (this.#exitCode === undefined) return this.uiTheme.fg("warning", "exited");
-		return this.uiTheme.fg("error", `exit ${this.#exitCode}`);
+		if (this.#state === "running") return this.uiTheme.fg("warning", tSettingsUi("running"));
+		if (this.#state === "timed_out") return this.uiTheme.fg("warning", tSettingsUi("timed out"));
+		if (this.#state === "killed") return this.uiTheme.fg("warning", tSettingsUi("killed"));
+		if (this.#exitCode === 0) return this.uiTheme.fg("success", tSettingsUi("exit {code}", { code: 0 }));
+		if (this.#exitCode === undefined) return this.uiTheme.fg("warning", tSettingsUi("exited"));
+		return this.uiTheme.fg("error", tSettingsUi("exit {code}", { code: this.#exitCode }));
+	}
+	#borderColor(): ThemeColor {
+		if (this.#state === "running") return "accent";
+		if (this.#state === "timed_out" || this.#state === "killed") return "warning";
+		if (this.#exitCode === 0) return "borderMuted";
+		return this.#exitCode === undefined ? "warning" : "error";
 	}
 
 	#readViewport(innerWidth: number, maxContentRows: number): string[] {
 		this.#terminal.resize(innerWidth, maxContentRows);
-		const viewportY = this.#terminal.buffer.active.viewportY;
-		return readTerminalRows(this.#terminal, viewportY, maxContentRows).map(line =>
+		const buffer = this.#terminal.buffer.active;
+		const rows = readTerminalRows(this.#terminal, buffer.viewportY, maxContentRows);
+		if (buffer.type === "normal") {
+			while (rows.length > 1 && rows.at(-1) === "") rows.pop();
+		}
+		return rows.map(line =>
 			truncateToWidth(styleTerminalRow(line, this.uiTheme.getFgAnsi("toolOutput")), innerWidth),
 		);
 	}
 	render(width: number): readonly string[] {
 		const safeWidth = Math.max(20, width);
-		const innerWidth = Math.max(1, safeWidth - 2);
+		const horizontalOnly = this.borderStyle === "horizontal";
+		const innerWidth = Math.max(1, safeWidth - (horizontalOnly ? 0 : 2));
 		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
 		const chromeRows = 4;
 		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
@@ -255,7 +269,7 @@ class BashInteractiveOverlayComponent implements Component {
 				: this.#state === "complete" && this.#exitCode === 0
 					? this.uiTheme.styledSymbol("tool.bash", "accent")
 					: formatStatusIcon("warning", this.uiTheme);
-		const title = this.uiTheme.fg("accent", "Console");
+		const title = this.uiTheme.fg("accent", tSettingsUi("Console"));
 		const statusBadge = `${this.uiTheme.fg("dim", this.uiTheme.format.bracketLeft)}${this.#stateText()}${this.uiTheme.fg("dim", this.uiTheme.format.bracketRight)}`;
 		const prefix = `${statusIcon} ${title} `;
 		const suffix = ` ${statusBadge}`;
@@ -265,23 +279,27 @@ class BashInteractiveOverlayComponent implements Component {
 		const footer =
 			this.#state === "running"
 				? truncateToWidth(
-						`${this.uiTheme.fg("warning", "esc")} ${this.uiTheme.fg("dim", "force-kill")} ${this.uiTheme.fg("dim", "· input forwarded to PTY")}`,
+						`${this.uiTheme.fg("warning", "esc")} ${this.uiTheme.fg("dim", tSettingsUi("force-kill"))} ${this.uiTheme.fg("dim", `· ${tSettingsUi("input forwarded to PTY")}`)}`,
 						innerWidth,
 					)
-				: truncateToWidth(this.uiTheme.fg("dim", "session finished"), innerWidth);
+				: truncateToWidth(this.uiTheme.fg("dim", tSettingsUi("session finished")), innerWidth);
 		const visibleLines = this.#readViewport(innerWidth, maxContentRows);
 		const content = visibleLines.length > 0 ? visibleLines : [padding(innerWidth)];
-		const borderHorizontal = this.uiTheme.fg("border", this.uiTheme.boxRound.horizontal.repeat(innerWidth));
-		const borderVertical = this.uiTheme.fg("border", this.uiTheme.boxRound.vertical);
-		const boxLine = (line: string) =>
-			`${borderVertical}${line}${padding(Math.max(0, innerWidth - visibleWidth(line)))}${borderVertical}`;
-		return [
-			`${this.uiTheme.fg("border", this.uiTheme.boxRound.topLeft)}${borderHorizontal}${this.uiTheme.fg("border", this.uiTheme.boxRound.topRight)}`,
-			boxLine(header),
-			...content.map(boxLine),
-			boxLine(footer),
-			`${this.uiTheme.fg("border", this.uiTheme.boxRound.bottomLeft)}${borderHorizontal}${this.uiTheme.fg("border", this.uiTheme.boxRound.bottomRight)}`,
-		];
+		const borderWidth = horizontalOnly ? safeWidth : innerWidth;
+		const borderColor = this.#borderColor();
+		const borderHorizontal = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.horizontal.repeat(borderWidth));
+		const borderVertical = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.vertical);
+		const boxLine = (line: string) => {
+			const padded = `${line}${padding(Math.max(0, innerWidth - visibleWidth(line)))}`;
+			return horizontalOnly ? padded : `${borderVertical}${padded}${borderVertical}`;
+		};
+		const topBorder = horizontalOnly
+			? borderHorizontal
+			: `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topRight)}`;
+		const bottomBorder = horizontalOnly
+			? borderHorizontal
+			: `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomRight)}`;
+		return [topBorder, boxLine(header), ...content.map(boxLine), boxLine(footer), bottomBorder];
 	}
 
 	invalidate(): void {}
@@ -321,6 +339,7 @@ export async function runInteractiveBashPty(
 				options.command,
 				uiTheme,
 				() => tui.terminal.rows,
+				settings.get("display.borderStyle"),
 				XtermTerminal,
 			);
 			component.setSession(session);

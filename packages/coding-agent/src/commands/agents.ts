@@ -3,6 +3,7 @@
  */
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
 import { type AgentsAction, type AgentsCommandArgs, runAgentsCommand } from "../cli/agents-cli";
+import { ensureCliHelpLocale, localizeCliHelpMetadata } from "../cli/help-locale";
 import { initTheme } from "../modes/theme/theme";
 
 const ACTIONS: AgentsAction[] = ["unpack"];
@@ -36,6 +37,8 @@ export default class Agents extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Agents);
 		if (!args.action) {
+			await ensureCliHelpLocale();
+			localizeCliHelpMetadata(Agents);
 			renderCommandHelp("omp", "agents", Agents);
 			return;
 		}

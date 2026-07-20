@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { TextContent, UserMessage } from "@oh-my-pi/pi-ai";
+import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -179,10 +180,10 @@ function createIrcMessage(timestamp: number): CustomMessage<{ from: string; mess
 	};
 }
 
-function createIrcContext(options: { liveBlockAbove?: boolean } = {}) {
+function createHubContext(options: { liveBlockAbove?: boolean } = {}) {
 	const chatContainer = new TranscriptContainer();
 	if (options.liveBlockAbove) {
-		// A still-running tool above the cards: they sit in the live region,
+		// A still-running tool above the group: the IRC events sit in the live region,
 		// where their rows cannot have committed to native scrollback.
 		chatContainer.addChild({
 			render: () => ["running tool"],
@@ -191,12 +192,14 @@ function createIrcContext(options: { liveBlockAbove?: boolean } = {}) {
 		} as Component);
 	}
 	const requestRender = vi.fn();
+	const pendingTools = new Map<string, HubActivityGroupComponent>();
 	const ctx = {
 		isInitialized: true,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		ui: { requestRender },
 		chatContainer,
+		pendingTools,
 		session: {},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
@@ -204,100 +207,119 @@ function createIrcContext(options: { liveBlockAbove?: boolean } = {}) {
 		helpers.addMessageToChat(message, options),
 	);
 	ctx.addMessageToChat = addMessageToChat;
-	return { ctx, chatContainer, requestRender, addMessageToChat };
+	return { ctx, chatContainer, requestRender, addMessageToChat, pendingTools };
 }
 
-describe("EventController IRC expiry", () => {
+/**
+ * Returns the last HubActivityGroupComponent child of the container.
+ * Throws a descriptive error when none exists so a failing assertion is easy to
+ * distinguish from a missing child.
+ */
+function hubGroup(chatContainer: TranscriptContainer): HubActivityGroupComponent {
+	const groups = chatContainer.children.filter(
+		(c): c is HubActivityGroupComponent => c instanceof HubActivityGroupComponent,
+	);
+	if (groups.length === 0) throw new Error("No HubActivityGroupComponent found in chatContainer");
+	return groups[groups.length - 1]!;
+}
+
+describe("EventController IRC events inside HubActivityGroupComponent", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	it("renders IRC messages immediately and removes live-region cards after the TTL", async () => {
+	it("renders IRC events immediately inside a HubActivityGroup and evicts live-region entries after the TTL", async () => {
 		vi.useFakeTimers();
 		const message = createIrcMessage(1);
-		const { ctx, chatContainer, requestRender } = createIrcContext({ liveBlockAbove: true });
+		const { ctx, chatContainer, requestRender } = createHubContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
 
-		expect(chatContainer.children).toHaveLength(2);
-		// One requestRender from the IRC handler mounting the card. The blanket
-		// pre-render that `handleEvent` used to fire before every dispatch was
-		// removed in #4353 (it doubled the paint rate during streaming and did no
-		// visible work beyond what the handlers already trigger).
+		// The event landed inside a HubActivityGroup, not as a top-level card.
+		const group = hubGroup(chatContainer);
+		expect(chatContainer.children.length).toBe(2); // live block + hub group
+		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 1");
 		expect(requestRender).toHaveBeenCalledTimes(1);
 
+		// Within the TTL: event still visible.
 		vi.advanceTimersByTime(9_999);
-		expect(chatContainer.children).toHaveLength(2);
+		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 1");
 
+		// After the TTL: event removed from group; group shows "pending" placeholder.
 		vi.advanceTimersByTime(1);
-		expect(chatContainer.children).toHaveLength(1);
+		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("pending");
 		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 
-	it("keeps a card whose rows may already be committed (no live block above)", async () => {
+	it("keeps an IRC event whose rows may already be committed (no live block above)", async () => {
 		vi.useFakeTimers();
 		const message = createIrcMessage(4);
-		const { ctx, chatContainer } = createIrcContext();
+		const { ctx, chatContainer } = createHubContext();
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
-		expect(chatContainer.children).toHaveLength(1);
+		const group = hubGroup(chatContainer);
 
-		// Render the container and commit its rows to simulate entering native scrollback
+		// Simulate rows entering native scrollback.
 		const lines = chatContainer.render(80);
 		chatContainer.setNativeScrollbackCommittedRows(lines.length);
 
-		// Everything above the card is finalized, so its rows may already be in
-		// native scrollback. Removing it would be an interior deletion of the
-		// committed prefix — the engine repairs that by recommitting everything
-		// below the gap (the duplicated-block artifact). It must stay.
+		// The group is above the commit boundary, but its rows are already on the
+		// tape — an interior deletion of committed history is forbidden. It must stay.
 		vi.advanceTimersByTime(10_000);
-		expect(chatContainer.children).toHaveLength(1);
+		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 4");
 	});
 
-	it("evicts the oldest live-region card beyond the cap", async () => {
+	it("evicts the oldest live-region event beyond the cap of 4", async () => {
 		vi.useFakeTimers();
-		const { ctx, chatContainer } = createIrcContext({ liveBlockAbove: true });
+		const { ctx, chatContainer } = createHubContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		for (let i = 0; i < 5; i++) {
 			await controller.handleEvent({ type: "irc_message", message: createIrcMessage(100 + i) });
 		}
-		// live block + MAX_LIVE_IRC_CARDS (4): the 5th card evicted the 1st.
-		expect(chatContainer.children).toHaveLength(5);
-		const rendered = chatContainer.children.map(child => child.render(80).join("\n"));
-		expect(rendered.some(text => text.includes("100"))).toBe(false);
-		expect(rendered.some(text => text.includes("104"))).toBe(true);
+
+		// The oldest entry (100) was evicted when the 5th arrived; the 4 newest remain.
+		const group = hubGroup(chatContainer);
+		const rendered = Bun.stripANSI(group.render(80).join("\n"));
+		expect(rendered).not.toContain("Ready 100");
+		expect(rendered).toContain("Ready 104");
 	});
 
 	it("does not schedule duplicate expiry for duplicate IRC events", async () => {
 		vi.useFakeTimers();
 		const message = createIrcMessage(2);
-		const { ctx, chatContainer, addMessageToChat } = createIrcContext({ liveBlockAbove: true });
+		const { ctx, chatContainer } = createHubContext({ liveBlockAbove: true });
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
 		await controller.handleEvent({ type: "irc_message", message });
 
-		expect(addMessageToChat).toHaveBeenCalledTimes(1);
-		expect(chatContainer.children).toHaveLength(2);
+		const group = hubGroup(chatContainer);
+		const rendered = Bun.stripANSI(group.render(80).join("\n"));
+		expect(rendered.split("Ready 2").length - 1).toBe(1);
+		expect(group.isEmpty).toBe(false);
+
+		// After TTL: group is empty — no second expiry fired.
 		vi.advanceTimersByTime(10_000);
-		expect(chatContainer.children).toHaveLength(1);
+		expect(group.isEmpty).toBe(true);
 	});
 
 	it("clears pending IRC expiry timers on dispose", async () => {
 		vi.useFakeTimers();
 		const message = createIrcMessage(3);
-		const { ctx, chatContainer, requestRender } = createIrcContext();
+		const { ctx, chatContainer, requestRender } = createHubContext();
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({ type: "irc_message", message });
 		controller.dispose();
 		vi.advanceTimersByTime(10_000);
 
-		expect(chatContainer.children).toHaveLength(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		// No timer fires after dispose — the group retains its entry.
+		const group = hubGroup(chatContainer);
+		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 3");
+		expect(requestRender).toHaveBeenCalledTimes(1); // only the initial mount
 	});
 });

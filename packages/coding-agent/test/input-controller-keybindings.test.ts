@@ -205,6 +205,7 @@ async function createContext() {
 		InputController,
 		ctx,
 		editor,
+		keyMap,
 		customHandlers,
 		setFocused(target: unknown) {
 			focused = target;
@@ -257,6 +258,28 @@ describe("InputController keybinding setup", () => {
 		expect(spies.refreshAppearance.mock.invocationCallOrder[0]!).toBeLessThan(
 			spies.resetDisplay.mock.invocationCallOrder[0]!,
 		);
+	});
+
+	it("routes configurable agent-cycle shortcuts to next and previous focus changes", async () => {
+		const { InputController, ctx, customHandlers, keyMap } = await createContext();
+		const cycleAgentSession = vi.fn(async (_direction: "next" | "previous") => {});
+		keyMap["app.agents.next"] = ["ctrl+n"];
+		keyMap["app.agents.previous"] = ["ctrl+p", "shift+tab"];
+		ctx.cycleAgentSession = cycleAgentSession;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(customHandlers.has("ctrl+n")).toBe(true);
+		expect(customHandlers.has("ctrl+p")).toBe(true);
+		expect(customHandlers.has("shift+tab")).toBe(true);
+		expect(customHandlers.has("alt+j")).toBe(false);
+		expect(customHandlers.has("alt+k")).toBe(false);
+
+		customHandlers.get("ctrl+n")?.();
+		customHandlers.get("shift+tab")?.();
+
+		expect(cycleAgentSession.mock.calls).toEqual([["next"], ["previous"]]);
 	});
 
 	it("does not mark pasted shell prompts as Python mode while editing", async () => {

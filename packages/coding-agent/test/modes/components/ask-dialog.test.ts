@@ -5,6 +5,7 @@ import type { ExtensionAskDialogQuestion } from "@oh-my-pi/pi-coding-agent/exten
 import { AskDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ask-dialog";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../../../src/i18n/settings-locale";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -17,6 +18,7 @@ const TAB = "\t";
 const SHIFT_TAB = "\x1b[Z";
 
 let darkTheme = await getThemeByName("dark");
+let previousSettingsUiLocale = getSettingsUiLocale();
 
 function render(component: AskDialogComponent): string {
 	return stripVTControlCharacters(component.render(80).join("\n"));
@@ -29,6 +31,7 @@ describe("AskDialogComponent", () => {
 	});
 
 	beforeEach(() => {
+		previousSettingsUiLocale = getSettingsUiLocale();
 		setThemeInstance(darkTheme!);
 		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
 	});
@@ -37,6 +40,7 @@ describe("AskDialogComponent", () => {
 		setKeybindings(KeybindingsManager.inMemory());
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		setSettingsUiLocale(previousSettingsUiLocale);
 	});
 
 	it("single-question, single-select: Enter on option submits immediately", () => {
@@ -1361,5 +1365,32 @@ describe("AskDialogComponent", () => {
 		component.handleInput(ENTER);
 		expect(onSubmit).toHaveBeenCalledTimes(1);
 		expect(onSubmit.mock.calls[0][0].results[0].customInput).toBeUndefined();
+	});
+
+	it("renders runtime-switched zh-CN labels for Other and Submit after module load", () => {
+		setSettingsUiLocale("en");
+		setSettingsUiLocale("zh-CN");
+		const component = new AskDialogComponent(
+			[
+				{
+					id: "q1",
+					question: "Choose multiple?",
+					options: [{ label: "Option A" }, { label: "Option B" }],
+					multi: true,
+				},
+			],
+			{ onSubmit: vi.fn(), onCancel: vi.fn(), onPrompt: vi.fn() },
+		);
+
+		const questionView = render(component);
+		expect(questionView).toContain(tSettingsUi("Other (type your own)"));
+		expect(questionView).toContain(tSettingsUi("Submit"));
+		expect(questionView).not.toContain("Other (type your own)");
+		expect(questionView).not.toContain("Submit");
+
+		component.handleInput(TAB);
+		const submitView = render(component);
+		expect(submitView).toContain(tSettingsUi("Review answers"));
+		expect(submitView).not.toContain("Review answers");
 	});
 });

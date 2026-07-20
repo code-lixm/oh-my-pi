@@ -8,6 +8,7 @@ import {
 	type AuthGatewayCommandArgs,
 	runAuthGatewayCommand,
 } from "../cli/auth-gateway-cli";
+import { ensureCliHelpLocale, localizeCliHelpMetadata } from "../cli/help-locale";
 import { initTheme } from "../modes/theme/theme";
 
 export default class AuthGateway extends Command {
@@ -50,6 +51,8 @@ export default class AuthGateway extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(AuthGateway);
 		if (!args.action) {
+			await ensureCliHelpLocale();
+			localizeCliHelpMetadata(AuthGateway);
 			renderCommandHelp("omp", "auth-gateway", AuthGateway);
 			return;
 		}

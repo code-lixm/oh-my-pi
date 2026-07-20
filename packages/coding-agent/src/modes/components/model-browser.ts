@@ -25,6 +25,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { ModelPerfStats } from "../../session/agent-storage";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../../thinking";
 import { type ThemeColor, theme } from "../theme/theme";
@@ -253,19 +254,26 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel): string {
 	}
 }
 
+/** Localize built-in role names while preserving compact English tags and custom-role labels. */
+export function formatRoleDisplayLabel(role: string, settings: Settings): string {
+	const info = getRoleInfo(role, settings);
+	const localizedName = tSettingsUi(info.name);
+	return localizedName !== info.name ? localizedName : (info.tag ?? info.name ?? role);
+}
+
 /**
- * A slim role chip: `●default ◉` — solid dot for configured assignments,
+ * A slim role chip: `● default ◉` — solid dot for configured assignments,
  * hollow for auto-selected fallbacks, thinking glyph attached when set.
  */
 export function formatRoleChip(role: string, assignment: RoleAssignment, settings: Settings): string {
 	const info = getRoleInfo(role, settings);
-	const label = (info.tag ?? info.name ?? role).toLowerCase();
+	const label = formatRoleDisplayLabel(role, settings).toLowerCase();
 	const glyph = thinkingLevelGlyph(assignment.thinkingLevel);
 	const suffix = glyph ? ` ${theme.fg("dim", glyph)}` : "";
 	if (assignment.autoSelected) {
-		return theme.fg("dim", `${theme.status.shadowed}${label}`) + suffix;
+		return theme.fg("dim", `${theme.status.shadowed} ${label}`) + suffix;
 	}
-	return theme.fg(info.color ?? "muted", `${theme.status.enabled}${label}`) + suffix;
+	return theme.fg(info.color ?? "muted", `${theme.status.enabled} ${label}`) + suffix;
 }
 
 /** `$in/out` per-million cost pair; `free` when both legs are zero. */
@@ -729,7 +737,7 @@ export class ModelBrowser implements Component {
 		const currentMark =
 			item.selector === this.#currentSelector ? ` ${theme.fg("success", theme.status.enabled)}` : "";
 		const overLimit = disabled
-			? ` ${theme.status.disabled} context>${formatNumber(item.model.contextWindow ?? 0).toLowerCase()}`
+			? ` ${theme.status.disabled} ${tSettingsUi("context>{limit}", { limit: formatNumber(item.model.contextWindow ?? 0).toLowerCase() })}`
 			: "";
 		let left = `${prefix}${providerPrefix}${name}${currentMark}${overLimit}`;
 
@@ -760,20 +768,22 @@ export class ModelBrowser implements Component {
 		const model = selected.model;
 
 		const facts: string[] = [model.name];
-		if (model.contextWindow) facts.push(`${formatNumber(model.contextWindow).toLowerCase()} ctx`);
-		if (model.maxTokens) facts.push(`${formatNumber(model.maxTokens).toLowerCase()} out`);
-		facts.push(`${formatCostPair(model)} per M`);
-		if (model.reasoning) facts.push("reasoning");
-		if (model.input.includes("image")) facts.push("vision");
+		if (model.contextWindow)
+			facts.push(tSettingsUi("{count} ctx", { count: formatNumber(model.contextWindow).toLowerCase() }));
+		if (model.maxTokens)
+			facts.push(tSettingsUi("{count} out", { count: formatNumber(model.maxTokens).toLowerCase() }));
+		facts.push(tSettingsUi("{cost} per M", { cost: formatCostPair(model) }));
+		if (model.reasoning) facts.push(tSettingsUi("reasoning"));
+		if (model.input.includes("image")) facts.push(tSettingsUi("vision"));
 		const perf = this.#perf.get(selected.selector);
 		if (perf) {
 			facts.push(`~${formatTps(perf.tps)}`);
-			if (perf.ttftMs !== null) facts.push(`${formatTtft(perf.ttftMs)} ttft`);
+			if (perf.ttftMs !== null) facts.push(tSettingsUi("{value} ttft", { value: formatTtft(perf.ttftMs) }));
 		}
 		const line1 = truncateToWidth(theme.fg("muted", `  ${facts.join(" · ")}`), width);
 
 		if (this.#isDisabled(selected)) {
-			const warning = `  ${theme.status.disabled} current context ${formatNumber(this.#currentContextTokens).toLowerCase()} exceeds ${formatNumber(model.contextWindow ?? 0).toLowerCase()} limit`;
+			const warning = `  ${theme.status.disabled} ${tSettingsUi("current context {current} exceeds {limit} limit", { current: formatNumber(this.#currentContextTokens).toLowerCase(), limit: formatNumber(model.contextWindow ?? 0).toLowerCase() })}`;
 			return [line1, truncateToWidth(theme.fg("warning", warning), width)];
 		}
 
@@ -792,7 +802,7 @@ export class ModelBrowser implements Component {
 		};
 		for (const role of MODEL_ROLE_IDS) pushRole(role);
 		for (const role in this.#roles) pushRole(role);
-		const line2 = chips.length > 0 ? truncateToWidth(`  ${chips.join(theme.fg("dim", " · "))}`, width) : "";
+		const line2 = chips.length > 0 ? truncateToWidth(`  ${chips.join("  ·  ")}`, width) : "";
 		return [line1, line2];
 	}
 
@@ -815,7 +825,10 @@ export class ModelBrowser implements Component {
 
 		if (total === 0) {
 			const message =
-				this.#emptyText?.() ?? (this.query.trim() ? "  No matching models" : "  No models available in this scope");
+				this.#emptyText?.() ??
+				(this.query.trim()
+					? `  ${tSettingsUi("No matching models")}`
+					: `  ${tSettingsUi("No models available in this scope")}`);
 			lines.push(truncateToWidth(theme.fg("muted", message), width));
 			for (let i = 1; i < this.#maxVisible; i++) lines.push("");
 		} else {

@@ -56,6 +56,18 @@ export interface SelectListLayoutOptions {
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
 	/** Enable type-to-filter search when the item count exceeds maxVisible. Defaults to true. */
 	overflowSearch?: boolean;
+	/** Localized label prefix for an active search query. Defaults to "Search". */
+	searchLabel?: string;
+	/**
+	 * Localized active-search status prefix (with trailing space). Defaults to "Search: ".
+	 * When provided, supersedes {@link searchLabel} so callers can pick the exact punctuation
+	 * and word ordering for their locale (e.g. "搜索： ").
+	 */
+	searchPrefix?: string;
+	/** Localized idle search prompt. Defaults to "Type to search". */
+	searchPlaceholder?: string;
+	/** Localized empty-state text shown when filtering matches nothing. Defaults to "No matching items". */
+	noMatchText?: string;
 	/**
 	 * Wrap long descriptions onto continuation rows indented under the
 	 * description column instead of truncating. Defaults to false so existing
@@ -155,12 +167,11 @@ export class SelectList implements Component, MouseRoutable {
 		this.#hitRows = [];
 		const showSearchStatus = this.#shouldRenderSearchStatus();
 
-		// If no items match filter, show message
 		if (this.#filteredItems.length === 0) {
 			if (showSearchStatus) {
 				lines.push(this.#renderStatusLine(width));
 			}
-			lines.push(this.theme.noMatch("  No matching items"));
+			lines.push(this.theme.noMatch(`  ${this.layout.noMatchText ?? "No matching items"}`));
 			return lines;
 		}
 
@@ -453,7 +464,9 @@ export class SelectList implements Component, MouseRoutable {
 
 	#renderStatusLine(width: number): string {
 		const query = sanitizeSingleLine(this.#filterQuery);
-		const statusText = query ? `  Search: ${query}` : "  Type to search";
+		const statusText = query
+			? `  ${this.layout.searchPrefix ?? `${this.layout.searchLabel ?? "Search"}: `}${query}`
+			: `  ${this.layout.searchPlaceholder ?? "Type to search"}`;
 		return this.theme.scrollInfo(truncateToWidth(statusText, Math.max(1, width - 2), Ellipsis.Omit));
 	}
 

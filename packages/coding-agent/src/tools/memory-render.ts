@@ -12,6 +12,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
 import {
@@ -69,7 +70,10 @@ function retainComponent(contents: string[], header: string, getExpanded: () => 
 		}
 		const remaining = contents.length - shown.length;
 		if (remaining > 0) {
-			lines.push(`  ${theme.fg("dim", `… ${remaining} more`)} ${formatExpandHint(theme, expanded, true)}`);
+			const overflow = tSettingsUi(remaining === 1 ? "… 1 more retained item" : "… {count} more retained items", {
+				count: remaining,
+			});
+			lines.push(`  ${theme.fg("dim", overflow)} ${formatExpandHint(theme, expanded, true)}`);
 		}
 		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 	});
@@ -80,7 +84,7 @@ export const retainToolRenderer = {
 	mergeCallAndResult: true,
 	renderCall(args: RetainRenderArgs, options: RenderResultOptions, theme: Theme): Component {
 		const contents = retainContents(args);
-		const header = renderStatusLine({ icon: "pending", title: "Retain" }, theme);
+		const header = renderStatusLine({ icon: "pending", title: tSettingsUi("Retain") }, theme);
 		return retainComponent(contents, header, () => options.expanded, theme);
 	},
 	renderResult(
@@ -90,7 +94,7 @@ export const retainToolRenderer = {
 		args?: RetainRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Retain failed", theme), 0, 0);
+			return new Text(formatErrorMessage(resultText(result) || tSettingsUi("Retain failed"), theme), 0, 0);
 		}
 		const contents = retainContents(args);
 		// `summary` is the tool's own "N memories stored/queued." line; drop the
@@ -99,7 +103,7 @@ export const retainToolRenderer = {
 		const header = renderStatusLine(
 			{
 				iconOverride: theme.styledSymbol("tool.memory", "accent"),
-				title: "Retain",
+				title: tSettingsUi("Retain"),
 				meta: summary ? [summary] : undefined,
 			},
 			theme,
@@ -112,7 +116,7 @@ export const recallToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		return new Text(queryHeader("Recall", args.query, "pending", theme), 0, 0);
+		return new Text(queryHeader(tSettingsUi("Recall"), args.query, "pending", theme), 0, 0);
 	},
 	renderResult(
 		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
@@ -121,21 +125,26 @@ export const recallToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Recall failed", theme), 0, 0);
+			return new Text(formatErrorMessage(resultText(result) || tSettingsUi("Recall failed"), theme), 0, 0);
 		}
 		const text = resultText(result);
 		const match = text.match(/^Found (\d+) relevant/);
 		const found = match ? Number(match[1]) : 0;
-		const meta = [found > 0 ? `${found} found` : "no matches"];
+		const meta = [found > 0 ? tSettingsUi("{count} found", { count: found }) : tSettingsUi("no matches")];
 		const header =
 			found > 0
-				? queryHeader("Recall", args?.query, "success", theme, meta, theme.styledSymbol("tool.memory", "accent"))
-				: queryHeader("Recall", args?.query, "warning", theme, meta);
+				? queryHeader(
+						tSettingsUi("Recall"),
+						args?.query,
+						"success",
+						theme,
+						meta,
+						theme.styledSymbol("tool.memory", "accent"),
+					)
+				: queryHeader(tSettingsUi("Recall"), args?.query, "warning", theme, meta);
 		if (found === 0) {
 			return new Text(header, 0, 0);
 		}
-		// Collapsed view is the header alone; expand to inspect the recalled
-		// memories without dumping the whole block into the transcript.
 		const body = text.replace(/^[^\n]*\n+/, "");
 		return createCachedComponent(
 			() => options.expanded,
@@ -159,7 +168,7 @@ export const reflectToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		return new Text(queryHeader("Reflect", args.query, "pending", theme), 0, 0);
+		return new Text(queryHeader(tSettingsUi("Reflect"), args.query, "pending", theme), 0, 0);
 	},
 	renderResult(
 		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
@@ -168,10 +177,10 @@ export const reflectToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Reflect failed", theme), 0, 0);
+			return new Text(formatErrorMessage(resultText(result) || tSettingsUi("Reflect failed"), theme), 0, 0);
 		}
 		const header = queryHeader(
-			"Reflect",
+			tSettingsUi("Reflect"),
 			args?.query,
 			"success",
 			theme,
@@ -191,9 +200,10 @@ export const reflectToolRenderer = {
 				}
 				const remaining = answerLines.length - shown.length;
 				if (remaining > 0) {
-					lines.push(
-						`  ${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`,
-					);
+					const overflow = tSettingsUi(remaining === 1 ? "… 1 more line" : "… {count} more lines", {
+						count: remaining,
+					});
+					lines.push(`  ${theme.fg("dim", overflow)} ${formatExpandHint(theme, expanded, true)}`);
 				}
 				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 			},

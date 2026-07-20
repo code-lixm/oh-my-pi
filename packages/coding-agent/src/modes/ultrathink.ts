@@ -1,4 +1,6 @@
+import { selectPrompt } from "../prompts/prompt-locale";
 import ultrathinkNotice from "../prompts/system/ultrathink-notice.md" with { type: "text" };
+import ultrathinkNoticeZh from "../prompts/system/ultrathink-notice.zh-CN.md" with { type: "text" };
 import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
@@ -17,8 +19,10 @@ import { keywordInProse } from "./markdown-prose";
 // Detection: lowercase keyword flanked by prose punctuation, whitespace, or a string edge.
 const ULTRATHINK_WORD = magicKeywordRegex("ultrathink");
 
-/** Hidden system notice appended after a user message that mentions "ultrathink". */
-export const ULTRATHINK_NOTICE: string = ultrathinkNotice.trim();
+/** Render the hidden system notice appended after a user message that mentions "ultrathink". */
+export function renderUltrathinkNotice(): string {
+	return selectPrompt(ultrathinkNotice, ultrathinkNoticeZh).trim();
+}
 
 /**
  * Whether `text` contains the standalone keyword "ultrathink" (lowercase,

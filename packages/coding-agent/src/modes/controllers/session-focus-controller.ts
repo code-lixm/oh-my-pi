@@ -9,11 +9,11 @@
  * authoritative state.
  */
 
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import type { InteractiveModeContext } from "../types";
-
 export class SessionFocusController {
 	#focusedAgentId: string | undefined;
 	/** Session currently attached while focused; undefined when unfocused. */
@@ -45,7 +45,29 @@ export class SessionFocusController {
 		this.#attachedSession = session;
 		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
 		await this.#attach(session);
-		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent`);
+		this.ctx.showStatus(tSettingsUi("Viewing agent {id} — Esc returns to main, ←← hops to parent", { id }));
+	}
+
+	/** Cycle through Main and live subagents in stable creation order. */
+	async cycleAgent(direction: "next" | "previous"): Promise<void> {
+		const agentIds = this.registry
+			.list()
+			.filter(ref => ref.kind === "sub" && (ref.status === "running" || ref.status === "idle"))
+			.sort((left, right) => left.createdAt - right.createdAt)
+			.map(ref => ref.id);
+		if (agentIds.length === 0) {
+			this.ctx.showStatus(tSettingsUi("No live subagents"));
+			return;
+		}
+
+		const targets = [MAIN_AGENT_ID, ...agentIds];
+		const current = this.#focusedAgentId ?? MAIN_AGENT_ID;
+		const currentIndex = Math.max(0, targets.indexOf(current));
+		const delta = direction === "next" ? 1 : -1;
+		const targetIndex = (currentIndex + delta + targets.length) % targets.length;
+		const target = targets[targetIndex]!;
+		if (target === MAIN_AGENT_ID) return this.unfocus();
+		return this.focusAgent(target);
 	}
 
 	/** Focus the focused agent's parent agent, falling back to the main session. No-op when unfocused. */
@@ -64,7 +86,7 @@ export class SessionFocusController {
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		await this.#attach(this.ctx.session);
-		this.ctx.showStatus("Returned to main session");
+		this.ctx.showStatus(tSettingsUi("Returned to main session"));
 	}
 
 	dispose(): void {
@@ -78,7 +100,12 @@ export class SessionFocusController {
 		const dead = event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
 		if (!gone && !dead) return;
 		void this.unfocus().then(() => {
-			this.ctx.showStatus(`Agent ${event.ref.id} is ${gone ? "gone" : event.ref.status}; returned to main session`);
+			this.ctx.showStatus(
+				tSettingsUi("Agent {id} is {status}; returned to main session", {
+					id: event.ref.id,
+					status: gone ? "gone" : event.ref.status,
+				}),
+			);
 		});
 	}
 
@@ -102,7 +129,8 @@ export class SessionFocusController {
 			}
 			await this.ctx.eventController.handleEvent(event);
 		});
-		this.ctx.statusLine.setSession(target, this.#focusedAgentId);
+		const focusedRef = this.#focusedAgentId ? this.registry.get(this.#focusedAgentId) : undefined;
+		this.ctx.statusLine.setSession(target, this.#focusedAgentId, focusedRef?.displayName);
 		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		// Mid-turn attach: no agent_start will arrive; arm the loader/turn state manually.
 		if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });

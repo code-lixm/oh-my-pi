@@ -111,6 +111,10 @@ export interface TUIOptions {
 export interface TUIStartOptions {
 	/** Clear saved native scrollback before the first paint. */
 	clearScrollback?: boolean;
+	/** Hold the first paint until terminal appearance is known or this timeout expires. */
+	waitForAppearanceMs?: number;
+	/** Hold the first paint until DEC 2026 support is confirmed or this timeout expires. */
+	waitForSynchronizedOutputMs?: number;
 }
 
 const DEFAULT_RENDER_SCHEDULER: RenderScheduler = {
@@ -926,6 +930,13 @@ export class TUI extends Container {
 	onDebug?: () => void;
 	#renderRequested = false;
 	#renderTimer: RenderTimer | undefined;
+	#startupAppearanceWaitTimer: RenderTimer | undefined;
+	#startupSynchronizedOutputWaitTimer: RenderTimer | undefined;
+	#startupAppearanceWaitPending = false;
+	#startupSynchronizedOutputWaitPending = false;
+	#startupAppearanceWaitActive = false;
+	#startupAppearanceRenderForce = false;
+	#startupAppearanceClearScrollback = false;
 	#renderScheduler: RenderScheduler;
 	#lastRenderAt = 0;
 	/**
@@ -1553,8 +1564,67 @@ export class TUI extends Container {
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
+	#armStartupAppearanceWait(timeoutMs: number | undefined): void {
+		if (timeoutMs === undefined || timeoutMs <= 0 || this.terminal.appearance !== undefined) return;
+		this.#startupAppearanceWaitPending = true;
+		this.#startupAppearanceWaitActive = true;
+		this.terminal.onAppearanceChange(() => {
+			this.#startupAppearanceWaitPending = false;
+			this.#tryReleaseStartupWait();
+		});
+		if (!this.#startupAppearanceWaitPending) return;
+		this.#startupAppearanceWaitTimer = this.#renderScheduler.scheduleRender(() => {
+			this.#startupAppearanceWaitPending = false;
+			this.#tryReleaseStartupWait();
+		}, timeoutMs);
+	}
+
+	#armStartupSynchronizedOutputWait(timeoutMs: number | undefined): void {
+		if (
+			timeoutMs === undefined ||
+			timeoutMs <= 0 ||
+			this.#synchronizedOutputEnabled ||
+			synchronizedOutputUserOverride() !== null
+		)
+			return;
+		this.#startupSynchronizedOutputWaitPending = true;
+		this.#startupAppearanceWaitActive = true;
+		this.#startupSynchronizedOutputWaitTimer = this.#renderScheduler.scheduleRender(() => {
+			this.#startupSynchronizedOutputWaitPending = false;
+			this.#tryReleaseStartupWait();
+		}, timeoutMs);
+	}
+
+	#releaseStartupSynchronizedOutputWait(): void {
+		if (!this.#startupSynchronizedOutputWaitPending) return;
+		this.#startupSynchronizedOutputWaitPending = false;
+		this.#tryReleaseStartupWait();
+	}
+
+	#tryReleaseStartupWait(): void {
+		if (
+			!this.#startupAppearanceWaitActive ||
+			this.#startupAppearanceWaitPending ||
+			this.#startupSynchronizedOutputWaitPending
+		)
+			return;
+		this.#startupAppearanceWaitActive = false;
+		this.#startupAppearanceWaitTimer?.cancel();
+		this.#startupAppearanceWaitTimer = undefined;
+		this.#startupSynchronizedOutputWaitTimer?.cancel();
+		this.#startupSynchronizedOutputWaitTimer = undefined;
+		const force = this.#startupAppearanceRenderForce;
+		const clearScrollback = this.#startupAppearanceClearScrollback;
+		this.#startupAppearanceRenderForce = false;
+		this.#startupAppearanceClearScrollback = false;
+		if (this.#stopped) return;
+		this.requestRender(force, { clearScrollback });
+	}
+
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#armStartupSynchronizedOutputWait(options?.waitForSynchronizedOutputMs);
+		this.#armStartupAppearanceWait(options?.waitForAppearanceMs);
 		this.#watchdog.start();
 		this.#ghosttyInitialImageDelayDone = false;
 		this.#ghosttyImageReadyAtMs = this.#renderScheduler.now() + TUI.#GHOSTTY_INITIAL_IMAGE_DELAY_MS;
@@ -1567,8 +1637,8 @@ export class TUI extends Container {
 		// wins, so skip every probe result in that case.
 		this.terminal.onPrivateModeReport?.((mode, supported, confirmed = true) => {
 			if (mode !== 2026 || !confirmed) return;
-			if (synchronizedOutputUserOverride() !== null) return;
-			this.#setSynchronizedOutput(supported);
+			if (synchronizedOutputUserOverride() === null) this.#setSynchronizedOutput(supported);
+			this.#releaseStartupSynchronizedOutputWait();
 		});
 		this.terminal.start(
 			data => this.#handleInput(data),
@@ -1809,6 +1879,19 @@ export class TUI extends Container {
 			this.#renderTimer.cancel();
 			this.#renderTimer = undefined;
 		}
+		if (this.#startupAppearanceWaitTimer) {
+			this.#startupAppearanceWaitTimer.cancel();
+			this.#startupAppearanceWaitTimer = undefined;
+		}
+		if (this.#startupSynchronizedOutputWaitTimer) {
+			this.#startupSynchronizedOutputWaitTimer.cancel();
+			this.#startupSynchronizedOutputWaitTimer = undefined;
+		}
+		this.#startupAppearanceWaitPending = false;
+		this.#startupSynchronizedOutputWaitPending = false;
+		this.#startupAppearanceWaitActive = false;
+		this.#startupAppearanceRenderForce = false;
+		this.#startupAppearanceClearScrollback = false;
 		if (this.#ghosttyInitialImageDelayTimer) {
 			this.#ghosttyInitialImageDelayTimer.cancel();
 			this.#ghosttyInitialImageDelayTimer = undefined;
@@ -1865,6 +1948,10 @@ export class TUI extends Container {
 	resetDisplay(): void {
 		if (this.#stopped) return;
 		this.invalidate();
+		if (this.#startupAppearanceWaitActive) {
+			this.requestRender(true);
+			return;
+		}
 		// A reset that lands inside a tmux/screen/zellij resize burst would
 		// paint mid-reflow and re-introduce the flash race (issue #2088).
 		// Fold it into the in-flight debounce instead; the settled paint runs
@@ -1874,13 +1961,20 @@ export class TUI extends Container {
 			this.#armMultiplexerResizeTimer(!isMultiplexerSession());
 			return;
 		}
-		this.#prepareForcedRender(!isMultiplexerSession());
+		// Explicit display resets must clear stale native scrollback even inside
+		// multiplexers; resize-debounce resets still use the mux-safe branch above.
+		this.#prepareForcedRender(true);
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
+		if (this.#startupAppearanceWaitActive) {
+			this.#startupAppearanceRenderForce ||= force;
+			this.#startupAppearanceClearScrollback ||= options?.clearScrollback === true;
+			return;
+		}
 		// Any non-component-scoped request makes the pending frame a full one.
 		this.#pendingRenderComponentsOnly = false;
 		if (force) {
@@ -2108,6 +2202,7 @@ export class TUI extends Container {
 
 	/** Ordinary (non-forced) scheduling shared by full and component-scoped requests. */
 	#requestOrdinaryRender(): void {
+		if (this.#startupAppearanceWaitActive) return;
 		// Coalesce non-forced renders inside the post-full-paint ConPTY settle
 		// window into one trailing render. Spinner/blink/streaming components
 		// otherwise fire `requestRender(false)` at 30 Hz while the host is still
@@ -2858,17 +2953,18 @@ export class TUI extends Container {
 			return;
 		}
 
-		// A destructive replay erases native history and must receive the complete
-		// component frame. Give virtualized roots one compose to rehydrate rows
-		// they dropped after commit. Height-only and net-unchanged resize events
-		// count too: both enter the geometry rebuild path below.
+		// A history-replacing full paint must receive the complete component frame.
+		// Give virtualized roots one compose to rehydrate rows they dropped after
+		// commit. Geometry-driven rebuilds only need that replay on terminals where
+		// resize actually rewrites scrollback; multiplexer / in-place resize paths
+		// keep their existing history and repaint only the visible window.
 		const replayFullHistory =
 			this.#hasEverRendered &&
-			!resizeRepaintsInPlace() &&
 			(this.#clearScrollbackOnNextRender ||
-				this.#resizeEventPending ||
-				(this.#previousWidth > 0 && this.#previousWidth !== width) ||
-				(this.#previousHeight > 0 && this.#previousHeight !== height));
+				(!resizeRepaintsInPlace() &&
+					(this.#resizeEventPending ||
+						(this.#previousWidth > 0 && this.#previousWidth !== width) ||
+						(this.#previousHeight > 0 && this.#previousHeight !== height))));
 		if (replayFullHistory) {
 			for (const child of this.children) prepareNativeScrollbackReplay(child);
 		}
@@ -3120,7 +3216,10 @@ export class TUI extends Container {
 		const intent: RenderIntent = fullPaint
 			? {
 					kind: "fullPaint",
-					clearScrollback: divergenceRebuild || ((replaceRequested || geometryRebuild) && !isMultiplexerSession()),
+					clearScrollback:
+						divergenceRebuild ||
+						deferredAltExit.length > 0 ||
+						(!isMultiplexerSession() && (replaceRequested || geometryRebuild)),
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);
@@ -3301,6 +3400,8 @@ export class TUI extends Container {
 						output += sequence;
 						cells += visibleWidth(sequence);
 					}
+				} else if (this.#ansiSequenceAnchorsCursor(raw, i, end) && output.length + end - i <= maxSourceLength) {
+					output += raw.slice(i, end);
 				}
 				i = end;
 				continue;
@@ -3383,6 +3484,18 @@ export class TUI extends Container {
 			line.charCodeAt(start + 3) === 0x36 &&
 			line.charCodeAt(start + 4) === 0x3b
 		);
+	}
+
+	#ansiSequenceAnchorsCursor(line: string, start: number, end: number): boolean {
+		if (line.charCodeAt(start + 1) !== 0x5b || end <= start + 2) return false;
+		const final = line.charCodeAt(end - 1);
+		if (final === 0x73 || final === 0x75) return end === start + 3;
+		if (final !== 0x43) return false;
+		for (let i = start + 2; i < end - 1; i++) {
+			const code = line.charCodeAt(i);
+			if (code < 0x30 || code > 0x39) return false;
+		}
+		return end > start + 3;
 	}
 
 	#ansiAsciiLineWidth(line: string, maxWidth: number): number | undefined {

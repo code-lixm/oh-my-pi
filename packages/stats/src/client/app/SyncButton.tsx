@@ -1,6 +1,16 @@
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { sync } from "../api";
+import { t, tp } from "../locale/catalog";
+import { useLocale } from "../useLocale";
+
+/**
+ * Status stored as structured data so locale changes (or future re-renders
+ * without an HTTP round-trip) re-evaluate the user-visible copy via t()/tp()
+ * at render time. Storing the already-localized message in state would freeze
+ * it to whichever locale was active at sync time.
+ */
+type SyncStatus = { type: "success"; processed: number } | { type: "error"; rawError: string };
 
 export interface SyncButtonProps {
 	onSyncStart?: () => void;
@@ -13,8 +23,10 @@ export interface SyncButtonProps {
 }
 
 export function SyncButton({ onSyncStart, onSyncComplete, className = "" }: SyncButtonProps) {
+	// Subscribe so success/error copy refreshes when the user flips locale.
+	useLocale();
 	const [syncing, setSyncing] = useState(false);
-	const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
+	const [status, setStatus] = useState<SyncStatus | null>(null);
 
 	const handleSync = async () => {
 		if (syncing) return;
@@ -32,21 +44,15 @@ export function SyncButton({ onSyncStart, onSyncComplete, className = "" }: Sync
 				files: typeof data?.files === "number" ? data.files : 0,
 				totalMessages: typeof data?.totalMessages === "number" ? data.totalMessages : 0,
 			};
-			setStatus({
-				type: "success",
-				message: `Synced: ${result.processed} new request${result.processed === 1 ? "" : "s"} found.`,
-			});
+			setStatus({ type: "success", processed: result.processed });
 			if (onSyncComplete) {
 				onSyncComplete({ success: true, data: result });
 			}
 		} catch (err) {
-			const errorMessage = err instanceof Error ? err.message : String(err);
-			setStatus({
-				type: "error",
-				message: `Sync failed: ${errorMessage}`,
-			});
+			const rawError = err instanceof Error ? err.message : String(err);
+			setStatus({ type: "error", rawError });
 			if (onSyncComplete) {
-				onSyncComplete({ success: false, error: errorMessage });
+				onSyncComplete({ success: false, error: rawError });
 			}
 		} finally {
 			setSyncing(false);
@@ -57,7 +63,11 @@ export function SyncButton({ onSyncStart, onSyncComplete, className = "" }: Sync
 		<div className={`stats-sync-container ${className}`}>
 			{status && (
 				<span className="stats-sync-status-msg" data-type={status.type}>
-					{status.message}
+					{status.type === "success"
+						? tp("syncButton.success.singular", "syncButton.success.plural", status.processed, {
+								n: status.processed,
+							})
+						: t("syncButton.error", { message: status.rawError })}
 				</span>
 			)}
 			<button
@@ -68,7 +78,7 @@ export function SyncButton({ onSyncStart, onSyncComplete, className = "" }: Sync
 				aria-busy={syncing}
 			>
 				<RefreshCw size={14} className={`stats-sync-icon ${syncing ? "stats-spin" : ""}`} />
-				{syncing ? "Syncing..." : "Sync DB"}
+				{syncing ? t("syncButton.syncing") : t("syncButton.idle")}
 			</button>
 		</div>
 	);

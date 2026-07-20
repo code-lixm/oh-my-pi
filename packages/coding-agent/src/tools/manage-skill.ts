@@ -8,7 +8,9 @@ import {
 	writeManagedSkill,
 } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
+import { selectPrompt } from "../prompts/prompt-locale";
 import manageSkillDescription from "../prompts/tools/manage-skill.md" with { type: "text" };
+import manageSkillDescriptionZh from "../prompts/tools/manage-skill.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const manageSkillSchema = type({
@@ -39,7 +41,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 	readonly name = "manage_skill";
 	readonly approval = "write" as const;
 	readonly label = "Manage Skill";
-	readonly description = manageSkillDescription;
+	readonly description = selectPrompt(manageSkillDescription, manageSkillDescriptionZh);
 	readonly parameters = manageSkillSchema;
 	readonly strict = true;
 	readonly loadMode = "essential" as const;

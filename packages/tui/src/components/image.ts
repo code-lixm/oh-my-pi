@@ -458,3 +458,19 @@ export class Image implements Component {
 		return lines;
 	}
 }
+
+/**
+ * Format a list of image blocks as plain-text fallback lines:
+ * `[Image #N, WxH]` / `[image/png 800x600]` — one per block, in input order.
+ *
+ * Host code can wrap the result in {@link framedBlock} (or any other box
+ * renderer) so it picks up the same rounded-border geometry and left
+ * padding the Markdown code frames use. Kept in the `tui` package so
+ * `Image` consumers do not have to re-derive the formatting rules.
+ */
+export function formatImageFallbacks(blocks: Array<{ mimeType: string; data?: string }>): string[] {
+	return blocks.map((img, i) => {
+		const dims = img.data ? (getImageDimensions(img.data, img.mimeType) ?? undefined) : undefined;
+		return imageFallback(img.mimeType, dims) || `[Image #${i + 1}]`;
+	});
+}

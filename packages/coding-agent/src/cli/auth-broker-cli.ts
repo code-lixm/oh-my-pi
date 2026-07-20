@@ -37,6 +37,7 @@ import { $which, APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, V
 import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { $ } from "bun";
 import chalk from "chalk";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthBrokerAction = "serve" | "token" | "login" | "logout" | "status" | "import" | "migrate" | "list";
@@ -80,6 +81,48 @@ const CALLBACK_PORTS: Record<string, number> = Object.fromEntries(
 		provider.callbackPort != null ? [[provider.id, provider.callbackPort] as [string, number]] : [],
 	),
 );
+
+function formatImportSkipReason(reason: string): string {
+	if (reason.startsWith("unreadable JSON: ")) {
+		return tSettingsUi("unreadable JSON: {error}", { error: reason.slice("unreadable JSON: ".length) });
+	}
+	if (reason === "credential marked disabled (use --include-disabled to import anyway)") {
+		return tSettingsUi("credential marked disabled (use --include-disabled to import anyway)");
+	}
+	if (reason === "missing access_token or refresh_token") {
+		return tSettingsUi("missing access_token or refresh_token");
+	}
+	const providerMatch = /^cannot determine omp provider from type=(.+) \(pass --provider to override\)$/.exec(reason);
+	if (providerMatch) {
+		return tSettingsUi("cannot determine omp provider from type={type} (pass --provider to override)", {
+			type: providerMatch[1] ?? "?",
+		});
+	}
+	const expiredMatch = /^cannot parse expired=(.+)$/.exec(reason);
+	if (expiredMatch) {
+		return tSettingsUi("cannot parse expired={value}", { value: expiredMatch[1] ?? "?" });
+	}
+	return reason;
+}
+
+function formatMigrateSkipReason(reason: string): string {
+	switch (reason) {
+		case "placeholder sentinel '<authenticated>' is not a real key":
+			return tSettingsUi("placeholder sentinel '<authenticated>' is not a real key");
+		case "OAuth from local SQLite skipped by default (use --include-oauth)":
+			return tSettingsUi("OAuth from local SQLite skipped by default (use --include-oauth)");
+		case "already on broker":
+			return tSettingsUi("already on broker");
+		case "another local api_key for this provider already planned":
+			return tSettingsUi("another local api_key for this provider already planned");
+		case "already on broker (provider has an api_key)":
+			return tSettingsUi("already on broker (provider has an api_key)");
+		case "local SQLite already supplied an api_key for this provider":
+			return tSettingsUi("local SQLite already supplied an api_key for this provider");
+		default:
+			return reason;
+	}
+}
 
 function getTokenFilePath(): string {
 	return path.join(getConfigRootDir(), "auth-broker.token");
@@ -137,15 +180,15 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		bearerTokens: [token],
 		version: VERSION,
 	});
-	logger.info("auth-broker listening", { url: handle.url });
-	logger.info("auth-broker bearer token loaded", { path: getTokenFilePath(), mode: "0600" });
+	logger.info(tSettingsUi("auth-broker listening"), { url: handle.url });
+	logger.info(tSettingsUi("auth-broker bearer token loaded"), { path: getTokenFilePath(), mode: "0600" });
 
 	const credentialDisabledUnsub = storage.onCredentialDisabled((event: CredentialDisabledEvent) => {
-		logger.warn("auth-broker credential disabled", { ...event });
+		logger.warn(tSettingsUi("auth-broker credential disabled"), { ...event });
 	});
 
 	const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-		logger.info("auth-broker shutting down", { signal });
+		logger.info(tSettingsUi("auth-broker shutting down"), { signal });
 		credentialDisabledUnsub();
 		await handle.close();
 		storage.close();
@@ -183,17 +226,20 @@ async function runLogin(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	if (!providerArg) {
 		if (flags.via) {
 			throw new Error(
-				"Usage: omp auth-broker login <provider> --via=user@host (provider required for remote login)",
+				tSettingsUi("Usage: omp auth-broker login <provider> --via=user@host (provider required for remote login)"),
 			);
 		}
 		providerArg = await pickProviderInteractively(providers);
 	}
 	if (!providers.some(p => p.id === providerArg)) {
 		throw new Error(
-			`Unknown OAuth provider '${providerArg}'. Known: ${providers
-				.map(p => p.id)
-				.sort()
-				.join(", ")}`,
+			tSettingsUi("Unknown OAuth provider '{provider}'. Known: {providers}", {
+				provider: providerArg,
+				providers: providers
+					.map(p => p.id)
+					.sort()
+					.join(", "),
+			}),
 		);
 	}
 	if (flags.via) {
@@ -223,7 +269,7 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 		const usesManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider);
 		await storage.login(provider, {
 			onAuth({ url, launchUrl, instructions }) {
-				process.stdout.write("\nOpen this URL in your browser:\n");
+				process.stdout.write(`\n${tSettingsUi("Open this URL in your browser:")}\n`);
 				// Full URL first so the CLI works from any machine, including SSH
 				// sessions where a `launchUrl` (loopback `/launch` on the OMP
 				// host) would resolve against the caller's browser and fail.
@@ -233,7 +279,9 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 					// Local shortcut for the machine running OMP. Terminals or
 					// screen-scrapers narrower than the full URL still get an
 					// unbroken copy target here.
-					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
+					process.stdout.write(
+						`${tSettingsUi("Local shortcut (this machine only): {url}", { url: launchUrl })}\n`,
+					);
 				}
 				if (instructions) process.stdout.write(`${instructions}\n`);
 				process.stdout.write("\n");
@@ -247,12 +295,12 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 			...(usesManualInput
 				? {
 						onManualCodeInput() {
-							return ask("Paste the authorization code (or full redirect URL):");
+							return ask(tSettingsUi("Paste the authorization code (or full redirect URL):"));
 						},
 					}
 				: undefined),
 		});
-		process.stdout.write(`\nCredentials saved to ${getAgentDbPath()}\n`);
+		process.stdout.write(`\n${tSettingsUi("Credentials saved to {path}", { path: getAgentDbPath() })}\n`);
 	} finally {
 		store.close();
 		rl.close();
@@ -286,7 +334,7 @@ function promptLine(rl: readline.Interface, question: string): Promise<string> {
 	};
 
 	const cancel = () => {
-		finish(() => reject(new Error("Login cancelled")));
+		finish(() => reject(new Error(tSettingsUi("Login cancelled"))));
 	};
 
 	const onSigint = () => {
@@ -315,19 +363,19 @@ function promptLine(rl: readline.Interface, question: string): Promise<string> {
 
 async function pickProviderInteractively(providers: readonly OAuthProviderInfo[]): Promise<string> {
 	if (providers.length === 0) {
-		throw new Error("No OAuth providers registered");
+		throw new Error(tSettingsUi("No OAuth providers registered"));
 	}
 	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 	try {
-		process.stdout.write("Select a provider:\n\n");
+		process.stdout.write(`${tSettingsUi("Select a provider:")}\n\n`);
 		for (let i = 0; i < providers.length; i++) {
 			process.stdout.write(`  ${i + 1}. ${providers[i].name}\n`);
 		}
 		process.stdout.write("\n");
-		const choice = await promptLine(rl, `Enter number (1-${providers.length}): `);
+		const choice = await promptLine(rl, tSettingsUi("Enter number (1-{count}): ", { count: providers.length }));
 		const index = Number.parseInt(choice, 10) - 1;
 		if (Number.isNaN(index) || index < 0 || index >= providers.length) {
-			throw new Error(`Invalid selection: ${choice}`);
+			throw new Error(tSettingsUi("Invalid selection: {choice}", { choice }));
 		}
 		return providers[index].id;
 	} finally {
@@ -339,7 +387,12 @@ async function runRemoteLogin(provider: string, via: string, dryRun: boolean): P
 	const port = CALLBACK_PORTS[provider];
 	if (port === undefined) {
 		throw new Error(
-			`No known OAuth callback port for '${provider}'. Use device-code flow on the broker host directly.`,
+			tSettingsUi(
+				"No known OAuth callback port for '{provider}'. Use device-code flow on the broker host directly.",
+				{
+					provider,
+				},
+			),
 		);
 	}
 	const sshArgs = [
@@ -356,7 +409,7 @@ async function runRemoteLogin(provider: string, via: string, dryRun: boolean): P
 	}
 	const sshBin = $which("ssh");
 	if (!sshBin) {
-		throw new Error("ssh binary not found in PATH");
+		throw new Error(tSettingsUi("ssh binary not found in PATH"));
 	}
 	const proc = Bun.spawn({
 		cmd: [sshBin, ...sshArgs],
@@ -366,7 +419,7 @@ async function runRemoteLogin(provider: string, via: string, dryRun: boolean): P
 	});
 	const exitCode = await proc.exited;
 	if (exitCode !== 0) {
-		throw new Error(`ssh exited with code ${exitCode}`);
+		throw new Error(tSettingsUi("ssh exited with code {code}", { code: exitCode }));
 	}
 }
 
@@ -377,13 +430,13 @@ async function runLogout(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		if (!providerArg) {
 			const stored = store.listProviders();
 			if (stored.length === 0) {
-				process.stdout.write("No credentials stored.\n");
+				process.stdout.write(`${tSettingsUi("No credentials stored.")}\n`);
 				return;
 			}
 			providerArg = await pickStoredProviderInteractively(stored);
 		}
 		store.deleteAuthCredentialsForProvider(providerArg, "logged out by user");
-		process.stdout.write(`Logged out of ${providerArg}\n`);
+		process.stdout.write(`${tSettingsUi("Logged out of {provider}", { provider: providerArg })}\n`);
 	} finally {
 		store.close();
 	}
@@ -392,15 +445,15 @@ async function runLogout(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 async function pickStoredProviderInteractively(providers: string[]): Promise<string> {
 	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 	try {
-		process.stdout.write("Select a provider to logout:\n\n");
+		process.stdout.write(`${tSettingsUi("Select a provider to log out:")}\n\n`);
 		for (let i = 0; i < providers.length; i++) {
 			process.stdout.write(`  ${i + 1}. ${providers[i]}\n`);
 		}
 		process.stdout.write("\n");
-		const choice = await promptLine(rl, `Enter number (1-${providers.length}): `);
+		const choice = await promptLine(rl, tSettingsUi("Enter number (1-{count}): ", { count: providers.length }));
 		const index = Number.parseInt(choice, 10) - 1;
 		if (Number.isNaN(index) || index < 0 || index >= providers.length) {
-			throw new Error(`Invalid selection: ${choice}`);
+			throw new Error(tSettingsUi("Invalid selection: {choice}", { choice }));
 		}
 		return providers[index];
 	} finally {
@@ -414,7 +467,7 @@ async function runList(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		process.stdout.write(`${JSON.stringify(providers.map(p => ({ id: p.id, name: p.name })))}\n`);
 		return;
 	}
-	process.stdout.write("Available providers:\n\n");
+	process.stdout.write(`${tSettingsUi("Available providers:")}\n\n`);
 	for (const p of providers) {
 		process.stdout.write(`  ${p.id.padEnd(20)} ${p.name}\n`);
 	}
@@ -482,7 +535,7 @@ async function collectImportSources(target: string): Promise<string[]> {
 	const stat = await fs.stat(target);
 	if (stat.isFile()) return [target];
 	if (!stat.isDirectory()) {
-		throw new Error(`Import source is neither file nor directory: ${target}`);
+		throw new Error(tSettingsUi("Import source is neither file nor directory: {path}", { path: target }));
 	}
 	const entries = await fs.readdir(target, { withFileTypes: true });
 	const files: string[] = [];
@@ -556,16 +609,24 @@ async function loadImportPlan(
 }
 
 function describeImportEntry(entry: ImportPlanEntry): string {
-	const ident = entry.email ?? entry.accountId ?? "(no identity)";
-	const stale = entry.expiresAt < Date.now() ? " [expired]" : "";
-	const disabled = entry.disabled ? " [disabled]" : "";
-	return `${entry.provider}: ${ident}${stale}${disabled} from ${entry.sourceFile}`;
+	const ident = entry.email ?? entry.accountId ?? tSettingsUi("(no identity)");
+	const stale = entry.expiresAt < Date.now() ? tSettingsUi(" [expired]") : "";
+	const disabled = entry.disabled ? tSettingsUi(" [disabled]") : "";
+	return tSettingsUi("{provider}: {identity}{stale}{disabled} from {file}", {
+		provider: entry.provider,
+		identity: ident,
+		stale,
+		disabled,
+		file: entry.sourceFile,
+	});
 }
 
 async function runImport(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const target = flags.source;
 	if (!target) {
-		throw new Error("Usage: omp auth-broker import <file|dir> [--provider=<id>] [--include-disabled] [--dry-run]");
+		throw new Error(
+			tSettingsUi("Usage: omp auth-broker import <file|dir> [--provider=<id>] [--include-disabled] [--dry-run]"),
+		);
 	}
 	const resolvedTarget = path.resolve(target.startsWith("~") ? target.replace(/^~/, os.homedir()) : target);
 	const { entries, skipped } = await loadImportPlan(resolvedTarget, flags.provider, flags.includeDisabled === true);
@@ -592,18 +653,23 @@ async function runImport(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 
 	if (!flags.json) {
 		for (const skip of skipped) {
-			process.stdout.write(`${chalk.yellow("skip")} ${skip.file}: ${skip.reason}\n`);
+			process.stdout.write(
+				`${chalk.yellow(tSettingsUi("skip"))} ${skip.file}: ${formatImportSkipReason(skip.reason)}\n`,
+			);
 		}
 	}
 
 	if (entries.length === 0) {
-		if (!flags.json) process.stdout.write(`No importable credentials in ${resolvedTarget}.\n`);
+		if (!flags.json)
+			process.stdout.write(`${tSettingsUi("No importable credentials in {path}.", { path: resolvedTarget })}\n`);
 		return;
 	}
 
 	if (flags.dryRun === true) {
 		if (!flags.json) {
-			process.stdout.write(`Dry run — would import ${entries.length} credential(s):\n`);
+			process.stdout.write(
+				`${tSettingsUi("Dry run — would import {count} credential(s):", { count: entries.length })}\n`,
+			);
 			for (const entry of entries) process.stdout.write(`  ${describeImportEntry(entry)}\n`);
 		}
 		return;
@@ -616,14 +682,16 @@ async function runImport(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 			try {
 				await client.uploadCredential(entry.provider, entry.credential);
 				if (!flags.json) {
-					process.stdout.write(`${chalk.green("uploaded")} ${describeImportEntry(entry)} → ${brokerConfig.url}\n`);
+					process.stdout.write(
+						`${chalk.green(tSettingsUi("uploaded"))} ${describeImportEntry(entry)} → ${brokerConfig.url}\n`,
+					);
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (flags.json) {
 					process.stdout.write(`${JSON.stringify({ error: message, file: entry.sourceFile })}\n`);
 				} else {
-					process.stdout.write(`${chalk.red("failed")} ${describeImportEntry(entry)}: ${message}\n`);
+					process.stdout.write(`${chalk.red(tSettingsUi("failed"))} ${describeImportEntry(entry)}: ${message}\n`);
 				}
 				process.exitCode = 1;
 			}
@@ -635,7 +703,8 @@ async function runImport(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	try {
 		for (const entry of entries) {
 			store.upsertAuthCredentialForProvider(entry.provider, entry.credential);
-			if (!flags.json) process.stdout.write(`${chalk.green("imported")} ${describeImportEntry(entry)}\n`);
+			if (!flags.json)
+				process.stdout.write(`${chalk.green(tSettingsUi("imported"))} ${describeImportEntry(entry)}\n`);
 		}
 	} finally {
 		store.close();
@@ -723,18 +792,22 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 	const brokerConfig = await resolveAuthBrokerConfig();
 	if (!brokerConfig) {
 		throw new Error(
-			"OMP_AUTH_BROKER_URL must be set (or `auth.broker.url` in config.yml). `migrate` uploads local credentials to a configured broker.",
+			tSettingsUi(
+				"OMP_AUTH_BROKER_URL must be set (or `auth.broker.url` in config.yml). `migrate` uploads local credentials to a configured broker.",
+			),
 		);
 	}
 	if (flags.fromLocal !== true) {
 		throw new Error(
-			"`omp auth-broker migrate` requires an explicit source. Pass `--from-local` to migrate from the local SQLite store and env vars.",
+			tSettingsUi(
+				"`omp auth-broker migrate` requires an explicit source. Pass `--from-local` to migrate from the local SQLite store and env vars.",
+			),
 		);
 	}
 
 	const client = new AuthBrokerClient({ url: brokerConfig.url, token: brokerConfig.token });
 	const snapshotResult = await client.fetchSnapshot();
-	if (snapshotResult.status !== 200) throw new Error("Auth broker returned no snapshot");
+	if (snapshotResult.status !== 200) throw new Error(tSettingsUi("Auth broker returned no snapshot"));
 	const existing = indexBrokerSnapshot(snapshotResult.snapshot);
 
 	const plan: MigratePlanEntry[] = [];
@@ -835,21 +908,25 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 	} else {
 		for (const skip of skipped) {
 			process.stdout.write(
-				`${chalk.yellow("skip")} [${skip.source}] ${skip.provider} ${skip.identity}: ${skip.reason}\n`,
+				`${chalk.yellow(tSettingsUi("skip"))} [${skip.source}] ${skip.provider} ${skip.identity === "(api key)" ? tSettingsUi("(api key)") : skip.identity}: ${formatMigrateSkipReason(skip.reason)}\n`,
 			);
 		}
 	}
 
 	if (plan.length === 0) {
-		if (!flags.json) process.stdout.write("Nothing to migrate.\n");
+		if (!flags.json) process.stdout.write(`${tSettingsUi("Nothing to migrate.")}\n`);
 		return;
 	}
 
 	if (flags.dryRun === true) {
 		if (!flags.json) {
-			process.stdout.write(`Dry run — would upload ${plan.length} credential(s):\n`);
+			process.stdout.write(
+				`${tSettingsUi("Dry run — would upload {count} credential(s):", { count: plan.length })}\n`,
+			);
 			for (const entry of plan) {
-				process.stdout.write(`  [${entry.source}] ${entry.provider} ${entry.identity}\n`);
+				process.stdout.write(
+					`  [${entry.source}] ${entry.provider} ${entry.identity === "(api key)" ? tSettingsUi("(api key)") : entry.identity}\n`,
+				);
 			}
 		}
 		return;
@@ -859,14 +936,18 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 		try {
 			await client.uploadCredential(entry.provider, entry.credential);
 			if (!flags.json) {
-				process.stdout.write(`${chalk.green("uploaded")} [${entry.source}] ${entry.provider} ${entry.identity}\n`);
+				process.stdout.write(
+					`${chalk.green(tSettingsUi("uploaded"))} [${entry.source}] ${entry.provider} ${entry.identity === "(api key)" ? tSettingsUi("(api key)") : entry.identity}\n`,
+				);
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (flags.json) {
 				process.stdout.write(`${JSON.stringify({ error: message, provider: entry.provider })}\n`);
 			} else {
-				process.stdout.write(`${chalk.red("failed")} [${entry.source}] ${entry.provider}: ${message}\n`);
+				process.stdout.write(
+					`${chalk.red(tSettingsUi("failed"))} [${entry.source}] ${entry.provider}: ${message}\n`,
+				);
 			}
 			process.exitCode = 1;
 		}
@@ -876,7 +957,7 @@ async function runMigrate(flags: AuthBrokerCommandArgs["flags"]): Promise<void> 
 async function runStatus(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const cfg = await resolveAuthBrokerConfig();
 	if (!cfg) {
-		const message = "No auth-broker configured (set OMP_AUTH_BROKER_URL to enable).";
+		const message = tSettingsUi("No auth-broker configured (set OMP_AUTH_BROKER_URL to enable).");
 		if (flags.json) process.stdout.write(`${JSON.stringify({ ok: false, reason: "not_configured" })}\n`);
 		else process.stdout.write(`${chalk.yellow(message)}\n`);
 		return;
@@ -887,14 +968,16 @@ async function runStatus(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify({ url: cfg.url, ...health })}\n`);
 		} else {
-			process.stdout.write(`${chalk.green("OK")} ${cfg.url} (version=${health.version ?? "unknown"})\n`);
+			process.stdout.write(
+				`${chalk.green(tSettingsUi("OK"))} ${tSettingsUi("{url} (version={version})", { url: cfg.url, version: health.version ?? tSettingsUi("unknown") })}\n`,
+			);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify({ ok: false, url: cfg.url, error: message })}\n`);
 		} else {
-			process.stdout.write(`${chalk.red("FAILED")} ${cfg.url}: ${message}\n`);
+			process.stdout.write(`${chalk.red(tSettingsUi("FAILED"))} ${cfg.url}: ${message}\n`);
 		}
 		process.exitCode = 1;
 	}
@@ -929,7 +1012,7 @@ export async function runAuthBrokerCommand(cmd: AuthBrokerCommandArgs): Promise<
 		default: {
 			// Exhaustive check.
 			const _exhaustive: never = cmd.action;
-			throw new Error(`Unknown auth-broker action: ${String(_exhaustive)}`);
+			throw new Error(tSettingsUi("Unknown auth-broker action: {action}", { action: String(_exhaustive) }));
 		}
 	}
 }

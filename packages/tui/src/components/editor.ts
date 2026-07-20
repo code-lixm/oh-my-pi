@@ -12,6 +12,7 @@ import { KillRing } from "../kill-ring";
 import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui";
 import {
+	anchorRightBorder,
 	getSegmenter,
 	getWidthConfigEpoch,
 	getWordNavKind,
@@ -1104,7 +1105,7 @@ export class Editor implements Component, Focusable {
 				const bottomRightAdjusted = this.borderColor(
 					`${padding(rightPad)}${includeHorizontal ? box.horizontal : ""}${box.bottomRight}`,
 				);
-				result.push(`${bottomLeft}${displayText}${linePad}${bottomRightAdjusted}`);
+				result.push(anchorRightBorder(`${bottomLeft}${displayText}${linePad}`, bottomRightAdjusted, width));
 			} else {
 				const leftBorder = this.borderColor(`${box.vertical}${padding(paddingX)}`);
 				// When scrollbar is active, replace the right border vertical with a
@@ -1112,7 +1113,7 @@ export class Editor implements Component, Focusable {
 				const inThumb = scrollbarThumb && visibleIndex >= scrollbarThumb.start && visibleIndex < scrollbarThumb.end;
 				const rightGlyph = inThumb ? "█" : box.vertical;
 				const rightBorder = this.borderColor(`${padding(Math.max(0, rightChromeCells - 1))}${rightGlyph}`);
-				result.push(leftBorder + displayText + linePad + rightBorder);
+				result.push(anchorRightBorder(leftBorder + displayText + linePad, rightBorder, width));
 			}
 		}
 

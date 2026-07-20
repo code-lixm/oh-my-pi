@@ -52,6 +52,8 @@ export interface SegmentContext {
 	session: AgentSession;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
 	focusedAgentId?: string | undefined;
+	/** User-facing name for the focused subagent. */
+	focusedAgentDisplayName?: string | undefined;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;

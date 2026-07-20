@@ -8,7 +8,14 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-ti
 import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
+import { tSettingsUi } from "../i18n/settings-locale";
+import { selectPrompt } from "../prompts/prompt-locale";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import evalDescriptionZh from "../prompts/tools/eval.zh-CN.md" with { type: "text" };
+import evalImageNote from "../prompts/tools/eval-image-note.md" with { type: "text" };
+import evalImageNoteZh from "../prompts/tools/eval-image-note.zh-CN.md" with { type: "text" };
+import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -177,7 +184,7 @@ export function getEvalToolDescription(options: EvalToolDescriptionOptions = {})
 	const rb = options.rb ?? false;
 	const jl = options.jl ?? false;
 	const spawnPolicy = resolveSpawnPolicy(options.spawns ?? true);
-	return prompt.render(evalDescription, {
+	return prompt.render(selectPrompt(evalDescription, evalDescriptionZh), {
 		py,
 		js,
 		rb,
@@ -370,7 +377,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	readonly intent = (args: Partial<typeof evalSchema.infer>): string | undefined => {
 		const title = typeof args.title === "string" ? args.title : undefined;
 		const language = typeof args.language === "string" ? formatEvalInputLanguage(args.language) : "javascript";
-		return title || `running ${language}`;
+		return title || tSettingsUi("running {language}", { language });
 	};
 
 	readonly #proxyExecutor?: EvalProxyExecutor;
@@ -622,9 +629,19 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 								data: image.data,
 								mimeType: image.mimeType,
 							});
-							const dimensionNote = formatDimensionNote(resized);
+							const dimensionNote = formatDimensionNote(resized, {
+								format: params =>
+									prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+							});
 							if (dimensionNote) {
-								cellImageNotes.push(`display image ${cellImageNotes.length + 1}: ${dimensionNote}`);
+								cellImageNotes.push(
+									prompt
+										.render(selectPrompt(evalImageNote, evalImageNoteZh), {
+											index: cellImageNotes.length + 1,
+											dimensionNote,
+										})
+										.trim(),
+								);
 							}
 						}
 						if (output.type === "status") {

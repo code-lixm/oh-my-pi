@@ -29,12 +29,16 @@ import { runExtensionCompact, runExtensionSetModel } from "../extensibility/exte
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionState } from "../hindsight/state";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { callTool } from "../mcp/client";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import { selectPrompt } from "../prompts/prompt-locale";
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
+import subagentSystemPromptTemplateZh from "../prompts/system/subagent-system-prompt.zh-CN.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
+import submitReminderTemplateZh from "../prompts/system/subagent-yield-reminder.zh-CN.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
@@ -98,7 +102,10 @@ export const BUDGET_STOP_GRACE_REQUESTS = 5;
 
 /** Steering notice injected when a subagent crosses its soft request budget. */
 export function buildBudgetNotice(requests: number, budget: number): string {
-	return `[budget notice] You have used ${requests} requests in this run (soft budget: ${budget}). Wrap up now: finish the current step and yield your final report. At ${Math.ceil(budget * 1.5)} requests the run is force-stopped and you will be asked to yield whatever you have.`;
+	return tSettingsUi(
+		"[budget notice] You have used {requests} requests in this run (soft budget: {budget}). Wrap up now: finish the current step and yield your final report. At {forceStopRequests} requests the run is force-stopped and you will be asked to yield whatever you have.",
+		{ requests, budget, forceStopRequests: Math.ceil(budget * 1.5) },
+	);
 }
 
 /** Flatten whitespace and clip salvage text for the cancelled-child summary line. */
@@ -1059,17 +1066,23 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			const message = reason.trim();
 			if (message.length > 0) return message;
 		}
-		return "Cancelled by caller";
+		return tSettingsUi("Cancelled by caller");
 	};
 	const resolveAbortReasonText = (): string => {
 		if (runtimeLimitExceeded) {
-			return `Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`;
+			return tSettingsUi("Subagent runtime limit exceeded (task.maxRuntimeMs={maxRuntimeMs})", { maxRuntimeMs });
 		}
 		if (budgetLimitExceeded) {
-			return `Soft request budget exceeded (${progress.requests} requests; budget ${softRequestBudget}) — agent did not yield when force-stopped`;
+			return tSettingsUi(
+				"Soft request budget exceeded ({requests} requests; budget {budget}) — agent did not yield when force-stopped",
+				{ requests: progress.requests, budget: softRequestBudget },
+			);
 		}
 		if (budgetStopRequested) {
-			return `Soft request budget exceeded (${progress.requests} requests; budget ${softRequestBudget})`;
+			return tSettingsUi("Soft request budget exceeded ({requests} requests; budget {budget})", {
+				requests: progress.requests,
+				budget: softRequestBudget,
+			});
 		}
 		return resolveSignalAbortReason();
 	};
@@ -1687,7 +1700,7 @@ async function driveSessionToYield(
 			if (lastBeforeReminder?.stopReason === "error") break;
 			try {
 				retryCount++;
-				const reminder = prompt.render(submitReminderTemplate, {
+				const reminder = prompt.render(selectPrompt(submitReminderTemplate, submitReminderTemplateZh), {
 					retryCount,
 					maxRetries: MAX_YIELD_RETRIES,
 					budgetStop,
@@ -2519,17 +2532,20 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
 				preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
 				systemPrompt: defaultPrompt => {
-					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-						agent: agent.systemPrompt,
-						context: options.context?.trim() ?? "",
-						planReference: options.planReference?.content ?? "",
-						planReferencePath: options.planReference?.path ?? "",
-						worktree: worktree ?? "",
-						outputSchema: normalizedOutputSchema,
-						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
-						ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
-						ircSelfId: ircEnabled ? id : "",
-					});
+					const subagentPrompt = prompt.render(
+						selectPrompt(subagentSystemPromptTemplate, subagentSystemPromptTemplateZh),
+						{
+							agent: agent.systemPrompt,
+							context: options.context?.trim() ?? "",
+							planReference: options.planReference?.content ?? "",
+							planReferencePath: options.planReference?.path ?? "",
+							worktree: worktree ?? "",
+							outputSchema: normalizedOutputSchema,
+							outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
+							ircPeers: ircEnabled ? renderIrcPeerRoster(id) : "",
+							ircSelfId: ircEnabled ? id : "",
+						},
+					);
 					return defaultPrompt.length === 0
 						? [subagentPrompt]
 						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];

@@ -83,6 +83,60 @@ describe("readToolRenderer hyperlinks", () => {
 		expect(extractLinkTexts(rendered)).not.toContain(`${examplePath}:10-12`);
 	});
 
+	it("renders the direct read call header with a toolTitle-colored Read title and path description", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const examplePath = path.resolve("/tmp/omp-read/native-title.ts");
+		const rendered = readToolRenderer
+			.renderCall({ path: `${examplePath}:4-6` }, { expanded: false, isPartial: false }, theme!)
+			.render(200)
+			.join("\n");
+		const plain = Bun.stripANSI(rendered);
+
+		expect(plain).toContain(`Read: ${examplePath}:4-6`);
+		expect(rendered).toContain(theme!.fg("toolTitle", "Read"));
+	});
+
+	it("renders separate selector read call paths while linking only the base path", async () => {
+		settings.override("tui.hyperlinks", "always");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const examplePath = path.resolve("/tmp/omp-read/separate-selector.ts");
+		const component = readToolRenderer.renderCall(
+			{ path: examplePath, selector: "10-12" },
+			{ expanded: false, isPartial: false },
+			theme!,
+		);
+
+		const rendered = component.render(200).join("\n");
+		expect(Bun.stripANSI(rendered)).toContain(`${examplePath}:10-12`);
+		const exampleUri = new URL(url.pathToFileURL(path.resolve(examplePath)).href);
+		exampleUri.searchParams.set("line", "10");
+		expect(extractLinkUris(rendered)).toContain(exampleUri.href);
+		expect(extractLinkTexts(rendered)).toContain(examplePath);
+		expect(extractLinkTexts(rendered)).not.toContain(`${examplePath}:10-12`);
+	});
+
+	it("renders separate raw read selectors while linking only the base path", async () => {
+		settings.override("tui.hyperlinks", "always");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const examplePath = path.resolve("/tmp/omp-read/raw-selector.ts");
+		const component = readToolRenderer.renderCall(
+			{ path: examplePath, selector: "raw" },
+			{ expanded: false, isPartial: false },
+			theme!,
+		);
+
+		const rendered = component.render(200).join("\n");
+		expect(Bun.stripANSI(rendered)).toContain(`${examplePath}:raw`);
+		expect(extractLinkUris(rendered)).toContain(url.pathToFileURL(path.resolve(examplePath)).href);
+		expect(extractLinkTexts(rendered)).toContain(examplePath);
+		expect(extractLinkTexts(rendered)).not.toContain(`${examplePath}:raw`);
+	});
 	it("links HTTP read result headers to the final URL", async () => {
 		settings.override("tui.hyperlinks", "always");
 		const theme = await getThemeByName("dark");
@@ -106,9 +160,10 @@ describe("readToolRenderer hyperlinks", () => {
 			{ path: "http://example.com/start" },
 		);
 
-		const rendered = component.render(200).join("\n");
-		expect(rendered).toContain("example.com /final");
-		expect(extractLinkUris(rendered)).toContain("http://example.com/final");
+		const rendered = Bun.stripANSI(component.render(200).join("\n"));
+		expect(rendered).toContain("read: example.com /final");
+		expect(rendered).not.toContain("Read: example.com /final");
+		expect(extractLinkUris(component.render(200).join("\n"))).toContain("http://example.com/final");
 	});
 });
 
@@ -132,6 +187,7 @@ describe("read ToolExecutionComponent framing", () => {
 			const topBorderIndex = lines.findIndex(
 				line => line.includes(activeTheme.boxRound.topLeft) && line.includes("Read"),
 			);
+
 			const bottomBorderIndex = lines.findIndex(
 				(line, index) => index > topBorderIndex && line.includes(activeTheme.boxRound.bottomLeft),
 			);

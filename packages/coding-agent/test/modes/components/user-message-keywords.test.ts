@@ -5,10 +5,10 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
 import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getEditorTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { Container } from "@oh-my-pi/pi-tui";
+import { Container, visibleWidth } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -24,6 +24,8 @@ afterAll(() => {
 function render(text: string): string {
 	return new UserMessageComponent(text).render(80).join("\n");
 }
+
+const stripUserControls = (text: string) => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
 
 describe("UserMessageComponent magic-keyword highlighting", () => {
 	it("gradient-paints a magic keyword in the rendered (sent) message bubble", () => {
@@ -144,5 +146,33 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		expect(Bun.stripANSI(raw)).toContain("[Image #1, 800x600]");
 		expect(raw).toContain("\x1b]8;id=");
 		expect(raw).toContain(imageUri);
+	});
+
+	it("wraps metadata-bearing image placeholders in a rounded frame without the user bubble background", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const rendered = new UserMessageComponent("see [Image #1, 2024x464] now").render(80);
+		const plain = rendered.map(stripUserControls);
+		expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(true);
+		expect(plain[0]?.trimEnd().endsWith(uiTheme.boxRound.topRight)).toBe(true);
+		expect(plain.at(-1)?.trimStart().startsWith(uiTheme.boxRound.bottomLeft)).toBe(true);
+		expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(true);
+		expect(plain.map(line => visibleWidth(line))).toEqual(Array(plain.length).fill(80));
+		expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(false);
+		const bodyLine = plain.find(line => line.includes("[Image #1, 2024x464]"));
+		expect(bodyLine).toBeDefined();
+		expect(bodyLine).toContain(uiTheme.boxRound.vertical);
+	});
+
+	it("keeps ordinary text messages on the existing bubble background without adding a rounded frame", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const rendered = new UserMessageComponent("plain user text").render(80);
+		const plain = rendered.map(stripUserControls);
+		expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(true);
+		expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(false);
+		expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(false);
 	});
 });

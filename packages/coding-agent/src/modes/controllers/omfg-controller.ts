@@ -1,7 +1,10 @@
 import * as path from "node:path";
 import { CONFIG_DIR_NAME, prompt } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../../capability/rule";
+import { tSettingsUi } from "../../i18n/settings-locale";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import omfgUserPrompt from "../../prompts/system/omfg-user.md" with { type: "text" };
+import omfgUserPromptZh from "../../prompts/system/omfg-user.zh-CN.md" with { type: "text" };
 import { shortenPath } from "../../tools/render-utils";
 import { OmfgPanelComponent } from "../components/omfg-panel";
 import type { InteractiveModeContext } from "../types";
@@ -32,9 +35,9 @@ interface GenerateCandidateOptions {
 type SaveCandidateResult = { kind: "saved" | "aborted" | "rejected" } | { kind: "amend"; feedback: string };
 
 const MAX_ATTEMPTS = 3;
-const PROJECT_OPTION = "This project (.omp/rules)";
-const GLOBAL_OPTION = "Global — all projects (~/.omp/agent/rules)";
-const AMEND_OPTION = "Amend with feedback…";
+const PROJECT_OPTION = tSettingsUi("This project (.omp/rules)");
+const GLOBAL_OPTION = tSettingsUi("Global — all projects (~/.omp/agent/rules)");
+const AMEND_OPTION = tSettingsUi("Amend with feedback…");
 
 export class OmfgController {
 	#activeRequest: OmfgRequest | undefined;
@@ -58,13 +61,13 @@ export class OmfgController {
 	async start(complaint: string): Promise<void> {
 		const trimmedComplaint = complaint.trim();
 		if (!trimmedComplaint) {
-			this.ctx.showStatus("Usage: /omfg <complaint>");
+			this.ctx.showStatus(tSettingsUi("Usage: /omfg <complaint>"));
 			return;
 		}
 
 		const model = this.ctx.session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /omfg.");
+			this.ctx.showError(tSettingsUi("No active model available for /omfg."));
 			return;
 		}
 
@@ -88,15 +91,15 @@ export class OmfgController {
 			for (;;) {
 				if (!this.#isActiveRequest(request)) return;
 				if (!candidate) {
-					request.component.markError("The model did not return a valid TTSR rule.");
+					request.component.markError(tSettingsUi("The model did not return a valid TTSR rule."));
 					return;
 				}
 
 				if (!candidate.validated) {
-					request.component.setStatus("confirming", "Couldn't confirm a conversation match.");
+					request.component.setStatus("confirming", tSettingsUi("Couldn't confirm a conversation match."));
 					const shouldSave = await this.ctx.showHookConfirm(
-						"Validation",
-						"Couldn't confirm this rule matches the conversation. Save anyway?",
+						tSettingsUi("Validation"),
+						tSettingsUi("Couldn't confirm this rule matches the conversation. Save anyway?"),
 					);
 					if (!this.#isActiveRequest(request)) return;
 					if (!shouldSave) {
@@ -139,8 +142,11 @@ export class OmfgController {
 		for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 			if (this.#shouldStop(request)) return undefined;
 			request.component.setRule("");
-			request.component.setStatus("generating", `Attempt ${attempt}/${MAX_ATTEMPTS} · generating…`);
-			const promptText = prompt.render(omfgUserPrompt, {
+			request.component.setStatus(
+				"generating",
+				tSettingsUi("Attempt {attempt}/{maxAttempts} · generating…", { attempt, maxAttempts: MAX_ATTEMPTS }),
+			);
+			const promptText = prompt.render(selectPrompt(omfgUserPrompt, omfgUserPromptZh), {
 				complaint: request.complaint,
 				feedback: failedAttempts.length > 0 ? failedAttempts.join("\n\n") : undefined,
 				previousRule,
@@ -164,12 +170,22 @@ export class OmfgController {
 					`Attempt ${attempt} failed: invalid rule (${parsed.error}).\nFailed candidate:\n${failedRule}`,
 				);
 				previousRule = failedRule;
-				request.component.setStatus("validating", `Attempt ${attempt}/${MAX_ATTEMPTS} · ${parsed.error}`);
+				request.component.setStatus(
+					"validating",
+					tSettingsUi("Attempt {attempt}/{maxAttempts} · {error}", {
+						attempt,
+						maxAttempts: MAX_ATTEMPTS,
+						error: parsed.error,
+					}),
+				);
 				continue;
 			}
 
 			request.component.setRule(parsed.fileContent);
-			request.component.setStatus("validating", `Attempt ${attempt}/${MAX_ATTEMPTS} · validating…`);
+			request.component.setStatus(
+				"validating",
+				tSettingsUi("Attempt {attempt}/{maxAttempts} · validating…", { attempt, maxAttempts: MAX_ATTEMPTS }),
+			);
 			const validated = validateParsedRuleAgainstAssistantHistory(parsed, this.ctx.session.messages);
 			if (validated.repairedCondition) {
 				request.component.setRule(validated.candidate.fileContent);
@@ -180,7 +196,8 @@ export class OmfgController {
 
 			lastCandidate = validated.candidate;
 			const failure =
-				validated.validation.feedback ?? "The rule condition did not match any earlier assistant output.";
+				validated.validation.feedback ??
+				tSettingsUi("The rule condition did not match any earlier assistant output.");
 			failedAttempts.push(
 				`Attempt ${attempt} failed validation:\n${failure}\nFailed candidate:\n${validated.candidate.fileContent}`,
 			);
@@ -192,8 +209,8 @@ export class OmfgController {
 
 	async #saveCandidate(request: OmfgRequest, candidate: OmfgCandidate): Promise<SaveCandidateResult> {
 		if (this.#shouldStop(request)) return { kind: "aborted" };
-		request.component.setStatus("saving", "Choose where to save or amend the TTSR rule…");
-		const location = await this.ctx.showHookSelector("Save TTSR rule where?", [
+		request.component.setStatus("saving", tSettingsUi("Choose where to save or amend the TTSR rule…"));
+		const location = await this.ctx.showHookSelector(tSettingsUi("Save TTSR rule where?"), [
 			PROJECT_OPTION,
 			GLOBAL_OPTION,
 			AMEND_OPTION,
@@ -206,10 +223,10 @@ export class OmfgController {
 		}
 
 		if (location === AMEND_OPTION) {
-			request.component.setStatus("confirming", "Describe how to amend the rule…");
+			request.component.setStatus("confirming", tSettingsUi("Describe how to amend the rule…"));
 			const amendment = await this.ctx.showHookInput(
-				"Amend TTSR rule",
-				"e.g. Make it specific to Ruby string eval in tool:write(*.rb)",
+				tSettingsUi("Amend TTSR rule"),
+				tSettingsUi("e.g. Make it specific to Ruby string eval in tool:write(*.rb)"),
 			);
 			if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 			const feedback = amendment?.trim();
@@ -224,8 +241,8 @@ export class OmfgController {
 		const target = this.#resolveTarget(location, candidate.rule.name);
 		if (await Bun.file(target.filePath).exists()) {
 			const shouldOverwrite = await this.ctx.showHookConfirm(
-				"Overwrite TTSR rule?",
-				`${shortenPath(target.filePath)} already exists. Overwrite it?`,
+				tSettingsUi("Overwrite TTSR rule?"),
+				tSettingsUi("{filePath} already exists. Overwrite it?", { filePath: shortenPath(target.filePath) }),
 			);
 			if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 			if (!shouldOverwrite) {
@@ -234,7 +251,7 @@ export class OmfgController {
 			}
 		}
 
-		request.component.setStatus("saving", `Saving ${candidate.rule.name}…`);
+		request.component.setStatus("saving", tSettingsUi("Saving {ruleName}…", { ruleName: candidate.rule.name }));
 		await Bun.write(target.filePath, candidate.fileContent);
 		if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 

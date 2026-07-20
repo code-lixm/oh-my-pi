@@ -25,6 +25,8 @@ import {
 } from "../config/model-resolver";
 import { Settings } from "../config/settings";
 import dryBalanceBenchPrompt from "../prompts/dry-balance-bench.md" with { type: "text" };
+import dryBalanceBenchPromptZh from "../prompts/dry-balance-bench.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 
 const DEFAULT_SAMPLE_COUNT = 100;
@@ -34,7 +36,6 @@ const BENCH_RENDER_INTERVAL_MS = 80;
 const BENCH_ACCOUNT_WIDTH = 60;
 const BENCH_ERROR_WIDTH = 110;
 const BENCH_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-const DRY_BALANCE_BENCH_PROMPT = dryBalanceBenchPrompt.trim();
 
 export interface DryBalanceCommandArgs {
 	model?: string;
@@ -418,7 +419,7 @@ async function runBenchRequest(
 			messages: [
 				{
 					role: "user",
-					content: DRY_BALANCE_BENCH_PROMPT,
+					content: selectPrompt(dryBalanceBenchPrompt, dryBalanceBenchPromptZh).trim(),
 					timestamp: Date.now(),
 					attribution: "user",
 				},

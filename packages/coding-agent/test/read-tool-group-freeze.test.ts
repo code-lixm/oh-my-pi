@@ -54,8 +54,9 @@ describe("ReadToolGroupComponent transcript freezing", () => {
 		group.updateResult(successResult(), false, "id1"); // Late result.
 
 		const out = Bun.stripANSI(tc.render(120).join("\n"));
-		expect(out).toContain("Read /tmp/example.ts:280-345");
-		expect(out).toContain(themeModule.theme.status.enabled);
+		const header = out.split("\n")[0]?.trim();
+		expect(header).toBe(`${themeModule.theme.symbol("icon.file")} Read: /tmp/example.ts:280-345`);
+		expect(out).toContain(themeModule.theme.symbol("icon.file"));
 		expect(out).not.toContain(themeModule.theme.status.pending);
 	});
 

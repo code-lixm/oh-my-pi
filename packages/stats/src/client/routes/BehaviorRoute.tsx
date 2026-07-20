@@ -31,8 +31,10 @@ import {
 import { formatInteger } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildBehaviorSummary } from "../data/view-models";
+import { t } from "../locale/catalog";
 import type { BehaviorModelStats, BehaviorOverallStats, BehaviorTimeSeriesPoint, TimeRange } from "../types";
 import { AsyncBoundary, Panel, SegmentedControl } from "../ui";
+import { useLocale } from "../useLocale";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface BehaviorRouteProps {
@@ -41,7 +43,29 @@ export interface BehaviorRouteProps {
 	refreshTrigger: number;
 }
 
+type MetricKey = "yelling" | "profanity" | "anguish" | "negation" | "repetition" | "blame" | "frustration" | "total";
+
+interface MetricOption {
+	value: MetricKey;
+	labelKey: string;
+	titleKey: string;
+}
+
+// Module-level structural definition — labels/titles are resolved per render
+// through `t()` so the segmented control reflects the active locale.
+const METRIC_DEFS: MetricOption[] = [
+	{ value: "yelling", labelKey: "behavior.metric.caps", titleKey: "behavior.metric.capsTitle" },
+	{ value: "profanity", labelKey: "behavior.metric.profanity", titleKey: "behavior.metric.profanity" },
+	{ value: "anguish", labelKey: "behavior.metric.anguish", titleKey: "behavior.metric.anguishTitle" },
+	{ value: "negation", labelKey: "behavior.metric.negation", titleKey: "behavior.metric.negationTitle" },
+	{ value: "repetition", labelKey: "behavior.metric.repetition", titleKey: "behavior.metric.repetitionTitle" },
+	{ value: "blame", labelKey: "behavior.metric.blame", titleKey: "behavior.metric.blameTitle" },
+	{ value: "frustration", labelKey: "behavior.metric.frustration", titleKey: "behavior.metric.frustrationTitle" },
+	{ value: "total", labelKey: "behavior.metric.all", titleKey: "behavior.metric.allTitle" },
+];
+
 export function BehaviorRoute({ active, range, refreshTrigger }: BehaviorRouteProps) {
+	useLocale();
 	const {
 		data: stats,
 		error,
@@ -83,34 +107,36 @@ function BehaviorSummaryPanel({
 
 	const cards = [
 		{
-			label: "User Messages",
+			label: t("behavior.summary.userMessages"),
 			value: formatInteger(overall.totalMessages),
-			sub: messages > 0 ? "in range" : undefined,
+			sub: messages > 0 ? t("behavior.summary.subInRange") : undefined,
 		},
 		{
-			label: "Yelling (CAPS)",
+			label: t("behavior.summary.yelling"),
 			value: formatInteger(overall.totalYelling),
 			sub: perMsg(overall.totalYelling, messages),
 		},
 		{
-			label: "Profanity Hits",
+			label: t("behavior.summary.profanity"),
 			value: formatInteger(overall.totalProfanity),
 			sub: perMsg(overall.totalProfanity, messages),
 		},
 		{
-			label: "Anguish Signals",
+			label: t("behavior.summary.anguish"),
 			value: formatInteger(overall.totalAnguish),
 			sub: perMsg(overall.totalAnguish, messages),
 		},
 		{
-			label: "Friction Signals",
+			label: t("behavior.summary.friction"),
 			value: formatInteger(summary.totalFrustration),
 			sub: perMsg(summary.totalFrustration, messages),
 		},
 		{
-			label: "Highest Friction Model",
+			label: t("behavior.summary.highestFrictionModel"),
 			value: summary.highestFrictionModel?.model ?? "—",
-			sub: summary.highestFrictionModel ? `${formatInteger(summary.highestFrictionModel.score)} hits` : undefined,
+			sub: summary.highestFrictionModel
+				? t("behavior.summary.subHits", { n: formatInteger(summary.highestFrictionModel.score) })
+				: undefined,
 		},
 	];
 
@@ -129,27 +155,6 @@ function BehaviorSummaryPanel({
 	);
 }
 
-const METRIC_OPTIONS = [
-	{ value: "yelling", label: "CAPS", title: "Yelling (CAPS)" },
-	{ value: "profanity", label: "Profanity", title: "Profanity" },
-	{ value: "anguish", label: "Anguish", title: "Anguish (!!!, nooo, ugh, dude, ':(')" },
-	{ value: "negation", label: "Negation", title: "Negation (no/nope/wrong, makes no sense)" },
-	{
-		value: "repetition",
-		label: "Repetition",
-		title: "Repetition (i meant, still doesnt)",
-	},
-	{ value: "blame", label: "Blame", title: "Blame (you didnt, why did you, stop X-ing)" },
-	{
-		value: "frustration",
-		label: "Frustration",
-		title: "Frustration (neg + rep + blame)",
-	},
-	{ value: "total", label: "All", title: "All signals combined" },
-] as const;
-
-type Metric = (typeof METRIC_OPTIONS)[number]["value"];
-
 function formatRateAxis(value: number): string {
 	if (!Number.isFinite(value)) return "-";
 	if (value === 0) return "0%";
@@ -157,7 +162,7 @@ function formatRateAxis(value: number): string {
 	return `${value.toFixed(0)}%`;
 }
 
-function pointHits(point: BehaviorTimeSeriesPoint, metric: Metric): number {
+function pointHits(point: BehaviorTimeSeriesPoint, metric: MetricKey): number {
 	if (metric === "frustration") {
 		return point.negation + point.repetition + point.blame;
 	}
@@ -178,10 +183,26 @@ interface DailyBucket {
 }
 
 function BehaviorChartPanel({ behaviorSeries }: { behaviorSeries: BehaviorTimeSeriesPoint[] }) {
+	const locale = useLocale();
 	const [byModel, setByModel] = useState(false);
-	const [metric, setMetric] = useState<Metric>("total");
+	const [metric, setMetric] = useState<MetricKey>("total");
 	const theme = useSystemTheme();
 	const chartTheme = CHART_THEMES[theme];
+
+	const metricOptions = useMemo(
+		() =>
+			METRIC_DEFS.map(o => ({
+				value: o.value,
+				label: t(o.labelKey),
+				title: t(o.titleKey),
+			})),
+		[locale],
+	);
+
+	const metricLabel = useMemo(() => {
+		const opt = METRIC_DEFS.find(o => o.value === metric);
+		return opt ? t(opt.titleKey) : t("behavior.chart.label");
+	}, [metric, locale]);
 
 	const chartData = useMemo(() => {
 		if (byModel) {
@@ -195,7 +216,6 @@ function BehaviorChartPanel({ behaviorSeries }: { behaviorSeries: BehaviorTimeSe
 				bucketToValue: bucket => ratePercent(bucket.hits, bucket.messages),
 			});
 		}
-		const metricLabel = METRIC_OPTIONS.find(m => m.value === metric)?.title ?? "Hits";
 		return buildAggregateTimeSeries<BehaviorTimeSeriesPoint, DailyBucket>(behaviorSeries, metricLabel, {
 			initBucket: () => ({ hits: 0, messages: 0 }),
 			accumulate: (bucket, point) => {
@@ -204,24 +224,20 @@ function BehaviorChartPanel({ behaviorSeries }: { behaviorSeries: BehaviorTimeSe
 			},
 			bucketToValue: bucket => ratePercent(bucket.hits, bucket.messages),
 		});
-	}, [behaviorSeries, byModel, metric]);
+	}, [behaviorSeries, byModel, metric, metricLabel]);
 
 	const sharedPlugins = useMemo(() => {
 		return buildSharedPlugins({
 			chartTheme,
 			showLegend: byModel,
-			defaultLabel: "Hits",
+			defaultLabel: t("behavior.chart.label"),
 			formatValue: formatRateAxis,
 		});
-	}, [chartTheme, byModel]);
+	}, [chartTheme, byModel, locale]);
 
 	const { sharedScaleBase, yScale } = useMemo(() => {
 		return buildSharedScales({ chartTheme, formatY: formatRateAxis });
 	}, [chartTheme]);
-
-	const metricLabel = useMemo(() => {
-		return METRIC_OPTIONS.find(m => m.value === metric)?.title ?? "";
-	}, [metric]);
 
 	const lineData = useMemo(() => {
 		if (!byModel) return null;
@@ -264,18 +280,18 @@ function BehaviorChartPanel({ behaviorSeries }: { behaviorSeries: BehaviorTimeSe
 	}, [sharedPlugins, sharedScaleBase, yScale]);
 
 	const byModelOptions = [
-		{ value: false, label: "All Models" },
-		{ value: true, label: "By Model" },
+		{ value: false, label: t("behavior.byModel.toggle.allModels") },
+		{ value: true, label: t("behavior.byModel.toggle.byModel") },
 	];
 
 	return (
 		<Panel
-			title="User Friction Signals"
-			subtitle={`${metricLabel} as % of user messages per day`}
+			title={t("behavior.chart.title")}
+			subtitle={t("behavior.chart.subtitle", { metric: metricLabel })}
 			actions={
 				<div className="flex items-center gap-3 flex-wrap">
 					<SegmentedControl
-						options={METRIC_OPTIONS.map(o => ({
+						options={metricOptions.map(o => ({
 							value: o.value,
 							label: o.label,
 							title: o.title,
@@ -290,7 +306,7 @@ function BehaviorChartPanel({ behaviorSeries }: { behaviorSeries: BehaviorTimeSe
 			<div className="h-[300px]">
 				{chartData.labels.length === 0 ? (
 					<div className="h-full flex items-center justify-center text-stats-muted text-sm">
-						No friction signal data available
+						{t("behavior.chart.empty")}
 					</div>
 				) : byModel && lineData ? (
 					<Line data={lineData} options={lineOptions} />
@@ -331,6 +347,7 @@ function BehaviorModelsTable({
 	models: BehaviorModelStats[];
 	behaviorSeries: BehaviorTimeSeriesPoint[];
 }) {
+	const locale = useLocale();
 	const [expandedKey, setExpandedKey] = useState<string | null>(null);
 	const theme = useSystemTheme();
 	const chartTheme = TABLE_CHART_THEMES[theme];
@@ -346,21 +363,23 @@ function BehaviorModelsTable({
 		});
 	}, [models]);
 
+	const headerColumns = useMemo(
+		() => [
+			{ label: t("behavior.byModel.column.model") },
+			{ label: t("behavior.byModel.column.messages"), align: "right" as const },
+			{ label: t("behavior.byModel.column.capsPct"), align: "right" as const },
+			{ label: t("behavior.byModel.column.profanityPct"), align: "right" as const },
+			{ label: t("behavior.byModel.column.anguishPct"), align: "right" as const },
+			{ label: t("behavior.byModel.column.frustrationPct"), align: "right" as const },
+			{ label: t("behavior.byModel.column.hitsPct"), align: "right" as const },
+			{ label: t("behavior.byModel.column.trend"), align: "center" as const },
+		],
+		[locale],
+	);
+
 	return (
-		<ModelTableShell title="Behavior Signals by Model" subtitle="Rates are per user message">
-			<ModelTableHeader
-				gridTemplate={TABLE_GRID_TEMPLATE}
-				columns={[
-					{ label: "Model" },
-					{ label: "Messages", align: "right" },
-					{ label: "CAPS %", align: "right" },
-					{ label: "Profanity %", align: "right" },
-					{ label: "Anguish %", align: "right" },
-					{ label: "Frustration %", align: "right" },
-					{ label: "Hits %", align: "right" },
-					{ label: "Trend", align: "center" },
-				]}
-			/>
+		<ModelTableShell title={t("behavior.byModel.title")} subtitle={t("behavior.byModel.subtitle")}>
+			<ModelTableHeader gridTemplate={TABLE_GRID_TEMPLATE} columns={headerColumns} />
 
 			<ModelTableBody>
 				{sortedModels.map((model, index) => {
@@ -413,43 +432,43 @@ function BehaviorModelsTable({
 								<div className="grid gap-4" style={{ gridTemplateColumns: "220px 1fr" }}>
 									<div className="space-y-4 text-sm">
 										<DetailRow
-											label="Yelling (CAPS)"
+											label={t("behavior.summary.yelling")}
 											total={model.totalYelling}
 											messages={model.totalMessages}
 											valueClass="text-[#ed4abf]"
 										/>
 										<DetailRow
-											label="Profanity"
+											label={t("behavior.summary.profanity")}
 											total={model.totalProfanity}
 											messages={model.totalMessages}
 											valueClass="text-[#ff6b7d]"
 										/>
 										<DetailRow
-											label="Anguish (!!!, nooo, dude, ..)"
+											label={t("behavior.byModel.rowAnguish")}
 											total={model.totalAnguish}
 											messages={model.totalMessages}
 											valueClass="text-[#9b4dff]"
 										/>
 										<DetailRow
-											label="Negation (no/nope/wrong)"
+											label={t("behavior.byModel.rowNegation")}
 											total={model.totalNegation}
 											messages={model.totalMessages}
 											valueClass="text-[#5ad8e6]"
 										/>
 										<DetailRow
-											label="Repetition (i meant, still doesnt)"
+											label={t("behavior.byModel.rowRepetition")}
 											total={model.totalRepetition}
 											messages={model.totalMessages}
 											valueClass="text-[#5ad8e6]"
 										/>
 										<DetailRow
-											label="Blame (you didnt, stop X-ing)"
+											label={t("behavior.byModel.rowBlame")}
 											total={model.totalBlame}
 											messages={model.totalMessages}
 											valueClass="text-[#5ad8e6]"
 										/>
 										<DetailRow
-											label="Avg chars / msg"
+											label={t("behavior.byModel.rowAvgChars")}
 											total={model.totalChars}
 											messages={model.totalMessages}
 											valueClass="stats-text-secondary"
@@ -470,7 +489,7 @@ function BehaviorModelsTable({
 				})}
 				{sortedModels.length === 0 ? (
 					<div className="border-t border-[var(--border-subtle)] px-5 py-8 text-center text-[var(--text-muted)] text-sm">
-						No user behavior recorded for this range yet.
+						{t("behavior.byModel.empty")}
 					</div>
 				) : null}
 			</ModelTableBody>
@@ -491,7 +510,7 @@ function DetailRow({
 	valueClass: string;
 	mode?: "rate" | "average";
 }) {
-	const perMsgLabel = mode === "rate" ? "% of msgs" : "Per msg";
+	const perMsgLabel = mode === "rate" ? t("behavior.byModel.label.perMsgRate") : t("behavior.byModel.label.perMsgAvg");
 	const perMsgValue = useMemo(() => {
 		if (messages === 0) return "-";
 		return mode === "rate" ? formatRate(total, messages) : (total / messages).toFixed(0);
@@ -502,7 +521,7 @@ function DetailRow({
 			<div className="text-[var(--text-primary)] font-medium mb-1">{label}</div>
 			<div className="space-y-0.5 text-[var(--text-secondary)]">
 				<div className="flex items-center justify-between">
-					<span className="stats-text-muted text-xs">Total</span>
+					<span className="stats-text-muted text-xs">{t("behavior.byModel.label.total")}</span>
 					<span className={`font-mono text-xs ${valueClass}`}>{formatInteger(total)}</span>
 				</div>
 				<div className="flex items-center justify-between">
@@ -527,22 +546,22 @@ function BreakdownChart({ data, chartTheme }: { data: DailyPoint[]; chartTheme: 
 			labels: data.map(d => format(new Date(d.timestamp), "MMM d")),
 			datasets: [
 				{
-					label: "CAPS",
+					label: t("behavior.byModel.label.seriesCaps"),
 					data: data.map(d => d.yelling),
 					...lineSeriesStyle(SERIES_COLORS.yelling),
 				},
 				{
-					label: "Profanity",
+					label: t("behavior.byModel.label.seriesProfanity"),
 					data: data.map(d => d.profanity),
 					...lineSeriesStyle(SERIES_COLORS.profanity),
 				},
 				{
-					label: "Anguish",
+					label: t("behavior.byModel.label.seriesAnguish"),
 					data: data.map(d => d.anguish),
 					...lineSeriesStyle(SERIES_COLORS.anguish),
 				},
 				{
-					label: "Frustration",
+					label: t("behavior.byModel.label.seriesFrustration"),
 					data: data.map(d => d.frustration),
 					...lineSeriesStyle(SERIES_COLORS.frustration),
 				},

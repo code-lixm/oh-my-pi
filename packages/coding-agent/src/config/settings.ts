@@ -26,12 +26,15 @@ import {
 	procmgr,
 	setWorktreesDir,
 } from "@oh-my-pi/pi-utils";
+import { setCliLocale } from "@oh-my-pi/pi-utils/cli";
 import { JSONC, YAML } from "bun";
 import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
+import { setSettingsUiLocale } from "../i18n/settings-locale";
 import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
+import { setPromptLocale } from "../prompts/prompt-locale";
 import { AgentStorage } from "../session/agent-storage";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { withFileLock } from "./file-lock";
@@ -44,6 +47,12 @@ import {
 	type SettingPath,
 	type SettingValue,
 } from "./settings-schema";
+
+function applyDisplayLanguage(value: unknown): void {
+	setSettingsUiLocale(value);
+	setPromptLocale(value);
+	setCliLocale(value);
+}
 
 // Re-export types that callers need
 export type * from "./settings-schema";
@@ -424,6 +433,7 @@ export class Settings {
 	static isolated(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
 		const instance = new Settings({ inMemory: true, overrides });
 		instance.#rebuildMerged();
+		applyDisplayLanguage(instance.get("displayLanguage"));
 		return instance;
 	}
 
@@ -478,6 +488,7 @@ export class Settings {
 		this.#modified.add(path);
 		this.#rebuildMerged();
 		const next = this.get(path);
+		if (path === "displayLanguage") applyDisplayLanguage(next);
 		this.#queueSave();
 
 		// Trigger hook if exists
@@ -499,6 +510,7 @@ export class Settings {
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
 		this.#rebuildMerged();
+		if (path === "displayLanguage") applyDisplayLanguage(this.get(path));
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
@@ -519,6 +531,7 @@ export class Settings {
 		}
 		delete current[segments[segments.length - 1]];
 		this.#rebuildMerged();
+		if (path === "displayLanguage") applyDisplayLanguage(this.get(path));
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
@@ -997,6 +1010,7 @@ export class Settings {
 
 		// Build merged view (global → project → overrides; project wins over global)
 		this.#rebuildMerged();
+		applyDisplayLanguage(this.get("displayLanguage"));
 		this.#fireAllHooks();
 		return this;
 	}
@@ -1012,6 +1026,7 @@ export class Settings {
 		this.#project = await projectPromise;
 		this.#configOverlay = await this.#loadConfigOverlays();
 		this.#rebuildMerged();
+		applyDisplayLanguage(this.get("displayLanguage"));
 		return this;
 	}
 

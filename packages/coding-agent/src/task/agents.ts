@@ -7,12 +7,19 @@ import { Effort } from "@oh-my-pi/pi-ai";
 import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { parseAgentFields } from "../discovery/helpers";
 import designerMd from "../prompts/agents/designer.md" with { type: "text" };
+import designerMdZh from "../prompts/agents/designer.zh-CN.md" with { type: "text" };
 // Embed agent markdown files at build time
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
+import agentFrontmatterTemplateZh from "../prompts/agents/frontmatter.zh-CN.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
+import librarianMdZh from "../prompts/agents/librarian.zh-CN.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
+import reviewerMdZh from "../prompts/agents/reviewer.zh-CN.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
+import scoutMdZh from "../prompts/agents/scout.zh-CN.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import taskMdZh from "../prompts/agents/task.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import { AUTO_THINKING } from "../thinking";
 
 import type { AgentDefinition, AgentSource } from "./types";
@@ -31,20 +38,23 @@ interface AgentFrontmatter {
 interface EmbeddedAgentDef {
 	fileName: string;
 	frontmatter?: AgentFrontmatter;
-	template: string;
+	template: () => string;
 }
 
 function buildAgentContent(def: EmbeddedAgentDef): string {
-	const body = prompt.render(def.template);
+	const body = prompt.render(def.template());
 	if (!def.frontmatter) return body;
-	return prompt.render(agentFrontmatterTemplate, { ...def.frontmatter, body });
+	return prompt.render(selectPrompt(agentFrontmatterTemplate, agentFrontmatterTemplateZh), {
+		...def.frontmatter,
+		body,
+	});
 }
 
 const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
-	{ fileName: "scout.md", template: scoutMd },
-	{ fileName: "designer.md", template: designerMd },
-	{ fileName: "reviewer.md", template: reviewerMd },
-	{ fileName: "librarian.md", template: librarianMd },
+	{ fileName: "scout.md", template: () => selectPrompt(scoutMd, scoutMdZh) },
+	{ fileName: "designer.md", template: () => selectPrompt(designerMd, designerMdZh) },
+	{ fileName: "reviewer.md", template: () => selectPrompt(reviewerMd, reviewerMdZh) },
+	{ fileName: "librarian.md", template: () => selectPrompt(librarianMd, librarianMdZh) },
 	{
 		fileName: "task.md",
 		frontmatter: {
@@ -58,7 +68,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			// `task.prewalk` setting (default off) or per agent via /agents
 			// (task.agentPrewalk).
 		},
-		template: taskMd,
+		template: () => selectPrompt(taskMd, taskMdZh),
 	},
 	{
 		fileName: "sonic.md",
@@ -68,7 +78,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			model: "@smol",
 			thinkingLevel: Effort.Medium,
 		},
-		template: taskMd,
+		template: () => selectPrompt(taskMd, taskMdZh),
 	},
 ];
 

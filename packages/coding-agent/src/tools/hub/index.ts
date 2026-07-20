@@ -29,7 +29,9 @@ import { type } from "arktype";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
+import hubDescriptionZh from "../../prompts/tools/hub.zh-CN.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
 import type { ToolSession } from "..";
 import {
@@ -230,9 +232,8 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			call: { op: "wait", name: "web", for: "ready", timeout: 30 },
 		},
 	];
-
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(hubDescription);
+		this.description = prompt.render(selectPrompt(hubDescription, hubDescriptionZh));
 	}
 
 	/** Messaging deps when this session can address peers; null otherwise. */

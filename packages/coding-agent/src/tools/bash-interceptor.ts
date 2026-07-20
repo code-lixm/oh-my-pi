@@ -5,7 +5,9 @@
  * this interceptor provides helpful error messages directing them to use
  * the specialized tools instead.
  */
+
 import { type BashInterceptorRule, DEFAULT_BASH_INTERCEPTOR_RULES } from "../config/settings-schema";
+import { tSettingsUi } from "../i18n/settings-locale";
 
 export interface InterceptionResult {
 	/** If true, the bash command should be blocked */
@@ -57,7 +59,9 @@ export function checkBashInterception(
 		if (regex.test(normalizedCommand)) {
 			return {
 				block: true,
-				message: `Blocked: ${rule.message}\n\nOriginal command: ${command}`,
+				message:
+					`${tSettingsUi("Blocked: {message}", { message: rule.message })}\n\n` +
+					tSettingsUi("Original command: {command}", { command }),
 				suggestedTool: rule.tool,
 			};
 		}

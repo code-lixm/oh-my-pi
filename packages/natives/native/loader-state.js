@@ -47,6 +47,78 @@ function startupMarker(text) {
 		// stderr unavailable; markers are best-effort
 	}
 }
+// =========================================================================
+// Locale resolution — runs before Settings/any heavy imports so the
+// final-fix diagnostic can land in the user's locale when the loader
+// itself is the only thing that gets to run.
+// =========================================================================
+
+/**
+ * Supported locales for the native loader diagnostics. English is the
+ * byte-identical default that matches the existing error text. Locales are
+ * derived from `OMP_LOCALE` / `PI_LOCALE` > `LC_ALL` > `LANG` > "en".
+ * Dynamic values (paths, URLs, version sentinels, OS/arch) are NEVER
+ * translated — only the chrome wrapping them is.
+ */
+const LOADER_LOCALES = ["en", "zh-CN"];
+
+const LOADER_MESSAGES = {
+	en: {
+		header: label => `Failed to load pi_natives native addon for ${label}.`,
+		tried: "Tried:",
+		unsupported_platform: (tag, list) =>
+			`Unsupported platform: ${tag}\n` +
+			`Supported platforms: ${list.join(", ")}\n` +
+			"If you need support for this platform, please open an issue.",
+		compiled_extract: "The compiled binary should extract one of:",
+		compiled_missing: versionedDir =>
+			`If missing, delete ${versionedDir} and re-run, or download manually:`,
+		npm_hint: "If installed via npm/bun, try reinstalling: bun install @oh-my-pi/pi-natives",
+		dev_hint: "If developing locally, build with: bun --cwd=packages/natives run build",
+		variant_hint:
+			"Optional x64 variants: TARGET_VARIANT=baseline|modern bun --cwd=packages/natives run build",
+		open_issue: "If you need support for this platform, please open an issue.",
+	},
+	"zh-CN": {
+		header: label => `加载 pi_natives 原生扩展失败（${label}）。`,
+		tried: "尝试过的路径：",
+		unsupported_platform: (tag, list) =>
+			`不支持的平台：${tag}\n` + `支持的平台：${list.join(", ")}\n` + "如需新增平台支持，请提交 issue。",
+		compiled_extract: "编译产物应解压出以下文件之一：",
+		compiled_missing: versionedDir => `若缺失，可删除 ${versionedDir} 后重试，或手动下载：`,
+		npm_hint: "若通过 npm/bun 安装，请尝试重新安装：bun install @oh-my-pi/pi-natives",
+		dev_hint: "若本地开发，请执行：bun --cwd=packages/natives run build",
+		variant_hint: "可选 x64 变体：TARGET_VARIANT=baseline|modern bun --cwd=packages/natives run build",
+		open_issue: "如需新增平台支持，请提交 issue。",
+	},
+};
+
+/**
+ * Normalize a locale token. Mirrors pi-utils/cli's rule (POSIX encoding
+ * suffix and case-insensitive match) so the loader can run without depending
+ * on the cli module.
+ */
+export function normalizeNativeLoaderLocale(value) {
+	if (typeof value !== "string") return "en";
+	const lower = value.trim().toLowerCase().replace(/_/g, "-").split(".")[0]?.split("-")[0] ?? "";
+	if (lower === "zh") return "zh-CN";
+	if (lower === "en") return "en";
+	return "en";
+}
+
+/**
+ * Resolve the loader locale from an env snapshot. Pure so tests can pin
+ * down the precedence without mutating process.env.
+ * Precedence: `OMP_LOCALE` / `PI_LOCALE` > `LC_ALL` > `LANG` > "en".
+ */
+export function resolveNativeLoaderLocale(env = process.env) {
+	if (!env) return "en";
+	if (env.OMP_LOCALE) return normalizeNativeLoaderLocale(env.OMP_LOCALE);
+	if (env.PI_LOCALE) return normalizeNativeLoaderLocale(env.PI_LOCALE);
+	if (env.LC_ALL) return normalizeNativeLoaderLocale(env.LC_ALL);
+	if (env.LANG) return normalizeNativeLoaderLocale(env.LANG);
+	return "en";
+}
 
 function getNativesDir() {
 	const xdgDataHome = process.env.XDG_DATA_HOME;
@@ -652,10 +724,16 @@ function installNativeTokioRuntime(bindings) {
 	}
 }
 
-
-function buildHelpMessage(ctx) {
+/**
+ * Build the "how to fix" hint for a failed native load. Defaults to English
+ * so existing tests stay byte-identical; `locale` switches chrome to zh-CN.
+ */
+function buildHelpMessage(ctx, locale = "en") {
+	const msgs = LOADER_MESSAGES[locale] ?? LOADER_MESSAGES.en;
 	if (ctx.isCompiledBinary) {
-		const expectedPaths = ctx.addonFilenames.map(filename => `  ${path.join(ctx.versionedDir, filename)}`).join("\n");
+		const expectedPaths = ctx.addonFilenames
+			.map(filename => `  ${path.join(ctx.versionedDir, filename)}`)
+			.join("\n");
 		const downloadHints = ctx.addonFilenames
 			.map(filename => {
 				const downloadUrl = `https://github.com/can1357/oh-my-pi/releases/latest/download/${filename}`;
@@ -663,16 +741,9 @@ function buildHelpMessage(ctx) {
 				return `  curl -fsSL "${downloadUrl}" -o "${targetPath}"`;
 			})
 			.join("\n");
-		return (
-			`The compiled binary should extract one of:\n${expectedPaths}\n\n` +
-			`If missing, delete ${ctx.versionedDir} and re-run, or download manually:\n${downloadHints}`
-		);
+		return `${msgs.compiled_extract}\n${expectedPaths}\n\n${msgs.compiled_missing(ctx.versionedDir)}\n${downloadHints}`;
 	}
-	return (
-		"If installed via npm/bun, try reinstalling: bun install @oh-my-pi/pi-natives\n" +
-		"If developing locally, build with: bun --cwd=packages/natives run build\n" +
-		"Optional x64 variants: TARGET_VARIANT=baseline|modern bun --cwd=packages/natives run build"
-	);
+	return `${msgs.npm_hint}\n${msgs.dev_hint}\n${msgs.variant_hint}`;
 }
 
 /**
@@ -760,13 +831,19 @@ export function loadNative() {
 	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
 	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
 
+	// Resolve locale at the earliest viable point so the final-fix diagnostic
+	// — the only message guaranteed to surface after dlopen/extract/stage have
+	// all failed — can land in the user's language without depending on
+	// Settings or any other upstream module.
+	const locale = resolveNativeLoaderLocale();
+
 	for (const candidate of runtimeCandidates) {
 		try {
 			startupMarker(`native:require:${path.basename(candidate)}`);
 			const bindings = require_(candidate);
 			validateLoadedBindings(ctx, bindings, candidate);
 			installNativeTokioRuntime(bindings);
-	        cleanupStaleNativeVersions({ nativesDir: ctx.nativesDir, currentVersion: ctx.packageVersion });
+			cleanupStaleNativeVersions({ nativesDir: ctx.nativesDir, currentVersion: ctx.packageVersion });
 			startupMarker("native:loadNative:done");
 			return bindings;
 		} catch (err) {
@@ -777,13 +854,11 @@ export function loadNative() {
 
 	if (!SUPPORTED_PLATFORMS.includes(ctx.platformTag)) {
 		throw new Error(
-			`Unsupported platform: ${ctx.platformTag}\n` +
-				`Supported platforms: ${SUPPORTED_PLATFORMS.join(", ")}\n` +
-				"If you need support for this platform, please open an issue.",
+			LOADER_MESSAGES[locale]?.unsupported_platform(ctx.platformTag, SUPPORTED_PLATFORMS) ??
+				LOADER_MESSAGES.en.unsupported_platform(ctx.platformTag, SUPPORTED_PLATFORMS),
 		);
 	}
 	const details = errors.map(error => `- ${error}`).join("\n");
-	throw new Error(
-		`Failed to load pi_natives native addon for ${ctx.addonLabel}.\n\nTried:\n${details}\n\n${buildHelpMessage(ctx)}`,
-	);
+	const msgs = LOADER_MESSAGES[locale] ?? LOADER_MESSAGES.en;
+	throw new Error(`${msgs.header(ctx.addonLabel)}\n\n${msgs.tried}\n${details}\n\n${buildHelpMessage(ctx, locale)}`);
 }

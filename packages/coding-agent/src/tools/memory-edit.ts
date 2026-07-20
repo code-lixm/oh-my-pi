@@ -1,6 +1,8 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type } from "arktype";
+import { selectPrompt } from "../prompts/prompt-locale";
 import memoryEditDescription from "../prompts/tools/memory-edit.md" with { type: "text" };
+import memoryEditDescriptionZh from "../prompts/tools/memory-edit.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const memoryEditSchema = type({
@@ -17,7 +19,7 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	readonly name = "memory_edit";
 	readonly approval = "read" as const;
 	readonly label = "Memory Edit";
-	readonly description = memoryEditDescription;
+	readonly description = selectPrompt(memoryEditDescription, memoryEditDescriptionZh);
 	readonly parameters = memoryEditSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";

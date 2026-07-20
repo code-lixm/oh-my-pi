@@ -9,7 +9,15 @@ import {
 	highlightCode as nativeHighlightCode,
 	supportsLanguage as nativeSupportsLanguage,
 } from "@oh-my-pi/pi-natives";
-import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
+import type {
+	EditorTheme,
+	MarkdownHeadingStyle,
+	MarkdownTableBorderStyle,
+	MarkdownTheme,
+	SelectListTheme,
+	SettingsListTheme,
+	SymbolTheme,
+} from "@oh-my-pi/pi-tui";
 import { adjustHsv, colorLuma, getCustomThemesDir, isEnoent, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
@@ -2827,11 +2835,12 @@ export function highlightCode(code: string, lang?: string, highlightTheme: Theme
 	return (highlighted ?? code).split("\n");
 }
 
-export function getSymbolTheme(): SymbolTheme {
+export function getSymbolTheme(themeOverride?: Theme): SymbolTheme {
+	const activeTheme = themeOverride ?? theme;
 	// Guard against `theme` being undefined (pre-init or cross-module-instance
 	// plugin calls). Fall back to the ASCII preset so the returned symbols are
 	// usable instead of crashing. See #2998.
-	if (typeof theme === "undefined") {
+	if (typeof activeTheme === "undefined") {
 		const box = {
 			topLeft: "+",
 			topRight: "+",
@@ -2857,24 +2866,38 @@ export function getSymbolTheme(): SymbolTheme {
 			spinnerFrames: ["-", "\\", "|", "/"],
 		};
 	}
-	const preset = theme.getSymbolPreset();
+	const preset = activeTheme.getSymbolPreset();
 
 	return {
-		cursor: theme.nav.cursor,
+		cursor: activeTheme.nav.cursor,
 		inputCursor: preset === "ascii" ? "|" : "▏",
-		boxRound: theme.boxRound,
-		boxSharp: theme.boxSharp,
-		table: theme.boxSharp,
-		quoteBorder: theme.md.quoteBorder,
-		hrChar: theme.md.hrChar,
-		colorSwatch: theme.md.colorSwatch,
-		spinnerFrames: theme.getSpinnerFrames("activity"),
+		boxRound: activeTheme.boxRound,
+		boxSharp: activeTheme.boxSharp,
+		table: activeTheme.boxSharp,
+		quoteBorder: activeTheme.md.quoteBorder,
+		hrChar: activeTheme.md.hrChar,
+		colorSwatch: activeTheme.md.colorSwatch,
+		spinnerFrames: activeTheme.getSpinnerFrames("activity"),
 	};
 }
 
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 let markdownMermaidRendering = true;
+let markdownHeadingStyle: MarkdownHeadingStyle = "compact";
+let markdownTableBorderStyle: MarkdownTableBorderStyle = "full";
+
+export function setMarkdownHeadingStyle(style: MarkdownHeadingStyle): void {
+	if (markdownHeadingStyle === style) return;
+	markdownHeadingStyle = style;
+	cachedMarkdownTheme = undefined;
+}
+
+export function setMarkdownTableBorderStyle(style: MarkdownTableBorderStyle): void {
+	if (markdownTableBorderStyle === style) return;
+	markdownTableBorderStyle = style;
+	cachedMarkdownTheme = undefined;
+}
 
 export function setMarkdownMermaidRendering(enabled: boolean): void {
 	if (markdownMermaidRendering === enabled) return;
@@ -2882,8 +2905,9 @@ export function setMarkdownMermaidRendering(enabled: boolean): void {
 	cachedMarkdownTheme = undefined;
 }
 
-export function getMarkdownTheme(): MarkdownTheme {
-	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === theme) {
+export function getMarkdownTheme(themeOverride?: Theme): MarkdownTheme {
+	const activeTheme = themeOverride ?? theme;
+	if (cachedMarkdownTheme !== undefined && cachedMarkdownThemeRef === activeTheme) {
 		return cachedMarkdownTheme;
 	}
 	const mermaid = markdownMermaidRendering
@@ -2892,34 +2916,36 @@ export function getMarkdownTheme(): MarkdownTheme {
 				// content rather than raw monochrome. Roles mirror the SVG renderer's
 				// mapping; `text`/`muted`/`border`/`borderMuted`/`accent` exist in every theme.
 				const mermaidColorMode =
-					theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
+					activeTheme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
 				const mermaidTheme = {
-					fg: theme.getColorHex("text"),
-					border: theme.getColorHex("border"),
-					line: theme.getColorHex("muted"),
-					arrow: theme.getColorHex("accent"),
-					corner: theme.getColorHex("muted"),
-					junction: theme.getColorHex("borderMuted"),
+					fg: activeTheme.getColorHex("text"),
+					border: activeTheme.getColorHex("border"),
+					line: activeTheme.getColorHex("muted"),
+					arrow: activeTheme.getColorHex("accent"),
+					corner: activeTheme.getColorHex("muted"),
+					junction: activeTheme.getColorHex("borderMuted"),
 				};
 				return { mermaidColorMode, mermaidTheme };
 			})()
 		: undefined;
 	const markdownTheme: MarkdownTheme = {
-		heading: (text: string) => theme.fg("mdHeading", text),
-		link: (text: string) => theme.fg("mdLink", text),
-		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
-		code: (text: string) => theme.fg("mdCode", text),
-		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
-		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
-		quote: (text: string) => theme.fg("mdQuote", text),
-		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
-		hr: (text: string) => theme.fg("mdHr", text),
-		listBullet: (text: string) => theme.fg("mdListBullet", text),
-		bold: (text: string) => theme.bold(text),
-		italic: (text: string) => theme.italic(text),
-		underline: (text: string) => theme.underline(text),
+		heading: (text: string) => activeTheme.fg("mdHeading", text),
+		headingStyle: markdownHeadingStyle,
+		tableBorderStyle: markdownTableBorderStyle,
+		link: (text: string) => activeTheme.fg("mdLink", text),
+		linkUrl: (text: string) => activeTheme.fg("mdLinkUrl", text),
+		code: (text: string) => activeTheme.fg("mdCode", text),
+		codeBlock: (text: string) => activeTheme.fg("mdCodeBlock", text),
+		codeBlockBorder: (text: string) => activeTheme.fg("mdCodeBlockBorder", text),
+		quote: (text: string) => activeTheme.fg("mdQuote", text),
+		quoteBorder: (text: string) => activeTheme.fg("mdQuoteBorder", text),
+		hr: (text: string) => activeTheme.fg("mdHr", text),
+		listBullet: (text: string) => activeTheme.fg("mdListBullet", text),
+		bold: (text: string) => activeTheme.bold(text),
+		italic: (text: string) => activeTheme.italic(text),
+		underline: (text: string) => activeTheme.underline(text),
 		strikethrough: (text: string) => chalk.strikethrough(text),
-		symbols: getSymbolTheme(),
+		symbols: getSymbolTheme(activeTheme),
 		resolveMermaidAscii: mermaid
 			? (source, maxWidth) =>
 					resolveMermaidAscii(source, {
@@ -2930,13 +2956,13 @@ export function getMarkdownTheme(): MarkdownTheme {
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
-			const highlighted = highlightCached(code, validLang, theme);
+			const highlighted = highlightCached(code, validLang, activeTheme);
 			if (highlighted !== null) return highlighted.split("\n");
-			return code.split("\n").map(line => theme.fg("mdCodeBlock", line));
+			return code.split("\n").map(line => activeTheme.fg("mdCodeBlock", line));
 		},
 	};
 	cachedMarkdownTheme = markdownTheme;
-	cachedMarkdownThemeRef = theme;
+	cachedMarkdownThemeRef = activeTheme;
 	return markdownTheme;
 }
 

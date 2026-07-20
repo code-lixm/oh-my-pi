@@ -20,8 +20,10 @@ import {
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
 import { useResource } from "../data/useResource";
 import { buildModelPerformanceLookup } from "../data/view-models";
+import { t } from "../locale/catalog";
 import type { ModelPerformancePoint, ModelStats, ModelTimeSeriesPoint, TimeRange } from "../types";
 import { AsyncBoundary, Panel } from "../ui";
+import { useLocale } from "../useLocale";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface ModelsRouteProps {
@@ -31,6 +33,7 @@ export interface ModelsRouteProps {
 }
 
 export function ModelsRoute({ active, range, refreshTrigger }: ModelsRouteProps) {
+	useLocale();
 	const {
 		data: modelStats,
 		error,
@@ -62,6 +65,7 @@ function ModelShareChart({ modelSeries, timeRange }: { modelSeries: ModelTimeSer
 	const theme = useSystemTheme();
 	const chartTheme = CHART_THEMES[theme];
 	const meta = rangeMeta(timeRange);
+	const otherLabel = t("models.series.other");
 
 	const chartData = useMemo(() => buildModelPreferenceSeries(modelSeries), [modelSeries]);
 
@@ -69,7 +73,7 @@ function ModelShareChart({ modelSeries, timeRange }: { modelSeries: ModelTimeSer
 		return {
 			labels: chartData.data.map(d => formatRangeTick(d.timestamp, timeRange)),
 			datasets: chartData.series.map((seriesName, index) => ({
-				label: seriesName,
+				label: seriesName === "Other" ? otherLabel : seriesName, // model name (data) preserved, only the rollup bucket translates
 				data: chartData.data.map(d => d[seriesName] ?? 0),
 				borderColor: MODEL_COLORS[index % MODEL_COLORS.length],
 				backgroundColor: `${MODEL_COLORS[index % MODEL_COLORS.length]}20`,
@@ -80,7 +84,7 @@ function ModelShareChart({ modelSeries, timeRange }: { modelSeries: ModelTimeSer
 				borderWidth: 2,
 			})),
 		};
-	}, [chartData, timeRange]);
+	}, [chartData, timeRange, otherLabel]);
 
 	const options = useMemo(() => {
 		return {
@@ -148,10 +152,12 @@ function ModelShareChart({ modelSeries, timeRange }: { modelSeries: ModelTimeSer
 	}, [chartTheme]);
 
 	return (
-		<Panel title="Model Preference" subtitle={`Share of requests over ${meta.windowLabel}`}>
+		<Panel title={t("models.share.title")} subtitle={t("models.share.subtitle", { window: meta.windowLabel })}>
 			<div className="h-[280px]">
 				{chartData.data.length === 0 ? (
-					<div className="h-full flex items-center justify-center text-stats-muted text-sm">No data available</div>
+					<div className="h-full flex items-center justify-center text-stats-muted text-sm">
+						{t("models.share.empty")}
+					</div>
 				) : (
 					<Line data={data} options={options} />
 				)}
@@ -260,16 +266,16 @@ function ModelsTable({
 	}, [models]);
 
 	return (
-		<ModelTableShell title="Model Statistics">
+		<ModelTableShell title={t("models.table.title")}>
 			<ModelTableHeader
 				gridTemplate={GRID_TEMPLATE}
 				columns={[
-					{ label: "Model" },
-					{ label: "Requests", align: "right" },
-					{ label: "Cost", align: "right" },
-					{ label: "Tokens", align: "right" },
-					{ label: "Tokens/s", align: "right" },
-					{ label: "TTFT", align: "right" },
+					{ label: t("models.table.column.model") },
+					{ label: t("models.table.column.requests"), align: "right" },
+					{ label: t("models.table.column.cost"), align: "right" },
+					{ label: t("models.table.column.tokens"), align: "right" },
+					{ label: t("models.table.column.tps"), align: "right" },
+					{ label: t("models.table.column.ttft"), align: "right" },
 					{ label: meta.trendLabel, align: "center" },
 				]}
 			/>
@@ -322,10 +328,12 @@ function ModelsTable({
 								<div className="grid gap-4" style={{ gridTemplateColumns: "200px 1fr" }}>
 									<div className="space-y-4 text-sm">
 										<div>
-											<div className="text-[var(--text-primary)] font-medium mb-2">Quality</div>
+											<div className="text-[var(--text-primary)] font-medium mb-2">
+												{t("models.expanded.quality")}
+											</div>
 											<div className="space-y-1 text-[var(--text-secondary)]">
 												<div className="flex items-center justify-between">
-													<span>Error rate</span>
+													<span>{t("models.expanded.errorRate")}</span>
 													<span
 														className={
 															errorRate > 5 ? "text-[var(--accent-red)]" : "text-[var(--accent-green)]"
@@ -335,7 +343,7 @@ function ModelsTable({
 													</span>
 												</div>
 												<div className="flex items-center justify-between">
-													<span>Cache rate</span>
+													<span>{t("models.expanded.cacheRate")}</span>
 													<span className="text-[var(--accent-cyan)]">
 														{(model.cacheRate * 100).toFixed(1)}%
 													</span>
@@ -343,16 +351,18 @@ function ModelsTable({
 											</div>
 										</div>
 										<div>
-											<div className="text-[var(--text-primary)] font-medium mb-2">Latency</div>
+											<div className="text-[var(--text-primary)] font-medium mb-2">
+												{t("models.expanded.latency")}
+											</div>
 											<div className="space-y-1 text-[var(--text-secondary)]">
 												<div className="flex items-center justify-between">
-													<span>Avg duration</span>
+													<span>{t("models.expanded.avgDuration")}</span>
 													<span className="font-mono">
 														{model.avgDuration ? `${(model.avgDuration / 1000).toFixed(2)}s` : "-"}
 													</span>
 												</div>
 												<div className="flex items-center justify-between">
-													<span>Avg TTFT</span>
+													<span>{t("models.expanded.avgTtft")}</span>
 													<span className="font-mono">
 														{model.avgTtft ? `${(model.avgTtft / 1000).toFixed(2)}s` : "-"}
 													</span>
@@ -402,13 +412,13 @@ function PerformanceChart({
 			labels: data.map(d => formatRangeTick(d.timestamp, timeRange)),
 			datasets: [
 				{
-					label: "TTFT",
+					label: "TTFT", // metric name preserved
 					data: data.map(d => d.avgTtftSeconds ?? null),
 					...lineSeriesStyle("#5ad8e6"),
 					yAxisID: "y" as const,
 				},
 				{
-					label: "Tokens/s",
+					label: "Tokens/s", // metric name preserved
 					data: data.map(d => d.avgTokensPerSecond ?? null),
 					...lineSeriesStyle(color),
 					yAxisID: "y1" as const,

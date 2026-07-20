@@ -5,7 +5,9 @@ import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import goalDescription from "../../prompts/tools/goal.md" with { type: "text" };
+import goalDescriptionZh from "../../prompts/tools/goal.zh-CN.md" with { type: "text" };
 import { formatDuration } from "../../slash-commands/helpers/format";
 import type { ToolSession } from "../../tools";
 import { formatErrorDetail, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -58,7 +60,7 @@ function validateCreateParams(params: GoalToolInput): { objective: string; token
 export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {
 	readonly name = "goal";
 	readonly label = "Goal";
-	readonly description = prompt.render(goalDescription);
+	readonly description = prompt.render(selectPrompt(goalDescription, goalDescriptionZh));
 	readonly parameters = goalSchema;
 	readonly strict = true;
 	readonly intent = "omit" as const;

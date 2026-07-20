@@ -19,8 +19,11 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import difficultySystemPrompt from "../prompts/system/auto-thinking-difficulty.md" with { type: "text" };
+import difficultySystemPromptZh from "../prompts/system/auto-thinking-difficulty.zh-CN.md" with { type: "text" };
 import difficultyLocalPrompt from "../prompts/system/auto-thinking-difficulty-local.md" with { type: "text" };
+import difficultyLocalPromptZh from "../prompts/system/auto-thinking-difficulty-local.zh-CN.md" with { type: "text" };
 import { clampAutoThinkingEffort } from "../thinking";
 import { preprocessTinyMessage } from "../tiny/message-preproc";
 import {
@@ -29,8 +32,6 @@ import {
 	ONLINE_AUTO_THINKING_MODEL_KEY,
 } from "../tiny/models";
 import { tinyModelClient } from "../tiny/title-client";
-
-const DIFFICULTY_SYSTEM_PROMPT = prompt.render(difficultySystemPrompt);
 
 /** Local classifiers occasionally need more room for chat-template boilerplate. */
 const LOCAL_ANSWER_MAX_TOKENS = 16;
@@ -88,7 +89,7 @@ async function classifyOnline(input: string, deps: ClassifyDifficultyDeps): Prom
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: [DIFFICULTY_SYSTEM_PROMPT],
+			systemPrompt: [prompt.render(selectPrompt(difficultySystemPrompt, difficultySystemPromptZh))],
 			messages: [{ role: "user", content: input, timestamp: Date.now() }],
 		},
 		{
@@ -119,7 +120,7 @@ async function classifyLocal(input: string, modelKey: string, deps: ClassifyDiff
 	const maxTokens = isTinyMemoryReasoningModelKey(modelKey)
 		? Math.max(LOCAL_ANSWER_MAX_TOKENS, REASONING_SAFE_MAX_TOKENS)
 		: LOCAL_ANSWER_MAX_TOKENS;
-	const builtPrompt = prompt.render(difficultyLocalPrompt, { prompt: input });
+	const builtPrompt = prompt.render(selectPrompt(difficultyLocalPrompt, difficultyLocalPromptZh), { prompt: input });
 	const text = await tinyModelClient.complete(modelKey, builtPrompt, {
 		maxTokens,
 		signal: deps.signal,

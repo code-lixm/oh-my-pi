@@ -6,6 +6,7 @@ import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
 import type { Component, NativeScrollbackCommittedRows, NativeScrollbackReplay } from "../tui";
 import {
+	anchorRightBorder,
 	applyBackgroundToLine,
 	Ellipsis,
 	encodeTextSized,
@@ -643,6 +644,9 @@ const RENDER_CACHE_MAX_SIZE = 512 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 32 * 1024;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
+/** Sentinel marker used by {@link Markdown.#renderFramedCodeBlock} to splice the omit hint line into the rendered body without consuming a real source line. */
+const OMIT_SENTINEL = "\u0000OMIT\u0000";
+
 interface RenderCacheEntry {
 	lines: readonly string[];
 	tables: readonly RenderedTableLayout[];
@@ -715,8 +719,15 @@ export interface DefaultTextStyle {
  * Theme functions for markdown elements.
  * Each function takes text and returns styled text with ANSI codes.
  */
+export type MarkdownHeadingStyle = "compact" | "hierarchical";
+export type MarkdownTableBorderStyle = "full" | "horizontal";
+
 export interface MarkdownTheme {
 	heading: (text: string) => string;
+	/** Compact hides source markers and flattens H1-H6 to one color-only style. */
+	headingStyle?: MarkdownHeadingStyle;
+	/** Border layout used by Markdown tables. */
+	tableBorderStyle?: MarkdownTableBorderStyle;
 	link: (text: string) => string;
 	linkUrl: (text: string) => string;
 	code: (text: string) => string;
@@ -738,6 +749,40 @@ export interface MarkdownTheme {
 	resolveMermaidAscii?: (source: string, maxWidth?: number) => string | null;
 	symbols: SymbolTheme;
 }
+
+/**
+ * Opt-in code-block display options for Markdown. When provided, fenced code
+ * blocks render as a compact rounded frame with the language label embedded in
+ * the top border (no raw ``` lines, no vertical padding inside the frame) and
+ * bodies that exceed the resolved collapsed budget collapse head+omission+tail.
+ * Designed for assistant Markdown children; non-Assistant callers should leave
+ * this unset to preserve the original fence rendering.
+ */
+export interface CodeBlockDisplayOptions {
+	/** Render fenced code as a rounded frame; required to opt into framing. */
+	frame: true;
+	/** Stable cache key; change it when the rendered output for a given body+width would differ. */
+	cacheKey: string;
+	/**
+	 * Resolve the current collapsed budget (e.g. viewport-derived). Re-evaluated
+	 * on every render so the fold tracks live resize — intentionally outside
+	 * the render signature; the resolved value is captured at render time.
+	 */
+	getCollapsedBudget: () => number;
+	/** Expand key label embedded in the omission hint, e.g. `ctrl+o`. */
+	expandKeyLabel: string;
+	/**
+	 * Pre-localized omit hint template. `{count}` is the number of hidden
+	 * lines; `{key}` is the {@link expandKeyLabel}. The whole line is painted
+	 * with the dimmed style before display, so callers should pass plain text.
+	 */
+	omitHintTemplate: string;
+}
+
+/**
+ * Default text styling for markdown content.
+ * Applied to all text unless overridden by markdown formatting.
+ */
 
 interface InlineStyleContext {
 	applyText: (text: string) => string;
@@ -992,6 +1037,12 @@ interface RenderSignature {
 	textSizing: boolean;
 	bgColorProbe: string;
 	headingProbe: string;
+	/** Stable cache key for opt-in code-block display options, or empty when unset. */
+	codeBlockDisplayKey: string;
+	/** Expanded state when opt-in framing is enabled; false otherwise. */
+	expanded: boolean;
+	/** Resolved collapsed budget for opt-in framing; -1 when framing is unset. */
+	codeBlockBudget: number;
 }
 
 interface StreamPrefixLineCache extends RenderSignature {
@@ -1033,6 +1084,10 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	#defaultStylePrefix?: string;
 	/** Number of spaces used to indent code block content. */
 	#codeBlockIndent: number;
+	/** Opt-in code-block display options; undefined preserves the legacy fence render. */
+	#codeBlockDisplayOptions: CodeBlockDisplayOptions | undefined;
+	/** Whether code-block bodies currently render in full (true) or folded (false). */
+	#expanded = false;
 
 	// Cache for rendered output. Cached arrays are shared and returned by
 	// reference (render contract: results are component-owned and immutable to
@@ -1141,6 +1196,35 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		if (this.#transientRenderCache === next) return;
 		this.#transientRenderCache = next;
 		this.invalidate();
+	}
+
+	/**
+	 * Opt into the compact rounded-frame code-block render. Pass `undefined`
+	 * to restore the legacy fence rendering. Caches are invalidated so the
+	 * next render sees the new configuration.
+	 */
+	setCodeBlockDisplayOptions(options: CodeBlockDisplayOptions | undefined): this {
+		this.#codeBlockDisplayOptions = options;
+		this.invalidate();
+		return this;
+	}
+
+	/**
+	 * Toggle collapsed/full body rendering for opted-in code blocks. While
+	 * collapsed, bodies that exceed the resolved budget fold head+omission+tail;
+	 * expanded renders the full body. No-op when no code-block display options
+	 * are set (caller only stores state, never applied).
+	 */
+	setExpanded(expanded: boolean): this {
+		const next = expanded === true;
+		if (this.#expanded === next) return this;
+		this.#expanded = next;
+		this.invalidate();
+		return this;
+	}
+
+	get expanded(): boolean {
+		return this.#expanded;
 	}
 
 	/**
@@ -1381,6 +1465,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	#renderSignature(width: number, paddingX: number): RenderSignature {
 		const bgColorProbe = this.#defaultTextStyle?.bgColor ? this.#defaultTextStyle.bgColor("\x01") : "";
 		const headingProbe = this.#theme.heading("");
+		const displayOptions = this.#codeBlockDisplayOptions;
 		return {
 			width,
 			paddingX,
@@ -1393,11 +1478,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			textSizing: TERMINAL.textSizing,
 			bgColorProbe,
 			headingProbe,
+			codeBlockDisplayKey: displayOptions?.cacheKey ?? "",
+			expanded: displayOptions ? this.#expanded : false,
+			codeBlockBudget: displayOptions ? Math.max(1, Math.floor(displayOptions.getCollapsedBudget())) : -1,
 		};
 	}
 
 	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}`;
+		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.codeBlockDisplayKey}\x00${signature.expanded ? 1 : 0}\x00${signature.codeBlockBudget}`;
 	}
 
 	#renderStreamingContentLines(
@@ -1502,6 +1590,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		if (cache.textSizing !== signature.textSizing) return undefined;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
+		if (cache.codeBlockDisplayKey !== signature.codeBlockDisplayKey) return undefined;
+		if (cache.expanded !== signature.expanded) return undefined;
+		if (cache.codeBlockBudget !== signature.codeBlockBudget) return undefined;
 		return cache;
 	}
 
@@ -1519,6 +1610,15 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
+			if (
+				this.#theme.headingStyle === "compact" &&
+				token.type === "heading" &&
+				i > 0 &&
+				tokens[i - 1]?.type !== "space" &&
+				wrappedLines[wrappedLines.length - 1] !== ""
+			) {
+				wrappedLines.push("");
+			}
 			const tableSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 			const tokenWrappedRowStart = wrappedLines.length;
 			const tokenRowStart = rowOffset + tokenWrappedRowStart;
@@ -1830,6 +1930,130 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		};
 	}
 
+	/**
+	 * Render an opted-in fenced code block as a compact rounded frame: language
+	 * embedded in the top border, no raw ``` lines, no vertical padding inside
+	 * the frame. When the body exceeds the resolved collapsed budget, the
+	 * middle is folded into a head + omission + tail (the tail re-evaluates
+	 * every render, so transient streaming growth keeps the latest lines in
+	 * view). Below an inner width of 4 the frame is dropped and body lines
+	 * render plain-wrapped — the narrow-width fallback.
+	 *
+	 * `wrapTextWithAnsi` later splits each row at the markdown content width,
+	 * which would split the borders. To keep the frame intact we pre-truncate
+	 * each body line to the inner content width and pad with spaces; top/bottom
+	 * borders are emitted at exactly `width` cells via `truncateToWidth(..., Ellipsis.Omit)`.
+	 */
+	#renderFramedCodeBlock(
+		body: string,
+		lang: string | undefined,
+		width: number,
+		options: CodeBlockDisplayOptions,
+	): string[] {
+		const langLabel = (lang ?? "").trim().split(/\s+/, 1)[0] ?? "";
+		const rawLines = body.length === 0 ? [""] : body.split("\n");
+		const bodyLines = this.#highlightCodeBody(rawLines, lang);
+
+		const border = this.#theme.codeBlockBorder;
+		const box = this.#theme.symbols.boxRound;
+
+		// Narrow-width fallback: no frame, just plain wrapped body lines.
+		if (width < 8) {
+			const wrapped: string[] = [];
+			for (const line of bodyLines) {
+				wrapped.push(...wrapTextWithAnsi(line, width));
+			}
+			return wrapped;
+		}
+
+		// Inner content width = full width minus the two vertical bars and
+		// the single space padding on each side (matches lsp/render.ts pattern).
+		const innerContentWidth = Math.max(1, width - 4);
+
+		const totalLines = bodyLines.length;
+		const budget = Math.max(1, Math.floor(options.getCollapsedBudget()));
+		let visibleBodyLines: string[];
+		let hiddenCount = 0;
+		if (this.#expanded || totalLines <= budget) {
+			visibleBodyLines = bodyLines;
+		} else if (budget < 3) {
+			// Budget too small to fit head + omit + tail — fold without the omit
+			// row so the visible count stays within the budget.
+			const split = Math.max(1, Math.floor(budget / 2));
+			visibleBodyLines = [...bodyLines.slice(0, split), ...bodyLines.slice(totalLines - split)];
+			hiddenCount = Math.max(0, totalLines - split * 2);
+		} else {
+			// Fold: head + omit + tail. Omit consumes one slot, leaving budget-1
+			// for head/tail split evenly.
+			const half = Math.max(1, Math.floor((budget - 1) / 2));
+			visibleBodyLines = [...bodyLines.slice(0, half), OMIT_SENTINEL, ...bodyLines.slice(totalLines - half)];
+			hiddenCount = Math.max(0, totalLines - half * 2);
+		}
+
+		const frameRows: string[] = [];
+		frameRows.push(this.#renderFrameBorder(box.topLeft, langLabel, box.topRight, box.horizontal, width, border));
+		for (const line of visibleBodyLines) {
+			if (line === OMIT_SENTINEL) {
+				const hint = options.omitHintTemplate
+					.replace("{count}", String(hiddenCount))
+					.replace("{key}", options.expandKeyLabel);
+				frameRows.push(this.#renderFrameRow(border(hint), innerContentWidth, box.vertical, border, width));
+			} else {
+				frameRows.push(this.#renderFrameRow(line, innerContentWidth, box.vertical, border, width));
+			}
+		}
+		frameRows.push(this.#renderFrameBorder(box.bottomLeft, "", box.bottomRight, box.horizontal, width, border));
+		return frameRows;
+	}
+
+	/**
+	 * Render a single frame row `│ <content padded to innerContentWidth> │`,
+	 * where content is ANSI-safe truncated to the available width and the row
+	 * is exactly `frameWidth` cells wide before styling.
+	 */
+	#renderFrameRow(
+		content: string,
+		innerContentWidth: number,
+		vertical: string,
+		border: (t: string) => string,
+		frameWidth: number,
+	): string {
+		const clipped = truncateToWidth(content, innerContentWidth);
+		const pad = Math.max(0, innerContentWidth - visibleWidth(clipped));
+		const rowWithoutRight = `${border(vertical)} ${clipped}${" ".repeat(pad)} `;
+		const row = anchorRightBorder(rowWithoutRight, border(vertical), frameWidth);
+		return visibleWidth(row) > frameWidth ? truncateToWidth(row, frameWidth, Ellipsis.Omit) : row;
+	}
+
+	/** Render an exact-width top or bottom border with an optional embedded label. */
+	#renderFrameBorder(
+		left: string,
+		label: string,
+		right: string,
+		horizontal: string,
+		frameWidth: number,
+		border: (t: string) => string,
+	): string {
+		const middleWidth = Math.max(0, frameWidth - visibleWidth(left) - visibleWidth(right));
+		if (label.length === 0) {
+			return `${border(left)}${border(horizontal.repeat(middleWidth))}${border(right)}`;
+		}
+
+		const maxLabelWidth = Math.max(0, middleWidth - 4);
+		const clippedLabel = truncateToWidth(label, maxLabelWidth, Ellipsis.Unicode);
+		const labelCell = ` ${clippedLabel} `;
+		const suffixWidth = Math.max(0, middleWidth - 1 - visibleWidth(labelCell));
+		const middle = `${horizontal}${labelCell}${horizontal.repeat(suffixWidth)}`;
+		return `${border(left)}${border(middle)}${border(right)}`;
+	}
+
+	#highlightCodeBody(lines: string[], lang: string | undefined): string[] {
+		if (this.#theme.highlightCode && (!this.transientRenderCache || this.#renderingFrozenPrefix)) {
+			return this.#theme.highlightCode(lines.join("\n"), lang);
+		}
+		return lines.map(line => this.#theme.codeBlock(line));
+	}
+
 	#renderToken(
 		token: Token,
 		width: number,
@@ -1838,12 +2062,13 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		tokenKey = "root",
 	): string[] {
 		const lines: string[] = [];
+		const compactHeadingFollows = this.#theme.headingStyle === "compact" && nextTokenType === "heading";
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
 		// and keep `\\` row breaks, so fractions and matrices span multiple lines.
 		if (isMathToken(token)) {
 			for (const mathLine of latexToBlock(token.text)) lines.push(this.#applyDefaultStyle(mathLine));
-			if (nextTokenType && nextTokenType !== "space") lines.push("");
+			if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") lines.push("");
 			return lines;
 		}
 
@@ -1853,6 +2078,11 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const headingPrefix = `${"#".repeat(headingLevel)} `;
 				const headingText = this.#renderInlineTokens(token.tokens || [], styleContext);
 				const headingPlainText = plainInlineTokens(token.tokens || []);
+				if (this.#theme.headingStyle === "compact") {
+					lines.push(this.#theme.heading(headingText));
+					if (nextTokenType && nextTokenType !== "space") lines.push("");
+					break;
+				}
 				let styledHeading: string;
 				if (headingLevel === 1 && TERMINAL.textSizing) {
 					const plainWidth = visibleWidth(headingPlainText);
@@ -1884,13 +2114,15 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const displayMath = soleDisplayMath(token.tokens);
 				if (displayMath) {
 					for (const mathLine of latexToBlock(displayMath.text)) lines.push(this.#applyDefaultStyle(mathLine));
-					if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") lines.push("");
+					if (!compactHeadingFollows && nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
+						lines.push("");
+					}
 					break;
 				}
 				const paragraphText = this.#renderInlineTokens(token.tokens || [], styleContext);
 				lines.push(...(hangWrapTreeGuideLines(paragraphText, width) ?? [paragraphText]));
 				// Don't add spacing if next token is space or list
-				if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
+				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
 					lines.push("");
 				}
 				break;
@@ -1910,11 +2142,20 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 								visibleWidth(asciiLine) > width ? truncateToWidth(asciiLine, width, Ellipsis.Omit) : asciiLine,
 							);
 						}
-						if (nextTokenType && nextTokenType !== "space") {
+						if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 							lines.push("");
 						}
 						break;
 					}
+				}
+
+				const displayOptions = this.#codeBlockDisplayOptions;
+				if (displayOptions) {
+					lines.push(...this.#renderFramedCodeBlock(token.text, token.lang, width, displayOptions));
+					if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
+						lines.push("");
+					}
+					break;
 				}
 
 				const codeIndent = padding(this.#codeBlockIndent);
@@ -1923,14 +2164,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					lines.push(bodyLine);
 				}
 				lines.push(this.#theme.codeBlockBorder("```"));
-				if (nextTokenType && nextTokenType !== "space") {
+				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after code blocks (unless space token follows)
 				}
 				break;
 			}
 
 			case "list": {
-				const listLines = this.#renderList(token as ListToken, 0, styleContext);
+				const listLines = this.#renderList(token as ListToken, 0, width, styleContext);
 				lines.push(...listLines);
 				// Don't add spacing after lists if a space token follows
 				// (the space token will handle it)
@@ -1956,6 +2197,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				for (let i = 0; i < quoteTokens.length; i++) {
 					const quoteToken = quoteTokens[i];
 					const nextQuoteToken = quoteTokens[i + 1];
+					if (
+						this.#theme.headingStyle === "compact" &&
+						quoteToken.type === "heading" &&
+						i > 0 &&
+						renderedQuoteLines[renderedQuoteLines.length - 1] !== ""
+					) {
+						renderedQuoteLines.push("");
+					}
 					const quoteTokenRowStart = renderedQuoteLines.length;
 					const quoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 					const quoteTokenLines = this.#renderToken(
@@ -2004,7 +2253,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					}
 				}
 				lines.push(...borderedQuoteLines);
-				if (nextTokenType && nextTokenType !== "space") {
+				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after blockquotes (unless space token follows)
 				}
 				break;
@@ -2013,7 +2262,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			case "hr": {
 				const raw = "raw" in token && typeof token.raw === "string" ? token.raw.trim() : "";
 				lines.push(this.#renderHrLine(width, raw[0] || ""));
-				if (nextTokenType && nextTokenType !== "space") {
+				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after horizontal rules (unless space token follows)
 				}
 				break;
@@ -2246,7 +2495,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	/**
 	 * Render a list with proper nesting support
 	 */
-	#renderList(token: ListToken, depth: number, styleContext?: InlineStyleContext): string[] {
+	#renderList(token: ListToken, depth: number, contentWidth: number, styleContext?: InlineStyleContext): string[] {
 		const lines: string[] = [];
 		const indent = "  ".repeat(depth);
 		// Use the list's start property (defaults to 1 for ordered lists)
@@ -2258,33 +2507,29 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			// Continuation rows align under the item text, so the hang matches the
 			// actual bullet width (`10. ` is 4 cells, not 2).
 			const continuationIndent = indent + padding(bullet.length);
+			const itemContentWidth = Math.max(1, contentWidth - indent.length - bullet.length);
 
 			// Process item tokens; nested-list lines arrive structurally tagged and
 			// already carry their own full indent.
-			const itemLines = this.#renderListItem(item.tokens || [], depth, styleContext);
-
-			if (itemLines.length > 0) {
-				const firstLine = itemLines[0]!;
-				if (firstLine.nested) {
-					// Nested list first - keep as-is (already has full indent)
-					lines.push(firstLine.text);
-				} else {
-					// Regular text content - add indent and bullet
-					lines.push(indent + this.#theme.listBullet(bullet) + firstLine.text);
+			const itemLines = this.#renderListItem(item.tokens || [], depth, contentWidth, styleContext);
+			let needsBullet = true;
+			for (const itemLine of itemLines) {
+				if (itemLine.nested) {
+					lines.push(itemLine.text);
+					continue;
 				}
-
-				// Rest of the lines
-				for (let j = 1; j < itemLines.length; j++) {
-					const line = itemLines[j]!;
-					if (line.nested) {
-						// Nested list line - already has full indent
-						lines.push(line.text);
+				const wrapped = wrapTextWithAnsi(itemLine.text, itemContentWidth);
+				const contentLines = wrapped.length > 0 ? wrapped : [""];
+				for (const contentLine of contentLines) {
+					if (needsBullet) {
+						lines.push(indent + this.#theme.listBullet(bullet) + contentLine);
+						needsBullet = false;
 					} else {
-						// Regular content - hang under the item text
-						lines.push(continuationIndent + line.text);
+						lines.push(continuationIndent + contentLine);
 					}
 				}
-			} else {
+			}
+			if (itemLines.length === 0) {
 				lines.push(indent + this.#theme.listBullet(bullet));
 			}
 		}
@@ -2301,6 +2546,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	#renderListItem(
 		tokens: Token[],
 		parentDepth: number,
+		contentWidth: number,
 		styleContext?: InlineStyleContext,
 	): Array<{ text: string; nested: boolean }> {
 		const lines: Array<{ text: string; nested: boolean }> = [];
@@ -2309,7 +2555,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
 				// These lines carry their own indent, so tag them for pass-through
-				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, styleContext);
+				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, contentWidth, styleContext);
 				for (const nestedLine of nestedLines) {
 					lines.push({ text: nestedLine, nested: true });
 				}
@@ -2410,20 +2656,22 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		tableKey = "table",
 	): string[] {
 		const lines: string[] = [];
+		const compactHeadingFollows = this.#theme.headingStyle === "compact" && nextTokenType === "heading";
 		const numCols = token.header.length;
 
 		if (numCols === 0) {
 			return lines;
 		}
 
-		// Calculate border overhead: "│ " + (n-1) * " │ " + " │"
-		// = 2 + (n-1) * 3 + 2 = 3n + 1
-		const borderOverhead = 3 * numCols + 1;
+		const horizontalOnly = this.#theme.tableBorderStyle === "horizontal";
+		// Full grids reserve side borders, cell padding, and column separators.
+		// Horizontal-only tables reserve three spaces between adjacent columns.
+		const borderOverhead = horizontalOnly ? 3 * (numCols - 1) : 3 * numCols + 1;
 		const availableForCells = availableWidth - borderOverhead;
 		if (availableForCells < numCols) {
 			// Too narrow to render a stable table. Fall back to raw markdown.
 			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
-			if (nextTokenType && nextTokenType !== "space") {
+			if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 				fallbackLines.push("");
 			}
 			return fallbackLines;
@@ -2537,9 +2785,10 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		const h = t.horizontal;
 		const v = t.vertical;
 
-		// Render top border
-		const topBorderCells = columnWidths.map(w => h.repeat(w));
-		lines.push(`${t.topLeft}${h}${topBorderCells.join(`${h}${t.teeDown}${h}`)}${h}${t.topRight}`);
+		if (!horizontalOnly) {
+			const topBorderCells = columnWidths.map(w => h.repeat(w));
+			lines.push(`${t.topLeft}${h}${topBorderCells.join(`${h}${t.teeDown}${h}`)}${h}${t.topRight}`);
+		}
 
 		// Render header with wrapping
 		const headerCellLines: string[][] = token.header.map((cell, i) => {
@@ -2554,12 +2803,12 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				return this.#theme.bold(padded);
 			});
-			lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
+			lines.push(horizontalOnly ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
 		}
 
-		// Render separator
-		const separatorCells = columnWidths.map(w => h.repeat(w));
-		const separatorLine = `${t.teeRight}${h}${separatorCells.join(`${h}${t.cross}${h}`)}${h}${t.teeLeft}`;
+		const separatorLine = horizontalOnly
+			? h.repeat(columnWidths.reduce((total, width) => total + width, borderOverhead))
+			: `${t.teeRight}${h}${columnWidths.map(w => h.repeat(w)).join(`${h}${t.cross}${h}`)}${h}${t.teeLeft}`;
 		lines.push(separatorLine);
 
 		// Render rows with wrapping
@@ -2576,18 +2825,18 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					const text = cellLines[lineIdx] || "";
 					return text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				});
-				lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
+				lines.push(horizontalOnly ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
 			}
 
-			if (rowIndex < token.rows.length - 1) {
+			if (!horizontalOnly && rowIndex < token.rows.length - 1) {
 				lines.push(separatorLine);
 			}
 		}
 
-		// Render bottom border
-		const bottomBorderCells = columnWidths.map(w => h.repeat(w));
-		const bottomBorder = `${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`;
-		lines.push(bottomBorder);
+		if (!horizontalOnly) {
+			const bottomBorderCells = columnWidths.map(w => h.repeat(w));
+			lines.push(`${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`);
+		}
 		this.#activeTableRenderSpecs?.push({
 			key: tableKey,
 			availableWidth,
@@ -2597,7 +2846,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			endRow: -1,
 		});
 
-		if (nextTokenType && nextTokenType !== "space") {
+		if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 			lines.push(""); // Add spacing after table
 		}
 		return lines;

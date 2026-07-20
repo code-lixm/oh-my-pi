@@ -1,5 +1,7 @@
 import { prompt } from "@oh-my-pi/pi-utils";
+import { selectPrompt } from "../prompts/prompt-locale";
 import workflowNoticeTemplate from "../prompts/system/workflow-notice.md" with { type: "text" };
+import workflowNoticeTemplateZh from "../prompts/system/workflow-notice.zh-CN.md" with { type: "text" };
 import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
@@ -24,7 +26,7 @@ export const WORKFLOW_NOTICE: string = renderWorkflowNotice({ taskBatch: true })
 
 /** renderWorkflowNotice renders the workflow notice for the active task schema. */
 export function renderWorkflowNotice({ taskBatch }: { taskBatch: boolean }): string {
-	return prompt.render(workflowNoticeTemplate, { taskBatch }).trim();
+	return prompt.render(selectPrompt(workflowNoticeTemplate, workflowNoticeTemplateZh), { taskBatch }).trim();
 }
 
 /**

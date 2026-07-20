@@ -38,8 +38,11 @@ import {
 	selectAttachAdapter,
 	selectLaunchAdapter,
 } from "../dap";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
+import debugDescriptionZh from "../prompts/tools/debug.zh-CN.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
@@ -582,7 +585,7 @@ function resolveDisassemblyReference(memoryReference: string | undefined): strin
 }
 
 function summarizeDebugCall(args: DebugRenderArgs): string {
-	const action = args.action ? args.action.replaceAll("_", " ") : "request";
+	const action = args.action ? args.action.replaceAll("_", " ") : tSettingsUi("request");
 	if (args.program) {
 		return `${action} ${truncateToWidth(args.program, TRUNCATE_LENGTHS.TITLE)}`;
 	}
@@ -616,7 +619,10 @@ function summarizeDebugCall(args: DebugRenderArgs): string {
 export const debugToolRenderer = {
 	animatedPartialResult: true,
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		const text = renderStatusLine({ icon: "pending", title: "Debug", description: summarizeDebugCall(args) }, theme);
+		const text = renderStatusLine(
+			{ icon: "pending", title: tSettingsUi("Debug"), description: summarizeDebugCall(args) },
+			theme,
+		);
 		return new Text(text, 0, 0);
 	},
 
@@ -629,16 +635,17 @@ export const debugToolRenderer = {
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
 			render(width: number): readonly string[] {
-				const action = (args?.action ?? result.details?.action ?? "debug").replaceAll("_", " ");
+				const actionValue = args?.action ?? result.details?.action;
+				const action = actionValue ? actionValue.replaceAll("_", " ") : tSettingsUi("request");
 				const success = !options.isPartial && !result.isError;
 				const statusIcon = success
 					? theme.styledSymbol("tool.debug", "accent")
 					: formatStatusIcon(options.isPartial ? "running" : "error", theme, options.spinnerFrame);
-				const header = `${statusIcon} Debug ${action}`;
+				const header = `${statusIcon} ${tSettingsUi("Debug {action}", { action })}`;
 				const summaryLines = result.details?.snapshot
 					? formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line))
 					: [];
-				const text = result.content.find(block => block.type === "text")?.text ?? "No output";
+				const text = result.content.find(block => block.type === "text")?.text ?? tSettingsUi("No output");
 				const rawLines = replaceTabs(text).split("\n");
 				const previewLimit = options.expanded ? PREVIEW_LIMITS.EXPANDED_LINES : PREVIEW_LIMITS.COLLAPSED_LINES;
 				const displayedLines = rawLines
@@ -647,7 +654,10 @@ export const debugToolRenderer = {
 				const remaining = rawLines.length - displayedLines.length;
 				if (remaining > 0) {
 					displayedLines.push(
-						theme.fg("muted", `… ${remaining} more lines ${formatExpandHint(theme, options.expanded, true)}`),
+						theme.fg(
+							"muted",
+							`${tSettingsUi(remaining === 1 ? "… {count} more line" : "… {count} more lines", { count: remaining })} ${formatExpandHint(theme, options.expanded, true)}`,
+						),
 					);
 				}
 				return outputBlock.render(
@@ -656,9 +666,9 @@ export const debugToolRenderer = {
 						state: result.isError ? "error" : "success",
 						sections: [
 							...(summaryLines.length > 0
-								? [{ label: theme.fg("toolTitle", "Session"), lines: summaryLines }]
+								? [{ label: theme.fg("toolTitle", tSettingsUi("Session")), lines: summaryLines }]
 								: []),
-							{ label: theme.fg("toolTitle", "Output"), lines: displayedLines },
+							{ label: theme.fg("toolTitle", tSettingsUi("Output")), lines: displayedLines },
 						],
 						width,
 						applyBg: false,
@@ -715,7 +725,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 	readonly loadMode = "discoverable";
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(debugDescription);
+		this.description = prompt.render(selectPrompt(debugDescription, debugDescriptionZh));
 	}
 
 	static createIf(session: ToolSession): DebugTool | null {

@@ -7,6 +7,7 @@
  */
 import { type Component, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { isProviderEnabled } from "../../../discovery";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { theme } from "../../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../utils/keybinding-matchers";
 import { clampSelection, contentRowWidth, renderScrollableList, searchableChar } from "../selector-helpers";
@@ -114,14 +115,14 @@ export class ExtensionList implements Component {
 		this.#visibleCount = 0;
 
 		// Search bar
-		const searchPrefix = theme.fg("muted", "Search: ");
-		const searchText = this.#searchQuery || (this.#focused ? "" : theme.fg("dim", "type to filter"));
+		const searchPrefix = theme.fg("muted", tSettingsUi("Search: "));
+		const searchText = this.#searchQuery || (this.#focused ? "" : theme.fg("dim", tSettingsUi("type to filter")));
 		const cursor = this.#focused ? theme.fg("accent", "_") : "";
 		lines.push(searchPrefix + searchText + cursor);
 		lines.push("");
 
 		if (this.#listItems.length === 0) {
-			lines.push(theme.fg("muted", "  No extensions found for this provider."));
+			lines.push(theme.fg("muted", `  ${tSettingsUi("No extensions found for this provider.")}`));
 			return lines;
 		}
 
@@ -171,8 +172,8 @@ export class ExtensionList implements Component {
 			? theme.fg("success", theme.checkbox.checked)
 			: theme.fg("dim", theme.checkbox.unchecked);
 		const icon = theme.icon.package;
-		const label = `Enable ${item.providerName}`;
-		const badge = theme.fg("warning", "(Master Switch)");
+		const label = tSettingsUi("Enable {providerName}", { providerName: item.providerName });
+		const badge = theme.fg("warning", tSettingsUi("(Master Switch)"));
 
 		let line = `${checkbox} ${icon} ${label}  ${badge}`;
 

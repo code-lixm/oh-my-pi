@@ -1,4 +1,5 @@
 import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import type { TodoItem } from "../../tools/todo";
 
@@ -20,7 +21,7 @@ export class TodoReminderComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		this.#box = new Box(1, 1, t => theme.inverse(theme.fg("warning", t)));
+		this.#box = new Box(1, 1, t => theme.bg("customMessageBg", t));
 		this.#box.setIgnoreTight(true);
 		this.addChild(this.#box);
 
@@ -30,14 +31,27 @@ export class TodoReminderComponent extends Container {
 	#rebuild(): void {
 		this.#box.clear();
 
-		const count = this.todos.length;
-		const label = count === 1 ? "todo" : "todos";
-		const header = `${theme.icon.warning} ${count} incomplete ${label} - reminder ${this.attempt}/${this.maxAttempts}`;
+		const isFinalAttempt = this.attempt >= this.maxAttempts;
+		this.#box.setBorder({
+			chars: theme.boxRound,
+			color: text => theme.fg(isFinalAttempt ? "warning" : "borderMuted", text),
+		});
 
-		this.#box.addChild(new Text(header, 0, 0));
+		const count = this.todos.length;
+		const label = count === 1 ? tSettingsUi("todo") : tSettingsUi("todos");
+		const headerText = tSettingsUi("{count} open {label} · reminder {attempt}/{maxAttempts}", {
+			count,
+			label,
+			attempt: this.attempt,
+			maxAttempts: this.maxAttempts,
+		});
+		const status = isFinalAttempt ? theme.status.warning : theme.status.pending;
+		const headerColor = isFinalAttempt ? "warning" : "customMessageLabel";
+
+		this.#box.addChild(new Text(theme.fg(headerColor, theme.bold(`${status} ${headerText}`)), 0, 0));
 		this.#box.addChild(new Spacer(1));
 
 		const todoList = this.todos.map(todo => `  ${theme.checkbox.unchecked} ${todo.content}`).join("\n");
-		this.#box.addChild(new Text(theme.italic(todoList), 0, 0));
+		this.#box.addChild(new Text(theme.fg("customMessageText", todoList), 0, 0));
 	}
 }

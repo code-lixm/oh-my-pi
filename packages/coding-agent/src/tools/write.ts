@@ -17,6 +17,7 @@ import { type } from "arktype";
 import { canonicalSnapshotKey, getFileSnapshotStore } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
@@ -24,7 +25,9 @@ import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCal
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
+import writeDescriptionZh from "../prompts/tools/write.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -471,7 +474,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						: undefined,
 				})
 			: writethroughNoop;
-		this.description = prompt.render(writeDescription);
+		this.description = prompt.render(selectPrompt(writeDescription, writeDescriptionZh));
 	}
 
 	async #resolveArchiveWritePath(writePath: string): Promise<ResolvedArchiveWritePath | null> {
@@ -1242,7 +1245,10 @@ function writeContentOf(args: unknown): string {
 
 function formatLineCountSuffix(lineCount: number, uiTheme: Theme): string {
 	if (lineCount <= 0) return "";
-	return uiTheme.fg("dim", ` · ${lineCount} line${lineCount === 1 ? "" : "s"}`);
+	return uiTheme.fg(
+		"dim",
+		` · ${tSettingsUi(lineCount === 1 ? "{count} line" : "{count} lines", { count: lineCount })}`,
+	);
 }
 
 function normalizeDisplayText(text: unknown): string {
@@ -1378,7 +1384,7 @@ export const writeToolRenderer = {
 		// noise. The liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
-				title: "Write",
+				title: tSettingsUi("Write"),
 				description: `${langIcon} ${pathDisplay}`,
 			},
 			uiTheme,
@@ -1438,7 +1444,7 @@ export const writeToolRenderer = {
 		if (result.isError) {
 			const errorText = result.content?.find(c => c.type === "text")?.text ?? "";
 			const header = renderStatusLine(
-				{ icon: "error", title: "Write", description: `${langIcon} ${pathDisplay}` },
+				{ icon: "error", title: tSettingsUi("Write"), description: `${langIcon} ${pathDisplay}` },
 				uiTheme,
 			);
 			return framedBlock(uiTheme, width => ({
@@ -1456,14 +1462,14 @@ export const writeToolRenderer = {
 		const lineSuffix = formatLineCountSuffix(lineCount, uiTheme);
 		const execSuffix =
 			!isPartial && result.details?.madeExecutable
-				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", "made executable!")}`
+				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", tSettingsUi("made executable!"))}`
 				: "";
 		const header = renderStatusLine(
 			{
 				icon: isPartial ? "running" : undefined,
 				iconOverride: isPartial ? undefined : uiTheme.styledSymbol("tool.write", "accent"),
 				spinnerFrame: options.spinnerFrame,
-				title: "Write",
+				title: tSettingsUi("Write"),
 				description: `${langIcon} ${pathDisplay}${lineSuffix}${execSuffix}`,
 			},
 			uiTheme,

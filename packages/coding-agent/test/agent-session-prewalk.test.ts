@@ -4,13 +4,14 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type Api, Effort, type Model, z } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { ModelRegistry } from "../src/config/model-registry";
+import { Settings } from "../src/config/settings";
+import { getPromptLocale, setPromptLocale } from "../src/prompts/prompt-locale";
+import { AgentSession } from "../src/session/agent-session";
+import { AuthStorage } from "../src/session/auth-storage";
+import { convertToLlm } from "../src/session/messages";
+import { SessionManager } from "../src/session/session-manager";
 
 /**
  * Prewalk: one-way switch from the starting model to a fast/cheap target
@@ -25,6 +26,7 @@ describe("AgentSession prewalk", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
 	let session: AgentSession | undefined;
+	const previousPromptLocale = getPromptLocale();
 
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-prewalk-");
@@ -33,6 +35,7 @@ describe("AgentSession prewalk", () => {
 	});
 
 	afterEach(async () => {
+		setPromptLocale(previousPromptLocale);
 		if (session) await session.dispose();
 		authStorage.close();
 		tempDir.removeSync();
@@ -110,6 +113,74 @@ describe("AgentSession prewalk", () => {
 		});
 	}
 
+	function contextMessagesText(contextMessages: ReadonlyArray<{ role: string }>): string {
+		const texts: string[] = [];
+		for (const message of contextMessages) {
+			if (message.role !== "user" && message.role !== "developer") continue;
+			if (!("content" in message)) continue;
+			const content: unknown = message.content;
+			if (typeof content === "string") {
+				texts.push(content);
+				continue;
+			}
+			if (!Array.isArray(content)) continue;
+			for (const block of content) {
+				if (typeof block !== "object" || block === null) continue;
+				if (!("type" in block) || block.type !== "text") continue;
+				if ("text" in block && typeof block.text === "string") texts.push(block.text);
+			}
+		}
+		return texts.join("\n\n");
+	}
+
+	async function capturePrewalkPromptTexts(locale: "en" | "zh-CN"): Promise<string[]> {
+		setPromptLocale(locale);
+		const primary = modelOrThrow("claude-sonnet-4-5");
+		const target = modelOrThrow("claude-sonnet-4-6");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+		const mock = createMockModel({
+			responses: [
+				toolCall("t1", "record"),
+				toolCall("t2", "bash"),
+				toolCall("t3", "todo"),
+				toolCall("t4", "write"),
+				{ content: ["done"] },
+			],
+		});
+		const prompts: string[] = [];
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: primary,
+				systemPrompt: ["Test"],
+				tools: [recordTool as AgentTool, bashTool as AgentTool, writeTool as AgentTool, todoTool as AgentTool],
+				messages: [],
+				thinkingLevel: Effort.Medium,
+			},
+			convertToLlm,
+			streamFn: (model, context, options) => {
+				prompts.push(contextMessagesText(context.messages));
+				return mock.stream(model, context, options);
+			},
+		});
+		const runSession = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false, displayLanguage: locale }),
+			modelRegistry,
+			toolRegistry,
+			prewalk: { target },
+		});
+		session = runSession;
+		try {
+			await runSession.prompt("do the task");
+			return prompts;
+		} finally {
+			await runSession.dispose();
+			if (session === runSession) session = undefined;
+		}
+	}
+
 	it("prewalks at the first edit/write after the todo gate opens; bash and todo don't trigger", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
@@ -172,6 +243,28 @@ describe("AgentSession prewalk", () => {
 		// Checklist present only once the target model is running.
 		expect(calls.map(call => call.hasChecklist)).toEqual([false, false, false, false, true]);
 		expect(session.model?.id).toBe(target.id);
+	});
+
+	it("localizes injected prewalk prompts at runtime while preserving todo/grep identifiers", async () => {
+		const english = await capturePrewalkPromptTexts("en");
+		const chinese = await capturePrewalkPromptTexts("zh-CN");
+
+		expect(
+			english.some(text => text.includes("complete plan in your NEXT reply") && text.includes("todo tool")),
+		).toBe(true);
+		expect(english.some(text => text.includes("grep for every other call site"))).toBe(true);
+		expect(english.every(text => !text.includes("在继续探索之前，先停下并在你的下一条回复里写出完整计划"))).toBe(
+			true,
+		);
+
+		expect(
+			chinese.some(
+				text =>
+					text.includes("在继续探索之前，先停下并在你的下一条回复里写出完整计划") && text.includes("todo 工具"),
+			),
+		).toBe(true);
+		expect(chinese.some(text => text.includes("用 grep 找出所有其他需要做同样改动的调用点"))).toBe(true);
+		expect(chinese.every(text => !text.includes("complete plan in your NEXT reply"))).toBe(true);
 	});
 
 	it("an edit before any todo call does not switch while a todo tool exists; the next edit after todo does", async () => {

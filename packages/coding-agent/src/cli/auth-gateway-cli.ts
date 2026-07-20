@@ -29,6 +29,7 @@ import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/aut
 import { type GeneratedProvider, getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
 import { getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
@@ -131,7 +132,7 @@ function createBrokerClient(brokerConfig: AuthBrokerClientConfig): AuthBrokerCli
 
 async function fetchBrokerSnapshot(client: AuthBrokerClient): Promise<SnapshotResponse> {
 	const result = await client.fetchSnapshot();
-	if (result.status !== 200) throw new Error("Auth broker returned no initial snapshot");
+	if (result.status !== 200) throw new Error(tSettingsUi("Auth broker returned no initial snapshot"));
 	return result.snapshot;
 }
 
@@ -139,7 +140,9 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const brokerConfig = await resolveAuthBrokerConfig();
 	if (!brokerConfig) {
 		throw new Error(
-			"`omp auth-gateway serve` requires OMP_AUTH_BROKER_URL (or `auth.broker.url`/`auth.broker.token` in config.yml). The gateway is itself a broker client.",
+			tSettingsUi(
+				"`omp auth-gateway serve` requires OMP_AUTH_BROKER_URL (or `auth.broker.url`/`auth.broker.token` in config.yml). The gateway is itself a broker client.",
+			),
 		);
 	}
 	const bind = flags.bind ?? DEFAULT_AUTH_GATEWAY_BIND;
@@ -185,20 +188,20 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		resolveModel: (id: string) => modelById.get(id),
 		listModels: () => modelById.values(),
 	});
-	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
+	process.stdout.write(`${tSettingsUi("auth-gateway listening on {url}", { url: handle.url })}\n`);
 	if (gatewayToken) {
-		process.stdout.write(`bearer token: ${getTokenFilePath()} (chmod 0600)\n`);
+		process.stdout.write(`${tSettingsUi("bearer token: {path} (chmod 0600)", { path: getTokenFilePath() })}\n`);
 	} else {
-		process.stdout.write(`auth: disabled (--no-auth) — any client can call this gateway\n`);
+		process.stdout.write(`${tSettingsUi("auth: disabled (--no-auth) — any client can call this gateway")}\n`);
 	}
-	process.stdout.write(`upstream broker: ${brokerConfig.url}\n`);
+	process.stdout.write(`${tSettingsUi("upstream broker: {url}", { url: brokerConfig.url })}\n`);
 
 	const stopped = Promise.withResolvers<void>();
 	let shutdownStarted = false;
 	const stop = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shutdownStarted) return;
 		shutdownStarted = true;
-		process.stdout.write(`\nReceived ${signal}, shutting down...\n`);
+		process.stdout.write(`\n${tSettingsUi("Received {signal}, shutting down...", { signal })}\n`);
 		let closeError: unknown;
 		try {
 			await handle.close();
@@ -266,9 +269,11 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			process.stdout.write(`${chalk.yellow("No broker configured.")} Set OMP_AUTH_BROKER_URL.\n`);
 			process.stdout.write(
-				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${chalk.yellow(tSettingsUi("No broker configured."))} ${tSettingsUi("Set OMP_AUTH_BROKER_URL.")}\n`,
+			);
+			process.stdout.write(
+				`${tSettingsUi("token:")} ${status.tokenPresent ? chalk.green(tSettingsUi("present")) : chalk.red(tSettingsUi("missing"))} ${tSettingsUi("at")} ${status.tokenFile}\n`,
 			);
 		}
 		process.exitCode = 1;
@@ -291,16 +296,20 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			const brokerLine = `upstream broker: ${brokerConfig.url} (${snapshot.credentials.length} credential${
-				snapshot.credentials.length === 1 ? "" : "s"
-			})`;
-			process.stdout.write(`${tokenPresent ? chalk.green("ready") : chalk.yellow("not ready")} ${brokerLine}\n`);
+			const brokerLine = tSettingsUi("upstream broker: {url} ({count} credential{plural})", {
+				url: brokerConfig.url,
+				count: snapshot.credentials.length,
+				plural: snapshot.credentials.length === 1 ? "" : "s",
+			});
 			process.stdout.write(
-				`token: ${tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${tokenPresent ? chalk.green(tSettingsUi("ready")) : chalk.yellow(tSettingsUi("not ready"))} ${brokerLine}\n`,
+			);
+			process.stdout.write(
+				`${tSettingsUi("token:")} ${tokenPresent ? chalk.green(tSettingsUi("present")) : chalk.red(tSettingsUi("missing"))} ${tSettingsUi("at")} ${status.tokenFile}\n`,
 			);
 			if (!tokenPresent) {
 				process.stdout.write(
-					"Run `omp auth-gateway token` or `omp auth-gateway serve` to create a bearer token.\n",
+					`${tSettingsUi("Run `omp auth-gateway token` or `omp auth-gateway serve` to create a bearer token.")}\n`,
 				);
 			}
 		}
@@ -320,9 +329,11 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			process.stdout.write(`${chalk.red("FAILED")} upstream broker: ${brokerConfig.url}: ${message}\n`);
 			process.stdout.write(
-				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${chalk.red(tSettingsUi("FAILED"))} ${tSettingsUi("upstream broker: {url}: {message}", { url: brokerConfig.url, message })}\n`,
+			);
+			process.stdout.write(
+				`${tSettingsUi("token:")} ${status.tokenPresent ? chalk.green(tSettingsUi("present")) : chalk.red(tSettingsUi("missing"))} ${tSettingsUi("at")} ${status.tokenFile}\n`,
 			);
 		}
 		process.exitCode = 1;
@@ -345,7 +356,7 @@ export async function runAuthGatewayCommand(cmd: AuthGatewayCommandArgs): Promis
 			return;
 		default: {
 			const _exhaustive: never = cmd.action;
-			throw new Error(`Unknown auth-gateway action: ${String(_exhaustive)}`);
+			throw new Error(tSettingsUi("Unknown auth-gateway action: {action}", { action: String(_exhaustive) }));
 		}
 	}
 }
@@ -513,9 +524,9 @@ function createStrictCompletionProbe(): CompletionProbe {
 
 function formatCompletionStatus(completion: CredentialCompletionResult | undefined): string {
 	if (!completion) return "";
-	if (completion.ok === true) return chalk.green(" [chat: ok]");
-	if (completion.ok === false) return chalk.red(" [chat: FAIL]");
-	return chalk.yellow(" [chat: skip]");
+	if (completion.ok === true) return chalk.green(tSettingsUi(" [chat: ok]"));
+	if (completion.ok === false) return chalk.red(tSettingsUi(" [chat: FAIL]"));
+	return chalk.yellow(tSettingsUi(" [chat: skip]"));
 }
 
 /**
@@ -534,7 +545,9 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const brokerConfig = await resolveAuthBrokerConfig();
 	if (!brokerConfig) {
 		throw new Error(
-			"`omp auth-gateway check` requires OMP_AUTH_BROKER_URL (or `auth.broker.url`/`auth.broker.token` in config.yml). It probes the same credentials the gateway would serve.",
+			tSettingsUi(
+				"`omp auth-gateway check` requires OMP_AUTH_BROKER_URL (or `auth.broker.url`/`auth.broker.token` in config.yml). It probes the same credentials the gateway would serve.",
+			),
 		);
 	}
 
@@ -562,28 +575,37 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 				grouped.set(row.provider, list);
 			}
 			const providers = [...grouped.keys()].sort();
-			process.stdout.write(`broker: ${brokerConfig.url}${flags.strict ? chalk.dim(" [strict]") : ""}\n`);
+			const strictSuffix = flags.strict ? chalk.dim(tSettingsUi(" [strict]")) : "";
+			process.stdout.write(
+				`${tSettingsUi("broker: {url}{strict}", { url: brokerConfig.url, strict: strictSuffix })}\n`,
+			);
 			for (const provider of providers) {
 				const rows = grouped.get(provider) ?? [];
 				process.stdout.write(`\n${chalk.bold(provider)} (${rows.length})\n`);
 				for (const row of rows) {
 					const status =
 						row.ok === true
-							? chalk.green("ok      ")
+							? chalk.green(tSettingsUi("ok      "))
 							: row.ok === false
-								? chalk.red("FAIL    ")
-								: chalk.yellow("unknown ");
+								? chalk.red(tSettingsUi("FAIL    "))
+								: chalk.yellow(tSettingsUi("unknown "));
 					const base =
-						row.email ?? row.accountId ?? (row.type === "api_key" ? "(api key)" : "(no identity on credential)");
+						row.email ??
+						row.accountId ??
+						(row.type === "api_key" ? tSettingsUi("(api key)") : tSettingsUi("(no identity on credential)"));
 					// Two subscriptions (orgs) can share one email — without the org a
 					// failed row can't say which subscription needs re-login.
 					const org = row.orgName ?? row.orgId;
 					const identity = org && org !== base ? `${base} (${org})` : base;
-					const remote = row.remoteRefresh ? chalk.dim(" [remote-refresh]") : "";
+					const remote = row.remoteRefresh ? chalk.dim(tSettingsUi(" [remote-refresh]")) : "";
 					const reasonParts: string[] = [];
 					if (row.reason) reasonParts.push(row.reason);
-					if (row.completion?.reason) reasonParts.push(`chat: ${row.completion.reason}`);
-					const reason = reasonParts.length > 0 ? chalk.dim(` — ${reasonParts.join("; ")}`) : "";
+					if (row.completion?.reason)
+						reasonParts.push(tSettingsUi("chat: {reason}", { reason: row.completion.reason }));
+					const reason =
+						reasonParts.length > 0
+							? chalk.dim(tSettingsUi(" — {reasons}", { reasons: reasonParts.join("; ") }))
+							: "";
 					const chat = formatCompletionStatus(row.completion);
 					process.stdout.write(
 						`  ${status}${chat} id=${row.id.toString().padStart(3)} ${row.type.padEnd(7)} ${identity}${remote}${reason}\n`,
@@ -595,12 +617,12 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 			const passing = results.filter(row => row.ok === true).length;
 			const chatFailed = flags.strict ? results.filter(row => row.completion?.ok === false).length : 0;
 			const summaryParts = [
-				chalk.green(`${passing} ok`),
-				chalk.red(`${failed} failed`),
-				chalk.yellow(`${unverifiable} unverifiable`),
+				chalk.green(tSettingsUi("{count} ok", { count: passing })),
+				chalk.red(tSettingsUi("{count} failed", { count: failed })),
+				chalk.yellow(tSettingsUi("{count} unverifiable", { count: unverifiable })),
 			];
-			if (flags.strict) summaryParts.push(chalk.red(`${chatFailed} chat-failed`));
-			summaryParts.push(`${results.length} total`);
+			if (flags.strict) summaryParts.push(chalk.red(tSettingsUi("{count} chat-failed", { count: chatFailed })));
+			summaryParts.push(tSettingsUi("{count} total", { count: results.length }));
 			process.stdout.write(`\n${summaryParts.join(", ")}\n`);
 			if (failed > 0 || chatFailed > 0) process.exitCode = 1;
 		}

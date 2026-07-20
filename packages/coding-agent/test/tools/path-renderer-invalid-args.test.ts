@@ -43,7 +43,7 @@ describe("tool path renderers with invalid provider arguments", () => {
 					uiTheme,
 				);
 			}).not.toThrow();
-			expect(renderPlain(callComponent!)).toContain("Read");
+			expect(renderPlain(callComponent!).toLowerCase()).toContain("read");
 
 			let resultComponent: Component | undefined;
 			expect(() => {
@@ -61,7 +61,7 @@ describe("tool path renderers with invalid provider arguments", () => {
 				);
 			}).not.toThrow();
 			const rendered = renderPlain(resultComponent!);
-			expect(rendered).toContain("Read");
+			expect(rendered.toLowerCase()).toContain("read");
 			expect(rendered).toContain("hello from read");
 		});
 

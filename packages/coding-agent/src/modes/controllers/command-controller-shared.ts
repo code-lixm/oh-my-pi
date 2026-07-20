@@ -9,6 +9,7 @@
  */
 import { Text } from "@oh-my-pi/pi-tui";
 import type { SourceMeta } from "../../capability/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { shortenPath } from "../../tools/render-utils";
 import { DynamicBorder } from "../components/dynamic-border";
 import { TranscriptBlock } from "../components/transcript-container";
@@ -24,7 +25,7 @@ export type ScopeFlagResult = { ok: true; scope: ScopeValue } | { ok: false; err
  */
 export function readScopeFlag(value: string | undefined): ScopeFlagResult {
 	if (!value || (value !== "project" && value !== "user")) {
-		return { ok: false, error: "Invalid --scope value. Use project or user." };
+		return { ok: false, error: tSettingsUi("Invalid --scope value. Use project or user.") };
 	}
 	return { ok: true, scope: value };
 }
@@ -61,7 +62,7 @@ export function parseRemoveArgs(rest: string): ParseRemoveResult {
 			i += 2;
 			continue;
 		}
-		return { ok: false, error: `Unknown option: ${token}` };
+		return { ok: false, error: tSettingsUi("Unknown option: {option}", { option: token }) };
 	}
 
 	return { ok: true, value: { name, scope } };

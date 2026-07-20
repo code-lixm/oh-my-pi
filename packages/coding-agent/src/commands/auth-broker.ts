@@ -8,6 +8,7 @@ import {
 	type AuthBrokerCommandArgs,
 	runAuthBrokerCommand,
 } from "../cli/auth-broker-cli";
+import { ensureCliHelpLocale, localizeCliHelpMetadata } from "../cli/help-locale";
 import { initTheme } from "../modes/theme/theme";
 
 export default class AuthBroker extends Command {
@@ -71,6 +72,8 @@ export default class AuthBroker extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(AuthBroker);
 		if (!args.action) {
+			await ensureCliHelpLocale();
+			localizeCliHelpMetadata(AuthBroker);
 			renderCommandHelp("omp", "auth-broker", AuthBroker);
 			return;
 		}

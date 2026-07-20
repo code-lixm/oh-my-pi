@@ -1,3 +1,22 @@
+// Inverse of the value-to-label translation used by #defToItem: given a
+// translated display label, return the real enum value (or boolean string)
+// the setting should be set to. Domain-level concept: the pair
+// (value-to-label, label-to-value) is the seam that lets SettingsList
+// display translated strings while the underlying config keeps its raw
+// enum keys.
+function parseValueFromLabel(def: SettingDef, label: string): string {
+	if (def.type === "boolean") {
+		return label === tSettingsUi("On") ? "true" : "false";
+	}
+	if (def.type === "enum") {
+		for (const v of def.values) {
+			if (tSettingsUi(v) === label) return v;
+		}
+		return label;
+	}
+	return label;
+}
+
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
 import {
@@ -41,12 +60,13 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
-import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
+import { clearSettingDefsCache, getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
 import { SnapcompactShapePreview } from "./snapcompact-shape-preview";
 import { getPreset } from "./status-line/presets";
 
@@ -93,7 +113,9 @@ class TextInputSubmenu extends Container {
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
 		this.addChild(this.#error);
-		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to cancel · Clear field to unset"), 0, 0));
+		this.addChild(
+			new Text(theme.fg("dim", `  ${tSettingsUi("Enter to save · Esc to cancel · Clear field to unset")}`), 0, 0),
+		);
 	}
 
 	handleInput(data: string): void {
@@ -132,7 +154,7 @@ class SelectSubmenu extends Container {
 		// Preview (if provided)
 		if (getPreview) {
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("muted", "Preview:"), 0, 0));
+			this.addChild(new Text(theme.fg("muted", tSettingsUi("Preview")), 0, 0));
 			this.#previewText = new Text(getPreview(), 0, 0);
 			this.addChild(this.#previewText);
 		}
@@ -177,7 +199,7 @@ class SelectSubmenu extends Container {
 
 		// Hint
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to select · Esc to go back")}`), 0, 0));
 
 		// Footer (e.g. the snapcompact shape preview) below the interactive rows,
 		// so the list never shifts while browsing.
@@ -239,13 +261,15 @@ class ProviderLimitsSubmenu extends Container {
 
 	#showProviderList(): void {
 		this.clear();
-		this.addChild(new Text(theme.bold(theme.fg("accent", "Max In-Flight Requests")), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("Max In-Flight Requests"))), 0, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(
 			new Text(
 				theme.fg(
 					"muted",
-					"Select a provider, enter a positive number to cap concurrent LLM requests, or clear it for unlimited.",
+					tSettingsUi(
+						"Select a provider, enter a positive number to cap concurrent LLM requests, or clear it for unlimited.",
+					),
 				),
 				0,
 				0,
@@ -259,13 +283,19 @@ class ProviderLimitsSubmenu extends Container {
 			return {
 				value: provider,
 				label: provider,
-				description: limit === undefined ? "Unlimited" : `Limit: ${limit}`,
+				description: limit === undefined ? tSettingsUi("Unlimited") : tSettingsUi("Limit: {limit}", { limit }),
 			};
 		});
 		const clearItem: SelectItem[] =
 			Object.keys(limits).length === 0
 				? []
-				: [{ value: "__clear_all", label: "Clear all limits", description: "Make every provider unlimited" }];
+				: [
+						{
+							value: "__clear_all",
+							label: tSettingsUi("Clear all limits"),
+							description: tSettingsUi("Make every provider unlimited"),
+						},
+					];
 		const items = [...providerItems, ...clearItem];
 		this.#selectList = new SelectList(items, Math.min(Math.max(items.length, 1), 12), getSelectListTheme());
 		this.#selectList.onSelect = item => {
@@ -281,7 +311,7 @@ class ProviderLimitsSubmenu extends Container {
 		this.#selectList.onCancel = this.onCancel;
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to edit provider · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to edit provider · Esc to go back")}`), 0, 0));
 	}
 
 	#showProviderEditor(provider: string): void {
@@ -290,8 +320,10 @@ class ProviderLimitsSubmenu extends Container {
 		this.#selectList = undefined;
 		this.addChild(
 			new TextInputSubmenu(
-				`Max In-Flight Requests: ${provider}`,
-				"Enter a positive number. Decimals round down. Clear the field to make this provider unlimited.",
+				`${tSettingsUi("Max In-Flight Requests")}: ${provider}`,
+				tSettingsUi(
+					"Enter a positive number. Decimals round down. Clear the field to make this provider unlimited.",
+				),
 				limits[provider]?.toString() ?? "",
 				value => {
 					const next = { ...limits };
@@ -300,7 +332,9 @@ class ProviderLimitsSubmenu extends Container {
 						delete next[provider];
 					} else {
 						const limit = Number(trimmed);
-						if (!Number.isFinite(limit) || limit <= 0) throw new Error("Limit must be a positive number.");
+						if (!Number.isFinite(limit) || limit <= 0) {
+							throw new Error(tSettingsUi("Limit must be a positive number."));
+						}
 						next[provider] = Math.max(1, Math.floor(limit));
 					}
 					const normalized = validateProviderMaxInFlightRequests(next);
@@ -327,20 +361,23 @@ class ProviderLimitsSubmenu extends Container {
 }
 
 let cachedSidebarWidth: number | undefined;
+let cachedSidebarWidthLocale: string | undefined;
 /**
  * Split-sidebar width derived from every group name in the schema (not just
  * the visible tab), so the divider column never moves when switching tabs or
  * when condition-gated groups appear.
  */
 function settingsSidebarWidth(): number {
-	if (cachedSidebarWidth === undefined) {
+	const locale = String(settings.get("displayLanguage") ?? "en");
+	if (cachedSidebarWidth === undefined || cachedSidebarWidthLocale !== locale) {
 		let nameWidth = 0;
 		for (const tab of SETTING_TABS) {
 			for (const def of getSettingsForTab(tab)) {
-				if (def.group) nameWidth = Math.max(nameWidth, visibleWidth(def.group));
+				if (def.groupLabel) nameWidth = Math.max(nameWidth, visibleWidth(def.groupLabel));
 			}
 		}
 		cachedSidebarWidth = Math.min(22, nameWidth) + 4;
+		cachedSidebarWidthLocale = locale;
 	}
 	return cachedSidebarWidth;
 }
@@ -350,9 +387,9 @@ function getSettingsTabs(): Tab[] {
 		...SETTING_TABS.map(id => {
 			const meta = TAB_METADATA[id];
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
-			return { id, label: `${icon} ${meta.label}`, short: icon };
+			return { id, label: `${icon} ${tSettingsUi(meta.label)}`, short: icon };
 		}),
-		{ id: "plugins", label: `${theme.icon.package} Plugins`, short: theme.icon.package },
+		{ id: "plugins", label: `${theme.icon.package} ${tSettingsUi("Plugins")}`, short: theme.icon.package },
 	];
 }
 
@@ -482,22 +519,27 @@ export class SettingsSelectorComponent implements Component {
 
 	#footerHintText(): string {
 		if (this.#searchList) {
-			return "Enter to change · Tab to jump tabs · Esc to exit search";
+			return tSettingsUi("Enter to change · Tab to jump tabs · Esc to exit search");
 		}
 		if (this.#currentTabId === "plugins") {
-			return "Tab to switch tabs · Esc to close";
+			return tSettingsUi("Tab to switch tabs · Esc to close");
 		}
 		if (this.#currentList?.sectionFocused) {
-			return "↑/↓ to jump sections · Tab/Enter to settings · ←/→ to switch tabs · Esc to close";
+			return tSettingsUi("↑/↓ to jump sections · Tab/Enter to settings · ←/→ to switch tabs · Esc to close");
 		}
-		const nav = this.#hasSectionJump ? "Tab to jump sections · ←/→ to switch tabs" : "Tab to switch tabs";
-		return `Enter/Space to change · ${nav} · Type to search · Esc to close`;
+		const nav = this.#hasSectionJump
+			? tSettingsUi("Tab to jump sections · ←/→ to switch tabs")
+			: tSettingsUi("Tab to switch tabs");
+		return tSettingsUi("Enter/Space to change · {nav} · Type to search · Esc to close", { nav });
 	}
 
 	/** Single-line search banner: accent icon, editable query with live cursor, right-aligned match count. */
 	#renderSearchBanner(width: number): string {
 		const icon = theme.symbol("icon.search");
-		const countText = this.#searchMatchCount === 1 ? "1 match" : `${this.#searchMatchCount} matches`;
+		const countText =
+			this.#searchMatchCount === 1
+				? tSettingsUi("1 match")
+				: tSettingsUi("{count} matches", { count: this.#searchMatchCount });
 		const rightWidth = visibleWidth(countText) + 1; // trailing margin
 		const prefix = ` ${theme.fg("accent", icon)} `;
 		// The input pads itself to exactly this width and keeps the cursor in view.
@@ -519,7 +561,9 @@ export class SettingsSelectorComponent implements Component {
 		const tabLines = this.#tabBar.render(innerWidth);
 		const searching = this.#searchList !== null;
 		const showPreview = !searching && this.#currentTabId === "appearance";
-		const previewLines = showPreview ? ["", theme.fg("muted", "Preview:"), this.#getStatusPreviewString()] : [];
+		const previewLines = showPreview
+			? ["", theme.fg("muted", tSettingsUi("Preview")), this.#getStatusPreviewString()]
+			: [];
 
 		// Fixed chrome: top border, tabs, divider, [search row], divider, hint, bottom border.
 		const fixedRows = 1 + tabLines.length + 1 + (searching ? 1 : 0) + 1 + 1 + 1;
@@ -538,7 +582,7 @@ export class SettingsSelectorComponent implements Component {
 		}
 
 		const out: string[] = [];
-		out.push(topBorder(width, "Settings"));
+		out.push(topBorder(width, tSettingsUi("Settings")));
 		this.#tabRowStart = out.length;
 		this.#tabRowCount = tabLines.length;
 		for (const line of tabLines) {
@@ -644,7 +688,8 @@ export class SettingsSelectorComponent implements Component {
 			{
 				layout: "flat",
 				typeToSearch: false,
-				emptyText: "No matching settings",
+				emptyText: tSettingsUi("No matching settings"),
+				noMatchText: tSettingsUi("No matching settings"),
 				hint: "",
 			},
 		);
@@ -698,7 +743,7 @@ export class SettingsSelectorComponent implements Component {
 			const meta = TAB_METADATA[result.tab];
 			items.push({
 				id: `__tab:${result.tab}`,
-				label: `${theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0])} ${meta.label}`,
+				label: `${theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0])} ${tSettingsUi(meta.label)}`,
 				currentValue: "",
 				heading: true,
 			});
@@ -748,17 +793,16 @@ export class SettingsSelectorComponent implements Component {
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
 			const count = counts.get(id) ?? 0;
 			if (count > 0) {
-				matched.push({ id, label: `${icon} ${meta.label} (${count})`, short: `${icon} ${count}` });
+				matched.push({ id, label: `${icon} ${tSettingsUi(meta.label)} (${count})`, short: `${icon} ${count}` });
 			}
 		}
 		for (const id of SETTING_TABS) {
 			if (matchedIds.has(id)) continue;
 			const meta = TAB_METADATA[id];
 			const icon = theme.symbol(meta.icon as Parameters<typeof theme.symbol>[0]);
-			empty.push({ id, label: `${icon} ${meta.label}`, short: icon, muted: true });
+			if ((counts.get(id) ?? 0) > 0) continue;
+			empty.push({ id, label: `${icon} ${tSettingsUi(meta.label)}`, short: icon });
 		}
-		// Plugins hosts its own UI; it is not part of the schema-backed search.
-		empty.push({ id: "plugins", label: `${theme.icon.package} Plugins`, short: theme.icon.package, muted: true });
 		return [...matched, ...empty];
 	}
 
@@ -773,12 +817,19 @@ export class SettingsSelectorComponent implements Component {
 		const def = getSettingDef(path);
 		if (!def) return;
 		if (def.type === "boolean") {
-			const boolValue = newValue === "true";
+			const boolValue = newValue === tSettingsUi("On");
 			settings.set(path, boolValue as never);
 			this.callbacks.onChange(path, boolValue);
 		} else if (def.type === "enum") {
-			settings.set(path, newValue as never);
-			this.callbacks.onChange(path, newValue);
+			const rawValue = parseValueFromLabel(def, newValue);
+			settings.set(path, rawValue as never);
+			this.callbacks.onChange(path, rawValue);
+		}
+		if (path === "displayLanguage") {
+			clearSettingDefsCache();
+			cachedSidebarWidth = undefined;
+			cachedSidebarWidthLocale = undefined;
+			this.#tabBar.setTabs(getSettingsTabs(), this.#currentTabId);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
 		if (def.tab === "appearance") {
@@ -802,35 +853,40 @@ export class SettingsSelectorComponent implements Component {
 		const changed = this.#isChanged(def, currentValue);
 
 		switch (def.type) {
-			case "boolean":
+			case "boolean": {
+				const isOn = Boolean(currentValue);
 				return {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: currentValue ? "true" : "false",
-					values: ["true", "false"],
+					currentValue: tSettingsUi(isOn ? "On" : "Off"),
+					values: [tSettingsUi("Off"), tSettingsUi("On")],
 					changed,
 				};
+			}
 
-			case "enum":
+			case "enum": {
+				const enumRaw = String(currentValue ?? "");
 				return {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: String(currentValue ?? ""),
-					values: [...def.values],
+					currentValue: tSettingsUi(enumRaw),
+					values: def.values.map(v => tSettingsUi(v)),
 					changed,
 				};
-
-			case "submenu":
+			}
+			case "submenu": {
+				const submenuRaw = this.#getSubmenuCurrentValue(def.path, currentValue);
 				return {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: this.#getSubmenuCurrentValue(def.path, currentValue),
+					currentValue: tSettingsUi(submenuRaw),
 					submenu: (cv, done) => this.#createSubmenu(def, cv, done),
 					changed,
 				};
+			}
 
 			case "text":
 				return {
@@ -963,6 +1019,15 @@ export class SettingsSelectorComponent implements Component {
 			value => {
 				this.#setSettingValue(def.path, value);
 				this.callbacks.onChange(def.path, value);
+				if (def.path === "displayLanguage") {
+					clearSettingDefsCache();
+					cachedSidebarWidth = undefined;
+					cachedSidebarWidthLocale = undefined;
+					this.#tabBar.setTabs(getSettingsTabs(), this.#currentTabId);
+					if (this.#currentTabId !== "plugins") {
+						this.#showSettingsTab(this.#currentTabId);
+					}
+				}
 				done(value);
 			},
 			() => {
@@ -1018,7 +1083,7 @@ export class SettingsSelectorComponent implements Component {
 	#formatProviderLimitsValue(value: unknown): string {
 		const limits = normalizeProviderMaxInFlightRequests(value);
 		const entries = Object.entries(limits).sort(([a], [b]) => a.localeCompare(b));
-		if (entries.length === 0) return "Unlimited";
+		if (entries.length === 0) return tSettingsUi("Unlimited");
 		return entries.map(([provider, limit]) => `${provider}: ${limit}`).join(", ");
 	}
 
@@ -1048,10 +1113,10 @@ export class SettingsSelectorComponent implements Component {
 			try {
 				parsed = JSON.parse(value || "{}");
 			} catch {
-				throw new Error(`Invalid record JSON for ${path}`);
+				throw new Error(`${path}: ${tSettingsUi("Invalid record JSON: {rawValue}", { rawValue: value || "{}" })}`);
 			}
 			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-				throw new Error(`Invalid record JSON for ${path}`);
+				throw new Error(`${path}: ${tSettingsUi("Invalid record JSON: {rawValue}", { rawValue: value || "{}" })}`);
 			}
 			if (path === "providers.maxInFlightRequests") {
 				parsed = validateProviderMaxInFlightRequests(parsed);
@@ -1090,7 +1155,7 @@ export class SettingsSelectorComponent implements Component {
 				const path = def.path;
 
 				if (def.type === "boolean") {
-					const boolValue = newValue === "true";
+					const boolValue = parseValueFromLabel(def, newValue) === "true";
 					settings.set(path, boolValue as never);
 					this.callbacks.onChange(path, boolValue);
 
@@ -1098,8 +1163,18 @@ export class SettingsSelectorComponent implements Component {
 						this.#triggerStatusLinePreview();
 					}
 				} else if (def.type === "enum") {
-					settings.set(path, newValue as never);
-					this.callbacks.onChange(path, newValue);
+					const rawValue = parseValueFromLabel(def, newValue);
+					settings.set(path, rawValue as never);
+					this.callbacks.onChange(path, rawValue);
+
+					if (path === "displayLanguage") {
+						clearSettingDefsCache();
+						cachedSidebarWidth = undefined;
+						cachedSidebarWidthLocale = undefined;
+						this.#tabBar.setTabs(getSettingsTabs(), this.#currentTabId);
+						this.#showSettingsTab(tabId);
+						return;
+					}
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Re-run the
@@ -1127,7 +1202,12 @@ export class SettingsSelectorComponent implements Component {
 			const item = this.#defToItem(def);
 			if (!item) continue;
 			if (def.group && def.group !== lastGroup) {
-				items.push({ id: `__heading:${def.group}`, label: def.group, currentValue: "", heading: true });
+				items.push({
+					id: `__heading:${def.group}`,
+					label: def.groupLabel ?? def.group,
+					currentValue: "",
+					heading: true,
+				});
 				lastGroup = def.group;
 			}
 			items.push(item);
@@ -1148,7 +1228,7 @@ export class SettingsSelectorComponent implements Component {
 		if (this.callbacks.getStatusLinePreview) {
 			return this.callbacks.getStatusLinePreview();
 		}
-		return theme.fg("dim", "(preview not available)");
+		return theme.fg("dim", tSettingsUi("(preview not available)"));
 	}
 
 	/**

@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { directoryExists, getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
@@ -44,7 +45,20 @@ async function maybeAutoChdir(parsed: Args): Promise<void> {
 	}
 }
 
+const DEFAULT_SANDBOX_DIR = path.join(os.homedir(), ".omp", "sandbox");
+
+async function applySandbox(parsed: Args): Promise<boolean> {
+	if (!parsed.sandbox) return false;
+
+	const sandboxDir = parsed.cwd ?? DEFAULT_SANDBOX_DIR;
+	await fs.mkdir(sandboxDir, { recursive: true });
+	setProjectDir(sandboxDir);
+	parsed.cwd = getProjectDir();
+	return true;
+}
+
 export async function applyStartupCwd(parsed: Args): Promise<void> {
+	if (await applySandbox(parsed)) return;
 	if (parsed.cwd) {
 		setProjectDir(parsed.cwd);
 		// setProjectDir resolves the (possibly relative) target against the launch

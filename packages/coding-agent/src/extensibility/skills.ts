@@ -11,8 +11,11 @@ import type { SourceMeta } from "../capability/types";
 import type { SkillsSettings } from "../config/settings";
 import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
+import { selectPrompt } from "../prompts/prompt-locale";
 import autoloadTemplate from "../prompts/skills/autoload.md" with { type: "text" };
+import autoloadTemplateZh from "../prompts/skills/autoload.zh-CN.md" with { type: "text" };
 import userInvocationTemplate from "../prompts/skills/user-invocation.md" with { type: "text" };
+import userInvocationTemplateZh from "../prompts/skills/user-invocation.zh-CN.md" with { type: "text" };
 import type { SkillPromptDetails } from "../session/messages";
 import { expandTilde } from "../tools/path-utils";
 export interface Skill {
@@ -481,7 +484,7 @@ export async function buildSkillPromptMessage(
 		// User-invoked skills announce themselves and expose their skill directory
 		// so the model resolves the skill's own relative paths (scripts/, templates/).
 		message = prompt
-			.render(userInvocationTemplate, {
+			.render(selectPrompt(userInvocationTemplate, userInvocationTemplateZh), {
 				name: skill.name,
 				body,
 				baseDir: skill.baseDir,
@@ -492,7 +495,7 @@ export async function buildSkillPromptMessage(
 		// Autoload skills are hidden, non-user context — they MUST NOT claim the
 		// user invoked them; this keeps the minimal provenance-only format.
 		message = prompt
-			.render(autoloadTemplate, {
+			.render(selectPrompt(autoloadTemplate, autoloadTemplateZh), {
 				body,
 				filePath: skill.filePath,
 				userArgs: trimmedArgs || undefined,

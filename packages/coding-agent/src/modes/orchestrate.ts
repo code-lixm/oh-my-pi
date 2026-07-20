@@ -1,4 +1,6 @@
+import { selectPrompt } from "../prompts/prompt-locale";
 import orchestrateNotice from "../prompts/system/orchestrate-notice.md" with { type: "text" };
+import orchestrateNoticeZh from "../prompts/system/orchestrate-notice.zh-CN.md" with { type: "text" };
 import { createGradientHighlighter, type KeywordHighlighter } from "./gradient-highlight";
 import { magicKeywordRegex } from "./magic-keyword-boundary";
 import { keywordInProse } from "./markdown-prose";
@@ -18,8 +20,10 @@ import { keywordInProse } from "./markdown-prose";
 // Detection: lowercase keyword flanked by prose punctuation, whitespace, or a string edge.
 const ORCHESTRATE_WORD = magicKeywordRegex("orchestrate");
 
-/** Hidden system notice appended after a user message that mentions "orchestrate". */
-export const ORCHESTRATE_NOTICE: string = orchestrateNotice.trim();
+/** Render the hidden system notice appended after a user message that mentions "orchestrate". */
+export function renderOrchestrateNotice(): string {
+	return selectPrompt(orchestrateNotice, orchestrateNoticeZh).trim();
+}
 
 /**
  * Whether `text` contains the standalone keyword "orchestrate" (lowercase,

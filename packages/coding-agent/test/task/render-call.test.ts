@@ -1,8 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TaskParams } from "@oh-my-pi/pi-coding-agent/task";
 import { taskToolRenderer } from "@oh-my-pi/pi-coding-agent/task/renderer";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
+
+const initialSettingsUiLocale = getSettingsUiLocale();
 
 describe("task renderer: streaming call preview", () => {
 	let theme: Theme;
@@ -18,6 +21,10 @@ describe("task renderer: streaming call preview", () => {
 
 	afterAll(() => {
 		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		setSettingsUiLocale(initialSettingsUiLocale);
 	});
 
 	function render(args: TaskParams, expanded = false): string {
@@ -67,6 +74,15 @@ describe("task renderer: streaming call preview", () => {
 		const out = render(args);
 
 		expect(out).toContain("First");
+	});
+
+	it("localizes the task call title to zh-CN", () => {
+		setSettingsUiLocale("zh-CN");
+		const out = render({ name: "Worker", task: "检查中文任务标题。" });
+		const header = out.split("\n")[0] ?? "";
+
+		expect(header).toContain("任务");
+		expect(header).not.toContain("Task");
 	});
 
 	it("always renders the full task markdown, collapsed or expanded", () => {

@@ -1,0 +1,1 @@
+display image {{index}}: {{dimensionNote}}

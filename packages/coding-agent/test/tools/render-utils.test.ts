@@ -16,6 +16,17 @@ import {
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
+
+let previousSettingsUiLocale = getSettingsUiLocale();
+
+beforeEach(() => {
+	previousSettingsUiLocale = getSettingsUiLocale();
+});
+
+afterEach(() => {
+	setSettingsUiLocale(previousSettingsUiLocale);
+});
 
 describe("parse error formatting", () => {
 	it("deduplicates parse errors while preserving order", () => {
@@ -311,6 +322,23 @@ describe("formatErrorMessage (F4 sanitization)", () => {
 		expect(visible.length).toBeLessThan(180);
 	});
 
+	it("switches the visible error prefix to zh-CN at runtime while preserving the payload text", () => {
+		const payload = "artifact://job-7/output.log missing";
+
+		setSettingsUiLocale("en");
+		const english = Bun.stripANSI(formatErrorMessage(payload, theme));
+		expect(english).toContain("Error:");
+		expect(english).toContain(payload);
+		expect(english).not.toContain("错误");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = Bun.stripANSI(formatErrorMessage(payload, theme));
+		expect(chinese).toContain("错误");
+		expect(chinese).toContain(payload);
+		expect(chinese).not.toContain("Error:");
+		expect(chinese).not.toBe(english);
+	});
+
 	it("falls back to 'Unknown error' for empty/missing input", () => {
 		const out = formatErrorMessage(undefined, theme);
 		expect(out).toContain("Unknown error");
@@ -344,6 +372,22 @@ describe("formatExpandHint / expandKeyHint", () => {
 		setKeybindings(KeybindingsManager.inMemory({ "app.tools.expand": "alt+e" }));
 		expect(expandKeyHint()).toBe("Alt+E");
 		expect(formatExpandHint(plainTheme, false, true)).toBe("[Alt+E: Expand]");
+	});
+
+	it("switches expand-hint chrome to zh-CN at runtime while preserving the remapped key label", () => {
+		setKeybindings(KeybindingsManager.inMemory({ "app.tools.expand": "alt+e" }));
+
+		setSettingsUiLocale("en");
+		const english = formatExpandHint(plainTheme, false, true);
+		expect(english).toBe("[Alt+E: Expand]");
+		expect(english).not.toContain("展开");
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = formatExpandHint(plainTheme, false, true);
+		expect(chinese).toContain("Alt+E");
+		expect(chinese).toContain("展开");
+		expect(chinese).not.toContain("Expand");
+		expect(chinese).not.toBe(english);
 	});
 
 	it("renders nothing when expanded or there is no more content", () => {

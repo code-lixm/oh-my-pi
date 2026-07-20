@@ -1,9 +1,11 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
+let previousLocale = getSettingsUiLocale();
 let counter = 0;
 function makeNode(role: "user" | "assistant", text: string, parentId: string | null = null): SessionTreeNode {
 	const id = `e${counter++}`;
@@ -42,6 +44,15 @@ describe("issue #2298: chain rows under last-sibling branches keep their gutter"
 		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
 	});
 
+	beforeEach(() => {
+		previousLocale = getSettingsUiLocale();
+		setSettingsUiLocale("en");
+	});
+
+	afterEach(() => {
+		setSettingsUiLocale(previousLocale);
+	});
+
 	// The bug rendered the conversation chain under a `└─` branch with bare
 	// spaces, breaking the visual flow back to the parent message. The fix
 	// anchors chain descendants (rows without their own connector) with a `│`
@@ -76,15 +87,15 @@ describe("issue #2298: chain rows under last-sibling branches keep their gutter"
 		};
 
 		// Branch1 is the last sibling at level 1, so its own connector is `└─`.
-		const branch1Row = findRow("user: branch1 head");
-		expect(branch1Row).toMatch(/└─\s+user: branch1 head/);
+		const branch1Row = findRow("user:branch1 head");
+		expect(branch1Row).toMatch(/└─\s+user:branch1 head/);
 
 		// Each chain descendant of branch1 must stay anchored by a `│` drawn
 		// below the branch head's content (one level right of the `└─`
 		// connector). Before #2298 these rows rendered as bare spaces and the
 		// chain floated unanchored; after #2325 the anchor must not sit in the
 		// `└─` corner column, which would dangle below the terminal branch.
-		for (const needle of ["assistant: chain-asst-1", "user: chain-user-2"]) {
+		for (const needle of ["assistant:chain-asst-1", "user:chain-user-2"]) {
 			const row = findRow(needle);
 			expect(row).not.toMatch(/^\s{2}│/);
 			expect(row).toMatch(/^\s{5}│\s+\S/);

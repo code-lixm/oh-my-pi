@@ -55,6 +55,7 @@ import { runExtensionCompact } from "../../extensibility/extensions/compact-hand
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { resolveLocalUrlToPath } from "../../internal-urls";
 import { MCPManager } from "../../mcp/manager";
 import type { MCPServerConfig } from "../../mcp/types";
@@ -481,16 +482,16 @@ export class AcpAgent implements Agent {
 		const authMethods: AuthMethod[] = [
 			{
 				id: "agent",
-				name: "Use existing local credentials",
-				description: "Authenticate via the provider keys/OAuth state already configured under ~/.omp.",
+				name: tSettingsUi("Use existing local credentials"),
+				description: tSettingsUi("Authenticate via the provider keys/OAuth state already configured under ~/.omp."),
 			},
 		];
 		if (params.clientCapabilities?.auth?.terminal === true) {
 			authMethods.push({
 				type: "terminal",
 				id: "terminal",
-				name: "Set up Oh My Pi in terminal",
-				description: "Launch the omp TUI to add provider keys and select models.",
+				name: tSettingsUi("Set up Oh My Pi in terminal"),
+				description: tSettingsUi("Launch the omp TUI to add provider keys and select models."),
 				args: [ACP_TERMINAL_AUTH_FLAG],
 			});
 		}

@@ -5,7 +5,9 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { taskToolRenderer } from "@oh-my-pi/pi-coding-agent/task/renderer";
 import type { AgentProgress, SingleResult, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
+const initialSettingsUiLocale = getSettingsUiLocale();
 function runningProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 	return {
 		index: 0,
@@ -64,6 +66,7 @@ describe("task progress rendering", () => {
 	});
 
 	afterEach(() => {
+		setSettingsUiLocale(initialSettingsUiLocale);
 		vi.restoreAllMocks();
 		resetSettingsForTest();
 	});
@@ -404,6 +407,83 @@ describe("task progress rendering", () => {
 		expect(expanded).not.toContain("more agents");
 	});
 
+	it("localizes the zh-CN title and agent count while preserving agent ids", async () => {
+		setSettingsUiLocale("zh-CN");
+		const theme = (await getThemeByName("dark"))!;
+		const details: TaskToolDetails = {
+			projectAgentsDir: null,
+			results: [],
+			totalDurationMs: 0,
+			progress: [
+				runningProgress({ index: 0, id: "LiveOne", status: "running" }),
+				runningProgress({ index: 1, id: "待保持原文-Agent", status: "pending" }),
+			],
+		};
+
+		const rendered = Bun.stripANSI(
+			taskToolRenderer
+				.renderResult(
+					{ content: [{ type: "text", text: "" }], details },
+					{ expanded: false, isPartial: true, spinnerFrame: 0 },
+					theme,
+				)
+				.render(120)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("任务");
+		expect(rendered).toContain("2 个代理");
+		expect(rendered).not.toContain("Task");
+		expect(rendered).not.toContain("2 agents");
+		expect(rendered).toContain("LiveOne");
+		expect(rendered).toContain("待保持原文-Agent");
+	});
+
+	it("localizes the zh-CN hidden status summary with completed, running, and pending counts", async () => {
+		setSettingsUiLocale("zh-CN");
+		const theme = (await getThemeByName("dark"))!;
+		const details: TaskToolDetails = {
+			projectAgentsDir: null,
+			results: [],
+			totalDurationMs: 0,
+			progress: [
+				runningProgress({ index: 0, id: "DoneOne", status: "completed", durationMs: 1000 }),
+				runningProgress({ index: 1, id: "DoneTwo", status: "completed", durationMs: 2000 }),
+				runningProgress({ index: 2, id: "RunHiddenA", status: "running" }),
+				runningProgress({ index: 3, id: "PendingHiddenA", status: "pending" }),
+				runningProgress({ index: 4, id: "RunHiddenB", status: "running" }),
+				runningProgress({ index: 5, id: "PendingHiddenB", status: "pending" }),
+				runningProgress({ index: 6, id: "RunVisibleA", status: "running" }),
+				runningProgress({ index: 7, id: "PendingVisibleA", status: "pending" }),
+				runningProgress({ index: 8, id: "RunVisibleB", status: "running" }),
+				runningProgress({ index: 9, id: "PendingVisibleB", status: "pending" }),
+			],
+		};
+
+		const rendered = Bun.stripANSI(
+			taskToolRenderer
+				.renderResult(
+					{ content: [{ type: "text", text: "" }], details },
+					{ expanded: false, isPartial: true, spinnerFrame: 0 },
+					theme,
+				)
+				.render(160)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("2 个已完成");
+		expect(rendered).toContain("2 个运行中");
+		expect(rendered).toContain("2 个待处理");
+		expect(rendered).not.toContain("2 done");
+		expect(rendered).not.toContain("2 running");
+		expect(rendered).not.toContain("2 pending");
+		expect(rendered).toContain("RunVisibleA");
+		expect(rendered).toContain("PendingVisibleB");
+		expect(rendered).not.toContain("DoneOne");
+		expect(rendered).not.toContain("RunHiddenA");
+		expect(rendered).not.toContain("PendingHiddenA");
+	});
+
 	it("keeps problem rows visible when the collapsed result list folds", async () => {
 		const theme = (await getThemeByName("dark"))!;
 		const details: TaskToolDetails = {
@@ -451,6 +531,7 @@ describe("task result detail-less state", () => {
 	});
 
 	afterEach(() => {
+		setSettingsUiLocale(initialSettingsUiLocale);
 		vi.restoreAllMocks();
 		resetSettingsForTest();
 	});

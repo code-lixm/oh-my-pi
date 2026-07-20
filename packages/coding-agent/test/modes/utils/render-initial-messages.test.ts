@@ -17,6 +17,7 @@ import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -245,7 +246,7 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 		new UiHelpers(ctx).renderInitialMessages();
 
 		expect(hasImageComponent(chatContainer)).toBe(true);
-		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read sample.png");
+		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read: sample.png");
 	});
 
 	it("restores eval display image blocks onto rebuilt tool output", async () => {
@@ -339,8 +340,44 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 		new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
 
 		expect(countImageComponents(chatContainer)).toBe(2);
-		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read reopened.png");
+		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read: reopened.png");
 		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+	});
+});
+
+describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
+	it("rebuilds a continuous hub send + wait(from) + irc run into one HubActivityGroupComponent", async () => {
+		await Settings.init({ inMemory: true });
+		const hubTurn: AssistantMessage = {
+			...assistantToolCall("hub-send", "hub", { op: "send", to: "Worker", message: "ping" }),
+			content: [
+				{ type: "toolCall", id: "hub-send", name: "hub", arguments: { op: "send", to: "Worker", message: "ping" } },
+				{ type: "toolCall", id: "hub-wait", name: "hub", arguments: { op: "wait", from: "AuthLoader" } },
+			],
+		};
+		const transcript = transcriptWith([
+			hubTurn,
+			{
+				role: "custom",
+				customType: "irc:incoming",
+				content: "peer ready",
+				display: true,
+				details: { from: "Worker", message: "peer ready" },
+				timestamp: 2,
+			},
+		]);
+		const { ctx, chatContainer } = makeRenderCtx(transcript);
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const groups = chatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(groups).toHaveLength(1);
+		const rendered = Bun.stripANSI(groups[0]!.render(120).join("\n"));
+		expect(rendered).toContain("Worker");
+		expect(rendered).toContain("AuthLoader");
+		expect(rendered).toContain("peer ready");
 	});
 });
 

@@ -2,6 +2,7 @@ import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
@@ -360,6 +361,22 @@ export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	setupVersion: { type: "number", default: 0 },
 
+	displayLanguage: {
+		type: "enum",
+		values: ["en", "zh-CN"] as const,
+		default: "en",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Display Language"),
+			description: tSettingsUi("Language used for the settings UI chrome and localized setting labels."),
+			options: [
+				{ value: "en", label: tSettingsUi("English") },
+				{ value: "zh-CN", label: tSettingsUi("简体中文") },
+			],
+		},
+	},
+
 	// Auth broker — credentials proxied through a remote `omp auth-broker serve`
 	// host. Hidden from the UI; populate via env vars or hand-edited config.yml.
 	// Env (`OMP_AUTH_BROKER_URL` / `OMP_AUTH_BROKER_TOKEN`) takes precedence so
@@ -372,9 +389,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Auto Resume",
-			description: "Automatically resume the most recent session in the current directory",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Auto Resume"),
+			description: tSettingsUi("Automatically resume the most recent session in the current directory"),
 		},
 	},
 
@@ -385,30 +402,33 @@ export const SETTINGS_SCHEMA = {
 		default: "idle",
 		ui: {
 			tab: "interaction",
-			group: "Power (macOS)",
-			label: "Sleep Prevention",
-			description:
+			group: tSettingsUi("Power (macOS)"),
+			label: tSettingsUi("Sleep Prevention"),
+			description: tSettingsUi(
 				"Prevent macOS sleep during active sessions. Each level is cumulative — it adds the flags of all lower levels.",
+			),
 			options: [
 				{
 					value: "off",
-					label: "Off",
-					description: "Do not prevent any sleep",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Do not prevent any sleep"),
 				},
 				{
 					value: "idle",
-					label: "Prevent Idle Sleep",
-					description: "Keep the system awake while a session is open (caffeinate -i)",
+					label: tSettingsUi("Prevent Idle Sleep"),
+					description: tSettingsUi("Keep the system awake while a session is open (caffeinate -i)"),
 				},
 				{
 					value: "display",
-					label: "Prevent Display Sleep",
-					description: "Also keep the display from idle-sleeping (caffeinate -i -d)",
+					label: tSettingsUi("Prevent Display Sleep"),
+					description: tSettingsUi("Also keep the display from idle-sleeping (caffeinate -i -d)"),
 				},
 				{
 					value: "system",
-					label: "Prevent System Sleep",
-					description: "Also block all system sleep on AC and declare the user active (caffeinate -i -d -s -u)",
+					label: tSettingsUi("Prevent System Sleep"),
+					description: tSettingsUi(
+						"Also block all system sleep on AC and declare the user active (caffeinate -i -d -s -u)",
+					),
 				},
 			],
 		},
@@ -418,10 +438,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Advisor",
-			label: "Enable Advisor",
-			description:
+			group: tSettingsUi("Advisor"),
+			label: tSettingsUi("Enable Advisor"),
+			description: tSettingsUi(
 				"Pair a second model (assigned to the 'advisor' role) that passively reviews each turn and injects notes.",
+			),
 		},
 	},
 	"prewalk.enabled": {
@@ -429,10 +450,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Prewalk",
-			label: "Enable Prewalk",
-			description:
+			group: tSettingsUi("Prewalk"),
+			label: tSettingsUi("Enable Prewalk"),
+			description: tSettingsUi(
 				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
+			),
 		},
 	},
 	"advisor.subagents": {
@@ -440,9 +462,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Advisor",
-			label: "Advisor for Subagents",
-			description: "Also enable the advisor on spawned task/eval subagents.",
+			group: tSettingsUi("Advisor"),
+			label: tSettingsUi("Advisor for Subagents"),
+			description: tSettingsUi("Also enable the advisor on spawned task/eval subagents."),
 			condition: "advisorEnabled",
 		},
 	},
@@ -452,10 +474,11 @@ export const SETTINGS_SCHEMA = {
 		default: "off",
 		ui: {
 			tab: "model",
-			group: "Advisor",
-			label: "Advisor Sync Backlog",
-			description:
+			group: tSettingsUi("Advisor"),
+			label: tSettingsUi("Advisor Sync Backlog"),
+			description: tSettingsUi(
 				"Pause the main agent for up to 30 seconds if the advisor falls behind by this many turns. Off disables catch-up delays.",
+			),
 			condition: "advisorEnabled",
 		},
 	},
@@ -464,17 +487,22 @@ export const SETTINGS_SCHEMA = {
 		default: 3,
 		ui: {
 			tab: "model",
-			group: "Advisor",
-			label: "Advisor Immune Turns",
-			description:
+			group: tSettingsUi("Advisor"),
+			label: tSettingsUi("Advisor Immune Turns"),
+			description: tSettingsUi(
 				"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.",
+			),
 			options: [
-				{ value: "0", label: "0 turns", description: "Allow every concern/blocker to interrupt." },
-				{ value: "1", label: "1 turn" },
-				{ value: "2", label: "2 turns" },
-				{ value: "3", label: "3 turns", description: "Default." },
-				{ value: "4", label: "4 turns" },
-				{ value: "5", label: "5 turns" },
+				{
+					value: "0",
+					label: tSettingsUi("0 turns"),
+					description: tSettingsUi("Allow every concern/blocker to interrupt."),
+				},
+				{ value: "1", label: tSettingsUi("1 turn") },
+				{ value: "2", label: tSettingsUi("2 turns") },
+				{ value: "3", label: tSettingsUi("3 turns"), description: tSettingsUi("Default.") },
+				{ value: "4", label: tSettingsUi("4 turns") },
+				{ value: "5", label: tSettingsUi("5 turns") },
 			],
 			condition: "advisorEnabled",
 		},
@@ -485,9 +513,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Git",
-			label: "Enable Git Integration",
-			description: "Show git branch, status, and PR information in the TUI and watch repository metadata.",
+			group: tSettingsUi("Git"),
+			label: tSettingsUi("Enable Git Integration"),
+			description: tSettingsUi(
+				"Show git branch, status, and PR information in the TUI and watch repository metadata.",
+			),
 		},
 	},
 
@@ -502,10 +532,11 @@ export const SETTINGS_SCHEMA = {
 		default: EMPTY_NUMBER_RECORD,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Max In-Flight Requests",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Max In-Flight Requests"),
+			description: tSettingsUi(
 				'Maximum concurrent LLM requests per provider id (for example "openai" or "anthropic"), shared across local OMP processes with this config root. Omitted providers are unlimited.',
+			),
 		},
 	},
 
@@ -553,9 +584,9 @@ export const SETTINGS_SCHEMA = {
 		default: "titanium",
 		ui: {
 			tab: "appearance",
-			group: "Theme",
-			label: "Dark Theme",
-			description: "Theme used when the terminal has a dark background",
+			group: tSettingsUi("Theme"),
+			label: tSettingsUi("Dark Theme"),
+			description: tSettingsUi("Theme used when the terminal has a dark background"),
 			options: "runtime",
 		},
 	},
@@ -565,9 +596,9 @@ export const SETTINGS_SCHEMA = {
 		default: "light",
 		ui: {
 			tab: "appearance",
-			group: "Theme",
-			label: "Light Theme",
-			description: "Theme used when the terminal has a light background",
+			group: tSettingsUi("Theme"),
+			label: tSettingsUi("Light Theme"),
+			description: tSettingsUi("Theme used when the terminal has a light background"),
 			options: "runtime",
 		},
 	},
@@ -578,9 +609,9 @@ export const SETTINGS_SCHEMA = {
 		default: "unicode",
 		ui: {
 			tab: "appearance",
-			group: "Theme",
-			label: "Symbol Preset",
-			description: "Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)",
+			group: tSettingsUi("Theme"),
+			label: tSettingsUi("Symbol Preset"),
+			description: tSettingsUi("Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)"),
 			options: [
 				{ value: "unicode", label: "Unicode", description: "Standard symbols (default)" },
 				{ value: "nerd", label: "Nerd Font", description: "Requires Nerd Font" },
@@ -594,9 +625,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Theme",
-			label: "Color-Blind Mode",
-			description: "Use blue instead of green for diff additions",
+			group: tSettingsUi("Theme"),
+			label: tSettingsUi("Color-Blind Mode"),
+			description: tSettingsUi("Use blue instead of green for diff additions"),
 		},
 	},
 
@@ -607,9 +638,9 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Status Line Preset",
-			description: "Pre-built status line configurations",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Status Line Preset"),
+			description: tSettingsUi("Pre-built status line configurations"),
 			options: [
 				{ value: "default", label: "Default", description: "Model, path, git, context, tokens, cost" },
 				{ value: "minimal", label: "Minimal", description: "Path and git only" },
@@ -628,9 +659,9 @@ export const SETTINGS_SCHEMA = {
 		default: "powerline-thin",
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Status Line Separator",
-			description: "Style of separators between segments",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Status Line Separator"),
+			description: tSettingsUi("Style of separators between segments"),
 			options: [
 				{ value: "powerline", label: "Powerline", description: "Solid arrows (Nerd Font)" },
 				{ value: "powerline-thin", label: "Thin chevron", description: "Thin arrows (Nerd Font)" },
@@ -648,9 +679,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Session Accent",
-			description: "Use the session name color for the editor border and status line gap",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Session Accent"),
+			description: tSettingsUi("Use the session name color for the editor border and status line gap"),
 		},
 	},
 
@@ -659,10 +690,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Transparent Status Line",
-			description:
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Transparent Status Line"),
+			description: tSettingsUi(
 				"Use the terminal's default background for the status line instead of the theme's `statusLineBg`. Powerline end caps are dropped because they need a contrasting fill to bridge into the surrounding terminal.",
+			),
 		},
 	},
 	"statusLine.compactThinkingLevel": {
@@ -670,10 +702,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Compact Thinking Level",
-			description:
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Compact Thinking Level"),
+			description: tSettingsUi(
 				"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
+			),
 		},
 	},
 	"tools.artifactSpillThreshold": {
@@ -681,9 +714,9 @@ export const SETTINGS_SCHEMA = {
 		default: 50,
 		ui: {
 			tab: "tools",
-			group: "Output Limits",
-			label: "Artifact Spill Threshold (KB)",
-			description: "Tool output above this size is saved as an artifact; tail is kept inline",
+			group: tSettingsUi("Output Limits"),
+			label: tSettingsUi("Artifact Spill Threshold (KB)"),
+			description: tSettingsUi("Tool output above this size is saved as an artifact; tail is kept inline"),
 			options: [
 				{ value: "1", label: "1 KB", description: "~250 tokens" },
 				{ value: "2.5", label: "2.5 KB", description: "~625 tokens" },
@@ -705,9 +738,9 @@ export const SETTINGS_SCHEMA = {
 		default: 20,
 		ui: {
 			tab: "tools",
-			group: "Output Limits",
-			label: "Artifact Tail Size (KB)",
-			description: "Amount of tail content kept inline when output spills to artifact",
+			group: tSettingsUi("Output Limits"),
+			label: tSettingsUi("Artifact Tail Size (KB)"),
+			description: tSettingsUi("Amount of tail content kept inline when output spills to artifact"),
 			options: [
 				{ value: "1", label: "1 KB", description: "~250 tokens" },
 				{ value: "2.5", label: "2.5 KB", description: "~625 tokens" },
@@ -725,10 +758,11 @@ export const SETTINGS_SCHEMA = {
 		default: 20,
 		ui: {
 			tab: "tools",
-			group: "Output Limits",
-			label: "Artifact Head Size (KB)",
-			description:
+			group: tSettingsUi("Output Limits"),
+			label: tSettingsUi("Artifact Head Size (KB)"),
+			description: tSettingsUi(
 				"Amount of head content kept inline alongside the tail when output spills to artifact (middle elision). 0 disables — keep tail only.",
+			),
 			options: [
 				{ value: "0", label: "0 KB", description: "Disabled; tail-only truncation" },
 				{ value: "1", label: "1 KB", description: "~250 tokens" },
@@ -747,10 +781,11 @@ export const SETTINGS_SCHEMA = {
 		default: 768,
 		ui: {
 			tab: "tools",
-			group: "Output Limits",
-			label: "Output Column Cap",
-			description:
+			group: tSettingsUi("Output Limits"),
+			label: tSettingsUi("Output Column Cap"),
+			description: tSettingsUi(
 				"Per-line byte cap for streaming tool outputs (bash, python, js eval) and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
+			),
 			options: [
 				{ value: "0", label: "Off", description: "No per-line cap" },
 				{ value: "256", label: "256", description: "Tight" },
@@ -767,9 +802,9 @@ export const SETTINGS_SCHEMA = {
 		default: 500,
 		ui: {
 			tab: "tools",
-			group: "Output Limits",
-			label: "Artifact Tail Lines",
-			description: "Maximum lines of tail content kept inline when output spills to artifact",
+			group: tSettingsUi("Output Limits"),
+			label: tSettingsUi("Artifact Tail Lines"),
+			description: tSettingsUi("Maximum lines of tail content kept inline when output spills to artifact"),
 			options: [
 				{ value: "50", label: "50 lines", description: "~250 tokens" },
 				{ value: "100", label: "100 lines", description: "~500 tokens" },
@@ -787,9 +822,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Status Line",
-			label: "Show Hook Status",
-			description: "Display hook status messages below the status line",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Show Hook Status"),
+			description: tSettingsUi("Display hook status messages below the status line"),
 		},
 	},
 
@@ -805,9 +840,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Images",
-			label: "Show Inline Images",
-			description: "Render images inline in the terminal",
+			group: tSettingsUi("Images"),
+			label: tSettingsUi("Show Inline Images"),
+			description: tSettingsUi("Render images inline in the terminal"),
 			condition: "hasImageProtocol",
 		},
 	},
@@ -817,9 +852,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Images",
-			label: "Auto-Resize Images",
-			description: "Resize large images to 2000x2000 max for better model compatibility",
+			group: tSettingsUi("Images"),
+			label: tSettingsUi("Auto-Resize Images"),
+			description: tSettingsUi("Resize large images to 2000x2000 max for better model compatibility"),
 		},
 	},
 
@@ -828,9 +863,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Images",
-			label: "Block Images",
-			description: "Prevent images from being sent to LLM providers",
+			group: tSettingsUi("Images"),
+			label: tSettingsUi("Block Images"),
+			description: tSettingsUi("Prevent images from being sent to LLM providers"),
 		},
 	},
 
@@ -839,32 +874,36 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Vision",
-			label: "Describe Images for Text Models",
-			description:
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Describe Images for Text Models"),
+			description: tSettingsUi(
 				"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
+			),
 		},
 	},
 
 	"tui.maxInlineImageColumns": {
 		type: "number",
 		default: 100,
-		description:
+		description: tSettingsUi(
 			"Maximum width in terminal columns for inline images (default 100). Set to 0 for unlimited (bounded only by terminal width).",
+		),
 	},
 
 	"tui.maxInlineImageRows": {
 		type: "number",
 		default: 20,
-		description:
+		description: tSettingsUi(
 			"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).",
+		),
 	},
 
 	"tui.maxInlineImages": {
 		type: "number",
 		default: 8,
-		description:
+		description: tSettingsUi(
 			"Maximum number of inline images kept as live terminal graphics (default 8). Older images fall back to a text placeholder via a full redraw once the limit is exceeded. Set to 0 to keep every image (no limit).",
+		),
 	},
 
 	"terminal.showProgress": {
@@ -872,9 +911,37 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Native Terminal Progress",
-			description: "Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Native Terminal Progress"),
+			description: tSettingsUi(
+				"Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running",
+			),
+		},
+	},
+
+	"tui.markdownHeadingStyle": {
+		type: "enum",
+		values: ["compact", "hierarchical"] as const,
+		default: "compact",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Markdown Headings"),
+			description: tSettingsUi("How Markdown headings are shown in transcript content"),
+			options: [
+				{
+					value: "compact",
+					label: tSettingsUi("Compact Headings"),
+					description: tSettingsUi(
+						"Hide # markers, flatten H1-H6 to one title color, and keep readable spacing around headings",
+					),
+				},
+				{
+					value: "hierarchical",
+					label: tSettingsUi("Hierarchical"),
+					description: tSettingsUi("Preserve Markdown heading levels, markers, and spacing"),
+				},
+			],
 		},
 	},
 
@@ -883,10 +950,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Large Headings (Kitty)",
-			description:
-				"Render Markdown H1 headings at 2x scale using Kitty's OSC 66 text-sizing protocol. Only takes effect on Kitty terminals; ignored everywhere else. Off by default.",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Large Headings (Kitty)"),
+			description: tSettingsUi(
+				"Render Markdown H1 headings at 2x scale using Kitty's OSC 66 text-sizing protocol. Only applies to Hierarchical Markdown Headings on Kitty terminals. Off by default.",
+			),
 		},
 	},
 
@@ -895,9 +963,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Render Mermaid Diagrams",
-			description: "Render Mermaid fenced code blocks as ASCII diagrams",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Render Mermaid Diagrams"),
+			description: tSettingsUi("Render Mermaid fenced code blocks as ASCII diagrams"),
 		},
 	},
 
@@ -907,10 +975,11 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Terminal Hyperlinks",
-			description:
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Terminal Hyperlinks"),
+			description: tSettingsUi(
 				"Wrap paths and URLs in OSC 8 hyperlinks for terminal-native click-to-open (auto: detect support; off: never; always: unconditional)",
+			),
 		},
 	},
 	"tui.tight": {
@@ -918,9 +987,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Tight Layout",
-			description: "Remove the 1-character horizontal padding from the left and right of the terminal output",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Tight Layout"),
+			description: tSettingsUi(
+				"Remove the 1-character horizontal padding from the left and right of the terminal output",
+			),
 		},
 	},
 	"tui.scrollbackRebuild": {
@@ -928,10 +999,37 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Rewrite Scrollback",
-			description:
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Rewrite Scrollback"),
+			description: tSettingsUi(
 				"Erase and replay terminal scrollback when a block's final form replaces its live preview. When off (default), stale preview copies remain in history and the final content is appended below.",
+			),
+		},
+	},
+
+	"display.borderStyle": {
+		type: "enum",
+		values: ["full", "horizontal"] as const,
+		default: "full",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Border Style"),
+			description: tSettingsUi(
+				"Choose full borders or horizontal-only lines for wide containers and Markdown tables",
+			),
+			options: [
+				{
+					value: "full",
+					label: tSettingsUi("Full"),
+					description: tSettingsUi("Draw complete borders and table grids"),
+				},
+				{
+					value: "horizontal",
+					label: tSettingsUi("Horizontal Only"),
+					description: tSettingsUi("Remove vertical borders and keep structural horizontal separators"),
+				},
+			],
 		},
 	},
 
@@ -941,9 +1039,9 @@ export const SETTINGS_SCHEMA = {
 		default: "classic",
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Shimmer",
-			description: "Animation style for working/loading messages",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Shimmer"),
+			description: tSettingsUi("Animation style for working/loading messages"),
 			options: [
 				{ value: "classic", label: "Classic", description: "Soft cosine wave sweeping across the text" },
 				{ value: "kitt", label: "KITT Scanner", description: "Knight Rider 1982 red light bouncing left-right" },
@@ -957,9 +1055,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Smooth Streaming",
-			description: "Reveal assistant text and streamed tool input smoothly while chunks arrive",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Smooth Streaming"),
+			description: tSettingsUi("Reveal assistant text and streamed tool input smoothly while chunks arrive"),
 		},
 	},
 
@@ -968,9 +1066,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Show Token Usage",
-			description: "Show per-turn token usage on assistant messages",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Token Usage"),
+			description: tSettingsUi("Show per-turn token usage on assistant messages"),
 		},
 	},
 
@@ -979,9 +1077,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Cache Miss Marker",
-			description: "Show a divider above an assistant turn whose request lost (missed) the prompt cache",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Cache Miss Marker"),
+			description: tSettingsUi(
+				"Show a divider above an assistant turn whose request lost (missed) the prompt cache",
+			),
 		},
 	},
 
@@ -990,10 +1090,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Collapse Compacted History",
-			description:
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Collapse Compacted History"),
+			description: tSettingsUi(
 				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
+			),
 		},
 	},
 
@@ -1002,9 +1103,9 @@ export const SETTINGS_SCHEMA = {
 		default: true, // will be computed based on platform if undefined
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Show Hardware Cursor",
-			description: "Show terminal cursor for IME support",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Hardware Cursor"),
+			description: tSettingsUi("Show terminal cursor for IME support"),
 		},
 	},
 
@@ -1030,9 +1131,9 @@ export const SETTINGS_SCHEMA = {
 		default: "high",
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Thinking Level",
-			description: "Reasoning depth for thinking-capable models",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Thinking Level"),
+			description: tSettingsUi("Reasoning depth for thinking-capable models"),
 			options: [
 				getConfiguredThinkingLevelMetadata(AUTO_THINKING),
 				...THINKING_EFFORTS.map(getThinkingLevelMetadata),
@@ -1045,9 +1146,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Hide Thinking Blocks",
-			description: "Hide thinking blocks in assistant responses",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Hide Thinking Blocks"),
+			description: tSettingsUi("Hide thinking blocks in assistant responses"),
 		},
 	},
 	proseOnlyThinking: {
@@ -1055,9 +1156,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Prose Only Thinking",
-			description: "Omit code blocks from thinking summaries and replace them with an ellipsis",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Prose Only Thinking"),
+			description: tSettingsUi("Omit code blocks from thinking summaries and replace them with an ellipsis"),
 		},
 	},
 
@@ -1066,10 +1167,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Omit Thinking summaries",
-			description:
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Omit Thinking summaries"),
+			description: tSettingsUi(
 				"Instruct upstream providers to completely omit thinking summaries from responses (where supported)",
+			),
 		},
 	},
 
@@ -1078,9 +1180,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Loop Guard",
-			description: "Enable automatic stream loop detection for model reasoning and prose",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Loop Guard"),
+			description: tSettingsUi("Enable automatic stream loop detection for model reasoning and prose"),
 		},
 	},
 
@@ -1089,9 +1191,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Loop Guard Scan Prose",
-			description: "Apply loop guard to assistant prose messages in addition to thinking logs",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Loop Guard Scan Prose"),
+			description: tSettingsUi("Apply loop guard to assistant prose messages in addition to thinking logs"),
 		},
 	},
 
@@ -1100,10 +1202,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Loop Guard Tool-Call Reminder",
-			description:
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Loop Guard Tool-Call Reminder"),
+			description: tSettingsUi(
 				"When a Gemini reasoning stream emits many consecutive planning headers without calling a tool, interrupt it and inject a reminder to issue a tool call (requires Loop Guard)",
+			),
 		},
 	},
 
@@ -1112,9 +1215,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Tool-Call Loop Guard",
-			description: "Detect consecutive identical tool calls across turns and inject a corrective steer",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Tool-Call Loop Guard"),
+			description: tSettingsUi("Detect consecutive identical tool calls across turns and inject a corrective steer"),
 		},
 	},
 
@@ -1123,9 +1226,9 @@ export const SETTINGS_SCHEMA = {
 		default: 5,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Tool-Call Loop Threshold",
-			description: "Consecutive identical tool calls required before the corrective steer is injected",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Tool-Call Loop Threshold"),
+			description: tSettingsUi("Consecutive identical tool calls required before the corrective steer is injected"),
 		},
 	},
 
@@ -1134,9 +1237,11 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Tool-Call Loop Exempt Tools",
-			description: "Tool names that may repeat consecutively without triggering the cross-turn loop guard",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Tool-Call Loop Exempt Tools"),
+			description: tSettingsUi(
+				"Tool names that may repeat consecutively without triggering the cross-turn loop guard",
+			),
 		},
 	},
 
@@ -1146,15 +1251,16 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "model",
-			group: "Prompt",
-			label: "Inline Tool Descriptors",
-			description:
+			group: tSettingsUi("Prompt"),
+			label: tSettingsUi("Inline Tool Descriptors"),
+			description: tSettingsUi(
 				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once. Auto enables this for Gemini models and disables it otherwise",
+			),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Inline descriptors for Gemini models; keep them in tool schemas otherwise",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Inline descriptors for Gemini models; keep them in tool schemas otherwise"),
 				},
 				{ value: "on", label: "On", description: "Always inline descriptors in the system prompt" },
 				{ value: "off", label: "Off", description: "Keep descriptors in provider tool schemas only" },
@@ -1167,9 +1273,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Prompt",
-			label: "Include Model in Prompt",
-			description: "Surface the active model identifier in the system prompt so the agent knows which model it is",
+			group: tSettingsUi("Prompt"),
+			label: tSettingsUi("Include Model in Prompt"),
+			description: tSettingsUi(
+				"Surface the active model identifier in the system prompt so the agent knows which model it is",
+			),
 		},
 	},
 
@@ -1178,10 +1286,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Prompt",
-			label: "Include Workspace Tree",
-			description:
+			group: tSettingsUi("Prompt"),
+			label: tSettingsUi("Include Workspace Tree"),
+			description: tSettingsUi(
 				"Render the workspace directory tree in the system prompt. WARNING: This can bust prompt caching across sessions when files are modified.",
+			),
 		},
 	},
 
@@ -1191,24 +1300,24 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "model",
-			group: "Prompt",
-			label: "Personality",
-			description: "Communication style rendered into the system prompt's personality block",
+			group: tSettingsUi("Prompt"),
+			label: tSettingsUi("Personality"),
+			description: tSettingsUi("Communication style rendered into the system prompt's personality block"),
 			options: [
 				{
 					value: "default",
-					label: "Default",
-					description: "Terse, evidence-first engineer; dense, action-oriented replies",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Terse, evidence-first engineer; dense, action-oriented replies"),
 				},
 				{
 					value: "friendly",
-					label: "Friendly",
-					description: "Warm, encouraging collaborator focused on momentum and morale",
+					label: tSettingsUi("Friendly"),
+					description: tSettingsUi("Warm, encouraging collaborator focused on momentum and morale"),
 				},
 				{
 					value: "pragmatic",
-					label: "Pragmatic",
-					description: "Direct, efficient engineer focused on clarity and rigor",
+					label: tSettingsUi("Pragmatic"),
+					description: tSettingsUi("Direct, efficient engineer focused on clarity and rigor"),
 				},
 				{ value: "none", label: "None", description: "Omit the personality block entirely" },
 			],
@@ -1221,9 +1330,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Temperature",
-			description: "Sampling temperature (0 = deterministic, 1 = creative, -1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Temperature"),
+			description: tSettingsUi("Sampling temperature (0 = deterministic, 1 = creative, -1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "0", label: "0", description: "Deterministic" },
@@ -1240,9 +1349,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Top P",
-			description: "Nucleus sampling cutoff (0-1, -1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Top P"),
+			description: tSettingsUi("Nucleus sampling cutoff (0-1, -1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "0.1", label: "0.1", description: "Very focused" },
@@ -1259,9 +1368,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Top K",
-			description: "Sample from top-K tokens (-1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Top K"),
+			description: tSettingsUi("Sample from top-K tokens (-1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "1", label: "1", description: "Greedy top token" },
@@ -1277,9 +1386,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Min P",
-			description: "Minimum probability threshold (0-1, -1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Min P"),
+			description: tSettingsUi("Minimum probability threshold (0-1, -1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "0.01", label: "0.01", description: "Very permissive" },
@@ -1294,9 +1403,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Presence Penalty",
-			description: "Penalty for introducing already-present tokens (-1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Presence Penalty"),
+			description: tSettingsUi("Penalty for introducing already-present tokens (-1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "0", label: "0", description: "No penalty" },
@@ -1312,9 +1421,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Repetition Penalty",
-			description: "Penalty for repeated tokens (-1 = provider default)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Repetition Penalty"),
+			description: tSettingsUi("Penalty for repeated tokens (-1 = provider default)"),
 			options: [
 				{ value: "-1", label: "Default", description: "Use provider default" },
 				{ value: "0.8", label: "0.8", description: "Allow repetition" },
@@ -1332,9 +1441,9 @@ export const SETTINGS_SCHEMA = {
 		default: "medium",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Text Verbosity",
-			description: "OpenAI Responses and Codex response verbosity (low, medium, or high)",
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Text Verbosity"),
+			description: tSettingsUi("OpenAI Responses and Codex response verbosity (low, medium, or high)"),
 			options: [
 				{ value: "low", label: "Low", description: "Prefer concise responses" },
 				{ value: "medium", label: "Medium", description: "Balance brevity and detail (default)" },
@@ -1349,10 +1458,11 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Service Tier — OpenAI",
-			description:
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Service Tier — OpenAI"),
+			description: tSettingsUi(
 				"Processing tier for OpenAI / OpenAI-Codex requests, and OpenAI-family models routed via OpenRouter (none = omit). Sent as `service_tier`.",
+			),
 			options: SERVICE_TIER_OPENAI_OPTIONS,
 		},
 	},
@@ -1363,10 +1473,11 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Service Tier — Anthropic",
-			description:
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Service Tier — Anthropic"),
+			description: tSettingsUi(
 				'Processing tier for Claude requests. `priority` realizes fast mode (`speed: "fast"`) on supported direct Anthropic models; ignored on Bedrock/Vertex Claude and via OpenRouter.',
+			),
 			options: SERVICE_TIER_ANTHROPIC_OPTIONS,
 		},
 	},
@@ -1377,10 +1488,11 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Service Tier — Google",
-			description:
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Service Tier — Google"),
+			description: tSettingsUi(
 				"Processing tier for Gemini (Google AI Studio + Vertex) requests, and Google-family models routed via OpenRouter (none = omit). Sent as the top-level `serviceTier` field.",
+			),
 			options: SERVICE_TIER_GOOGLE_OPTIONS,
 		},
 	},
@@ -1391,10 +1503,11 @@ export const SETTINGS_SCHEMA = {
 		default: "inherit",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Service Tier — Subagent",
-			description:
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Service Tier — Subagent"),
+			description: tSettingsUi(
 				"Service Tier for spawned task/eval subagents. Inherit = match the main agent's live per-family tiers (tracks /fast); pick a value to apply it to whichever family the subagent's model belongs to.",
+			),
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 		},
 	},
@@ -1405,10 +1518,11 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "model",
-			group: "Sampling",
-			label: "Service Tier — Advisor",
-			description:
+			group: tSettingsUi("Sampling"),
+			label: tSettingsUi("Service Tier — Advisor"),
+			description: tSettingsUi(
 				"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live per-family tiers; pick a value to apply it to the advisor model's family.",
+			),
 			options: SERVICE_TIER_INHERIT_OPTIONS,
 			condition: "advisorEnabled",
 		},
@@ -1422,9 +1536,9 @@ export const SETTINGS_SCHEMA = {
 		default: 10,
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Retry Attempts",
-			description: "Maximum retry attempts on API errors",
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Retry Attempts"),
+			description: tSettingsUi("Maximum retry attempts on API errors"),
 			options: [
 				{ value: "1", label: "1 retry" },
 				{ value: "2", label: "2 retries" },
@@ -1441,10 +1555,11 @@ export const SETTINGS_SCHEMA = {
 		default: 5 * 60 * 1000,
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Max Retry Delay",
-			description:
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Max Retry Delay"),
+			description: tSettingsUi(
 				"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows).",
+			),
 		},
 	},
 	"retry.modelFallback": {
@@ -1452,9 +1567,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Retry Model Fallback",
-			description: "Allow retry recovery to switch to configured fallback models",
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Retry Model Fallback"),
+			description: tSettingsUi("Allow retry recovery to switch to configured fallback models"),
 		},
 	},
 	"retry.fallbackChains": {
@@ -1462,10 +1577,11 @@ export const SETTINGS_SCHEMA = {
 		default: {} as Record<string, string[]>,
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Retry Fallback Chains",
-			description:
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Retry Fallback Chains"),
+			description: tSettingsUi(
 				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.',
+			),
 		},
 	},
 	"retry.fallbackRevertPolicy": {
@@ -1474,14 +1590,14 @@ export const SETTINGS_SCHEMA = {
 		default: "cooldown-expiry",
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Fallback Revert Policy",
-			description: "When to return to the primary model after a fallback",
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Fallback Revert Policy"),
+			description: tSettingsUi("When to return to the primary model after a fallback"),
 			options: [
 				{
 					value: "cooldown-expiry",
-					label: "Cooldown expiry",
-					description: "Return to the primary model after its suppression window ends",
+					label: tSettingsUi("Cooldown expiry"),
+					description: tSettingsUi("Return to the primary model after its suppression window ends"),
 				},
 				{ value: "never", label: "Never", description: "Stay on the fallback model until manually changed" },
 			],
@@ -1493,10 +1609,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Retry & Fallback",
-			label: "Anthropic Server-Side Fallback (Fable 5)",
-			description:
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Anthropic Server-Side Fallback (Fable 5)"),
+			description: tSettingsUi(
 				"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 4.8 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
+			),
 		},
 	},
 
@@ -1511,9 +1628,9 @@ export const SETTINGS_SCHEMA = {
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Steering Mode",
-			description: "How to process queued messages while agent is working",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Steering Mode"),
+			description: tSettingsUi("How to process queued messages while agent is working"),
 		},
 	},
 
@@ -1523,9 +1640,9 @@ export const SETTINGS_SCHEMA = {
 		default: "one-at-a-time",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Follow-Up Mode",
-			description: "How to drain follow-up messages after a turn completes",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Follow-Up Mode"),
+			description: tSettingsUi("How to drain follow-up messages after a turn completes"),
 		},
 	},
 
@@ -1535,9 +1652,9 @@ export const SETTINGS_SCHEMA = {
 		default: "immediate",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Interrupt Mode",
-			description: "When steering messages interrupt tool execution",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Interrupt Mode"),
+			description: tSettingsUi("When steering messages interrupt tool execution"),
 		},
 	},
 
@@ -1547,19 +1664,19 @@ export const SETTINGS_SCHEMA = {
 		default: "prompt",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Loop Mode",
-			description: "What happens between /loop iterations before re-submitting the prompt",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Loop Mode"),
+			description: tSettingsUi("What happens between /loop iterations before re-submitting the prompt"),
 			options: [
 				{
 					value: "prompt",
-					label: "Prompt",
-					description: "Re-submit the prompt as a follow-up message (current behavior)",
+					label: tSettingsUi("Prompt"),
+					description: tSettingsUi("Re-submit the prompt as a follow-up message (current behavior)"),
 				},
 				{
 					value: "compact",
-					label: "Compact",
-					description: "Compact the session context, then re-submit the prompt",
+					label: tSettingsUi("Compact"),
+					description: tSettingsUi("Compact the session context, then re-submit the prompt"),
 				},
 				{ value: "reset", label: "Reset", description: "Start a new session, then re-submit the prompt" },
 			],
@@ -1573,9 +1690,9 @@ export const SETTINGS_SCHEMA = {
 		default: "tree",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Double-Escape Action",
-			description: "Action when pressing Escape twice with empty editor",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Double-Escape Action"),
+			description: tSettingsUi("Action when pressing Escape twice with empty editor"),
 		},
 	},
 
@@ -1585,9 +1702,9 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Session Tree Filter",
-			description: "Default filter mode when opening the session tree",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Session Tree Filter"),
+			description: tSettingsUi("Default filter mode when opening the session tree"),
 		},
 	},
 
@@ -1596,9 +1713,9 @@ export const SETTINGS_SCHEMA = {
 		default: 5,
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Autocomplete Items",
-			description: "Max visible items in autocomplete dropdown (3-20)",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Autocomplete Items"),
+			description: tSettingsUi("Max visible items in autocomplete dropdown (3-20)"),
 			options: [
 				{ value: "3", label: "3 items" },
 				{ value: "5", label: "5 items" },
@@ -1615,9 +1732,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Emoji Autocomplete",
-			description: "Suggest emojis from `:name:` shortcodes and expand text emoticons like `:D` or `:-)`",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Emoji Autocomplete"),
+			description: tSettingsUi(
+				"Suggest emojis from `:name:` shortcodes and expand text emoticons like `:D` or `:-)`",
+			),
 		},
 	},
 
@@ -1626,10 +1745,11 @@ export const SETTINGS_SCHEMA = {
 		default: 100,
 		ui: {
 			tab: "interaction",
-			group: "Input",
-			label: "Large Paste Menu",
-			description:
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Large Paste Menu"),
+			description: tSettingsUi(
 				"When a paste reaches this many lines, offer a menu to wrap it in a code block, wrap it in XML tags, or save it to a file. 0 disables the menu (large pastes still collapse to a [Paste] marker).",
+			),
 			options: [
 				{ value: "0", label: "Off" },
 				{ value: "100", label: "100 lines" },
@@ -1645,9 +1765,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Quiet Startup",
-			description: "Skip welcome screen and startup status messages",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Quiet Startup"),
+			description: tSettingsUi("Skip welcome screen and startup status messages"),
 		},
 	},
 
@@ -1656,10 +1776,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Show Startup Splash",
-			description:
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Show Startup Splash"),
+			description: tSettingsUi(
 				"Show the full animated setup splash on normal interactive startup without rerunning setup. Quiet Startup still suppresses it.",
+			),
 		},
 	},
 
@@ -1668,9 +1789,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Setup Wizard",
-			description: "Show newly added onboarding steps once per setup version",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Setup Wizard"),
+			description: tSettingsUi("Show newly added onboarding steps once per setup version"),
 		},
 	},
 
@@ -1679,9 +1800,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Check for Updates",
-			description: "Check for omp updates on startup",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Check for Updates"),
+			description: tSettingsUi("Check for omp updates on startup"),
 		},
 	},
 
@@ -1691,9 +1812,9 @@ export const SETTINGS_SCHEMA = {
 		default: "notify",
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Marketplace Auto-Update",
-			description: "Check for plugin updates on startup",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Marketplace Auto-Update"),
+			description: tSettingsUi("Check for plugin updates on startup"),
 			options: [
 				{ value: "off", label: "Off", description: "Don't check for plugin updates" },
 				{ value: "notify", label: "Notify", description: "Check on startup and notify when updates are available" },
@@ -1707,9 +1828,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Startup & Updates",
-			label: "Collapse Changelog",
-			description: "Show condensed changelog after updates",
+			group: tSettingsUi("Startup & Updates"),
+			label: tSettingsUi("Collapse Changelog"),
+			description: tSettingsUi("Show condensed changelog after updates"),
 		},
 	},
 
@@ -1718,9 +1839,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Magic Keywords",
-			label: "Magic Keywords",
-			description: "Enable hidden notices for standalone ultrathink, orchestrate, and workflowz keywords",
+			group: tSettingsUi("Magic Keywords"),
+			label: tSettingsUi("Magic Keywords"),
+			description: tSettingsUi(
+				"Enable hidden notices for standalone ultrathink, orchestrate, and workflowz keywords",
+			),
 		},
 	},
 
@@ -1729,9 +1852,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Magic Keywords",
-			label: "Ultrathink Keyword",
-			description: "Let standalone ultrathink request maximum automatic thinking and append its hidden notice",
+			group: tSettingsUi("Magic Keywords"),
+			label: tSettingsUi("Ultrathink Keyword"),
+			description: tSettingsUi(
+				"Let standalone ultrathink request maximum automatic thinking and append its hidden notice",
+			),
 		},
 	},
 
@@ -1740,9 +1865,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Magic Keywords",
-			label: "Orchestrate Keyword",
-			description: "Let standalone orchestrate append its hidden multi-agent orchestration notice",
+			group: tSettingsUi("Magic Keywords"),
+			label: tSettingsUi("Orchestrate Keyword"),
+			description: tSettingsUi("Let standalone orchestrate append its hidden multi-agent orchestration notice"),
 		},
 	},
 
@@ -1751,9 +1876,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Magic Keywords",
-			label: "Workflow Keyword",
-			description: "Let standalone workflowz append its hidden eval workflow notice",
+			group: tSettingsUi("Magic Keywords"),
+			label: tSettingsUi("Workflow Keyword"),
+			description: tSettingsUi("Let standalone workflowz append its hidden eval workflow notice"),
 		},
 	},
 
@@ -1764,9 +1889,9 @@ export const SETTINGS_SCHEMA = {
 		default: "on",
 		ui: {
 			tab: "interaction",
-			group: "Notifications",
-			label: "Completion Notification",
-			description: "Notify when the agent finishes a turn",
+			group: tSettingsUi("Notifications"),
+			label: tSettingsUi("Completion Notification"),
+			description: tSettingsUi("Notify when the agent finishes a turn"),
 		},
 	},
 
@@ -1775,9 +1900,9 @@ export const SETTINGS_SCHEMA = {
 		default: 0,
 		ui: {
 			tab: "interaction",
-			group: "Notifications",
-			label: "Ask Timeout",
-			description: "Auto-select the recommended ask option after this many seconds (0 disables)",
+			group: tSettingsUi("Notifications"),
+			label: tSettingsUi("Ask Timeout"),
+			description: tSettingsUi("Auto-select the recommended ask option after this many seconds (0 disables)"),
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "15", label: "15 seconds" },
@@ -1794,9 +1919,9 @@ export const SETTINGS_SCHEMA = {
 		default: "on",
 		ui: {
 			tab: "interaction",
-			group: "Notifications",
-			label: "Ask Notification",
-			description: "Notify when the ask tool is waiting for input",
+			group: tSettingsUi("Notifications"),
+			label: tSettingsUi("Ask Notification"),
+			description: tSettingsUi("Notify when the ask tool is waiting for input"),
 		},
 	},
 
@@ -1805,9 +1930,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Notifications",
-			label: "Idle Recap",
-			description: "Generate a brief LLM recap of where things stand after the terminal has been idle",
+			group: tSettingsUi("Notifications"),
+			label: tSettingsUi("Idle Recap"),
+			description: tSettingsUi("Generate a brief LLM recap of where things stand after the terminal has been idle"),
 		},
 	},
 
@@ -1816,9 +1941,9 @@ export const SETTINGS_SCHEMA = {
 		default: 240,
 		ui: {
 			tab: "interaction",
-			group: "Notifications",
-			label: "Idle Recap Delay",
-			description: "Seconds to wait while idle before showing the recap",
+			group: tSettingsUi("Notifications"),
+			label: tSettingsUi("Idle Recap Delay"),
+			description: tSettingsUi("Seconds to wait while idle before showing the recap"),
 			options: [
 				{ value: "60", label: "1 minute" },
 				{ value: "120", label: "2 minutes" },
@@ -1835,9 +1960,9 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_RELAY_URL,
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Relay URL",
-			description: "Relay used by /collab (wss://host[:port])",
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Relay URL"),
+			description: tSettingsUi("Relay used by /collab (wss://host[:port])"),
 		},
 	},
 
@@ -1846,10 +1971,11 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Web UI URL",
-			description:
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Web UI URL"),
+			description: tSettingsUi(
 				"Browser UI used by /collab links; empty derives from collab.relayUrl; explicit http:// is localhost-only",
+			),
 		},
 	},
 
@@ -1858,9 +1984,9 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Display Name",
-			description: "Name shown to other collab participants (default: OS username)",
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Display Name"),
+			description: tSettingsUi("Name shown to other collab participants (default: OS username)"),
 		},
 	},
 
@@ -1869,10 +1995,11 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_SHARE_URL,
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Share Server",
-			description:
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Share Server"),
+			description: tSettingsUi(
 				"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
+			),
 		},
 	},
 
@@ -1882,19 +2009,23 @@ export const SETTINGS_SCHEMA = {
 		default: "blob",
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Share Store",
-			description: "Where /share uploads the encrypted session blob",
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Share Store"),
+			description: tSettingsUi("Where /share uploads the encrypted session blob"),
 			options: [
 				{
 					value: "blob",
-					label: "Encrypted Blob",
-					description: "Upload to the share server (no GitHub account needed; avoids gist API rate limits)",
+					label: tSettingsUi("Encrypted Blob"),
+					description: tSettingsUi(
+						"Upload to the share server (no GitHub account needed; avoids gist API rate limits)",
+					),
 				},
 				{
 					value: "gist",
-					label: "GitHub Gist",
-					description: "Push to a secret gist (needs authenticated gh), falling back to the share server",
+					label: tSettingsUi("GitHub Gist"),
+					description: tSettingsUi(
+						"Push to a secret gist (needs authenticated gh), falling back to the share server",
+					),
 				},
 			],
 		},
@@ -1905,9 +2036,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "interaction",
-			group: "Collab",
-			label: "Share Secret Redaction",
-			description: "Run the secret obfuscator over /share snapshots before upload (uses the secrets.* config)",
+			group: tSettingsUi("Collab"),
+			label: tSettingsUi("Share Secret Redaction"),
+			description: tSettingsUi(
+				"Run the secret obfuscator over /share snapshots before upload (uses the secrets.* config)",
+			),
 		},
 	},
 
@@ -1917,9 +2050,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Speech",
-			label: "Speech-to-Text",
-			description: "Enable speech-to-text input via microphone",
+			group: tSettingsUi("Speech"),
+			label: tSettingsUi("Speech-to-Text"),
+			description: tSettingsUi("Enable speech-to-text input via microphone"),
 		},
 	},
 
@@ -1934,10 +2067,11 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_STT_MODEL_KEY,
 		ui: {
 			tab: "interaction",
-			group: "Speech",
-			label: "Speech Model",
-			description:
+			group: tSettingsUi("Speech"),
+			label: tSettingsUi("Speech Model"),
+			description: tSettingsUi(
 				"Local on-device speech model. Parakeet TDT v3 (sherpa-onnx) is the SoTA default; Whisper base/small/large-v3-turbo tiers (transformers.js) trade size for multilingual coverage. Downloaded on first use.",
+			),
 			options: STT_MODEL_OPTIONS,
 		},
 	},
@@ -1947,10 +2081,11 @@ export const SETTINGS_SCHEMA = {
 		default: "never",
 		ui: {
 			tab: "interaction",
-			group: "Speech",
-			label: "Speech-to-Text Submit Trigger",
-			description:
+			group: tSettingsUi("Speech"),
+			label: tSettingsUi("Speech-to-Text Submit Trigger"),
+			description: tSettingsUi(
 				"Choose when speech dictation automatically submits: Never, Release (2+ words), Release with complete sentence, or When I Say Submit.",
+			),
 			options: STT_SUBMIT_TRIGGER_OPTIONS,
 		},
 	},
@@ -1965,9 +2100,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "context",
-			group: "General",
-			label: "Auto-Promote Context",
-			description: "Promote to a larger-context model on context overflow instead of compacting",
+			group: tSettingsUi("General"),
+			label: tSettingsUi("Auto-Promote Context"),
+			description: tSettingsUi("Promote to a larger-context model on context overflow instead of compacting"),
 		},
 	},
 
@@ -1977,9 +2112,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Auto-Compact",
-			description: "Automatically compact context when it gets too large",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Auto-Compact"),
+			description: tSettingsUi("Automatically compact context when it gets too large"),
 		},
 	},
 
@@ -1988,9 +2123,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Mid-Turn Compaction",
-			description: "Check thresholds at safe mid-turn tool-loop boundaries before the next provider request",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Mid-Turn Compaction"),
+			description: tSettingsUi(
+				"Check thresholds at safe mid-turn tool-loop boundaries before the next provider request",
+			),
 		},
 	},
 
@@ -2000,31 +2137,34 @@ export const SETTINGS_SCHEMA = {
 		default: "snapcompact",
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Compaction Strategy",
-			description:
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Compaction Strategy"),
+			description: tSettingsUi(
 				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), snapcompact (archive history as dense images), or disable auto maintenance (off)",
+			),
 			options: [
 				{
 					value: "context-full",
-					label: "Context-full",
-					description: "Summarize in-place and keep the current session",
+					label: tSettingsUi("Context-full"),
+					description: tSettingsUi("Summarize in-place and keep the current session"),
 				},
 				{ value: "handoff", label: "Handoff", description: "Generate handoff and continue in a new session" },
 				{
 					value: "shake",
-					label: "Shake",
-					description: "Drop heavy content (tool results + large blocks) in place; recover via artifact",
+					label: tSettingsUi("Shake"),
+					description: tSettingsUi(
+						"Drop heavy content (tool results + large blocks) in place; recover via artifact",
+					),
 				},
 				{
 					value: "snapcompact",
-					label: "Snapcompact",
-					description: "Archive history onto dense bitmap images the model reads back; no LLM call",
+					label: tSettingsUi("Snapcompact"),
+					description: tSettingsUi("Archive history onto dense bitmap images the model reads back; no LLM call"),
 				},
 				{
 					value: "off",
-					label: "Off",
-					description: "Disable automatic context maintenance (same behavior as Auto-compact off)",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Disable automatic context maintenance (same behavior as Auto-compact off)"),
 				},
 			],
 		},
@@ -2035,9 +2175,11 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Compaction Threshold",
-			description: "Percent threshold for context maintenance; set to Default to use legacy reserve-based behavior",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Compaction Threshold"),
+			description: tSettingsUi(
+				"Percent threshold for context maintenance; set to Default to use legacy reserve-based behavior",
+			),
 			options: [
 				{ value: "default", label: "Default", description: "Legacy reserve-based threshold" },
 				{ value: "10", label: "10%", description: "Extremely early maintenance" },
@@ -2060,9 +2202,9 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Compaction Token Limit",
-			description: "Fixed token limit for context maintenance; overrides percentage if set",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Compaction Token Limit"),
+			description: tSettingsUi("Fixed token limit for context maintenance; overrides percentage if set"),
 			options: [
 				{ value: "default", label: "Default", description: "Use percentage-based threshold" },
 				{ value: "25000", label: "25K tokens", description: "Quarter of a 200K window" },
@@ -2081,9 +2223,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Save Handoff Docs",
-			description: "Save generated handoff documents to markdown files for the auto-handoff flow",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Save Handoff Docs"),
+			description: tSettingsUi("Save generated handoff documents to markdown files for the auto-handoff flow"),
 		},
 	},
 
@@ -2092,9 +2234,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Remote Compaction",
-			description: "Use remote compaction endpoints when available instead of local summarization",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Remote Compaction"),
+			description: tSettingsUi("Use remote compaction endpoints when available instead of local summarization"),
 		},
 	},
 
@@ -2103,9 +2245,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Remote Compaction V2",
-			description: "Use Responses streaming compaction for compatible remote compaction models",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Remote Compaction V2"),
+			description: tSettingsUi("Use Responses streaming compaction for compatible remote compaction models"),
 		},
 	},
 
@@ -2129,9 +2271,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Idle Compaction",
-			description: "Compact context while idle when token count exceeds threshold",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Idle Compaction"),
+			description: tSettingsUi("Compact context while idle when token count exceeds threshold"),
 		},
 	},
 
@@ -2140,9 +2282,9 @@ export const SETTINGS_SCHEMA = {
 		default: 200000,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Idle Compaction Threshold",
-			description: "Token count above which idle compaction triggers",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Idle Compaction Threshold"),
+			description: tSettingsUi("Token count above which idle compaction triggers"),
 			options: [
 				{ value: "100000", label: "100K tokens" },
 				{ value: "200000", label: "200K tokens" },
@@ -2162,9 +2304,9 @@ export const SETTINGS_SCHEMA = {
 		default: 300,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Idle Compaction Delay",
-			description: "Seconds to wait while idle before compacting",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Idle Compaction Delay"),
+			description: tSettingsUi("Seconds to wait while idle before compacting"),
 			options: [
 				{ value: "60", label: "1 minute" },
 				{ value: "120", label: "2 minutes" },
@@ -2181,9 +2323,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Supersede Stale Reads",
-			description: "Prune older read results when the same file is read again (cache-aware, runs every turn)",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Supersede Stale Reads"),
+			description: tSettingsUi(
+				"Prune older read results when the same file is read again (cache-aware, runs every turn)",
+			),
 		},
 	},
 
@@ -2192,10 +2336,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Compaction",
-			label: "Elide Uneventful Results",
-			description:
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Elide Uneventful Results"),
+			description: tSettingsUi(
 				"Prune tool results flagged contextually useless (no matches, timed-out waits) once consumed (cache-aware)",
+			),
 		},
 	},
 
@@ -2206,21 +2351,24 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact System Prompt",
-			description:
+			group: tSettingsUi("Experimental"),
+			label: tSettingsUi("Snapcompact System Prompt"),
+			description: tSettingsUi(
 				"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.",
+			),
 			options: [
 				{ value: "none", label: "None", description: "Keep the system prompt as text." },
 				{
 					value: "agents-md",
-					label: "AGENTS.md",
-					description: "Only move loaded context-file instructions to images, when that saves tokens.",
+					label: tSettingsUi("AGENTS.md"),
+					description: tSettingsUi(
+						"Only move loaded context-file instructions to images, when that saves tokens.",
+					),
 				},
 				{
 					value: "all",
-					label: "All",
-					description: "Move the full system prompt to images, when that saves tokens.",
+					label: tSettingsUi("All"),
+					description: tSettingsUi("Move the full system prompt to images, when that saves tokens."),
 				},
 			],
 		},
@@ -2231,10 +2379,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Tool Results",
-			description:
+			group: tSettingsUi("Experimental"),
+			label: tSettingsUi("Snapcompact Tool Results"),
+			description: tSettingsUi(
 				"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.",
+			),
 		},
 	},
 
@@ -2258,15 +2407,16 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "context",
-			group: "Experimental",
-			label: "Tool Calling Mode",
-			description:
+			group: tSettingsUi("Experimental"),
+			label: tSettingsUi("Tool Calling Mode"),
+			description: tSettingsUi(
 				"Controls how tools are exposed to the model. Auto uses provider-native tool calls unless the selected model is marked as not supporting them, then falls back to the GLM owned dialect. Native forces provider-native tools; the other values force the named owned dialect. Applies on session start.",
+			),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Use native tool calls unless the model is known not to support them.",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Use native tool calls unless the model is known not to support them."),
 				},
 				{ value: "native", label: "Native", description: "Use provider-native tool calls." },
 				{ value: "glm", label: "GLM", description: "Use GLM-style in-band tool calls." },
@@ -2290,103 +2440,115 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "context",
-			group: "Experimental",
-			label: "Snapcompact Shape",
-			description:
+			group: tSettingsUi("Experimental"),
+			label: tSettingsUi("Snapcompact Shape"),
+			description: tSettingsUi(
 				"Frame shape snapcompact prints text with (compaction archive and inline imaging). Auto picks a shape tuned for the current model.",
+			),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Picks a shape tuned for the current model, falling back to its provider family.",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi(
+						"Picks a shape tuned for the current model, falling back to its provider family.",
+					),
 				},
 				{
 					value: "8x8r-bw",
-					label: "8x8 repeated, black",
-					description:
+					label: tSettingsUi("8x8 repeated, black"),
+					description: tSettingsUi(
 						"unscii square cell, black ink, every line printed twice with the copy on a pale highlight band.",
+					),
 				},
 				{
 					value: "8x8r-sent",
-					label: "8x8 repeated, sentence hues",
-					description: "Repeated grid with ink cycling six hues at sentence boundaries.",
+					label: tSettingsUi("8x8 repeated, sentence hues"),
+					description: tSettingsUi("Repeated grid with ink cycling six hues at sentence boundaries."),
 				},
 				{
 					value: "8x8u-bw",
-					label: "8x8, black",
-					description: "Plain unscii square cell, single-printed lines, black ink.",
+					label: tSettingsUi("8x8, black"),
+					description: tSettingsUi("Plain unscii square cell, single-printed lines, black ink."),
 				},
 				{
 					value: "8x8u-sent",
-					label: "8x8, sentence hues",
-					description: "Plain unscii square cell with sentence-hue ink.",
+					label: tSettingsUi("8x8, sentence hues"),
+					description: tSettingsUi("Plain unscii square cell with sentence-hue ink."),
 				},
 				{
 					value: "6x6u-bw",
-					label: "6x6 dense, black",
-					description: "unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.",
+					label: tSettingsUi("6x6 dense, black"),
+					description: tSettingsUi(
+						"unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.",
+					),
 				},
 				{
 					value: "6x6u-sent",
-					label: "6x6 dense, sentence hues",
-					description: "Densest cell with sentence-hue ink.",
+					label: tSettingsUi("6x6 dense, sentence hues"),
+					description: tSettingsUi("Densest cell with sentence-hue ink."),
 				},
 				{
 					value: "5x8-bw",
-					label: "5x8 legacy, black",
-					description: "Original X.org 5x8 glyphs on the 2576px frame, black ink.",
+					label: tSettingsUi("5x8 legacy, black"),
+					description: tSettingsUi("Original X.org 5x8 glyphs on the 2576px frame, black ink."),
 				},
 				{
 					value: "5x8-sent",
-					label: "5x8 legacy, sentence hues",
-					description: "The original snapcompact shape (pre-shape-table sessions rendered this).",
+					label: tSettingsUi("5x8 legacy, sentence hues"),
+					description: tSettingsUi("The original snapcompact shape (pre-shape-table sessions rendered this)."),
 				},
 				{
 					value: "6x12-dim",
-					label: "6x12, dimmed stopwords",
-					description: "X.org 6x12 glyphs, black ink, function words dimmed gray.",
+					label: tSettingsUi("6x12, dimmed stopwords"),
+					description: tSettingsUi("X.org 6x12 glyphs, black ink, function words dimmed gray."),
 				},
 				{
 					value: "8x13-bw",
-					label: "8x13, black",
-					description: "X.org 8x13 glyphs, black ink.",
+					label: tSettingsUi("8x13, black"),
+					description: tSettingsUi("X.org 8x13 glyphs, black ink."),
 				},
 				{
 					value: "8on16-bw",
-					label: "8x13 on 16px pitch, black",
-					description: "8x13 glyphs on an 8x16 cell (extra leading), black ink.",
+					label: tSettingsUi("8x13 on 16px pitch, black"),
+					description: tSettingsUi("8x13 glyphs on an 8x16 cell (extra leading), black ink."),
 				},
 				{
 					value: "8on22-bw",
-					label: "8x13 on 22px pitch (leading), black",
-					description:
+					label: tSettingsUi("8x13 on 22px pitch (leading), black"),
+					description: tSettingsUi(
 						"8x13 glyphs on an 8x22 cell — extra line spacing so rows don't crowd. Default for OpenAI/Google.",
+					),
 				},
 				{
 					value: "11on16-bw",
-					label: "8x13 on 11px advance (tracking), black",
-					description:
+					label: tSettingsUi("8x13 on 11px advance (tracking), black"),
+					description: tSettingsUi(
 						"8x13 glyphs on an 11x16 cell — extra letter spacing so characters don't merge. Default for Anthropic.",
+					),
 				},
 				{
 					value: "silver16-bw",
-					label: "Silver 16, CJK",
-					description: "Embedded Silver TrueType font on a 16px grid for CJK and other non-Latin text.",
+					label: tSettingsUi("Silver 16, CJK"),
+					description: tSettingsUi(
+						"Embedded Silver TrueType font on a 16px grid for CJK and other non-Latin text.",
+					),
 				},
 				{
 					value: "doc-8on16-bw",
-					label: "Doc 8on16, black",
-					description: "Two word-wrapped newspaper columns of 8x13 glyphs on a 16px pitch, black ink.",
+					label: tSettingsUi("Doc 8on16, black"),
+					description: tSettingsUi(
+						"Two word-wrapped newspaper columns of 8x13 glyphs on a 16px pitch, black ink.",
+					),
 				},
 				{
 					value: "doc-8on16-sent",
-					label: "Doc 8on16, sentence hues",
-					description: "Two-column doc layout with sentence-hue ink.",
+					label: tSettingsUi("Doc 8on16, sentence hues"),
+					description: tSettingsUi("Two-column doc layout with sentence-hue ink."),
 				},
 				{
 					value: "doc-8on16-sent-dim",
-					label: "Doc 8on16, sentence hues + dimmed stopwords",
-					description: "Two-column doc layout, sentence-hue ink, function words dimmed gray.",
+					label: tSettingsUi("Doc 8on16, sentence hues + dimmed stopwords"),
+					description: tSettingsUi("Two-column doc layout, sentence-hue ink, function words dimmed gray."),
 				},
 			],
 		},
@@ -2398,9 +2560,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "context",
-			group: "General",
-			label: "Branch Summaries",
-			description: "Prompt to summarize when leaving a branch",
+			group: tSettingsUi("General"),
+			label: tSettingsUi("Branch Summaries"),
+			description: tSettingsUi("Prompt to summarize when leaving a branch"),
 		},
 	},
 
@@ -2454,17 +2616,17 @@ export const SETTINGS_SCHEMA = {
 		default: "off",
 		ui: {
 			tab: "memory",
-			group: "General",
-			label: "Memory Backend",
-			description: "Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory",
+			group: tSettingsUi("General"),
+			label: tSettingsUi("Memory Backend"),
+			description: tSettingsUi("Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory"),
 			options: [
 				{ value: "off", label: "Off", description: "No memory subsystem runs" },
 				{ value: "local", label: "Local", description: "Local rollout summarisation pipeline (memory_summary.md)" },
 				{ value: "hindsight", label: "Hindsight", description: "Vectorize Hindsight remote memory service" },
 				{
 					value: "mnemopi",
-					label: "Mnemopi",
-					description: "Local SQLite recall/retain backend with optional embeddings",
+					label: tSettingsUi("Mnemopi"),
+					description: tSettingsUi("Local SQLite recall/retain backend with optional embeddings"),
 				},
 			],
 		},
@@ -2478,10 +2640,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Auto-Learn",
-			label: "Auto-Learn (experimental)",
-			description:
+			group: tSettingsUi("Auto-Learn"),
+			label: tSettingsUi("Auto-Learn (experimental)"),
+			description: tSettingsUi(
 				"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills",
+			),
 		},
 	},
 	"autolearn.autoContinue": {
@@ -2489,10 +2652,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Auto-Learn",
-			label: "Auto-run capture at stop",
-			description:
+			group: tSettingsUi("Auto-Learn"),
+			label: tSettingsUi("Auto-run capture at stop"),
+			description: tSettingsUi(
 				"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.",
+			),
 			condition: "autolearnActive",
 		},
 	},
@@ -2505,9 +2669,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi DB Path",
-			description: "Optional SQLite DB path. Defaults to the agent memories directory.",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi DB Path"),
+			description: tSettingsUi("Optional SQLite DB path. Defaults to the agent memories directory."),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2516,9 +2680,11 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Bank",
-			description: "Optional shared bank base name. Per-project modes derive project-local banks from it.",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Bank"),
+			description: tSettingsUi(
+				"Optional shared bank base name. Per-project modes derive project-local banks from it.",
+			),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2528,25 +2694,26 @@ export const SETTINGS_SCHEMA = {
 		default: "per-project",
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Scoping",
-			description:
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Scoping"),
+			description: tSettingsUi(
 				"global = one shared bank; per-project = isolated bank per cwd; per-project-tagged = project-local writes plus global recall visibility",
+			),
 			options: [
 				{
 					value: "global",
-					label: "Global",
-					description: "One shared Mnemopi bank for every project",
+					label: tSettingsUi("Global"),
+					description: tSettingsUi("One shared Mnemopi bank for every project"),
 				},
 				{
 					value: "per-project",
-					label: "Per project",
-					description: "Project-local Mnemopi bank per cwd basename",
+					label: tSettingsUi("Per project"),
+					description: tSettingsUi("Project-local Mnemopi bank per cwd basename"),
 				},
 				{
 					value: "per-project-tagged",
-					label: "Per project (tagged)",
-					description: "Write to a project-local bank but merge project + shared recall results",
+					label: tSettingsUi("Per project (tagged)"),
+					description: tSettingsUi("Write to a project-local bank but merge project + shared recall results"),
 				},
 			],
 			condition: "mnemopiActive",
@@ -2558,20 +2725,21 @@ export const SETTINGS_SCHEMA = {
 		default: "en",
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Embedding variant",
-			description:
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Embedding variant"),
+			description: tSettingsUi(
 				"Local embedding model family. en = stronger English model; multilingual = cross-language model. Changing this rebuilds existing memory embeddings on next start.",
+			),
 			options: [
 				{
 					value: "en",
-					label: "English (bge-base-en-v1.5)",
-					description: "BAAI/bge-base-en-v1.5 (768d), English-only",
+					label: tSettingsUi("English (bge-base-en-v1.5)"),
+					description: tSettingsUi("BAAI/bge-base-en-v1.5 (768d), English-only"),
 				},
 				{
 					value: "multilingual",
-					label: "Multilingual (multilingual-e5-large)",
-					description: "intfloat/multilingual-e5-large (1024d), cross-language recall",
+					label: tSettingsUi("Multilingual (multilingual-e5-large)"),
+					description: tSettingsUi("intfloat/multilingual-e5-large (1024d), cross-language recall"),
 				},
 			],
 			condition: "mnemopiActive",
@@ -2582,9 +2750,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Auto Recall",
-			description: "Recall local memories into the first turn of each session",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Auto Recall"),
+			description: tSettingsUi("Recall local memories into the first turn of each session"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2593,9 +2761,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Auto Retain",
-			description: "Retain completed conversation turns into local Mnemopi memory",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Auto Retain"),
+			description: tSettingsUi("Retain completed conversation turns into local Mnemopi memory"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2604,9 +2772,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Polyphonic Recall",
-			description: "Enable 4-voice recall (vector, graph, fact, temporal) fused with reciprocal rank fusion",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Polyphonic Recall"),
+			description: tSettingsUi(
+				"Enable 4-voice recall (vector, graph, fact, temporal) fused with reciprocal rank fusion",
+			),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2615,9 +2785,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Enhanced Recall",
-			description: "Enable the tiered query result cache for repeated and similar recall queries",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Enhanced Recall"),
+			description: tSettingsUi("Enable the tiered query result cache for repeated and similar recall queries"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2626,10 +2796,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Proactive Linking",
-			description:
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Proactive Linking"),
+			description: tSettingsUi(
 				"Ingest new memories into the episodic graph as they are stored, linking them to related entities and memories",
+			),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2638,9 +2809,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Disable Embeddings",
-			description: "Force deterministic FTS-only recall instead of vector embeddings",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Disable Embeddings"),
+			description: tSettingsUi("Force deterministic FTS-only recall instead of vector embeddings"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2649,10 +2820,11 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Embedding Model",
-			description:
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Embedding Model"),
+			description: tSettingsUi(
 				"Advanced: explicit embedding model id that overrides the variant. Leave empty to use mnemopi.embeddingVariant.",
+			),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2661,9 +2833,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Embedding API URL",
-			description: "Optional OpenAI-compatible embedding endpoint passed to Mnemopi",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Embedding API URL"),
+			description: tSettingsUi("Optional OpenAI-compatible embedding endpoint passed to Mnemopi"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2672,9 +2844,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi Embedding API Key",
-			description: "Optional embedding API key passed to Mnemopi",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi Embedding API Key"),
+			description: tSettingsUi("Optional embedding API key passed to Mnemopi"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2684,17 +2856,18 @@ export const SETTINGS_SCHEMA = {
 		default: "smol",
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi LLM Mode",
-			description:
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi LLM Mode"),
+			description: tSettingsUi(
 				"Use no LLM, the online tiny model (the TINY role from /models, else @smol), or a remote OpenAI-compatible endpoint",
+			),
 			condition: "mnemopiActive",
 			options: [
 				{ value: "none", label: "None", description: "Disable Mnemopi LLM-backed extraction" },
 				{
 					value: "smol",
-					label: "Online (tiny)",
-					description: "Use the online tiny model (the TINY role from /models, else @smol)",
+					label: tSettingsUi("Online (tiny)"),
+					description: tSettingsUi("Use the online tiny model (the TINY role from /models, else @smol)"),
 				},
 				{ value: "remote", label: "Remote", description: "Use the Mnemopi remote LLM settings below" },
 			],
@@ -2705,9 +2878,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi LLM Base URL",
-			description: "Optional OpenAI-compatible LLM endpoint for Mnemopi remote mode",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi LLM Base URL"),
+			description: tSettingsUi("Optional OpenAI-compatible LLM endpoint for Mnemopi remote mode"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2716,9 +2889,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi LLM API Key",
-			description: "Optional LLM API key for Mnemopi remote mode",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi LLM API Key"),
+			description: tSettingsUi("Optional LLM API key for Mnemopi remote mode"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2727,9 +2900,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Mnemopi",
-			label: "Mnemopi LLM Model",
-			description: "Optional LLM model name for Mnemopi remote mode",
+			group: tSettingsUi("Mnemopi"),
+			label: tSettingsUi("Mnemopi LLM Model"),
+			description: tSettingsUi("Optional LLM model name for Mnemopi remote mode"),
 			condition: "mnemopiActive",
 		},
 	},
@@ -2746,9 +2919,9 @@ export const SETTINGS_SCHEMA = {
 		default: "http://localhost:8888",
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight API URL",
-			description: "Hindsight server URL (Cloud or self-hosted)",
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight API URL"),
+			description: tSettingsUi("Hindsight server URL (Cloud or self-hosted)"),
 			condition: "hindsightActive",
 		},
 	},
@@ -2760,9 +2933,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Bank ID",
-			description: "Memory bank identifier (default: project name)",
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Bank ID"),
+			description: tSettingsUi("Memory bank identifier (default: project name)"),
 			condition: "hindsightActive",
 		},
 	},
@@ -2774,26 +2947,28 @@ export const SETTINGS_SCHEMA = {
 		default: "per-project-tagged",
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Scoping",
-			description:
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Scoping"),
+			description: tSettingsUi(
 				"global = one shared bank; per-project = isolated bank per cwd; per-project-tagged = shared bank with project tags so global + project memories merge on recall",
+			),
 			options: [
 				{
 					value: "global",
-					label: "Global",
-					description: "One shared bank — every project sees the same memories",
+					label: tSettingsUi("Global"),
+					description: tSettingsUi("One shared bank — every project sees the same memories"),
 				},
 				{
 					value: "per-project",
-					label: "Per project",
-					description: "Isolated bank per cwd basename — projects cannot see each other's memories",
+					label: tSettingsUi("Per project"),
+					description: tSettingsUi("Isolated bank per cwd basename — projects cannot see each other's memories"),
 				},
 				{
 					value: "per-project-tagged",
-					label: "Per project (tagged)",
-					description:
+					label: tSettingsUi("Per project (tagged)"),
+					description: tSettingsUi(
 						"Shared bank, retains tagged with project:<cwd>. Recall surfaces project + untagged global memories together",
+					),
 				},
 			],
 			condition: "hindsightActive",
@@ -2807,9 +2982,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Auto Recall",
-			description: "Recall memories on the first turn of each session",
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Auto Recall"),
+			description: tSettingsUi("Recall memories on the first turn of each session"),
 			condition: "hindsightActive",
 		},
 	},
@@ -2818,9 +2993,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Auto Retain",
-			description: "Retain transcript every N turns and at session boundaries",
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Auto Retain"),
+			description: tSettingsUi("Retain transcript every N turns and at session boundaries"),
 			condition: "hindsightActive",
 		},
 	},
@@ -2831,14 +3006,14 @@ export const SETTINGS_SCHEMA = {
 		default: "full-session",
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Retain Mode",
-			description: "full-session = upsert one document per session, last-turn = chunked",
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Retain Mode"),
+			description: tSettingsUi("full-session = upsert one document per session, last-turn = chunked"),
 			options: [
 				{
 					value: "full-session",
-					label: "Full session",
-					description: "Upsert one document per session (recommended)",
+					label: tSettingsUi("Full session"),
+					description: tSettingsUi("Upsert one document per session (recommended)"),
 				},
 				{ value: "last-turn", label: "Last turn", description: "Chunked retention sliced by turn boundaries" },
 			],
@@ -2866,10 +3041,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Mental Models",
-			description:
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Mental Models"),
+			description: tSettingsUi(
 				"Read curated reflect summaries (mental models) into developer instructions at boot. Loads existing models on the bank — does not write. Pair with hindsight.mentalModelAutoSeed to also auto-create the built-in seed set.",
+			),
 			condition: "hindsightActive",
 		},
 	},
@@ -2878,10 +3054,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "memory",
-			group: "Hindsight",
-			label: "Hindsight Mental Model Auto-Seed",
-			description:
+			group: tSettingsUi("Hindsight"),
+			label: tSettingsUi("Hindsight Mental Model Auto-Seed"),
+			description: tSettingsUi(
 				"At session start, create any built-in mental models (project-conventions, project-decisions, user-preferences) that do not yet exist on the bank.",
+			),
 			condition: "hindsightActive",
 		},
 	},
@@ -2894,9 +3071,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "TTSR",
-			description: "Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("TTSR"),
+			description: tSettingsUi(
+				"Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)",
+			),
 		},
 	},
 
@@ -2906,9 +3085,9 @@ export const SETTINGS_SCHEMA = {
 		default: "discard",
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "TTSR Context Mode",
-			description: "What to do with partial output when TTSR triggers",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("TTSR Context Mode"),
+			description: tSettingsUi("What to do with partial output when TTSR triggers"),
 		},
 	},
 
@@ -2918,9 +3097,9 @@ export const SETTINGS_SCHEMA = {
 		default: "always",
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "TTSR Interrupt Mode",
-			description: "When to interrupt mid-stream vs inject warning after completion",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("TTSR Interrupt Mode"),
+			description: tSettingsUi("When to interrupt mid-stream vs inject warning after completion"),
 			options: [
 				{ value: "always", label: "always", description: "Interrupt on prose and tool streams" },
 				{ value: "prose-only", label: "prose-only", description: "Interrupt only on reply/thinking matches" },
@@ -2936,9 +3115,9 @@ export const SETTINGS_SCHEMA = {
 		default: "once",
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "TTSR Repeat Mode",
-			description: "How rules can repeat: once per session or after a message gap",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("TTSR Repeat Mode"),
+			description: tSettingsUi("How rules can repeat: once per session or after a message gap"),
 		},
 	},
 
@@ -2947,9 +3126,9 @@ export const SETTINGS_SCHEMA = {
 		default: 10,
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "TTSR Repeat Gap",
-			description: "Messages before a rule can trigger again",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("TTSR Repeat Gap"),
+			description: tSettingsUi("Messages before a rule can trigger again"),
 			options: [
 				{ value: "5", label: "5 messages" },
 				{ value: "10", label: "10 messages" },
@@ -2965,9 +3144,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "Built-in Rules",
-			description: "Load the default rules shipped with the agent (override individually with ttsr.disabledRules)",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("Built-in Rules"),
+			description: tSettingsUi(
+				"Load the default rules shipped with the agent (override individually with ttsr.disabledRules)",
+			),
 		},
 	},
 
@@ -2976,9 +3157,9 @@ export const SETTINGS_SCHEMA = {
 		default: [] as string[],
 		ui: {
 			tab: "context",
-			group: "Rules (TTSR)",
-			label: "Disabled Rules",
-			description: "Rule names to ignore entirely (applies to bundled defaults and your own rules)",
+			group: tSettingsUi("Rules (TTSR)"),
+			label: tSettingsUi("Disabled Rules"),
+			description: tSettingsUi("Rule names to ignore entirely (applies to bundled defaults and your own rules)"),
 		},
 	},
 
@@ -2993,9 +3174,9 @@ export const SETTINGS_SCHEMA = {
 		default: "hashline",
 		ui: {
 			tab: "files",
-			group: "Editing",
-			label: "Edit Mode",
-			description: "Select the edit tool variant (replace, patch, hashline, or apply_patch)",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Edit Mode"),
+			description: tSettingsUi("Select the edit tool variant (replace, patch, hashline, or apply_patch)"),
 		},
 	},
 
@@ -3004,9 +3185,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "Editing",
-			label: "Fuzzy Match",
-			description: "Accept high-confidence fuzzy matches for whitespace differences",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Fuzzy Match"),
+			description: tSettingsUi("Accept high-confidence fuzzy matches for whitespace differences"),
 		},
 	},
 
@@ -3015,9 +3196,9 @@ export const SETTINGS_SCHEMA = {
 		default: 0.95,
 		ui: {
 			tab: "files",
-			group: "Editing",
-			label: "Fuzzy Match Threshold",
-			description: "Similarity threshold (0-1) for accepting fuzzy matches",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Fuzzy Match Threshold"),
+			description: tSettingsUi("Similarity threshold (0-1) for accepting fuzzy matches"),
 			options: [
 				{ value: "0.85", label: "0.85", description: "Lenient" },
 				{ value: "0.90", label: "0.90", description: "Moderate" },
@@ -3032,9 +3213,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "Editing",
-			label: "Abort on Failed Preview",
-			description: "Abort streaming edit tool calls when patch preview fails",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Abort on Failed Preview"),
+			description: tSettingsUi("Abort streaming edit tool calls when patch preview fails"),
 		},
 	},
 
@@ -3043,9 +3224,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "Editing",
-			label: "Block Auto-Generated Files",
-			description: "Prevent editing of files that appear to be auto-generated (protoc, sqlc, swagger, etc.)",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Block Auto-Generated Files"),
+			description: tSettingsUi(
+				"Prevent editing of files that appear to be auto-generated (protoc, sqlc, swagger, etc.)",
+			),
 		},
 	},
 
@@ -3065,9 +3248,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "Reading",
-			label: "Line Numbers",
-			description: "Prepend line numbers to read tool output by default",
+			group: tSettingsUi("Reading"),
+			label: tSettingsUi("Line Numbers"),
+			description: tSettingsUi("Prepend line numbers to read tool output by default"),
 		},
 	},
 
@@ -3076,9 +3259,9 @@ export const SETTINGS_SCHEMA = {
 		default: 300,
 		ui: {
 			tab: "files",
-			group: "Reading",
-			label: "Default Read Limit",
-			description: "Default number of lines returned when agent calls read without a limit",
+			group: tSettingsUi("Reading"),
+			label: tSettingsUi("Default Read Limit"),
+			description: tSettingsUi("Default number of lines returned when agent calls read without a limit"),
 			options: [
 				{ value: "200", label: "200 lines" },
 				{ value: "300", label: "300 lines" },
@@ -3094,9 +3277,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summaries",
-			description: "Return structural code summaries when read is called without an explicit selector",
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summaries"),
+			description: tSettingsUi("Return structural code summaries when read is called without an explicit selector"),
 		},
 	},
 
@@ -3105,9 +3288,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Prose Summaries",
-			description: "Return structural summaries for Markdown and plain text reads",
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Prose Summaries"),
+			description: tSettingsUi("Return structural summaries for Markdown and plain text reads"),
 		},
 	},
 
@@ -3116,9 +3299,9 @@ export const SETTINGS_SCHEMA = {
 		default: 4,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summary Body Lines",
-			description: "Minimum multiline body or literal length before read summaries collapse it",
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summary Body Lines"),
+			description: tSettingsUi("Minimum multiline body or literal length before read summaries collapse it"),
 		},
 	},
 
@@ -3127,9 +3310,9 @@ export const SETTINGS_SCHEMA = {
 		default: 6,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summary Comment Lines",
-			description: "Minimum multiline block comment length before read summaries collapse it",
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summary Comment Lines"),
+			description: tSettingsUi("Minimum multiline block comment length before read summaries collapse it"),
 		},
 	},
 
@@ -3138,9 +3321,9 @@ export const SETTINGS_SCHEMA = {
 		default: 100,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summary Minimum File Length",
-			description: "Files with fewer total lines are read verbatim instead of structurally summarized",
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summary Minimum File Length"),
+			description: tSettingsUi("Files with fewer total lines are read verbatim instead of structurally summarized"),
 		},
 	},
 
@@ -3149,10 +3332,11 @@ export const SETTINGS_SCHEMA = {
 		default: 50,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summary Unfold Target",
-			description:
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summary Unfold Target"),
+			description: tSettingsUi(
 				"BFS-unfold elidable spans until the summary is at least this many visible lines. 0 keeps only the outermost elisions.",
+			),
 		},
 	},
 
@@ -3161,10 +3345,11 @@ export const SETTINGS_SCHEMA = {
 		default: 100,
 		ui: {
 			tab: "files",
-			group: "Read Summaries",
-			label: "Read Summary Unfold Ceiling",
-			description:
+			group: tSettingsUi("Read Summaries"),
+			label: tSettingsUi("Read Summary Unfold Ceiling"),
+			description: tSettingsUi(
 				"Hard ceiling on summary size while BFS-unfolding. An unfold whose revealed lines would exceed this is skipped (that span stays folded) and unfolding continues with the remaining spans.",
+			),
 		},
 	},
 
@@ -3173,9 +3358,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "Reading",
-			label: "Inline Read Previews",
-			description: "Render read tool results inline in the transcript instead of summary rows",
+			group: tSettingsUi("Reading"),
+			label: tSettingsUi("Inline Read Previews"),
+			description: tSettingsUi("Render read tool results inline in the transcript instead of summary rows"),
 		},
 	},
 
@@ -3185,9 +3370,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "LSP",
-			description: "Enable the lsp tool for code intelligence (definitions, references, diagnostics, rename)",
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("LSP"),
+			description: tSettingsUi(
+				"Enable the lsp tool for code intelligence (definitions, references, diagnostics, rename)",
+			),
 		},
 	},
 
@@ -3196,10 +3383,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "Lazy LSP Startup",
-			description:
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("Lazy LSP Startup"),
+			description: tSettingsUi(
 				"Start language servers on first use (lsp tool or editing a matching file type) instead of at session startup",
+			),
 		},
 	},
 
@@ -3208,9 +3396,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "Format on Write",
-			description: "Automatically format code files using LSP after writing",
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("Format on Write"),
+			description: tSettingsUi("Automatically format code files using LSP after writing"),
 		},
 	},
 
@@ -3219,9 +3407,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "Diagnostics on Write",
-			description: "Return LSP diagnostics after writing code files",
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("Diagnostics on Write"),
+			description: tSettingsUi("Return LSP diagnostics after writing code files"),
 		},
 	},
 
@@ -3230,9 +3418,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "Diagnostics on Edit",
-			description: "Return LSP diagnostics after editing code files",
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("Diagnostics on Edit"),
+			description: tSettingsUi("Return LSP diagnostics after editing code files"),
 		},
 	},
 
@@ -3241,9 +3429,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "files",
-			group: "LSP",
-			label: "Deduplicate Diagnostics",
-			description: "Suppress post-edit LSP diagnostics already shown for a file; only surface new or changed ones",
+			group: tSettingsUi("LSP"),
+			label: tSettingsUi("Deduplicate Diagnostics"),
+			description: tSettingsUi(
+				"Suppress post-edit LSP diagnostics already shown for a file; only surface new or changed ones",
+			),
 		},
 	},
 
@@ -3252,9 +3442,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Bash",
-			label: "Bash",
-			description: "Enable the bash tool for shell command execution",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Bash"),
+			description: tSettingsUi("Enable the bash tool for shell command execution"),
 		},
 	},
 
@@ -3263,9 +3453,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "shell",
-			group: "Bash",
-			label: "Bash Auto-Background",
-			description: "Automatically background long-running bash commands and deliver the result later",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Bash Auto-Background"),
+			description: tSettingsUi("Automatically background long-running bash commands and deliver the result later"),
 		},
 	},
 
@@ -3275,9 +3465,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "shell",
-			group: "Bash",
-			label: "Bash Interceptor",
-			description: "Block shell commands that have dedicated tools",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Bash Interceptor"),
+			description: tSettingsUi("Block shell commands that have dedicated tools"),
 		},
 	},
 	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
@@ -3288,9 +3478,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Bash",
-			label: "Shell Minimizer",
-			description: "Compress verbose shell output (git, npm, cargo, etc.) before returning it to the agent",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Shell Minimizer"),
+			description: tSettingsUi(
+				"Compress verbose shell output (git, npm, cargo, etc.) before returning it to the agent",
+			),
 		},
 	},
 	"shellMinimizer.settingsPath": {
@@ -3309,9 +3501,9 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "shell",
-			group: "Bash",
-			label: "Shell Minimizer Source Outline",
-			description: "Source outline mode for cat/read of source files: default or aggressive",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Shell Minimizer Source Outline"),
+			description: tSettingsUi("Source outline mode for cat/read of source files: default or aggressive"),
 		},
 	},
 	"shellMinimizer.legacyFilters": {
@@ -3325,9 +3517,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Python Eval Backend",
-			description: "Allow the eval tool to dispatch Python cells to the IPython kernel",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Python Eval Backend"),
+			description: tSettingsUi("Allow the eval tool to dispatch Python cells to the IPython kernel"),
 		},
 	},
 
@@ -3336,9 +3528,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "JavaScript Eval Backend",
-			description: "Allow the eval tool to dispatch JavaScript cells to the in-process runtime",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("JavaScript Eval Backend"),
+			description: tSettingsUi("Allow the eval tool to dispatch JavaScript cells to the in-process runtime"),
 		},
 	},
 
@@ -3347,9 +3539,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Ruby Eval Backend",
-			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Ruby Eval Backend"),
+			description: tSettingsUi("Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel"),
 		},
 	},
 
@@ -3358,9 +3550,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Julia Eval Backend",
-			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Julia Eval Backend"),
+			description: tSettingsUi("Allow the eval tool to dispatch Julia cells to the persistent Julia kernel"),
 		},
 	},
 
@@ -3371,9 +3563,9 @@ export const SETTINGS_SCHEMA = {
 		default: "session",
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Python Kernel Mode",
-			description: "Keep the IPython kernel alive across eval calls or start fresh each time",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Python Kernel Mode"),
+			description: tSettingsUi("Keep the IPython kernel alive across eval calls or start fresh each time"),
 		},
 	},
 	"python.interpreter": {
@@ -3381,10 +3573,11 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Python Interpreter",
-			description:
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Python Interpreter"),
+			description: tSettingsUi(
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
+			),
 		},
 	},
 	"ruby.interpreter": {
@@ -3392,10 +3585,11 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Ruby Interpreter",
-			description:
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Ruby Interpreter"),
+			description: tSettingsUi(
 				"Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.",
+			),
 		},
 	},
 	"julia.interpreter": {
@@ -3403,10 +3597,11 @@ export const SETTINGS_SCHEMA = {
 		default: "",
 		ui: {
 			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Julia Interpreter",
-			description:
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Julia Interpreter"),
+			description: tSettingsUi(
 				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
+			),
 		},
 	},
 
@@ -3420,10 +3615,11 @@ export const SETTINGS_SCHEMA = {
 		default: {},
 		ui: {
 			tab: "interaction",
-			group: "Approvals",
-			label: "Tool Approval Policies",
-			description:
+			group: tSettingsUi("Approvals"),
+			label: tSettingsUi("Tool Approval Policies"),
+			description: tSettingsUi(
 				"Per-tool approval policies. Set to 'allow' to auto-approve, 'prompt' to require confirmation, or 'deny' to block. Overrides are honored in every approval mode.",
+			),
 		},
 	},
 
@@ -3437,27 +3633,30 @@ export const SETTINGS_SCHEMA = {
 		default: "yolo",
 		ui: {
 			tab: "interaction",
-			group: "Approvals",
-			label: "Tool Approval",
-			description:
+			group: tSettingsUi("Approvals"),
+			label: tSettingsUi("Tool Approval"),
+			description: tSettingsUi(
 				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+			),
 			options: [
 				{
 					value: "always-ask",
-					label: "Always ask",
-					description: "Auto-approve read-only tools; require confirmation for write and exec tools.",
+					label: tSettingsUi("Always ask"),
+					description: tSettingsUi("Auto-approve read-only tools; require confirmation for write and exec tools."),
 				},
 				{
 					value: "write",
-					label: "Write",
-					description:
+					label: tSettingsUi("Write"),
+					description: tSettingsUi(
 						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, and task.",
+					),
 				},
 				{
 					value: "yolo",
-					label: "Yolo",
-					description:
+					label: tSettingsUi("Yolo"),
+					description: tSettingsUi(
 						"Auto-approve read, write, and exec tools. User policy can still require confirmation or block calls.",
+					),
 				},
 			],
 		},
@@ -3469,9 +3668,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Todos",
-			description: "Enable the todo tool for task tracking",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Todos"),
+			description: tSettingsUi("Enable the todo tool for task tracking"),
 		},
 	},
 
@@ -3480,9 +3679,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Reminders",
-			description: "Remind the agent to complete todos before stopping",
+			group: tSettingsUi("Todos"),
+			label: tSettingsUi("Todo Reminders"),
+			description: tSettingsUi("Remind the agent to complete todos before stopping"),
 		},
 	},
 
@@ -3491,9 +3690,9 @@ export const SETTINGS_SCHEMA = {
 		default: 3,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Reminder Limit",
-			description: "Maximum number of todo reminders before giving up",
+			group: tSettingsUi("Todos"),
+			label: tSettingsUi("Todo Reminder Limit"),
+			description: tSettingsUi("Maximum number of todo reminders before giving up"),
 			options: [
 				{ value: "1", label: "1 reminder" },
 				{ value: "2", label: "2 reminders" },
@@ -3509,15 +3708,15 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Create Todos Automatically",
-			description: "How strongly to push automatic todo-list creation after the first message",
+			group: tSettingsUi("Todos"),
+			label: tSettingsUi("Create Todos Automatically"),
+			description: tSettingsUi("How strongly to push automatic todo-list creation after the first message"),
 			options: [
 				{ value: "default", label: "Default", description: "Model decides; no automatic todo list" },
 				{
 					value: "preferred",
-					label: "Preferred",
-					description: "Suggests a todo list on the first message (reminder, not forced)",
+					label: tSettingsUi("Preferred"),
+					description: tSettingsUi("Suggests a todo list on the first message (reminder, not forced)"),
 				},
 				{ value: "always", label: "Always", description: "Forces a comprehensive todo list on the first message" },
 			],
@@ -3530,9 +3729,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Glob",
-			description: "Enable the glob tool for glob-based file lookup",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Glob"),
+			description: tSettingsUi("Enable the glob tool for glob-based file lookup"),
 		},
 	},
 
@@ -3541,9 +3740,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Grep",
-			description: "Enable the grep tool for regex content search",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Grep"),
+			description: tSettingsUi("Enable the grep tool for regex content search"),
 		},
 	},
 
@@ -3552,9 +3751,9 @@ export const SETTINGS_SCHEMA = {
 		default: 1,
 		ui: {
 			tab: "tools",
-			group: "Grep & Browser",
-			label: "Grep Context Before",
-			description: "Lines of context before each grep match",
+			group: tSettingsUi("Grep & Browser"),
+			label: tSettingsUi("Grep Context Before"),
+			description: tSettingsUi("Lines of context before each grep match"),
 			options: [
 				{ value: "0", label: "0 lines" },
 				{ value: "1", label: "1 line" },
@@ -3570,9 +3769,9 @@ export const SETTINGS_SCHEMA = {
 		default: 3,
 		ui: {
 			tab: "tools",
-			group: "Grep & Browser",
-			label: "Grep Context After",
-			description: "Lines of context after each grep match",
+			group: tSettingsUi("Grep & Browser"),
+			label: tSettingsUi("Grep Context After"),
+			description: tSettingsUi("Lines of context after each grep match"),
 			options: [
 				{ value: "0", label: "0 lines" },
 				{ value: "1", label: "1 line" },
@@ -3589,9 +3788,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "AST Grep",
-			description: "Enable the ast_grep tool for structural AST search",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("AST Grep"),
+			description: tSettingsUi("Enable the ast_grep tool for structural AST search"),
 		},
 	},
 
@@ -3600,9 +3799,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "AST Edit",
-			description: "Enable the ast_edit tool for structural AST rewrites",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("AST Edit"),
+			description: tSettingsUi("Enable the ast_edit tool for structural AST rewrites"),
 		},
 	},
 
@@ -3613,9 +3812,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Debug",
-			description: "Enable the debug tool for DAP-based debugging",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Debug"),
+			description: tSettingsUi("Enable the debug tool for DAP-based debugging"),
 		},
 	},
 
@@ -3624,9 +3823,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Launch",
-			description: "Enable the launch tool for supervising shared long-running project processes",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Launch"),
+			description: tSettingsUi("Enable the launch tool for supervising shared long-running project processes"),
 		},
 	},
 
@@ -3635,9 +3834,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Speech Generation",
-			description: "Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Speech Generation"),
+			description: tSettingsUi("Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis"),
 		},
 	},
 	"generate_image.enabled": {
@@ -3645,10 +3844,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Generate Image",
-			description:
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Generate Image"),
+			description: tSettingsUi(
 				"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.",
+			),
 		},
 	},
 
@@ -3657,9 +3857,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Inspect Image",
-			description: "Enable the inspect_image tool, delegating image understanding to a vision-capable model",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Inspect Image"),
+			description: tSettingsUi(
+				"Enable the inspect_image tool, delegating image understanding to a vision-capable model",
+			),
 		},
 	},
 
@@ -3668,9 +3870,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Checkpoint/Rewind",
-			description: "Enable the checkpoint and rewind tools for context checkpointing",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Checkpoint/Rewind"),
+			description: tSettingsUi("Enable the checkpoint and rewind tools for context checkpointing"),
 		},
 	},
 
@@ -3680,9 +3882,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Read URLs",
-			description: "Allow the read tool to fetch and process URLs",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Read URLs"),
+			description: tSettingsUi("Allow the read tool to fetch and process URLs"),
 		},
 	},
 
@@ -3691,10 +3893,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Obsidian Vault",
-			description:
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Obsidian Vault"),
+			description: tSettingsUi(
 				"Enable the vault:// internal URL for reading and editing Obsidian vault content via the Obsidian CLI. When disabled, vault:// resolution is refused and the vault:// entry is omitted from the system prompt.",
+			),
 		},
 	},
 
@@ -3703,10 +3906,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "GitHub CLI",
-			description:
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("GitHub CLI"),
+			description: tSettingsUi(
 				"Enable the github tool (op-based dispatch for repository, issue, pull request, diff, search, checkout, push, and Actions watch workflows)",
+			),
 		},
 	},
 
@@ -3715,9 +3919,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "GitHub",
-			label: "GitHub View Cache",
-			description: "Cache rendered issue/PR view output in ~/.omp/cache/github-cache.db so repeated reads are free",
+			group: tSettingsUi("GitHub"),
+			label: tSettingsUi("GitHub View Cache"),
+			description: tSettingsUi(
+				"Cache rendered issue/PR view output in ~/.omp/cache/github-cache.db so repeated reads are free",
+			),
 		},
 	},
 
@@ -3726,10 +3932,11 @@ export const SETTINGS_SCHEMA = {
 		default: 300,
 		ui: {
 			tab: "tools",
-			group: "GitHub",
-			label: "GitHub Cache Soft TTL",
-			description:
+			group: tSettingsUi("GitHub"),
+			label: tSettingsUi("GitHub Cache Soft TTL"),
+			description: tSettingsUi(
 				"Within this window, cached issue/PR view rows are returned directly (seconds; default 5 minutes)",
+			),
 		},
 	},
 
@@ -3738,10 +3945,11 @@ export const SETTINGS_SCHEMA = {
 		default: 604800,
 		ui: {
 			tab: "tools",
-			group: "GitHub",
-			label: "GitHub Cache Hard TTL",
-			description:
+			group: tSettingsUi("GitHub"),
+			label: tSettingsUi("GitHub Cache Hard TTL"),
+			description: tSettingsUi(
 				"Past the soft TTL the cached row is returned and refreshed in the background; past the hard TTL it is dropped (seconds; default 7 days)",
+			),
 		},
 	},
 
@@ -3750,9 +3958,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Web Search",
-			description: "Enable the web_search tool for live web results",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Web Search"),
+			description: tSettingsUi("Enable the web_search tool for live web results"),
 		},
 	},
 
@@ -3761,9 +3969,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Ask",
-			description: "Enable the ask tool for interactive user questions",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Ask"),
+			description: tSettingsUi("Enable the ask tool for interactive user questions"),
 		},
 	},
 
@@ -3772,9 +3980,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Available Tools",
-			label: "Browser",
-			description: "Enable the browser tool for scripted Chromium automation (puppeteer)",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Browser"),
+			description: tSettingsUi("Enable the browser tool for scripted Chromium automation (puppeteer)"),
 		},
 	},
 
@@ -3783,9 +3991,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Grep & Browser",
-			label: "Headless Browser",
-			description: "Launch browser in headless mode (disable to show browser UI)",
+			group: tSettingsUi("Grep & Browser"),
+			label: tSettingsUi("Headless Browser"),
+			description: tSettingsUi("Launch browser in headless mode (disable to show browser UI)"),
 		},
 	},
 
@@ -3794,10 +4002,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Grep & Browser",
-			label: "cmux Browser",
-			description:
+			group: tSettingsUi("Grep & Browser"),
+			label: tSettingsUi("cmux Browser"),
+			description: tSettingsUi(
 				"Use cmux WKWebView surfaces for browser automation when a cmux socket is available. Set PI_BROWSER_CMUX=0 or PI_BROWSER_CMUX=1 to override.",
+			),
 		},
 	},
 	"browser.screenshotDir": {
@@ -3805,10 +4014,11 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tools",
-			group: "Grep & Browser",
-			label: "Screenshot Directory",
-			description:
+			group: tSettingsUi("Grep & Browser"),
+			label: tSettingsUi("Screenshot Directory"),
+			description: tSettingsUi(
 				"Directory to save screenshots. If unset, screenshots go to a temp file. Supports ~. Examples: ~/Downloads, ~/Desktop, /sdcard/Download (Android)",
+			),
 		},
 	},
 
@@ -3818,9 +4028,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "Intent Tracing",
-			description: "Ask the agent to describe the intent of each tool call before executing it",
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Intent Tracing"),
+			description: tSettingsUi("Ask the agent to describe the intent of each tool call before executing it"),
 		},
 	},
 	"tools.abortOnFabricatedResult": {
@@ -3828,10 +4038,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "Abort On Fabricated Tool Result",
-			description:
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Abort On Fabricated Tool Result"),
+			description: tSettingsUi(
 				"With in-band tool calls, stop the model immediately when it starts hallucinating a tool result mid-turn. Disable to let the model finish generating and discard the fabricated continuation instead.",
+			),
 		},
 	},
 
@@ -3840,9 +4051,9 @@ export const SETTINGS_SCHEMA = {
 		default: 0,
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "Max Tool Timeout",
-			description: "Maximum timeout in seconds the agent can set for any tool (0 = no limit)",
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Max Tool Timeout"),
+			description: tSettingsUi("Maximum timeout in seconds the agent can set for any tool (0 = no limit)"),
 			options: [
 				{ value: "0", label: "No limit" },
 				{ value: "30", label: "30 seconds" },
@@ -3860,9 +4071,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "Async Execution",
-			description: "Enable async bash commands and background task execution",
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Async Execution"),
+			description: tSettingsUi("Enable async bash commands and background task execution"),
 		},
 	},
 
@@ -3877,10 +4088,11 @@ export const SETTINGS_SCHEMA = {
 		default: "smart",
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "Max Poll Time",
-			description:
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Max Poll Time"),
+			description: tSettingsUi(
 				"How long a `hub` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
+			),
 			options: [
 				{ value: "5s", label: "5 seconds" },
 				{ value: "10s", label: "10 seconds" },
@@ -3897,10 +4109,11 @@ export const SETTINGS_SCHEMA = {
 		default: 120_000,
 		ui: {
 			tab: "tools",
-			group: "Execution",
-			label: "IRC Timeout",
-			description:
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("IRC Timeout"),
+			description: tSettingsUi(
 				"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
+			),
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "30000", label: "30 seconds" },
@@ -3921,10 +4134,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Discovery & MCP",
-			label: "xd:// Tools",
-			description:
+			group: tSettingsUi("Discovery & MCP"),
+			label: tSettingsUi("xd:// Tools"),
+			description: tSettingsUi(
 				"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Disable to expose every enabled tool top-level.",
+			),
 		},
 	},
 
@@ -3934,9 +4148,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tools",
-			group: "Discovery & MCP",
-			label: "MCP Project Config",
-			description: "Load .mcp.json/mcp.json from project root",
+			group: tSettingsUi("Discovery & MCP"),
+			label: tSettingsUi("MCP Project Config"),
+			description: tSettingsUi("Load .mcp.json/mcp.json from project root"),
 		},
 	},
 
@@ -3945,9 +4159,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Discovery & MCP",
-			label: "MCP Update Injection",
-			description: "Inject MCP resource updates into the agent conversation",
+			group: tSettingsUi("Discovery & MCP"),
+			label: tSettingsUi("MCP Update Injection"),
+			description: tSettingsUi("Inject MCP resource updates into the agent conversation"),
 		},
 	},
 
@@ -3956,10 +4170,11 @@ export const SETTINGS_SCHEMA = {
 		default: 500,
 		ui: {
 			tab: "tools",
-			group: "Discovery & MCP",
-			label: "MCP Notification Debounce",
-			description:
+			group: tSettingsUi("Discovery & MCP"),
+			label: tSettingsUi("MCP Notification Debounce"),
+			description: tSettingsUi(
 				"Debounce window in milliseconds for MCP resource updates before injecting them into the conversation",
+			),
 		},
 	},
 
@@ -3973,9 +4188,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Plan Mode",
-			description: "Enable plan mode for read-only exploration and planning before execution",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Plan Mode"),
+			description: tSettingsUi("Enable plan mode for read-only exploration and planning before execution"),
 		},
 	},
 
@@ -3984,9 +4199,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Start in Plan Mode",
-			description: "Automatically enter plan mode at the start of every new session",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Start in Plan Mode"),
+			description: tSettingsUi("Automatically enter plan mode at the start of every new session"),
 			condition: "planModeEnabled",
 		},
 	},
@@ -3996,9 +4211,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Goal Mode",
-			description: "Enable per-session goal mode and the hidden goal tool",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Goal Mode"),
+			description: tSettingsUi("Enable per-session goal mode and the hidden goal tool"),
 		},
 	},
 
@@ -4007,9 +4222,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Goal Status in Footer",
-			description: "Show token budget alongside the goal indicator in the status line",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Goal Status in Footer"),
+			description: tSettingsUi("Show token budget alongside the goal indicator in the status line"),
 		},
 	},
 
@@ -4018,9 +4233,9 @@ export const SETTINGS_SCHEMA = {
 		default: ["interactive"],
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Goal Continuation Modes",
-			description: "Run modes where active goals may auto-continue between turns",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Goal Continuation Modes"),
+			description: tSettingsUi("Run modes where active goals may auto-continue between turns"),
 		},
 	},
 
@@ -4029,9 +4244,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Modes",
-			label: "Refresh Title on Replan",
-			description: "Refresh generated session titles after todo init replans unless the title was set by the user",
+			group: tSettingsUi("Modes"),
+			label: tSettingsUi("Refresh Title on Replan"),
+			description: tSettingsUi(
+				"Refresh generated session titles after todo init replans unless the title was set by the user",
+			),
 		},
 	},
 
@@ -4053,10 +4270,11 @@ export const SETTINGS_SCHEMA = {
 		default: "none",
 		ui: {
 			tab: "tasks",
-			group: "Isolation",
-			label: "Isolation Mode",
-			description:
+			group: tSettingsUi("Isolation"),
+			label: tSettingsUi("Isolation Mode"),
+			description: tSettingsUi(
 				'Isolation backend for subagents. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
+			),
 			options: [
 				{ value: "none", label: "None", description: "No isolation" },
 				{ value: "auto", label: "Auto", description: "Let the PAL pick the best available backend" },
@@ -4066,19 +4284,19 @@ export const SETTINGS_SCHEMA = {
 				{ value: "reflink", label: "Reflink", description: "Linux FICLONE per-file reflink" },
 				{
 					value: "overlayfs",
-					label: "Overlayfs",
-					description: "Linux kernel overlay (or fuse-overlayfs fallback)",
+					label: tSettingsUi("Overlayfs"),
+					description: tSettingsUi("Linux kernel overlay (or fuse-overlayfs fallback)"),
 				},
 				{ value: "projfs", label: "ProjFS", description: "Windows Projected File System" },
 				{
 					value: "block-clone",
-					label: "Block clone",
-					description: "Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)",
+					label: tSettingsUi("Block clone"),
+					description: tSettingsUi("Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)"),
 				},
 				{
 					value: "rcopy",
-					label: "Recursive copy",
-					description: "git worktree if available, otherwise recursive copy",
+					label: tSettingsUi("Recursive copy"),
+					description: tSettingsUi("git worktree if available, otherwise recursive copy"),
 				},
 			],
 		},
@@ -4090,9 +4308,9 @@ export const SETTINGS_SCHEMA = {
 		default: "patch",
 		ui: {
 			tab: "tasks",
-			group: "Isolation",
-			label: "Isolation Merge Strategy",
-			description: "How isolated task changes are integrated (patch apply or branch merge)",
+			group: tSettingsUi("Isolation"),
+			label: tSettingsUi("Isolation Merge Strategy"),
+			description: tSettingsUi("How isolated task changes are integrated (patch apply or branch merge)"),
 			options: [
 				{ value: "patch", label: "Patch", description: "Combine diffs and git apply" },
 				{ value: "branch", label: "Branch", description: "Commit per task, merge with --no-ff" },
@@ -4106,9 +4324,9 @@ export const SETTINGS_SCHEMA = {
 		default: "generic",
 		ui: {
 			tab: "tasks",
-			group: "Isolation",
-			label: "Isolation Commit Style",
-			description: "Commit message style for nested repo changes (generic or AI-generated)",
+			group: tSettingsUi("Isolation"),
+			label: tSettingsUi("Isolation Commit Style"),
+			description: tSettingsUi("Commit message style for nested repo changes (generic or AI-generated)"),
 			options: [
 				{ value: "generic", label: "Generic", description: "Static commit message" },
 				{ value: "ai", label: "AI", description: "AI-generated commit message from diff" },
@@ -4121,10 +4339,11 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "tasks",
-			group: "Isolation",
-			label: "Worktree Base Directory",
-			description:
+			group: tSettingsUi("Isolation"),
+			label: tSettingsUi("Worktree Base Directory"),
+			description: tSettingsUi(
 				"Base directory for agent-managed worktrees — task-isolation copies, `github` PR checkouts, and `omp worktree` cleanup all live here. Unset uses ~/.omp/wt. Must be an absolute or ~-relative path; relative paths are ignored. The OMP_WORKTREE_DIR env var overrides this.",
+			),
 		},
 	},
 
@@ -4134,9 +4353,9 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Prefer Task Delegation",
-			description: "How strongly to push delegating work to subagents",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Prefer Task Delegation"),
+			description: tSettingsUi("How strongly to push delegating work to subagents"),
 			options: [
 				{ value: "default", label: "Default", description: "Model decides when to delegate" },
 				{ value: "preferred", label: "Preferred", description: "Adds delegation guidance to the system prompt" },
@@ -4150,10 +4369,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Batch Task Calls",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Batch Task Calls"),
+			description: tSettingsUi(
 				"Switch the task tool to its batch shape: one call carries { agent, context, tasks[] } — one subagent per item (with per-item isolation) and a required shared context prepended to every assignment. With async.enabled=true, each spawn runs as an independent background agent with the normal idle/parked lifecycle; otherwise the call blocks for merged results. Disable to restore the flat single-spawn schema.",
+			),
 		},
 	},
 
@@ -4162,9 +4382,9 @@ export const SETTINGS_SCHEMA = {
 		default: 32,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Concurrent Tasks",
-			description: "Maximum number of subagents running concurrently",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Max Concurrent Tasks"),
+			description: tSettingsUi("Maximum number of subagents running concurrently"),
 			options: [
 				{ value: "0", label: "Unlimited" },
 				{ value: "1", label: "1 task" },
@@ -4183,10 +4403,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "LSP in Subagents",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("LSP in Subagents"),
+			description: tSettingsUi(
 				"Allow subagents spawned via the task tool to use the lsp tool. Off by default to keep subagents cheap; enable when LSP-aware delegation is worth the extra tokens.",
+			),
 		},
 	},
 
@@ -4195,9 +4416,9 @@ export const SETTINGS_SCHEMA = {
 		default: 2,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Task Recursion",
-			description: "How many levels deep subagents can spawn their own subagents",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Max Task Recursion"),
+			description: tSettingsUi("How many levels deep subagents can spawn their own subagents"),
 			options: [
 				{ value: "-1", label: "Unlimited" },
 				{ value: "0", label: "None" },
@@ -4213,10 +4434,11 @@ export const SETTINGS_SCHEMA = {
 		default: 0,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Max Subagent Runtime",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Max Subagent Runtime"),
+			description: tSettingsUi(
 				"Hard wall-clock limit per subagent (ms). 0 disables it. Defense-in-depth against provider-side stream hangs that escape the inference-layer watchdog; triggers a normal subagent abort with a 'timed out' reason.",
+			),
 			options: [
 				{ value: "0", label: "Unlimited", description: "Default" },
 				{ value: "300000", label: "5 minutes" },
@@ -4232,10 +4454,11 @@ export const SETTINGS_SCHEMA = {
 		default: 420_000,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Agent Idle TTL",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Agent Idle TTL"),
+			description: tSettingsUi(
 				"How long an idle subagent stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
+			),
 		},
 	},
 
@@ -4244,10 +4467,11 @@ export const SETTINGS_SCHEMA = {
 		default: 200,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Soft Subagent Request Budget",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Soft Subagent Request Budget"),
+			description: tSettingsUi(
 				"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
+			),
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "90", label: "90 requests" },
@@ -4262,10 +4486,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Subagents",
-			label: "Soft Request Budget Notice",
-			description:
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Soft Request Budget Notice"),
+			description: tSettingsUi(
 				"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
+			),
 		},
 	},
 
@@ -4299,9 +4524,9 @@ export const SETTINGS_SCHEMA = {
 		default: 60,
 		ui: {
 			tab: "tools",
-			group: "Todos",
-			label: "Todo Auto-Clear Delay",
-			description: "Delay before completed or abandoned todos are removed from the todo widget",
+			group: tSettingsUi("Todos"),
+			label: tSettingsUi("Todo Auto-Clear Delay"),
+			description: tSettingsUi("Delay before completed or abandoned todos are removed from the todo widget"),
 			options: [
 				{ value: "0", label: "Instant" },
 				{ value: "60", label: "1 minute", description: "Default" },
@@ -4319,9 +4544,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Show Resolved Model Badge",
-			description: "Display the actual model ID used by each subagent in the task widget status line",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Resolved Model Badge"),
+			description: tSettingsUi("Display the actual model ID used by each subagent in the task widget status line"),
 		},
 	},
 
@@ -4333,9 +4558,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Commands & Skills",
-			label: "Skill Commands",
-			description: "Register skills as /skill:name commands",
+			group: tSettingsUi("Commands & Skills"),
+			label: tSettingsUi("Skill Commands"),
+			description: tSettingsUi("Register skills as /skill:name commands"),
 		},
 	},
 
@@ -4365,9 +4590,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Commands & Skills",
-			label: "Claude User Commands",
-			description: "Load commands from ~/.claude/commands/",
+			group: tSettingsUi("Commands & Skills"),
+			label: tSettingsUi("Claude User Commands"),
+			description: tSettingsUi("Load commands from ~/.claude/commands/"),
 		},
 	},
 
@@ -4376,9 +4601,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Commands & Skills",
-			label: "Claude Project Commands",
-			description: "Load commands from .claude/commands/",
+			group: tSettingsUi("Commands & Skills"),
+			label: tSettingsUi("Claude Project Commands"),
+			description: tSettingsUi("Load commands from .claude/commands/"),
 		},
 	},
 
@@ -4387,9 +4612,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Commands & Skills",
-			label: "OpenCode User Commands",
-			description: "Load commands from ~/.config/opencode/commands/",
+			group: tSettingsUi("Commands & Skills"),
+			label: tSettingsUi("OpenCode User Commands"),
+			description: tSettingsUi("Load commands from ~/.config/opencode/commands/"),
 		},
 	},
 
@@ -4398,9 +4623,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "tasks",
-			group: "Commands & Skills",
-			label: "OpenCode Project Commands",
-			description: "Load commands from .opencode/commands/",
+			group: tSettingsUi("Commands & Skills"),
+			label: tSettingsUi("OpenCode Project Commands"),
+			description: tSettingsUi("Load commands from .opencode/commands/"),
 		},
 	},
 
@@ -4414,9 +4639,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "providers",
-			group: "Privacy",
-			label: "Hide Secrets",
-			description: "Obfuscate secrets before sending to AI providers",
+			group: tSettingsUi("Privacy"),
+			label: tSettingsUi("Hide Secrets"),
+			description: tSettingsUi("Obfuscate secrets before sending to AI providers"),
 		},
 	},
 
@@ -4426,10 +4651,11 @@ export const SETTINGS_SCHEMA = {
 		default: 3,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Ollama Cloud Max Concurrency",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Ollama Cloud Max Concurrency"),
+			description: tSettingsUi(
 				"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit",
+			),
 		},
 	},
 	"providers.webSearch": {
@@ -4438,9 +4664,9 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Web Search Provider",
-			description: "Preferred provider for the web_search tool",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Web Search Provider"),
+			description: tSettingsUi("Preferred provider for the web_search tool"),
 			options: SEARCH_PROVIDER_OPTIONS,
 		},
 	},
@@ -4449,9 +4675,9 @@ export const SETTINGS_SCHEMA = {
 		default: [] as SearchProviderId[],
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Excluded Web Search Providers",
-			description: "Providers that web_search should never use, even as fallbacks",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Excluded Web Search Providers"),
+			description: tSettingsUi("Providers that web_search should never use, even as fallbacks"),
 		},
 	},
 	"providers.webSearchGeminiModel": {
@@ -4459,9 +4685,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Gemini web_search model",
-			description: "Model ID for Gemini Google Search grounding. Defaults to gemini-2.5-flash.",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Gemini web_search model"),
+			description: tSettingsUi("Model ID for Gemini Google Search grounding. Defaults to gemini-2.5-flash."),
 		},
 	},
 	"providers.antigravityEndpoint": {
@@ -4470,24 +4696,26 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Antigravity Endpoint Mode",
-			description: "Endpoint routing strategy for google-antigravity providers (chat, search, image, discovery)",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Antigravity Endpoint Mode"),
+			description: tSettingsUi(
+				"Endpoint routing strategy for google-antigravity providers (chat, search, image, discovery)",
+			),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Try production endpoint, fail over to sandbox on 5xx/429",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Try production endpoint, fail over to sandbox on 5xx/429"),
 				},
 				{
 					value: "production",
-					label: "Production Only",
-					description: "Force production endpoint only",
+					label: tSettingsUi("Production Only"),
+					description: tSettingsUi("Force production endpoint only"),
 				},
 				{
 					value: "sandbox",
-					label: "Sandbox Only",
-					description: "Force sandbox endpoint only",
+					label: tSettingsUi("Sandbox Only"),
+					description: tSettingsUi("Force sandbox endpoint only"),
 				},
 			],
 		},
@@ -4498,36 +4726,38 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Image Provider",
-			description: "Preferred provider for image generation",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Image Provider"),
+			description: tSettingsUi("Preferred provider for image generation"),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description:
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi(
 						"Priority: per-request provider > configured provider > active session provider > GPT model image tool > Codex subscription > Antigravity > xAI > OpenRouter > Gemini",
+					),
 				},
 				{
 					value: "openai",
 					label: "OpenAI",
-					description:
+					description: tSettingsUi(
 						"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
+					),
 				},
 				{
 					value: "openai-codex",
-					label: "OpenAI Codex (ChatGPT)",
-					description: "Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed",
+					label: tSettingsUi("OpenAI Codex (ChatGPT)"),
+					description: tSettingsUi("Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed"),
 				},
 				{
 					value: "antigravity",
-					label: "Antigravity",
-					description: "Requires google-antigravity OAuth",
+					label: tSettingsUi("Antigravity"),
+					description: tSettingsUi("Requires google-antigravity OAuth"),
 				},
 				{
 					value: "xai",
-					label: "xAI Grok Imagine",
-					description: "Requires xAI Grok OAuth or XAI_API_KEY",
+					label: tSettingsUi("xAI Grok Imagine"),
+					description: tSettingsUi("Requires xAI Grok OAuth or XAI_API_KEY"),
 				},
 				{ value: "gemini", label: "Gemini", description: "Requires GEMINI_API_KEY" },
 				{ value: "openrouter", label: "OpenRouter", description: "Requires OPENROUTER_API_KEY" },
@@ -4540,16 +4770,17 @@ export const SETTINGS_SCHEMA = {
 		default: "standard",
 		ui: {
 			tab: "providers",
-			group: "Fireworks",
-			label: "Fireworks Tier",
-			description:
+			group: tSettingsUi("Fireworks"),
+			label: tSettingsUi("Fireworks Tier"),
+			description: tSettingsUi(
 				'Serving path for Fireworks requests. Priority sends `service_tier: "priority"` for higher reliability during peak traffic at a higher price; Standard omits it. Fast (`-fast`) models ignore this — Fast is its own serving path.',
+			),
 			options: [
 				{ value: "standard", label: "Standard", description: "Default serving path (no service_tier)" },
 				{
 					value: "priority",
-					label: "Priority",
-					description: "Priority serving path: higher reliability, premium per-token pricing",
+					label: tSettingsUi("Priority"),
+					description: tSettingsUi("Priority serving path: higher reliability, premium per-token pricing"),
 				},
 			],
 		},
@@ -4560,20 +4791,22 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Text-to-Speech Provider",
-			description: "Backend for the tts tool: local on-device neural TTS (Kokoro-82M) or xAI Grok Voice",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Text-to-Speech Provider"),
+			description: tSettingsUi(
+				"Backend for the tts tool: local on-device neural TTS (Kokoro-82M) or xAI Grok Voice",
+			),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Prefer local on-device TTS; route .mp3 output to xAI when credentials exist",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Prefer local on-device TTS; route .mp3 output to xAI when credentials exist"),
 				},
 				{ value: "local", label: "Local", description: "On-device neural TTS (Kokoro-82M); output is WAV/PCM16" },
 				{
 					value: "xai",
-					label: "xAI Grok Voice",
-					description: "Requires xAI Grok OAuth or XAI_API_KEY; MP3 or WAV",
+					label: tSettingsUi("xAI Grok Voice"),
+					description: tSettingsUi("Requires xAI Grok OAuth or XAI_API_KEY; MP3 or WAV"),
 				},
 			],
 		},
@@ -4584,9 +4817,9 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_TTS_LOCAL_MODEL_KEY,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Local TTS Model",
-			description: "On-device neural TTS model (Kokoro-82M) used by the local TTS backend",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Local TTS Model"),
+			description: tSettingsUi("On-device neural TTS model (Kokoro-82M) used by the local TTS backend"),
 			options: TTS_LOCAL_MODEL_OPTIONS,
 		},
 	},
@@ -4596,9 +4829,9 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_TTS_VOICE,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Local TTS Voice",
-			description: "Kokoro voice used by the local TTS backend (American/British, female/male)",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Local TTS Voice"),
+			description: tSettingsUi("Kokoro voice used by the local TTS backend (American/British, female/male)"),
 			options: TTS_LOCAL_VOICE_OPTIONS,
 		},
 	},
@@ -4607,9 +4840,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization",
-			description: "Speak the assistant's output aloud through the speakers as it streams",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Speech Vocalization"),
+			description: tSettingsUi("Speak the assistant's output aloud through the speakers as it streams"),
 		},
 	},
 	"speech.mode": {
@@ -4618,10 +4851,11 @@ export const SETTINGS_SCHEMA = {
 		default: "assistant",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization Mode",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Speech Vocalization Mode"),
+			description: tSettingsUi(
 				"What to speak: all = assistant messages + thinking; assistant = messages only; yield = only the final message at turn end",
+			),
 			options: [
 				{ value: "all", label: "All (messages + thinking)" },
 				{ value: "assistant", label: "Assistant messages" },
@@ -4634,10 +4868,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Enhanced Speech Rewriting",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Enhanced Speech Rewriting"),
+			description: tSettingsUi(
 				"Rewrite assistant output into natural spoken prose with the tiny/smol model before synthesis (describes code, drops links and markdown). Falls back to mechanical cleanup on failure",
+			),
 		},
 	},
 	"speech.voice": {
@@ -4646,9 +4881,9 @@ export const SETTINGS_SCHEMA = {
 		default: DEFAULT_TTS_VOICE,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Speech Vocalization Voice",
-			description: "Kokoro voice used when speaking the assistant's output aloud",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Speech Vocalization Voice"),
+			description: tSettingsUi("Kokoro voice used when speaking the assistant's output aloud"),
 			options: TTS_LOCAL_VOICE_OPTIONS,
 		},
 	},
@@ -4658,10 +4893,11 @@ export const SETTINGS_SCHEMA = {
 		default: ONLINE_TINY_TITLE_MODEL_KEY,
 		ui: {
 			tab: "providers",
-			group: "Tiny Model",
-			label: "Tiny Model",
-			description:
+			group: tSettingsUi("Tiny Model"),
+			label: tSettingsUi("Tiny Model"),
+			description: tSettingsUi(
 				"Session-title model: online (the TINY role from /models, else @smol) by default, or a local on-device model",
+			),
 			options: TINY_TITLE_MODEL_OPTIONS,
 		},
 	},
@@ -4671,10 +4907,11 @@ export const SETTINGS_SCHEMA = {
 		default: TINY_MODEL_DEVICE_DEFAULT,
 		ui: {
 			tab: "providers",
-			group: "Tiny Model",
-			label: "Tiny Model Device",
-			description:
+			group: tSettingsUi("Tiny Model"),
+			label: tSettingsUi("Tiny Model Device"),
+			description: tSettingsUi(
 				"ONNX execution provider for local tiny models (titles + memory). Default uses CPU-only inference. The PI_TINY_DEVICE env var overrides this.",
+			),
 			options: TINY_MODEL_DEVICE_SETTING_OPTIONS,
 		},
 	},
@@ -4684,10 +4921,11 @@ export const SETTINGS_SCHEMA = {
 		default: TINY_MODEL_DTYPE_DEFAULT,
 		ui: {
 			tab: "providers",
-			group: "Tiny Model",
-			label: "Tiny Model Precision",
-			description:
+			group: tSettingsUi("Tiny Model"),
+			label: tSettingsUi("Tiny Model Precision"),
+			description: tSettingsUi(
 				"ONNX quantization/precision for local tiny models. Default uses each model's shipped dtype (q4); lower precision is faster, higher is more faithful. The PI_TINY_DTYPE env var overrides this.",
+			),
 			options: TINY_MODEL_DTYPE_SETTING_OPTIONS,
 		},
 	},
@@ -4697,10 +4935,11 @@ export const SETTINGS_SCHEMA = {
 		default: ONLINE_MEMORY_MODEL_KEY,
 		ui: {
 			tab: "memory",
-			group: "General",
-			label: "Memory Model",
-			description:
+			group: tSettingsUi("General"),
+			label: tSettingsUi("Memory Model"),
+			description: tSettingsUi(
 				"Mnemopi LLM for fact extraction + consolidation: online (the TINY role from /models, else smol/remote) by default, or a local on-device model",
+			),
 			condition: "mnemopiActive",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -4712,10 +4951,11 @@ export const SETTINGS_SCHEMA = {
 		default: ONLINE_AUTO_THINKING_MODEL_KEY,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "Auto Thinking Model",
-			description:
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Auto Thinking Model"),
+			description: tSettingsUi(
 				"Difficulty classifier for the `auto` thinking level: online (the TINY role from /models, else smol) by default, or a local on-device model",
+			),
 			condition: "autoThinkingActive",
 			options: AUTO_THINKING_MODEL_OPTIONS,
 		},
@@ -4725,10 +4965,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "interaction",
-			group: "Agent",
-			label: "Detect unexpected stops",
-			description:
+			group: tSettingsUi("Agent"),
+			label: tSettingsUi("Detect unexpected stops"),
+			description: tSettingsUi(
 				"Use a small model to detect when the assistant says it will continue but stops without tool calls; automatically prompt it to continue.",
+			),
 		},
 	},
 	"providers.unexpectedStopModel": {
@@ -4737,10 +4978,11 @@ export const SETTINGS_SCHEMA = {
 		default: ONLINE_MEMORY_MODEL_KEY,
 		ui: {
 			tab: "providers",
-			group: "Tiny Model",
-			label: "Unexpected Stop Model",
-			description:
+			group: tSettingsUi("Tiny Model"),
+			label: tSettingsUi("Unexpected Stop Model"),
+			description: tSettingsUi(
 				"Classifier for unexpected-stop detection: online (the TINY role from /models, else smol) by default, or a local on-device model.",
+			),
 			condition: "unexpectedStopDetection",
 			options: TINY_MEMORY_MODEL_OPTIONS,
 		},
@@ -4752,9 +4994,9 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Protocol",
-			label: "Kimi API Format",
-			description: "API format for Kimi Code provider (auto follows live model metadata)",
+			group: tSettingsUi("Protocol"),
+			label: tSettingsUi("Kimi API Format"),
+			description: tSettingsUi("API format for Kimi Code provider (auto follows live model metadata)"),
 			options: [
 				{ value: "auto", label: "Auto", description: "Use the model's server-declared protocol" },
 				{ value: "openai", label: "OpenAI", description: "api.kimi.com" },
@@ -4769,9 +5011,11 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Protocol",
-			label: "OpenAI WebSockets",
-			description: "Websocket policy for OpenAI Codex models (auto uses model defaults, on forces, off disables)",
+			group: tSettingsUi("Protocol"),
+			label: tSettingsUi("OpenAI WebSockets"),
+			description: tSettingsUi(
+				"Websocket policy for OpenAI Codex models (auto uses model defaults, on forces, off disables)",
+			),
 			options: [
 				{ value: "auto", label: "Auto", description: "Use model/provider default websocket behavior" },
 				{ value: "off", label: "Off", description: "Disable websockets for OpenAI Codex models" },
@@ -4785,10 +5029,11 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "providers",
-			group: "Timeouts",
-			label: "Stream First Event Timeout",
-			description:
+			group: tSettingsUi("Timeouts"),
+			label: tSettingsUi("Stream First Event Timeout"),
+			description: tSettingsUi(
 				"Seconds to wait for the first model stream event; -1 uses provider/env defaults, 0 disables the watchdog",
+			),
 			options: [
 				{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
 				{ value: "0", label: "Off", description: "Disable first-event timeout" },
@@ -4804,10 +5049,11 @@ export const SETTINGS_SCHEMA = {
 		default: -1,
 		ui: {
 			tab: "providers",
-			group: "Timeouts",
-			label: "Stream Idle Timeout",
-			description:
+			group: tSettingsUi("Timeouts"),
+			label: tSettingsUi("Stream Idle Timeout"),
+			description: tSettingsUi(
 				"Seconds a model stream may stay silent between events; -1 uses provider/env defaults, 0 disables the watchdog",
+			),
 			options: [
 				{ value: "-1", label: "Auto", description: "Use provider defaults and PI_* timeout env vars" },
 				{ value: "0", label: "Off", description: "Disable idle timeout" },
@@ -4824,10 +5070,11 @@ export const SETTINGS_SCHEMA = {
 		default: "default",
 		ui: {
 			tab: "providers",
-			group: "Protocol",
-			label: "OpenRouter Routing",
-			description:
+			group: tSettingsUi("Protocol"),
+			label: tSettingsUi("OpenRouter Routing"),
+			description: tSettingsUi(
 				"Default routing-variant suffix appended to OpenRouter model IDs (overridden when the selector already names a variant)",
+			),
 			options: [
 				{ value: "default", label: "Default", description: "No suffix; use OpenRouter's default routing" },
 				{ value: "nitro", label: ":nitro", description: "Prioritize throughput / lowest latency" },
@@ -4835,8 +5082,8 @@ export const SETTINGS_SCHEMA = {
 				{ value: "online", label: ":online", description: "Enable OpenRouter's web-search plugin" },
 				{
 					value: "exacto",
-					label: ":exacto",
-					description: "Cherry-picked high-quality providers (only defined for select models)",
+					label: tSettingsUi(":exacto"),
+					description: tSettingsUi("Cherry-picked high-quality providers (only defined for select models)"),
 				},
 			],
 		},
@@ -4847,14 +5094,14 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Fetch Provider",
-			description: "Reader backend priority for the fetch/read URL tool",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Fetch Provider"),
+			description: tSettingsUi("Reader backend priority for the fetch/read URL tool"),
 			options: [
 				{
 					value: "auto",
-					label: "Auto",
-					description: "Priority: native > trafilatura > lynx > parallel > jina",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Priority: native > trafilatura > lynx > parallel > jina"),
 				},
 				{ value: "native", label: "Native", description: "In-process HTML→Markdown converter (always available)" },
 				{ value: "trafilatura", label: "Trafilatura", description: "Auto-installs via uv/pip" },
@@ -4871,15 +5118,16 @@ export const SETTINGS_SCHEMA = {
 		default: "unset" as const,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Codex Auto-Redeem Saved Resets",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Codex Auto-Redeem Saved Resets"),
+			description: tSettingsUi(
 				"When a turn is blocked by the Codex weekly limit on the active account and no other account is available, run the conservative saved-reset check. unset asks before spending the first eligible reset, yes spends eligible resets without prompting, and no disables the check entirely. Requires retries enabled.",
+			),
 			options: [
 				{
 					value: "unset",
-					label: "Unset",
-					description: "Check eligibility, then ask before spending the first saved reset.",
+					label: tSettingsUi("Unset"),
+					description: tSettingsUi("Check eligibility, then ask before spending the first saved reset."),
 				},
 				{ value: "yes", label: "Yes", description: "Spend eligible saved resets without prompting." },
 				{ value: "no", label: "No", description: "Do not run the saved-reset auto-redeem check." },
@@ -4891,10 +5139,11 @@ export const SETTINGS_SCHEMA = {
 		default: 60,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Codex Auto-Redeem Min Block",
-			description:
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Codex Auto-Redeem Min Block"),
+			description: tSettingsUi(
 				"Only auto-redeem when the natural weekly reset is at least this many minutes away (don't spend a ~30-day credit to save a short wait).",
+			),
 		},
 	},
 	"codexResets.keepCredits": {
@@ -4902,9 +5151,11 @@ export const SETTINGS_SCHEMA = {
 		default: 0,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Codex Auto-Redeem Reserve",
-			description: "Never auto-spend below this many saved resets (0 = the last credit may be spent automatically).",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Codex Auto-Redeem Reserve"),
+			description: tSettingsUi(
+				"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically).",
+			),
 		},
 	},
 	"provider.appendOnlyContext": {
@@ -4913,10 +5164,11 @@ export const SETTINGS_SCHEMA = {
 		default: "auto",
 		ui: {
 			tab: "providers",
-			group: "Protocol",
-			label: "Append-Only Context",
-			description:
+			group: tSettingsUi("Protocol"),
+			label: tSettingsUi("Append-Only Context"),
+			description: tSettingsUi(
 				"Cache system prompt + tool specs and keep an append-only message log so provider prefix caches (DeepSeek, Xiaomi/SGLang, Anthropic) hit at maximum rate. Auto enables for known prefix-cache providers.",
+			),
 			options: [
 				{ value: "auto", label: "Auto", description: "Enable for known prefix-cache providers (recommended)" },
 				{ value: "on", label: "On", description: "Always enable append-only context" },
@@ -4929,7 +5181,12 @@ export const SETTINGS_SCHEMA = {
 	"exa.enabled": {
 		type: "boolean",
 		default: true,
-		ui: { tab: "providers", group: "Services", label: "Exa", description: "Master toggle for all Exa search tools" },
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Exa"),
+			description: tSettingsUi("Master toggle for all Exa search tools"),
+		},
 	},
 
 	"exa.enableSearch": {
@@ -4937,9 +5194,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Exa Search",
-			description: "Enable Exa basic search, deep search, code search, and crawl tools",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Exa Search"),
+			description: tSettingsUi("Enable Exa basic search, deep search, code search, and crawl tools"),
 		},
 	},
 
@@ -4948,9 +5205,11 @@ export const SETTINGS_SCHEMA = {
 		default: 1_000,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Exa Search Delay",
-			description: "Minimum delay between Exa web search requests in milliseconds; set 0 to disable pacing",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Exa Search Delay"),
+			description: tSettingsUi(
+				"Minimum delay between Exa web search requests in milliseconds; set 0 to disable pacing",
+			),
 		},
 	},
 
@@ -4959,9 +5218,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Exa Researcher",
-			description: "Enable the Exa researcher tool for AI-powered deep research",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Exa Researcher"),
+			description: tSettingsUi("Enable the Exa researcher tool for AI-powered deep research"),
 		},
 	},
 
@@ -4970,9 +5229,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "Exa Websets",
-			description: "Enable Exa webset management and enrichment tools",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Exa Websets"),
+			description: tSettingsUi("Enable Exa webset management and enrichment tools"),
 		},
 	},
 
@@ -4982,9 +5241,9 @@ export const SETTINGS_SCHEMA = {
 		default: undefined,
 		ui: {
 			tab: "providers",
-			group: "Services",
-			label: "SearXNG Endpoint",
-			description: "Base URL of a self-hosted SearXNG instance used for web search",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("SearXNG Endpoint"),
+			description: tSettingsUi("Base URL of a self-hosted SearXNG instance used for web search"),
 		},
 	},
 
@@ -5030,9 +5289,9 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "tools",
-			group: "Developer",
-			label: "Auto QA",
-			description: "Enable automated tool issue reporting (report_tool_issue) for all agents",
+			group: tSettingsUi("Developer"),
+			label: tSettingsUi("Auto QA"),
+			description: tSettingsUi("Enable automated tool issue reporting (report_tool_issue) for all agents"),
 		},
 	},
 
@@ -5041,9 +5300,9 @@ export const SETTINGS_SCHEMA = {
 		default: "https://qa.omp.sh/v1/grievances" as const,
 		ui: {
 			tab: "tools",
-			group: "Developer",
-			label: "Auto QA Push Endpoint",
-			description: "Full URL receiving Auto QA JSON reports (default https://qa.omp.sh/v1/grievances)",
+			group: tSettingsUi("Developer"),
+			label: tSettingsUi("Auto QA Push Endpoint"),
+			description: tSettingsUi("Full URL receiving Auto QA JSON reports (default https://qa.omp.sh/v1/grievances)"),
 		},
 	},
 

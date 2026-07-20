@@ -1,8 +1,11 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getPromptLocale, setPromptLocale } from "./prompts/prompt-locale";
 import { buildSystemPrompt } from "./system-prompt";
+
+const initialPromptLocale = getPromptLocale();
 
 interface ProbeRunResult {
 	elapsedMs: number;
@@ -10,6 +13,27 @@ interface ProbeRunResult {
 	cached: unknown;
 	count: number;
 }
+const PROMPT_LOCALE_SMOKE_OPTIONS = {
+	contextFiles: [],
+	skills: [],
+	rules: [],
+	workspaceTree: {
+		rootPath: import.meta.dir,
+		rendered: "",
+		truncated: false,
+		totalLines: 0,
+		agentsMdFiles: [],
+	},
+	activeRepoContext: null,
+};
+
+beforeEach(() => {
+	setPromptLocale("en");
+});
+
+afterEach(() => {
+	setPromptLocale(initialPromptLocale);
+});
 
 async function runProbeScenario(options: {
 	runs: number;
@@ -232,5 +256,30 @@ describe("non-Linux system prompt CPU model", () => {
 			cpus.mockRestore();
 			Object.defineProperty(process, "platform", { value: originalPlatform });
 		}
+	});
+});
+
+describe("system prompt locale", () => {
+	it("renders the active prompt locale at build time", async () => {
+		setPromptLocale("en");
+		const english = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
+
+		setPromptLocale("zh-CN");
+		const chinese = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
+
+		expect(english).toContain("You are a helpful assistant the team trusts");
+		expect(english).not.toContain("你是团队信任的");
+		expect(chinese).toContain("你是团队信任的");
+		expect(chinese).not.toContain("You are a helpful assistant the team trusts");
+	});
+
+	it("uses locale-neutral zh-CN intent guidance instead of the old English style rule", async () => {
+		setPromptLocale("zh-CN");
+		const chinese = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
+
+		expect(chinese).toContain("你是团队信任的");
+		expect(chinese).not.toContain("present participle");
+		expect(chinese).not.toContain("Capitalized");
+		expect(chinese).not.toContain("a concise intent");
 	});
 });

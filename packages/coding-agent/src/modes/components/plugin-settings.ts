@@ -31,6 +31,7 @@ import {
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
 import type { InstalledPlugin, PluginSettingSchema } from "../../extensibility/plugins/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { shortenPath } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
@@ -112,15 +113,28 @@ export class PluginListComponent extends Container {
 
 		// Title
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", "  Plugins")), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${tSettingsUi("Plugins")}`)), 0, 0));
 		this.addChild(new Spacer(1));
 
 		if (entries.length === 0) {
-			this.addChild(new Text(theme.fg("muted", "  No plugins installed"), 0, 0));
+			this.addChild(new Text(theme.fg("muted", `  ${tSettingsUi("No plugins installed")}`), 0, 0));
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("dim", "  Install npm plugins:        omp plugin install <package>"), 0, 0));
 			this.addChild(
-				new Text(theme.fg("dim", "  Install marketplace plugins: omp plugin install <name>@<marketplace>"), 0, 0),
+				new Text(
+					theme.fg("dim", `  ${tSettingsUi("Install npm plugins:        omp plugin install <package>")}`),
+					0,
+					0,
+				),
+			);
+			this.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`  ${tSettingsUi("Install marketplace plugins: omp plugin install <name>@<marketplace>")}`,
+					),
+					0,
+					0,
+				),
 			);
 			this.addChild(new Spacer(1));
 			this.addChild(new DynamicBorder());
@@ -152,7 +166,7 @@ export class PluginListComponent extends Container {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to configure · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to configure · Esc to go back")}`), 0, 0));
 		this.addChild(new DynamicBorder());
 	}
 
@@ -252,8 +266,8 @@ export class PluginDetailComponent extends Container {
 		// Enable/disable toggle
 		items.push({
 			id: "__enabled__",
-			label: "Enabled",
-			description: "Enable or disable this plugin",
+			label: tSettingsUi("Enabled"),
+			description: tSettingsUi("Enable or disable this plugin"),
 			currentValue: plugin.enabled ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -273,7 +287,7 @@ export class PluginDetailComponent extends Container {
 				items.push({
 					id: `feature:${featName}`,
 					label: `  ${featName}`,
-					description: feat.description || `Enable ${featName} feature`,
+					description: feat.description || tSettingsUi("Enable {name} feature", { name: featName }),
 					currentValue: isEnabled ? "true" : "false",
 					values: ["true", "false"],
 				});
@@ -292,7 +306,7 @@ export class PluginDetailComponent extends Container {
 					items.push({
 						id: `config:${key}`,
 						label: `  ${key}`,
-						description: schema.description || `Configure ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
 						currentValue: currentValue ? "true" : "false",
 						values: ["true", "false"],
 					});
@@ -300,12 +314,12 @@ export class PluginDetailComponent extends Container {
 					items.push({
 						id: `config:${key}`,
 						label: `  ${key}`,
-						description: schema.description || `Configure ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
 						currentValue: String(currentValue ?? schema.default ?? ""),
 						submenu: (cv, done) =>
 							new ConfigEnumSubmenu(
 								key,
-								schema.description || `Select value for ${key}`,
+								schema.description || tSettingsUi("Select value for {key}", { key }),
 								schema.values,
 								cv,
 								value => {
@@ -320,7 +334,7 @@ export class PluginDetailComponent extends Container {
 					items.push({
 						id: `config:${key}`,
 						label: `  ${key}`,
-						description: schema.description || `Configure ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
 						currentValue: displayValue,
 						submenu: (cv, done) =>
 							new ConfigInputSubmenu(
@@ -371,7 +385,7 @@ export class PluginDetailComponent extends Container {
 
 		this.addChild(this.#settingsList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to edit · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to edit · Esc to go back")}`), 0, 0));
 		this.addChild(new DynamicBorder());
 	}
 
@@ -419,8 +433,8 @@ export class MarketplacePluginDetailComponent extends Container {
 		const items: SettingItem[] = [
 			{
 				id: "__enabled__",
-				label: "Enabled",
-				description: "Enable or disable this marketplace plugin",
+				label: tSettingsUi("Enabled"),
+				description: tSettingsUi("Enable or disable this marketplace plugin"),
 				currentValue: enabled ? "true" : "false",
 				values: ["true", "false"],
 			},
@@ -464,7 +478,7 @@ export class MarketplacePluginDetailComponent extends Container {
 		}
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to toggle · Esc to go back"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to toggle · Esc to go back")}`), 0, 0));
 		this.addChild(new DynamicBorder());
 	}
 
@@ -513,7 +527,7 @@ class ConfigEnumSubmenu extends Container {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to cancel"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to select · Esc to cancel")}`), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -543,7 +557,7 @@ class ConfigInputSubmenu extends Container {
 		}
 
 		// Type hint
-		let hint = `Type: ${schema.type}`;
+		let hint = tSettingsUi("Type: {type}", { type: schema.type });
 		if (schema.type === "number") {
 			const numSchema = schema as { min?: number; max?: number };
 			if (numSchema.min !== undefined || numSchema.max !== undefined) {
@@ -571,7 +585,7 @@ class ConfigInputSubmenu extends Container {
 
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to cancel"), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to save · Esc to cancel")}`), 0, 0));
 	}
 
 	handleInput(data: string): void {

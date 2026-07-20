@@ -1,8 +1,12 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { tSettingsUi } from "../i18n/settings-locale";
+import { selectPrompt } from "../prompts/prompt-locale";
 import checkpointDescription from "../prompts/tools/checkpoint.md" with { type: "text" };
+import checkpointDescriptionZh from "../prompts/tools/checkpoint.zh-CN.md" with { type: "text" };
 import rewindDescription from "../prompts/tools/rewind.md" with { type: "text" };
+import rewindDescriptionZh from "../prompts/tools/rewind.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 import type { OutputMeta } from "./output-meta";
 import { ToolError } from "./tool-errors";
@@ -64,10 +68,11 @@ export class CheckpointTool implements AgentTool<typeof checkpointSchema, Checkp
 	readonly parameters = checkpointSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
-	readonly intent = (args: Partial<CheckpointParams>) => (args.goal ? `checkpointing: ${args.goal}` : "checkpointing");
+	readonly intent = (args: Partial<CheckpointParams>) =>
+		args.goal ? tSettingsUi("checkpointing: {goal}", { goal: args.goal }) : tSettingsUi("checkpointing");
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(checkpointDescription);
+		this.description = prompt.render(selectPrompt(checkpointDescription, checkpointDescriptionZh));
 	}
 
 	static createIf(session: ToolSession): CheckpointTool | null {
@@ -110,10 +115,10 @@ export class RewindTool implements AgentTool<typeof rewindSchema, RewindToolDeta
 	readonly parameters = rewindSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
-	readonly intent = (): string => "rewinding";
+	readonly intent = (): string => tSettingsUi("rewinding");
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(rewindDescription);
+		this.description = prompt.render(selectPrompt(rewindDescription, rewindDescriptionZh));
 	}
 
 	static createIf(session: ToolSession): RewindTool | null {

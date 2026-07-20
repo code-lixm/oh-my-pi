@@ -157,6 +157,14 @@ describe("Settings", () => {
 				"minimax",
 			]);
 		});
+
+		it("defaults markdown heading style to compact and exposes the supported modes", () => {
+			const settings = Settings.isolated();
+
+			expect(settings.get("tui.markdownHeadingStyle")).toBe("compact");
+			expect(getDefault("tui.markdownHeadingStyle")).toBe("compact");
+			expect(getEnumValues("tui.markdownHeadingStyle")).toEqual(["compact", "hierarchical"]);
+		});
 	});
 
 	describe("get()", () => {

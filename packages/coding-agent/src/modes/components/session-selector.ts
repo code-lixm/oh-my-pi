@@ -14,6 +14,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { SessionInfo, SessionStatus } from "../../session/session-listing";
@@ -30,15 +31,15 @@ import { HookSelectorComponent } from "./hook-selector";
 function formatSessionStatus(status: SessionStatus | undefined): string | undefined {
 	switch (status) {
 		case "complete":
-			return theme.fg("success", `${theme.status.success} done`);
+			return theme.fg("success", `${theme.status.success} ${tSettingsUi("done")}`);
 		case "interrupted":
-			return theme.fg("warning", `${theme.status.warning} interrupted`);
+			return theme.fg("warning", `${theme.status.warning} ${tSettingsUi("interrupted")}`);
 		case "aborted":
-			return theme.fg("muted", `${theme.status.aborted} aborted`);
+			return theme.fg("muted", `${theme.status.aborted} ${tSettingsUi("aborted")}`);
 		case "error":
-			return theme.fg("error", `${theme.status.error} error`);
+			return theme.fg("error", `${theme.status.error} ${tSettingsUi("error")}`);
 		case "pending":
-			return theme.fg("accent", `${theme.status.pending} pending`);
+			return theme.fg("accent", `${theme.status.pending} ${tSettingsUi("pending")}`);
 		default:
 			return undefined;
 	}
@@ -529,11 +530,14 @@ class SessionList implements Component {
 		if (this.#filteredSessions.length === 0) {
 			if (this.#showCwd) {
 				// "All" scope - no sessions anywhere that match filter
-				lines.push(truncateToWidth(theme.fg("muted", "  No sessions found"), width));
+				lines.push(truncateToWidth(theme.fg("muted", `  ${tSettingsUi("No sessions found")}`), width));
 			} else {
 				// "Current folder" scope - hint to try "all"
 				lines.push(
-					truncateToWidth(theme.fg("muted", "  No sessions in current folder. Press Tab to view all."), width),
+					truncateToWidth(
+						theme.fg("muted", `  ${tSettingsUi("No sessions in current folder. Press Tab to view all.")}`),
+						width,
+					),
 				);
 			}
 			return lines;
@@ -547,11 +551,19 @@ class SessionList implements Component {
 			const diffHours = Math.floor(diffMs / 3600000);
 			const diffDays = Math.floor(diffMs / 86400000);
 
-			if (diffMins < 1) return "just now";
-			if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? "s" : ""} ago`;
-			if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? "s" : ""} ago`;
-			if (diffDays === 1) return "1 day ago";
-			if (diffDays < 7) return `${diffDays} days ago`;
+			if (diffMins < 1) return tSettingsUi("just now");
+			if (diffMins < 60) {
+				return diffMins === 1
+					? tSettingsUi("{count} minute ago", { count: diffMins })
+					: tSettingsUi("{count} minutes ago", { count: diffMins });
+			}
+			if (diffHours < 24) {
+				return diffHours === 1
+					? tSettingsUi("{count} hour ago", { count: diffHours })
+					: tSettingsUi("{count} hours ago", { count: diffHours });
+			}
+			if (diffDays === 1) return tSettingsUi("1 day ago");
+			if (diffDays < 7) return tSettingsUi("{count} days ago", { count: diffDays });
 
 			return date.toLocaleDateString();
 		};
@@ -614,7 +626,7 @@ class SessionList implements Component {
 				metadata += ` ${dot} ${status}`;
 			}
 			if (session.parentSessionPath) {
-				metadata += ` ${dot} ${dim(`${theme.icon.branch} fork`)}`;
+				metadata += ` ${dot} ${dim(`${theme.icon.branch} ${tSettingsUi("fork")}`)}`;
 			}
 			if (this.#showCwd && session.cwd) {
 				metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
@@ -831,8 +843,8 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	#headerLabel(): string {
-		const scopeLabel = this.#scope === "all" ? "all projects" : "current folder";
-		return `${theme.bold("Resume Session")} ${theme.fg("muted", `(${scopeLabel})`)}`;
+		const scopeLabel = this.#scope === "all" ? tSettingsUi("all projects") : tSettingsUi("current folder");
+		return `${theme.bold(tSettingsUi("Resume Session"))} ${theme.fg("muted", `(${scopeLabel})`)}`;
 	}
 
 	/**
@@ -848,7 +860,9 @@ export class SessionSelectorComponent extends Container {
 				if (!this.#loadAllSessions) return;
 				this.#toggling = true;
 				this.#messageContainer.clear();
-				this.#messageContainer.addChild(new Text(theme.fg("muted", "  Loading all projects…"), 1, 0));
+				this.#messageContainer.addChild(
+					new Text(theme.fg("muted", `  ${tSettingsUi("Loading all projects…")}`), 1, 0),
+				);
 				this.#onRequestRender?.();
 				try {
 					global = await this.#loadAllSessions();
@@ -900,7 +914,9 @@ export class SessionSelectorComponent extends Container {
 
 	#showError(message: string): void {
 		this.#messageContainer.clear();
-		this.#messageContainer.addChild(new Text(theme.fg("error", `Error: ${replaceTabs(message)}`), 1, 0));
+		this.#messageContainer.addChild(
+			new Text(theme.fg("error", tSettingsUi("Error: {message}", { message: replaceTabs(message) })), 1, 0),
+		);
 		this.#messageContainer.addChild(new Spacer(1));
 	}
 
@@ -916,10 +932,10 @@ export class SessionSelectorComponent extends Container {
 			this.#onRequestRender?.();
 		};
 		this.#confirmationDialog = new HookSelectorComponent(
-			`Delete session?\n${displayName}`,
-			["Yes", "No"],
+			tSettingsUi("Delete session?\n{displayName}", { displayName }),
+			[tSettingsUi("Yes"), tSettingsUi("No")],
 			async (option: string) => {
-				if (option === "Yes" && this.#onDelete) {
+				if (option === tSettingsUi("Yes") && this.#onDelete) {
 					this.#clearError();
 					try {
 						const deleted = await this.#onDelete(session);
@@ -975,8 +991,11 @@ export class SessionSelectorComponent extends Container {
 
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
-		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
-		const hint = theme.fg("muted", `  [Del/⌫ delete · Enter select · Tab ${scopeHint} · Esc cancel]`);
+		const scopeHint = this.#scope === "all" ? tSettingsUi("current folder") : tSettingsUi("all projects");
+		const hint = theme.fg(
+			"muted",
+			`  ${tSettingsUi("[Del/⌫ delete · Enter select · Tab {scopeHint} · Esc cancel]", { scopeHint })}`,
+		);
 		return ["", hint, "", ...this.#bottomBorder.render(width)];
 	}
 

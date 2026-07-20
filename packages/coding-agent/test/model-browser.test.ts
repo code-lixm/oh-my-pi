@@ -1,13 +1,18 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { MODEL_ROLE_IDS } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	buildBrowserItems,
+	formatRoleChip,
+	formatRoleDisplayLabel,
 	ModelBrowser,
+	type RoleAssignment,
 	sortModelItems,
 } from "@oh-my-pi/pi-coding-agent/modes/components/model-browser";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function makeModel(provider: string, id: string): Model {
 	return buildModel({
@@ -64,6 +69,70 @@ describe("ModelBrowser search ranking", () => {
 	});
 });
 
+describe("formatRoleDisplayLabel localization", () => {
+	test("returns compact built-in role tags in English", () => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			const settings = Settings.isolated({ displayLanguage: "en" });
+			const labels = Object.fromEntries(MODEL_ROLE_IDS.map(role => [role, formatRoleDisplayLabel(role, settings)]));
+
+			expect(labels).toEqual({
+				default: "DEFAULT",
+				smol: "SMOL",
+				slow: "SLOW",
+				vision: "VISION",
+				plan: "PLAN",
+				designer: "DESIGNER",
+				commit: "COMMIT",
+				tiny: "TINY",
+				task: "TASK",
+				advisor: "ADVISOR",
+			});
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
+	});
+
+	test("returns localized built-in role names in zh-CN", () => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			const settings = Settings.isolated({ displayLanguage: "zh-CN" });
+			const labels = Object.fromEntries(MODEL_ROLE_IDS.map(role => [role, formatRoleDisplayLabel(role, settings)]));
+
+			expect(labels).toEqual({
+				default: "默认",
+				smol: "轻量",
+				slow: "深度思考",
+				vision: "视觉",
+				plan: "规划",
+				designer: "设计",
+				commit: "提交",
+				tiny: "微型",
+				task: "子任务",
+				advisor: "审阅助手",
+			});
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
+	});
+
+	test("keeps configured custom role names in zh-CN when no translation exists", () => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			const settings = Settings.isolated({
+				displayLanguage: "zh-CN",
+				modelTags: {
+					reviewer: { name: "代码审查员" },
+				},
+			});
+
+			expect(formatRoleDisplayLabel("reviewer", settings)).toBe("代码审查员");
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
+	});
+});
+
 describe("ModelBrowser perf display", () => {
 	beforeAll(async () => {
 		// render() reads the global theme singleton.
@@ -102,5 +171,55 @@ describe("ModelBrowser perf display", () => {
 		browser.setItems(buildBrowserItems([makeModel("openai", "gpt-5")]));
 
 		expect(renderPlain(browser, 120)[2]).not.toContain("t/s");
+	});
+});
+
+describe("formatRoleChip glyph-label spacing (zh-CN regression)", () => {
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+
+	function strip(text: string): string {
+		return Bun.stripANSI(text);
+	}
+
+	function assignment(model: Model, auto: boolean): RoleAssignment {
+		return { model, thinkingLevel: "inherit", autoSelected: auto };
+	}
+
+	/**
+	 * Core regression: formatRoleChip must separate the status glyph (●/○) from the
+	 * label text with exactly one ASCII space.  The old buggy output "●默认" / "○设计师"
+	 * had zero-width gap; the fixed output is "● 默认" / "○ 设计师".
+	 *
+	 * zh-CN labels are read dynamically so the test survives translation changes.
+	 */
+
+	test("configured zh-CN chip: one ASCII space between status glyph and label", () => {
+		const prev = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("zh-CN");
+			const settings = Settings.isolated({ displayLanguage: "zh-CN" });
+			const model = makeModel("test", "m-zh");
+			const out = strip(formatRoleChip("designer", assignment(model, false), settings));
+			expect(out).toContain("● 设计");
+			expect(out).not.toContain("●设计");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
+	});
+
+	test("auto-selected zh-CN chip: one ASCII space between status glyph and label", () => {
+		const prev = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("zh-CN");
+			const settings = Settings.isolated({ displayLanguage: "zh-CN" });
+			const model = makeModel("test", "m-zh");
+			const out = strip(formatRoleChip("designer", assignment(model, true), settings));
+			expect(out).toContain("○ 设计");
+			expect(out).not.toContain("○设计");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
 	});
 });

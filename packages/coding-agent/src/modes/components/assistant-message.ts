@@ -1,13 +1,46 @@
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
-import { Container, Image, type ImageBudget, ImageProtocol, Markdown, Spacer, TERMINAL, Text } from "@oh-my-pi/pi-tui";
+import {
+	type CodeBlockDisplayOptions,
+	Container,
+	Image,
+	type ImageBudget,
+	ImageProtocol,
+	Markdown,
+	Spacer,
+	TERMINAL,
+	Text,
+} from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
-import { getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
+import {
+	expandKeyHint,
+	getPreviewLines,
+	previewWindowRows,
+	resolveImageOptions,
+	TRUNCATE_LENGTHS,
+} from "../../tools/render-utils";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
+
+/** Cache key for the assistant Markdown children's code-block display options. */
+const ASSISTANT_CODE_BLOCK_CACHE_KEY = "assistant:framed:v1";
+
+/** Build the shared {@link CodeBlockDisplayOptions} for assistant markdown children. */
+function buildAssistantCodeBlockOptions(): CodeBlockDisplayOptions {
+	const expandKeyLabel = expandKeyHint();
+	const omitHintTemplate = tSettingsUi("… {count} more lines ({key} to expand)");
+	return {
+		frame: true,
+		cacheKey: `${ASSISTANT_CODE_BLOCK_CACHE_KEY}:${expandKeyLabel}:${omitHintTemplate}`,
+		getCollapsedBudget: previewWindowRows,
+		expandKeyLabel,
+		omitHintTemplate,
+	};
+}
 
 /**
  * Max lines of a turn-ending provider error rendered inline in the transcript.
@@ -196,6 +229,9 @@ export class AssistantMessageComponent extends Container {
 	 * transcript keeps the error in history.
 	 */
 	#errorPinned = false;
+	/** Repeated identical retry failures collapse into the first component. */
+	#errorRepeatCount = 1;
+	#errorSuppressed = false;
 	/**
 	 * Monotonic content version reported to the transcript container via
 	 * {@link getTranscriptBlockVersion}. Bumped by {@link updateContent} — the
@@ -210,11 +246,19 @@ export class AssistantMessageComponent extends Container {
 	/** Width of the most recent render(); the settled-rows walk reads child
 	 *  renders at exactly this width (L1 cache hits). */
 	#lastRenderWidth = 0;
+	/**
+	 * Code-block fold state forwarded to every Markdown child. Mirrors the
+	 * ChatTranscriptBuilder's bus: `true` shows the full body, `false` collapses
+	 * to head+omission+tail via {@link Markdown.setExpanded}.
+	 */
+	#expanded = false;
 	// Fast-path state: reuse Markdown children when message shape is stable during streaming.
 	#fastPathKey: string | undefined;
 	#fastPathItems:
 		| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
 		| undefined;
+	/** All Markdown children, including messages ineligible for the streaming fast path. */
+	#markdownChildren: Markdown[] = [];
 	/** Live "thinking" pulse shown in place of a hidden thinking block while it
 	 *  streams; undefined when not animating. Driven by {@link #thinkingDotsTimer}. */
 	#thinkingDots: Text | undefined;
@@ -327,7 +371,7 @@ export class AssistantMessageComponent extends Container {
 	#thinkingDotsLabel(): string {
 		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "…";
 		const coloredGlyph = theme.fg("thinkingText", glyph);
-		const thinkingLabel = theme.fg("muted", " Thinking");
+		const thinkingLabel = theme.fg("muted", ` ${tSettingsUi("Thinking")}`);
 		const rate = Math.min(SPEED_MAX, sharedSpeedTracker.getSpeed());
 		// The numeric badge ("<total> · <rate> toks/s") only renders while this block
 		// is genuinely streaming provider tokens. A block that has observed no token
@@ -345,7 +389,7 @@ export class AssistantMessageComponent extends Container {
 		// gray until the rarely-hit SPEED_MAX ceiling.
 		const ratio = Math.sqrt(rate / SPEED_MAX);
 		const hex = lerpHex(theme.getColorHex("dim"), theme.getAccentColorHex(), ratio);
-		const rateText = ` · ${rate.toFixed(1)} toks/s`;
+		const rateText = ` · ${rate.toFixed(1)} ${tSettingsUi("toks/s")}`;
 		const rateSpan = theme.getColorMode() === "truecolor" ? chalk.hex(hex)(rateText) : theme.fg("muted", rateText);
 		return coloredGlyph + thinkingLabel + totalSpan + rateSpan;
 	}
@@ -403,8 +447,21 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	isTranscriptBlockFinalized(): boolean {
-		return this.#transcriptBlockFinalized;
+	/**
+	 * Toggle collapsed/expanded rendering of code blocks inside every Markdown
+	 * child. Forwarded in-place to all fast-path items; new children built by
+	 * the next `updateContent` pick up the latest value. Bumps the block
+	 * version so the transcript repaints, and requests a render so the change
+	 * is visible immediately. Wired into ChatTranscriptBuilder's `#expandables`
+	 * bus via the standard `{ setExpanded(boolean) }` shape.
+	 */
+	setExpanded(expanded: boolean): void {
+		const next = expanded === true;
+		if (this.#expanded === next) return;
+		this.#expanded = next;
+		for (const markdown of this.#markdownChildren) markdown.setExpanded(next);
+		this.#blockVersion++;
+		this.onImageUpdate?.();
 	}
 
 	/**
@@ -452,6 +509,10 @@ export class AssistantMessageComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	isTranscriptBlockFinalized(): boolean {
+		return this.#transcriptBlockFinalized;
+	}
+
 	markTranscriptBlockFinalized(): void {
 		this.#transcriptBlockFinalized = true;
 		this.#stopThinkingAnimation();
@@ -462,6 +523,14 @@ export class AssistantMessageComponent extends Container {
 			this.#fastPathItems = undefined;
 			if (this.#lastMessage) this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
+	}
+
+	setErrorAggregation(repeatCount: number, suppressed: boolean): void {
+		const nextCount = Math.max(1, repeatCount);
+		if (this.#errorRepeatCount === nextCount && this.#errorSuppressed === suppressed) return;
+		this.#errorRepeatCount = nextCount;
+		this.#errorSuppressed = suppressed;
+		if (this.#lastMessage) this.updateContent(this.#lastMessage);
 	}
 
 	applyRetryRecovery(retryRecovery: AssistantMessage["retryRecovery"]): void {
@@ -490,9 +559,12 @@ export class AssistantMessageComponent extends Container {
 	 */
 	#appendErrorBlock(message: string): void {
 		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
-		if (lines.length === 0) lines.push("Unknown error");
+		if (lines.length === 0) lines.push(tSettingsUi("Unknown error"));
+		const repeatSuffix = this.#errorRepeatCount > 1 ? ` × ${this.#errorRepeatCount}` : "";
 		// The caller owns the separating Spacer; adding one here doubled the gap.
-		this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
+		this.#contentContainer.addChild(
+			new Text(theme.fg("error", tSettingsUi("Error: {message}", { message: `${lines[0]}${repeatSuffix}` })), 1, 0),
+		);
 		for (const line of lines.slice(1)) {
 			this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 		}
@@ -579,7 +651,9 @@ export class AssistantMessageComponent extends Container {
 				);
 				continue;
 			}
-			this.#contentContainer.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
+			this.#contentContainer.addChild(
+				new Text(theme.fg("toolOutput", tSettingsUi("[Image: {mimeType}]", { mimeType: image.mimeType })), 1, 0),
+			);
 		}
 	}
 
@@ -772,6 +846,7 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.#contentContainer.clear();
 		this.#thinkingDots = undefined;
+		this.#markdownChildren = [];
 
 		// Determine if we should capture Markdown instances for next fast path
 		const shouldCapture = this.#canFastPath(message);
@@ -796,7 +871,10 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
-				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme());
+				const md = new Markdown(trimmed, 0, 0, getMarkdownTheme());
+				md.setCodeBlockDisplayOptions(buildAssistantCodeBlockOptions());
+				md.setExpanded(this.#expanded);
+				this.#markdownChildren.push(md);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
@@ -819,10 +897,13 @@ export class AssistantMessageComponent extends Container {
 					);
 
 				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+				const md = new Markdown(thinkingText, 0, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 					italic: true,
 				});
+				md.setCodeBlockDisplayOptions(buildAssistantCodeBlockOptions());
+				md.setExpanded(this.#expanded);
+				this.#markdownChildren.push(md);
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
@@ -851,9 +932,15 @@ export class AssistantMessageComponent extends Container {
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (errorPresentation.kind === "compact-recovered") {
-			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
-		} else if (!hasToolCalls && errorPresentation.kind === "full") {
+			if (!this.#errorSuppressed) {
+				const repeatSuffix = this.#errorRepeatCount > 1 ? ` × ${this.#errorRepeatCount}` : "";
+				const recoveredError = tSettingsUi("Error: {message}", {
+					message: `${errorPresentation.text}${repeatSuffix}`,
+				});
+				this.#contentContainer.addChild(new Spacer(1));
+				this.#contentContainer.addChild(new Text(theme.fg("dim", theme.strikethrough(recoveredError)), 1, 0));
+			}
+		} else if (!this.#errorSuppressed && !hasToolCalls && errorPresentation.kind === "full") {
 			if (!(message.stopReason === "error" && this.#errorPinned)) {
 				this.#contentContainer.addChild(new Spacer(1));
 				if (message.stopReason === "aborted") {

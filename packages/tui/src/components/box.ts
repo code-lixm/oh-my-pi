@@ -1,5 +1,6 @@
 import type { Component } from "../tui";
 import {
+	anchorRightBorder,
 	getPaddingX,
 	getPublishedLineWidths,
 	getWidthConfigEpoch,
@@ -208,7 +209,7 @@ export class Box implements Component {
 				const side = paint(border.chars.vertical);
 				result.push(paint(border.chars.topLeft + rule + border.chars.topRight));
 				for (const row of interior) {
-					result.push(side + row + side);
+					result.push(anchorRightBorder(side + row, side, width));
 				}
 				result.push(paint(border.chars.bottomLeft + rule + border.chars.bottomRight));
 			} else {

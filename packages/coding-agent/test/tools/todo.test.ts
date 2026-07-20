@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -16,6 +16,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 function createSession(initialPhases: TodoPhase[] = []): ToolSession {
 	let phases = initialPhases;
@@ -34,6 +35,12 @@ function createSession(initialPhases: TodoPhase[] = []): ToolSession {
 
 beforeAll(async () => {
 	await initTheme();
+});
+
+const initialSettingsUiLocale = getSettingsUiLocale();
+
+afterEach(() => {
+	setSettingsUiLocale(initialSettingsUiLocale);
 });
 
 describe("resolveTodoMarkdownPath", () => {
@@ -547,6 +554,50 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 		];
 		const sel = selectCollapsedTodos(tasks, never, 5);
 		expect(contents(sel)).toEqual(["done a", "done b"]);
+	});
+});
+
+describe("todoToolRenderer i18n", () => {
+	it("localizes the zh-CN title and task count while preserving phase and task text", () => {
+		setSettingsUiLocale("zh-CN");
+		const result = {
+			content: [{ type: "text" as const, text: "" }],
+			details: {
+				storage: "memory" as const,
+				phases: [
+					{
+						name: "Phase Ω",
+						tasks: [
+							{ content: "AuthLoader literal", status: "pending" as const },
+							{ content: "RetryStopScout literal", status: "pending" as const },
+							{ content: "RendererAuditAM literal", status: "pending" as const },
+							{ content: "RendererAuditNZ literal", status: "pending" as const },
+						],
+					},
+					{
+						name: "Phase β",
+						tasks: [
+							{ content: "Keep user prose raw", status: "pending" as const },
+							{ content: "Keep model prose raw", status: "pending" as const },
+							{ content: "Keep path ./src/task/render.ts raw", status: "pending" as const },
+							{ content: "Keep IRC body raw", status: "pending" as const },
+						],
+					},
+				],
+			},
+		};
+
+		const rendered = Bun.stripANSI(
+			todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"),
+		);
+
+		expect(rendered).toContain("待办");
+		expect(rendered).toContain("8 个任务");
+		expect(rendered).not.toContain("Todo");
+		expect(rendered).not.toContain("8 tasks");
+		expect(rendered).toContain("Phase Ω");
+		expect(rendered).toContain("AuthLoader literal");
+		expect(rendered).toContain("./src/task/render.ts");
 	});
 });
 

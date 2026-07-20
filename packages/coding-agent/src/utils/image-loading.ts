@@ -1,6 +1,9 @@
 import * as fs from "node:fs/promises";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { formatBytes, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
+import { formatBytes, prompt, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
+import { selectPrompt } from "../prompts/prompt-locale";
+import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize";
 
@@ -162,7 +165,9 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
-			dimensionNote = formatDimensionNote(resized);
+			dimensionNote = formatDimensionNote(resized, {
+				format: params => prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+			});
 		} catch {
 			// keep original image when resize fails
 		}
@@ -209,7 +214,9 @@ export async function loadImageAttachmentInput(
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
-			dimensionNote = formatDimensionNote(resized);
+			dimensionNote = formatDimensionNote(resized, {
+				format: params => prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+			});
 		} catch {
 			// keep original image when resize fails
 		}

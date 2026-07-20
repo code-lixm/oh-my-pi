@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Skill } from "../extensibility/skills";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { validateRelativePath } from "../internal-urls/skill-protocol";
 import type { InternalResource, ResolveContext } from "../internal-urls/types";
@@ -38,12 +39,12 @@ export interface InternalUrlExpansionOptions {
 export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): string {
 	const parsed = /^skill:\/\/([^/?#]+)(\/[^?#]*)?(?:[?#].*)?$/.exec(url);
 	if (!parsed) {
-		throw new ToolError(`Invalid skill:// URL: ${url}`);
+		throw new ToolError(tSettingsUi("Invalid skill:// URL: {url}", { url }));
 	}
 
 	let rawSkillSegment = parsed[1];
 	if (!rawSkillSegment) {
-		throw new ToolError(`skill:// URL requires a skill name: ${url}`);
+		throw new ToolError(tSettingsUi("skill:// URL requires a skill name: {url}", { url }));
 	}
 	// Decode percent-encoded colons (%3A) used for namespaced skill names
 	try {
@@ -59,7 +60,12 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	if (!skill) {
 		const available = skills.map(s => s.name);
 		const availableStr = available.length > 0 ? available.join(", ") : "none";
-		throw new ToolError(`Unknown skill: ${rawSkillSegment}. Available: ${availableStr}`);
+		throw new ToolError(
+			tSettingsUi("Unknown skill: {skill}. Available: {available}", {
+				skill: rawSkillSegment,
+				available: availableStr,
+			}),
+		);
 	}
 
 	// Combine any colon suffix (line range like ":1-5") with the path segment
@@ -74,7 +80,7 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	try {
 		relativePath = decodeURIComponent(rawPath.slice(1));
 	} catch {
-		throw new ToolError(`Invalid skill:// URL path encoding: ${url}`);
+		throw new ToolError(tSettingsUi("Invalid skill:// URL path encoding: {url}", { url }));
 	}
 	try {
 		validateRelativePath(relativePath);
@@ -87,7 +93,7 @@ export function resolveSkillUrlToPath(url: string, skills: readonly Skill[]): st
 	const resolvedPath = path.resolve(targetPath);
 	const resolvedBaseDir = path.resolve(skill.baseDir);
 	if (!resolvedPath.startsWith(resolvedBaseDir + path.sep) && resolvedPath !== resolvedBaseDir) {
-		throw new ToolError("Path traversal is not allowed in skill:// URLs");
+		throw new ToolError(tSettingsUi("Path traversal is not allowed in skill:// URLs"));
 	}
 
 	return resolvedPath;
@@ -207,7 +213,7 @@ async function resolveInternalUrlToPath(
 	const url = normalizeLocalScheme(rawUrl);
 	const scheme = extractScheme(url);
 	if (!scheme) {
-		throw new ToolError(`Unsupported internal URL in bash command: ${url}`);
+		throw new ToolError(tSettingsUi("Unsupported internal URL in bash command: {url}", { url }));
 	}
 
 	if (scheme === "skill") {
@@ -217,7 +223,9 @@ async function resolveInternalUrlToPath(
 	if (scheme === "local") {
 		if (!localOptions) {
 			throw new ToolError(
-				"Cannot resolve local:// URL in bash command: local protocol options are unavailable for this session.",
+				tSettingsUi(
+					"Cannot resolve local:// URL in bash command: local protocol options are unavailable for this session.",
+				),
 			);
 		}
 		const resolvedLocalPath = resolveLocalUrlToPath(url, localOptions);
@@ -229,8 +237,8 @@ async function resolveInternalUrlToPath(
 
 	if (!internalRouter?.canHandle(url)) {
 		throw new ToolError(
-			`Cannot resolve ${scheme}:// URL in bash command: ${url}\n` +
-				"Internal URL router is unavailable for this protocol in the current session.",
+			`${tSettingsUi("Cannot resolve {scheme}:// URL in bash command: {url}", { scheme, url })}\n` +
+				tSettingsUi("Internal URL router is unavailable for this protocol in the current session."),
 		);
 	}
 
@@ -239,11 +247,18 @@ async function resolveInternalUrlToPath(
 		resource = await internalRouter.resolve(url, { cwd, pathOnly: true });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new ToolError(`Failed to resolve ${scheme}:// URL in bash command: ${url}\n${message}`);
+		throw new ToolError(
+			`${tSettingsUi("Failed to resolve {scheme}:// URL in bash command: {url}", { scheme, url })}\n${message}`,
+		);
 	}
 
 	if (!resource.sourcePath) {
-		throw new ToolError(`${scheme}:// URL resolved without a filesystem path and cannot be used in bash: ${url}`);
+		throw new ToolError(
+			tSettingsUi("{scheme}:// URL resolved without a filesystem path and cannot be used in bash: {url}", {
+				scheme,
+				url,
+			}),
+		);
 	}
 
 	return path.resolve(resource.sourcePath);

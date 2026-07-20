@@ -2,14 +2,26 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { type CliLocale, getCliLocale, setCliLocale } from "@oh-my-pi/pi-utils/cli";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
+import { getPromptLocale, type PromptLocale, setPromptLocale } from "../../../src/prompts/prompt-locale";
 
 beforeAll(async () => {
 	await initTheme();
 });
 
 let geometryStub: { restore(): void } | undefined;
+let previousCliLocale: CliLocale;
+let previousSettingsUiLocale: ReturnType<typeof getSettingsUiLocale>;
+let previousPromptLocale: PromptLocale;
 
 beforeEach(async () => {
+	previousCliLocale = getCliLocale();
+	previousSettingsUiLocale = getSettingsUiLocale();
+	previousPromptLocale = getPromptLocale();
+	setCliLocale("en");
+	setSettingsUiLocale("en");
+	setPromptLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	geometryStub = stubStdoutGeometry(120);
@@ -17,6 +29,9 @@ beforeEach(async () => {
 
 afterEach(() => {
 	resetSettingsForTest();
+	setCliLocale(previousCliLocale);
+	setSettingsUiLocale(previousSettingsUiLocale);
+	setPromptLocale(previousPromptLocale);
 	geometryStub?.restore();
 	geometryStub = undefined;
 });
@@ -39,7 +54,10 @@ function stubStdoutGeometry(cols: number): { restore(): void } {
 	};
 }
 
-function createSelector(onCancel: () => void = () => {}): SettingsSelectorComponent {
+function createSelector(
+	onCancel: () => void = () => {},
+	onChange: (path: string, value: unknown) => void = () => {},
+): SettingsSelectorComponent {
 	return new SettingsSelectorComponent(
 		{
 			availableThinkingLevels: [],
@@ -49,7 +67,7 @@ function createSelector(onCancel: () => void = () => {}): SettingsSelectorCompon
 			cwd: process.cwd(),
 		},
 		{
-			onChange: () => {},
+			onChange,
 			onCancel,
 		},
 	);
@@ -106,6 +124,50 @@ describe("SettingsSelectorComponent memory tab", () => {
 		expect(after).toContain("Memory Backend");
 		expect(after).not.toContain("Hindsight API URL");
 		expect(after).not.toContain("Hindsight Auto Recall");
+	});
+
+	it("persists zh-CN inline boolean labels as raw booleans when enabling 紧凑布局 (`tui.tight`)", () => {
+		const changes: Array<[string, unknown]> = [];
+		settings.set("displayLanguage", "zh-CN");
+		const comp = createSelector(undefined, (path, value) => {
+			changes.push([path, value]);
+		});
+
+		for (const ch of "紧凑布局") comp.handleInput(ch);
+		const before = comp.render(120).join("\n");
+		expect(before).toContain("紧凑布局");
+		expect(before).toContain("关闭");
+
+		comp.handleInput("\x1b[B");
+		comp.handleInput("\n");
+
+		expect(settings.get("tui.tight")).toBe(true);
+		expect(changes).toEqual([["tui.tight", true]]);
+		const after = comp.render(120).join("\n");
+		expect(after).toContain("紧凑布局");
+		expect(after).toContain("开");
+	});
+
+	it("persists zh-CN inline enum labels as raw keys when cycling 终端超链接", () => {
+		const changes: Array<[string, unknown]> = [];
+		settings.set("displayLanguage", "zh-CN");
+		const comp = createSelector(undefined, (path, value) => {
+			changes.push([path, value]);
+		});
+
+		for (const ch of "终端超链接") comp.handleInput(ch);
+		const before = comp.render(120).join("\n");
+		expect(before).toContain("终端超链接");
+		expect(before).toContain("自动");
+
+		comp.handleInput("\n");
+
+		expect(settings.get("tui.hyperlinks")).toBe("always");
+		expect(settings.get("tui.hyperlinks")).not.toBe("总是");
+		expect(changes).toEqual([["tui.hyperlinks", "always"]]);
+		const after = comp.render(120).join("\n");
+		expect(after).toContain("终端超链接");
+		expect(after).toContain("总是");
 	});
 
 	it("clears the global settings search on Escape before closing the selector", () => {

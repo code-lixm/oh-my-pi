@@ -6,8 +6,10 @@ import { AgentTokenShare } from "../components/AgentTokenShare";
 import { CHART_THEMES } from "../components/chart-shared";
 import { formatCost, formatDurationMs, formatInteger, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
+import { t } from "../locale/catalog";
 import type { MessageStats, TimeRange } from "../types";
 import { AsyncBoundary, DataTable, MetricCluster, Panel, Skeleton, StatusPill } from "../ui";
+import { useLocale } from "../useLocale";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface OverviewRouteProps {
@@ -18,6 +20,8 @@ export interface OverviewRouteProps {
 }
 
 export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }: OverviewRouteProps) {
+	useLocale();
+	const locale = useLocale();
 	const {
 		data: overview,
 		error: overviewError,
@@ -51,7 +55,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 			labels,
 			datasets: [
 				{
-					label: "Requests",
+					label: t("overview.legend.requests"),
 					data: overview.timeSeries.map(pt => pt.requests),
 					borderColor: "#5ad8e6",
 					backgroundColor: "rgba(90, 216, 230, 0.12)",
@@ -62,7 +66,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 					fill: true,
 				},
 				{
-					label: "Errors",
+					label: t("overview.legend.errors"),
 					data: overview.timeSeries.map(pt => pt.errors),
 					borderColor: "#ff6b7d",
 					backgroundColor: "rgba(255, 107, 125, 0.12)",
@@ -74,7 +78,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 				},
 			],
 		};
-	}, [overview?.timeSeries, range]);
+	}, [overview?.timeSeries, range, locale]);
 
 	const chartOptions = useMemo(() => {
 		return {
@@ -136,7 +140,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 		() => [
 			{
 				key: "model",
-				header: "Model",
+				header: t("table.column.model"),
 				render: (item: MessageStats) => (
 					<div>
 						<div className="stats-font-medium stats-text-primary">{item.model}</div>
@@ -146,39 +150,39 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 			},
 			{
 				key: "timestamp",
-				header: "Time",
+				header: t("table.column.time"),
 				render: (item: MessageStats) => formatRelativeTime(item.timestamp),
 			},
 			{
 				key: "tokens",
-				header: "Tokens",
+				header: t("table.column.tokens"),
 				numeric: true,
 				render: (item: MessageStats) => formatInteger(item.usage.totalTokens),
 			},
 			{
 				key: "cost",
-				header: "Cost",
+				header: t("table.column.cost"),
 				numeric: true,
 				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
 			},
 			{
 				key: "duration",
-				header: "Duration",
+				header: t("table.column.duration"),
 				numeric: true,
 				render: (item: MessageStats) => formatDurationMs(item.duration),
 			},
 			{
 				key: "status",
-				header: "Status",
+				header: t("table.column.status"),
 				className: "stats-text-center",
 				render: (item: MessageStats) => (
 					<StatusPill variant={item.errorMessage ? "danger" : "success"}>
-						{item.errorMessage ? "Failed" : "Success"}
+						{item.errorMessage ? t("table.status.failed") : t("table.status.success")}
 					</StatusPill>
 				),
 			},
 		],
-		[],
+		[locale],
 	);
 
 	const renderMobileCard = (item: MessageStats, onClick?: () => void) => (
@@ -189,24 +193,24 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 					<div className="stats-text-xs stats-text-muted">{item.provider}</div>
 				</div>
 				<StatusPill variant={item.errorMessage ? "danger" : "success"}>
-					{item.errorMessage ? "Failed" : "Success"}
+					{item.errorMessage ? t("table.status.failed") : t("table.status.success")}
 				</StatusPill>
 			</div>
 			<div className="stats-mobile-card-grid">
 				<div>
-					<div className="stats-mobile-card-label">Time</div>
+					<div className="stats-mobile-card-label">{t("table.column.time")}</div>
 					<div className="stats-mobile-card-value">{formatRelativeTime(item.timestamp)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Cost</div>
+					<div className="stats-mobile-card-label">{t("table.column.cost")}</div>
 					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Tokens</div>
+					<div className="stats-mobile-card-label">{t("table.column.tokens")}</div>
 					<div className="stats-mobile-card-value">{formatInteger(item.usage.totalTokens)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Duration</div>
+					<div className="stats-mobile-card-label">{t("table.column.duration")}</div>
 					<div className="stats-mobile-card-value">{formatDurationMs(item.duration)}</div>
 				</div>
 			</div>
@@ -225,10 +229,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 				{overview && <MetricCluster stats={overview.overall} />}
 			</AsyncBoundary>
 
-			<Panel
-				title="Token Usage by Agent"
-				subtitle="Share of tokens across the main agent, task subagents, and the advisor"
-			>
+			<Panel title={t("overview.tokenUsage.title")} subtitle={t("overview.tokenUsage.subtitle")}>
 				<AsyncBoundary loading={overviewLoading} error={overviewError} data={overview}>
 					{overview && <AgentTokenShare stats={overview.byAgentType} />}
 				</AsyncBoundary>
@@ -236,14 +237,14 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 
 			<div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 				<div className="lg:col-span-2">
-					<Panel title="System Throughput" subtitle="Request volume and errors over time">
+					<Panel title={t("overview.throughput.title")} subtitle={t("overview.throughput.subtitle")}>
 						<AsyncBoundary loading={overviewLoading} error={overviewError} data={overview}>
 							<div className="h-[280px]">
 								{overview?.timeSeries && overview.timeSeries.length > 0 ? (
 									<Line data={chartData} options={chartOptions} />
 								) : (
 									<div className="h-full flex items-center justify-center text-stats-muted text-sm">
-										No time-series data available
+										{t("overview.throughput.empty")}
 									</div>
 								)}
 							</div>
@@ -252,7 +253,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 				</div>
 
 				<div>
-					<Panel title="Operational Feed" subtitle="Real-time request log">
+					<Panel title={t("overview.feed.title")} subtitle={t("overview.feed.subtitle")}>
 						<AsyncBoundary
 							loading={requestsLoading}
 							error={requestsError}
@@ -309,7 +310,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 									);
 								})}
 								{previewRequests.length === 0 && (
-									<div className="py-8 text-center stats-text-muted text-sm">No recent requests found</div>
+									<div className="py-8 text-center stats-text-muted text-sm">{t("overview.feed.empty")}</div>
 								)}
 							</div>
 						</AsyncBoundary>
@@ -318,11 +319,11 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 			</div>
 
 			<Panel
-				title="Recent Requests Preview"
-				subtitle="Latest transactions processed by the proxy"
+				title={t("overview.preview.title")}
+				subtitle={t("overview.preview.subtitle")}
 				actions={
 					<a href={`#/requests?range=${range}`} className="stats-button stats-button-secondary text-xs">
-						View All Requests
+						{t("overview.preview.viewAll")}
 					</a>
 				}
 			>
@@ -333,7 +334,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 						keyExtractor={item => item.id || `${item.sessionFile}-${item.entryId}`}
 						onRowClick={item => item.id && onRequestClick(item.id)}
 						renderMobileCard={renderMobileCard}
-						emptyText="No recent requests found"
+						emptyText={t("overview.feed.empty")}
 					/>
 				</AsyncBoundary>
 			</Panel>

@@ -1,7 +1,11 @@
 import { escapeXmlText, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import goalBudgetLimitPrompt from "../prompts/goals/goal-budget-limit.md" with { type: "text" };
+import goalBudgetLimitPromptZh from "../prompts/goals/goal-budget-limit.zh-CN.md" with { type: "text" };
 import goalContinuationPrompt from "../prompts/goals/goal-continuation.md" with { type: "text" };
+import goalContinuationPromptZh from "../prompts/goals/goal-continuation.zh-CN.md" with { type: "text" };
 import goalModeActivePrompt from "../prompts/goals/goal-mode-active.md" with { type: "text" };
+import goalModeActivePromptZh from "../prompts/goals/goal-mode-active.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import type { Goal, GoalBudgetSteering, GoalModeState, GoalRuntimeEvent, GoalTokenUsage } from "./state";
 
 export interface GoalRuntimeHost {
@@ -79,10 +83,10 @@ export function goalTokenDelta(current: GoalTokenUsage, baseline: GoalTokenUsage
 export function renderGoalPrompt(kind: GoalPromptKind, goal: Goal): string {
 	const template =
 		kind === "active"
-			? goalModeActivePrompt
+			? selectPrompt(goalModeActivePrompt, goalModeActivePromptZh)
 			: kind === "continuation"
-				? goalContinuationPrompt
-				: goalBudgetLimitPrompt;
+				? selectPrompt(goalContinuationPrompt, goalContinuationPromptZh)
+				: selectPrompt(goalBudgetLimitPrompt, goalBudgetLimitPromptZh);
 	return prompt.render(template, {
 		objective: escapeXmlText(goal.objective),
 		tokensUsed: String(goal.tokensUsed),

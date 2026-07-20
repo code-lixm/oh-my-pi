@@ -26,6 +26,7 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
@@ -79,16 +80,20 @@ export class CommandController {
 		const arg = parts.length > 1 ? parts[1] : undefined;
 
 		if (arg === "--copy" || arg === "clipboard" || arg === "copy") {
-			this.ctx.showWarning("Use /dump to copy the session to clipboard.");
+			this.ctx.showWarning(tSettingsUi("Use /dump to copy the session to clipboard."));
 			return;
 		}
 
 		try {
 			const filePath = await this.ctx.session.exportToHtml(arg);
-			this.ctx.showStatus(`Session exported to: ${filePath}`);
+			this.ctx.showStatus(tSettingsUi("Session exported to: {filePath}", { filePath }));
 			this.openInBrowser(filePath);
 		} catch (error: unknown) {
-			this.ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.ctx.showError(
+				tSettingsUi("Failed to export session: {error}", {
+					error: error instanceof Error ? error.message : "Unknown error",
+				}),
+			);
 		}
 	}
 
@@ -96,7 +101,7 @@ export class CommandController {
 		try {
 			const formatted = this.ctx.session.formatSessionAsText();
 			if (!formatted) {
-				this.ctx.showError("No messages to dump yet.");
+				this.ctx.showError(tSettingsUi("No messages to dump yet."));
 				return;
 			}
 			// Build the LLM request JSON sidecar first so its path (and a
@@ -106,18 +111,23 @@ export class CommandController {
 			try {
 				sidecarPath = await this.ctx.session.dumpLlmRequestToTmpDir();
 			} catch (error: unknown) {
-				sidecarError = error instanceof Error ? error.message : "Unknown error";
+				sidecarError = error instanceof Error ? error.message : tSettingsUi("Unknown error");
 			}
 			const doc = sidecarPath
-				? `${formatted}\n\n---\nLLM request JSON: ${sidecarPath}\nThis file persists on disk and may contain raw context/secrets — treat accordingly.`
+				? `${formatted}\n\n---\n${tSettingsUi("LLM request JSON: {path}", { path: String(sidecarPath) })}\n${tSettingsUi("This file persists on disk and may contain raw context/secrets — treat accordingly.")}`
 				: formatted;
 			await copyToClipboard(doc);
-			const statusParts = ["Session copied to clipboard"];
-			if (sidecarPath) statusParts.push(`LLM request JSON: ${sidecarPath}`);
-			if (sidecarError) statusParts.push(`LLM request JSON unavailable: ${sidecarError}`);
+			const statusParts = [tSettingsUi("Session copied to clipboard")];
+			if (sidecarPath) statusParts.push(tSettingsUi("LLM request JSON: {path}", { path: String(sidecarPath) }));
+			if (sidecarError)
+				statusParts.push(tSettingsUi("LLM request JSON unavailable: {error}", { error: String(sidecarError) }));
 			this.ctx.showStatus(statusParts.join("\n"));
 		} catch (error: unknown) {
-			this.ctx.showError(`Failed to copy session: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.ctx.showError(
+				tSettingsUi("Failed to copy session: {error}", {
+					error: error instanceof Error ? error.message : "Unknown error",
+				}),
+			);
 		}
 	}
 
@@ -125,18 +135,20 @@ export class CommandController {
 		try {
 			const advisorHistory = this.ctx.session.formatAdvisorHistoryAsText({ compact: !isRaw });
 			if (advisorHistory === null) {
-				this.ctx.showError("Advisor is not active for this session.");
+				this.ctx.showError(tSettingsUi("Advisor is not active for this session."));
 				return;
 			}
 			if (!advisorHistory) {
-				this.ctx.showError("Advisor has no history yet.");
+				this.ctx.showError(tSettingsUi("Advisor has no history yet."));
 				return;
 			}
 			copyToClipboard(advisorHistory);
-			this.ctx.showStatus("Advisor history copied to clipboard");
+			this.ctx.showStatus(tSettingsUi("Advisor history copied to clipboard"));
 		} catch (error: unknown) {
 			this.ctx.showError(
-				`Failed to copy advisor history: ${error instanceof Error ? error.message : "Unknown error"}`,
+				tSettingsUi("Failed to copy advisor history: {error}", {
+					error: error instanceof Error ? error.message : "Unknown error",
+				}),
 			);
 		}
 	}
@@ -147,15 +159,17 @@ export class CommandController {
 			const renderedLines = this.ctx.chatContainer.render(width).map(line => replaceTabs(Bun.stripANSI(line)));
 			const rendered = renderedLines.join("\n").trimEnd();
 			if (!rendered) {
-				this.ctx.showError("No messages to dump yet.");
+				this.ctx.showError(tSettingsUi("No messages to dump yet."));
 				return;
 			}
 			const tmpPath = path.join(os.tmpdir(), `${Snowflake.next()}-tmp.txt`);
 			await Bun.write(tmpPath, `${rendered}\n`);
-			this.ctx.showStatus(`Debug transcript written to:\n${tmpPath}`);
+			this.ctx.showStatus(tSettingsUi("Debug transcript written to:\n{path}", { path: tmpPath }));
 		} catch (error: unknown) {
 			this.ctx.showError(
-				`Failed to write debug transcript: ${error instanceof Error ? error.message : "Unknown error"}`,
+				tSettingsUi("Failed to write debug transcript: {error}", {
+					error: error instanceof Error ? error.message : "Unknown error",
+				}),
 			);
 		}
 	}
@@ -169,7 +183,7 @@ export class CommandController {
 			return;
 		}
 
-		const loader = new BorderedLoader(this.ctx.ui, theme, "Sharing session...");
+		const loader = new BorderedLoader(this.ctx.ui, theme, tSettingsUi("Sharing session..."));
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(loader);
 		this.ctx.ui.setFocus(loader);
@@ -183,7 +197,7 @@ export class CommandController {
 		};
 		loader.onAbort = () => {
 			restoreEditor();
-			this.ctx.showStatus("Share cancelled");
+			this.ctx.showStatus(tSettingsUi("Share cancelled"));
 		};
 
 		// Custom share scripts keep their legacy contract: they receive a path
@@ -197,21 +211,25 @@ export class CommandController {
 				restoreEditor();
 
 				if (typeof result === "string") {
-					this.ctx.showStatus(`Share URL: ${result}`);
+					this.ctx.showStatus(tSettingsUi("Share URL: {url}", { url: result }));
 					this.openInBrowser(result);
 				} else if (result) {
 					const parts: string[] = [];
-					if (result.url) parts.push(`Share URL: ${result.url}`);
+					if (result.url) parts.push(tSettingsUi("Share URL: {url}", { url: result.url }));
 					if (result.message) parts.push(result.message);
 					if (parts.length > 0) this.ctx.showStatus(parts.join("\n"));
 					if (result.url) this.openInBrowser(result.url);
 				} else {
-					this.ctx.showStatus("Session shared");
+					this.ctx.showStatus(tSettingsUi("Session shared"));
 				}
 			} catch (err) {
 				if (!loader.signal.aborted) {
 					restoreEditor();
-					this.ctx.showError(`Custom share failed: ${err instanceof Error ? err.message : String(err)}`);
+					this.ctx.showError(
+						tSettingsUi("Custom share failed: {error}", {
+							error: err instanceof Error ? err.message : String(err),
+						}),
+					);
 				}
 			} finally {
 				await fs.rm(tmpFile, { force: true }).catch(() => {});
@@ -231,15 +249,19 @@ export class CommandController {
 			if (loader.signal.aborted) return;
 			restoreEditor();
 
-			const lines = [`Share URL: ${result.url}`];
-			if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
-			if (result.truncated) lines.push("Note: large content was trimmed to fit the share size limit.");
+			const lines = [tSettingsUi("Share URL: {url}", { url: result.url })];
+			if (result.gistUrl) lines.push(tSettingsUi("Gist: {url}", { url: result.gistUrl }));
+			if (result.truncated) lines.push(tSettingsUi("Note: large content was trimmed to fit the share size limit."));
 			this.ctx.showStatus(lines.join("\n"));
 			this.openInBrowser(result.url);
 		} catch (error: unknown) {
 			if (!loader.signal.aborted) {
 				restoreEditor();
-				this.ctx.showError(`Failed to share session: ${error instanceof Error ? error.message : "Unknown error"}`);
+				this.ctx.showError(
+					tSettingsUi("Failed to share session: {error}", {
+						error: error instanceof Error ? error.message : "Unknown error",
+					}),
+				);
 			}
 		}
 	}
@@ -253,9 +275,9 @@ export class CommandController {
 		const normalizedPremiumRequests = Math.round((premiumRequests + Number.EPSILON) * 100) / 100;
 
 		let info = `${theme.bold("Session Info")}\n\n`;
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n\n`;
-		info += `\n${theme.bold("Provider")}\n`;
+		info += `${theme.fg("dim", tSettingsUi("File:"))} ${stats.sessionFile ?? tSettingsUi("In-memory")}\n`;
+		info += `${theme.fg("dim", tSettingsUi("ID:"))} ${stats.sessionId}\n\n`;
+		info += `\n${theme.bold(tSettingsUi("Provider"))}\n`;
 		const model = this.ctx.session.model;
 		if (!model) {
 			info += `${theme.fg("dim", "No model selected")}\n`;
@@ -316,7 +338,7 @@ export class CommandController {
 		}
 
 		if (this.ctx.lspServers && this.ctx.lspServers.length > 0) {
-			info += `\n${theme.bold("LSP Servers")}\n`;
+			info += `\n${theme.bold(tSettingsUi("LSP Servers"))}\n`;
 			for (const server of this.ctx.lspServers) {
 				const statusColor =
 					server.status === "ready"
@@ -486,13 +508,13 @@ export class CommandController {
 	async handleJobsCommand(): Promise<void> {
 		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
-			this.ctx.showWarning("Async background jobs are unavailable in this session.");
+			this.ctx.showWarning(tSettingsUi("Async background jobs are unavailable in this session."));
 			return;
 		}
 
 		const now = Date.now();
 		const lineWidth = Math.max(24, (this.ctx.ui.terminal.columns ?? 100) - 24);
-		let info = `${theme.bold("Background Jobs")}\n\n`;
+		let info = `${theme.bold(tSettingsUi("Background Jobs"))}\n\n`;
 		info += `${theme.fg("dim", "Running:")} ${snapshot.running.length}\n`;
 
 		if (snapshot.running.length === 0 && snapshot.recent.length === 0) {
@@ -525,19 +547,23 @@ export class CommandController {
 		if (!usageReports) {
 			const provider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 			if (!provider.fetchUsageReports) {
-				this.ctx.showWarning("Usage reporting is not configured for this session.");
+				this.ctx.showWarning(tSettingsUi("Usage reporting is not configured for this session."));
 				return;
 			}
 			try {
 				usageReports = await provider.fetchUsageReports();
 			} catch (error) {
-				this.ctx.showError(`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					tSettingsUi("Failed to fetch usage data: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
 				return;
 			}
 		}
 
 		if (!usageReports || usageReports.length === 0) {
-			this.ctx.showWarning("No usage data available.");
+			this.ctx.showWarning(tSettingsUi("No usage data available."));
 			return;
 		}
 
@@ -561,10 +587,10 @@ export class CommandController {
 		const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
 		const changelogMarkdown =
 			entriesToShow.length > 0 ? renderChangelogEntries(entriesToShow).markdown : "No changelog entries found.";
-		const title = showFull ? "Full Changelog" : "Recent Changes";
+		const title = showFull ? tSettingsUi("Full Changelog") : tSettingsUi("Recent Changes");
 		const hint = showFull
 			? ""
-			: `\n\n${theme.fg("dim", "Use")} ${theme.bold("/changelog full")} ${theme.fg("dim", "to view the complete changelog.")}`;
+			: `\n\n${theme.fg("dim", tSettingsUi("Use"))} ${theme.bold("/changelog full")} ${theme.fg("dim", tSettingsUi("to view the complete changelog."))}`;
 
 		const block = new TranscriptBlock();
 		block.addChild(new DynamicBorder());
@@ -585,13 +611,13 @@ export class CommandController {
 			tools: this.ctx.session.agent.state.tools,
 			xdevTools: this.ctx.session.getXdevToolEntries(),
 		});
-		showMarkdownPanel(this.ctx, "Available Tools", tools);
+		showMarkdownPanel(this.ctx, tSettingsUi("Available Tools"), tools);
 	}
 
 	handleContextCommand(): void {
 		const breakdown = computeContextBreakdown(this.ctx.session, { snapcompactSavings: true });
 		if (breakdown.contextWindow <= 0) {
-			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
+			this.ctx.showWarning(tSettingsUi("Context usage is unavailable: no model is selected for this session."));
 			return;
 		}
 		const output = renderContextUsage(breakdown, theme);
@@ -613,12 +639,14 @@ export class CommandController {
 		if (action === "view") {
 			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
 			if (!payload) {
-				this.ctx.showWarning("Memory payload is empty (memory backend off, disabled, or no memory available).");
+				this.ctx.showWarning(
+					tSettingsUi("Memory payload is empty (memory backend off, disabled, or no memory available)."),
+				);
 				return;
 			}
 			const block = new TranscriptBlock();
 			block.addChild(new DynamicBorder());
-			block.addChild(new Text(theme.bold(theme.fg("accent", "Memory Injection Payload")), 1, 0));
+			block.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("Memory Injection Payload"))), 1, 0));
 			block.addChild(new Spacer(1));
 			block.addChild(new Markdown(payload, 1, 1, getMarkdownTheme()));
 			block.addChild(new DynamicBorder());
@@ -630,9 +658,11 @@ export class CommandController {
 			try {
 				await backend.clear(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
 				await this.ctx.session.refreshBaseSystemPrompt();
-				this.ctx.showStatus("Memory data cleared and system prompt refreshed.");
+				this.ctx.showStatus(tSettingsUi("Memory data cleared and system prompt refreshed."));
 			} catch (error) {
-				this.ctx.showError(`Memory clear failed: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					`${tSettingsUi("Memory clear failed:")} ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
 			return;
 		}
@@ -640,9 +670,11 @@ export class CommandController {
 		if (action === "enqueue" || action === "rebuild") {
 			try {
 				await backend.enqueue(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
-				this.ctx.showStatus("Memory consolidation enqueued.");
+				this.ctx.showStatus(tSettingsUi("Memory consolidation enqueued."));
 			} catch (error) {
-				this.ctx.showError(`Memory enqueue failed: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					`${tSettingsUi("Memory enqueue failed:")} ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
 			return;
 		}
@@ -652,12 +684,28 @@ export class CommandController {
 			try {
 				const payload = await hook?.(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
 				if (!payload) {
-					this.ctx.showWarning(`Memory ${action} is not available for the ${backend.id} backend.`);
+					this.ctx.showWarning(
+						tSettingsUi("Memory {action} is not available for the {backend} backend.", {
+							action,
+							backend: String(backend.id),
+						}),
+					);
 					return;
 				}
-				showMarkdownPanel(this.ctx, `Memory ${action === "stats" ? "Stats" : "Diagnostics"}`, payload);
+				showMarkdownPanel(
+					this.ctx,
+					tSettingsUi("Memory {kind}", {
+						kind: action === "stats" ? tSettingsUi("Stats") : tSettingsUi("Diagnostics"),
+					}),
+					payload,
+				);
 			} catch (error) {
-				this.ctx.showError(`Memory ${action} failed: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					tSettingsUi("Memory {action} failed: {error}", {
+						action,
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
 			}
 			return;
 		}
@@ -667,7 +715,7 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|mm ...>");
+		this.ctx.showError(tSettingsUi("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|mm ...>"));
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {
@@ -679,11 +727,11 @@ export class CommandController {
 		const state = this.ctx.session.getHindsightSessionState();
 		const primary = state && !state.aliasOf ? state : undefined;
 		if (!primary) {
-			this.ctx.showError("Hindsight backend is not active for this session.");
+			this.ctx.showError(tSettingsUi("Hindsight backend is not active for this session."));
 			return;
 		}
 		if (!primary.config.mentalModelsEnabled) {
-			this.ctx.showError("Mental models are disabled (hindsight.mentalModelsEnabled = false).");
+			this.ctx.showError(tSettingsUi("Mental models are disabled (hindsight.mentalModelsEnabled = false)."));
 			return;
 		}
 
@@ -692,14 +740,14 @@ export class CommandController {
 				await this.#mmList(primary);
 				return;
 			case "show":
-				if (!arg) return this.ctx.showError("Usage: /memory mm show <id>");
+				if (!arg) return this.ctx.showError(tSettingsUi("Usage: /memory mm show <id>"));
 				await this.#mmShow(primary, arg);
 				return;
 			case "refresh":
 				await this.#mmRefresh(primary, arg);
 				return;
 			case "history":
-				if (!arg) return this.ctx.showError("Usage: /memory mm history <id>");
+				if (!arg) return this.ctx.showError(tSettingsUi("Usage: /memory mm history <id>"));
 				await this.#mmHistory(primary, arg);
 				return;
 			case "seed":
@@ -710,11 +758,11 @@ export class CommandController {
 				return;
 			case "delete":
 			case "remove":
-				if (!arg) return this.ctx.showError("Usage: /memory mm delete <id>");
+				if (!arg) return this.ctx.showError(tSettingsUi("Usage: /memory mm delete <id>"));
 				await this.#mmDelete(primary, arg);
 				return;
 			default:
-				this.ctx.showError("Usage: /memory mm <list|show|refresh|history|seed|reload|delete>");
+				this.ctx.showError(tSettingsUi("Usage: /memory mm <list|show|refresh|history|seed|reload|delete>"));
 		}
 	}
 
@@ -724,16 +772,22 @@ export class CommandController {
 			const response = await client.listMentalModels(state.bankId, { detail: "metadata" });
 			const items = response.items ?? [];
 			if (items.length === 0) {
-				this.ctx.showStatus(`No mental models on bank ${state.bankId}.`);
+				this.ctx.showStatus(tSettingsUi("No mental models on bank {bankId}.", { bankId: state.bankId }));
 				return;
 			}
 			const lines = items
 				.slice()
 				.sort((a, b) => a.id.localeCompare(b.id))
 				.map(summarizeMentalModel);
-			showMarkdownPanel(this.ctx, `Mental Models — ${state.bankId}`, lines.join("\n"));
+			showMarkdownPanel(
+				this.ctx,
+				tSettingsUi("Mental Models — {bankId}", { bankId: state.bankId }),
+				lines.join("\n"),
+			);
 		} catch (error) {
-			this.ctx.showError(`mm list failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm list failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -741,7 +795,7 @@ export class CommandController {
 		try {
 			const model = await state.client.getMentalModel(state.bankId, id, { detail: "content" });
 			if (!model) {
-				this.ctx.showError(`Mental model not found: ${id}`);
+				this.ctx.showError(tSettingsUi("Mental model not found: {id}", { id }));
 				return;
 			}
 			const tags = model.tags && model.tags.length > 0 ? `\n_tags: ${model.tags.join(", ")}_` : "";
@@ -754,7 +808,9 @@ export class CommandController {
 				`**id:** \`${model.id}\`${tags}${refreshed}${sourceQuery}\n\n${content}`,
 			);
 		} catch (error) {
-			this.ctx.showError(`mm show failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm show failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -765,7 +821,7 @@ export class CommandController {
 				// auto-refresh filter so curated/manual models can still be
 				// refreshed on demand.
 				await state.client.refreshMentalModel(state.bankId, id);
-				this.ctx.showStatus(`Refresh queued for mental model ${id}.`);
+				this.ctx.showStatus(tSettingsUi("Refresh queued for mental model {id}.", { id }));
 			} else {
 				// Bulk refresh: only touch models that opted into automatic
 				// refresh via `trigger.refresh_after_consolidation`. Curated
@@ -776,14 +832,17 @@ export class CommandController {
 				const list = await state.client.listMentalModels(state.bankId, { detail: "content" });
 				const items = list.items ?? [];
 				if (items.length === 0) {
-					this.ctx.showStatus(`No mental models on bank ${state.bankId}.`);
+					this.ctx.showStatus(tSettingsUi("No mental models on bank {bankId}.", { bankId: state.bankId }));
 					return;
 				}
 				const targets = items.filter(m => m.trigger?.refresh_after_consolidation === true);
 				const skipped = items.length - targets.length;
 				if (targets.length === 0) {
 					this.ctx.showStatus(
-						`No mental models opted into auto-refresh; ${skipped} curated model(s) left untouched. Pass an explicit id to refresh one of them.`,
+						tSettingsUi(
+							"No mental models opted into auto-refresh; {skipped} curated model(s) left untouched. Pass an explicit id to refresh one of them.",
+							{ skipped: String(skipped) },
+						),
 					);
 					return;
 				}
@@ -794,13 +853,21 @@ export class CommandController {
 						queued++;
 					} catch (error) {
 						this.ctx.showWarning(
-							`Refresh failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`,
+							tSettingsUi("Refresh failed for {id}: {error}", {
+								id: String(item.id),
+								error: error instanceof Error ? error.message : String(error),
+							}),
 						);
 					}
 				}
-				const skippedSuffix = skipped > 0 ? `; skipped ${skipped} curated model(s)` : "";
+				const skippedSuffix =
+					skipped > 0 ? tSettingsUi("; skipped {n} curated model(s)", { n: String(skipped) }) : "";
 				this.ctx.showStatus(
-					`Refresh queued for ${queued}/${targets.length} auto-refresh model(s)${skippedSuffix}.`,
+					tSettingsUi("Refresh queued for {queued}/{total} auto-refresh model(s){suffix}.", {
+						queued: String(queued),
+						total: String(targets.length),
+						suffix: skippedSuffix,
+					}),
 				);
 			}
 			// Reload the cache after a brief grace so the new content (if the refresh
@@ -808,7 +875,11 @@ export class CommandController {
 			await Bun.sleep(500);
 			await reloadMentalModelsForSession(state.session);
 		} catch (error) {
-			this.ctx.showError(`mm refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm refresh failed: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
 		}
 	}
 
@@ -819,11 +890,11 @@ export class CommandController {
 				state.client.getMentalModelHistory(state.bankId, id),
 			]);
 			if (!model) {
-				this.ctx.showError(`Mental model not found: ${id}`);
+				this.ctx.showError(tSettingsUi("Mental model not found: {id}", { id }));
 				return;
 			}
 			if (history.length === 0) {
-				this.ctx.showStatus(`No history recorded for ${id}.`);
+				this.ctx.showStatus(tSettingsUi("No history recorded for {id}.", { id }));
 				return;
 			}
 			// History is most-recent first. Each entry stores the content BEFORE that
@@ -839,9 +910,13 @@ export class CommandController {
 				const diff = diffMentalModelContent(before, after);
 				sections.push(`### ${history[i].changed_at}\n\n\`\`\`diff\n${diff}\n\`\`\``);
 			}
-			showMarkdownPanel(this.ctx, `History — ${model.name}`, sections.join("\n\n"));
+			showMarkdownPanel(this.ctx, tSettingsUi("History — {name}", { name: model.name }), sections.join("\n\n"));
 		} catch (error) {
-			this.ctx.showError(`mm history failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm history failed: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
 		}
 	}
 
@@ -858,7 +933,9 @@ export class CommandController {
 				config.scoping,
 			);
 			if (seeds.length === 0) {
-				this.ctx.showStatus(`No built-in seeds apply to scoping=${config.scoping}.`);
+				this.ctx.showStatus(
+					tSettingsUi("No built-in seeds apply to scoping={scoping}.", { scoping: String(config.scoping) }),
+				);
 				return;
 			}
 			const list = await state.client.listMentalModels(state.bankId, { detail: "metadata" });
@@ -880,22 +957,32 @@ export class CommandController {
 					created++;
 				} catch (error) {
 					this.ctx.showWarning(
-						`Seed failed for ${seed.id}: ${error instanceof Error ? error.message : String(error)}`,
+						tSettingsUi("Seed failed for {id}: {error}", {
+							id: String(seed.id),
+							error: error instanceof Error ? error.message : String(error),
+						}),
 					);
 				}
 			}
-			this.ctx.showStatus(`Seeded ${created} new mental model(s); ${skipped} already present.`);
+			this.ctx.showStatus(
+				tSettingsUi("Seeded {created} new mental model(s); {skipped} already present.", {
+					created: String(created),
+					skipped: String(skipped),
+				}),
+			);
 		} catch (error) {
-			this.ctx.showError(`mm seed failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm seed failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
 	async #mmReload(state: HindsightSessionState): Promise<void> {
 		const ok = await reloadMentalModelsForSession(state.session);
 		if (ok) {
-			this.ctx.showStatus("Mental-model cache reloaded.");
+			this.ctx.showStatus(tSettingsUi("Mental-model cache reloaded."));
 		} else {
-			this.ctx.showError("Reload failed (Hindsight backend not active or mental models disabled).");
+			this.ctx.showError(tSettingsUi("Reload failed (Hindsight backend not active or mental models disabled)."));
 		}
 	}
 
@@ -903,15 +990,19 @@ export class CommandController {
 		try {
 			const removed = await state.client.deleteMentalModel(state.bankId, id);
 			if (!removed) {
-				this.ctx.showError(`Mental model not found: ${id}`);
+				this.ctx.showError(tSettingsUi("Mental model not found: {id}", { id }));
 				return;
 			}
 			// Drop the cached snippet so the closing tag does not silently keep
 			// stale content in the system prompt until the next agent_end TTL.
 			await reloadMentalModelsForSession(state.session);
-			this.ctx.showStatus(`Deleted mental model ${id} from bank ${state.bankId}.`);
+			this.ctx.showStatus(
+				tSettingsUi("Deleted mental model {id} from bank {bankId}.", { id, bankId: state.bankId }),
+			);
 		} catch (error) {
-			this.ctx.showError(`mm delete failed: ${error instanceof Error ? error.message : String(error)}`);
+			this.ctx.showError(
+				tSettingsUi("mm delete failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -957,7 +1048,7 @@ export class CommandController {
 
 	async handleDropCommand(): Promise<void> {
 		if (!this.ctx.sessionManager.getSessionFile()) {
-			this.ctx.showError("Nothing to drop (in-memory session)");
+			this.ctx.showError(tSettingsUi("Nothing to drop (in-memory session)"));
 			return;
 		}
 		await this.#runNewSessionFlow({ drop: true }, "Session dropped");

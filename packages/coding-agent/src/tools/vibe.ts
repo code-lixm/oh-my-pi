@@ -16,13 +16,20 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import vibeKillDescription from "../prompts/tools/vibe-kill.md" with { type: "text" };
+import vibeKillDescriptionZh from "../prompts/tools/vibe-kill.zh-CN.md" with { type: "text" };
 import vibeListDescription from "../prompts/tools/vibe-list.md" with { type: "text" };
+import vibeListDescriptionZh from "../prompts/tools/vibe-list.zh-CN.md" with { type: "text" };
 import vibeSendDescription from "../prompts/tools/vibe-send.md" with { type: "text" };
+import vibeSendDescriptionZh from "../prompts/tools/vibe-send.zh-CN.md" with { type: "text" };
 import vibeSpawnDescription from "../prompts/tools/vibe-spawn.md" with { type: "text" };
+import vibeSpawnDescriptionZh from "../prompts/tools/vibe-spawn.zh-CN.md" with { type: "text" };
 import vibeWaitDescription from "../prompts/tools/vibe-wait.md" with { type: "text" };
+import vibeWaitDescriptionZh from "../prompts/tools/vibe-wait.zh-CN.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { oneLineLabel } from "../task/types";
 import { renderStatusLine } from "../tui";
@@ -109,7 +116,7 @@ export class VibeSpawnTool implements AgentTool<typeof vibeSpawnSchema, VibeTool
 	readonly parameters = vibeSpawnSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeSpawnDescription);
+		this.description = prompt.render(selectPrompt(vibeSpawnDescription, vibeSpawnDescriptionZh));
 	}
 
 	async execute(_toolCallId: string, params: typeof vibeSpawnSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
@@ -130,7 +137,7 @@ export class VibeSendTool implements AgentTool<typeof vibeSendSchema, VibeToolDe
 	readonly parameters = vibeSendSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeSendDescription);
+		this.description = prompt.render(selectPrompt(vibeSendDescription, vibeSendDescriptionZh));
 	}
 
 	async execute(_toolCallId: string, params: typeof vibeSendSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
@@ -157,7 +164,7 @@ export class VibeWaitTool implements AgentTool<typeof vibeWaitSchema, VibeToolDe
 	readonly strict = true;
 	readonly interruptible = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeWaitDescription);
+		this.description = prompt.render(selectPrompt(vibeWaitDescription, vibeWaitDescriptionZh));
 	}
 
 	async execute(
@@ -228,7 +235,7 @@ export class VibeKillTool implements AgentTool<typeof vibeKillSchema, VibeToolDe
 	readonly parameters = vibeKillSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeKillDescription);
+		this.description = prompt.render(selectPrompt(vibeKillDescription, vibeKillDescriptionZh));
 	}
 
 	async execute(_toolCallId: string, params: typeof vibeKillSchema.infer): Promise<AgentToolResult<VibeToolDetails>> {
@@ -254,7 +261,7 @@ export class VibeListTool implements AgentTool<typeof vibeListSchema, VibeToolDe
 	readonly parameters = vibeListSchema;
 	readonly strict = true;
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(vibeListDescription);
+		this.description = prompt.render(selectPrompt(vibeListDescription, vibeListDescriptionZh));
 	}
 
 	async execute(): Promise<AgentToolResult<VibeToolDetails>> {
@@ -464,17 +471,20 @@ function linesComponent(lines: string[] | (() => string[])): Component {
 function describeCall(op: VibeOp, args: VibeRenderArgs | undefined): string {
 	switch (op) {
 		case "spawn":
-			return `spawn ${args?.cli ?? "?"}${args?.name ? ` · ${frameText(args.name, 40)}` : ""}`;
+			return tSettingsUi("spawn {cli}{nameSuffix}", {
+				cli: args?.cli ?? "?",
+				nameSuffix: args?.name ? ` · ${frameText(args.name, 40)}` : "",
+			});
 		case "send":
-			return `send → ${args?.session ? frameText(args.session, 40) : "?"}`;
+			return tSettingsUi("send → {session}", { session: args?.session ? frameText(args.session, 40) : "?" });
 		case "wait":
 			return args?.sessions?.length
-				? `wait on ${frameText(args.sessions.join(", "), 60)}`
-				: "wait on running sessions";
+				? tSettingsUi("wait on {sessions}", { sessions: frameText(args.sessions.join(", "), 60) })
+				: tSettingsUi("wait on running sessions");
 		case "kill":
-			return `kill ${args?.session ? frameText(args.session, 40) : "?"}`;
+			return tSettingsUi("kill {session}", { session: args?.session ? frameText(args.session, 40) : "?" });
 		case "list":
-			return "sessions";
+			return tSettingsUi("sessions");
 	}
 }
 
@@ -488,7 +498,7 @@ export function createVibeToolRenderer(op: VibeOp) {
 		animatedPartialResult: op === "wait",
 
 		renderCall(args: VibeRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-			const title = uiTheme.fg("muted", `vibe ${describeCall(op, args)}`);
+			const title = uiTheme.fg("muted", tSettingsUi("vibe {detail}", { detail: describeCall(op, args) }));
 			if (composerOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				return linesComponent(() => {
@@ -497,11 +507,18 @@ export function createVibeToolRenderer(op: VibeOp) {
 						uiTheme,
 						title,
 						composerRows(uiTheme, message, { cursor: cursorOn, expanded: options.expanded }),
-						uiTheme.fg("dim", op === "spawn" ? "booting CLI…" : "delivering…"),
+						uiTheme.fg("dim", op === "spawn" ? tSettingsUi("booting CLI…") : tSettingsUi("delivering…")),
 					);
 				});
 			}
-			return new Text(renderStatusLine({ icon: "pending", title: `vibe ${describeCall(op, args)}` }, uiTheme), 0, 0);
+			return new Text(
+				renderStatusLine(
+					{ icon: "pending", title: tSettingsUi("vibe {detail}", { detail: describeCall(op, args) }) },
+					uiTheme,
+				),
+				0,
+				0,
+			);
 		},
 
 		renderResult(
@@ -514,7 +531,10 @@ export function createVibeToolRenderer(op: VibeOp) {
 			if (!details || result.isError) {
 				const fallback = result.content.find(part => part.type === "text")?.text ?? "";
 				const header = renderStatusLine(
-					{ icon: result.isError ? "error" : "done", title: `vibe ${describeCall(op, args)}` },
+					{
+						icon: result.isError ? "error" : "done",
+						title: tSettingsUi("vibe {detail}", { detail: describeCall(op, args) }),
+					},
 					uiTheme,
 				);
 				const body = fallback
@@ -527,18 +547,25 @@ export function createVibeToolRenderer(op: VibeOp) {
 				const message = op === "spawn" ? (args?.prompt ?? "") : (args?.message ?? "");
 				const target =
 					op === "spawn"
-						? `${uiTheme.fg("muted", "vibe spawn")} ${formatBadge(details.spawned?.cli ?? args?.cli ?? "?", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
-						: `${uiTheme.fg("muted", "vibe send →")} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
+						? `${uiTheme.fg("muted", tSettingsUi("vibe spawn"))} ${formatBadge(details.spawned?.cli ?? args?.cli ?? "?", "accent", uiTheme)} ${uiTheme.fg("accent", frameText(details.spawned?.id ?? args?.name ?? "", 40))}`
+						: `${uiTheme.fg("muted", tSettingsUi("vibe send →"))} ${uiTheme.fg("accent", frameText(args?.session ?? "?", 40))}`;
 				const ack =
 					op === "spawn"
-						? uiTheme.fg("success", `turn started${details.spawned ? ` (job ${details.spawned.jobId})` : ""}`)
+						? uiTheme.fg(
+								"success",
+								tSettingsUi("turn started{suffix}", {
+									suffix: details.spawned ? ` (job ${details.spawned.jobId})` : "",
+								}),
+							)
 						: details.send?.mode === "steered"
-							? uiTheme.fg("success", "steered into the running turn")
+							? uiTheme.fg("success", tSettingsUi("steered into the running turn"))
 							: details.send?.mode === "queued"
-								? uiTheme.fg("warning", "mid-turn — queued as the next turn")
+								? uiTheme.fg("warning", tSettingsUi("mid-turn — queued as the next turn"))
 								: uiTheme.fg(
 										"success",
-										`turn started${details.send?.jobId ? ` (job ${details.send.jobId})` : ""}`,
+										tSettingsUi("turn started{suffix}", {
+											suffix: details.send?.jobId ? ` (job ${details.send.jobId})` : "",
+										}),
 									);
 				const lines = miniFrame(
 					uiTheme,
@@ -548,13 +575,15 @@ export function createVibeToolRenderer(op: VibeOp) {
 				);
 				return linesComponent(lines);
 			}
-
 			if (op === "kill") {
-				const killedNote = details.killed?.cancelledTurn ? " (in-flight turn cancelled)" : "";
+				const killedNote = details.killed?.cancelledTurn ? tSettingsUi(" (in-flight turn cancelled)") : "";
 				const header = renderStatusLine(
 					{
 						icon: "done",
-						title: `vibe kill ${frameText(details.killed?.id ?? args?.session ?? "?", 40)}${killedNote}`,
+						title: tSettingsUi("vibe kill {session}{cancelled}", {
+							session: frameText(details.killed?.id ?? args?.session ?? "?", 40),
+							cancelled: killedNote,
+						}),
 					},
 					uiTheme,
 				);
@@ -564,10 +593,14 @@ export function createVibeToolRenderer(op: VibeOp) {
 			// wait/list: the TV wall.
 			const screens = details.screens;
 			if (screens.length === 0) {
-				const fallback = result.content.find(part => part.type === "text")?.text ?? "no sessions";
+				const fallback = result.content.find(part => part.type === "text")?.text ?? tSettingsUi("no sessions");
 				return new Text(
 					renderStatusLine(
-						{ icon: "warning", title: `vibe ${op}`, meta: [uiTheme.fg("dim", frameText(fallback, 60))] },
+						{
+							icon: "warning",
+							title: tSettingsUi("vibe {op}", { op }),
+							meta: [uiTheme.fg("dim", frameText(fallback, 60))],
+						},
 						uiTheme,
 					),
 					0,
@@ -579,15 +612,16 @@ export function createVibeToolRenderer(op: VibeOp) {
 			return linesComponent(() => {
 				const running = screens.filter(screen => screen.state === "running" || screen.state === "starting").length;
 				const meta: string[] = [];
-				if (running > 0) meta.push(uiTheme.fg("accent", `${running} on air`));
-				if (settledById.size > 0) meta.push(uiTheme.fg("success", `${settledById.size} settled`));
-				if (details.wait?.timedOut) meta.push(uiTheme.fg("warning", "timed out"));
+				if (running > 0) meta.push(uiTheme.fg("accent", tSettingsUi("{count} on air", { count: running })));
+				if (settledById.size > 0)
+					meta.push(uiTheme.fg("success", tSettingsUi("{count} settled", { count: settledById.size })));
+				if (details.wait?.timedOut) meta.push(uiTheme.fg("warning", tSettingsUi("timed out")));
 				const title =
 					op === "wait"
 						? waiting
-							? "vibe wait — watching the wall"
-							: "vibe wait"
-						: `vibe sessions (${screens.length})`;
+							? tSettingsUi("vibe wait — watching the wall")
+							: tSettingsUi("vibe wait")
+						: tSettingsUi("vibe sessions ({count})", { count: screens.length });
 				const header = renderStatusLine(
 					{
 						icon: details.wait?.timedOut ? "warning" : running > 0 ? "info" : "done",

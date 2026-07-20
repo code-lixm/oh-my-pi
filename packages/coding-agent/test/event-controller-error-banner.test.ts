@@ -17,6 +17,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
@@ -39,16 +40,20 @@ function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): Assist
 	};
 }
 
+let previousLocale = getSettingsUiLocale();
+
 beforeAll(async () => {
 	await initTheme(false);
 });
 
 beforeEach(async () => {
+	previousLocale = getSettingsUiLocale();
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
 
 afterEach(() => {
+	setSettingsUiLocale(previousLocale);
 	resetSettingsForTest();
 });
 
@@ -61,6 +66,7 @@ function createFixture(streamingMessage?: AssistantMessage) {
 		setErrorPinned: vi.fn(),
 		setHideThinkingBlock: vi.fn((hide: boolean) => componentCalls.push(`hide:${hide}`)),
 		messagePersistenceKey: vi.fn(() => "test-persistence-key"),
+		setErrorAggregation: vi.fn(),
 		applyRetryRecovery: vi.fn(),
 	};
 	const showPinnedError = vi.fn();
@@ -148,6 +154,8 @@ describe("EventController error banner", () => {
 
 		expect(showPinnedError).toHaveBeenCalledTimes(1);
 		expect(showPinnedError).toHaveBeenCalledWith(errorMessage);
+		expect(streamingComponent.setErrorAggregation).toHaveBeenCalledTimes(1);
+		expect(streamingComponent.setErrorAggregation).toHaveBeenCalledWith(1, false);
 		// The same error is mirrored in the banner, so the transcript's inline
 		// `Error: …` line is suppressed to avoid a duplicate render.
 		expect(streamingComponent.setErrorPinned).toHaveBeenCalledWith(true);
@@ -359,11 +367,34 @@ describe("EventController working loader reconciliation", () => {
 });
 
 describe("ErrorBannerComponent", () => {
-	it("renders the provider error message", () => {
-		const banner = new ErrorBannerComponent("Output blocked by content filtering policy");
+	it("renders an English footer that says the current turn stopped, /retry can recover, and the next message closes the banner", () => {
+		setSettingsUiLocale("en");
+		const errorMessage = "Output blocked by content filtering policy";
+		const banner = new ErrorBannerComponent(errorMessage);
 		const rendered = Bun.stripANSI(banner.render(120).join("\n"));
-		expect(rendered).toContain("Output blocked by content filtering policy");
-		expect(rendered).toContain("Dismissed when you send your next message.");
+
+		expect(rendered).toContain(errorMessage);
+		expect(rendered).toMatch(/(current|this) turn/i);
+		expect(rendered).toMatch(/stopp(?:ed|ing)/i);
+		expect(rendered).toContain("/retry");
+		expect(rendered).toMatch(/next message/i);
+		expect(rendered).toMatch(/dismiss|close/i);
+		expect(rendered).toMatch(/banner/i);
+	});
+
+	it("renders a zh-CN footer with the same stop, /retry, and next-message dismissal contract while preserving the raw provider error", () => {
+		setSettingsUiLocale("zh-CN");
+		const errorMessage = "Output blocked by content filtering policy";
+		const banner = new ErrorBannerComponent(errorMessage);
+		const rendered = Bun.stripANSI(banner.render(120).join("\n"));
+
+		expect(rendered).toContain(errorMessage);
+		expect(rendered).toMatch(/当前|本轮/);
+		expect(rendered).toMatch(/已停止|停止|终止/);
+		expect(rendered).toContain("/retry");
+		expect(rendered).toMatch(/下一条消息/);
+		expect(rendered).toMatch(/关闭|收起/);
+		expect(rendered).toMatch(/提示|横幅/);
 	});
 
 	it("caps an oversized multi-line error to a few lines", () => {

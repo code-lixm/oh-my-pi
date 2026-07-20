@@ -19,7 +19,9 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { theme } from "../modes/theme/theme";
+
 import { initXdg } from "./commands/init-xdg";
 
 // =============================================================================
@@ -91,8 +93,9 @@ export function parseConfigArgs(args: string[]): ConfigCommandArgs | undefined {
 
 	const action = args[1];
 	if (!VALID_ACTIONS.includes(action as ConfigAction)) {
-		console.error(chalk.red(`Unknown config command: ${action}`));
-		console.error(`Valid commands: ${VALID_ACTIONS.join(", ")}`);
+		console.error(chalk.red(tSettingsUi("Unknown config command: {command}", { command: action })));
+		console.error(tSettingsUi("Valid commands: {commands}", { commands: VALID_ACTIONS.join(", ") }));
+
 		process.exit(1);
 	}
 
@@ -127,11 +130,12 @@ export function parseConfigArgs(args: string[]): ConfigCommandArgs | undefined {
 
 function formatValue(value: unknown): string {
 	if (value === undefined || value === null) {
-		return chalk.dim("(not set)");
+		return chalk.dim(tSettingsUi("(not set)"));
 	}
 	if (typeof value === "boolean") {
-		return value ? chalk.green("true") : chalk.red("false");
+		return value ? chalk.green(tSettingsUi("true")) : chalk.red(tSettingsUi("false"));
 	}
+
 	if (typeof value === "number") {
 		return chalk.cyan(String(value));
 	}
@@ -181,17 +185,27 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			const lower = trimmed.toLowerCase();
 			if (["true", "1", "yes", "on"].includes(lower)) parsedValue = true;
 			else if (["false", "0", "no", "off"].includes(lower)) parsedValue = false;
-			else throw new Error(`Invalid boolean value: ${rawValue}. Use true/false, yes/no, on/off, or 1/0`);
+			else
+				throw new Error(
+					tSettingsUi("Invalid boolean value: {rawValue}. Use true/false, yes/no, on/off, or 1/0", {
+						rawValue,
+					}),
+				);
 			break;
 		}
 		case "number":
 			parsedValue = Number(trimmed);
-			if (!Number.isFinite(parsedValue)) throw new Error(`Invalid number: ${rawValue}`);
+			if (!Number.isFinite(parsedValue)) throw new Error(tSettingsUi("Invalid number: {rawValue}", { rawValue }));
 			break;
 		case "enum": {
 			const valid = getEnumValues(path);
 			if (valid && !valid.includes(trimmed)) {
-				throw new Error(`Invalid value: ${rawValue}. Valid values: ${valid.join(", ")}`);
+				throw new Error(
+					tSettingsUi("Invalid value: {rawValue}. Valid values: {validValues}", {
+						rawValue,
+						validValues: valid.join(", "),
+					}),
+				);
 			}
 			parsedValue = trimmed;
 			break;
@@ -201,10 +215,10 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			try {
 				parsed = JSON.parse(trimmed);
 			} catch {
-				throw new Error(`Invalid array JSON: ${rawValue}`);
+				throw new Error(tSettingsUi("Invalid array JSON: {rawValue}", { rawValue }));
 			}
 			if (!Array.isArray(parsed)) {
-				throw new Error(`Invalid array JSON: ${rawValue}`);
+				throw new Error(tSettingsUi("Invalid array JSON: {rawValue}", { rawValue }));
 			}
 			parsedValue = parsed;
 			break;
@@ -214,10 +228,10 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			try {
 				parsed = JSON.parse(trimmed);
 			} catch {
-				throw new Error(`Invalid record JSON: ${rawValue}`);
+				throw new Error(tSettingsUi("Invalid record JSON: {rawValue}", { rawValue }));
 			}
 			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				throw new Error(`Invalid record JSON: ${rawValue}`);
+				throw new Error(tSettingsUi("Invalid record JSON: {rawValue}", { rawValue }));
 			}
 			if (path === "providers.maxInFlightRequests") {
 				parsed = validateProviderMaxInFlightRequests(parsed);
@@ -289,7 +303,7 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 		return;
 	}
 
-	console.log(chalk.bold("Settings:\n"));
+	console.log(chalk.bold(tSettingsUi("Settings:\n")));
 
 	const groups: Record<string, CliSettingDef[]> = {};
 	for (const def of defs) {
@@ -319,15 +333,19 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 
 function handleGet(key: string | undefined, flags: { json?: boolean }): void {
 	if (!key) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config get <key>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Usage: {command}", { command: `${APP_NAME} config get <key>` })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Unknown setting: {key}", { key })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
@@ -343,22 +361,26 @@ function handleGet(key: string | undefined, flags: { json?: boolean }): void {
 
 async function handleSet(key: string | undefined, value: string | undefined, flags: { json?: boolean }): Promise<void> {
 	if (!key || value === undefined) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config set <key> <value>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Usage: {command}", { command: `${APP_NAME} config set <key> <value>` })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Unknown setting: {key}", { key })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
 	try {
 		parseAndSetValue(def.path, value);
 	} catch (err) {
-		console.error(chalk.red(String(err)));
+		console.error(chalk.red(err instanceof Error ? err.message : String(err)));
 		process.exit(1);
 	}
 
@@ -367,21 +389,29 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: newValue }));
 	} else {
-		console.log(chalk.green(`${theme.status.success} Set ${def.path} = ${formatValue(newValue)}`));
+		console.log(
+			chalk.green(
+				`${theme.status.success} ${tSettingsUi("Set {key} = {value}", { key: def.path, value: formatValue(newValue) })}`,
+			),
+		);
 	}
 }
 
 async function handleReset(key: string | undefined, flags: { json?: boolean }): Promise<void> {
 	if (!key) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config reset <key>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Usage: {command}", { command: `${APP_NAME} config reset <key>` })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(tSettingsUi("Unknown setting: {key}", { key })));
+		console.error(
+			chalk.dim(`\n${tSettingsUi("Run '{command}' to see available keys", { command: `${APP_NAME} config list` })}`),
+		);
 		process.exit(1);
 	}
 
@@ -392,7 +422,11 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: defaultValue }));
 	} else {
-		console.log(chalk.green(`${theme.status.success} Reset ${def.path} to ${formatValue(defaultValue)}`));
+		console.log(
+			chalk.green(
+				`${theme.status.success} ${tSettingsUi("Reset {key} to {value}", { key: def.path, value: formatValue(defaultValue) })}`,
+			),
+		);
 	}
 }
 
@@ -405,20 +439,20 @@ function handlePath(): void {
 // =============================================================================
 
 export function printConfigHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} config`)} - Manage settings
+	console.log(`${chalk.bold(`${APP_NAME} config`)} - ${tSettingsUi("Manage settings")}
 
-${chalk.bold("Commands:")}
-  list               List all settings with current values
-  get <key>          Get a specific setting value
-  set <key> <value>  Set a setting value
-  reset <key>        Reset a setting to its default value
-  path               Print the config directory path
-  init-xdg           Initialize XDG Base Directory structure
+${chalk.bold(tSettingsUi("Commands:"))}
+  ${tSettingsUi("list               List all settings with current values")}
+  ${tSettingsUi("get <key>          Get a specific setting value")}
+  ${tSettingsUi("set <key> <value>  Set a setting value")}
+  ${tSettingsUi("reset <key>        Reset a setting to its default value")}
+  ${tSettingsUi("path               Print the config directory path")}
+  ${tSettingsUi("init-xdg           Initialize XDG Base Directory structure")}
 
-${chalk.bold("Options:")}
-  --json             Output as JSON
+${chalk.bold(tSettingsUi("Options:"))}
+  ${tSettingsUi("--json             Output as JSON")}
 
-${chalk.bold("Examples:")}
+${chalk.bold(tSettingsUi("Examples:"))}
   ${APP_NAME} config list
   ${APP_NAME} config get theme
   ${APP_NAME} config set theme catppuccin-mocha
@@ -428,7 +462,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} config list --json
   ${APP_NAME} config init-xdg
 
-${chalk.bold("Boolean Values:")}
-  true, false, yes, no, on, off, 1, 0
+${chalk.bold(tSettingsUi("Boolean Values:"))}
+  ${tSettingsUi("true, false, yes, no, on, off, 1, 0")}
 `);
 }

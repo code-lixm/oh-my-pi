@@ -15,13 +15,12 @@ import {
 	type UsageReport,
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
-import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, getProjectDir, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { Settings } from "../config/settings";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { discoverAuthStorage } from "../sdk";
-
-const BAR_WIDTH = 28;
-
 export interface UsageCommandArgs {
 	action?: string;
 	json?: boolean;
@@ -32,6 +31,8 @@ export interface UsageCommandArgs {
 	/** History window in days (with `history`). */
 	days?: number;
 }
+
+const BAR_WIDTH = 28;
 
 /** Identity slice of a stored credential, for "every account" coverage. */
 export interface UsageAccountIdentity {
@@ -213,15 +214,15 @@ function describeAmount(limit: UsageLimit): string {
 			`${formatUnitValue(amount.used, amount.unit)} / ${formatUnitValue(amount.limit, amount.unit)}${UNIT_SUFFIX[amount.unit]}`,
 		);
 	} else if (absoluteUnit && amount.remaining !== undefined) {
-		parts.push(`${formatUnitValue(amount.remaining, amount.unit)}${UNIT_SUFFIX[amount.unit]} left`);
+		parts.push(`${formatUnitValue(amount.remaining, amount.unit)}${UNIT_SUFFIX[amount.unit]} ${tSettingsUi("left")}`);
 	}
 	const fraction = resolveUsedFraction(limit);
 	if (fraction !== undefined) {
-		parts.push(`${(fraction * 100).toFixed(1)}% used`);
+		parts.push(tSettingsUi("{percent}% used", { percent: (fraction * 100).toFixed(1) }));
 	} else if (amount.remainingFraction !== undefined) {
-		parts.push(`${(amount.remainingFraction * 100).toFixed(1)}% left`);
+		parts.push(tSettingsUi("{percent}% left", { percent: (amount.remainingFraction * 100).toFixed(1) }));
 	}
-	if (parts.length === 0) parts.push("no data");
+	if (parts.length === 0) parts.push(tSettingsUi("no data"));
 	return parts.join(" · ");
 }
 
@@ -256,7 +257,7 @@ function reportAccountLabel(report: UsageReport, index: number): string {
 		const scoped = limit.scope.accountId ?? limit.scope.projectId;
 		if (scoped) return scoped;
 	}
-	return `account ${index + 1}`;
+	return tSettingsUi("account {n}", { n: index + 1 });
 }
 
 /** Lowercased identity strings a report can be attributed to. */
@@ -346,8 +347,9 @@ export function collectUnreportedAccounts(
 
 /** Compose the account label from parts, masking each part individually so `--redact` cannot be bypassed by the composite string. */
 function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<string, string>): string {
-	if (account.type === "api_key") return "API key";
-	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account";
+	if (account.type === "api_key") return tSettingsUi("API key");
+	const base =
+		account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? tSettingsUi("OAuth account");
 	const masked = redaction?.get(base) ?? base;
 	// orgId fallback: the uuid is the actual scoped identity; a token response
 	// can carry it without a display name, and two same-email rows must still
@@ -374,10 +376,13 @@ function formatAccountHeader(
 		header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
 	}
 	const planType = report.metadata?.planType;
-	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
+	if (typeof planType === "string" && planType)
+		header += chalk.dim(` · ${tSettingsUi("plan: {planType}", { planType })}`);
 	const savedResets = report.resetCredits?.availableCount ?? 0;
 	if (savedResets > 0) {
-		header += chalk.cyan(` · ✦ ${savedResets} saved reset${savedResets === 1 ? "" : "s"}`);
+		header += chalk.cyan(
+			` · ✦ ${savedResets} ${tSettingsUi("saved reset{plural}", { plural: savedResets === 1 ? "" : "s" })}`,
+		);
 		const credits = report.resetCredits?.credits;
 		if (credits) {
 			const expiries = credits
@@ -388,16 +393,22 @@ function formatAccountHeader(
 			const upcoming = expiries.find(c => c.ms > nowMs);
 			if (upcoming) {
 				header += chalk.dim(
-					` · soonest expires in ${formatDuration(upcoming.ms - nowMs)} (${upcoming.date.slice(0, 10)})`,
+					` · ${tSettingsUi("soonest expires in {duration} ({date})", {
+						duration: formatDuration(upcoming.ms - nowMs),
+						date: upcoming.date.slice(0, 10),
+					})}`,
 				);
 			} else {
 				const lastExpired = expiries.at(-1);
-				if (lastExpired) header += chalk.dim(` · expired (${lastExpired.date.slice(0, 10)})`);
+				if (lastExpired)
+					header += chalk.dim(` · ${tSettingsUi("expired ({date})", { date: lastExpired.date.slice(0, 10) })}`);
 			}
 		}
 	}
 	if (report.fetchedAt && nowMs - report.fetchedAt > 90_000) {
-		header += chalk.dim(` · fetched ${formatDuration(nowMs - report.fetchedAt)} ago`);
+		header += chalk.dim(
+			` · ${tSettingsUi("fetched {duration} ago", { duration: formatDuration(nowMs - report.fetchedAt) })}`,
+		);
 	}
 	return header;
 }
@@ -409,7 +420,7 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 	const details: string[] = [describeAmount(limit)];
 	const resetsAt = limit.window?.resetsAt;
 	if (resetsAt !== undefined && resetsAt > nowMs) {
-		details.push(`resets in ${formatDuration(resetsAt - nowMs)}`);
+		details.push(tSettingsUi("resets in {duration}", { duration: formatDuration(resetsAt - nowMs) }));
 	}
 	const lines = [
 		`      ${STATUS_COLOR[status]("●")} ${padded}  ${renderBar(limit)}  ${chalk.dim(details.join(" · "))}`,
@@ -440,7 +451,7 @@ function collectProviderLimitTemplates(reports: UsageReport[]): ProviderLimitTem
 
 function formatMissingLimitLine(template: ProviderLimitTemplate, labelWidth: number): string {
 	const padded = template.title.padEnd(labelWidth);
-	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim("not reported")}`;
+	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim(tSettingsUi("not reported"))}`;
 }
 
 /** Per-window capacity stat: how much account quota is burned and left. */
@@ -531,8 +542,10 @@ export function formatUsageBreakdown(
 
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(0, ...reports.map(report => report.fetchedAt ?? 0));
-	const headerSuffix = latestFetchedAt ? chalk.dim(` · fetched ${formatDuration(nowMs - latestFetchedAt)} ago`) : "";
-	lines.push(`${chalk.bold("Usage")}${headerSuffix}`);
+	const headerSuffix = latestFetchedAt
+		? chalk.dim(` · ${tSettingsUi("fetched {duration} ago", { duration: formatDuration(nowMs - latestFetchedAt) })}`)
+		: "";
+	lines.push(`${chalk.bold(tSettingsUi("Usage"))}${headerSuffix}`);
 
 	for (const provider of providers) {
 		const providerReports = reportsByProvider.get(provider) ?? [];
@@ -540,7 +553,7 @@ export function formatUsageBreakdown(
 		const accountCount = providerReports.length + providerUnreported.length;
 		lines.push("");
 		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountCount === 1 ? "account" : "accounts"}`)}`,
+			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(tSettingsUi("— {count} account{plural}", { count: accountCount, plural: accountCount === 1 ? "" : "s" }))}`,
 		);
 		// Provider-wide disclaimers render once per provider, not per limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
@@ -553,7 +566,7 @@ export function formatUsageBreakdown(
 		providerReports.forEach((report, index) => {
 			lines.push(`  ${formatAccountHeader(report, index, nowMs, redaction)}`);
 			if (report.limits.length === 0) {
-				lines.push(`      ${chalk.dim("no limits reported")}`);
+				lines.push(`      ${chalk.dim(tSettingsUi("no limits reported"))}`);
 				return;
 			}
 			const limitsById = new Map<string, UsageLimit>();
@@ -570,16 +583,21 @@ export function formatUsageBreakdown(
 
 		for (const account of providerUnreported) {
 			const label = accountIdentityLabel(account, redaction);
-			lines.push(`  ${chalk.dim("○")} ${chalk.dim(`${label} — no usage data`)}`);
+			lines.push(`  ${chalk.dim("○")} ${chalk.dim(tSettingsUi("{label} — no usage data", { label }))}`);
 		}
 
 		const stats = computeProviderWindowStats(providerReports);
 		if (stats.length > 0) {
-			const parts = stats.map(
-				stat =>
-					`${stat.window} → ${stat.usedAccounts.toFixed(2)}/${stat.accounts} ${stat.accounts === 1 ? "account" : "accounts"} used (${stat.remainingAccounts.toFixed(2)}× quota left)`,
+			const parts = stats.map(stat =>
+				tSettingsUi("{window} → {used}/{total} account{plural} used ({remaining}× quota left)", {
+					window: stat.window,
+					used: stat.usedAccounts.toFixed(2),
+					total: stat.accounts,
+					plural: stat.accounts === 1 ? "" : "s",
+					remaining: stat.remainingAccounts.toFixed(2),
+				}),
 			);
-			lines.push(`  ${chalk.dim(`capacity: ${parts.join(" · ")}`)}`);
+			lines.push(`  ${chalk.dim(tSettingsUi("capacity: {stats}", { stats: parts.join(" · ") }))}`);
 		}
 	}
 
@@ -688,14 +706,18 @@ export function formatUsageHistory(
 
 	const lines: string[] = [];
 	lines.push(
-		`${chalk.bold("Usage history")}${chalk.dim(` · last ${formatDuration(nowMs - sinceMs)} · peak per bucket`)}`,
+		`${chalk.bold(tSettingsUi("Usage history"))}${chalk.dim(
+			` · ${tSettingsUi("last {duration} · peak per bucket", { duration: formatDuration(nowMs - sinceMs) })}`,
+		)}`,
 	);
 
 	for (const provider of [...providers.keys()].sort((a, b) => a.localeCompare(b))) {
 		const accounts = providers.get(provider) ?? new Map<string, HistoryAccount>();
 		lines.push("");
 		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accounts.size === 1 ? "account" : "accounts"}`)}`,
+			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(
+				tSettingsUi("— {count} account{plural}", { count: accounts.size, plural: accounts.size === 1 ? "" : "s" }),
+			)}`,
 		);
 		const sortedAccounts = [...accounts.values()].sort((a, b) => a.label.localeCompare(b.label));
 		for (const account of sortedAccounts) {
@@ -711,9 +733,16 @@ export function formatUsageHistory(
 				const peakFraction = fractions.length > 0 ? Math.max(...fractions) : undefined;
 				const status = historyStatus(latestFraction, latestEntry?.status);
 				const details: string[] = [];
-				if (latestFraction !== undefined) details.push(`latest ${(latestFraction * 100).toFixed(1)}%`);
-				if (peakFraction !== undefined) details.push(`peak ${(peakFraction * 100).toFixed(1)}%`);
-				details.push(`${series.entries.length} snapshot${series.entries.length === 1 ? "" : "s"}`);
+				if (latestFraction !== undefined)
+					details.push(tSettingsUi("latest {percent}%", { percent: (latestFraction * 100).toFixed(1) }));
+				if (peakFraction !== undefined)
+					details.push(tSettingsUi("peak {percent}%", { percent: (peakFraction * 100).toFixed(1) }));
+				details.push(
+					tSettingsUi("{count} snapshot{plural}", {
+						count: series.entries.length,
+						plural: series.entries.length === 1 ? "" : "s",
+					}),
+				);
 				lines.push(
 					`      ${STATUS_COLOR[status]("●")} ${series.title.padEnd(labelWidth)}  ${renderHistorySparkline(series.entries, sinceMs, nowMs)}  ${chalk.dim(details.join(" · "))}`,
 				);
@@ -805,15 +834,18 @@ function redactReportForJson(
 }
 
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
+	await Settings.loadReadOnly({ cwd: getProjectDir() });
 	const authStorage = await discoverAuthStorage();
 	try {
 		if (cmd.action === "invalidate") {
 			const provider = cmd.provider?.toLowerCase();
 			await authStorage.invalidateUsageCache(provider);
 			if (provider) {
-				process.stdout.write(`Invalidated cached usage reports for provider "${provider}".\n`);
+				process.stdout.write(
+					`${tSettingsUi('Invalidated cached usage reports for provider "{provider}".', { provider })}\n`,
+				);
 			} else {
-				process.stdout.write("Invalidated cached usage reports for all providers.\n");
+				process.stdout.write(`${tSettingsUi("Invalidated cached usage reports for all providers.")}\n`);
 			}
 			return;
 		}
@@ -836,10 +868,13 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				return;
 			}
 			if (entries.length === 0) {
-				const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
+				const scope = cmd.provider ? tSettingsUi(' for provider "{provider}"', { provider: cmd.provider }) : "";
 				process.stderr.write(
 					chalk.yellow(
-						`No usage history recorded${scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, omp usage).\n`,
+						`${tSettingsUi(
+							"No usage history recorded{scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, omp usage).",
+							{ scope },
+						)}\n`,
 					),
 				);
 				process.exitCode = 1;
@@ -902,13 +937,18 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 		}
 
 		if (filteredReports.length === 0 && accounts.length === 0) {
-			const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
+			const scope = cmd.provider ? tSettingsUi(' for provider "{provider}"', { provider: cmd.provider }) : "";
 			// Credentials exist but every one is for a provider without a usage
 			// endpoint — say so rather than implying nothing is logged in.
 			const message =
 				storedAccounts.length > 0
-					? `No usage data${scope}. Stored credentials are for providers without a usage endpoint.\n`
-					: `No credentials found${scope}. Run \`omp\` and use /login to add accounts.\n`;
+					? `${tSettingsUi(
+							"No usage data{scope}. Stored credentials are for providers without a usage endpoint.",
+							{ scope },
+						)}\n`
+					: `${tSettingsUi("No credentials found{scope}. Run `omp` and use /login to add accounts.", {
+							scope,
+						})}\n`;
 			process.stderr.write(chalk.yellow(message));
 			process.exitCode = 1;
 			return;

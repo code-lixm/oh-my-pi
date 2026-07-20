@@ -1,4 +1,6 @@
 import type React from "react";
+import { t } from "../locale/catalog";
+import { useLocale } from "../useLocale";
 import { EmptyState } from "./EmptyState";
 import { ErrorState } from "./ErrorState";
 import { Skeleton } from "./Skeleton";
@@ -19,11 +21,14 @@ export function AsyncBoundary({
 	error,
 	data,
 	empty = false,
-	emptyText = "No data available",
+	emptyText,
 	fallback,
 	onRetry,
 	children,
 }: AsyncBoundaryProps) {
+	useLocale();
+	const resolvedEmptyText = emptyText ?? t("state.asyncBoundary.empty.default");
+
 	// If there's an error and no stale data, render ErrorState
 	if (error && data === null) {
 		return <ErrorState error={error} onRetry={onRetry} />;
@@ -46,7 +51,7 @@ export function AsyncBoundary({
 
 	// If there is data but it's empty, render EmptyState
 	if (!loading && (empty || data === null)) {
-		return <EmptyState message={emptyText} />;
+		return <EmptyState message={resolvedEmptyText} />;
 	}
 
 	// Render children (stale data is kept visible even if loading is true in background)

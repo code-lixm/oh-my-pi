@@ -1,5 +1,5 @@
-Your current interruptible wait was interrupted because an IRC message arrived from your parent agent `{{from}}`.
-
-Parent IRC message:
+The main agent `{{from}}` sent an additional instruction:
 
 {{message}}
+
+Handle it after the current non-interruptible step; reply with `hub send` if clarification is needed.

@@ -21,6 +21,7 @@ import type {
 	AgentEvent as WireAgentEvent,
 	SessionEntry as WireSessionEntry,
 } from "@oh-my-pi/pi-wire";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { InteractiveModeContext } from "../modes/types";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
@@ -243,16 +244,18 @@ export class CollabHost {
 				return;
 			}
 			if (willReconnect) {
-				this.#ctx.showStatus(`Collab relay connection lost (${reason}), reconnecting…`, { dim: true });
+				this.#ctx.showStatus(tSettingsUi("Collab relay connection lost ({reason}), reconnecting…", { reason }), {
+					dim: true,
+				});
 			} else {
 				void this.#teardown();
-				this.#ctx.session.emitNotice("warning", `Collab ended: ${reason}`, "collab");
+				this.#ctx.session.emitNotice("warning", tSettingsUi("Collab ended: {reason}", { reason }), "collab");
 			}
 		};
 		socket.connect();
 
 		const timeout = setTimeout(
-			() => firstOpen.reject(new Error("timed out connecting to relay")),
+			() => firstOpen.reject(new Error(tSettingsUi("timed out connecting to relay"))),
 			CONNECT_TIMEOUT_MS,
 		);
 		try {

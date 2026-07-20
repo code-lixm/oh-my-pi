@@ -24,6 +24,7 @@ import {
 	type SubmenuOption,
 	TAB_GROUPS,
 } from "../../config/settings-schema";
+import { getSettingsUiLocale, type SettingsUiLocale, tSettingsUi } from "../../i18n/settings-locale";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UI Definition Types
@@ -38,6 +39,7 @@ interface BaseSettingDef {
 	tab: SettingTab;
 	/** Section within the tab; items are ordered by TAB_GROUPS[tab] and rendered under a heading row. */
 	group?: string;
+	groupLabel?: string;
 	/**
 	 * Optional visibility predicate. When supplied and returning false, the
 	 * setting is hidden from the UI. Applies to every variant — booleans,
@@ -56,6 +58,14 @@ export interface EnumSettingDef extends BaseSettingDef {
 }
 
 type OptionList = ReadonlyArray<SubmenuOption>;
+
+function localizeOption(option: SubmenuOption): SubmenuOption {
+	return {
+		...option,
+		label: tSettingsUi(option.label),
+		...(option.description ? { description: tSettingsUi(option.description) } : {}),
+	};
+}
 
 export interface SubmenuSettingDef extends BaseSettingDef {
 	type: "submenu";
@@ -136,7 +146,7 @@ const CONDITIONS: Record<string, () => boolean> = {
 function resolveOptions(ui: AnyUiMetadata): OptionList | "runtime" | undefined {
 	if (!ui.options) return undefined;
 	if (ui.options === "runtime") return "runtime";
-	return ui.options;
+	return ui.options.map(localizeOption);
 }
 
 function pathToSettingDef(path: SettingPath): SettingDef | null {
@@ -145,7 +155,15 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 
 	const schemaType = getType(path);
 	const condition = ui.condition ? CONDITIONS[ui.condition] : undefined;
-	const base = { path, label: ui.label, description: ui.description, tab: ui.tab, group: ui.group, condition };
+	const base = {
+		path,
+		label: tSettingsUi(ui.label),
+		description: tSettingsUi(ui.description),
+		tab: ui.tab,
+		group: ui.group,
+		groupLabel: ui.group ? tSettingsUi(ui.group) : undefined,
+		condition,
+	};
 
 	if (schemaType === "boolean") {
 		return { ...base, type: "boolean" };
@@ -191,11 +209,13 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Cache of generated definitions */
-let cachedDefs: SettingDef[] | null = null;
+const cachedDefs = new Map<SettingsUiLocale, SettingDef[]>();
 
 /** Get all setting definitions with UI */
 export function getAllSettingDefs(): SettingDef[] {
-	if (cachedDefs) return cachedDefs;
+	const locale = getSettingsUiLocale();
+	const cached = cachedDefs.get(locale);
+	if (cached) return cached;
 
 	const defs: SettingDef[] = [];
 	for (const tab of SETTING_TABS) {
@@ -204,8 +224,12 @@ export function getAllSettingDefs(): SettingDef[] {
 			if (def) defs.push(def);
 		}
 	}
-	cachedDefs = defs;
+	cachedDefs.set(locale, defs);
 	return defs;
+}
+
+export function clearSettingDefsCache(): void {
+	cachedDefs.clear();
 }
 
 /**

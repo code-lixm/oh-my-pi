@@ -1,5 +1,6 @@
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getTinyTitleModelSpec, type TinyTitleLocalModelKey } from "../../tiny/models";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { theme } from "../theme/theme";
@@ -37,13 +38,13 @@ function currentFile(event: TinyTitleProgressEvent | undefined): string | undefi
 }
 
 function statusLabel(event: TinyTitleProgressEvent | undefined): string {
-	if (!event) return "Preparing";
-	if (event.status === "error") return "Failed";
-	if (event.status === "ready") return "Ready";
-	if (event.status === "done") return "Downloaded";
-	if (event.status === "download") return "Downloading";
-	if (event.status === "progress" || event.status === "progress_total") return "Downloading";
-	return "Preparing";
+	if (!event) return tSettingsUi("Preparing");
+	if (event.status === "error") return tSettingsUi("Failed");
+	if (event.status === "ready") return tSettingsUi("Ready");
+	if (event.status === "done") return tSettingsUi("Downloaded");
+	if (event.status === "download") return tSettingsUi("Downloading");
+	if (event.status === "progress" || event.status === "progress_total") return tSettingsUi("Downloading");
+	return tSettingsUi("Preparing");
 }
 
 function byteLabel(event: TinyTitleProgressEvent | undefined): string | undefined {
@@ -80,7 +81,7 @@ export class TinyTitleDownloadProgressComponent implements Component {
 		const pct =
 			this.#event?.progress === undefined ? "" : `${Math.floor(this.#event.progress).toString().padStart(3, " ")}%`;
 		const bytes = byteLabel(this.#event);
-		const title = `${theme.fg("accent", "Tiny model")} ${theme.fg("muted", status)} ${spec.label}`;
+		const title = `${theme.fg("accent", tSettingsUi("Tiny model"))} ${theme.fg("muted", status)} ${spec.label}`;
 		const details = [progressBar(this.#event?.progress, Math.max(8, width - 36)), pct, bytes, file]
 			.filter((part): part is string => Boolean(part))
 			.join(" ");

@@ -3,6 +3,7 @@
  * Displays a list of string options with keyboard navigation.
  */
 import {
+	anchorRightBorder,
 	Container,
 	Ellipsis,
 	extractPrintableText,
@@ -20,6 +21,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, type ThemeColor, theme } from "../../modes/theme/theme";
 import {
 	matchesAppExternalEditor,
@@ -149,7 +151,13 @@ class OutlinedList extends Container {
 				const pad = Math.max(0, innerWidth - visibleWidth(wrappedLine));
 				const filled = `${wrappedLine}${padding(pad)}`;
 				const painted = row.highlight ? paintSelectedRow(filled) : filled;
-				content.push(`${borderColor(theme.boxRound.vertical)}${painted}${borderColor(theme.boxRound.vertical)}`);
+				content.push(
+					anchorRightBorder(
+						`${borderColor(theme.boxRound.vertical)}${painted}`,
+						borderColor(theme.boxRound.vertical),
+						width,
+					),
+				);
 			}
 		}
 		return [horizontal, ...content, horizontal];
@@ -262,7 +270,7 @@ export class HookSelectorComponent extends Container {
 			this.addChild(this.#listContainer);
 		}
 		this.addChild(new Spacer(1));
-		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
+		const controlsHint = opts?.helpText ?? tSettingsUi("up/down navigate  enter select  esc cancel");
 		this.addChild(new Text(theme.fg("dim", controlsHint), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
@@ -538,7 +546,7 @@ export class HookSelectorComponent extends Container {
 		}
 
 		if (total === 0) {
-			rows.push({ text: theme.fg("dim", "  No matching options"), highlight: false });
+			rows.push({ text: theme.fg("dim", `  ${tSettingsUi("No matching options")}`), highlight: false });
 		}
 
 		if (startIndex > 0 || endIndex < total || this.#shouldRenderSearchStatus(renderWidth, mdTheme)) {

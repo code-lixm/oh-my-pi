@@ -3,14 +3,17 @@ import * as path from "node:path";
 import { getAgentDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { expandAtImports } from "../discovery/at-imports";
 import activeRepoWatchdogTemplate from "../prompts/advisor/active-repo-watchdog.md" with { type: "text" };
+import activeRepoWatchdogTemplateZh from "../prompts/advisor/active-repo-watchdog.zh-CN.md" with { type: "text" };
 import contextFilesTemplate from "../prompts/advisor/context-files.md" with { type: "text" };
+import contextFilesTemplateZh from "../prompts/advisor/context-files.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import type { ActiveRepoContext } from "../utils/active-repo-context";
 import { repo } from "../utils/git";
 import { normalizePromptPath } from "../utils/prompt-path";
 
 export function formatActiveRepoWatchdogPrompt(activeRepoContext: ActiveRepoContext): string {
 	return prompt
-		.render(activeRepoWatchdogTemplate, {
+		.render(selectPrompt(activeRepoWatchdogTemplate, activeRepoWatchdogTemplateZh), {
 			relativeRepoRoot: normalizePromptPath(activeRepoContext.relativeRepoRoot),
 		})
 		.trim();
@@ -27,7 +30,9 @@ export function formatAdvisorContextPrompt(
 	contextFiles: ReadonlyArray<{ path: string; content: string }>,
 ): string | undefined {
 	if (contextFiles.length === 0) return undefined;
-	return prompt.render(contextFilesTemplate, { contextFiles }).trim() || undefined;
+	return (
+		prompt.render(selectPrompt(contextFilesTemplate, contextFilesTemplateZh), { contextFiles }).trim() || undefined
+	);
 }
 
 /**

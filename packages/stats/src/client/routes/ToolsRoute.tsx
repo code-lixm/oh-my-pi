@@ -6,8 +6,10 @@ import { formatRangeTick, rangeMeta } from "../components/range-meta";
 import { formatCompact, formatCost, formatInteger, formatPercent, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildToolRows, type ToolRowView } from "../data/view-models";
+import { t } from "../locale/catalog";
 import type { TimeRange, ToolModelStats, ToolTimeSeriesPoint, ToolUsageStats } from "../types";
 import { AsyncBoundary, DataTable, Panel, StatusPill } from "../ui";
+import { useLocale } from "../useLocale";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface ToolsRouteProps {
@@ -17,6 +19,7 @@ export interface ToolsRouteProps {
 }
 
 export function ToolsRoute({ active, range, refreshTrigger }: ToolsRouteProps) {
+	useLocale();
 	const {
 		data: stats,
 		error,
@@ -28,7 +31,7 @@ export function ToolsRoute({ active, range, refreshTrigger }: ToolsRouteProps) {
 
 	return (
 		<div className="stats-route-container space-y-6">
-			<AsyncBoundary loading={loading} error={error} data={stats} emptyText="No tool calls recorded for this range.">
+			<AsyncBoundary loading={loading} error={error} data={stats} emptyText={t("tools.empty")}>
 				{stats && (
 					<>
 						<ToolsSummaryPanel byTool={stats.byTool} />
@@ -41,10 +44,6 @@ export function ToolsRoute({ active, range, refreshTrigger }: ToolsRouteProps) {
 		</div>
 	);
 }
-
-// ---------------------------------------------------------------------------
-// Summary metrics
-// ---------------------------------------------------------------------------
 
 function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 	const totals = useMemo(() => {
@@ -68,47 +67,44 @@ function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 	}, [byTool]);
 
 	return (
-		<Panel
-			title="Tool Usage"
-			subtitle="Tokens/cost are the invoking turns' real provider usage, split across each turn's tool calls"
-		>
+		<Panel title={t("tools.summary.title")} subtitle={t("tools.summary.subtitle")}>
 			<div className="stats-metric-cluster">
 				<div className="stats-metric-primary-grid">
 					<div className="stats-metric-card primary">
-						<div className="stats-metric-label">Tool Calls</div>
+						<div className="stats-metric-label">{t("tools.summary.calls")}</div>
 						<div className="stats-metric-value">{formatInteger(totals.calls)}</div>
 					</div>
 					<div className="stats-metric-card primary">
-						<div className="stats-metric-label">Tools Used</div>
+						<div className="stats-metric-label">{t("tools.summary.tools")}</div>
 						<div className="stats-metric-value">{formatInteger(totals.tools)}</div>
 					</div>
 					<div className="stats-metric-card primary">
-						<div className="stats-metric-label">Error Rate</div>
+						<div className="stats-metric-label">{t("tools.summary.errorRate")}</div>
 						<div className="stats-metric-value">
 							{formatPercent(totals.calls > 0 ? totals.errors / totals.calls : 0)}
 						</div>
 					</div>
 					<div className="stats-metric-card primary">
-						<div className="stats-metric-label">Attributed Cost</div>
+						<div className="stats-metric-label">{t("tools.summary.attributedCost")}</div>
 						<div className="stats-metric-value">{formatCost(totals.cost)}</div>
 					</div>
 				</div>
 
 				<div className="stats-metric-secondary-grid">
 					<div className="stats-metric-card secondary">
-						<div className="stats-metric-label">Attributed Tokens</div>
+						<div className="stats-metric-label">{t("tools.summary.attributedTokens")}</div>
 						<div className="stats-metric-value">{formatCompact(Math.round(totals.tokens))}</div>
 					</div>
 					<div className="stats-metric-card secondary">
-						<div className="stats-metric-label">Attributed Output</div>
+						<div className="stats-metric-label">{t("tools.summary.attributedOutput")}</div>
 						<div className="stats-metric-value">{formatCompact(Math.round(totals.output))}</div>
 					</div>
 					<div className="stats-metric-card secondary">
-						<div className="stats-metric-label">Result Text</div>
+						<div className="stats-metric-label">{t("tools.summary.resultText")}</div>
 						<div className="stats-metric-value">{formatCompact(totals.resultChars)} chars</div>
 					</div>
 					<div className="stats-metric-card secondary">
-						<div className="stats-metric-label">Call Arguments</div>
+						<div className="stats-metric-label">{t("tools.summary.callArgs")}</div>
 						<div className="stats-metric-value">{formatCompact(totals.argsChars)} chars</div>
 					</div>
 				</div>
@@ -116,10 +112,6 @@ function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 		</Panel>
 	);
 }
-
-// ---------------------------------------------------------------------------
-// Calls over time (stacked by top tools)
-// ---------------------------------------------------------------------------
 
 const TOP_TOOLS = 6;
 
@@ -221,10 +213,12 @@ function ToolCallsChart({ series, timeRange }: { series: ToolTimeSeriesPoint[]; 
 	);
 
 	return (
-		<Panel title="Calls Over Time" subtitle={`Tool calls over ${meta.windowLabel}, stacked by tool`}>
+		<Panel title={t("tools.chart.title")} subtitle={t("tools.chart.subtitle", { window: meta.windowLabel })}>
 			<div className="h-[280px]">
 				{chartSeries.buckets.length === 0 ? (
-					<div className="h-full flex items-center justify-center text-stats-muted text-sm">No data available</div>
+					<div className="h-full flex items-center justify-center text-stats-muted text-sm">
+						{t("tools.chart.empty")}
+					</div>
 				) : (
 					<Line data={data} options={options} />
 				)}
@@ -233,22 +227,19 @@ function ToolCallsChart({ series, timeRange }: { series: ToolTimeSeriesPoint[]; 
 	);
 }
 
-// ---------------------------------------------------------------------------
-// Per-tool table
-// ---------------------------------------------------------------------------
-
 function errorPillVariant(errorRate: number): "danger" | "warning" | "success" {
 	return errorRate > 0.1 ? "danger" : errorRate > 0 ? "warning" : "success";
 }
 
 function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
+	const locale = useLocale();
 	const rows = useMemo(() => buildToolRows(byTool), [byTool]);
 
 	const columns = useMemo(
 		() => [
 			{
 				key: "tool",
-				header: "Tool",
+				header: t("tools.table.column.tool"),
 				render: (item: ToolRowView) => (
 					<div className="stats-font-medium stats-text-primary font-mono truncate max-w-[280px]" title={item.tool}>
 						{item.tool}
@@ -257,7 +248,7 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 			},
 			{
 				key: "calls",
-				header: "Calls",
+				header: t("tools.table.column.calls"),
 				numeric: true,
 				render: (item: ToolRowView) => (
 					<div className="stats-text-right">
@@ -274,7 +265,7 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 			},
 			{
 				key: "errorRate",
-				header: "Error Rate",
+				header: t("tools.table.column.errorRate"),
 				numeric: true,
 				render: (item: ToolRowView) => (
 					<StatusPill variant={errorPillVariant(item.errorRate)}>{formatPercent(item.errorRate)}</StatusPill>
@@ -282,40 +273,40 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 			},
 			{
 				key: "tokens",
-				header: "Attr. Tokens",
+				header: t("tools.table.column.attributedTokens"),
 				numeric: true,
 				render: (item: ToolRowView) => (
-					<span className="font-mono" title="Invoking turns' total tokens, split across each turn's calls">
+					<span className="font-mono" title={t("tools.table.attrTokensTitle")}>
 						{formatCompact(Math.round(item.totalTokensShare))}
 					</span>
 				),
 			},
 			{
 				key: "cost",
-				header: "Attr. Cost",
+				header: t("tools.table.column.attributedCost"),
 				numeric: true,
 				render: (item: ToolRowView) => <span className="font-mono">{formatCost(item.costShare)}</span>,
 			},
 			{
 				key: "resultChars",
-				header: "Result Text",
+				header: t("tools.table.column.resultText"),
 				numeric: true,
 				render: (item: ToolRowView) => (
-					<span className="font-mono" title="Characters of tool-result text fed back into context">
+					<span className="font-mono" title={t("tools.table.resultTextTitle")}>
 						{formatCompact(item.resultChars)}
 					</span>
 				),
 			},
 			{
 				key: "lastUsed",
-				header: "Last Used",
+				header: t("tools.table.column.lastUsed"),
 				numeric: true,
 				render: (item: ToolRowView) => (
 					<span className="stats-text-secondary">{formatRelativeTime(item.lastUsed)}</span>
 				),
 			},
 		],
-		[],
+		[locale],
 	);
 
 	const renderMobileCard = (item: ToolRowView) => (
@@ -326,21 +317,21 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 			</div>
 			<div className="stats-mobile-card-grid">
 				<div>
-					<div className="stats-mobile-card-label">Calls</div>
+					<div className="stats-mobile-card-label">{t("tools.table.column.calls")}</div>
 					<div className="stats-mobile-card-value font-mono">{formatInteger(item.calls)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Attr. Tokens</div>
+					<div className="stats-mobile-card-label">{t("tools.table.column.attributedTokens")}</div>
 					<div className="stats-mobile-card-value font-mono">
 						{formatCompact(Math.round(item.totalTokensShare))}
 					</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Attr. Cost</div>
+					<div className="stats-mobile-card-label">{t("tools.table.column.attributedCost")}</div>
 					<div className="stats-mobile-card-value font-mono">{formatCost(item.costShare)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Result Text</div>
+					<div className="stats-mobile-card-label">{t("tools.table.column.resultText")}</div>
 					<div className="stats-mobile-card-value font-mono">{formatCompact(item.resultChars)}</div>
 				</div>
 			</div>
@@ -348,23 +339,20 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 	);
 
 	return (
-		<Panel title="By Tool" subtitle="Usage per tool, most called first">
+		<Panel title={t("tools.table.title")} subtitle={t("tools.table.subtitle")}>
 			<DataTable
 				columns={columns}
 				data={rows}
 				keyExtractor={item => item.tool}
 				renderMobileCard={renderMobileCard}
-				emptyText="No tool calls recorded for this range."
+				emptyText={t("tools.empty")}
 			/>
 		</Panel>
 	);
 }
 
-// ---------------------------------------------------------------------------
-// Per-(tool, model) breakdown
-// ---------------------------------------------------------------------------
-
 function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
+	const locale = useLocale();
 	const [tool, setTool] = useState<string | null>(null);
 
 	const tools = useMemo(() => [...new Set(byToolModel.map(row => row.tool))].sort(), [byToolModel]);
@@ -381,14 +369,14 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 		() => [
 			{
 				key: "tool",
-				header: "Tool",
+				header: t("tools.table.column.tool"),
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<span className="stats-font-medium stats-text-primary font-mono">{item.tool}</span>
 				),
 			},
 			{
 				key: "model",
-				header: "Model",
+				header: t("table.column.model"),
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<div>
 						<div className="stats-text-primary">{item.model || "(unknown)"}</div>
@@ -398,7 +386,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 			},
 			{
 				key: "calls",
-				header: "Calls",
+				header: t("tools.table.column.calls"),
 				numeric: true,
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<span className="font-mono">{formatInteger(item.calls)}</span>
@@ -406,7 +394,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 			},
 			{
 				key: "errorRate",
-				header: "Error Rate",
+				header: t("tools.table.column.errorRate"),
 				numeric: true,
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<StatusPill variant={errorPillVariant(item.errorRate)}>{formatPercent(item.errorRate)}</StatusPill>
@@ -414,7 +402,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 			},
 			{
 				key: "tokens",
-				header: "Attr. Tokens",
+				header: t("tools.table.column.attributedTokens"),
 				numeric: true,
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<span className="font-mono">{formatCompact(Math.round(item.totalTokensShare))}</span>
@@ -422,21 +410,21 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 			},
 			{
 				key: "cost",
-				header: "Attr. Cost",
+				header: t("tools.table.column.attributedCost"),
 				numeric: true,
 				render: (item: ToolModelStats & { errorRate: number }) => (
 					<span className="font-mono">{formatCost(item.costShare)}</span>
 				),
 			},
 		],
-		[],
+		[locale],
 	);
 
 	return (
-		<Panel title="By Model" subtitle="Which models call which tools">
+		<Panel title={t("tools.byModel.title")} subtitle={t("tools.byModel.subtitle")}>
 			<div className="mb-4" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
 				<span className="stats-text-secondary" style={{ fontSize: "0.875rem", whiteSpace: "nowrap" }}>
-					Tool
+					{t("tools.byModel.toolLabel")}
 				</span>
 				<select
 					className="stats-select"
@@ -444,7 +432,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 					onChange={e => setTool(e.target.value || null)}
 					style={{ maxWidth: "320px", flex: 1 }}
 				>
-					<option value="">All tools</option>
+					<option value="">{t("tools.byModel.allTools")}</option>
 					{tools.map(name => (
 						<option key={name} value={name}>
 							{name}
@@ -456,7 +444,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 				columns={columns}
 				data={rows}
 				keyExtractor={item => `${item.tool}::${item.model}::${item.provider}`}
-				emptyText="No tool calls recorded for this range."
+				emptyText={t("tools.empty")}
 			/>
 		</Panel>
 	);

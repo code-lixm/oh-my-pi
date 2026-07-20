@@ -21,6 +21,7 @@ import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { type OverlayHandle, type OverlayOptions, setKeybindings, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../src/i18n/settings-locale";
 
 /**
  * Matches the plan-approved synthetic-prompt dispatch. `#approvePlan` calls
@@ -63,6 +64,8 @@ function compactNumber(value: number): string {
 	return formatNumber(value).toLowerCase();
 }
 
+let previousSettingsUiLocale = getSettingsUiLocale();
+
 describe("InteractiveMode plan review rendering", () => {
 	// Per-test, mutated by tests (planMode flags, spies, model roles, dispose/recreate).
 	let tempDir: TempDir;
@@ -93,6 +96,7 @@ describe("InteractiveMode plan review rendering", () => {
 	});
 
 	beforeEach(async () => {
+		previousSettingsUiLocale = getSettingsUiLocale();
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-plan-review-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -130,6 +134,7 @@ describe("InteractiveMode plan review rendering", () => {
 		currentTempDir?.removeSync();
 		setKeybindings(KeybindingsManager.inMemory());
 		resetSettingsForTest();
+		setSettingsUiLocale(previousSettingsUiLocale);
 	});
 
 	it("keeps queued-message rows in the live region instead of native scrollback", () => {
@@ -982,6 +987,38 @@ describe("InteractiveMode plan review rendering", () => {
 		});
 	});
 
+	it("routes zh-CN approve-and-execute picks through the clear-session branch", async () => {
+		const localizedApprove = tSettingsUi("Approve and execute", undefined, "zh-CN");
+		expect(localizedApprove).not.toBe("Approve and execute");
+		setSettingsUiLocale("zh-CN");
+
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nClear context in zh-CN.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue(localizedApprove);
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const compact = vi.spyOn(mode, "handleCompactCommand").mockResolvedValue("ok");
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(compact).not.toHaveBeenCalled();
+		expect(prompt).toHaveBeenCalledWith(expect.any(String), {
+			synthetic: true,
+		});
+	});
+
 	it("executes on the slider-selected tier, surviving #exitPlanMode's model restore", async () => {
 		// Regression: the model-tier slider's choice used to be applied BEFORE
 		// #approvePlan ran. #approvePlan → #exitPlanMode restores the model that
@@ -1513,6 +1550,36 @@ describe("InteractiveMode plan review rendering", () => {
 		// turn doesn't double-inject the plan reference (it was just dispatched
 		// inside the synthetic prompt).
 		expect(markSentSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("routes zh-CN approve-and-compact picks through the compaction branch", async () => {
+		const localizedCompact = tSettingsUi("Approve and compact context", undefined, "zh-CN");
+		expect(localizedCompact).not.toBe("Approve and compact context");
+		setSettingsUiLocale("zh-CN");
+
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nCompact and execute in zh-CN.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue(localizedCompact);
+		const clearSpy = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const compactSpy = vi.spyOn(mode, "handleCompactCommand").mockResolvedValue("ok");
+		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(clearSpy).not.toHaveBeenCalled();
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(promptSpy.mock.calls.findIndex(isPlanApprovedCall)).toBeGreaterThanOrEqual(0);
 	});
 
 	it("Approve and compact context: cancelled outcome skips plan-approved dispatch", async () => {

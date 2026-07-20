@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Box, type BoxBorder, Text } from "@oh-my-pi/pi-tui";
+import { VirtualTerminal } from "./virtual-terminal";
 
 const CHARS: BoxBorder["chars"] = {
 	topLeft: "+",
@@ -73,5 +74,24 @@ describe("Box border", () => {
 			for (const w of widths(rows)) expect(w).toBeLessThanOrEqual(width);
 			for (const line of plain(rows)) expect(line).not.toContain("+");
 		}
+	});
+
+	it("anchors the right border despite hidden cursor motion in the body row", () => {
+		const frameWidth = 8;
+		const box = new Box(1, 0, text => `\x1b[48;5;236m\x1b[1C${text}\x1b[49m`, {
+			chars: CHARS,
+			color: t => `\x1b[31m${t}\x1b[39m`,
+		});
+		box.setIgnoreTight(true);
+		box.addChild(new Text("hi", 0, 0));
+
+		const bodyRow = box.render(frameWidth)[1]!;
+		expect(Bun.stringWidth(Bun.stripANSI(bodyRow))).toBe(frameWidth);
+
+		const term = new VirtualTerminal(frameWidth + 2, 1);
+		term.write(bodyRow);
+
+		expect(term.getViewport()[0]).toBe("|  hi  |");
+		expect(term.getCursor()).toEqual({ row: 0, col: frameWidth });
 	});
 });

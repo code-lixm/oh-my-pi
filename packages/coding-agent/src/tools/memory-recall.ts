@@ -2,7 +2,9 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { formatCurrentTime, formatMemories } from "../hindsight/content";
+import { selectPrompt } from "../prompts/prompt-locale";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
+import recallDescriptionZh from "../prompts/tools/recall.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const memoryRecallSchema = type({
@@ -15,7 +17,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly name = "recall";
 	readonly approval = "read" as const;
 	readonly label = "Recall";
-	readonly description = recallDescription;
+	readonly description = selectPrompt(recallDescription, recallDescriptionZh);
 	readonly parameters = memoryRecallSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";

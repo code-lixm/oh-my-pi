@@ -3,6 +3,7 @@
  */
 import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../cli/args";
+import { ensureCliHelpLocale, localizeCliHelpMetadata } from "../cli/help-locale";
 import { runSetupCommand, type SetupCommandArgs, type SetupComponent } from "../cli/setup-cli";
 import { runRootCommand } from "../main";
 import { initTheme } from "../modes/theme/theme";
@@ -48,6 +49,8 @@ export default class Setup extends Command {
 		const { args, flags } = await this.parse(Setup);
 		if (!args.component) {
 			if (flags.check || flags.json) {
+				await ensureCliHelpLocale();
+				localizeCliHelpMetadata(Setup);
 				renderCommandHelp("omp", "setup", Setup);
 				return;
 			}

@@ -12,10 +12,16 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model
 import type { Settings } from "../config/settings";
 import type { MemoryBackendSaveInput, MemoryBackendSaveResult } from "../memory-backend/types";
 import consolidationTemplate from "../prompts/memories/consolidation.md" with { type: "text" };
+import consolidationTemplateZh from "../prompts/memories/consolidation.zh-CN.md" with { type: "text" };
 import consolidationSystemTemplate from "../prompts/memories/consolidation_system.md" with { type: "text" };
+import consolidationSystemTemplateZh from "../prompts/memories/consolidation_system.zh-CN.md" with { type: "text" };
 import readPathTemplate from "../prompts/memories/read-path.md" with { type: "text" };
+import readPathTemplateZh from "../prompts/memories/read-path.zh-CN.md" with { type: "text" };
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
+import stageOneInputTemplateZh from "../prompts/memories/stage_one_input.zh-CN.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
+import stageOneSystemTemplateZh from "../prompts/memories/stage_one_system.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import type { AgentSession } from "../session/agent-session";
 import {
 	claimStage1Jobs,
@@ -218,7 +224,7 @@ function renderMemoryToolDeveloperInstructionsSnapshot(
 		snapshot.learned && learnedBudget > 0 ? truncateByApproxTokens(snapshot.learned, learnedBudget).trim() : "";
 	if (!summaryOut && !learnedOut) return undefined;
 
-	return prompt.render(readPathTemplate, {
+	return prompt.render(selectPrompt(readPathTemplate, readPathTemplateZh), {
 		memory_summary: summaryOut,
 		learned: learnedOut,
 	});
@@ -725,7 +731,7 @@ async function runStage1Job(options: {
 			Math.floor(modelMaxTokens * config.rolloutPayloadPercent),
 		);
 		const truncatedItems = truncateByApproxTokens(serializedItems, budgetTokens);
-		const inputPrompt = prompt.render(stageOneInputTemplate, {
+		const inputPrompt = prompt.render(selectPrompt(stageOneInputTemplate, stageOneInputTemplateZh), {
 			thread_id: claim.threadId,
 			response_items_json: truncatedItems,
 		});
@@ -733,7 +739,7 @@ async function runStage1Job(options: {
 		const response = await completeSimple(
 			model,
 			{
-				systemPrompt: [stageOneSystemTemplate],
+				systemPrompt: [selectPrompt(stageOneSystemTemplate, stageOneSystemTemplateZh)],
 				messages: [{ role: "user", content: [{ type: "text", text: inputPrompt }], timestamp: Date.now() }],
 			},
 			{
@@ -862,7 +868,7 @@ async function runConsolidationModel(options: {
 	const { memoryRoot, model, apiKey } = options;
 	const rawMemories = await Bun.file(path.join(memoryRoot, "raw_memories.md")).text();
 	const rolloutSummaries = await readRolloutSummaries(memoryRoot);
-	const input = prompt.render(consolidationTemplate, {
+	const input = prompt.render(selectPrompt(consolidationTemplate, consolidationTemplateZh), {
 		raw_memories: truncateByApproxTokens(rawMemories, 20_000),
 		rollout_summaries: truncateByApproxTokens(rolloutSummaries, 12_000),
 	});
@@ -870,7 +876,7 @@ async function runConsolidationModel(options: {
 	const response = await completeSimple(
 		model,
 		{
-			systemPrompt: [consolidationSystemTemplate],
+			systemPrompt: [selectPrompt(consolidationSystemTemplate, consolidationSystemTemplateZh)],
 			messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
 		},
 		{

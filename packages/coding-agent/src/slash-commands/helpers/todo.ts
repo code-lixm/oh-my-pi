@@ -1,3 +1,4 @@
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { TodoPhase } from "../../tools/todo";
 import {
 	applyOpsToPhases,
@@ -172,7 +173,7 @@ async function handleTodoAppendCommand(restArgs: string, runtime: SlashCommandRu
 	} else if (next.length > 0) {
 		targetPhase = next[next.length - 1]!;
 	} else {
-		targetPhase = { name: "Todos", tasks: [] };
+		targetPhase = { name: tSettingsUi("Todos"), tasks: [] };
 		next.push(targetPhase);
 	}
 

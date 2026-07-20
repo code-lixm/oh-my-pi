@@ -11,10 +11,11 @@ import type { ModelRegistry } from "../config/model-registry";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
+import commitSystemPromptZh from "../prompts/system/commit-message-system.zh-CN.md" with { type: "text" };
 import { concreteThinkingLevel, toReasoningEffort } from "../thinking";
 
-const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);
 const MAX_DIFF_CHARS = 4000;
 // Cover the "backend ignores `disableReasoning`" case unconditionally: the
 // static `model.reasoning` catalog flag can't distinguish a thinking model
@@ -109,7 +110,7 @@ export async function generateCommitMessage(
 			const response = await completeSimple(
 				candidate.model,
 				{
-					systemPrompt: [COMMIT_SYSTEM_PROMPT],
+					systemPrompt: [prompt.render(selectPrompt(commitSystemPrompt, commitSystemPromptZh))],
 					messages: [{ role: "user", content: userMessage, timestamp: Date.now() }],
 				},
 				{

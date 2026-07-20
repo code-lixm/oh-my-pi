@@ -4,6 +4,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { OAuthSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/oauth-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 beforeAll(async () => {
 	await initTheme();
@@ -186,5 +187,97 @@ describe("OAuthSelectorComponent", () => {
 				.join("\n");
 			expect(rendered).toContain("OpenCode Go");
 		});
+	});
+});
+
+describe("OAuthSelectorComponent locale", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("renders zh-CN status labels after locale is switched at runtime", () => {
+		const prev = getSettingsUiLocale();
+		const target = getOAuthProviders().find(provider => provider.id === "anthropic");
+		expect(target).toBeDefined();
+		if (!target) return;
+		try {
+			const auth = {
+				has: (providerId: string) => providerId === target.id,
+				hasAuth: (providerId: string) => providerId === target.id,
+				getCredentialOrigin: (_providerId: string) => undefined,
+			} as unknown as AuthStorage;
+
+			setSettingsUiLocale("en");
+			const component = new OAuthSelectorComponent(
+				"logout",
+				auth,
+				() => {},
+				() => {},
+			);
+			for (const char of target.id) component.handleInput(char);
+			const enOutput = component
+				.render(80)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(enOutput).toContain(target.name);
+			expect(enOutput).toContain("logged in");
+			expect(enOutput).not.toContain("已登录");
+
+			setSettingsUiLocale("zh-CN");
+			const zhOutput = component
+				.render(80)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(zhOutput).toContain(target.name);
+			expect(zhOutput).not.toContain("logged in");
+			expect(zhOutput).toContain("已登录");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
+	});
+
+	it("renders zh-CN source-label origin leg after locale is switched at runtime", () => {
+		const prev = getSettingsUiLocale();
+		const target = getOAuthProviders().find(provider => provider.id === "anthropic");
+		expect(target).toBeDefined();
+		if (!target) return;
+		try {
+			const auth = {
+				has: (providerId: string) => providerId === target.id,
+				hasAuth: (providerId: string) => providerId === target.id,
+				getCredentialOrigin: (providerId: string) =>
+					providerId === target.id ? ({ kind: "oauth" } as const) : undefined,
+			} as unknown as AuthStorage;
+
+			setSettingsUiLocale("en");
+			const component = new OAuthSelectorComponent(
+				"logout",
+				auth,
+				() => {},
+				() => {},
+			);
+			for (const char of target.id) component.handleInput(char);
+			const enOutput = component
+				.render(80)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(enOutput).toContain(target.name);
+			expect(enOutput).toContain("logged in");
+			expect(enOutput).toContain("(login)");
+			expect(enOutput).not.toContain("(登录)");
+
+			setSettingsUiLocale("zh-CN");
+			const zhOutput = component
+				.render(80)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(zhOutput).toContain(target.name);
+			expect(zhOutput).not.toContain("logged in");
+			expect(zhOutput).toContain("已登录");
+			expect(zhOutput).toContain("(登录)");
+			expect(zhOutput).not.toContain("(login)");
+		} finally {
+			setSettingsUiLocale(prev);
+		}
 	});
 });

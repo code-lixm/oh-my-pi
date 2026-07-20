@@ -28,14 +28,16 @@ import {
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import {
+	type AssistantErrorAggregation,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
-	buildIrcMessageCard,
+	buildIrcActivityEvent,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
+	updateAssistantErrorAggregation,
 } from "../utils/transcript-render-helpers";
 import { createAdvisorMessageCard } from "./advisor-message";
 import { AssistantMessageComponent } from "./assistant-message";
@@ -50,6 +52,7 @@ import {
 } from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
+import { HubActivityGroupComponent, isHubGroupedActivityArgs } from "./hub-activity-group";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
@@ -79,15 +82,17 @@ function userMessageText(message: Extract<AgentMessage, { role: "user" }>): stri
 
 export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
-	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
+	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent | HubActivityGroupComponent>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
+	#hubActivityGroup: HubActivityGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
 	#pendingUsageTtft: number | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
+	#errorAggregation: AssistantErrorAggregation<AssistantMessageComponent> | undefined;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
@@ -106,6 +111,7 @@ export class ChatTranscriptBuilder {
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+		if (this.#pendingTools.size === 0) this.#finalizeHubActivityGroup();
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
@@ -136,7 +142,9 @@ export class ChatTranscriptBuilder {
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
+		this.#errorAggregation = undefined;
 		this.#expandables = [];
+		this.#hubActivityGroup = null;
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -192,6 +200,20 @@ export class ChatTranscriptBuilder {
 		return this.#readGroup;
 	}
 
+	#finalizeHubActivityGroup(): void {
+		this.#hubActivityGroup?.finalize();
+		this.#hubActivityGroup = null;
+	}
+
+	#ensureHubActivityGroup(): HubActivityGroupComponent {
+		if (!this.#hubActivityGroup?.canAppend) {
+			this.#hubActivityGroup = new HubActivityGroupComponent();
+			this.#trackExpandable(this.#hubActivityGroup);
+			this.container.addChild(this.#hubActivityGroup);
+		}
+		return this.#hubActivityGroup;
+	}
+
 	// The per-turn token-usage row must land below the turn's tool blocks, but
 	// normal `read` calls only materialize their group in #appendToolResult. Defer
 	// the row: stash it on the assistant message and flush once the turn's tools
@@ -199,6 +221,7 @@ export class ChatTranscriptBuilder {
 	#flushPendingUsage(): void {
 		if (!this.#pendingUsage) return;
 		this.#readGroup?.seal();
+		this.#finalizeHubActivityGroup();
 		this.#readGroup = null;
 		this.container.addChild(
 			createUsageRowBlock(this.#pendingUsage, this.#pendingUsageDuration, this.#pendingUsageTtft),
@@ -210,6 +233,7 @@ export class ChatTranscriptBuilder {
 
 	#appendChatMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") this.#flushPendingUsage();
+		if (message.role !== "assistant") this.#errorAggregation = undefined;
 		switch (message.role) {
 			case "assistant":
 				this.#appendAssistantMessage(message);
@@ -223,6 +247,7 @@ export class ChatTranscriptBuilder {
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
+				this.#finalizeHubActivityGroup();
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					this.container.addChild(new UserMessageComponent(textContent, isSynthetic));
@@ -230,6 +255,7 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "bashExecution": {
+				this.#finalizeHubActivityGroup();
 				const component = new BashExecutionComponent(message.command, this.deps.ui, message.excludeFromContext);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
@@ -237,6 +263,7 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "pythonExecution": {
+				this.#finalizeHubActivityGroup();
 				const component = new EvalExecutionComponent(message.code, this.deps.ui, message.excludeFromContext);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
@@ -248,6 +275,7 @@ export class ChatTranscriptBuilder {
 				this.#appendCustomMessage(message);
 				break;
 			case "compactionSummary": {
+				this.#finalizeHubActivityGroup();
 				const component = new CompactionSummaryMessageComponent(message);
 				this.#trackExpandable(component);
 				this.container.addChild(component);
@@ -256,11 +284,13 @@ export class ChatTranscriptBuilder {
 			case "branchSummary": {
 				const component = new BranchSummaryMessageComponent(message);
 				this.#trackExpandable(component);
+				this.#finalizeHubActivityGroup();
 				this.container.addChild(component);
 				break;
 			}
 			case "fileMention": {
 				// Indent one column to match the transcript's other rows (the viewer renders
+				this.#finalizeHubActivityGroup();
 				// body rows without an outer gutter; rows own their left pad).
 				const block = buildFileMentionBlock(message.files, 1);
 				if (block.children.length > 0) this.container.addChild(block);
@@ -284,7 +314,14 @@ export class ChatTranscriptBuilder {
 			proseOnlyThinking,
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
+		this.#trackExpandable(assistantComponent);
 		this.container.addChild(assistantComponent);
+		this.#errorAggregation = updateAssistantErrorAggregation(
+			this.#errorAggregation,
+			message,
+			assistantComponent,
+			(target, repeatCount, suppressed) => target.setErrorAggregation(repeatCount, suppressed),
+		);
 
 		if (settings.get("display.cacheMissMarker")) {
 			const invalidation = detectCacheInvalidation(this.#lastAssistantUsage, message.usage);
@@ -304,8 +341,10 @@ export class ChatTranscriptBuilder {
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasErrorStop = errorPresentation.kind === "full";
 		const errorMessage = hasErrorStop ? errorPresentation.text : null;
+		if (assistantHasVisibleContent(timeline.beforeTools)) this.#finalizeHubActivityGroup();
 		const appendAssistantSegment = (segment: Extract<AgentMessage, { role: "assistant" }> | undefined) => {
 			if (!segment || !assistantHasVisibleContent(segment)) return;
+			this.#finalizeHubActivityGroup();
 			const component = new AssistantMessageComponent(
 				segment,
 				hideThinkingBlock,
@@ -323,6 +362,26 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
+			if (content.name === "hub" && isHubGroupedActivityArgs(content.arguments)) {
+				this.#readGroup?.seal();
+				this.#readGroup = null;
+				const group = this.#ensureHubActivityGroup();
+				group.displaceWaitingPoll(content.id);
+				group.updateArgs(content.arguments, content.id);
+				if (hasErrorStop && errorMessage) {
+					group.updateResult(
+						{ content: [{ type: "text", text: errorMessage }], isError: true },
+						false,
+						content.id,
+					);
+				} else {
+					this.#pendingTools.set(content.id, group);
+				}
+				appendAssistantSegment(afterToolSegment);
+				continue;
+			}
+
+			this.#finalizeHubActivityGroup();
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
@@ -419,6 +478,15 @@ export class ChatTranscriptBuilder {
 
 	#appendCustomMessage(message: Extract<AgentMessage, { role: "custom" | "hookMessage" }>): void {
 		if (!message.display) return;
+		if (
+			message.customType === "irc:incoming" ||
+			message.customType === "irc:autoreply" ||
+			message.customType === "irc:relay"
+		) {
+			this.#ensureHubActivityGroup().appendIrcEvent(buildIrcActivityEvent(message));
+			return;
+		}
+		this.#finalizeHubActivityGroup();
 		if (message.customType === "async-result") {
 			this.container.addChild(buildAsyncResultBlock(message));
 			return;
@@ -440,17 +508,9 @@ export class ChatTranscriptBuilder {
 			this.container.addChild(component);
 			return;
 		}
-		if (
-			message.customType === "irc:incoming" ||
-			message.customType === "irc:autoreply" ||
-			message.customType === "irc:relay"
-		) {
-			this.container.addChild(buildIrcMessageCard(message, () => this.#expanded));
-			return;
-		}
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-			this.container.addChild(createAdvisorMessageCard(details, () => this.#expanded, theme));
+			this.container.addChild(createAdvisorMessageCard(details, theme));
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

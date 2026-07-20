@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -17,6 +18,52 @@ from pathlib import Path
 
 SKIP_DELTAS = {"tokenDelta", "partialToolCall", "heartbeat", "thinkingDelta"}
 COALESCE_DELTAS = {"textDelta"}
+
+# Minimal in-script i18n. Locale resolution: explicit OMP_LOCALE / PI_LOCALE >
+# LC_ALL > LANG; anything starting with "zh" maps to zh-CN, otherwise English.
+# Keep machine data (file paths, JSON keys, dynamic error messages) untouched.
+MESSAGES = {
+    "en": {
+        "desc": "Filter Cursor debug logs",
+        "help_file": "JSONL log file",
+        "help_verbose": "Show all entries",
+        "help_follow": "Follow mode (tail -f)",
+        "help_last": "Show last N entries",
+        "usage": "Usage: cursor-log.py <file> [-v] [-f] [--last N]",
+        "file_not_found": "File not found: {path}",
+        "parse_error": "[PARSE ERROR] {line}",
+        "text_label": "text",
+    },
+    "zh-CN": {
+        "desc": "过滤并展示 Cursor 调试日志",
+        "help_file": "JSONL 日志文件",
+        "help_verbose": "显示全部条目",
+        "help_follow": "持续跟踪模式（tail -f）",
+        "help_last": "仅显示最后 N 条",
+        "usage": "用法：cursor-log.py <file> [-v] [-f] [--last N]",
+        "file_not_found": "未找到文件：{path}",
+        "parse_error": "[解析错误] {line}",
+        "text_label": "文本",
+    },
+}
+
+
+def detect_locale() -> str:
+    override = os.environ.get("OMP_LOCALE") or os.environ.get("PI_LOCALE")
+    source = override or os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
+    return "zh-CN" if source.lower().startswith("zh") else "en"
+
+
+def t(key: str, **kwargs) -> str:
+    locale = detect_locale()
+    table = MESSAGES.get(locale) or MESSAGES["en"]
+    template = table.get(key) or MESSAGES["en"][key]
+    if kwargs:
+        try:
+            return template.format(**kwargs)
+        except (KeyError, IndexError):
+            return template
+    return template
 
 
 def get_delta_type(entry: dict) -> str | None:
@@ -163,6 +210,7 @@ def coalesce_entries(entries: list[dict], verbose: bool = False) -> list[str]:
     output = []
     text_buffer = ""
     text_ts = 0
+    text_label = t("text_label")
 
     def flush_text():
         nonlocal text_buffer, text_ts
@@ -173,7 +221,7 @@ def coalesce_entries(entries: list[dict], verbose: bool = False) -> list[str]:
             text = text_buffer.replace("\n", "\\n")
             if len(text) > 300:
                 text = text[:300] + "..."
-            output.append(f"[{time_str}] text: {text}")
+            output.append(f"[{time_str}] {text_label}: {text}")
             text_buffer = ""
             text_ts = 0
 
@@ -216,7 +264,7 @@ def parse_entries(path: Path, last: int = 0) -> list[dict]:
             try:
                 entries.append(json.loads(line))
             except json.JSONDecodeError:
-                print(f"[PARSE ERROR] {line[:100]}", file=sys.stderr)
+                print(t("parse_error", line=line[:100]), file=sys.stderr)
     return entries
 
 
@@ -224,7 +272,7 @@ def process_file(
     path: Path, verbose: bool = False, follow: bool = False, last: int = 0
 ):
     if not path.exists():
-        print(f"File not found: {path}", file=sys.stderr)
+        print(t("file_not_found", path=path), file=sys.stderr)
         sys.exit(1)
 
     if follow:
@@ -255,13 +303,11 @@ def process_file(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Filter Cursor debug logs")
-    parser.add_argument("file", type=Path, help="JSONL log file")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show all entries")
-    parser.add_argument(
-        "-f", "--follow", action="store_true", help="Follow mode (tail -f)"
-    )
-    parser.add_argument("--last", type=int, default=0, help="Show last N entries")
+    parser = argparse.ArgumentParser(description=t("desc"))
+    parser.add_argument("file", type=Path, help=t("help_file"))
+    parser.add_argument("-v", "--verbose", action="store_true", help=t("help_verbose"))
+    parser.add_argument("-f", "--follow", action="store_true", help=t("help_follow"))
+    parser.add_argument("--last", type=int, default=0, help=t("help_last"))
 
     args = parser.parse_args()
 

@@ -4,8 +4,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { getProjectDir, isEnoent, readImageMetadata } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isEnoent, prompt, readImageMetadata } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { selectPrompt } from "../prompts/prompt-locale";
+import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 import { resolveReadPath } from "../tools/path-utils";
 import { formatBytes } from "../tools/render-utils";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
@@ -78,7 +81,10 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			if (autoResizeImages) {
 				try {
 					const resized = await resizeImage({ type: "image", data: base64Content, mimeType });
-					dimensionNote = formatDimensionNote(resized);
+					dimensionNote = formatDimensionNote(resized, {
+						format: params =>
+							prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+					});
 					attachment = {
 						type: "image",
 						mimeType: resized.mimeType,

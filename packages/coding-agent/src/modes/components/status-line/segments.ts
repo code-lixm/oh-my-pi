@@ -3,7 +3,9 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
+import { MAIN_AGENT_ID } from "../../../registry/agent-registry";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
@@ -85,7 +87,8 @@ const piSegment: StatusLineSegment = {
 	render(ctx) {
 		if (ctx.focusedAgentId) {
 			const icon = theme.icon.ghost ? `${theme.icon.ghost} ` : "";
-			return { content: theme.fg("warning", `${icon}${ctx.focusedAgentId} `), visible: true };
+			const name = ctx.focusedAgentDisplayName ?? ctx.focusedAgentId;
+			return { content: theme.fg("warning", `${icon}${MAIN_AGENT_ID} › ${name} `), visible: true };
 		}
 		const content = theme.icon.pi ? `${theme.icon.pi} ` : "";
 		return { content: theme.fg("accent", content), visible: true };
@@ -98,7 +101,7 @@ const modelSegment: StatusLineSegment = {
 		const state = ctx.session.state;
 		const opts = ctx.options.model ?? {};
 
-		let modelName = state.model?.name || state.model?.id || "no-model";
+		let modelName = state.model?.name || state.model?.id || tSettingsUi("no-model");
 		if (modelName.startsWith("Claude ")) {
 			modelName = modelName.slice(7);
 		}
@@ -113,7 +116,7 @@ const modelSegment: StatusLineSegment = {
 				const resolved = ctx.session.autoResolvedThinkingLevel();
 				thinkingDisplay = resolved
 					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
-					: `${theme.thinking.autoPending} auto`;
+					: `${theme.thinking.autoPending} ${tSettingsUi("auto")}`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
 				if (level !== ThinkingLevel.Off) {
@@ -202,7 +205,7 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 			break;
 	}
 
-	const parts: string[] = [withIcon(icon, "Goal")];
+	const parts: string[] = [withIcon(icon, tSettingsUi("Goal"))];
 	const showBudget = ctx.session.settings.get("goal.statusInFooter") === true;
 	if (showBudget && goal) {
 		parts.push(formatGoalBudget(goal.tokensUsed, goal.tokenBudget));
@@ -218,19 +221,19 @@ function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]
 	const hours = Math.floor(totalSeconds / 3_600);
 	const minutes = Math.floor((totalSeconds % 3_600) / 60);
 	const seconds = totalSeconds % 60;
-	if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ""} left`;
-	if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ""} left`;
-	return `${seconds}s left`;
+	if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ""} ${tSettingsUi("left")}`;
+	if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ""} ${tSettingsUi("left")}`;
+	return `${seconds}s ${tSettingsUi("left")}`;
 }
 
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
-		const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : " (paused)";
+		const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : ` ${tSettingsUi("(paused)")}`;
 
 		const plan = ctx.planMode;
 		if (plan && (plan.enabled || plan.paused)) {
-			const label = plan.paused ? `Plan${pauseSuffix}` : "Plan";
+			const label = plan.paused ? `${tSettingsUi("Plan")}${pauseSuffix}` : tSettingsUi("Plan");
 			const content = withIcon(theme.icon.plan, label);
 			const color = plan.paused ? "warning" : "accent";
 			return { content: theme.fg(color, content), visible: true };
@@ -238,7 +241,7 @@ const modeSegment: StatusLineSegment = {
 
 		const prewalk = ctx.prewalk;
 		if (prewalk?.enabled) {
-			const content = withIcon(theme.icon.prewalk, "Prewalk");
+			const content = withIcon(theme.icon.prewalk, tSettingsUi("Prewalk"));
 			return { content: theme.fg("accent", content), visible: true };
 		}
 
@@ -249,7 +252,7 @@ const modeSegment: StatusLineSegment = {
 
 		const vibe = ctx.vibeMode;
 		if (vibe?.enabled) {
-			const content = withIcon(theme.icon.agents, "Vibe");
+			const content = withIcon(theme.icon.agents, tSettingsUi("Vibe"));
 			return { content: theme.fg("accent", content), visible: true };
 		}
 
@@ -257,7 +260,8 @@ const modeSegment: StatusLineSegment = {
 		if (loop) {
 			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
 			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
-			const parts = [withIcon(icon, `Loop ${loop.state}`)];
+			const stateLabel = loop.state === "paused" ? tSettingsUi("(paused)") : tSettingsUi(loop.state);
+			const parts = [withIcon(icon, `${tSettingsUi("Loop")} ${stateLabel}`)];
 			const limit = formatLoopLimit(loop.limit);
 			if (limit) parts.push(limit);
 			return { content: theme.fg(color, parts.join(" ")), visible: true };
@@ -444,7 +448,7 @@ const costSegment: StatusLineSegment = {
 		const billingParts: string[] = [];
 		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-		if (usingSubscription) billingParts.push("(sub)");
+		if (usingSubscription) billingParts.push(tSettingsUi("(sub)"));
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},
@@ -523,7 +527,7 @@ const sessionSegment: StatusLineSegment = {
 	render(ctx) {
 		const sessionManager = ctx.session.sessionManager;
 		const sessionId = sessionManager?.getSessionId?.();
-		const display = sessionId?.slice(0, 8) || "new";
+		const display = sessionId?.slice(0, 8) || tSettingsUi("new");
 
 		return { content: withIcon(theme.icon.session, display), visible: true };
 	},
@@ -604,8 +608,8 @@ const collabSegment: StatusLineSegment = {
 		if (!ctx.collab) return { content: "", visible: false };
 		const label =
 			ctx.collab.role === "host"
-				? `⇄ collab:${ctx.collab.participantCount}`
-				: `⇄ collab guest:${ctx.collab.participantCount}`;
+				? `⇄ ${tSettingsUi("collab:{count}", { count: ctx.collab.participantCount })}`
+				: `⇄ ${tSettingsUi("collab guest:{count}", { count: ctx.collab.participantCount })}`;
 		return { content: theme.fg("accent", label), visible: true };
 	},
 };

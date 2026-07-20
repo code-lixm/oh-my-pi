@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { grepToolRenderer } from "../../src/tools/grep";
 
@@ -13,6 +13,7 @@ function extractLinkUris(text: string): string[] {
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
+	await initTheme(false, undefined, undefined, "dark", "light");
 });
 
 afterEach(() => {
@@ -24,7 +25,7 @@ afterAll(() => {
 });
 
 describe("grepToolRenderer", () => {
-	it("indents inline grep output and avoids accent-colored success headers", async () => {
+	it("renders grep from column 0 while keeping toolTitle success headers", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -42,9 +43,15 @@ describe("grepToolRenderer", () => {
 			.render(240);
 		const plainLines = sanitizeText(renderedLines.join("\n")).split("\n");
 
-		expect(plainLines.every(line => line.startsWith(" "))).toBe(true);
+		expect(plainLines[0]!.search(/\S/)).toBe(0);
+		expect(plainLines[0]!.startsWith(`${uiTheme.symbol("icon.search")} Grep`)).toBe(true);
+		expect(plainLines[1]).toBe(`└─ # src/`);
+		expect(plainLines[2]).toBe(`   ## file.ts#abcd`);
+		expect(plainLines[3]).toBe(`   *12│const needle = true;`);
+		expect(renderedLines[0]).toContain(uiTheme.fg("toolTitle", uiTheme.symbol("icon.search")));
+		expect(renderedLines[0]).toContain(uiTheme.fg("toolTitle", "Grep"));
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", uiTheme.symbol("icon.search")));
-		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", "Search"));
+		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", "Grep"));
 	});
 
 	it("keeps truncation status in the header without a bottom notice", async () => {

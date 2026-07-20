@@ -1,6 +1,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine } from "../tui";
 import { formatErrorDetail, formatExpandHint, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
@@ -28,17 +29,18 @@ const INSPECT_OUTPUT_EXPANDED_LINES = 16;
 const INSPECT_OUTPUT_LINE_WIDTH = 120;
 
 function questionLine(question: string, uiTheme: Theme): string {
-	return `${uiTheme.fg("dim", "Question:")} ${uiTheme.fg("accent", truncateToWidth(replaceTabs(question), INSPECT_QUESTION_PREVIEW_WIDTH))}`;
+	return `${uiTheme.fg("dim", tSettingsUi("Question:"))} ${uiTheme.fg("accent", truncateToWidth(replaceTabs(question), INSPECT_QUESTION_PREVIEW_WIDTH))}`;
 }
 
 export const inspectImageToolRenderer = {
 	renderCall(args: InspectImageRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = typeof args.path === "string" ? args.path : "";
 		const pathDisplay = rawPath ? shortenPath(rawPath) : "…";
-		const header = renderStatusLine({ icon: "pending", title: "Inspect", description: pathDisplay }, uiTheme);
+		const header = renderStatusLine(
+			{ icon: "pending", title: tSettingsUi("Inspect"), description: pathDisplay },
+			uiTheme,
+		);
 		const question = typeof args.question === "string" ? args.question.trim() : "";
-		// Call is at most a status line plus a one-line question — too small to box.
-		// The container renders a lone Text cleanly with no chrome.
 		if (!question) return new Text(header, 0, 0);
 		const tree = ` ${uiTheme.fg("dim", uiTheme.tree.last)} ${questionLine(question, uiTheme)}`;
 		return new Text(`${header}\n${tree}`, 0, 0);
@@ -53,18 +55,18 @@ export const inspectImageToolRenderer = {
 		const details = result.details;
 		const rawPath =
 			typeof details?.imagePath === "string" ? details.imagePath : typeof args?.path === "string" ? args.path : "";
-		const pathDisplay = rawPath ? shortenPath(rawPath) : "image";
+		const pathDisplay = rawPath ? shortenPath(rawPath) : tSettingsUi("image");
 		const success = !result.isError;
 		const header = renderStatusLine(
 			success
 				? {
 						iconOverride: uiTheme.styledSymbol("tool.inspectImage", "accent"),
-						title: "Inspect",
+						title: tSettingsUi("Inspect"),
 						description: pathDisplay,
 					}
 				: {
 						icon: "error",
-						title: "Inspect",
+						title: tSettingsUi("Inspect"),
 						description: pathDisplay,
 					},
 			uiTheme,
@@ -77,7 +79,7 @@ export const inspectImageToolRenderer = {
 			return framedBlock(uiTheme, width => {
 				const bodyLines: string[] = [];
 				if (question) bodyLines.push(questionLine(question, uiTheme));
-				bodyLines.push(formatErrorDetail(outputText || "inspection failed", uiTheme));
+				bodyLines.push(formatErrorDetail(outputText || tSettingsUi("inspect failed"), uiTheme));
 				return {
 					header,
 					sections: [{ lines: bodyLines }],
@@ -115,7 +117,10 @@ export const inspectImageToolRenderer = {
 			if (outputLines.length > maxLines) {
 				const remaining = outputLines.length - maxLines;
 				const hint = formatExpandHint(uiTheme, options.expanded, true);
-				bodyLines.push(`${uiTheme.fg("dim", `… ${remaining} more lines`)}${hint ? ` ${hint}` : ""}`);
+				const overflow = tSettingsUi(remaining === 1 ? "… 1 more line" : "… {count} more lines", {
+					count: remaining,
+				});
+				bodyLines.push(`${uiTheme.fg("dim", overflow)}${hint ? ` ${hint}` : ""}`);
 			}
 
 			return {

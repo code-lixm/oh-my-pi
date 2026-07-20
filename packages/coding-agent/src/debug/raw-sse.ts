@@ -1,5 +1,6 @@
 import { type Component, matchesKey, parseSgrMouse, replaceTabs, ScrollView, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { bottomBorder, divider, row, topBorder } from "../modes/components/overlay-box";
 import { theme } from "../modes/theme/theme";
 import { copyToClipboard } from "../utils/clipboard";
@@ -198,7 +199,7 @@ export class RawSseViewerComponent implements Component {
 		this.#bodyRowCount = bodyHeight;
 
 		return [
-			topBorder(this.#lastRenderWidth, "Raw Provider Stream"),
+			topBorder(this.#lastRenderWidth, tSettingsUi("Raw Provider Stream")),
 			row(this.#summaryText(), this.#lastRenderWidth),
 			divider(this.#lastRenderWidth),
 			...bodyRows.map(line => row(line, this.#lastRenderWidth)),
@@ -212,8 +213,11 @@ export class RawSseViewerComponent implements Component {
 		const snapshot = this.#buffer.snapshot();
 		if (snapshot.records.length === 0) {
 			return [
-				theme.fg("muted", "No raw SSE frames captured yet."),
-				theme.fg("muted", "HTTP SSE providers populate this view while a model response is streaming."),
+				theme.fg("muted", tSettingsUi("No raw SSE frames captured yet.")),
+				theme.fg(
+					"muted",
+					tSettingsUi("HTTP SSE providers populate this view while a model response is streaming."),
+				),
 			];
 		}
 
@@ -259,14 +263,18 @@ export class RawSseViewerComponent implements Component {
 	#summaryText(): string {
 		const snapshot = this.#buffer.snapshot();
 		const last = snapshot.lastUpdatedAt
-			? `${theme.fg("muted", "last")} ${theme.fg("accent", formatRawSseIsoTime(snapshot.lastUpdatedAt))}`
-			: theme.fg("muted", "waiting for first frame");
-		const follow = this.#followTail ? theme.fg("success", "follow on") : theme.fg("warning", "follow off");
-		return `${theme.fg("muted", "events")} ${theme.fg("accent", String(snapshot.totalEvents))}  ${theme.fg("muted", "records")} ${theme.fg("accent", String(snapshot.records.length))}  ${last}  ${follow}`;
+			? `${theme.fg("muted", tSettingsUi("last"))} ${theme.fg("accent", formatRawSseIsoTime(snapshot.lastUpdatedAt))}`
+			: theme.fg("muted", tSettingsUi("waiting for first frame"));
+		const follow = this.#followTail
+			? theme.fg("success", tSettingsUi("follow on"))
+			: theme.fg("warning", tSettingsUi("follow off"));
+		return `${theme.fg("muted", tSettingsUi("events"))} ${theme.fg("accent", String(snapshot.totalEvents))}  ${theme.fg("muted", tSettingsUi("records"))} ${theme.fg("accent", String(snapshot.records.length))}  ${last}  ${follow}`;
 	}
 
 	#statusText(): string {
-		const help = "Esc close · Ctrl+C copy raw · End follow tail · wheel scroll · click summary toggles follow";
+		const help = tSettingsUi(
+			"Esc close · Ctrl+C copy raw · End follow tail · wheel scroll · click summary toggles follow",
+		);
 		return this.#statusMessage
 			? `${theme.fg("success", this.#statusMessage)}  ${theme.fg("dim", help)}`
 			: theme.fg("dim", help);
@@ -291,7 +299,7 @@ export class RawSseViewerComponent implements Component {
 	#copyAll(): void {
 		const payload = this.#buffer.toRawText();
 		if (payload.trim().length === 0) {
-			const message = "No raw SSE frames to copy";
+			const message = tSettingsUi("No raw SSE frames to copy");
 			this.#statusMessage = message;
 			this.#onStatus?.(message);
 			this.#onUpdate?.();
@@ -300,12 +308,12 @@ export class RawSseViewerComponent implements Component {
 
 		try {
 			copyToClipboard(payload);
-			const message = "Copied raw SSE stream";
+			const message = tSettingsUi("Copied raw SSE stream");
 			this.#statusMessage = message;
 			this.#onStatus?.(message);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.#statusMessage = `Copy failed: ${message}`;
+			this.#statusMessage = tSettingsUi("Copy failed: {message}", { message });
 		}
 		this.#onUpdate?.();
 	}

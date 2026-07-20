@@ -5,12 +5,24 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { shortenPath } from "../../tools/render-utils";
 import * as git from "../../utils/git";
 import { sanitizeStatusText } from "../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./status-line/context-thresholds";
+
+const THINKING_LEVEL_LABELS: Partial<Record<ThinkingLevel, string>> = {
+	[ThinkingLevel.Off]: "Off",
+	[ThinkingLevel.Minimal]: "Min",
+	[ThinkingLevel.Low]: "Low",
+	[ThinkingLevel.Medium]: "Medium",
+	[ThinkingLevel.High]: "High",
+	[ThinkingLevel.XHigh]: "XHigh",
+	[ThinkingLevel.Max]: "Max",
+	[ThinkingLevel.Inherit]: "Inherit",
+};
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -112,7 +124,11 @@ export class FooterComponent implements Component {
 
 		const headState = git.head.resolveSync(getProjectDir());
 		this.#cachedBranch =
-			headState === null ? null : headState.kind === "ref" ? (headState.branchName ?? headState.ref) : "detached";
+			headState === null
+				? null
+				: headState.kind === "ref"
+					? (headState.branchName ?? headState.ref)
+					: tSettingsUi("Detached");
 		return this.#cachedBranch;
 	}
 
@@ -180,13 +196,13 @@ export class FooterComponent implements Component {
 			const billingParts: string[] = [];
 			if (totalCost) billingParts.push(`$${totalCost.toFixed(3)}`);
 			if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-			if (usingSubscription) billingParts.push("(sub)");
+			if (usingSubscription) billingParts.push(tSettingsUi("(sub)"));
 			if (billingParts.length > 0) statsParts.push(billingParts.join(" "));
 		}
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;
-		const autoIndicator = this.#autoCompactEnabled ? " (auto)" : "";
+		const autoIndicator = this.#autoCompactEnabled ? tSettingsUi(" (auto)") : "";
 		const contextPercentDisplay = `${formatContextUsage(contextPercentValue, contextWindow, contextTokens)}${autoIndicator}`;
 		if (contextUsage && contextPercentValue !== null) {
 			const color = getContextUsageThemeColor(getContextUsageLevel(contextPercentValue, contextWindow));
@@ -200,7 +216,7 @@ export class FooterComponent implements Component {
 		let statsLeft = statsParts.join(" ");
 
 		// Add model name on the right side, plus thinking level if model supports it
-		const modelName = state.model?.id || "no-model";
+		const modelName = state.model?.id || tSettingsUi("No model");
 
 		// Add thinking level hint when the current model advertises supported efforts
 		let rightSide = modelName;
@@ -209,11 +225,12 @@ export class FooterComponent implements Component {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
 				// question-box marker; once resolved it shows `<level>`.
 				const resolved = this.session.autoResolvedThinkingLevel();
-				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
+				const resolvedLabel = resolved ? (THINKING_LEVEL_LABELS[resolved as ThinkingLevel] ?? resolved) : undefined;
+				rightSide = `${modelName} • ${resolvedLabel ? tSettingsUi(resolvedLabel) : `${theme.thinking.autoPending} ${tSettingsUi("Auto")}`}`;
 			} else {
 				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
 				if (thinkingLevel !== ThinkingLevel.Off) {
-					rightSide = `${modelName} • ${thinkingLevel}`;
+					rightSide = `${modelName} • ${tSettingsUi(THINKING_LEVEL_LABELS[thinkingLevel] ?? thinkingLevel)}`;
 				}
 			}
 		}
@@ -266,7 +283,7 @@ export class FooterComponent implements Component {
 			const sortedStatuses = Array.from(this.#extensionStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
 				.map(([, text]) => sanitizeStatusText(text));
-			const statusLine = sortedStatuses.join(" ");
+			const statusLine = sortedStatuses.join("  ");
 			// Truncate to terminal width with dim ellipsis for consistency with footer style
 			lines.push(truncateToWidth(statusLine, width));
 		}

@@ -88,6 +88,7 @@ export type TodoPhase = {
 export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
 	clearInitialTerminalHistory?: boolean;
+	waitForInitialAppearance?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
@@ -121,6 +122,8 @@ export interface InteractiveModeContext {
 	readonly focusedAgentId: string | undefined;
 	/** Focus the main view on an agent's live session (delegates to SessionFocusController.focusAgent). */
 	focusAgentSession(id: string): Promise<void>;
+	/** Cycle through the main session and currently live subagents. */
+	cycleAgentSession(direction: "next" | "previous"): Promise<void>;
 	/** Focus the focused agent's parent session, falling back to main (delegates to focusParent). */
 	focusParentSession(): Promise<void>;
 	/** Return the view to the main session (delegates to SessionFocusController.unfocus). */
@@ -335,6 +338,7 @@ export interface InteractiveModeContext {
 	handleDumpCommand(): Promise<void>;
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
+	showLastTurn(): void;
 	handleClearCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;

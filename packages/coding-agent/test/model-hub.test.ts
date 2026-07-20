@@ -15,9 +15,10 @@ import {
 	type ModelHubOptions,
 	resetProviderAutoRefreshGuard,
 } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function normalize(lines: readonly string[]): string {
 	return stripVTControlCharacters(lines.join("\n")).replace(/\s+/g, " ").trim();
@@ -43,7 +44,8 @@ function makeModel(provider: string, id: string, contextWindow = 128_000): Model
 	});
 }
 
-let testTheme = await getThemeByName("dark");
+let testTheme: Theme | undefined;
+let previousLocale: string;
 
 function installTestTheme(): void {
 	if (!testTheme) {
@@ -76,12 +78,18 @@ function makeRegistry(models: () => Model[], overrides: RegistryOverrides = {}):
 
 interface HubHarness {
 	hub: ModelHubComponent;
-	onAssign: ReturnType<typeof vi.fn>;
-	onUnassign: ReturnType<typeof vi.fn>;
-	onLoginRequest: ReturnType<typeof vi.fn>;
-	onCancel: ReturnType<typeof vi.fn>;
-	onFallbackChainChange: Mock<(role: string, chain: string[]) => void>;
+	onAssign: Mock<AssignCallback>;
+	onUnassign: Mock<UnassignCallback>;
+	onLoginRequest: Mock<LoginRequestCallback>;
+	onCancel: Mock<CancelCallback>;
+	onFallbackChainChange: Mock<FallbackChainChangeCallback>;
 }
+
+type AssignCallback = ModelHubCallbacks["onAssign"];
+type UnassignCallback = ModelHubCallbacks["onUnassign"];
+type LoginRequestCallback = NonNullable<ModelHubCallbacks["onLoginRequest"]>;
+type CancelCallback = ModelHubCallbacks["onCancel"];
+type FallbackChainChangeCallback = NonNullable<ModelHubCallbacks["onFallbackChainChange"]>;
 
 const openHubs: ModelHubComponent[] = [];
 
@@ -98,12 +106,12 @@ function createHub(options: {
 	const settings = options.settings ?? Settings.isolated({});
 	const registry = makeRegistry(modelsFn, options.registry);
 	const ui = { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI;
-	const onAssign = vi.fn();
-	const onUnassign = vi.fn();
-	const onLoginRequest = vi.fn();
-	const onCancel = vi.fn();
+	const onAssign: Mock<AssignCallback> = vi.fn();
+	const onUnassign: Mock<UnassignCallback> = vi.fn();
+	const onLoginRequest: Mock<LoginRequestCallback> = vi.fn();
+	const onCancel: Mock<CancelCallback> = vi.fn();
 	// Mirror the controller: persist chain edits so the hub's re-read sees them.
-	const onFallbackChainChange = vi.fn((role: string, chain: string[]) => {
+	const onFallbackChainChange: Mock<FallbackChainChangeCallback> = vi.fn((role: string, chain: string[]) => {
 		const chains = { ...settings.get("retry.fallbackChains") };
 		if (chain.length === 0) {
 			delete chains[role];
@@ -142,13 +150,15 @@ describe("ModelHub", () => {
 		if (!testTheme) {
 			throw new Error("Failed to load dark theme for ModelHub tests");
 		}
+		previousLocale = getSettingsUiLocale();
 	});
-
 	afterEach(() => {
+		previousLocale = getSettingsUiLocale();
 		resetProviderAutoRefreshGuard();
 		for (const hub of openHubs.splice(0)) {
 			hub.dispose();
 		}
+		setSettingsUiLocale(previousLocale);
 	});
 
 	describe("role chips and roles view", () => {
@@ -167,11 +177,11 @@ describe("ModelHub", () => {
 			installTestTheme();
 
 			const rendered = normalize(hub.render(220));
-			expect(rendered).toContain("●default");
-			expect(rendered).toContain("●custom-fast");
+			expect(rendered).toContain("● default");
+			expect(rendered).toContain("● custom-fast");
 			// Explicit :low suffix surfaces as the low thinking glyph on the chip.
 			expect(rendered).toContain("◔");
-			expect(rendered).toContain("●smol");
+			expect(rendered).toContain("● smol");
 		});
 
 		test("list rows carry no role chips; only the selected model's detail line is tagged", () => {
@@ -185,9 +195,113 @@ describe("ModelHub", () => {
 			// Auto-selection tags smol → haiku and slow → codex, but only the
 			// selected model's chips render (in the detail line). With row
 			// chips both would appear at once.
-			const hollow = ["○smol", "○slow"].filter(chip => rendered.includes(chip));
+			const hollow = ["○ smol", "○ slow"].filter(chip => rendered.includes(chip));
 			expect(hollow).toHaveLength(1);
-			expect(rendered).not.toContain("●smol");
+			expect(rendered).not.toContain("● smol");
+		});
+
+		test("roles view localizes zh-CN labels and aligns model columns by visible width", () => {
+			const previousLocale = getSettingsUiLocale();
+			try {
+				const settings = Settings.isolated({
+					displayLanguage: "zh-CN",
+					modelRoles: {
+						default: "test/model-default",
+						plan: "test/model-plan",
+						task: "test/model-task",
+					},
+				});
+				const { hub } = createHub({
+					models: [
+						makeModel("test", "model-default"),
+						makeModel("test", "model-plan"),
+						makeModel("test", "model-task"),
+					],
+					scoped: true,
+					settings,
+				});
+				installTestTheme();
+
+				hub.handleInput(UP); // All models → Roles (since Recent is removed)
+				hub.handleInput("\n"); // dive into the role rows
+
+				const lines = hub.render(220).map(line => stripVTControlCharacters(line));
+				const defaultRow = lines.find(line => line.includes("默认"));
+				const planRow = lines.find(line => line.includes("规划"));
+				const taskRow = lines.find(line => line.includes("子任务"));
+				expect(defaultRow).toBeDefined();
+				expect(planRow).toBeDefined();
+				expect(taskRow).toBeDefined();
+
+				const modelColumnStart = (line: string, selector: string): number => {
+					const start = line.indexOf(selector);
+					expect(start).toBeGreaterThan(-1);
+					return visibleWidth(line.slice(0, start));
+				};
+
+				const defaultStart = modelColumnStart(defaultRow ?? "", "test/model-default");
+				const planStart = modelColumnStart(planRow ?? "", "test/model-plan");
+				const taskStart = modelColumnStart(taskRow ?? "", "test/model-task");
+				expect(planStart).toBe(defaultStart);
+				expect(taskStart).toBe(defaultStart);
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
+		});
+
+		test("configured and auto-selected zh-CN role chips have one ASCII space between glyph and label", () => {
+			const previousLocale = getSettingsUiLocale();
+			try {
+				const settings = Settings.isolated({
+					displayLanguage: "zh-CN",
+					modelRoles: {
+						// explicit: configured → ● glyph
+						default: "test/model-default",
+						plan: "test/model-default",
+					},
+				});
+				// No roles for designer/smol/slow → they fall back to auto → ○ glyph
+				const { hub } = createHub({
+					models: [
+						makeModel("test", "model-default"),
+						makeModel("test", "model-plan"),
+						makeModel("test", "model-designer"),
+						makeModel("test", "model-smol"),
+						makeModel("test", "model-slow"),
+					],
+					scoped: true,
+					settings,
+				});
+				installTestTheme();
+
+				const lines = hub.render(220);
+				const rendered = normalize(lines);
+				const detail = stripVTControlCharacters(lines.find(line => line.includes("● 默认")) ?? "");
+
+				// Configured chips (●): glyph and label must NOT be adjacent.
+				expect(rendered).toContain("● 默认");
+				expect(rendered).not.toContain("●默认");
+				expect(rendered).toContain("● 规划");
+				expect(rendered).not.toContain("●规划");
+
+				// Auto-selected chips (○): glyph and label must NOT be adjacent.
+				// designer auto-resolves to the model named "model-designer" via pi/designer.
+				expect(rendered).toContain("○ 设计");
+				expect(rendered).not.toContain("○设计");
+				// smol and slow also auto-resolve to their respective models.
+				expect(rendered).toContain("○ 轻量");
+				expect(rendered).not.toContain("○轻量");
+				expect(rendered).toContain("○ 深度思考");
+				expect(rendered).not.toContain("○深度思考");
+				// Detail row separator: "  ·  " (two spaces, dimmed dot, two spaces).
+				expect(detail).toContain("● 默认 ◒  ·  ○ 轻量  ·  ○ 深度思考  ·  ● 规划  ·  ○ 设计");
+				expect(detail).toMatch(/◒ {2}· {2}○ 轻量/);
+				expect(detail).toMatch(/○ 轻量 {2}· {2}○ 深度思考/);
+				expect(detail).toMatch(/○ 深度思考 {2}· {2}● 规划/);
+				expect(detail).toMatch(/● 规划 {2}· {2}○ 设计/);
+			} finally {
+				setSettingsUiLocale(previousLocale);
+			}
 		});
 
 		test("roles view reflects auto thinking from defaultThinkingLevel and :auto suffixes", () => {
@@ -446,7 +560,8 @@ describe("ModelHub", () => {
 				expect(settings.getProjectModelRole("default")).toBe(selector);
 
 				const projectDefault = createHub({ models: [model], scoped: true, settings });
-				expect(normalize(projectDefault.hub.render(220))).toContain("○smol");
+				const projectDefaultLines = projectDefault.hub.render(220).map(line => stripVTControlCharacters(line));
+				expect(projectDefaultLines.find(line => line.includes("○ smol"))).toBeDefined();
 				projectDefault.hub.handleInput("\n");
 				projectDefault.hub.handleInput("\n");
 				expect(projectDefault.onUnassign).toHaveBeenCalledWith("default", "project");
@@ -484,7 +599,8 @@ describe("ModelHub", () => {
 			const model = makeModel("test", "claude-haiku-4.5");
 			const settings = Settings.isolated({ modelRoleStorage: "project" });
 			const { hub, onAssign, onUnassign } = createHub({ models: [model], scoped: true, settings });
-			expect(normalize(hub.render(220))).toContain("○smol");
+			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
+			expect(lines.find(line => line.includes("○ smol"))).toBeDefined();
 
 			hub.handleInput("\n");
 			hub.handleInput(DOWN);
@@ -840,7 +956,7 @@ describe("ModelHub", () => {
 			const panned = normalize(hub.render(220));
 			const modelIdsIn = (frame: string) => new Set(Array.from(frame.matchAll(/model-\d\d/g), match => match[0]));
 			const beforeIds = modelIdsIn(before);
-			const revealed = [...modelIdsIn(panned)].filter(id => !beforeIds.has(id));
+			const revealed = Array.from(modelIdsIn(panned)).filter(id => !beforeIds.has(id));
 			expect(revealed.length).toBeGreaterThan(0);
 
 			// ...but never moves the selection: Enter still opens the same model's strip.

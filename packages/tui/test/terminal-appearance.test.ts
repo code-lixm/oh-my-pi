@@ -99,7 +99,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		terminal.stop();
 	});
 
-	it("queues overlapping OSC 11 queries until both in-flight DA1 sentinels are consumed", () => {
+	it("queues overlapping OSC 11 queries until the post-sentinel grace window expires", () => {
 		vi.useFakeTimers();
 		const { terminal, queryCount, sentinelCount } = setupTerminal();
 
@@ -119,8 +119,22 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		process.stdin.emit("data", "\x1b[?1;2c");
 		expect(queryCount()).toBe(1);
 
-		// Second DA1 drains the OSC 11 sentinel and kicks the queued re-query.
+		// OSC 11's own DA1 starts the grace window; the queued re-query must not
+		// fire until that window expires.
 		process.stdin.emit("data", "\x1b[?1;2c");
+		expect(queryCount()).toBe(1);
+		expect(sentinelCount()).toBe(1);
+
+		vi.advanceTimersByTime(99);
+		expect(queryCount()).toBe(1);
+		expect(sentinelCount()).toBe(1);
+
+		vi.advanceTimersByTime(1);
+		expect(queryCount()).toBe(2);
+		expect(sentinelCount()).toBe(2);
+
+		// The queued re-query should only start once when the grace timer expires.
+		vi.advanceTimersByTime(500);
 		expect(queryCount()).toBe(2);
 		expect(sentinelCount()).toBe(2);
 
@@ -497,6 +511,34 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		// OSC 11's own DA1 sentinel drains the FIFO without re-entering the bug path.
 		process.stdin.emit("data", "\x1b[?1;2c");
+
+		terminal.stop();
+	});
+
+	it("accepts a late OSC 11 reply that arrives within the post-sentinel grace window", () => {
+		vi.useFakeTimers();
+		const { terminal, received } = setupTerminal();
+		const appearances: string[] = [];
+		terminal.onAppearanceChange(a => appearances.push(a));
+
+		// Both startup DA1 sentinels arrive before the asynchronous OSC 11 color lookup.
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b[?1;2c");
+
+		expect(terminal.appearance).toBeUndefined();
+		expect(appearances).toEqual([]);
+
+		vi.advanceTimersByTime(99);
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+
+		expect(received).toEqual([]);
+		expect(terminal.appearance).toBe("light");
+		expect(appearances).toEqual(["light"]);
+
+		// Completing the query must cancel the grace timeout rather than re-firing later.
+		vi.advanceTimersByTime(1);
+		expect(terminal.appearance).toBe("light");
+		expect(appearances).toEqual(["light"]);
 
 		terminal.stop();
 	});

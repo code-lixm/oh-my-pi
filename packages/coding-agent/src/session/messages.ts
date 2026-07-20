@@ -25,6 +25,7 @@ import type {
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { prompt } from "@oh-my-pi/pi-utils";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
+import userInterjectionTemplateZh from "../prompts/steering/user-interjection.zh-CN.md" with { type: "text" };
 
 export {
 	type BranchSummaryMessage,
@@ -34,6 +35,7 @@ export {
 	createCustomMessage,
 } from "@oh-my-pi/pi-agent-core/compaction/messages";
 
+import { selectPrompt } from "../prompts/prompt-locale";
 import type { OutputMeta } from "../tools/output-meta";
 import { formatOutputNotice } from "../tools/output-meta";
 
@@ -360,7 +362,7 @@ function userMessageWithoutSteering(message: UserMessage): UserMessage {
 }
 
 function renderSteeringEnvelope(message: string): string {
-	return prompt.render(userInterjectionTemplate, { message });
+	return prompt.render(selectPrompt(userInterjectionTemplate, userInterjectionTemplateZh), { message });
 }
 
 function getArrayContentText(content: (TextContent | ImageContent)[]): string {

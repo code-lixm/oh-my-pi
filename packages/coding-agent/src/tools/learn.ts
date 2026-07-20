@@ -3,7 +3,9 @@ import { type } from "arktype";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { localBackend } from "../memory-backend/local-backend";
+import { selectPrompt } from "../prompts/prompt-locale";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
+import learnDescriptionZh from "../prompts/tools/learn.zh-CN.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 const learnSchema = type({
@@ -33,7 +35,7 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 			? "write"
 			: "read";
 	readonly label = "Learn";
-	readonly description = learnDescription;
+	readonly description = selectPrompt(learnDescription, learnDescriptionZh);
 	readonly parameters = learnSchema;
 	readonly strict = true;
 	readonly loadMode = "essential" as const;

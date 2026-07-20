@@ -2,6 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
 
@@ -81,10 +82,11 @@ function formatTimeAgo(date: Date): string {
 	const diffHours = Math.floor(diffMs / 3600000);
 	const diffDays = Math.floor(diffMs / 86400000);
 
-	if (diffMins < 1) return "just now";
-	if (diffMins < 60) return `${diffMins}m ago`;
-	if (diffHours < 24) return `${diffHours}h ago`;
-	if (diffDays < 7) return `${diffDays}d ago`;
+	if (diffMins < 1) return tSettingsUi("just now");
+	if (diffMins < 60) return tSettingsUi("{count}m ago", { count: diffMins });
+	if (diffHours < 24)
+		return tSettingsUi(diffHours === 1 ? "{count} hour ago" : "{count} hours ago", { count: diffHours });
+	if (diffDays < 7) return tSettingsUi(diffDays === 1 ? "1 day ago" : "{count} days ago", { count: diffDays });
 	return date.toLocaleDateString();
 }
 
@@ -103,7 +105,7 @@ function sessionDisplayName(info: SessionInfo): string {
 	const ts = Number.isFinite(created) ? created : info.modified.getTime();
 	const date = new Date(ts);
 	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-	return `Untitled · ${time}`;
+	return tSettingsUi("Untitled · {time}", { time });
 }
 
 function extractTextFromContent(content: Message["content"]): string {

@@ -18,6 +18,7 @@ import { Container, Ellipsis, matchesKey, type OverlayHandle, padding, type TUI,
 import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
@@ -392,11 +393,13 @@ export class AgentHubOverlayComponent extends Container {
 		const lines: string[] = [];
 		lines.push(...new DynamicBorder().render(width));
 		const counts = this.#statusSummary();
-		lines.push(` ${theme.fg("accent", "Agent Hub")}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`);
+		lines.push(
+			` ${theme.fg("accent", tSettingsUi("Agent Hub"))}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`,
+		);
 		lines.push(...new DynamicBorder().render(width));
 
 		if (this.#rows.length === 0) {
-			lines.push(` ${theme.fg("dim", "no subagents yet — task spawns appear here")}`);
+			lines.push(` ${theme.fg("dim", tSettingsUi("no subagents yet — task spawns appear here"))}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
 			// Chrome: 2 borders + title + notice? + blank + hints + border
@@ -421,13 +424,13 @@ export class AgentHubOverlayComponent extends Container {
 				}
 			}
 			if (start > 0) {
-				lines.push(` ${theme.fg("dim", `… ${start} more`)}`);
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
 			}
 			for (let i = start; i < end; i++) {
 				lines.push(...entries[i]);
 			}
 			if (end < this.#rows.length) {
-				lines.push(` ${theme.fg("dim", `… ${this.#rows.length - end} more`)}`);
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: this.#rows.length - end })}`)}`);
 			}
 		}
 
@@ -435,7 +438,7 @@ export class AgentHubOverlayComponent extends Container {
 			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width - 2)))}`);
 		}
 		lines.push("");
-		lines.push(` ${theme.fg("dim", "j/k:select  Enter:open  r:revive  x:kill  Esc/←←:close")}`);
+		lines.push(` ${theme.fg("dim", tSettingsUi("j/k:select  Enter:open  r:revive  x:kill  Esc/←←:close"))}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
@@ -448,7 +451,7 @@ export class AgentHubOverlayComponent extends Container {
 		const parts: string[] = [];
 		for (const status of ["running", "idle", "parked", "aborted"] as const) {
 			const count = counts[status];
-			if (count > 0) parts.push(`${count} ${status}`);
+			if (count > 0) parts.push(`${count} ${tSettingsUi(status)}`);
 		}
 		return parts.join(theme.sep.dot);
 	}
@@ -470,7 +473,7 @@ export class AgentHubOverlayComponent extends Container {
 			fields.push(theme.fg("dim", `↳ ${replaceTabs(ref.parentId)}`));
 		}
 		if (ref.kind === "advisor") {
-			fields.push(theme.fg("warning", "read-only"));
+			fields.push(theme.fg("warning", tSettingsUi("read-only")));
 		}
 		const unread = this.#irc.unreadCount(ref.id);
 		if (unread > 0) {

@@ -15,6 +15,14 @@ export const PLACEHOLDER_REGEX = /\[(Image|Paste) #([1-9]\d*)(?:,[^\]\n]*)?\]/g;
  *  the pending-image buffer. */
 const IMAGE_MARKER_REGEX = /\[Image #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
 
+/** Whether `text` contains at least one positional image marker. */
+export function hasImageMarker(text: string): boolean {
+	IMAGE_MARKER_REGEX.lastIndex = 0;
+	const found = IMAGE_MARKER_REGEX.test(text);
+	IMAGE_MARKER_REGEX.lastIndex = 0;
+	return found;
+}
+
 /** Renumber every `[Image #N]` marker in `text` by `offset` (added to the
  *  existing index), preserving the optional `, WxH` tail. Paste markers are
  *  left untouched. Used when restoring queued image-messages back into a draft

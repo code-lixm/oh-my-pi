@@ -14,12 +14,17 @@ import {
 	ToolsRoute,
 } from "./routes";
 import { RequestDrawer } from "./ui/RequestDrawer";
+import { useLocale } from "./useLocale";
 
 export default function App() {
 	const { section, setSection, range, setRange } = useHashRoute();
 	const [refreshTrigger, setRefreshTrigger] = useState(0);
 	const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
 	const [updatedAt, setUpdatedAt] = useState<number | null>(() => Date.now());
+	// Subscribe once at the root so any sibling (layout, drawer, route portals)
+	// re-renders when the user flips the locale toggle, regardless of which
+	// subtree's other subscribers exist.
+	useLocale();
 
 	const handleSyncComplete = useCallback((result: { success: boolean }) => {
 		if (result.success) {

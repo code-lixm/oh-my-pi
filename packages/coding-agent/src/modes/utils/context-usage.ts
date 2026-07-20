@@ -5,6 +5,7 @@ import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../../extensibility/skills";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { AgentSession } from "../../session/agent-session";
 import { estimateInlineSavings, type SnapcompactSavingsEstimate } from "../../session/snapcompact-inline";
 import type { Tool } from "../../tools";
@@ -208,19 +209,31 @@ export function computeContextBreakdown(
 	}
 
 	const categories: CategoryInfo[] = [
-		{ id: "systemPrompt", label: "System prompt", tokens: systemPromptTokens, color: "accent", glyph: CELL_FILLED },
-		{ id: "systemTools", label: "System tools", tokens: toolsTokens, color: "warning", glyph: CELL_FILLED },
+		{
+			id: "systemPrompt",
+			label: tSettingsUi("System prompt"),
+			tokens: systemPromptTokens,
+			color: "accent",
+			glyph: CELL_FILLED,
+		},
+		{
+			id: "systemTools",
+			label: tSettingsUi("System tools"),
+			tokens: toolsTokens,
+			color: "warning",
+			glyph: CELL_FILLED,
+		},
 		{
 			id: "systemContext",
-			label: "System context",
+			label: tSettingsUi("System context"),
 			tokens: systemContextTokens,
 			color: "customMessageLabel",
 			glyph: CELL_FILLED,
 		},
-		{ id: "skills", label: "Skills", tokens: skillsTokens, color: "success", glyph: CELL_FILLED },
+		{ id: "skills", label: tSettingsUi("Skills"), tokens: skillsTokens, color: "success", glyph: CELL_FILLED },
 		{
 			id: "messages",
-			label: "Messages",
+			label: tSettingsUi("Messages"),
 			tokens: messagesTokens,
 			color: "userMessageText",
 			glyph: CELL_FILLED_MESSAGES,
@@ -359,26 +372,26 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 	const modelId = model?.id ?? "unknown";
 	const windowLabel = formatNumber(contextWindow).toLowerCase();
 
-	lines.push(theme.bold(`${modelName}`) + theme.fg("dim", ` (${windowLabel} context)`));
+	lines.push(theme.bold(`${modelName}`) + theme.fg("dim", tSettingsUi(" ({windowLabel} context)", { windowLabel })));
 	lines.push(theme.fg("muted", `${modelId}[${windowLabel}]`));
 	lines.push(
-		`${theme.bold(formatNumber(usedTokens))}${theme.fg("dim", `/${windowLabel} tokens`)}` +
+		`${theme.bold(formatNumber(usedTokens))}${theme.fg("dim", tSettingsUi("/{windowLabel} tokens", { windowLabel }))}` +
 			theme.fg("muted", ` (${percentString(usedTokens, contextWindow)})`),
 	);
 	lines.push("");
-	lines.push(theme.fg("muted", "Estimated usage by category"));
+	lines.push(theme.fg("muted", tSettingsUi("Estimated usage by category")));
 
 	for (const category of categories) {
 		const dot = theme.fg(category.color, category.glyph);
 		const label = category.label;
 		const tokens = formatNumber(category.tokens);
 		const pct = percentString(category.tokens, contextWindow);
-		lines.push(`${dot} ${label}: ${theme.bold(tokens)} ${theme.fg("dim", `tokens (${pct})`)}`);
+		lines.push(`${dot} ${label}: ${theme.bold(tokens)} ${theme.fg("dim", tSettingsUi("tokens ({pct})", { pct }))}`);
 	}
 
 	const freeDot = theme.fg("dim", CELL_FREE);
 	lines.push(
-		`${freeDot} Free space: ${theme.bold(formatNumber(freeTokens))} ${theme.fg("dim", `(${percentString(freeTokens, contextWindow)})`)}`,
+		`${freeDot} ${tSettingsUi("Free space: {freeTokens} {percent}", { freeTokens: theme.bold(formatNumber(freeTokens)), percent: theme.fg("dim", `(${percentString(freeTokens, contextWindow)})`) })}`,
 	);
 
 	if (autoCompactBufferTokens > 0) {
@@ -402,21 +415,26 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 				const sp = snap.systemPrompt;
 				if (sp.applied) {
 					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): saves ${theme.bold(`~${formatNumber(sp.savedTokens)}`)} ` +
+						`  ${tSettingsUi("System prompt ({scope}): saves {savedTokens}", { scope: sp.scope === "agents-md" ? "AGENTS.md" : tSettingsUi("all"), savedTokens: theme.bold(`~${formatNumber(sp.savedTokens)}`) })} ` +
 							theme.fg(
 								"dim",
-								`(${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)})`,
+								tSettingsUi("({textTokens} text → {frames} frame{plural} ≈ {imageTokens})", {
+									textTokens: formatNumber(sp.textTokens),
+									frames: sp.frames,
+									plural: sp.frames === 1 ? "" : "s",
+									imageTokens: formatNumber(sp.imageTokens),
+								}),
 							),
 					);
 				} else {
 					const reason =
 						sp.reason === "budget"
-							? "image budget exhausted"
+							? tSettingsUi("image budget exhausted")
 							: sp.reason === "empty"
-								? "nothing to image"
-								: "frames would not save tokens";
+								? tSettingsUi("nothing to image")
+								: tSettingsUi("frames would not save tokens");
 					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): ${theme.fg("dim", `stays text (${reason})`)}`,
+						`  ${tSettingsUi("System prompt ({scope}): {detail}", { scope: sp.scope === "agents-md" ? "AGENTS.md" : tSettingsUi("all"), detail: theme.fg("dim", tSettingsUi("stays text ({reason})", { reason })) })}`,
 					);
 				}
 			}
@@ -424,19 +442,29 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 				const tr = snap.toolResults;
 				if (tr.swapped > 0) {
 					lines.push(
-						`  Tool results: saves ${theme.bold(`~${formatNumber(tr.savedTokens)}`)} ` +
+						`  ${tSettingsUi("Tool results: saves {savedTokens}", { savedTokens: theme.bold(`~${formatNumber(tr.savedTokens)}`) })} ` +
 							theme.fg(
 								"dim",
-								`(${tr.swapped}/${tr.total} imaged, ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)})`,
+								tSettingsUi("({swapped}/{total} imaged, {textTokens} text → {frames} frames ≈ {imageTokens})", {
+									swapped: tr.swapped,
+									total: tr.total,
+									textTokens: formatNumber(tr.textTokens),
+									frames: tr.frames,
+									imageTokens: formatNumber(tr.imageTokens),
+								}),
 							),
 					);
 				} else {
-					lines.push(`  Tool results: ${theme.fg("dim", `none imaged (${tr.total} in history)`)}`);
+					lines.push(
+						tSettingsUi("  Tool results: {detail}", {
+							detail: theme.fg("dim", tSettingsUi("none imaged ({count} in history)", { count: tr.total })),
+						}),
+					);
 				}
 			}
 			if (snap.savedTokens > 0) {
 				lines.push(
-					`  Next request: ${theme.bold(`~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`)} ${theme.fg("dim", "tokens on the wire")}`,
+					`  ${tSettingsUi("Next request: {nextRequestTokens} {detail}", { nextRequestTokens: theme.bold(`~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`), detail: theme.fg("dim", tSettingsUi("tokens on the wire")) })}`,
 				);
 			}
 		}
@@ -451,7 +479,7 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
  */
 export function renderContextUsage(breakdown: ContextBreakdown, theme: typeof Theme): string {
 	if (breakdown.contextWindow <= 0) {
-		return theme.fg("muted", "Context usage is unavailable: no model is selected for this session.");
+		return theme.fg("muted", tSettingsUi("Context usage is unavailable: no model is selected for this session."));
 	}
 
 	const cells = planCells(breakdown);

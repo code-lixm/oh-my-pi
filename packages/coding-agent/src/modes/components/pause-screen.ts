@@ -20,6 +20,7 @@ import {
 	type OverlayOptions,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { formatDuration } from "../../slash-commands/helpers/format";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt } from "../utils/keybinding-matchers";
@@ -86,10 +87,12 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 			content.push(centerLine(theme.bold(sessionName), width));
 			content.push("");
 		}
-		content.push(centerLine(theme.bold(theme.fg("accent", `▌▌ ${TITLE}`)), width));
+		content.push(centerLine(theme.bold(theme.fg("accent", `▌▌ ${tSettingsUi(TITLE)}`)), width));
 		content.push("");
-		content.push(centerLine(theme.fg("dim", `paused for ${formatClock(elapsedMs)}`), width));
-		content.push(centerLine(theme.fg("dim", "esc to resume"), width));
+		content.push(
+			centerLine(theme.fg("dim", tSettingsUi("paused for {duration}", { duration: formatClock(elapsedMs) })), width),
+		);
+		content.push(centerLine(theme.fg("dim", tSettingsUi("esc to resume")), width));
 	} else {
 		if (sessionName) {
 			content.push(centerLine(theme.bold(sessionName), width));
@@ -102,15 +105,17 @@ export function renderPauseScreen(width: number, height: number, elapsedMs: numb
 			content.push(centerLine(theme.fg("accent", glyphRow), width));
 		}
 		content.push("");
-		content.push(centerLine(theme.bold(theme.fg("accent", TITLE)), width));
+		content.push(centerLine(theme.bold(theme.fg("accent", tSettingsUi(TITLE))), width));
 		content.push("");
 		for (const line of BODY_LINES) {
-			content.push(centerLine(theme.fg("muted", line), width));
+			content.push(centerLine(theme.fg("muted", tSettingsUi(line)), width));
 		}
 		content.push("");
-		content.push(centerLine(theme.fg("dim", `paused for ${formatClock(elapsedMs)}`), width));
+		content.push(
+			centerLine(theme.fg("dim", tSettingsUi("paused for {duration}", { duration: formatClock(elapsedMs) })), width),
+		);
 		content.push("");
-		content.push(centerLine(theme.fg("dim", RESUME_HINT), width));
+		content.push(centerLine(theme.fg("dim", tSettingsUi(RESUME_HINT)), width));
 	}
 
 	const topPad = Math.max(0, Math.floor((height - content.length) / 2));
@@ -202,7 +207,9 @@ export async function runPauseScreen(host: PauseScreenHost): Promise<void> {
 		overlay.hide();
 		const heldMs = agentPauseGate.resume();
 		if (heldMs !== undefined) {
-			host.showStatus(`Resumed after ${formatDuration(heldMs)} — agents are running again.`);
+			host.showStatus(
+				tSettingsUi("Resumed after {duration} — agents are running again.", { duration: formatDuration(heldMs) }),
+			);
 		}
 	}
 }

@@ -6,6 +6,7 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { createBackgroundTanDispatchBlock } from "../../modes/components/background-tan-message";
@@ -20,6 +21,11 @@ import {
 import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
+import {
+	HubActivityGroupComponent,
+	isHubActivityRoutePending,
+	isHubGroupedActivityArgs,
+} from "../../modes/components/hub-activity-group";
 import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
@@ -46,14 +52,17 @@ import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
+	type AssistantErrorAggregation,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
+	buildIrcActivityEvent,
 	buildIrcMessageCard,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
+	updateAssistantErrorAggregation,
 } from "./transcript-render-helpers";
 
 type TextBlock = { type: "text"; text: string };
@@ -185,9 +194,7 @@ export class UiHelpers {
 					}
 					if (message.customType === "advisor") {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-						this.ctx.chatContainer.addChild(
-							createAdvisorMessageCard(details, () => this.ctx.toolOutputExpanded, theme),
-						);
+						this.ctx.chatContainer.addChild(createAdvisorMessageCard(details, theme));
 						break;
 					}
 					if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
@@ -288,6 +295,19 @@ export class UiHelpers {
 		}
 
 		let readGroup: ReadToolGroupComponent | null = null;
+		let hubActivityGroup: HubActivityGroupComponent | null = null;
+		const finalizeHubActivityGroup = () => {
+			hubActivityGroup?.finalize();
+			hubActivityGroup = null;
+		};
+		const ensureHubActivityGroup = () => {
+			if (!hubActivityGroup?.canAppend) {
+				hubActivityGroup = new HubActivityGroupComponent();
+				hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
+				this.ctx.chatContainer.addChild(hubActivityGroup);
+			}
+			return hubActivityGroup;
+		};
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// The per-turn token-usage row (display.showTokenUsage) must land below the
@@ -304,6 +324,7 @@ export class UiHelpers {
 		const flushPendingUsage = () => {
 			if (!pendingUsage) return;
 			readGroup?.seal();
+			finalizeHubActivityGroup();
 			readGroup = null;
 			this.ctx.chatContainer.addChild(createUsageRowBlock(pendingUsage, pendingUsageDuration, pendingUsageTtft));
 			pendingUsage = undefined;
@@ -352,16 +373,25 @@ export class UiHelpers {
 		};
 		const messages = sessionContext.messages;
 		const count = messages.length;
+		let errorAggregation: AssistantErrorAggregation<AssistantMessageComponent> | undefined;
 		for (let i = 0; i < count; i++) {
 			const message = messages[i]!;
+			if (message.role !== "assistant") errorAggregation = undefined;
 			if (message.role !== "toolResult") flushPendingUsage();
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
+				if (assistantHasVisibleContent(timeline.beforeTools)) finalizeHubActivityGroup();
 				this.ctx.addMessageToChat(message);
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
 				if (assistantComponent) {
+					errorAggregation = updateAssistantErrorAggregation(
+						errorAggregation,
+						message,
+						assistantComponent,
+						(target, repeatCount, suppressed) => target.setErrorAggregation(repeatCount, suppressed),
+					);
 					const usage = message.usage;
 					const explained = sessionContext.cacheMissExplainedAt?.[i] ?? false;
 					if (this.ctx.settings.get("display.cacheMissMarker") && !explained) {
@@ -386,6 +416,7 @@ export class UiHelpers {
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
 				const appendAssistantSegment = (segment: AssistantMessage | undefined) => {
 					if (!segment || !assistantHasVisibleContent(segment)) return;
+					finalizeHubActivityGroup();
 					const component = createAssistantMessageComponent(this.ctx, segment);
 					this.ctx.chatContainer.addChild(component);
 				};
@@ -397,7 +428,42 @@ export class UiHelpers {
 					}
 					resolveWaitingPoll(content.name);
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
+					const partialJson = getStreamingPartialJson(content);
+					// Mid-stream rebuild (theme change, settings, focus replay): decode
+					// display args from the raw stream exactly like the live reveal path.
+					// Provider-parsed `arguments` can lag far enough to misroute a Hub
+					// messaging call into a generic tool component unless classification
+					// uses the decoded partial object.
+					const rawInput = content.customWireName !== undefined;
+					const renderArgs = partialJson
+						? decodeStreamedToolArgs(partialJson, {
+								rawInput,
+								fullArgs: content.arguments,
+								streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+							})
+						: content.arguments;
 
+					if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
+					if (content.name === "hub" && isHubGroupedActivityArgs(renderArgs)) {
+						readGroup?.seal();
+						readGroup = null;
+						const group = ensureHubActivityGroup();
+						group.displaceWaitingPoll(content.id);
+						group.updateArgs(renderArgs, content.id);
+						if (hasErrorStop && errorMessage) {
+							group.updateResult(
+								{ content: [{ type: "text", text: errorMessage }], isError: true },
+								false,
+								content.id,
+							);
+						} else {
+							this.ctx.pendingTools.set(content.id, group);
+						}
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
+
+					finalizeHubActivityGroup();
 					if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
@@ -440,20 +506,6 @@ export class UiHelpers {
 					readGroup?.seal();
 					readGroup = null;
 					const tool = this.ctx.viewSession.getToolByName(content.name);
-					const partialJson = getStreamingPartialJson(content);
-					// Mid-stream rebuild (theme change, settings, focus replay): decode
-					// display args from the raw stream exactly like the live reveal path.
-					// The provider-parsed `arguments` lag the stream by up to a throttled
-					// parse window, so spreading them alone would freeze a long write/edit
-					// preview at its last full parse.
-					const rawInput = content.customWireName !== undefined;
-					const renderArgs = partialJson
-						? decodeStreamedToolArgs(partialJson, {
-								rawInput,
-								fullArgs: content.arguments,
-								streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
-							})
-						: content.arguments;
 					const component = new ToolExecutionComponent(
 						content.name,
 						renderArgs,
@@ -578,8 +630,20 @@ export class UiHelpers {
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
-				// All other messages use standard rendering
-				this.ctx.addMessageToChat(message, options);
+				if (
+					(message.role === "custom" || message.role === "hookMessage") &&
+					message.display &&
+					(message.customType === "irc:incoming" ||
+						message.customType === "irc:autoreply" ||
+						message.customType === "irc:relay")
+				) {
+					ensureHubActivityGroup().appendIrcEvent(buildIrcActivityEvent(message));
+				} else {
+					if (!((message.role === "custom" || message.role === "hookMessage") && !message.display)) {
+						finalizeHubActivityGroup();
+					}
+					this.ctx.addMessageToChat(message, options);
+				}
 			}
 		}
 		flushPendingUsage();
@@ -588,6 +652,14 @@ export class UiHelpers {
 		// rebuilt group freezes (even with a never-persisted result) and commits to
 		// native scrollback like every other historical block.
 		readGroup?.seal();
+		const trailingHubActivityGroup = hubActivityGroup as HubActivityGroupComponent | null;
+		if (this.ctx.viewSession.isStreaming) {
+			this.ctx.eventController?.inheritHubActivityGroup(trailingHubActivityGroup);
+			hubActivityGroup = null;
+		} else {
+			trailingHubActivityGroup?.seal();
+			hubActivityGroup = null;
+		}
 		// A trailing waiting poll is final history on rebuild; seal it so it
 		// freezes (and its spinner timer stops) like every other block.
 		resolveWaitingPoll();
@@ -669,8 +741,9 @@ export class UiHelpers {
 			}
 		}
 		if (compactionCount > 0) {
-			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
-			this.ctx.showStatus(`Session compacted ${times}`);
+			const times =
+				compactionCount === 1 ? tSettingsUi("1 time") : tSettingsUi("{compactionCount} times", { compactionCount });
+			this.ctx.showStatus(tSettingsUi("Session compacted {times}", { times }));
 		}
 		if (options.clearTerminalHistory) {
 			this.ctx.ui.requestRender(true, { clearScrollback: true });
@@ -689,11 +762,17 @@ export class UiHelpers {
 	}
 
 	showError(errorMessage: string): void {
-		this.ctx.present([new Spacer(1), new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0)]);
+		this.ctx.present([
+			new Spacer(1),
+			new Text(theme.fg("error", tSettingsUi("Error: {errorMessage}", { errorMessage })), 1, 0),
+		]);
 	}
 
 	showWarning(warningMessage: string): void {
-		this.ctx.present([new Spacer(1), new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0)]);
+		this.ctx.present([
+			new Spacer(1),
+			new Text(theme.fg("warning", tSettingsUi("Warning: {warningMessage}", { warningMessage })), 1, 0),
+		]);
 	}
 
 	showNewVersionNotification(newVersion: string): void {
@@ -701,9 +780,9 @@ export class UiHelpers {
 		block.addChild(new DynamicBorder(text => theme.fg("warning", text)));
 		block.addChild(
 			new Text(
-				theme.bold(theme.fg("warning", "Update Available")) +
+				theme.bold(theme.fg("warning", tSettingsUi("Update Available"))) +
 					"\n" +
-					theme.fg("muted", `New version ${newVersion} is available. Run: `) +
+					theme.fg("muted", tSettingsUi("New version {newVersion} is available. Run: ", { newVersion })) +
 					theme.fg("accent", "omp update"),
 				1,
 				0,
@@ -742,8 +821,11 @@ export class UiHelpers {
 					this.ctx.pendingMessagesContainer.addChild(new TruncatedText(queuedText, 1, 0));
 				}
 			}
-			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} to edit`);
+			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || tSettingsUi("Alt+Up");
+			const hintText = theme.fg(
+				"dim",
+				`  ${theme.tree.hook} ${tSettingsUi("{dequeueKey} to edit", { dequeueKey })}`,
+			);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
@@ -755,7 +837,9 @@ export class UiHelpers {
 		this.ctx.editor.clearDraft(text);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
-			queuedImages ? "Queued message with image for after compaction" : "Queued message for after compaction",
+			queuedImages
+				? tSettingsUi("Queued message with image for after compaction")
+				: tSettingsUi("Queued message for after compaction"),
 		);
 	}
 
@@ -816,9 +900,10 @@ export class UiHelpers {
 			this.ctx.compactionQueuedMessages = queuedMessages;
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				tSettingsUi("Failed to send queued message{plural}: {error}", {
+					plural: queuedMessages.length > 1 ? "s" : "",
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			);
 		};
 

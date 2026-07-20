@@ -4,7 +4,7 @@
  * (rounded corners, sharp tee/cross junctions) and the `border`/`accent` theme
  * colors so all outlined overlays read identically.
  */
-import { padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { anchorRightBorder, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { theme } from "../theme/theme";
 
 /** Pad or truncate a (possibly ANSI-styled) string to exactly `width` columns. */
@@ -50,7 +50,11 @@ export function bottomBorder(width: number): string {
 /** Wrap pre-styled content in vertical borders with single-column insets. */
 export function row(content: string, width: number): string {
 	const box = theme.boxRound;
-	return `${paint(box.vertical)} ${fit(content, Math.max(0, width - 4))} ${paint(box.vertical)}`;
+	return anchorRightBorder(
+		`${paint(box.vertical)} ${fit(content, Math.max(0, width - 4))} `,
+		paint(box.vertical),
+		width,
+	);
 }
 
 /**
@@ -105,5 +109,5 @@ export function splitRow(sidebar: string, body: string, width: number, sidebarWi
 	const box = theme.boxRound;
 	const bodyWidth = splitBodyWidth(width, sidebarWidth);
 	const bar = paint(box.vertical);
-	return `${bar} ${fit(sidebar, sidebarWidth)} ${bar} ${fit(body, bodyWidth)} ${bar}`;
+	return anchorRightBorder(`${bar} ${fit(sidebar, sidebarWidth)} ${bar} ${fit(body, bodyWidth)} `, bar, width);
 }

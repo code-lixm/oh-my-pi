@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -174,7 +175,7 @@ export class AsyncJobManager {
 		options?: AsyncJobRegisterOptions,
 	): string {
 		if (this.#disposed) {
-			throw new Error("Async job manager is disposed");
+			throw new Error(tSettingsUi("Async job manager is disposed"));
 		}
 		// Queued jobs hold no execution slot yet — only count jobs that are
 		// actually running so a large parked batch cannot starve registration.
@@ -184,7 +185,9 @@ export class AsyncJobManager {
 		}
 		if (activeCount >= this.#maxRunningJobs) {
 			throw new Error(
-				`Background job limit reached (${this.#maxRunningJobs}). Wait for running jobs to finish or cancel one.`,
+				tSettingsUi("Background job limit reached ({count}). Wait for running jobs to finish or cancel one.", {
+					count: this.#maxRunningJobs,
+				}),
 			);
 		}
 

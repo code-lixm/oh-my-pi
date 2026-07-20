@@ -4,6 +4,7 @@
 
 import * as os from "node:os";
 import { formatBytes, getProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 
 export interface SystemInfo {
 	os: string;
@@ -79,20 +80,20 @@ export async function collectSystemInfo(): Promise<SystemInfo> {
 /** Format system info for display */
 export function formatSystemInfo(info: SystemInfo): string {
 	const lines = [
-		"System Information",
+		tSettingsUi("System Information"),
 		"━━━━━━━━━━━━━━━━━━",
-		`OS:      ${info.os}`,
-		`Arch:    ${info.arch}`,
-		`CPU:     ${info.cpu}`,
-		`Memory:  ${formatBytes(info.memory.total)} (${formatBytes(info.memory.free)} free)`,
-		`Bun:     ${info.versions.bun}`,
-		`App:     omp ${info.versions.app}`,
-		`Node:    ${info.versions.node} (compat)`,
-		`CWD:     ${info.cwd}`,
-		`Shell:   ${info.shell}`,
+		`${tSettingsUi("OS:")}      ${info.os}`,
+		`${tSettingsUi("Arch:")}    ${info.arch}`,
+		`${tSettingsUi("CPU:")}     ${info.cpu}`,
+		`${tSettingsUi("Memory:")}  ${formatBytes(info.memory.total)} (${formatBytes(info.memory.free)} ${tSettingsUi("free")})`,
+		`${tSettingsUi("Bun:")}     ${info.versions.bun}`,
+		`${tSettingsUi("App:")}     omp ${info.versions.app}`,
+		`${tSettingsUi("Node:")}    ${info.versions.node} (${tSettingsUi("compat")})`,
+		`${tSettingsUi("CWD:")}     ${info.cwd}`,
+		`${tSettingsUi("Shell:")}   ${info.shell}`,
 	];
 	if (info.terminal) {
-		lines.push(`Terminal: ${info.terminal}`);
+		lines.push(`${tSettingsUi("Terminal:")} ${info.terminal}`);
 	}
 	return lines.join("\n");
 }

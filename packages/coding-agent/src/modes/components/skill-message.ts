@@ -1,6 +1,7 @@
 import type { TextContent } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Box, Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { CustomMessage, SkillPromptDetails } from "../../session/messages";
 import { shortenPath } from "../../tools/render-utils";
@@ -71,7 +72,7 @@ export class SkillMessageComponent extends Container {
 		}
 
 		this.#box.addChild(new Spacer(1));
-		this.#box.addChild(new Text(theme.fg("muted", "prompt"), 0, 0));
+		this.#box.addChild(new Text(theme.fg("muted", tSettingsUi("prompt")), 0, 0));
 		this.#box.addChild(new Spacer(1));
 
 		this.#contentComponent = new Markdown(text, 0, 0, getMarkdownTheme(), {
@@ -89,7 +90,9 @@ export class SkillMessageComponent extends Container {
 			parts.push(fileHyperlink(filePath, theme.fg("accent", shortenPath(filePath)), { line: 1 }));
 		}
 		if (typeof details?.lineCount === "number") {
-			parts.push(theme.fg("muted", `${details.lineCount} ${details.lineCount === 1 ? "line" : "lines"}`));
+			parts.push(
+				theme.fg("muted", `${details.lineCount} ${tSettingsUi(details.lineCount === 1 ? "line" : "lines")}`),
+			);
 		}
 
 		if (parts.length === 0) {

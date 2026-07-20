@@ -8,6 +8,7 @@ import {
 	loadSystemPromptFiles,
 	type SystemPromptToolMetadata,
 } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { getPromptLocale, type PromptLocale, setPromptLocale } from "../src/prompts/prompt-locale";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 function escapeRegExp(text: string): string {
@@ -29,15 +30,21 @@ describe("SYSTEM.md prompt assembly", () => {
 	let tempDir = "";
 	let tempHomeDir = "";
 	let originalHome: string | undefined;
+	let previousPromptLocale: PromptLocale;
 
 	beforeEach(() => {
+		previousPromptLocale = getPromptLocale();
+		setPromptLocale("en");
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-system-prompt-"));
 		tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-system-home-"));
 		originalHome = process.env.HOME;
 		process.env.HOME = tempHomeDir;
 	});
 
-	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
+	afterEach(() => {
+		setPromptLocale(previousPromptLocale);
+		cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome }))();
+	});
 
 	it("renders SYSTEM.md exactly once when it is used as the custom base prompt", async () => {
 		const projectDir = path.join(tempDir, "project");

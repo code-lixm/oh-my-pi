@@ -1,3 +1,5 @@
+import { tSettingsUi } from "../i18n/settings-locale";
+
 /**
  * Public shape of the `shake` operation, kept in a dependency-free leaf module
  * so slash-command registries and controllers can import `formatShakeSummary`
@@ -28,16 +30,29 @@ export function formatShakeSummary(result: ShakeResult): string {
 	if (result.mode === "images") {
 		const n = result.imagesDropped ?? 0;
 		return n === 0
-			? "No images found in this session."
-			: `Dropped ${n} image${n === 1 ? "" : "s"} from this session.`;
+			? tSettingsUi("No images found in this session.")
+			: tSettingsUi("Dropped {count} image{plural} from this session.", { count: n, plural: n === 1 ? "" : "s" });
 	}
 	const parts: string[] = [];
 	if (result.toolResultsDropped > 0) {
-		parts.push(`${result.toolResultsDropped} tool result${result.toolResultsDropped === 1 ? "" : "s"}`);
+		parts.push(
+			tSettingsUi("{count} tool result{plural}", {
+				count: result.toolResultsDropped,
+				plural: result.toolResultsDropped === 1 ? "" : "s",
+			}),
+		);
 	}
 	if (result.blocksDropped > 0) {
-		parts.push(`${result.blocksDropped} block${result.blocksDropped === 1 ? "" : "s"}`);
+		parts.push(
+			tSettingsUi("{count} block{plural}", {
+				count: result.blocksDropped,
+				plural: result.blocksDropped === 1 ? "" : "s",
+			}),
+		);
 	}
-	if (parts.length === 0) return "Nothing to shake.";
-	return `Shook ${parts.join(" + ")} (~${result.tokensFreed} tokens freed).`;
+	if (parts.length === 0) return tSettingsUi("Nothing to shake.");
+	return tSettingsUi("Shook {parts} (~{tokensFreed} tokens freed).", {
+		parts: parts.join(" + "),
+		tokensFreed: result.tokensFreed,
+	});
 }

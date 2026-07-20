@@ -12,12 +12,17 @@
  */
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import autolearnGuidance from "../prompts/system/autolearn-guidance.md" with { type: "text" };
+import autolearnGuidanceZh from "../prompts/system/autolearn-guidance.zh-CN.md" with { type: "text" };
 import autolearnGuidanceLearn from "../prompts/system/autolearn-guidance-learn.md" with { type: "text" };
+import autolearnGuidanceLearnZh from "../prompts/system/autolearn-guidance-learn.zh-CN.md" with { type: "text" };
 import autolearnNudgeAutoContinue from "../prompts/system/autolearn-nudge-autocontinue.md" with { type: "text" };
+import autolearnNudgeAutoContinueZh from "../prompts/system/autolearn-nudge-autocontinue.zh-CN.md" with {
+	type: "text",
+};
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 
-const AUTOLEARN_NUDGE_AUTOCONTINUE = autolearnNudgeAutoContinue.trim();
 const DEFAULT_MIN_TOOL_CALLS = 5;
 
 /**
@@ -33,8 +38,8 @@ const DEFAULT_MIN_TOOL_CALLS = 5;
  */
 export function buildAutoLearnInstructions(available: { manageSkill: boolean; learn: boolean }): string | null {
 	if (!available.manageSkill) return null;
-	const parts = [autolearnGuidance.trim()];
-	if (available.learn) parts.push(autolearnGuidanceLearn.trim());
+	const parts = [selectPrompt(autolearnGuidance, autolearnGuidanceZh).trim()];
+	if (available.learn) parts.push(selectPrompt(autolearnGuidanceLearn, autolearnGuidanceLearnZh).trim());
 	return parts.join("\n\n");
 }
 
@@ -60,6 +65,8 @@ export class AutoLearnController {
 	#captureInFlight = false;
 	/** One newer eligible primary stop arrived while capture was running. */
 	#capturePending = false;
+	/** Swallow the agent_end produced by an auto-run capture turn so it cannot re-trigger. */
+	#suppressNext = false;
 
 	constructor(options: AutoLearnControllerOptions) {
 		this.#session = options.session;
@@ -95,6 +102,11 @@ export class AutoLearnController {
 		// observed no agent_start can never inherit a stale value.
 		const startedInGoalMode = this.#turnStartedInGoalMode;
 		this.#turnStartedInGoalMode = false;
+
+		if (this.#suppressNext) {
+			this.#suppressNext = false;
+			return;
+		}
 
 		// Never nudge a turn that ended in an abort (ESC, cancel, etc.). The
 		// abort flag on the session is unreliable by the time agent_end is
@@ -133,20 +145,28 @@ export class AutoLearnController {
 			this.#capturePending = true;
 			return;
 		}
-		this.#startCapture();
+		const content = selectPrompt(autolearnNudgeAutoContinue, autolearnNudgeAutoContinueZh).trim();
+		// Arm suppression synchronously: the synthetic capture turn's agent_end
+		// fires inside sendCustomMessage (before it resolves), so the flag must be
+		// set before then. Disarm when no turn actually started — a deferred/queued
+		// dispatch or a failed send produces no agent_end, and a latched flag would
+		// otherwise swallow the next real stop.
+		this.#suppressNext = true;
+		this.#startCapture(content);
 	}
 
-	#startCapture(): void {
+	#startCapture(content: string): void {
 		this.#captureInFlight = true;
-		void this.#capture(AUTOLEARN_NUDGE_AUTOCONTINUE)
+		void this.#capture(content)
 			.catch(err => {
+				this.#suppressNext = false;
 				logger.warn("auto-learn capture failed", { err });
 			})
 			.finally(() => {
 				this.#captureInFlight = false;
 				if (!this.#capturePending) return;
 				this.#capturePending = false;
-				this.#startCapture();
+				this.#startCapture(content);
 			});
 	}
 }

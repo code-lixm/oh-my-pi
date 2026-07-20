@@ -4,6 +4,7 @@ import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool, getEvalToolDescription } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 function makeSession(opts: { spawns?: string | null; backends?: Record<string, boolean> }): ToolSession {
 	const settings = Settings.isolated();
@@ -61,6 +62,49 @@ describe("eval tool description", () => {
 		const denied = new EvalTool(makeSession({ spawns: "" })).description;
 		expect(wildcard).toContain("agent(prompt");
 		expect(denied).not.toContain("agent(prompt");
+	});
+});
+
+describe("eval tool intent locale", () => {
+	let previousLocale: string;
+
+	beforeEach(() => {
+		previousLocale = getSettingsUiLocale();
+	});
+
+	afterEach(() => {
+		setSettingsUiLocale(previousLocale);
+	});
+
+	it("uses locale fallback with canonical runtime names for every legal eval token", () => {
+		const tool = new EvalTool(makeSession({}));
+		const cases = [
+			{ language: "py", english: "running python", chinese: "正在运行 python" },
+			{ language: "js", english: "running javascript", chinese: "正在运行 javascript" },
+			{ language: "rb", english: "running ruby", chinese: "正在运行 ruby" },
+			{ language: "jl", english: "running julia", chinese: "正在运行 julia" },
+		] as const;
+
+		setSettingsUiLocale("en");
+		for (const { language, english } of cases) {
+			expect(tool.intent({ language, code: "" })).toBe(english);
+		}
+
+		setSettingsUiLocale("zh-CN");
+		for (const { language, chinese, english } of cases) {
+			expect(tool.intent({ language, code: "" })).toBe(chinese);
+			expect(tool.intent({ language, code: "" })).not.toBe(english);
+		}
+	});
+
+	it("uses the custom title verbatim, ignoring locale", () => {
+		const tool = new EvalTool(makeSession({}));
+
+		setSettingsUiLocale("en");
+		expect(tool.intent({ language: "py", code: "", title: "Plot results" })).toBe("Plot results");
+
+		setSettingsUiLocale("zh-CN");
+		expect(tool.intent({ language: "py", code: "", title: "绘制结果" })).toBe("绘制结果");
 	});
 });
 

@@ -25,9 +25,15 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils/dirs";
 import { declareWorkerHostEntry, installWorkerInbox } from "@oh-my-pi/pi-utils/worker-host";
+import type { LocalizableCliConstructor } from "./cli/help-locale";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
+
+interface CliHelpFunctions {
+	ensureCliHelpLocale: (cwd?: string) => Promise<void>;
+	localizeCliHelpMetadata: <T extends LocalizableCliConstructor>(ctor: T) => T;
+}
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -52,9 +58,13 @@ const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
 // `@oh-my-pi/pi-utils/env` eagerly loads `.env` from the agent directory at
 // import time, so it must not be imported before `setProfile` runs.
 
-async function showHelp(config: CliConfig): Promise<void> {
+async function showHelp(config: CliConfig, helpers: CliHelpFunctions): Promise<void> {
 	const { renderRootHelp } = await import("@oh-my-pi/pi-utils/cli");
 	const { getExtraHelpText } = await import("./cli/args");
+	await helpers.ensureCliHelpLocale();
+	for (const command of config.commands.values()) {
+		helpers.localizeCliHelpMetadata(command);
+	}
 	renderRootHelp(config);
 	const extra = getExtraHelpText();
 	if (extra.trim().length > 0) {
@@ -361,10 +371,10 @@ export async function runCli(argv: string[]): Promise<void> {
 		await runSmokeTest();
 		return;
 	}
-	const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
-		import("@oh-my-pi/pi-utils/cli"),
-		import("./cli-commands"),
-	]);
+	const [
+		{ run },
+		{ commands, ensureCliHelpLocale, localizeCliHelpMetadata, localizeCommandEntryHelp, resolveCliArgv },
+	] = await Promise.all([import("@oh-my-pi/pi-utils/cli"), import("./cli-runtime")]);
 	// --help and --version are handled by run() directly, don't rewrite those.
 	// Everything else that isn't a known subcommand routes to "launch".
 	const resolved = resolveCliArgv(resolvedArgv);
@@ -373,7 +383,27 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, help: showHelp });
+	const commandId = resolved.argv[0] ?? "";
+	const commandArgv = resolved.argv.slice(1);
+	const isRootHelp = commandId === "--help" || commandId === "-h" || commandId === "help" || commandId === "";
+	const isCommandHelp = commandArgv.includes("--help") || commandArgv.includes("-h");
+	if (isRootHelp) {
+		await ensureCliHelpLocale();
+		await localizeCommandEntryHelp(commands);
+	} else if (isCommandHelp) {
+		await ensureCliHelpLocale();
+		const entry = commands.find(command => command.name === commandId || command.aliases?.includes(commandId));
+		if (entry) {
+			localizeCliHelpMetadata(await entry.load());
+		}
+	}
+	return run({
+		bin: APP_NAME,
+		version: VERSION,
+		argv: resolved.argv,
+		commands,
+		help: config => showHelp(config, { ensureCliHelpLocale, localizeCliHelpMetadata }),
+	});
 }
 
 // Floating call instead of top-level await: TLA forces `--bytecode` (CJS

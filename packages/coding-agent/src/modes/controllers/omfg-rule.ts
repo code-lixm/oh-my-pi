@@ -4,6 +4,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { compileRuleCondition, type Rule } from "../../capability/rule";
 import { buildRuleFromMarkdown, createSourceMeta } from "../../discovery/helpers";
 import { TtsrManager, type TtsrMatchContext } from "../../export/ttsr";
+import { tSettingsUi } from "../../i18n/settings-locale";
 
 export interface ParsedGeneratedRule {
 	rule: Rule;
@@ -451,7 +452,10 @@ function repairEscapedConditions(candidate: ParsedGeneratedRule): ParsedGenerate
 function buildNoMatchFeedback(rule: Rule, surfaces: readonly HistorySurface[]): string {
 	const hints = extractConditionHints(rule.condition);
 	const lines = [
-		`No assistant history surface matched condition ${formatRuleList(rule.condition)} within scope ${formatRuleList(rule.scope)}.`,
+		tSettingsUi("No assistant history surface matched condition {condition} within scope {scope}.", {
+			condition: formatRuleList(rule.condition),
+			scope: formatRuleList(rule.scope),
+		}),
 	];
 	if (surfaces.length === 0) {
 		lines.push("No assistant text, thinking, or tool-call argument surfaces were available to check.");

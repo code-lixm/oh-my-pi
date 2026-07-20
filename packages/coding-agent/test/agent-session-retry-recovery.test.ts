@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -7,14 +7,23 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import * as aiStream from "@oh-my-pi/pi-ai/stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { RecoveredRetryError } from "@oh-my-pi/pi-coding-agent/extensibility/shared-events";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { resolveAssistantErrorPresentation } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { TUI } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import chalk from "chalk";
 
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 
@@ -124,6 +133,9 @@ describe("AgentSession retry recovery", () => {
 	let sessions: AgentSession[];
 	let managers: SessionManager[];
 
+	beforeAll(async () => {
+		await initTheme(false);
+	});
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-retry-recovery-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
@@ -347,15 +359,16 @@ describe("AgentSession retry recovery", () => {
 		];
 
 		for (const testCase of recoveredCases) {
+			const errorMessage = `${testCase.name} retry was superseded`;
 			expect(
 				resolveAssistantErrorPresentation(
 					assistantMessage({
 						stopReason: "error",
-						errorMessage: `${testCase.name} retry was superseded`,
+						errorMessage,
 						retryRecovery: retryRecovery(testCase.recovery, testCase.note),
 					}),
 				),
-			).toEqual({ kind: "compact-recovered", text: testCase.note, isError: false });
+			).toEqual({ kind: "compact-recovered", text: errorMessage, isError: false });
 		}
 
 		expect(
@@ -398,5 +411,227 @@ describe("AgentSession retry recovery", () => {
 			role: "assistant",
 			content: [{ type: "text", text: "recovered after credential switch" }],
 		});
+	});
+
+	// ---------------------------------------------------------------------------
+	// Live aggregation: EventController drives error aggregation via
+	// event-controller.ts:862 (updateAssistantErrorAggregation on message_end).
+	// Removing that call site breaks this test.
+	// ---------------------------------------------------------------------------
+	it("live: EventController aggregates three identical errors; recovery applies dim strikethrough", async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
+
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+
+		const chatContainer = new TranscriptContainer();
+		const ctx = {
+			isInitialized: true,
+			init: vi.fn(async () => {}),
+			ui: { requestRender: vi.fn(() => {}), requestComponentRender: vi.fn(() => {}), resetDisplay: vi.fn(() => {}) },
+			settings: { get: vi.fn(() => false) },
+			statusLine: { invalidate: vi.fn(() => {}) },
+			updateEditorTopBorder: vi.fn(() => {}),
+			updatePendingMessagesDisplay: vi.fn(() => {}),
+			ensureLoadingAnimation: vi.fn(() => {}),
+			flushCompactionQueue: vi.fn(async () => {}),
+			showPinnedError: vi.fn(() => {}),
+			clearPinnedError: vi.fn(() => {}),
+			showError: vi.fn(() => {}),
+			showStatus: vi.fn(() => {}),
+			editor: {},
+			streamingComponent: undefined as AssistantMessageComponent | undefined,
+			streamingMessage: undefined as AssistantMessage | undefined,
+			chatContainer,
+			pendingTools: new Map<string, unknown>(),
+			statusContainer: { clear: vi.fn(), disposeChildren: vi.fn(), addChild: vi.fn(), children: [] },
+			loadingAnimation: undefined,
+			autoCompactionLoader: undefined,
+			retryLoader: undefined,
+			proseOnlyThinking: true,
+			pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
+			pendingBashComponents: [],
+			pendingPythonComponents: [],
+			viewSession: { retryAttempt: 0, getToolByName: () => undefined, extensionRunner: undefined },
+			sessionManager: { getCwd: () => tempDir.path() },
+			showWarning: vi.fn(() => {}),
+			session: { isStreaming: false },
+			noteDisplayableThinkingContent: vi.fn(() => false),
+			get hasDisplayableThinkingContent() {
+				return false;
+			},
+			get effectiveHideThinkingBlock() {
+				return false;
+			},
+			clearTransientSessionUi: () => {},
+			addMessageToChat: vi.fn(() => []),
+			optimisticUserMessageSignature: undefined,
+			locallySubmittedUserSignatures: new Set<string>(),
+			clearOptimisticUserMessage: vi.fn(() => {}),
+			replaceOptimisticUserMessage: vi.fn(() => {}),
+			updatePendingMessagesDisplay2: vi.fn(() => {}),
+			rebuildChatFromMessages: vi.fn(() => {}),
+			getUserMessageText: (_msg: unknown) => "",
+			initialChatRendered: false,
+		} as unknown as InteractiveModeContext;
+
+		const controller = new EventController(ctx);
+
+		try {
+			const ERROR_MSG = "503 service unavailable: overloaded_error";
+			const NOTE = "error; retried";
+
+			const messages: AssistantMessage[] = [];
+			for (let i = 0; i < 3; i++) {
+				messages.push(
+					assistantMessage({
+						timestamp: 1_700_000_000_000 + i * 1000,
+						stopReason: "error",
+						errorMessage: ERROR_MSG,
+						content: [],
+					}),
+				);
+			}
+
+			for (let i = 0; i < 3; i++) {
+				await controller.handleEvent({
+					type: "message_start",
+					message: messages[i]!,
+				} as Extract<AgentSessionEvent, { type: "message_start" }>);
+
+				await controller.handleEvent({
+					type: "message_end",
+					message: messages[i]!,
+				} as Extract<AgentSessionEvent, { type: "message_end" }>);
+
+				if (i < 2) {
+					await controller.handleEvent({
+						type: "auto_retry_start",
+						attempt: i + 1,
+						maxAttempts: 3,
+						delayMs: 0,
+						errorId: undefined,
+						errorMessage: ERROR_MSG,
+					} as Extract<AgentSessionEvent, { type: "auto_retry_start" }>);
+				}
+			}
+
+			const components = chatContainer.children.filter(
+				(c): c is AssistantMessageComponent => c instanceof AssistantMessageComponent,
+			);
+			expect(components.length).toBe(3);
+
+			const recoveredErrors: RecoveredRetryError[] = messages.map((msg, i) => ({
+				entryId: `entry-${i}`,
+				persistenceKey: `assistant:${msg.timestamp}:anthropic:claude-sonnet-4-5::error`,
+				note: NOTE,
+				retryRecovery: retryRecovery("plain", NOTE),
+			}));
+
+			await controller.handleEvent({
+				type: "auto_retry_end",
+				success: true,
+				attempt: 3,
+				recoveredErrors,
+			} as Extract<AgentSessionEvent, { type: "auto_retry_end" }>);
+
+			const leaderRaw = components[0]!.render(120).join("\n");
+			const leaderPost = Bun.stripANSI(leaderRaw);
+
+			expect(leaderRaw).toContain("\x1b[9m");
+			expect(leaderPost).toContain("Error:");
+			expect(leaderPost).toContain("× 3");
+			expect(leaderPost).not.toContain("error; retried");
+			expect(leaderPost).not.toContain("retried");
+
+			for (let i = 1; i < 3; i++) {
+				const raw = components[i]!.render(120).join("\n");
+				expect(Bun.stripANSI(raw)).not.toContain("Error:");
+				expect(raw).not.toContain("\x1b[9m");
+			}
+		} finally {
+			chalk.level = prevLevel;
+			controller.dispose();
+		}
+	});
+
+	// ---------------------------------------------------------------------------
+	// Rebuild aggregation: ChatTranscriptBuilder.rebuild() calls
+	// chat-transcript-builder.ts:291 (updateAssistantErrorAggregation on each
+	// appended assistant message). Removing that call site breaks this test.
+	// ---------------------------------------------------------------------------
+	it("rebuild: ChatTranscriptBuilder aggregates three recovered error entries identically", () => {
+		const ERROR_MSG = "rate limit exceeded";
+		const NOTE = "error; retried";
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+
+		try {
+			const entries: SessionMessageEntry[] = [];
+			for (let i = 0; i < 3; i++) {
+				const ts = 1_700_000_000_000 + i * 1000;
+				const entryTimestamp = new Date(ts).toISOString();
+				entries.push({
+					type: "message",
+					id: `entry-${i}`,
+					parentId: null,
+					timestamp: entryTimestamp,
+					message: assistantMessage({
+						timestamp: ts,
+						stopReason: "error",
+						errorMessage: ERROR_MSG,
+						retryRecovery: retryRecovery("plain", NOTE),
+						content: [],
+					}),
+				});
+			}
+
+			const requestRender = vi.fn(() => {});
+			const mockTui = {
+				requestRender,
+				requestComponentRender: vi.fn(() => {}),
+				resetDisplay: vi.fn(() => {}),
+				imageBudget: undefined,
+			} as unknown as TUI;
+
+			const builder = new ChatTranscriptBuilder({
+				ui: mockTui,
+				getTool: () => undefined,
+				getMessageRenderer: () => undefined,
+				cwd: process.cwd(),
+				hideThinkingBlock: () => false,
+				proseOnlyThinking: () => true,
+				requestRender,
+			});
+
+			try {
+				builder.rebuild(entries);
+
+				const components = builder.container.children.filter(
+					(c): c is AssistantMessageComponent => c instanceof AssistantMessageComponent,
+				);
+				expect(components.length).toBe(3);
+
+				const leaderRaw = components[0]!.render(120).join("\n");
+				const leaderPost = Bun.stripANSI(leaderRaw);
+
+				expect(leaderRaw).toContain("\x1b[9m");
+				expect(leaderPost).toContain("Error:");
+				expect(leaderPost).toContain("× 3");
+				expect(leaderPost).not.toContain("error; retried");
+				expect(leaderPost).not.toContain("retried");
+
+				for (let i = 1; i < 3; i++) {
+					const raw = components[i]!.render(120).join("\n");
+					expect(Bun.stripANSI(raw)).not.toContain("Error:");
+					expect(raw).not.toContain("\x1b[9m");
+				}
+			} finally {
+				builder.dispose();
+			}
+		} finally {
+			chalk.level = prevLevel;
+		}
 	});
 });

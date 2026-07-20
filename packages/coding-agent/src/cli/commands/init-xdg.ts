@@ -1,12 +1,13 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { tSettingsUi } from "../../i18n/settings-locale";
 
 const APP_NAME = "omp";
 
 export async function initXdg(): Promise<void> {
 	if (process.platform !== "linux" && process.platform !== "darwin") {
-		console.error("XDG directory setup is only supported on Linux and macOS.");
+		console.error(tSettingsUi("XDG directory setup is only supported on Linux and macOS."));
 		process.exit(1);
 	}
 
@@ -18,10 +19,10 @@ export async function initXdg(): Promise<void> {
 
 	for (const dir of dirs) {
 		await fs.mkdir(dir, { recursive: true });
-		console.log(`Created ${dir.replace(os.homedir(), "~")}`);
+		console.log(tSettingsUi("Created {path}", { path: dir.replace(os.homedir(), "~") }));
 	}
 
-	console.log("\nXDG directories initialized.");
-	console.log("Ensure XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME");
-	console.log("are set in your shell profile for omp to use them.");
+	console.log(`\n${tSettingsUi("XDG directories initialized.")}`);
+	console.log(tSettingsUi("Ensure XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME"));
+	console.log(tSettingsUi("are set in your shell profile for omp to use them."));
 }

@@ -1,5 +1,6 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { Container, getKeybindings, Input, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { openPath } from "../../utils/open";
 import { DynamicBorder } from "./dynamic-border";
@@ -30,7 +31,7 @@ export class LoginDialogComponent extends Container {
 		this.addChild(new DynamicBorder());
 
 		// Title
-		this.addChild(new Text(theme.fg("warning", `Login to ${providerName}`), 1, 0));
+		this.addChild(new Text(theme.fg("warning", tSettingsUi("Login to {providerName}", { providerName })), 1, 0));
 
 		// Dynamic content area
 		this.#contentContainer = new Container();
@@ -60,11 +61,11 @@ export class LoginDialogComponent extends Container {
 	#cancel(): void {
 		this.#abortController.abort();
 		if (this.#inputRejecter) {
-			this.#inputRejecter(new Error("Login cancelled"));
+			this.#inputRejecter(new Error(tSettingsUi("Login cancelled")));
 			this.#inputResolver = undefined;
 			this.#inputRejecter = undefined;
 		}
-		this.onComplete(false, "Login cancelled");
+		this.onComplete(false, tSettingsUi("Login cancelled"));
 	}
 
 	/**
@@ -83,13 +84,18 @@ export class LoginDialogComponent extends Container {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("accent", url), 1, 0));
 
-		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
+		const clickHint =
+			process.platform === "darwin" ? tSettingsUi("Cmd+click to open") : tSettingsUi("Ctrl+click to open");
 		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
 		this.#contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 1, 0));
 
 		if (launchUrl && launchUrl !== url) {
 			this.#contentContainer.addChild(
-				new Text(theme.fg("dim", `Local shortcut (this machine only): ${launchUrl}`), 1, 0),
+				new Text(
+					theme.fg("dim", tSettingsUi("Local shortcut (this machine only): {url}", { url: launchUrl })),
+					1,
+					0,
+				),
 			);
 		}
 
@@ -115,7 +121,7 @@ export class LoginDialogComponent extends Container {
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(theme.fg("dim", prompt), 1, 0));
 			this.#contentContainer.addChild(this.#input);
-			this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 1, 0));
+			this.#contentContainer.addChild(new Text(theme.fg("dim", tSettingsUi("(Escape to cancel)")), 1, 0));
 		}
 		this.#input.setValue("");
 		this.#tui.requestRender();
@@ -134,12 +140,16 @@ export class LoginDialogComponent extends Container {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
 		if (placeholder) {
-			this.#contentContainer.addChild(new Text(theme.fg("dim", `e.g., ${placeholder}`), 1, 0));
+			this.#contentContainer.addChild(
+				new Text(theme.fg("dim", tSettingsUi("e.g., {placeholder}", { placeholder })), 1, 0),
+			);
 		}
 		if (!this.#contentContainer.children.includes(this.#input)) {
 			this.#contentContainer.addChild(this.#input);
 		}
-		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel, Enter to submit)"), 1, 0));
+		this.#contentContainer.addChild(
+			new Text(theme.fg("dim", tSettingsUi("(Escape to cancel, Enter to submit)")), 1, 0),
+		);
 
 		this.#input.setValue("");
 		this.#tui.requestRender();
@@ -156,7 +166,7 @@ export class LoginDialogComponent extends Container {
 	showWaiting(message: string): void {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
-		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 1, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("dim", tSettingsUi("(Escape to cancel)")), 1, 0));
 		this.#tui.requestRender();
 	}
 

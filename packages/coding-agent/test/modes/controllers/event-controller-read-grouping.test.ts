@@ -18,7 +18,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
@@ -128,7 +128,7 @@ describe("EventController read-group accretion", () => {
 
 		const groups = readGroups(chatContainer);
 		expect(groups.length).toBe(1);
-		expect(header(groups[0]!)).toContain("Read (4)");
+		expect(header(groups[0]!).trim()).toBe(`${theme.status.pending} Read 4 paths`);
 	});
 
 	it("starts a new group after a completion that renders visible reasoning", async () => {
@@ -142,8 +142,8 @@ describe("EventController read-group accretion", () => {
 
 		const groups = readGroups(chatContainer);
 		expect(groups.length).toBe(2);
-		expect(header(groups[0]!)).toContain("Read (2)");
-		expect(header(groups[1]!)).toContain("Read (2)");
+		expect(header(groups[0]!).trim()).toBe(`${theme.status.pending} Read 2 paths`);
+		expect(header(groups[1]!).trim()).toBe(`${theme.status.pending} Read 2 paths`);
 	});
 
 	it("keeps the active group repaintable until it is finalized", async () => {

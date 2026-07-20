@@ -20,6 +20,7 @@
  */
 import * as path from "node:path";
 import type * as natives from "@oh-my-pi/pi-natives";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { ToolSession } from "../tools";
 import { generateCommitMessage } from "../utils/commit-message-generator";
 import * as git from "../utils/git";
@@ -252,9 +253,11 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 	try {
 		if (mergeMode === "branch") {
 			if (!result.branchName && result.exitCode === 0 && !result.aborted && result.error) {
-				const patchList = result.patchPath ? `\nPatch artifact:\n- ${result.patchPath}` : "";
+				const patchList = result.patchPath
+					? `\n${tSettingsUi("Patch artifact:\n- {patchPath}", { patchPath: result.patchPath })}`
+					: "";
 				return {
-					summary: `\n\n<system-notification>Branch merge failed before a task branch could be created: ${result.error}\nTask outputs are preserved but changes were not applied.${patchList}</system-notification>`,
+					summary: `\n\n<system-notification>${tSettingsUi("Branch merge failed before a task branch could be created: {error}\nTask outputs are preserved but changes were not applied.{patchList}", { error: result.error, patchList })}</system-notification>`,
 					changesApplied: false,
 					hadAnyChanges: false,
 					mergedBranchForNestedPatches: false,
@@ -265,8 +268,8 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 			if (!result.branchName || result.exitCode !== 0 || result.aborted) {
 				return {
 					summary: canApplyNestedOnly
-						? "\n\nNo root changes to apply; nested repository patches captured."
-						: "\n\nNo changes to apply.",
+						? `\n\n${tSettingsUi("No root changes to apply; nested repository patches captured.")}`
+						: `\n\n${tSettingsUi("No changes to apply.")}`,
 					changesApplied: true,
 					hadAnyChanges: canApplyNestedOnly,
 					mergedBranchForNestedPatches: canApplyNestedOnly,
@@ -286,10 +289,14 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 
 			let summary: string;
 			if (changesApplied) {
-				summary = hadAnyChanges ? `\n\nMerged branch: ${result.branchName}` : "\n\nNo changes to apply.";
+				summary = hadAnyChanges
+					? `\n\n${tSettingsUi("Merged branch: {branchName}", { branchName: result.branchName })}`
+					: `\n\n${tSettingsUi("No changes to apply.")}`;
 			} else {
-				const conflictPart = mergeResult.conflict ? `\nConflict: ${mergeResult.conflict}` : "";
-				summary = `\n\n<system-notification>Branch merge failed: ${result.branchName}.${conflictPart}\nThe unmerged branch remains for manual resolution.</system-notification>`;
+				const conflictPart = mergeResult.conflict
+					? `\n${tSettingsUi("Conflict: {conflict}", { conflict: mergeResult.conflict })}`
+					: "";
+				summary = `\n\n<system-notification>${tSettingsUi("Branch merge failed: {branchName}.{conflictPart}\nThe unmerged branch remains for manual resolution.", { branchName: result.branchName, conflictPart })}</system-notification>`;
 			}
 			if (mergeResult.stashConflict) {
 				summary += `\n\n<system-notification>${mergeResult.stashConflict}</system-notification>`;
@@ -351,18 +358,21 @@ export async function mergeIsolatedChanges(opts: IsolationMergeOptions): Promise
 
 		let summary: string;
 		if (changesApplied) {
-			summary = hadAnyChanges ? "\n\nApplied patches: yes" : "\n\nNo changes to apply.";
+			summary = hadAnyChanges
+				? `\n\n${tSettingsUi("Applied patches: yes")}`
+				: `\n\n${tSettingsUi("No changes to apply.")}`;
 		} else {
-			const notification =
-				"<system-notification>Patches were not applied and must be handled manually.</system-notification>";
-			const patchList = result.patchPath ? `\n\nPatch artifact:\n- ${result.patchPath}` : "";
+			const notification = `<system-notification>${tSettingsUi("Patches were not applied and must be handled manually.")}</system-notification>`;
+			const patchList = result.patchPath
+				? `\n\n${tSettingsUi("Patch artifact:\n- {patchPath}", { patchPath: result.patchPath })}`
+				: "";
 			summary = `\n\n${notification}${patchList}`;
 		}
 		return { summary, changesApplied, hadAnyChanges, mergedBranchForNestedPatches: false };
 	} catch (mergeErr) {
 		const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
 		return {
-			summary: `\n\n<system-notification>Merge phase failed: ${msg}\nTask outputs are preserved but changes were not applied.</system-notification>`,
+			summary: `\n\n<system-notification>${tSettingsUi("Merge phase failed: {error}\nTask outputs are preserved but changes were not applied.", { error: msg })}</system-notification>`,
 			changesApplied: false,
 			hadAnyChanges: false,
 			mergedBranchForNestedPatches: false,
@@ -408,6 +418,6 @@ export async function applyEligibleNestedPatches(opts: NestedPatchApplyOptions):
 		return `\n\n<system-notification>${warnings.join("\n")}</system-notification>`;
 	} catch {
 		// Nested patch failures are non-fatal to the parent merge.
-		return "\n\n<system-notification>Some nested repository patches failed to apply.</system-notification>";
+		return `\n\n<system-notification>${tSettingsUi("Some nested repository patches failed to apply.")}</system-notification>`;
 	}
 }

@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import { getRecentErrors } from "../api";
 import { formatCost, formatInteger, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
+import { t } from "../locale/catalog";
 import type { MessageStats, TimeRange } from "../types";
 import { AsyncBoundary, DataTable, Panel, StatusPill } from "../ui";
+import { useLocale } from "../useLocale";
 
 export interface ErrorsRouteProps {
 	active: boolean;
@@ -13,6 +15,7 @@ export interface ErrorsRouteProps {
 }
 
 export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: ErrorsRouteProps) {
+	const locale = useLocale();
 	const {
 		data: recentErrors,
 		error,
@@ -26,7 +29,7 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 		() => [
 			{
 				key: "model",
-				header: "Model",
+				header: t("table.column.model"),
 				render: (item: MessageStats) => (
 					<div>
 						<div className="stats-font-medium stats-text-primary">{item.model}</div>
@@ -36,35 +39,35 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 			},
 			{
 				key: "timestamp",
-				header: "Time",
+				header: t("table.column.time"),
 				render: (item: MessageStats) => formatRelativeTime(item.timestamp),
 			},
 			{
 				key: "errorMessage",
-				header: "Error Message",
+				header: t("errors.column.errorMessage"),
 				render: (item: MessageStats) => (
 					<div
 						className="stats-text-xs stats-text-danger stats-truncate stats-max-w-md stats-font-mono"
 						title={item.errorMessage || ""}
 					>
-						{item.errorMessage || "Unknown error"}
+						{item.errorMessage || t("errors.unknownError")}
 					</div>
 				),
 			},
 			{
 				key: "tokens",
-				header: "Tokens",
+				header: t("table.column.tokens"),
 				numeric: true,
 				render: (item: MessageStats) => formatInteger(item.usage.totalTokens),
 			},
 			{
 				key: "cost",
-				header: "Cost",
+				header: t("table.column.cost"),
 				numeric: true,
 				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
 			},
 		],
-		[],
+		[locale],
 	);
 
 	const renderMobileCard = (item: MessageStats, onClick?: () => void) => (
@@ -74,19 +77,19 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 					<div className="stats-font-semibold stats-text-primary">{item.model}</div>
 					<div className="stats-text-xs stats-text-muted">{item.provider}</div>
 				</div>
-				<StatusPill variant="danger">Failed</StatusPill>
+				<StatusPill variant="danger">{t("errors.mobile.status.failed")}</StatusPill>
 			</div>
 			<div className="stats-mobile-card-grid">
 				<div>
-					<div className="stats-mobile-card-label">Time</div>
+					<div className="stats-mobile-card-label">{t("table.column.time")}</div>
 					<div className="stats-mobile-card-value">{formatRelativeTime(item.timestamp)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Cost</div>
+					<div className="stats-mobile-card-label">{t("errors.mobile.cost")}</div>
 					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
 				</div>
 				<div>
-					<div className="stats-mobile-card-label">Tokens</div>
+					<div className="stats-mobile-card-label">{t("errors.mobile.tokens")}</div>
 					<div className="stats-mobile-card-value">{formatInteger(item.usage.totalTokens)}</div>
 				</div>
 			</div>
@@ -96,20 +99,15 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 
 	return (
 		<div className="stats-route-container">
-			<Panel title="Recent Errors" subtitle="Up to 50 most recent failed requests in the stats database">
-				<AsyncBoundary
-					loading={loading}
-					error={error}
-					data={recentErrors}
-					emptyText="No recent failures in the local stats database"
-				>
+			<Panel title={t("errors.title")} subtitle={t("errors.subtitle")}>
+				<AsyncBoundary loading={loading} error={error} data={recentErrors} emptyText={t("errors.empty")}>
 					<DataTable
 						columns={columns}
 						data={recentErrors || []}
 						keyExtractor={item => item.id || `${item.sessionFile}-${item.entryId}`}
 						onRowClick={item => item.id && onRequestClick(item.id)}
 						renderMobileCard={renderMobileCard}
-						emptyText="No recent failures in the local stats database"
+						emptyText={t("errors.empty")}
 					/>
 				</AsyncBoundary>
 			</Panel>

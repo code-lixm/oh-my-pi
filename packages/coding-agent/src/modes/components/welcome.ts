@@ -8,14 +8,23 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import tipsText from "./tips.txt" with { type: "text" };
+import tipsZhCnText from "./tips.zh-CN.txt" with { type: "text" };
 
 /** Tips embedded at build time, one per line; blanks dropped. */
-const TIPS: readonly string[] = tipsText
-	.split("\n")
-	.map(line => line.trim())
-	.filter(line => line.length > 0);
+function parseTips(text: string): readonly string[] {
+	return text
+		.split("\n")
+		.map(line => line.trim())
+		.filter(line => line.length > 0);
+}
+
+const TIPS_BY_LOCALE = {
+	en: parseTips(tipsText),
+	"zh-CN": parseTips(tipsZhCnText),
+} as const;
 
 /**
  * Fixed number of session rows in the welcome box so its height stays stable
@@ -43,6 +52,10 @@ const NEW_GLOW_PERIOD_MS = 1500;
 /** Selection weight for "[NEW]" tips; ordinary tips weigh 1, so a freshly added
  *  affordance surfaces this many times as often. */
 const NEW_TIP_WEIGHT = 4;
+
+function getTipsForLocale(): readonly string[] {
+	return TIPS_BY_LOCALE[getSettingsUiLocale()] ?? TIPS_BY_LOCALE.en;
+}
 
 /** Pick a tip from `tips`, biased toward "[NEW]" tips by {@link NEW_TIP_WEIGHT};
  *  `r` is a uniform sample in [0, 1). Returns "" when `tips` is empty.
@@ -160,7 +173,7 @@ export class WelcomeComponent implements Component {
 			if (theme.getSymbolPreset() === "unicode" && Math.random() < 0.1) {
 				this.#selectedTip = "Please use nerdfont 😭.";
 			} else {
-				this.#selectedTip = pickWeightedTip(TIPS, Math.random());
+				this.#selectedTip = pickWeightedTip(getTipsForLocale(), Math.random());
 			}
 		}
 		return this.#selectedTip || undefined;
@@ -264,7 +277,7 @@ export class WelcomeComponent implements Component {
 		// Left column - centered content
 		const leftLines = [
 			"",
-			this.#centerText(theme.bold("Welcome back!"), leftCol),
+			this.#centerText(theme.bold(tSettingsUi("Welcome back!")), leftCol),
 			"",
 			...logoColored.map(l => this.#centerText(l, leftCol)),
 			"",
@@ -279,7 +292,7 @@ export class WelcomeComponent implements Component {
 		// Recent sessions content
 		const sessionLines: string[] = [];
 		if (this.recentSessions.length === 0) {
-			sessionLines.push(` ${theme.fg("dim", "No recent sessions")}`);
+			sessionLines.push(` ${theme.fg("dim", tSettingsUi("No recent sessions"))}`);
 		} else {
 			// Reserve width for the bullet prefix (" • ") and the trailing " (timeAgo)"
 			// so the relative time is never the part that gets truncated. The name
@@ -305,7 +318,7 @@ export class WelcomeComponent implements Component {
 		// LSP servers content
 		const lspLines: string[] = [];
 		if (this.lspServers.length === 0) {
-			lspLines.push(` ${theme.fg("dim", "No LSP servers")}`);
+			lspLines.push(` ${theme.fg("dim", tSettingsUi("No LSP servers"))}`);
 		} else {
 			for (const server of this.lspServers.slice(0, WELCOME_LSP_SLOTS)) {
 				const icon =
@@ -327,16 +340,16 @@ export class WelcomeComponent implements Component {
 
 		// Right column
 		const rightLines = [
-			` ${theme.bold(theme.fg("accent", "Tips"))}`,
-			` ${theme.fg("dim", "#")}${theme.fg("muted", " for prompt actions")}`,
-			` ${theme.fg("dim", "/")}${theme.fg("muted", " for commands")}`,
-			` ${theme.fg("dim", "!")}${theme.fg("muted", " to run bash")}`,
-			` ${theme.fg("dim", "$")}${theme.fg("muted", " to run python")}`,
+			` ${theme.bold(theme.fg("accent", tSettingsUi("Tips")))}`,
+			` ${theme.fg("dim", "#")}${theme.fg("muted", ` ${tSettingsUi("for prompt actions")}`)}`,
+			` ${theme.fg("dim", "/")}${theme.fg("muted", ` ${tSettingsUi("for commands")}`)}`,
+			` ${theme.fg("dim", "!")}${theme.fg("muted", ` ${tSettingsUi("to run bash")}`)}`,
+			` ${theme.fg("dim", "$")}${theme.fg("muted", ` ${tSettingsUi("to run python")}`)}`,
 			separator,
-			` ${theme.bold(theme.fg("accent", "LSP Servers"))}`,
+			` ${theme.bold(theme.fg("accent", tSettingsUi("LSP Servers")))}`,
 			...lspLines,
 			separator,
-			` ${theme.bold(theme.fg("accent", "Recent sessions"))}`,
+			` ${theme.bold(theme.fg("accent", tSettingsUi("Recent sessions")))}`,
 			...sessionLines,
 			"",
 		];

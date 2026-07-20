@@ -6,8 +6,11 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
+import todoDescriptionZh from "../prompts/tools/todo.zh-CN.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
@@ -294,19 +297,23 @@ function resolveTaskOrError(
 	errors: string[],
 ): { task: TodoItem; phase: TodoPhase } | undefined {
 	if (!content) {
-		errors.push("Missing task content");
+		errors.push(tSettingsUi("Missing task content"));
 		return undefined;
 	}
 	const hit = findTaskByContent(phases, content);
 	if (!hit) {
 		if (/^task-\d+$/.test(content)) {
 			errors.push(
-				`Task "${content}" not found. Tasks are referenced by content, not by IDs — pass the task's full text from the previous result.`,
+				tSettingsUi(
+					'Task "{content}" not found. Tasks are referenced by content, not by IDs — pass the task\'s full text from the previous result.',
+					{ content },
+				),
 			);
 		} else {
 			const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-			const hint = totalTasks === 0 ? " (todo list is empty — was it replaced or not yet created?)" : "";
-			errors.push(`Task "${content}" not found${hint}`);
+			const hint =
+				totalTasks === 0 ? tSettingsUi(" (todo list is empty — was it replaced or not yet created?)") : "";
+			errors.push(tSettingsUi('Task "{content}" not found{hint}', { content, hint }));
 		}
 	}
 	return hit;
@@ -314,11 +321,11 @@ function resolveTaskOrError(
 
 function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, errors: string[]): TodoPhase | undefined {
 	if (!name) {
-		errors.push("Missing phase name");
+		errors.push(tSettingsUi("Missing phase name"));
 		return undefined;
 	}
 	const phase = findPhaseByName(phases, name);
-	if (!phase) errors.push(`Phase "${name}" not found`);
+	if (!phase) errors.push(tSettingsUi('Phase "{name}" not found', { name }));
 	return phase;
 }
 
@@ -348,7 +355,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, items: entry.items }]
 			: undefined);
 	if (!list) {
-		errors.push("Missing list for init operation");
+		errors.push(tSettingsUi("Missing list for init operation"));
 		return [];
 	}
 	// Duplicate phase names / task contents would be permanently unaddressable
@@ -357,12 +364,12 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	const seenTasks = new Set<string>();
 	for (const listEntry of list) {
 		if (seenPhases.has(listEntry.phase)) {
-			errors.push(`Duplicate phase "${listEntry.phase}" in init list`);
+			errors.push(tSettingsUi('Duplicate phase "{phase}" in init list', { phase: listEntry.phase }));
 		}
 		seenPhases.add(listEntry.phase);
 		for (const content of listEntry.items) {
 			if (seenTasks.has(content)) {
-				errors.push(`Duplicate task "${content}" in init list`);
+				errors.push(tSettingsUi('Duplicate task "{content}" in init list', { content }));
 			}
 			seenTasks.add(content);
 		}
@@ -375,11 +382,11 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 
 function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	if (!entry.phase) {
-		errors.push("Missing phase name for append operation");
+		errors.push(tSettingsUi("Missing phase name for append operation"));
 		return phases;
 	}
 	if (!entry.items || entry.items.length === 0) {
-		errors.push("Missing items for append operation");
+		errors.push(tSettingsUi("Missing items for append operation"));
 		return phases;
 	}
 
@@ -389,7 +396,7 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	let hasDuplicate = false;
 	for (const content of entry.items) {
 		if (seen.has(content) || findTaskByContent(phases, content)) {
-			errors.push(`Task "${content}" already exists`);
+			errors.push(tSettingsUi('Task "{content}" already exists', { content }));
 			hasDuplicate = true;
 		}
 		seen.add(content);
@@ -504,7 +511,7 @@ export function resolveTodoMarkdownPath(input: string, cwd: string): string {
 
 /** Render todo phases as a Markdown checklist suitable for editing/copying. */
 export function phasesToMarkdown(phases: TodoPhase[]): string {
-	if (phases.length === 0) return "# Todos\n";
+	if (phases.length === 0) return `# ${tSettingsUi("Todos")}\n`;
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
@@ -550,31 +557,35 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 		const taskMatch = /^[-*+]\s*\[(.?)\]\s+(.+?)\s*$/.exec(trimmed);
 		if (taskMatch) {
 			if (!currentPhase) {
-				currentPhase = { name: "Todos", tasks: [] };
+				currentPhase = { name: tSettingsUi("Todos"), tasks: [] };
 				phases.push(currentPhase);
 			}
 			const marker = taskMatch[1];
 			const status = MARKER_TO_STATUS[marker];
 			if (!status) {
-				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-])`);
+				errors.push(
+					tSettingsUi('Line {line}: unknown status marker "[{marker}]" (use [ ], [x], [/], [-])', {
+						line: lineNum + 1,
+						marker,
+					}),
+				);
 				continue;
 			}
 			currentPhase.tasks.push({ content: taskMatch[2].trim(), status });
 			continue;
 		}
 
-		errors.push(`Line ${lineNum + 1}: unrecognized syntax "${trimmed}"`);
+		errors.push(tSettingsUi('Line {line}: unrecognized syntax "{text}"', { line: lineNum + 1, text: trimmed }));
 	}
 
 	normalizeInProgressTask(phases);
 	return { phases, errors };
 }
-
 function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) {
-		if (errors.length > 0) return `Errors: ${errors.join("; ")}`;
-		return readOnly ? "Todo list is empty." : "Todo list cleared.";
+		if (errors.length > 0) return `${tSettingsUi("Errors:")} ${errors.join("; ")}`;
+		return readOnly ? tSettingsUi("Todo list is empty.") : tSettingsUi("Todo list cleared.");
 	}
 
 	const remainingByPhase = phases
@@ -593,11 +604,11 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	const done = current.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
 
 	const lines: string[] = [];
-	if (errors.length > 0) lines.push(`Errors: ${errors.join("; ")}`);
+	if (errors.length > 0) lines.push(`${tSettingsUi("Errors:")} ${errors.join("; ")}`);
 	if (remainingTasks.length === 0) {
-		lines.push("Remaining items: none.");
+		lines.push(tSettingsUi("Remaining items: none."));
 	} else {
-		lines.push(`Remaining items (${remainingTasks.length}):`);
+		lines.push(tSettingsUi("Remaining items ({count}):", { count: remainingTasks.length }));
 		for (const task of remainingTasks) {
 			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
 		}
@@ -613,11 +624,22 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		(phase, idx) =>
 			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
 	);
-	lines.push(`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open.`);
 	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+		tSettingsUi("Overall: {closed}/{total} done, {open} open.", {
+			closed: closedAll,
+			total: tasks.length,
+			open: remainingTasks.length,
+		}),
+	);
+	lines.push(
+		`${tSettingsUi("Active phase {idx}/{total}", {
+			idx: currentIdx + 1,
+			total: phases.length,
+		})} "${current.name}" (${done}/${current.tasks.length})${
 			workedAhead
-				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
+				? tSettingsUi(
+						" — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).",
+					)
 				: "."
 		}`,
 	);
@@ -625,7 +647,12 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
-			const tag = task.status === "in_progress" ? " (in progress)" : task.status === "abandoned" ? " (dropped)" : "";
+			const tag =
+				task.status === "in_progress"
+					? ` ${tSettingsUi("(in progress)")}`
+					: task.status === "abandoned"
+						? ` ${tSettingsUi("(dropped)")}`
+						: "";
 			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
@@ -639,8 +666,8 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
 	readonly approval = "read" as const;
-	readonly label = "Todo";
-	readonly summary = "Write a structured todo list to track progress within a session";
+	readonly label = tSettingsUi("Todo");
+	readonly summary = tSettingsUi("Write a structured todo list to track progress within a session");
 	readonly description: string;
 	readonly parameters = todoSchema;
 	readonly concurrency = "exclusive";
@@ -692,7 +719,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	];
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(todoDescription);
+		this.description = prompt.render(selectPrompt(todoDescription, todoDescriptionZh));
 	}
 
 	async execute(
@@ -925,20 +952,25 @@ export const todoToolRenderer = {
 		const opsList = normalizeTodoArg(args);
 		const ops =
 			opsList.length === 0
-				? ["update"]
+				? [tSettingsUi("update")]
 				: opsList.map(e => {
-						const parts = [e.op ?? "update"];
+						const parts = [e.op ?? tSettingsUi("update")];
 						if (e.task) parts.push(e.task);
 						if (e.phase) parts.push(e.phase);
 						if (Array.isArray(e.items) && e.items.length) {
-							parts.push(`${e.items.length} item${e.items.length === 1 ? "" : "s"}`);
+							const itemCount = e.items.length;
+							parts.push(
+								itemCount === 1
+									? tSettingsUi("{count} item", { count: itemCount })
+									: tSettingsUi("{count} items", { count: itemCount }),
+							);
 						}
 						return parts.join(" ");
 					});
 		// No body worth boxing while the call streams — a lone status line reads
 		// cleaner than an empty frame. The container renders it without chrome.
 		const header = renderStatusLine(
-			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: "Todo", meta: ops },
+			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: tSettingsUi("Todo"), meta: ops },
 			uiTheme,
 		);
 		return new Text(header, 0, 0);
@@ -951,8 +983,9 @@ export const todoToolRenderer = {
 		args?: TodoRenderArgs,
 	): Component {
 		if (result.isError) {
-			const errorText = result.content?.find(content => content.type === "text")?.text ?? "Todo operation failed";
-			const header = renderStatusLine({ icon: "error", title: "Todo" }, uiTheme);
+			const errorText =
+				result.content?.find(content => content.type === "text")?.text ?? tSettingsUi("Todo operation failed");
+			const header = renderStatusLine({ icon: "error", title: tSettingsUi("Todo") }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
@@ -977,13 +1010,17 @@ export const todoToolRenderer = {
 		const header = renderStatusLine(
 			{
 				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
-				title: "Todo",
-				meta: [`${allTasks.length} tasks`],
+				title: tSettingsUi("Todo"),
+				meta: [
+					allTasks.length === 1
+						? tSettingsUi("{count} task", { count: allTasks.length })
+						: tSettingsUi("{count} tasks", { count: allTasks.length }),
+				],
 			},
 			uiTheme,
 		);
 		if (allTasks.length === 0) {
-			const fallback = result.content?.find(content => content.type === "text")?.text ?? "No todos";
+			const fallback = result.content?.find(content => content.type === "text")?.text ?? tSettingsUi("No todos");
 			return new Text(`${header}\n  ${uiTheme.fg("dim", fallback)}`, 0, 0);
 		}
 

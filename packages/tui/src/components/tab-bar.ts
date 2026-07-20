@@ -65,8 +65,10 @@ export class TabBar implements Component {
 	/** Callback fired when the active tab changes */
 	onTabChange?: (tab: Tab, index: number) => void;
 
-	/** Render the trailing "(tab to cycle)" hint. Disable when the host folds the hint into its own footer. */
+	/** Render the trailing hint. Disable when the host folds the hint into its own footer. */
 	showHint = true;
+	/** Localized trailing hint text. Defaults to "(tab to cycle)". */
+	hintText = "(tab to cycle)";
 
 	constructor(label: string, tabs: Tab[], theme: TabBarTheme, initialIndex: number = 0) {
 		this.#label = label;
@@ -206,9 +208,9 @@ export class TabBar implements Component {
 				}
 			}
 			// Navigation hint
-			if (this.showHint) {
+			if (this.showHint && this.hintText) {
 				chunks.push({ text: "  " });
-				chunks.push({ text: this.#theme.hint("(tab to cycle)") });
+				chunks.push({ text: this.#theme.hint(this.hintText) });
 			}
 			return chunks;
 		};

@@ -66,6 +66,9 @@ export default class Index extends Command {
 		"allow-home": Flags.boolean({
 			description: "Allow starting in ~ without auto-switching to a temp dir",
 		}),
+		sandbox: Flags.boolean({
+			description: "Run an in-memory session in an isolated sandbox directory without project discovery",
+		}),
 		profile: Flags.string({
 			description: "Use an isolated profile for auth, sessions, settings, and caches",
 		}),

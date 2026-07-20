@@ -8,9 +8,12 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { formatGroupedPaths, isEnoent, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { InternalUrlRouter } from "../internal-urls";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
+import globDescriptionZh from "../prompts/tools/glob.zh-CN.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
 import { Ellipsis, fileHyperlink, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
@@ -28,13 +31,7 @@ import {
 	resolveToCwd,
 	toPathList,
 } from "./path-utils";
-import {
-	createCachedComponent,
-	formatCount,
-	formatEmptyMessage,
-	formatErrorMessage,
-	PREVIEW_LIMITS,
-} from "./render-utils";
+import { createCachedComponent, formatEmptyMessage, formatErrorMessage, PREVIEW_LIMITS } from "./render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -137,7 +134,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	) {
 		this.#customOps = options?.operations;
 		this.#rootPathAlias = options?.rootPathAlias === true;
-		this.description = prompt.render(globDescription);
+		this.description = prompt.render(selectPrompt(globDescription, globDescriptionZh));
 	}
 
 	async execute(
@@ -275,8 +272,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					// A timed-out empty result is an incomplete scan, not a verified
 					// absence — never emit the definitive "No files found" claim next
 					// to a timeout notice (the two statements contradict each other).
-					const parts = opts?.timedOut ? [] : ["No files found matching pattern"];
-					if (notice) parts.push(notice);
+					const parts = opts?.timedOut ? [] : [tSettingsUi("No files found matching pattern")];
 					if (missingPathsNote) parts.push(missingPathsNote);
 					// Zero results is useless regardless of notices: the follow-up
 					// call has already corrected course by the time compaction runs.
@@ -511,19 +507,19 @@ export const globToolRenderer = {
 	inline: true,
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
-		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);
+		if (args.limit !== undefined) meta.push(tSettingsUi("limit:{count}", { count: args.limit }));
 
 		const text = renderStatusLine(
 			{
 				icon: "pending",
-				title: "Glob",
+				title: tSettingsUi("Glob"),
 				titleColor: "toolTitle",
 				description: formatGlobRenderPaths(args) || "*",
 				meta,
 			},
 			uiTheme,
 		);
-		return new Text(text, 1, 0);
+		return new Text(text, 0, 0);
 	},
 
 	renderResult(
@@ -535,8 +531,9 @@ export const globToolRenderer = {
 		const details = result.details;
 
 		if (result.isError || details?.error) {
-			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
+			const errorText =
+				details?.error || result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
+			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
 		}
 
 		const hasDetailedData = details?.fileCount !== undefined;
@@ -549,17 +546,17 @@ export const globToolRenderer = {
 				textContent.includes("No files found") ||
 				textContent.trim() === ""
 			) {
-				return new Text(formatEmptyMessage("No files found", uiTheme), 1, 0);
+				return new Text(formatEmptyMessage(tSettingsUi("No files found"), uiTheme), 0, 0);
 			}
 
 			const lines = textContent.split("\n").filter(l => l.trim());
 			const header = renderStatusLine(
 				{
 					iconOverride: globStatusIcon(uiTheme),
-					title: "Glob",
+					title: tSettingsUi("Glob"),
 					titleColor: "toolTitle",
 					description: formatGlobRenderPaths(args),
-					meta: [formatCount("file", lines.length)],
+					meta: [tSettingsUi(lines.length === 1 ? "{count} file" : "{count} files", { count: lines.length })],
 				},
 				uiTheme,
 			);
@@ -590,33 +587,39 @@ export const globToolRenderer = {
 
 		const missingPaths = details?.missingPaths ?? [];
 		const missingNote =
-			missingPaths.length > 0 ? uiTheme.fg("warning", `skipped missing: ${missingPaths.join(", ")}`) : undefined;
+			missingPaths.length > 0
+				? uiTheme.fg("warning", tSettingsUi("skipped missing: {paths}", { paths: missingPaths.join(", ") }))
+				: undefined;
 
 		if (fileCount === 0) {
 			// `truncated` on an empty result means the scan timed out mid-walk —
 			// render "incomplete", not a definitive "No files found".
-			const emptyLabel = truncated ? "No matches before timeout (scan incomplete)" : "No files found";
+			const emptyLabel = truncated
+				? tSettingsUi("No matches before timeout (scan incomplete)")
+				: tSettingsUi("No files found");
 			const header = renderStatusLine(
 				{
 					icon: "warning",
-					title: "Glob",
+					title: tSettingsUi("Glob"),
 					titleColor: "toolTitle",
 					description: formatGlobRenderPaths(args),
-					meta: truncated ? ["0 files", uiTheme.fg("warning", "timed out")] : ["0 files"],
+					meta: truncated
+						? [tSettingsUi("0 files"), uiTheme.fg("warning", tSettingsUi("timed out"))]
+						: [tSettingsUi("0 files")],
 				},
 				uiTheme,
 			);
 			const lines = [header, formatEmptyMessage(emptyLabel, uiTheme)];
 			if (missingNote) lines.push(missingNote);
-			return new Text(lines.join("\n"), 1, 0);
+			return new Text(lines.join("\n"), 0, 0);
 		}
-		const meta: string[] = [formatCount("file", fileCount)];
-		if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-		if (truncated) meta.push(uiTheme.fg("warning", "truncated"));
+		const meta: string[] = [tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount })];
+		if (details?.scopePath) meta.push(tSettingsUi("in {paths}", { paths: details.scopePath }));
+		if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
 		const header = renderStatusLine(
 			{
 				...(truncated ? { icon: "warning" as const } : { iconOverride: globStatusIcon(uiTheme) }),
-				title: "Glob",
+				title: tSettingsUi("Glob"),
 				titleColor: "toolTitle",
 				description: formatGlobRenderPaths(args),
 				meta,
@@ -625,15 +628,23 @@ export const globToolRenderer = {
 		);
 
 		const truncationReasons: string[] = [];
-		if (details?.resultLimitReached) truncationReasons.push(`limit ${details.resultLimitReached} results`);
-		if (limits?.resultLimit) truncationReasons.push(`limit ${limits.resultLimit.reached} results`);
-		if (truncation) truncationReasons.push(truncation.truncatedBy === "lines" ? "line limit" : "size limit");
+		if (details?.resultLimitReached) {
+			truncationReasons.push(tSettingsUi("limit {count} results", { count: details.resultLimitReached }));
+		}
+		if (limits?.resultLimit) {
+			truncationReasons.push(tSettingsUi("limit {count} results", { count: limits.resultLimit.reached }));
+		}
+		if (truncation) {
+			truncationReasons.push(tSettingsUi(truncation.truncatedBy === "lines" ? "line limit" : "size limit"));
+		}
 		const artifactId = truncation && "artifactId" in truncation ? truncation.artifactId : undefined;
 		if (artifactId) truncationReasons.push(formatFullOutputReference(artifactId));
 
 		const extraLines: string[] = [];
 		if (truncationReasons.length > 0) {
-			extraLines.push(uiTheme.fg("warning", `truncated: ${truncationReasons.join(", ")}`));
+			extraLines.push(
+				uiTheme.fg("warning", tSettingsUi("truncated: {reasons}", { reasons: truncationReasons.join(", ") })),
+			);
 		}
 		if (missingNote) extraLines.push(missingNote);
 
@@ -656,7 +667,6 @@ export const globToolRenderer = {
 				);
 				return [header, ...fileLines, ...extraLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 			},
-			{ paddingX: 1 },
 		);
 	},
 	mergeCallAndResult: true,

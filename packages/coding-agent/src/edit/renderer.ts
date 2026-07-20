@@ -716,6 +716,12 @@ function wrapEditRendererLine(line: string, width: number): string[] {
 
 export const editToolRenderer = {
 	mergeCallAndResult: true,
+	// The streaming edit preview (apply_patch / hashline diff) commits preview
+	// rows to native scrollback as it streams. The first final result replaces
+	// those preview rows with the authoritative diff; without a viewport repaint
+	// at that seam the stale streaming rows survive above the new frame (issue:
+	// tool-execution-ssh/write/edit streaming repaint regressions in mux panes).
+	forceFirstResultViewportRepaint: true,
 
 	renderCall(
 		args: EditRenderArgs,

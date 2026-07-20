@@ -2,8 +2,12 @@ import { instrumentedCompleteSimple, resolveTelemetry } from "@oh-my-pi/pi-agent
 import type { Tool } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { extractTextContent, extractToolCall, parseJsonPayload } from "../commit/utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
+import guidedGoalInterviewPromptZh from "../prompts/goals/guided-goal-interview.zh-CN.md" with { type: "text" };
 import guidedGoalSystemPrompt from "../prompts/goals/guided-goal-system.md" with { type: "text" };
+import guidedGoalSystemPromptZh from "../prompts/goals/guided-goal-system.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 import type { AgentSession } from "../session/agent-session";
 import { concreteThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 
@@ -91,15 +95,17 @@ export async function runGuidedGoalTurn(
 				warning: undefined,
 			};
 	if (!resolved.model) {
-		throw new Error("No plan, slow, or current session model is available for /guided-goal.");
+		throw new Error(tSettingsUi("No plan, slow, or current session model is available for /guided-goal."));
 	}
 
 	const apiKey = await session.modelRegistry.getApiKey(resolved.model, session.sessionId);
 	if (!apiKey) {
-		throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
+		throw new Error(
+			tSettingsUi("No API key for {model}", { model: `${resolved.model.provider}/${resolved.model.id}` }),
+		);
 	}
 
-	const userPrompt = prompt.render(guidedGoalInterviewPrompt, {
+	const userPrompt = prompt.render(selectPrompt(guidedGoalInterviewPrompt, guidedGoalInterviewPromptZh), {
 		messages: options.messages.map(message => ({ label: message.role.toUpperCase(), content: message.content })),
 	});
 	// Secret obfuscation: route the user-authored transcript through the session obfuscator the
@@ -111,7 +117,7 @@ export async function runGuidedGoalTurn(
 	const response = await instrumentedCompleteSimple(
 		resolved.model,
 		{
-			systemPrompt: [prompt.render(guidedGoalSystemPrompt)],
+			systemPrompt: [prompt.render(selectPrompt(guidedGoalSystemPrompt, guidedGoalSystemPromptZh))],
 			messages: [{ role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() }],
 			tools: [RESPOND_TOOL],
 		},
@@ -139,10 +145,10 @@ export async function runGuidedGoalTurn(
 	);
 
 	if (response.stopReason === "error") {
-		throw new Error(response.errorMessage ?? "guided goal request failed");
+		throw new Error(response.errorMessage ?? tSettingsUi("guided goal request failed"));
 	}
 	if (response.stopReason === "aborted") {
-		throw new Error("guided goal request aborted");
+		throw new Error(tSettingsUi("guided goal request aborted"));
 	}
 
 	const call = extractToolCall(response, RESPOND_TOOL_NAME);
@@ -152,7 +158,7 @@ export async function runGuidedGoalTurn(
 	} else {
 		const text = extractTextContent(response);
 		if (!text) {
-			throw new Error("guided goal returned an invalid response");
+			throw new Error(tSettingsUi("guided goal returned an invalid response"));
 		}
 		result = parseGuidedGoalPayload(parseJsonPayload(text));
 	}

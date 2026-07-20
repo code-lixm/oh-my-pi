@@ -1,6 +1,7 @@
 import type { TextContent } from "@oh-my-pi/pi-ai";
 import { Container, Markdown, Text } from "@oh-my-pi/pi-tui";
 import type { CollabPromptDetails } from "../../collab/protocol";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { CustomMessage } from "../../session/messages";
 import { getMarkdownTheme, theme } from "../theme/theme";
 
@@ -11,7 +12,7 @@ import { getMarkdownTheme, theme } from "../theme/theme";
 export class CollabPromptMessageComponent extends Container {
 	constructor(message: CustomMessage<CollabPromptDetails>) {
 		super();
-		const from = message.details?.from?.trim() || "guest";
+		const from = message.details?.from?.trim() || tSettingsUi("guest");
 		const authorText = new Text(theme.fg("accent", `\x1b[1m«${from}»\x1b[22m ›`), 1, 0);
 		authorText.setIgnoreTight(true);
 		this.addChild(authorText);

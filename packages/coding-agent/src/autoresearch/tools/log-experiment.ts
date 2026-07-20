@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Text } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
 import type { ToolDefinition } from "../../extensibility/extensions";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme } from "../../modes/theme/theme";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
 import * as git from "../../utils/git";
@@ -79,7 +80,9 @@ export function createLogExperimentTool(
 			const pendingRun = storage.getPendingRun(session.id);
 			if (!pendingRun) {
 				return {
-					content: [{ type: "text", text: "Error: no pending run available. Run run_experiment first." }],
+					content: [
+						{ type: "text", text: tSettingsUi("Error: no pending run available. Run run_experiment first.") },
+					],
 				};
 			}
 
@@ -136,7 +139,7 @@ export function createLogExperimentTool(
 					);
 					if (commitResult.error) {
 						return {
-							content: [{ type: "text", text: `Error: ${commitResult.error}` }],
+							content: [{ type: "text", text: tSettingsUi("Error: {error}", { error: commitResult.error }) }],
 						};
 					}
 					gitNote = commitResult.note ?? null;
@@ -144,18 +147,27 @@ export function createLogExperimentTool(
 					if (newSha) commitHash = newSha;
 				} else if (!onAutoresearchBranch) {
 					warnings.push(
-						"Auto-commit skipped: not on a dedicated autoresearch branch. Modified files remain in the worktree.",
+						tSettingsUi(
+							"Auto-commit skipped: not on a dedicated autoresearch branch. Modified files remain in the worktree.",
+						),
 					);
 				} else if (allModified.length === 0) {
-					gitNote = "nothing to commit";
+					gitNote = tSettingsUi("nothing to commit");
 				}
 				if (scopeDeviations.length > 0) {
 					if (justification === null) {
 						warnings.push(
-							`Kept with unjustified scope deviations: ${scopeDeviations.join(", ")}. Pass \`justification\` next time or \`flag_runs\` this entry on a future log_experiment if it was a mistake.`,
+							tSettingsUi(
+								"Kept with unjustified scope deviations: {paths}. Pass `justification` next time or `flag_runs` this entry on a future log_experiment if it was a mistake.",
+								{ paths: scopeDeviations.join(", ") },
+							),
 						);
 					} else {
-						warnings.push(`Kept with scope deviations (justified): ${scopeDeviations.join(", ")}`);
+						warnings.push(
+							tSettingsUi("Kept with scope deviations (justified): {paths}", {
+								paths: scopeDeviations.join(", "),
+							}),
+						);
 					}
 				}
 			} else {
@@ -166,7 +178,7 @@ export function createLogExperimentTool(
 				);
 				if (revertResult.error) {
 					return {
-						content: [{ type: "text", text: `Error: ${revertResult.error}` }],
+						content: [{ type: "text", text: tSettingsUi("Error: {error}", { error: revertResult.error }) }],
 					};
 				}
 				gitNote = revertResult.note ?? null;

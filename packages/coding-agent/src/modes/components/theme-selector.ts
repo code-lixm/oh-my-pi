@@ -1,4 +1,5 @@
 import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
@@ -25,7 +26,7 @@ export class ThemeSelectorComponent extends Container {
 		const themeItems: SelectItem[] = themes.map(name => ({
 			value: name,
 			label: name,
-			description: name === currentTheme ? "(current)" : undefined,
+			description: name === currentTheme ? tSettingsUi("(current)") : undefined,
 		}));
 
 		// Add top border

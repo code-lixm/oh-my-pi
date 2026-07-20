@@ -1,3 +1,4 @@
+import { t } from "../locale/catalog";
 import type { TimeRange } from "../types";
 
 export interface RangeControlProps {
@@ -6,20 +7,21 @@ export interface RangeControlProps {
 	className?: string;
 }
 
-const RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-	{ value: "1h", label: "1h" },
-	{ value: "24h", label: "24h" },
-	{ value: "7d", label: "7d" },
-	{ value: "30d", label: "30d" },
-	{ value: "90d", label: "90d" },
-	{ value: "all", label: "All" },
+const RANGE_OPTIONS: { value: TimeRange }[] = [
+	{ value: "1h" },
+	{ value: "24h" },
+	{ value: "7d" },
+	{ value: "30d" },
+	{ value: "90d" },
+	{ value: "all" },
 ];
 
 export function RangeControl({ value, onChange, className = "" }: RangeControlProps) {
 	return (
-		<div className={`stats-range-control ${className}`} role="radiogroup" aria-label="Select time range">
+		<div className={`stats-range-control ${className}`} role="radiogroup" aria-label={t("rangeControl.aria")}>
 			{RANGE_OPTIONS.map(opt => {
 				const isActive = opt.value === value;
+				const label = opt.value === "all" ? t("rangeControl.all") : opt.value;
 				return (
 					<button
 						key={opt.value}
@@ -30,7 +32,7 @@ export function RangeControl({ value, onChange, className = "" }: RangeControlPr
 						className="stats-range-control-btn"
 						onClick={() => onChange(opt.value)}
 					>
-						{opt.label}
+						{label}
 					</button>
 				);
 			})}

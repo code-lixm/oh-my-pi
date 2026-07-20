@@ -8,6 +8,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme } from "../../modes/theme/theme";
 import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCell, renderStatusLine } from "../../tui";
 import type { BrowserToolDetails } from "../browser";
@@ -35,21 +36,21 @@ interface BrowserRenderContext {
 
 function describeBrowser(args: BrowserRenderArgs, details: BrowserToolDetails | undefined): string | undefined {
 	const cdpUrl = typeof args.app?.cdp_url === "string" ? args.app.cdp_url : "";
-	if (cdpUrl) return `connected ${cdpUrl}`;
+	if (cdpUrl) return tSettingsUi("connected {target}", { target: cdpUrl });
 	const appPath = typeof args.app?.path === "string" ? args.app.path : "";
-	if (appPath) return `spawned ${shortenPath(appPath)}`;
+	if (appPath) return tSettingsUi("spawned {target}", { target: shortenPath(appPath) });
 	if (args.app?.cmux !== false && (args.app?.cmux === true || args.app?.surface)) {
-		return args.app.surface ? `cmux ${args.app.surface}` : "cmux";
+		return args.app.surface ? tSettingsUi("cmux {surface}", { surface: args.app.surface }) : tSettingsUi("cmux");
 	}
 	switch (details?.browser) {
 		case "headless":
-			return "headless";
+			return tSettingsUi("headless");
 		case "spawned":
-			return "spawned";
+			return tSettingsUi("spawned");
 		case "connected":
-			return "connected";
+			return tSettingsUi("connected");
 		case "cmux":
-			return "cmux";
+			return tSettingsUi("cmux");
 		default:
 			return undefined;
 	}
@@ -57,7 +58,7 @@ function describeBrowser(args: BrowserRenderArgs, details: BrowserToolDetails | 
 
 function tabLabel(args: BrowserRenderArgs, details: BrowserToolDetails | undefined): string {
 	const name = details?.name ?? args.name ?? "main";
-	return `tab ${JSON.stringify(name)}`;
+	return tSettingsUi("tab {name}", { name: JSON.stringify(name) });
 }
 
 function cellStatus(isPartial: boolean, isError: boolean): "pending" | "running" | "complete" | "error" {
@@ -158,10 +159,10 @@ function renderOpenOrCloseLine(
 	let title: string;
 	if (action === "close") {
 		const all = args.all === true || (args.name === undefined && details?.name === undefined);
-		title = all ? "Close all tabs" : `Close ${tabLabel(args, details)}`;
-		if (args.kill) title += " (kill)";
+		title = all ? tSettingsUi("Close all tabs") : tSettingsUi("Close {target}", { target: tabLabel(args, details) });
+		if (args.kill) title += tSettingsUi(" (kill)");
 	} else {
-		title = `Open ${tabLabel(args, details)}`;
+		title = tSettingsUi("Open {target}", { target: tabLabel(args, details) });
 	}
 
 	const meta: string[] = [];

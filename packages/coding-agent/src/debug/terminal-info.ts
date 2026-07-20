@@ -14,6 +14,7 @@ import {
 	TERMINAL,
 	TERMINAL_ID,
 } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../i18n/settings-locale";
 
 /** Live values the debug view reads off the running TUI, not the static capability table. */
 export interface TerminalRuntimeState {
@@ -92,33 +93,33 @@ export function collectTerminalState(runtime: TerminalRuntimeState): TerminalSta
 	};
 }
 
-const yesNo = (value: boolean): string => (value ? "yes" : "no");
-
 /** Format terminal state for display in the debug menu. */
 export function formatTerminalState(info: TerminalStateInfo): string {
 	const lines = [
-		"Terminal State",
+		tSettingsUi("Terminal State"),
 		"━━━━━━━━━━━━━━",
-		`Detected:     ${info.detectedId}`,
-		`Geometry:     ${info.columns}x${info.rows} cells · cell ${info.cellWidthPx}x${info.cellHeightPx}px`,
-		info.multiplexer ? `Multiplexer:  ${info.multiplexer}` : "Multiplexer:  none",
+		`${tSettingsUi("Detected:")}     ${info.detectedId}`,
+		`${tSettingsUi("Geometry:")}     ${info.columns}x${info.rows} ${tSettingsUi("cells")} · ${tSettingsUi("cell")} ${info.cellWidthPx}x${info.cellHeightPx}px`,
+		info.multiplexer
+			? `${tSettingsUi("Multiplexer:")}  ${info.multiplexer}`
+			: `${tSettingsUi("Multiplexer:")}  ${tSettingsUi("none")}`,
 		"",
-		"Subprotocols",
-		`  Graphics:     ${info.imageProtocol}`,
-		`  Notify:       ${info.notifyProtocol}${info.osc99Confirmed ? " · confirmed via DA" : ""}`,
-		`  Hyperlinks:   ${yesNo(info.hyperlinks)} (OSC 8)`,
-		`  True color:   ${yesNo(info.trueColor)} (24-bit SGR)`,
-		`  DECCARA:      ${yesNo(info.deccara)} (rectangular-SGR background fills)`,
-		`  Sync output:  ${yesNo(info.synchronizedOutput)} (DEC 2026)`,
+		tSettingsUi("Subprotocols"),
+		`  ${tSettingsUi("Graphics:")}     ${tSettingsUi(info.imageProtocol)}`,
+		`  ${tSettingsUi("Notify:")}       ${tSettingsUi(info.notifyProtocol)}${info.osc99Confirmed ? ` · ${tSettingsUi("confirmed via DA")}` : ""}`,
+		`  ${tSettingsUi("Hyperlinks:")}   ${info.hyperlinks ? tSettingsUi("yes") : tSettingsUi("no")} (OSC 8)`,
+		`  ${tSettingsUi("True color:")}   ${info.trueColor ? tSettingsUi("yes") : tSettingsUi("no")} (24-bit SGR)`,
+		`  ${tSettingsUi("DECCARA:")}      ${info.deccara ? tSettingsUi("yes") : tSettingsUi("no")} (${tSettingsUi("rectangular-SGR background fills")})`,
+		`  ${tSettingsUi("Sync output:")}  ${info.synchronizedOutput ? tSettingsUi("yes") : tSettingsUi("no")} (DEC 2026)`,
 		"",
-		"Scrollback",
-		`  Screen->history clear: ${info.screenToScrollback ? "CSI 22 J" : "CSI 2 J (redraw)"}`,
+		tSettingsUi("Scrollback"),
+		`  ${tSettingsUi("Screen->history clear:")} ${info.screenToScrollback ? "CSI 22 J" : tSettingsUi("CSI 2 J (redraw)")}`,
 		"",
-		"Detection signals",
-		`  TERM:                 ${info.env.TERM ?? "(unset)"}`,
-		`  TERM_PROGRAM:         ${info.env.TERM_PROGRAM ?? "(unset)"}`,
-		`  TERM_PROGRAM_VERSION: ${info.env.TERM_PROGRAM_VERSION ?? "(unset)"}`,
-		`  COLORTERM:            ${info.env.COLORTERM ?? "(unset)"}`,
+		tSettingsUi("Detection signals"),
+		`  TERM:                 ${info.env.TERM ?? tSettingsUi("(unset)")}`,
+		`  TERM_PROGRAM:         ${info.env.TERM_PROGRAM ?? tSettingsUi("(unset)")}`,
+		`  TERM_PROGRAM_VERSION: ${info.env.TERM_PROGRAM_VERSION ?? tSettingsUi("(unset)")}`,
+		`  COLORTERM:            ${info.env.COLORTERM ?? tSettingsUi("(unset)")}`,
 	];
 	return lines.join("\n");
 }

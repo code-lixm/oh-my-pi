@@ -8,7 +8,10 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { escapeXmlAttribute, escapeXmlText } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { tSettingsUi } from "../i18n/settings-locale";
 import adviseDescription from "../prompts/advisor/advise-tool.md" with { type: "text" };
+import adviseDescriptionZh from "../prompts/advisor/advise-tool.zh-CN.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
 
 const adviseSchema = type({
 	note: type("string").describe(
@@ -182,8 +185,8 @@ function advisorSeverityRank(severity: AdvisorSeverity | undefined): number {
 
 export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails> {
 	readonly name = "advise";
-	readonly label = "Advise";
-	readonly description = adviseDescription;
+	readonly label = tSettingsUi("Advise");
+	readonly description = selectPrompt(adviseDescription, adviseDescriptionZh);
 	readonly parameters = adviseSchema;
 	readonly intent = "omit" as const;
 	/** Highest delivered severity rank per normalized note. A new call passes
@@ -211,7 +214,7 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 		const previousRank = this.#deliveredNoteSeverities.get(key) ?? 0;
 		if (rank <= previousRank) {
 			return {
-				content: [{ type: "text", text: "Duplicate advice ignored." }],
+				content: [{ type: "text", text: tSettingsUi("Duplicate advice ignored.") }],
 				details: { note: args.note, severity: args.severity },
 				useless: true,
 			};
@@ -219,7 +222,7 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 		this.#deliveredNoteSeverities.set(key, rank);
 		this.onAdvice(args.note, args.severity);
 		return {
-			content: [{ type: "text", text: "Recorded." }],
+			content: [{ type: "text", text: tSettingsUi("Recorded.") }],
 			details: { note: args.note, severity: args.severity },
 			useless: true,
 		};

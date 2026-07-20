@@ -2,8 +2,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../../i18n/settings-locale";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import backgroundTanDispatchPrompt from "../../prompts/system/background-tan-dispatch.md" with { type: "text" };
+import backgroundTanDispatchPromptZh from "../../prompts/system/background-tan-dispatch.zh-CN.md" with { type: "text" };
 import tanContextSwitchPrompt from "../../prompts/system/tan-context-switch.md" with { type: "text" };
+import tanContextSwitchPromptZh from "../../prompts/system/tan-context-switch.zh-CN.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
@@ -43,7 +47,7 @@ export class TanCommandController {
 	async start(work: string): Promise<void> {
 		const trimmedWork = work.trim();
 		if (!trimmedWork) {
-			this.ctx.showStatus("Usage: /tan <work>");
+			this.ctx.showStatus(tSettingsUi("Usage: /tan <work>"));
 			return;
 		}
 
@@ -51,19 +55,19 @@ export class TanCommandController {
 
 		const model = session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /tan.");
+			this.ctx.showError(tSettingsUi("No active model available for /tan."));
 			return;
 		}
 
 		const manager = session.asyncJobManager;
 		if (!manager) {
-			this.ctx.showError("Background jobs are disabled; enable async jobs to use /tan.");
+			this.ctx.showError(tSettingsUi("Background jobs are disabled; enable async jobs to use /tan."));
 			return;
 		}
 
 		const parentFile = this.ctx.sessionManager.getSessionFile();
 		if (!parentFile) {
-			this.ctx.showError("/tan requires a persisted session.");
+			this.ctx.showError(tSettingsUi("/tan requires a persisted session."));
 			return;
 		}
 
@@ -151,7 +155,7 @@ export class TanCommandController {
 						const injectContextSwitch = () => {
 							clone?.agent.appendMessage({
 								role: "developer",
-								content: tanContextSwitchPrompt,
+								content: selectPrompt(tanContextSwitchPrompt, tanContextSwitchPromptZh),
 								attribution: "agent",
 								timestamp: Date.now(),
 							});
@@ -207,7 +211,10 @@ export class TanCommandController {
 			return;
 		}
 
-		const content = prompt.render(backgroundTanDispatchPrompt, { jobId, work: trimmedWork });
+		const content = prompt.render(selectPrompt(backgroundTanDispatchPrompt, backgroundTanDispatchPromptZh), {
+			jobId,
+			work: trimmedWork,
+		});
 		// /tan is meant to run alongside an active session. While the parent turn is
 		// still streaming, queue the dispatch breadcrumb for the next turn rather than
 		// steering the in-flight response; when idle this same call appends + persists
@@ -224,6 +231,6 @@ export class TanCommandController {
 			{ triggerTurn: false, deliverAs: "nextTurn" },
 		);
 		if (!wasStreaming) this.ctx.rebuildChatFromMessages();
-		this.ctx.showStatus(`Dispatched background tan ${jobId}`);
+		this.ctx.showStatus(tSettingsUi("Dispatched background tan {jobId}", { jobId }));
 	}
 }

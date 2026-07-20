@@ -81,4 +81,21 @@ describe("StatusLineComponent", () => {
 		const stripped = border.content.replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("Prewalk");
 	});
+
+	it("renders multiple hook statuses with exactly two ASCII spaces between them", () => {
+		const statusLine = new StatusLineComponent(
+			makeSessionWithLastMessage({
+				role: "assistant",
+				timestamp: 1,
+				content: [{ type: "text", text: "hi" }],
+			}) as unknown as AgentSession,
+		);
+		statusLine.updateSettings({ showHookStatus: true });
+		statusLine.setHookStatus("b", "beta");
+		statusLine.setHookStatus("a", "alpha");
+
+		const rendered = Bun.stripANSI(statusLine.render(120)[0] ?? "");
+		expect(rendered).toBe("alpha  beta");
+		expect(rendered).not.toContain("alpha beta");
+	});
 });

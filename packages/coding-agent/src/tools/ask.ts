@@ -33,8 +33,11 @@ import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type as arkType } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
-import askDescription from "../prompts/tools/ask.md" with { type: "text" };
+import { selectPrompt } from "../prompts/prompt-locale";
+import askDescriptionEn from "../prompts/tools/ask.md" with { type: "text" };
+import askDescriptionZh from "../prompts/tools/ask.zh-CN.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 import { framedBlock, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
@@ -45,14 +48,19 @@ import { ToolAbortError } from "./tool-errors";
 // Types
 // =============================================================================
 
-const OTHER_OPTION = "Other (type your own)";
-const CHAT_ABOUT_THIS_OPTION = "Chat about this";
+function getOtherOptionLabel(): string {
+	return tSettingsUi("Other (type your own)");
+}
+/** Stable English reserved labels as the agent-facing protocol identifier. The
+ *  agent/runtime boundary always sees these exact strings, so a model prompted
+ *  in English can trigger the special "Other / Chat about this / Next" behavior
+ *  regardless of the user's settings UI locale. The localized Other display
+ *  string comes from `getOtherOptionLabel()`; runtime matchers accept either
+ *  form so cross-locale usage remains correct. */
+const RESERVED_OTHER_LABEL = "Other (type your own)";
+const RESERVED_CHAT_LABEL = "Chat about this";
+
 const NEXT_OPTION = "Next →";
-const RESERVED_OPTION_LABELS: Record<string, true> = {
-	[OTHER_OPTION]: true,
-	[CHAT_ABOUT_THIS_OPTION]: true,
-	[NEXT_OPTION]: true,
-};
 
 const OptionItem = arkType({
 	label: arkType("string").describe("display label"),
@@ -68,10 +76,15 @@ const QuestionItem = arkType({
 	"multi?": arkType("boolean").describe("allow multiple selections"),
 	"recommended?": arkType("number").describe("recommended option index"),
 }).narrow((question, ctx) => {
-	const reserved = question.options.find(option => RESERVED_OPTION_LABELS[option.label] === true);
+	const reserved = question.options.find(
+		option =>
+			option.label === RESERVED_OTHER_LABEL || option.label === RESERVED_CHAT_LABEL || option.label === NEXT_OPTION,
+	);
 	return (
 		reserved === undefined ||
-		ctx.mustBe(`defined with option labels that do not collide with reserved runtime labels: ${reserved.label}`)
+		ctx.mustBe(
+			`defined with option labels that do not collide with reserved runtime labels: ${RESERVED_OTHER_LABEL}, ${RESERVED_CHAT_LABEL}, ${NEXT_OPTION}`,
+		)
 	);
 });
 
@@ -134,15 +147,13 @@ function toSelectOption(option: AskOption, label = option.label): ExtensionUISel
 // Constants
 // =============================================================================
 
-const RECOMMENDED_SUFFIX = " (Recommended)";
+function getRecommendedSuffix(): string {
+	return tSettingsUi(" (Recommended)");
+}
 // Window after the timeout deadline within which an `undefined` selection is
 // attributed to a UI-enforced timeout (for surfaces that close the dialog at
 // the deadline but never invoke `onTimeout`). Cancels beyond it are user Esc.
 const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
-
-function getDoneOptionLabel(): string {
-	return `${theme.status.success} Done selecting`;
-}
 
 /** Add "(Recommended)" suffix to the option at the given index if not already present */
 function addRecommendedSuffix(options: AskOption[], recommendedIndex?: number): ExtensionUISelectItem[] {
@@ -150,9 +161,10 @@ function addRecommendedSuffix(options: AskOption[], recommendedIndex?: number): 
 		return options.map(option => toSelectOption(option));
 	}
 	return options.map((option, i) => {
+		const recommendedSuffix = getRecommendedSuffix();
 		const label =
-			i === recommendedIndex && !option.label.endsWith(RECOMMENDED_SUFFIX)
-				? option.label + RECOMMENDED_SUFFIX
+			i === recommendedIndex && !option.label.endsWith(recommendedSuffix)
+				? option.label + recommendedSuffix
 				: option.label;
 		return toSelectOption(option, label);
 	});
@@ -168,7 +180,8 @@ function getAutoSelectionOnTimeout(options: AskOption[], recommended?: number): 
 
 /** Strip "(Recommended)" suffix from a label */
 function stripRecommendedSuffix(label: string): string {
-	return label.endsWith(RECOMMENDED_SUFFIX) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label;
+	const recommendedSuffix = getRecommendedSuffix();
+	return label.endsWith(recommendedSuffix) ? label.slice(0, -recommendedSuffix.length) : label;
 }
 
 interface CustomInputContext {
@@ -296,7 +309,11 @@ function buildCustomInputRows(
 	context: CustomInputContext,
 	contentWidth: number,
 ): CustomInputRow[] {
-	const selectedIndex = options.findIndex(option => getSelectOptionLabel(option) === OTHER_OPTION);
+	const selectedIndex = options.findIndex(
+		option =>
+			getSelectOptionLabel(option) === RESERVED_OTHER_LABEL ||
+			getSelectOptionLabel(option) === getOtherOptionLabel(),
+	);
 	const checked = new Set(context.checkedIndices ?? []);
 	const window = pickCustomInputOptionWindow(options.length, selectedIndex, checked);
 	const rows: CustomInputRow[] = [];
@@ -442,7 +459,7 @@ async function askSingleQuestion(
 	options: AskSingleQuestionOptions = {},
 ): Promise<SelectionResult> {
 	const { recommended, timeout, signal, initialSelection, navigation } = options;
-	const doneLabel = getDoneOptionLabel();
+	const doneLabel = `${theme.status.success} ${tSettingsUi("Done selecting")}`;
 	let selectedOptions = [...(initialSelection?.selectedOptions ?? [])];
 	let customInput = initialSelection?.customInput;
 	const note = initialSelection?.note;
@@ -556,7 +573,7 @@ async function askSingleQuestion(
 			if (!navigation?.allowForward && selected.size > 0) {
 				opts.push(doneLabel);
 			}
-			opts.push(OTHER_OPTION);
+			opts.push(getOtherOptionLabel());
 
 			const checkedIndices: number[] = [];
 			for (let i = 0; i < questionOptions.length; i++) {
@@ -585,7 +602,7 @@ async function askSingleQuestion(
 			}
 			if (choice === doneLabel) break;
 
-			if (choice === OTHER_OPTION) {
+			if (choice === RESERVED_OTHER_LABEL || choice === getOtherOptionLabel()) {
 				if (selectTimedOut) {
 					timedOut = true;
 					break;
@@ -622,7 +639,7 @@ async function askSingleQuestion(
 	} else {
 		while (true) {
 			const displayOptions = addRecommendedSuffix(questionOptions, recommended);
-			const optionsWithNavigation: ExtensionUISelectItem[] = [...displayOptions, OTHER_OPTION];
+			const optionsWithNavigation: ExtensionUISelectItem[] = [...displayOptions, getOtherOptionLabel()];
 
 			let initialIndex = recommended;
 			const previouslySelected = selectedOptions[0];
@@ -656,7 +673,7 @@ async function askSingleQuestion(
 				}
 				break;
 			}
-			if (choice === OTHER_OPTION) {
+			if (choice === RESERVED_OTHER_LABEL || choice === getOtherOptionLabel()) {
 				if (selectTimedOut) {
 					break;
 				}
@@ -810,7 +827,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly loadMode = "discoverable";
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(askDescription);
+		this.description = prompt.render(selectPrompt(askDescriptionEn, askDescriptionZh));
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
@@ -1173,23 +1190,19 @@ function renderCustomInputLines(uiTheme: Theme, customInput: string): string[] {
 
 /** Render an answer note with tab replacement and line-width clamping. */
 function renderNoteLines(uiTheme: Theme, note: string, width: number): string[] {
-	const prefix = " Note: ";
-	const continuationPrefix = "       ";
+	const noteLabel = tSettingsUi("Note:");
+	const prefix = ` ${noteLabel} `;
+	const continuationPrefix = " ".repeat(visibleWidth(prefix));
 	const firstLineWidth = Math.max(1, width - visibleWidth(prefix));
 	const continuationWidth = Math.max(1, width - visibleWidth(continuationPrefix));
 	return replaceTabs(note)
 		.split("\n")
 		.map((line, index) => {
-			const linePrefix = index === 0 ? `${uiTheme.fg("dim", " Note:")} ` : continuationPrefix;
+			const linePrefix = index === 0 ? `${uiTheme.fg("dim", ` ${noteLabel}`)} ` : continuationPrefix;
 			const maxWidth = index === 0 ? firstLineWidth : continuationWidth;
 			return `${linePrefix}${uiTheme.fg("toolOutput", truncateToWidth(line, maxWidth))}`;
 		});
 }
-
-/**
- * Marker glyph for a question option. Single-choice questions render circular radio
- * buttons (pick one); multi-select questions render rectangular checkboxes (pick many).
- */
 function optionMarker(uiTheme: Theme, multi: boolean | undefined, selected: boolean): string {
 	if (multi) return selected ? uiTheme.checkbox.checked : uiTheme.checkbox.unchecked;
 	return selected ? uiTheme.radio.selected : uiTheme.radio.unselected;
@@ -1236,7 +1249,9 @@ function renderAnswerOptionLines(
 
 	// Nothing was chosen (and no custom answer) → a lone cancelled marker.
 	if (selected.size === 0 && customInput === undefined && note === undefined) {
-		return [` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", "Cancelled")}`];
+		return [
+			` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", tSettingsUi("Cancelled"))}`,
+		];
 	}
 
 	const out: string[] = [];
@@ -1257,7 +1272,7 @@ function renderAnswerOptionLines(
 export const askToolRenderer = {
 	mergeCallAndResult: true,
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const label = formatTitle("Ask", uiTheme);
+		const label = formatTitle(tSettingsUi("Ask"), uiTheme);
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>
@@ -1268,12 +1283,12 @@ export const askToolRenderer = {
 		// throw here takes down the whole TUI render loop — normalize first.
 		const questions = normalizeRenderQuestions(args.questions);
 		if (questions && questions.length > 0) {
-			const header = `${label} ${uiTheme.fg("muted", `${questions.length} questions`)}`;
+			const header = `${label} ${uiTheme.fg("muted", tSettingsUi(questions.length === 1 ? "{count} question" : "{count} questions", { count: questions.length }))}`;
 			return framedBlock(uiTheme, width => {
 				const sections = questions.map(q => {
 					const meta: string[] = [];
-					if (q.multi) meta.push("multi");
-					if (q.options?.length) meta.push(`options:${q.options.length}`);
+					if (q.multi) meta.push(tSettingsUi("multi"));
+					if (q.options?.length) meta.push(tSettingsUi("options:{count}", { count: q.options.length }));
 					const metaStr = meta.length > 0 ? uiTheme.fg("dim", ` · ${meta.join(" · ")}`) : "";
 					// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
 					const mdLines = md(q.question, width);
@@ -1288,7 +1303,7 @@ export const askToolRenderer = {
 
 		// Single question
 		if (typeof args.question !== "string" || !args.question) {
-			const errorLine = formatErrorMessage("No question provided", uiTheme);
+			const errorLine = formatErrorMessage(tSettingsUi("No question provided"), uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header: errorLine,
 				sections: [],
@@ -1297,12 +1312,11 @@ export const askToolRenderer = {
 				width,
 			}));
 		}
-
 		const question = args.question;
 		const meta: string[] = [];
-		if (args.multi) meta.push("multi");
+		if (args.multi) meta.push(tSettingsUi("multi"));
 		const questionOptions = normalizeRenderOptions(args.options);
-		if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
+		if (questionOptions?.length) meta.push(tSettingsUi("options:{count}", { count: questionOptions.length }));
 		const header = `${label}${formatMeta(meta, uiTheme)}`;
 		const multi = args.multi;
 		return framedBlock(uiTheme, width => {
@@ -1335,14 +1349,17 @@ export const askToolRenderer = {
 		if (!details) {
 			const txt = result.content[0];
 			const fallback = txt?.type === "text" && txt.text ? txt.text : "";
-			const header = renderStatusLine({ icon: "warning", title: "Ask" }, uiTheme);
+			const header = renderStatusLine({ icon: "warning", title: tSettingsUi("Ask") }, uiTheme);
 			const body = fallback ? `\n${uiTheme.fg("dim", fallback)}` : "";
 			return new Text(`${header}${body}`, 0, 0);
 		}
 
 		// Chat redirect: user chose "Chat about this" instead of answering.
 		if (details.chatRedirect) {
-			const header = renderStatusLine({ icon: "info", title: "Ask", meta: ["chat redirect"] }, uiTheme);
+			const header = renderStatusLine(
+				{ icon: "info", title: tSettingsUi("Ask"), meta: [tSettingsUi("chat redirect")] },
+				uiTheme,
+			);
 			const questions = details.questions ?? [];
 			return framedBlock(uiTheme, width => ({
 				header,
@@ -1365,8 +1382,12 @@ export const askToolRenderer = {
 			const header = renderStatusLine(
 				{
 					icon: hasAnySelection ? "success" : "warning",
-					title: "Ask",
-					meta: [`${results.length} questions`],
+					title: tSettingsUi("Ask"),
+					meta: [
+						tSettingsUi(results.length === 1 ? "{count} question" : "{count} questions", {
+							count: results.length,
+						}),
+					],
 				},
 				uiTheme,
 			);
@@ -1412,8 +1433,8 @@ export const askToolRenderer = {
 			(details.selectedOptions && details.selectedOptions.length > 0);
 		const header = renderStatusLine(
 			hasSelection
-				? { iconOverride: uiTheme.styledSymbol("tool.ask", "accent"), title: "Ask" }
-				: { icon: "warning", title: "Ask" },
+				? { iconOverride: uiTheme.styledSymbol("tool.ask", "accent"), title: tSettingsUi("Ask") }
+				: { icon: "warning", title: tSettingsUi("Ask") },
 			uiTheme,
 		);
 		const dOptions = details.options;
@@ -1430,7 +1451,7 @@ export const askToolRenderer = {
 			];
 			if (dTimedOut) {
 				// Distinguish auto-selection from a real user choice in the transcript.
-				bodyLines.push(uiTheme.fg("dim", "auto-selected after timeout — not a user choice"));
+				bodyLines.push(uiTheme.fg("dim", tSettingsUi("auto-selected after timeout — not a user choice")));
 			}
 			return {
 				header,

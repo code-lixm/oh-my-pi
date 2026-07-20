@@ -31,11 +31,13 @@ import type { ModelRegistry } from "../../config/model-registry";
 import { type ModelRoleLookup, type ResolvedModelRoleValue, resolveModelRoleValue } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, getConfiguredThinkingLevelMetadata } from "../../thinking";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
 	buildBrowserItems,
+	formatRoleDisplayLabel,
 	ModelBrowser,
 	type ModelBrowserItem,
 	type RoleAssignments,
@@ -392,7 +394,7 @@ export class ModelHubComponent implements Component {
 			label: providerId,
 			providerId,
 			locked: isLocked,
-			annotation: isLocked ? undefined : String(availableCounts.get(providerId) ?? 0),
+			annotation: isLocked ? tSettingsUi("login") : String(availableCounts.get(providerId) ?? 0),
 			oauth: oauthIds.has(providerId),
 			catalogCount: catalogCounts.get(providerId) ?? 0,
 		});
@@ -410,10 +412,10 @@ export class ModelHubComponent implements Component {
 			{
 				id: "roles",
 				kind: "roles",
-				label: "Roles",
+				label: tSettingsUi("Roles"),
 				annotation: `${assignedCount}/${visibleRoles.length}`,
 			},
-			{ id: "all", kind: "all", label: "All models", annotation: String(availableModels.length) },
+			{ id: "all", kind: "all", label: tSettingsUi("All models"), annotation: String(availableModels.length) },
 		];
 
 		this.#fixedEntries = fixed;
@@ -701,17 +703,17 @@ export class ModelHubComponent implements Component {
 	#formatDiscoveryAge(fetchedAt: number | undefined): string | undefined {
 		if (!fetchedAt) return undefined;
 		const ageMs = Math.max(0, Date.now() - fetchedAt);
-		if (ageMs < 60_000) return "less than a minute ago";
-		return `${Math.round(ageMs / 60_000)}m ago`;
+		if (ageMs < 60_000) return tSettingsUi("less than a minute ago");
+		return tSettingsUi("{count}m ago", { count: Math.round(ageMs / 60_000) });
 	}
 
 	#emptyStateMessage(): string | undefined {
 		if (this.#configError) return `  ${this.#configError}`;
 		const entry = this.#activeEntry();
-		if (entry.kind === "recent") return "  No recently used models yet";
+		if (entry.kind === "recent") return `  ${tSettingsUi("No recently used models yet")}`;
 		if (entry.kind !== "provider" || entry.locked) return undefined;
 		if (this.#browser.query.trim()) {
-			return `  No matching models in ${entry.label}. Switch to All models to search every provider.`;
+			return `  ${tSettingsUi("No matching models in {provider}. Switch to All models to search every provider.", { provider: entry.label })}`;
 		}
 		const providerId = entry.providerId ?? "";
 		const state = this.#registry.getProviderDiscoveryState(providerId);
@@ -720,22 +722,24 @@ export class ModelHubComponent implements Component {
 		switch (state.status) {
 			case "cached":
 				return age
-					? `  Using cached model list from ${age}. Live refresh is still pending.`
-					: "  Using cached model list. Live refresh is still pending.";
+					? `  ${tSettingsUi("Using cached model list from {age}. Live refresh is still pending.", { age })}`
+					: `  ${tSettingsUi("Using cached model list. Live refresh is still pending.")}`;
 			case "unavailable": {
 				const httpMatch = state.error?.match(/^HTTP (\d+) from (.+)$/);
 				if (httpMatch?.[1] === "404") {
-					return `  Discovery endpoint ${httpMatch[2]} returned 404. Point baseUrl at the host that serves /models (usually .../v1).`;
+					return `  ${tSettingsUi("Discovery endpoint {url} returned 404. Point baseUrl at the host that serves /models (usually .../v1).", { url: httpMatch[2] })}`;
 				}
-				if (state.error) return `  Discovery failed: ${state.error}`;
-				return age ? `  Provider unavailable. Using cached model list from ${age}.` : "  Provider unavailable.";
+				if (state.error) return `  ${tSettingsUi("Discovery failed: {error}", { error: state.error })}`;
+				return age
+					? `  ${tSettingsUi("Provider unavailable. Using cached model list from {age}.", { age })}`
+					: `  ${tSettingsUi("Provider unavailable.")}`;
 			}
 			case "unauthenticated":
-				return "  Provider requires authentication before models can be discovered.";
+				return `  ${tSettingsUi("Provider requires authentication before models can be discovered.")}`;
 			case "idle":
-				return "  Provider has not been refreshed yet.";
+				return `  ${tSettingsUi("Provider has not been refreshed yet.")}`;
 			case "empty":
-				return "  Discovery succeeded but returned 0 models. Check that /models returns { data: [{ id }] }.";
+				return `  ${tSettingsUi("Discovery succeeded but returned 0 models. Check that /models returns { data: [{ id }] }.")}`;
 			case "ok":
 				return undefined;
 		}
@@ -823,16 +827,15 @@ export class ModelHubComponent implements Component {
 		const scopes: readonly ModelRoleSelectionScope[] = scopedStorage ? ["project", "global"] : ["global"];
 		for (const role of this.#visibleRoleIds()) {
 			const info = getRoleInfo(role, this.#settings);
-			const assignment = this.#roles[role];
 			for (const scope of scopes) {
 				const scopedModel = scopedStorage
 					? this.#roleForScope(role, scope).model
-					: assignment && !assignment.autoSelected
-						? assignment.model
+					: this.#roles[role] && !this.#roles[role]!.autoSelected
+						? this.#roles[role]!.model
 						: undefined;
 				const assignedHere =
 					!!scopedModel && scopedModel.provider === item.model.provider && scopedModel.id === item.model.id;
-				const roleLabel = (info.tag ?? info.name ?? role).toLowerCase();
+				const roleLabel = formatRoleDisplayLabel(role, this.#settings).toLowerCase();
 				const label = scopedStorage ? `${scope} ${roleLabel}` : roleLabel;
 				chips.push({
 					label,
@@ -847,16 +850,20 @@ export class ModelHubComponent implements Component {
 			}
 		}
 		chips.push({
-			label: `fallbacks:${item.model.id}`,
-			styled: theme.fg("muted", `fallbacks:${item.model.id}`),
+			label: tSettingsUi("fallbacks:{modelId}", { modelId: item.model.id }),
+			styled: theme.fg("muted", tSettingsUi("fallbacks:{modelId}", { modelId: item.model.id })),
 			action: "fallbackModel",
 		});
 		chips.push({
-			label: `fallbacks:${item.model.provider}/*`,
-			styled: theme.fg("muted", `fallbacks:${item.model.provider}/*`),
+			label: tSettingsUi("fallbacks:{provider}/*", { provider: item.model.provider }),
+			styled: theme.fg("muted", tSettingsUi("fallbacks:{provider}/*", { provider: item.model.provider })),
 			action: "fallbackProvider",
 		});
-		chips.push({ label: "fallback", styled: theme.fg("muted", "retry-fallback"), action: "fallback" });
+		chips.push({
+			label: tSettingsUi("fallback"),
+			styled: theme.fg("muted", tSettingsUi("retry-fallback")),
+			action: "fallback",
+		});
 		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false };
 	}
 
@@ -1007,13 +1014,13 @@ export class ModelHubComponent implements Component {
 	#openFallbackKeyStrip(item: ModelBrowserItem): void {
 		const chips: StripChip[] = [
 			{
-				label: `for ${item.selector}`,
-				styled: theme.fg("muted", `for ${item.selector}`),
+				label: tSettingsUi("for {selector}", { selector: item.selector }),
+				styled: theme.fg("muted", tSettingsUi("for {selector}", { selector: item.selector })),
 				action: "fallbackModel",
 			},
 			{
-				label: `for ${item.model.provider}/*`,
-				styled: theme.fg("muted", `for ${item.model.provider}/*`),
+				label: tSettingsUi("for {provider}/*", { provider: item.model.provider }),
+				styled: theme.fg("muted", tSettingsUi("for {provider}/*", { provider: item.model.provider })),
 				action: "fallbackProvider",
 			},
 		];
@@ -1639,45 +1646,52 @@ export class ModelHubComponent implements Component {
 		if (this.#assigning !== null) {
 			if (this.#assigning.kind === "fallbackKey") {
 				return truncateToWidth(
-					theme.fg("accent", " New fallback chain — Enter picks the model it protects, Esc cancels"),
+					theme.fg(
+						"accent",
+						` ${tSettingsUi("New fallback chain — Enter picks the model it protects, Esc cancels")}`,
+					),
 					width,
 				);
 			}
-			const info = getRoleInfo(this.#assigning.role, this.#settings);
-			const label = info.tag ?? info.name ?? this.#assigning.role;
+			const label = formatRoleDisplayLabel(this.#assigning.role, this.#settings);
 			if (this.#assigning.kind === "fallback") {
-				const verb = this.#assigning.index === null ? "Adding fallback for" : "Replacing fallback of";
-				return truncateToWidth(
-					theme.fg("accent", ` ${verb} ${theme.bold(label)} — Enter picks the fallback model, Esc cancels`),
-					width,
+				const message = tSettingsUi(
+					this.#assigning.index === null
+						? "Adding fallback for {label} — Enter picks the fallback model, Esc cancels"
+						: "Replacing fallback of {label} — Enter picks the fallback model, Esc cancels",
+					{ label: theme.bold(label) },
 				);
+				return truncateToWidth(theme.fg("accent", ` ${message}`), width);
 			}
 			return truncateToWidth(
-				theme.fg("accent", ` Assigning ${theme.bold(label)} — Enter assigns, Esc cancels`),
+				theme.fg(
+					"accent",
+					` ${tSettingsUi("Assigning {label} — Enter assigns, Esc cancels", { label: theme.bold(label) })}`,
+				),
 				width,
 			);
 		}
 		const entry = this.#activeEntry();
-		const scopedSuffix = this.#scopedModels.length > 0 ? " · --models scope" : "";
+		const scopedSuffix = this.#scopedModels.length > 0 ? ` ${tSettingsUi("· --models scope")}` : "";
 		let text: string;
 		switch (entry.kind) {
 			case "recent":
-				text = `Recently used models${scopedSuffix}`;
+				text = `${tSettingsUi("Recently used models")}${scopedSuffix}`;
 				break;
 			case "roles":
-				text = "Model roles — f adds a retry fallback, cleared roles fall back to auto-selection";
+				text = tSettingsUi("Model roles — f adds a retry fallback, cleared roles fall back to auto-selection");
 				break;
 			case "provider":
 				if (entry.locked) {
-					text = `${entry.label} · not configured`;
+					text = `${entry.label} ${tSettingsUi("· not configured")}`;
 				} else if (entry.providerId && this.#refreshingProviders.has(entry.providerId)) {
-					text = `${entry.label} · refreshing model list…`;
+					text = `${entry.label} ${tSettingsUi("· refreshing model list…")}`;
 				} else {
-					text = `${entry.label} · ${entry.annotation ?? "0"} models${scopedSuffix}`;
+					text = `${entry.label} ${tSettingsUi("· {count} models", { count: entry.annotation ?? "0" })}${scopedSuffix}`;
 				}
 				break;
 			default:
-				text = `All available models${scopedSuffix}`;
+				text = `${tSettingsUi("All available models")}${scopedSuffix}`;
 				break;
 		}
 		if (this.#configError && entry.kind !== "provider") {
@@ -1709,8 +1723,8 @@ export class ModelHubComponent implements Component {
 		let tagWidth = 0;
 		for (const rowDef of this.#rolesRows) {
 			if (rowDef.kind !== "role") continue;
-			const info = getRoleInfo(rowDef.role, this.#settings);
-			tagWidth = Math.max(tagWidth, visibleWidth(info.tag ?? info.name ?? rowDef.role));
+			const label = formatRoleDisplayLabel(rowDef.role, this.#settings);
+			tagWidth = Math.max(tagWidth, visibleWidth(label));
 		}
 
 		const cycleOrder = this.#cycleOrder();
@@ -1729,7 +1743,7 @@ export class ModelHubComponent implements Component {
 			}
 
 			if (rowDef.kind === "newRole" || rowDef.kind === "newFallback") {
-				const label = rowDef.kind === "newRole" ? "+ New role…" : "+ New fallback…";
+				const label = tSettingsUi(rowDef.kind === "newRole" ? "+ New role…" : "+ New fallback…");
 				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", label)}`;
 				line = this.#finishRolesRow(line, width, hovered);
 				lines.push(line);
@@ -1759,7 +1773,8 @@ export class ModelHubComponent implements Component {
 			const role = rowDef.role;
 			const info = getRoleInfo(role, this.#settings);
 			const assignment = this.#roles[role];
-			const tag = (info.tag ?? info.name ?? role).padEnd(tagWidth);
+			const roleLabel = formatRoleDisplayLabel(role, this.#settings);
+			const tag = roleLabel + " ".repeat(Math.max(0, tagWidth - visibleWidth(roleLabel)));
 
 			let dot: string;
 			let tagStyled: string;
@@ -1777,11 +1792,14 @@ export class ModelHubComponent implements Component {
 			} else if (assignment) {
 				dot = theme.fg("dim", theme.status.shadowed);
 				tagStyled = theme.fg("dim", tag);
-				value = theme.fg("dim", `auto → ${assignment.model.provider}/${assignment.model.id}`);
+				value = theme.fg(
+					"dim",
+					tSettingsUi("auto → {provider}/{id}", { provider: assignment.model.provider, id: assignment.model.id }),
+				);
 			} else {
 				dot = theme.fg("dim", theme.status.shadowed);
 				tagStyled = theme.fg("dim", tag);
-				value = theme.fg("dim", "—");
+				value = theme.fg("dim", tSettingsUi("—"));
 			}
 
 			// Quick-cycle membership badge (`⟳2` = second stop of the ctrl+p cycle).
@@ -1813,10 +1831,16 @@ export class ModelHubComponent implements Component {
 					cycleOrder.map(role => ({ label: role })),
 					activeIndex,
 				);
-				lines[rows - 1] = truncateToWidth(`  ${theme.fg("dim", `${cycleKey} cycle:`)} ${track}`, width);
+				lines[rows - 1] = truncateToWidth(
+					`  ${theme.fg("dim", tSettingsUi("{cycleKey} cycle:", { cycleKey }))} ${track}`,
+					width,
+				);
 			} else {
 				lines[rows - 1] = truncateToWidth(
-					theme.fg("dim", `  ${cycleKey} cycle is empty — press c on a role to add it`),
+					theme.fg(
+						"dim",
+						`  ${tSettingsUi("{cycleKey} cycle is empty — press c on a role to add it", { cycleKey })}`,
+					),
 					width,
 				);
 			}
@@ -1828,27 +1852,50 @@ export class ModelHubComponent implements Component {
 		const lines: string[] = [];
 		this.#lockedLoginLine = null;
 		lines.push("");
-		lines.push(truncateToWidth(theme.fg("warning", `  ${entry.label} has no credentials configured`), width));
+		lines.push(
+			truncateToWidth(
+				theme.fg("warning", `  ${tSettingsUi("{label} has no credentials configured", { label: entry.label })}`),
+				width,
+			),
+		);
 		lines.push("");
 		const envVars = entry.providerId ? (getCatalogProviderEntry(entry.providerId)?.envVars ?? []) : [];
 		if (envVars.length > 0) {
 			lines.push(
 				truncateToWidth(
-					theme.fg("muted", `  Set ${envVars.join(" or ")} in your environment, or add a key in config.`),
+					theme.fg(
+						"muted",
+						`  ${tSettingsUi("Set {envVars} in your environment, or add a key in config.", { envVars: envVars.join(" or ") })}`,
+					),
 					width,
 				),
 			);
 		} else {
-			lines.push(truncateToWidth(theme.fg("muted", "  Add an API key for this provider in config."), width));
+			lines.push(
+				truncateToWidth(
+					theme.fg("muted", `  ${tSettingsUi("Add an API key for this provider in config.")}`),
+					width,
+				),
+			);
 		}
 		if (entry.oauth) {
 			this.#lockedLoginLine = lines.length + 1; // +1 for the status row offset handled by caller
-			lines.push(truncateToWidth(theme.fg("accent", `  ${theme.nav.cursor} Log in with OAuth (Enter)`), width));
+			lines.push(
+				truncateToWidth(
+					theme.fg("accent", `  ${theme.nav.cursor} ${tSettingsUi("Log in with OAuth (Enter)")}`),
+					width,
+				),
+			);
 		}
 		lines.push("");
 		const catalogCount = entry.catalogCount ?? 0;
 		if (catalogCount > 0) {
-			lines.push(truncateToWidth(theme.fg("dim", `  ${catalogCount} models in catalog:`), width));
+			lines.push(
+				truncateToWidth(
+					theme.fg("dim", `  ${tSettingsUi("{count} models in catalog:", { count: catalogCount })}`),
+					width,
+				),
+			);
 			const preview = this.#scopedModels.length > 0 ? [] : this.#registry.getAll();
 			for (const model of preview) {
 				if (model.provider !== entry.providerId) continue;
@@ -1864,45 +1911,50 @@ export class ModelHubComponent implements Component {
 		const strip = this.#strip;
 		if (strip) {
 			if (strip.kind === "roleName") {
-				return "Enter create + pick model · Esc cancel";
+				return tSettingsUi("Enter create + pick model · Esc cancel");
 			}
-			if (strip.kind === "role") return "←/→ choose · Enter assign/clear · Esc cancel";
+			if (strip.kind === "role") return tSettingsUi("←/→ choose · Enter assign/clear · Esc cancel");
 			if (strip.kind === "scope") return "←/→ save scope · Enter choose · Esc cancel";
-			return "←/→ thinking level · Enter apply · Esc keep";
+			return tSettingsUi("←/→ thinking level · Enter apply · Esc keep");
 		}
 		if (this.#assigning !== null) {
 			switch (this.#assigning.kind) {
 				case "fallback":
-					return "Enter pick fallback · ↑/↓ providers · type to search · Esc cancel";
+					return tSettingsUi("Enter pick fallback · ↑/↓ providers · type to search · Esc cancel");
 				case "fallbackKey":
-					return "Enter pick the protected model · ↑/↓ providers · type to search · Esc cancel";
+					return tSettingsUi("Enter pick the protected model · ↑/↓ providers · type to search · Esc cancel");
 				default:
-					return "Enter assign · ↑/↓ providers · type to search · Esc cancel";
+					return tSettingsUi("Enter assign · ↑/↓ providers · type to search · Esc cancel");
 			}
 		}
 		const entry = this.#activeEntry();
 		if (entry.kind === "roles") {
 			if (this.#focus !== "list") {
-				return "↑/↓ providers · → roles · Esc close";
+				return tSettingsUi("↑/↓ providers · → roles · Esc close");
 			}
 			const row = this.#rolesRows[this.#roleIndex];
 			if (row?.kind === "fallback") {
-				return "↑/↓ rows · Enter replace · f add another · x remove · [/] reorder · ← providers";
+				return tSettingsUi("↑/↓ rows · Enter replace · f add another · x remove · [/] reorder · ← providers");
 			}
 			if (row?.kind === "chainKey") {
-				return "↑/↓ rows · Enter/f add fallback · x clear chain · ← providers";
+				return tSettingsUi("↑/↓ rows · Enter/f add fallback · x clear chain · ← providers");
 			}
 			if (row?.kind === "newFallback") {
-				return "↑/↓ rows · Enter new model/provider fallback chain · ← providers";
+				return tSettingsUi("↑/↓ rows · Enter new model/provider fallback chain · ← providers");
 			}
-			return "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new";
+			return tSettingsUi(
+				"↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new",
+			);
 		}
 		if (entry.kind === "provider" && entry.locked) {
-			return entry.oauth ? "Enter log in · ↑/↓ providers · Esc close" : "↑/↓ providers · Esc close";
+			return entry.oauth
+				? tSettingsUi("Enter log in · ↑/↓ providers · Esc close")
+				: tSettingsUi("↑/↓ providers · Esc close");
 		}
-		const arrows = this.#focus === "scope" ? "↑/↓ providers · → models" : "↑/↓ models · ← providers";
-		const refresh = entry.kind === "provider" ? " · F5 refresh" : "";
-		return `Enter assign roles · ${arrows} · type to search${refresh} · Esc close`;
+		const arrows =
+			this.#focus === "scope" ? tSettingsUi("↑/↓ providers · → models") : tSettingsUi("↑/↓ models · ← providers");
+		const refresh = entry.kind === "provider" ? ` ${tSettingsUi("· F5 refresh")}` : "";
+		return `${tSettingsUi("Enter assign roles")} · ${arrows} · ${tSettingsUi("type to search")}${refresh} · ${tSettingsUi("Esc close")}`;
 	}
 
 	/** Footer row: active strip (chips) or the contextual hint line. */
@@ -1914,16 +1966,20 @@ export class ModelHubComponent implements Component {
 		}
 
 		if (strip.kind === "roleName") {
-			const label = theme.fg("accent", "New role name:");
-			const inputWidth = Math.max(8, Math.min(32, width - visibleWidth("New role name:") - 24));
+			const roleNameLabel = tSettingsUi("New role name:");
+			const label = theme.fg("accent", roleNameLabel);
+			const inputWidth = Math.max(8, Math.min(32, width - visibleWidth(roleNameLabel) - 24));
 			const inputLine = strip.input.render(inputWidth)[0] ?? "";
-			return truncateToWidth(`${label} ${inputLine} ${theme.fg("dim", "(letters, digits, - and _)")}`, width);
+			return truncateToWidth(
+				`${label} ${inputLine} ${theme.fg("dim", tSettingsUi("(letters, digits, - and _)"))}`,
+				width,
+			);
 		}
 
 		const prefix =
 			strip.kind === "role"
-				? `${theme.fg("accent", strip.item.id)}${theme.fg("dim", " →")} `
-				: `${theme.fg(getRoleInfo(strip.role ?? "", this.#settings).color ?? "muted", (getRoleInfo(strip.role ?? "", this.#settings).tag ?? strip.role ?? "").toLowerCase())}${theme.fg("dim", ` · ${strip.item.id} →`)} `;
+				? `${theme.fg("accent", strip.item.id)}${theme.fg("dim", ` ${tSettingsUi("→")}`)} `
+				: `${theme.fg(getRoleInfo(strip.role ?? "", this.#settings).color ?? "muted", formatRoleDisplayLabel(strip.role ?? "", this.#settings).toLowerCase())}${theme.fg("dim", ` ${tSettingsUi("· {id} →", { id: strip.item.id })}`)} `;
 
 		// Horizontal window: once the strip overflows, drop leading chips behind
 		// a dim ellipsis so the selected chip (plus one chip of lookahead when it
@@ -1948,7 +2004,6 @@ export class ModelHubComponent implements Component {
 		};
 		let start = startFor(Math.min(strip.index + 1, strip.chips.length - 1));
 		if (start > strip.index) start = startFor(strip.index);
-
 		let line = prefix;
 		// Columns are relative to the frame: row() insets content by 2.
 		let col = 2 + prefixWidth;
@@ -1997,7 +2052,7 @@ export class ModelHubComponent implements Component {
 		const sidebarLines = this.#renderSidebar(sidebarWidth, contentRows);
 
 		const out: string[] = [];
-		out.push(topBorderSplit(width, "Models", sidebarWidth));
+		out.push(topBorderSplit(width, tSettingsUi("Models"), sidebarWidth));
 		this.#contentRowStart = out.length;
 		for (let i = 0; i < contentRows; i++) {
 			out.push(splitRow(sidebarLines[i] ?? "", bodyLines[i] ?? "", width, sidebarWidth));

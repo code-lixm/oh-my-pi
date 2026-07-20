@@ -1,4 +1,5 @@
 import { CancellableLoader, Container, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme } from "../../modes/theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -18,7 +19,7 @@ export class BorderedLoader extends Container {
 		);
 		this.addChild(this.#loader);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "esc cancel"), 1, 0));
+		this.addChild(new Text(theme.fg("muted", tSettingsUi("esc cancel")), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder(borderColor));
 	}

@@ -1,5 +1,6 @@
 import type { Effort } from "@oh-my-pi/pi-ai";
 import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { getThinkingLevelMetadata } from "../../thinking";
 import { DynamicBorder } from "./dynamic-border";
@@ -19,7 +20,14 @@ export class ThinkingSelectorComponent extends Container {
 	) {
 		super();
 
-		const thinkingLevels: SelectItem[] = availableLevels.map(getThinkingLevelMetadata);
+		const thinkingLevels: SelectItem[] = availableLevels.map(level => {
+			const metadata = getThinkingLevelMetadata(level);
+			return {
+				...metadata,
+				label: tSettingsUi(metadata.label),
+				description: tSettingsUi(metadata.description),
+			};
+		});
 
 		// Add top border
 		this.addChild(new DynamicBorder());

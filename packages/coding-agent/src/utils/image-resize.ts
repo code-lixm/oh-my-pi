@@ -1,4 +1,5 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { prompt } from "@oh-my-pi/pi-utils";
 
 export interface ImageResizeOptions {
 	maxWidth?: number;
@@ -20,6 +21,17 @@ export interface ResizedImage {
 	wasResized: boolean;
 	decodeFailed?: boolean;
 	get data(): string;
+}
+export interface DimensionNoteParams extends prompt.TemplateContext {
+	originalWidth: number;
+	originalHeight: number;
+	width: number;
+	height: number;
+	scale: string;
+}
+
+export interface FormatDimensionNoteOptions {
+	format?: (params: DimensionNoteParams) => string;
 }
 
 // 500KB target — aggressive compression; Anthropic's 5MB per-image cap is rarely the
@@ -405,7 +417,7 @@ export async function resizeImage(img: ImageContent, options?: ImageResizeOption
  * Format a dimension note for resized images.
  * This helps the model understand the coordinate mapping.
  */
-export function formatDimensionNote(result: ResizedImage): string | undefined {
+export function formatDimensionNote(result: ResizedImage, options?: FormatDimensionNoteOptions): string | undefined {
 	if (!result.wasResized) {
 		return undefined;
 	}
@@ -415,6 +427,15 @@ export function formatDimensionNote(result: ResizedImage): string | undefined {
 	if (result.width === result.originalWidth && result.height === result.originalHeight) {
 		return undefined;
 	}
-	const scale = result.originalWidth / result.width;
-	return `[Image: original ${result.originalWidth}x${result.originalHeight}, displayed at ${result.width}x${result.height}. Multiply coordinates by ${scale.toFixed(2)} to map to original image.]`;
+	const params: DimensionNoteParams = {
+		originalWidth: result.originalWidth,
+		originalHeight: result.originalHeight,
+		width: result.width,
+		height: result.height,
+		scale: (result.originalWidth / result.width).toFixed(2),
+	};
+	if (options?.format) {
+		return options.format(params);
+	}
+	return `[Image: original ${params.originalWidth}x${params.originalHeight}, displayed at ${params.width}x${params.height}. Multiply coordinates by ${params.scale} to map to original image.]`;
 }

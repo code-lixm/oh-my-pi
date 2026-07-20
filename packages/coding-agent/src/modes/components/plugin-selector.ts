@@ -5,6 +5,7 @@
  * Selecting a plugin triggers installation. Esc cancels.
  */
 import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
@@ -52,11 +53,11 @@ export class PluginSelectorComponent extends Container {
 		if (items.length === 0) {
 			items.push({
 				value: "__empty__",
-				label: "No plugins available",
+				label: tSettingsUi("No plugins available"),
 				description:
 					marketplaceCount === 0
-						? "Add a marketplace first: /marketplace add <source>"
-						: "Configured marketplaces have no plugins",
+						? tSettingsUi("Add a marketplace first: /marketplace add <source>")
+						: tSettingsUi("Configured marketplaces have no plugins"),
 			});
 		}
 

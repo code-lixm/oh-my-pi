@@ -10,6 +10,7 @@ import { Container, Markdown, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
@@ -18,7 +19,6 @@ import {
 	formatBadge,
 	formatDuration,
 	formatExpandHint,
-	formatMoreItems,
 	formatStatusIcon,
 	previewLine,
 	previewWindowRows,
@@ -55,7 +55,7 @@ type TaskRenderOptions = RenderResultOptions & { renderContext?: TaskRenderConte
 const MAX_NESTED_TASK_RENDER_DEPTH = 8;
 
 function renderNestedCycleLine(theme: Theme): string {
-	return theme.fg("dim", "… nested task progress already shown");
+	return theme.fg("dim", tSettingsUi("… nested task progress already shown"));
 }
 
 /**
@@ -119,7 +119,7 @@ function appendAgentStats(
 }
 
 function formatFindingSummary(findings: FindingDetails[], theme: Theme): string {
-	if (findings.length === 0) return theme.fg("dim", "Findings: none");
+	if (findings.length === 0) return theme.fg("dim", `${tSettingsUi("Findings:")} ${tSettingsUi("none")}`);
 
 	const counts: { [P in FindingPriority]?: number } = {};
 	for (const finding of findings) {
@@ -134,7 +134,7 @@ function formatFindingSummary(findings: FindingDetails[], theme: Theme): string 
 		parts.push(theme.styledSymbol(symbol, color) ? `${theme.styledSymbol(symbol, color)} ${text}` : text);
 	}
 
-	return `${theme.fg("dim", "Findings:")} ${parts.join(theme.sep.dot)}`;
+	return `${theme.fg("dim", tSettingsUi("Findings:"))} ${parts.join(theme.sep.dot)}`;
 }
 
 function normalizeFindings(value: unknown): FindingDetails[] {
@@ -247,8 +247,8 @@ function getRenderYieldLabels(type: RenderYieldItem["type"]): string[] {
 }
 
 function formatYieldPreview(item: RenderYieldItem): string {
-	if (item.useLastTurn === true && item.data === undefined) return "last assistant turn";
-	if (item.data === undefined) return "last assistant turn";
+	if (item.useLastTurn === true && item.data === undefined) return tSettingsUi("last assistant turn");
+	if (item.data === undefined) return tSettingsUi("last assistant turn");
 	if (typeof item.data === "string") return previewLine(replaceTabs(sanitizeText(item.data)), 70);
 	try {
 		return previewLine(replaceTabs(sanitizeText(JSON.stringify(item.data) ?? "null")), 70);
@@ -268,12 +268,17 @@ function renderTypedYieldSections(value: unknown, continuePrefix: string, expand
 	const lines: string[] = [];
 	for (const { item, labels } of typedItems.slice(-displayCount)) {
 		const terminal = !Array.isArray(item.type);
-		const prefix = terminal ? "yield" : "yield+";
+		const prefix = terminal ? tSettingsUi("yield") : tSettingsUi("yield+");
 		const label = `${prefix}[${labels.join(", ")}]`;
 		lines.push(`${continuePrefix}${theme.fg("dim", label)}: ${theme.fg("dim", formatYieldPreview(item))}`);
 	}
 	if (typedItems.length > displayCount) {
-		lines.push(`${continuePrefix}${theme.fg("dim", formatMoreItems(typedItems.length - displayCount, "yield"))}`);
+		const hidden = typedItems.length - displayCount;
+		const more =
+			hidden === 1
+				? tSettingsUi("… {count} more yield", { count: hidden })
+				: tSettingsUi("… {count} more yields", { count: hidden });
+		lines.push(`${continuePrefix}${theme.fg("dim", more)}`);
 	}
 	return lines;
 }
@@ -504,7 +509,7 @@ function renderOutputSection(
 	if (!trimmedOutput && !warning) return lines;
 
 	if (warning) {
-		lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+		lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Output"))}`);
 		lines.push(
 			`${continuePrefix}  ${theme.fg("warning", theme.status.warning)} ${theme.fg(
 				"dim",
@@ -547,9 +552,12 @@ function renderOutputSection(
 		}
 
 		if (outputLines.length > previewCount) {
-			lines.push(
-				`${continuePrefix}  ${theme.fg("dim", formatMoreItems(outputLines.length - previewCount, "line"))}`,
-			);
+			const hidden = outputLines.length - previewCount;
+			const more =
+				hidden === 1
+					? tSettingsUi("… {count} more line", { count: hidden })
+					: tSettingsUi("… {count} more lines", { count: hidden });
+			lines.push(`${continuePrefix}  ${theme.fg("dim", more)}`);
 		}
 
 		return lines;
@@ -566,7 +574,7 @@ function renderOutputSection(
 			}
 
 			// Expanded: tree format
-			lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+			lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Output"))}`);
 			const tree = renderJsonTreeLines(parsed, theme, expanded ? 6 : 2, expanded ? 24 : 6);
 			if (tree.lines.length > 0) {
 				for (const line of tree.lines) {
@@ -582,7 +590,7 @@ function renderOutputSection(
 		}
 	}
 
-	lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+	lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Output"))}`);
 
 	const outputLines = trimmedOutput.split("\n");
 	const previewCount = expanded ? maxExpanded : maxCollapsed;
@@ -591,9 +599,13 @@ function renderOutputSection(
 	}
 
 	if (outputLines.length > previewCount) {
-		lines.push(`${continuePrefix}  ${theme.fg("dim", formatMoreItems(outputLines.length - previewCount, "line"))}`);
+		const hidden = outputLines.length - previewCount;
+		const more =
+			hidden === 1
+				? tSettingsUi("… {count} more line", { count: hidden })
+				: tSettingsUi("… {count} more lines", { count: hidden });
+		lines.push(`${continuePrefix}  ${theme.fg("dim", more)}`);
 	}
-
 	return lines;
 }
 
@@ -608,13 +620,18 @@ function renderTaskSection(
 	const trimmed = sanitizeText(task).trim();
 	if (!expanded || !trimmed) return lines;
 
-	lines.push(`${continuePrefix}${theme.fg("dim", "Task")}`);
+	lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Task"))}`);
 	const taskLines = trimmed.split("\n");
 	for (const line of taskLines.slice(0, maxExpanded)) {
 		lines.push(`${continuePrefix}  ${theme.fg("dim", truncateToWidth(replaceTabs(line), 70))}`);
 	}
 	if (taskLines.length > maxExpanded) {
-		lines.push(`${continuePrefix}  ${theme.fg("dim", formatMoreItems(taskLines.length - maxExpanded, "line"))}`);
+		const hidden = taskLines.length - maxExpanded;
+		const more =
+			hidden === 1
+				? tSettingsUi("… {count} more line", { count: hidden })
+				: tSettingsUi("… {count} more lines", { count: hidden });
+		lines.push(`${continuePrefix}  ${theme.fg("dim", more)}`);
 	}
 
 	return lines;
@@ -642,26 +659,26 @@ function formatScalarInline(value: unknown, maxLen: number, _theme: Theme): stri
 }
 
 function formatOutputInline(data: unknown, theme: Theme, maxWidth = 80): string {
-	if (data === null || data === undefined) return "Output: none";
+	if (data === null || data === undefined) return tSettingsUi("Output: none");
 
 	// For scalars, show directly
 	if (typeof data !== "object") {
-		return `Output: ${formatScalarInline(data, 60, theme)}`;
+		return `${tSettingsUi("Output: ")}${formatScalarInline(data, 60, theme)}`;
 	}
 
 	// For arrays, show count and first element preview
 	if (Array.isArray(data)) {
-		if (data.length === 0) return "Output: []";
+		if (data.length === 0) return tSettingsUi("Output: []");
 		const preview = formatScalarInline(data[0], 40, theme);
-		return `Output: [${data.length} items] ${preview}${data.length > 1 ? "…" : ""}`;
+		return `${tSettingsUi("Output: [{count} items]", { count: data.length })} ${preview}${data.length > 1 ? "…" : ""}`;
 	}
 
 	// For objects, show key=value pairs inline
 	const entries = Object.entries(data as Record<string, unknown>);
-	if (entries.length === 0) return "Output: {}";
+	if (entries.length === 0) return tSettingsUi("Output: {}");
 
 	const pairs: string[] = [];
-	let totalLen = "Output: ".length;
+	let totalLen = tSettingsUi("Output: ").length;
 
 	for (const [key, value] of entries) {
 		const valueStr = formatScalarInline(value, 24, theme);
@@ -677,7 +694,7 @@ function formatOutputInline(data: unknown, theme: Theme, maxWidth = 80): string 
 		totalLen += addLen;
 	}
 
-	return `Output: ${pairs.join(", ")}`;
+	return `${tSettingsUi("Output: ")}${pairs.join(", ")}`;
 }
 
 /**
@@ -722,7 +739,7 @@ function renderTaskCallLines(args: Partial<TaskParams> | undefined, theme: Theme
 	const idLabel = rawName ? formatTaskId(rawName) : "";
 	const brief = taskFirstLine(args.task);
 	if (idLabel || brief) {
-		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || "agent"))}`;
+		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || tSettingsUi("agent")))}`;
 		if (brief) {
 			line += `: ${theme.fg("muted", previewLine(brief, 64))}`;
 		}
@@ -762,12 +779,17 @@ function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): strin
 		}
 		line += agentTypeBadge(item?.agent, theme);
 		if (item?.isolated === true) {
-			line += theme.fg("dim", " [isolated]");
+			line += theme.fg("dim", ` ${tSettingsUi("[isolated]")}`);
 		}
 		lines.push(line);
 	}
 	if (cap < tasks.length) {
-		lines.push(`${bullet} ${theme.fg("dim", formatMoreItems(tasks.length - cap, "agent"))}`);
+		const hidden = tasks.length - cap;
+		const more =
+			hidden === 1
+				? tSettingsUi("… {count} more agent", { count: hidden })
+				: tSettingsUi("… {count} more agents", { count: hidden });
+		lines.push(`${bullet} ${theme.fg("dim", more)}`);
 	}
 	return lines;
 }
@@ -835,7 +857,7 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 	const header = renderStatusLine(
 		{
 			iconOverride: theme.styledSymbol("tool.task", "accent"),
-			title: "Task",
+			title: tSettingsUi("Task"),
 			description: formatAgentHeaderLabel(args),
 		},
 		theme,
@@ -866,7 +888,7 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 
 		return {
 			header,
-			headerMeta: showIsolated ? "isolated" : undefined,
+			headerMeta: showIsolated ? tSettingsUi("isolated") : undefined,
 			sections,
 			state: "pending",
 			borderColor: "borderMuted",
@@ -932,11 +954,11 @@ function renderAgentProgress(
 	// generic running marker because "we're waiting on a quota window" is
 	// the operationally meaningful state.
 	if (progress.retryState && progress.status === "running") {
-		statusLine += ` ${formatBadge("retrying", "warning", theme)}`;
+		statusLine += ` ${formatBadge(tSettingsUi("retrying"), "warning", theme)}`;
 	} else if (progress.retryFailure && (progress.status === "failed" || progress.status === "aborted")) {
-		statusLine += ` ${formatBadge("rate-limited", "error", theme)}`;
+		statusLine += ` ${formatBadge(tSettingsUi("rate-limited"), "error", theme)}`;
 	} else if (progress.status === "failed" || progress.status === "aborted") {
-		const statusLabel = progress.status === "failed" ? "failed" : "aborted";
+		const statusLabel = progress.status === "failed" ? tSettingsUi("failed") : tSettingsUi("aborted");
 		statusLine += ` ${formatBadge(statusLabel, iconColor, theme)}`;
 	}
 
@@ -984,18 +1006,24 @@ function renderAgentProgress(
 
 	// Retry detail line: surface why the subagent is paused and roughly how
 	// long until the next attempt. Without this, the parent UI would just
-	// keep spinning while a child sleeps on a 3-hour provider rate-limit.
 	if (progress.retryState && progress.status === "running") {
 		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - Date.now());
-		const waitLabel = remainingMs > 0 ? `in ${formatDuration(remainingMs)}` : "now";
+		const waitLabel =
+			remainingMs > 0 ? tSettingsUi("in {duration}", { duration: formatDuration(remainingMs) }) : tSettingsUi("now");
 		const summary =
-			`retrying ${progress.retryState.attempt}/${progress.retryState.maxAttempts} ${waitLabel}: ` +
-			previewLine(sanitizeText(progress.retryState.errorMessage), 60);
+			tSettingsUi("retrying {attempt}/{maxAttempts} {wait}: ", {
+				attempt: progress.retryState.attempt,
+				maxAttempts: progress.retryState.maxAttempts,
+				wait: waitLabel,
+			}) + previewLine(sanitizeText(progress.retryState.errorMessage), 60);
 		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", summary)}`);
 	} else if (progress.retryFailure && progress.status !== "running") {
-		const summary = `auto-retry gave up after ${progress.retryFailure.attempt} attempt${
-			progress.retryFailure.attempt === 1 ? "" : "s"
-		}: ${previewLine(sanitizeText(progress.retryFailure.errorMessage), 80)}`;
+		const attempts = progress.retryFailure.attempt;
+		const tail =
+			attempts === 1
+				? tSettingsUi("auto-retry gave up after {attempt} attempt: ", { attempt: attempts })
+				: tSettingsUi("auto-retry gave up after {attempt} attempts: ", { attempt: attempts });
+		const summary = `${tail}${previewLine(sanitizeText(progress.retryFailure.errorMessage), 80)}`;
 		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("error", summary)}`);
 	}
 
@@ -1052,12 +1080,12 @@ function renderAgentProgress(
 					}
 				}
 				if ((dataArray as unknown[]).length > displayCount) {
-					lines.push(
-						`${continuePrefix}${theme.fg(
-							"dim",
-							formatMoreItems((dataArray as unknown[]).length - displayCount, "item"),
-						)}`,
-					);
+					const hiddenCount = (dataArray as unknown[]).length - displayCount;
+					const moreLine =
+						hiddenCount === 1
+							? tSettingsUi("… {count} more item", { count: hiddenCount })
+							: tSettingsUi("… {count} more items", { count: hiddenCount });
+					lines.push(`${continuePrefix}${theme.fg("dim", moreLine)}`);
 				}
 			}
 		}
@@ -1121,16 +1149,16 @@ function renderReviewResult(
 		? theme.styledSymbol("status.done", "accent")
 		: theme.fg(verdictColor, theme.status.error);
 	lines.push(
-		`${continuePrefix} Patch is ${theme.fg(verdictColor, summary.overall_correctness)} ${verdictIcon} ${theme.fg(
+		`${continuePrefix} ${tSettingsUi("Patch is {verdict}", { verdict: summary.overall_correctness })} ${verdictIcon} ${theme.fg(
 			"dim",
-			`(${(summary.confidence * 100).toFixed(0)}% confidence)`,
+			tSettingsUi("({confidence}% confidence)", { confidence: (summary.confidence * 100).toFixed(0) }),
 		)}`,
 	);
 
 	// Explanation preview (first ~80 chars when collapsed, full when expanded)
 	if (summary.explanation) {
 		if (expanded) {
-			lines.push(`${continuePrefix}${theme.fg("dim", "Summary")}`);
+			lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Summary"))}`);
 			const explanationLines = sanitizeText(summary.explanation).split("\n");
 			for (const line of explanationLines) {
 				lines.push(`${continuePrefix}  ${theme.fg("dim", replaceTabs(line))}`);
@@ -1173,9 +1201,9 @@ function renderFindings(findings: FindingDetails[], continuePrefix: string, expa
 		const findingContinue = isLastFinding ? "   " : `${theme.tree.vertical}  `;
 
 		const { color } = getPriorityInfo(finding.priority);
-		const rawTitle = sanitizeText(finding.title?.replace(/^\[P\d\]\s*/, "") ?? "Untitled");
+		const rawTitle = sanitizeText(finding.title?.replace(/^\[P\d\]\s*/, "") ?? tSettingsUi("Untitled"));
 		const titleText = replaceTabs(rawTitle).replace(/[\r\n]+/g, " ");
-		const loc = `${path.basename(sanitizeText(finding.file_path || "<unknown>"))}:${finding.line_start}`;
+		const loc = `${path.basename(sanitizeText(finding.file_path || tSettingsUi("<unknown>")))}:${finding.line_start}`;
 
 		lines.push(
 			`${continuePrefix}${findingPrefix} ${theme.fg(color, `[${finding.priority}]`)} ${titleText} ${theme.fg("dim", loc)}`,
@@ -1192,7 +1220,12 @@ function renderFindings(findings: FindingDetails[], continuePrefix: string, expa
 	}
 
 	if (!expanded && findings.length > 3) {
-		lines.push(`${continuePrefix}${theme.fg("dim", formatMoreItems(findings.length - 3, "finding"))}`);
+		const hidden = findings.length - 3;
+		const more =
+			hidden === 1
+				? tSettingsUi("… {count} more finding", { count: hidden })
+				: tSettingsUi("… {count} more findings", { count: hidden });
+		lines.push(`${continuePrefix}${theme.fg("dim", more)}`);
 	}
 
 	return lines;
@@ -1226,14 +1259,14 @@ function renderAgentResult(
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
 	const statusText = aborted
-		? "aborted"
+		? tSettingsUi("aborted")
 		: needsWarning
-			? "warning"
+			? tSettingsUi("warning")
 			: success
-				? "done"
+				? tSettingsUi("done")
 				: mergeFailed
-					? "merge failed"
-					: "failed";
+					? tSettingsUi("merge failed")
+					: tSettingsUi("failed");
 
 	// Main status line: id: description [status] · stats · ⟨agent⟩
 	const trimmedDescription = result.description ? sanitizeText(result.description).trim() : undefined;
@@ -1261,7 +1294,7 @@ function renderAgentResult(
 	statusLine += `${theme.sep.dot}${theme.fg("dim", formatDuration(result.durationMs))}`;
 
 	if (result.truncated) {
-		statusLine += ` ${theme.fg("warning", "[truncated]")}`;
+		statusLine += ` ${theme.fg("warning", tSettingsUi("[truncated]"))}`;
 	}
 
 	lines.push(statusLine);
@@ -1339,7 +1372,7 @@ function renderAgentResult(
 				const target = lines;
 				if (!isTaskTool) {
 					hasCustomRendering = true;
-					target.push(`${continuePrefix}${theme.fg("dim", `Tool: ${toolName}`)}`);
+					target.push(`${continuePrefix}${theme.fg("dim", `${tSettingsUi("Tool: {toolName}", { toolName })}`)}`);
 				}
 				if (component instanceof Text) {
 					// Prefix each line with continuePrefix
@@ -1380,9 +1413,9 @@ function renderAgentResult(
 	}
 
 	if (result.patchPath && !aborted && result.exitCode === 0) {
-		lines.push(`${continuePrefix}${theme.fg("dim", `Patch: ${result.patchPath}`)}`);
+		lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Patch: {path}", { path: result.patchPath }))}`);
 	} else if (result.branchName && !aborted && result.exitCode === 0) {
-		lines.push(`${continuePrefix}${theme.fg("dim", `Branch: ${result.branchName}`)}`);
+		lines.push(`${continuePrefix}${theme.fg("dim", tSettingsUi("Branch: {name}", { name: result.branchName }))}`);
 	}
 
 	// Error message
@@ -1435,17 +1468,22 @@ function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme
 	};
 	for (const p of hidden) counts[p.status]++;
 	const parts: string[] = [];
-	if (counts.completed > 0) parts.push(theme.fg("dim", `${counts.completed} done`));
-	if (counts.running > 0) parts.push(theme.fg("dim", `${counts.running} running`));
-	if (counts.pending > 0) parts.push(theme.fg("dim", `${counts.pending} pending`));
-	if (counts.failed > 0) parts.push(theme.fg("error", `${counts.failed} failed`));
-	if (counts.aborted > 0) parts.push(theme.fg("error", `${counts.aborted} aborted`));
+	if (counts.completed > 0) parts.push(theme.fg("dim", tSettingsUi("{count} done", { count: counts.completed })));
+	if (counts.running > 0) parts.push(theme.fg("dim", tSettingsUi("{count} running", { count: counts.running })));
+	if (counts.pending > 0) parts.push(theme.fg("dim", tSettingsUi("{count} pending", { count: counts.pending })));
+	if (counts.failed > 0) parts.push(theme.fg("error", tSettingsUi("{count} failed", { count: counts.failed })));
+	if (counts.aborted > 0) parts.push(theme.fg("error", tSettingsUi("{count} aborted", { count: counts.aborted })));
 	const breakdown =
 		parts.length > 0
 			? `${theme.fg("dim", " (")}${parts.join(theme.fg("dim", theme.sep.dot))}${theme.fg("dim", ")")}`
 			: "";
 	const hint = formatExpandHint(theme, false, true);
-	return `${theme.fg("dim", formatMoreItems(hidden.length, "agent"))}${breakdown}${hint ? ` ${hint}` : ""}`;
+	const hiddenCount = hidden.length;
+	const moreLine =
+		hiddenCount === 1
+			? tSettingsUi("… {count} more agent", { count: hiddenCount })
+			: tSettingsUi("… {count} more agents", { count: hiddenCount });
+	return `${theme.fg("dim", moreLine)}${breakdown}${hint ? ` ${hint}` : ""}`;
 }
 
 /**
@@ -1487,11 +1525,11 @@ export function renderResult(
 		const text = result.content.find(c => c.type === "text")?.text || "";
 		const errored = result.isError === true;
 		const header = errored
-			? renderStatusLine({ icon: "error", title: "Task", description: agentLabel }, theme)
+			? renderStatusLine({ icon: "error", title: tSettingsUi("Task"), description: agentLabel }, theme)
 			: renderStatusLine(
 					{
 						iconOverride: theme.styledSymbol("status.done", "accent"),
-						title: "Task",
+						title: tSettingsUi("Task"),
 						description: agentLabel,
 					},
 					theme,
@@ -1537,7 +1575,12 @@ export function renderResult(
 	// Header meta is the spawn count only; each row carries its own ⟨agent⟩
 	// badge, so a joined type list here would repeat them. Before anything
 	// spawns, fall back to the flat form's agent type from the call args.
-	const countLabel = agentCount > 0 ? `${agentCount} ${agentCount === 1 ? "agent" : "agents"}` : undefined;
+	const countLabel =
+		agentCount > 0
+			? agentCount === 1
+				? tSettingsUi("{count} agent", { count: agentCount })
+				: tSettingsUi("{count} agents", { count: agentCount })
+			: undefined;
 	const metaLabel = countLabel ?? agentLabel;
 	const header = renderStatusLine(
 		{
@@ -1551,7 +1594,7 @@ export function renderResult(
 					: icon === "success"
 						? theme.styledSymbol("status.done", "accent")
 						: undefined,
-			title: "Task",
+			title: tSettingsUi("Task"),
 			meta: metaLabel ? [metaLabel] : undefined,
 		},
 		theme,
@@ -1587,9 +1630,12 @@ export function renderResult(
 			}
 			if (visible.length < ordered.length) {
 				const hint = formatExpandHint(theme, false, true);
-				lines.push(
-					`${theme.fg("dim", formatMoreItems(ordered.length - visible.length, "agent"))}${hint ? ` ${hint}` : ""}`,
-				);
+				const hiddenCount = ordered.length - visible.length;
+				const moreLine =
+					hiddenCount === 1
+						? tSettingsUi("… {count} more agent", { count: hiddenCount })
+						: tSettingsUi("… {count} more agents", { count: hiddenCount });
+				lines.push(`${theme.fg("dim", moreLine)}${hint ? ` ${hint}` : ""}`);
 			}
 
 			// Mixed blocking+async call: async spawns never land in `results`
@@ -1606,12 +1652,16 @@ export function renderResult(
 			}
 
 			const summaryParts: string[] = [];
-			if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
-			if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
-			if (mergeFailedCount > 0) summaryParts.push(theme.fg("warning", `${mergeFailedCount} merge failed`));
-			if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
+			if (abortedCount > 0)
+				summaryParts.push(theme.fg("error", tSettingsUi("{count} aborted", { count: abortedCount })));
+			if (successCount > 0)
+				summaryParts.push(theme.fg("success", tSettingsUi("{count} succeeded", { count: successCount })));
+			if (mergeFailedCount > 0)
+				summaryParts.push(theme.fg("warning", tSettingsUi("{count} merge failed", { count: mergeFailedCount })));
+			if (failCount > 0) summaryParts.push(theme.fg("error", tSettingsUi("{count} failed", { count: failCount })));
 			const totalRequests = requestTotal;
-			if (totalRequests > 0) summaryParts.push(theme.fg("dim", `${formatNumber(totalRequests)} req`));
+			if (totalRequests > 0)
+				summaryParts.push(theme.fg("dim", tSettingsUi("{count} req", { count: formatNumber(totalRequests) })));
 			summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
 			// Wrap the run summary in the theme's bracket glyphs (dim chrome, colored
 			// counts) to match the bash tool's `[Wall: … | Exit: …]` footer.
@@ -1626,7 +1676,7 @@ export function renderResult(
 		const borderColor = isError ? "error" : "borderMuted";
 
 		if (lines.length === 0) {
-			const text = fallbackText.trim() ? fallbackText : "No results";
+			const text = fallbackText.trim() ? fallbackText : tSettingsUi("No results");
 			return {
 				header,
 				sections: [
@@ -1705,7 +1755,7 @@ function renderNestedTaskResults(
 			continue;
 		}
 		if (depth >= MAX_NESTED_TASK_RENDER_DEPTH) {
-			lines.push(theme.fg("dim", "… nested task depth limit reached"));
+			lines.push(theme.fg("dim", tSettingsUi("… nested task depth limit reached")));
 			continue;
 		}
 		seen.add(details);
@@ -1722,7 +1772,11 @@ function renderNestedTaskResults(
 		});
 		if (hiddenCount > 0) {
 			const { prefix } = nestedMarkers(true, theme);
-			lines.push(`${prefix} ${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}`);
+			const moreLine =
+				hiddenCount === 1
+					? tSettingsUi("… {count} more agent", { count: hiddenCount })
+					: tSettingsUi("… {count} more agents", { count: hiddenCount });
+			lines.push(`${prefix} ${theme.fg("dim", moreLine)}`);
 		}
 		seen.delete(details);
 	}
@@ -1750,7 +1804,7 @@ function renderNestedTaskTree(
 			continue;
 		}
 		if (depth >= MAX_NESTED_TASK_RENDER_DEPTH) {
-			lines.push(theme.fg("dim", "… nested task depth limit reached"));
+			lines.push(theme.fg("dim", tSettingsUi("… nested task depth limit reached")));
 			continue;
 		}
 		seen.add(details);
@@ -1765,7 +1819,11 @@ function renderNestedTaskTree(
 			});
 			if (hiddenCount > 0) {
 				const { prefix } = nestedMarkers(true, theme);
-				lines.push(`${prefix} ${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}`);
+				const moreLine =
+					hiddenCount === 1
+						? tSettingsUi("… {count} more agent", { count: hiddenCount })
+						: tSettingsUi("… {count} more agents", { count: hiddenCount });
+				lines.push(`${prefix} ${theme.fg("dim", moreLine)}`);
 			}
 			seen.delete(details);
 			continue;
@@ -1793,7 +1851,11 @@ function renderNestedTaskTree(
 			});
 			if (hiddenCount > 0) {
 				const { prefix } = nestedMarkers(true, theme);
-				lines.push(`${prefix} ${theme.fg("dim", formatMoreItems(hiddenCount, "agent"))}`);
+				const moreLine =
+					hiddenCount === 1
+						? tSettingsUi("… {count} more agent", { count: hiddenCount })
+						: tSettingsUi("… {count} more agents", { count: hiddenCount });
+				lines.push(`${prefix} ${theme.fg("dim", moreLine)}`);
 			}
 		}
 		seen.delete(details);

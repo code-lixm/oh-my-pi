@@ -25,7 +25,9 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { resolveMemoryBackend } from "../memory-backend";
+
 import { runPauseScreen } from "../modes/components/pause-screen";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import { theme } from "../modes/theme/theme";
@@ -210,6 +212,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSettingsSelector();
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "last",
+		description: "View the latest user turn",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			runtime.ctx.showLastTurn();
 		},
 	},
 	{
@@ -2545,11 +2555,34 @@ function materializeTuiBuiltinSlashCommand(
  * declarative subcommand/hint definitions.
  */
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<TuiBuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd =>
-	materializeTuiBuiltinSlashCommand(cmd),
+	materializeTuiBuiltinSlashCommand({
+		...cmd,
+		description: tSettingsUi(cmd.description),
+		inlineHint: cmd.inlineHint ? tSettingsUi(cmd.inlineHint) : undefined,
+		subcommands: cmd.subcommands?.map(subcommand => ({
+			...subcommand,
+			description: tSettingsUi(subcommand.description),
+			usage: subcommand.usage ? tSettingsUi(subcommand.usage) : undefined,
+		})),
+	}),
 );
 
 export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): ReadonlyArray<TuiBuiltinSlashCommand> {
-	return BUILTIN_SLASH_COMMAND_DEFS.map(cmd => materializeTuiBuiltinSlashCommand(cmd, runtime));
+	return BUILTIN_SLASH_COMMAND_DEFS.map(cmd =>
+		materializeTuiBuiltinSlashCommand(
+			{
+				...cmd,
+				description: tSettingsUi(cmd.description),
+				inlineHint: cmd.inlineHint ? tSettingsUi(cmd.inlineHint) : undefined,
+				subcommands: cmd.subcommands?.map(subcommand => ({
+					...subcommand,
+					description: tSettingsUi(subcommand.description),
+					usage: subcommand.usage ? tSettingsUi(subcommand.usage) : undefined,
+				})),
+			},
+			runtime,
+		),
+	);
 }
 
 /**

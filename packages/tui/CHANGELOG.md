@@ -15,6 +15,13 @@
 - Prevented temporary dashboard frame updates from cluttering the terminal's native scrollback history.
 - Added support for cleaning up tracked Kitty graphics, allowing inline images to be properly deleted before falling back to text.
 - Fixed an issue where resizing or growing a multiplexer pane would incorrectly overwrite newly exposed rows with blank padding.
+### Added
+
+- Added an opt-in horizontal-only Markdown table style that removes the outer grid and column rules while retaining the header separator and width-aware column layout.
+
+### Fixed
+
+- Fixed right borders drifting by one column on rows whose Unicode display width differs between the application and terminal. Framed rows now anchor their closing border to the frame's physical cursor column, including long ANSI-heavy rows and editor/Box components.
 
 ## [17.0.3] - 2026-07-17
 
@@ -25,6 +32,9 @@
 - Fixed interactive sessions surviving terminal closure and entering a runaway render loop by stopping the TUI and raising SIGHUP when terminal input closes or output fails ([#5835](https://github.com/can1357/oh-my-pi/issues/5835)).
 - Fixed native cmux SSH pane resizes inserting blank rows into terminal scrollback by routing remote-transport sessions through the in-place repaint path ([#5857](https://github.com/can1357/oh-my-pi/issues/5857)).
 - Fixed the terminal flickering when leaving a fullscreen overlay (e.g. `/settings`) on terminals that re-report their size when the alternate screen buffer toggles: the alt-toggle SIGWINCH echo is height-only, so the resize fast path no longer borrows the alternate screen for it ([#5854](https://github.com/can1357/oh-my-pi/issues/5854)).
+### Fixed
+
+- Fixed destructive startup paints racing terminal DEC 2026 capability detection by allowing the first frame to wait for a confirmed synchronized-output result with a bounded timeout.
 
 ## [17.0.2] - 2026-07-17
 
@@ -97,12 +107,27 @@
 ### Fixed
 
 - Fixed a rendering issue where resizing the terminal during forced renders (such as tool finalization or image reconciliation) caused the entire transcript to visibly replay and flicker. Forced renders are now consolidated into a single paint once the resize settles.
+### Added
+
+- Added an opt-in startup appearance barrier that coalesces render requests until terminal appearance resolves or a caller-defined timeout expires, preventing fallback-paletted frames from entering native scrollback
+
+### Changed
+
+- Added a compact Markdown heading style that flattens H1-H6 and hides source markers while preserving one readable blank row around headings
+
+### Fixed
+
+- Fixed Ghostty occasionally losing its startup light-background response when the OSC 11 color reply arrived just after the DA1 capability sentinel
+- Fixed narrow Markdown list items wrapping back to column zero instead of preserving the bullet-width and nested-level hanging indent
 
 ## [16.4.7] - 2026-07-12
 
 ### Fixed
 
 - Fixed keyboard navigation paying an extra frame of input latency after idle; the queue-drain grace now applies only to Ctrl+C and Escape double-press gestures.
+### Added
+
+- Added opt-in framed fenced-code rendering with ANSI-safe middle folding and expandable full-content display.
 
 ## [16.4.6] - 2026-07-12
 

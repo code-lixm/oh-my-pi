@@ -175,11 +175,12 @@ function contiguousAt(buffer: string[], needle: string[]): number[] {
 }
 
 function saveTerminalEnv(): Record<string, string | undefined> {
-	// A resize on Warp takes the in-place path (no ED3), so neutralize the
-	// ambient terminal identity to keep the direct-terminal scrollback
-	// assertions deterministic on any dev machine.
+	// A resize on Warp or CMUX takes the in-place path (no ED3), so neutralize
+	// the ambient terminal identity to keep the direct-terminal scrollback
+	// assertions deterministic on any dev machine while still restoring any
+	// explicit multiplexer setup after each test.
 	const saved: Record<string, string | undefined> = {};
-	for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE"]) {
+	for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"]) {
 		saved[key] = Bun.env[key];
 		delete Bun.env[key];
 	}

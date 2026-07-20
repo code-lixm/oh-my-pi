@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
+- Grouped uninterrupted Hub messaging, job waits, agent status, and IRC notifications into one compact expandable transcript activity block.
+
+### Fixed
+
+- Fixed interactive Bash PTY overlays filling most of the terminal with blank rows for short output; normal-buffer sessions now grow with visible content up to the viewport cap, while alternate-screen programs retain their full terminal geometry and horizontal-only borders follow `display.borderStyle`.
+- Fixed Advisor silence and waiting-status self-talk appearing as actionable suggestion cards, including localized variants such as `静默、等汇总。`.
+- Fixed newly added interactive session, agent dashboard, footer/status, selector, Bash/Advisor, startup, and argument-validation text bypassing the configured `displayLanguage`.
+
 ## [17.0.5] - 2026-07-18
 
 ### Added
@@ -44,6 +55,18 @@
 - Fixed bash command timeouts rendering with an incorrect error border, and resolved Windows bash crashes when piped commands time out.
 - Migrated legacy nested/quoted-dotted config keys (e.g., `dev.autoqa.consent` -> `dev.autoqaConsent`) on settings load.
 - Added managed `ctx.setInterval` / `ctx.setTimeout` / `ctx.clearTimer` helpers on extension contexts to prevent uncaught exceptions from crashing sessions.
+### Added
+
+- Added the persistent `display.borderStyle` setting, allowing wide output containers and Markdown tables to switch between full borders and horizontal-only structural separators.
+
+### Changed
+
+- Softened incomplete-todo reminder cards with a neutral background and rounded outline, reserving warning emphasis for the final reminder.
+- Reduced persistent transcript background fills: pending, running, and error tool states remain tinted, while successful and warning output uses borders without a default background.
+
+### Fixed
+
+- Fixed rounded card, overlay, selector, code-block, and tool-output right borders drifting by one column on content rows containing terminal-width-ambiguous Unicode characters.
 
 ## [17.0.4] - 2026-07-18
 
@@ -54,6 +77,58 @@
 - Fixed `task` tool schemas emitting boolean subschemas that llama.cpp grammar generation cannot parse ([#5957](https://github.com/can1357/oh-my-pi/issues/5957)).
 - Fixed the transcript keeping finalized assistant blocks in the live compose walk after their rows entered native terminal scrollback, making each stream tick's `TranscriptContainer.render` depth-linear in session length. Fully committed finalized blocks are now compacted out of the local frame regardless of post-finalize version tracking; a later mutation no longer recommits on ordinary frames (no duplication) and rehydrates on the next destructive full replay (no loss). Compose cost for a live tail tick is now flat as depth grows (`bench/transcript-compose.bench.ts`: ratio(N5000/N500) 2.30 → 0.90) ([#5930](https://github.com/can1357/oh-my-pi/issues/5930)).
 - Fixed `/quit` and `/exit` hanging during interactive shutdown by making the mnemopi dispose path retain the current session and flush in-flight extractions without sleeping the bank; the `/memory enqueue` path and end-of-session backend enqueue still perform full cross-session consolidation. ([#3641](https://github.com/can1357/oh-my-pi/issues/3641))
+
+## [17.0.3] - 2026-07-17
+
+### Changed
+
+- `omp usage` and the in-session `/usage` view now show the Anthropic organization next to the account for org-scoped credentials (with `--redact` masking applied per part in the CLI, falling back to the org id when no display name is available), attribute "no usage data" rows per organization, and match the "in use by this session" marker by organization so only the active subscription is flagged. The OAuth login success message names the account and organization that was stored — a login landing on an unintended subscription is visible immediately.
+- `/logout` labels Anthropic accounts with their organization and marks only the credential of the active organization as active; `omp token --list` shows the organization next to each account. Two subscriptions sharing one email are distinguishable when selecting which to remove or mint a token for.
+- `omp auth-broker migrate --from-local` dedupes Anthropic OAuth identities per organization, so a Team seat already on the broker no longer blocks uploading the personal plan under the same email.
+- The status line invalidates its cached usage when the session rotates to a different Anthropic organization (previously the old subscription's quota could linger for the cache TTL), and `omp auth-gateway check` labels each credential with its organization so a failing row says which subscription needs re-login.
+- `omp usage` "no usage data" attribution is org-decisive whenever either the stored account or a report carries an organization: an org-less legacy credential whose own fetch failed is no longer hidden by an org-attributed sibling report sharing the same email.
+- Active-account matching for `/usage`, `/logout`, and `omp token --list` now treats a shared organization as a qualifier rather than a match: two Anthropic Team seats in one org (same org id, per-user pools) no longer flag each other's rows or reports as "in use by this session" — the base identity (account/email/project) is still required, with org-only sessions matching on the org alone.
+- `omp usage` "no usage data" coverage now requires the member's own identity within a shared organization: a sibling Team member's same-org report no longer counts as coverage for an account whose own report is missing, while an org-only account remains covered by any same-org report.
+- `omp auth-broker migrate --from-local` reruns now recognize an already-migrated org-only Anthropic row (login recovered neither email nor account) by its organization id instead of re-uploading it, which could overwrite the broker's newer refresh token with the stale local one.
+- Updated tangential agent forks to ignore parent session history and focus exclusively on the new request
+- Hardened `/tan` fork isolation: the clone's inherited todo list is cleared at fork (parent todo reminders no longer drag the tan back onto the parent's task), the fork notice warns that the parent is concurrently editing the same working directory, and the notice is re-injected after each compaction so the fork boundary survives summarization
+- Added visual markers in the transcript for elided tool calls that have no corresponding result
+- Updated status event log to prioritize the most recent entries in the display window
+- Updated the snapcompact shape preview transcript to use the compact scope format shown to models during compaction.
+
+### Fixed
+
+- Fixed `xd://` mount notices triggering unsolicited model turns by deferring hidden notices until the next user prompt.
+- Fixed `xd://` device tools appearing in the direct tool inventory and prompting invalid function calls ([#5797](https://github.com/can1357/oh-my-pi/issues/5797)).
+- Fixed `history://` read selectors being treated as part of the agent id instead of paging the transcript ([#5806](https://github.com/can1357/oh-my-pi/issues/5806)).
+- Narrowed the `history://` contract in the system prompt to match the implementation: it serves registered agents process-wide plus persisted subagents discoverable from their artifact trees, but does not discover unregistered top-level sessions solely from persisted session files ([#5839](https://github.com/can1357/oh-my-pi/issues/5839)).
+- Fixed expanded `!` bash and `eval` output keeping a stale `… N more lines (ctrl+o to expand)` footer after Ctrl+O revealed every line ([#5842](https://github.com/can1357/oh-my-pi/issues/5842)).
+- Fixed MCP reauthentication continuing to an authorization URL without `client_id` after dynamic client registration fails; the registration error now blocks the flow with the provider response details ([#5852](https://github.com/can1357/oh-my-pi/issues/5852)).
+- Fixed collapsed todo views hiding the in-progress task in large phases. Both the transient `Todo` tool result and the sticky `Todos` HUD now share one walking-viewport policy: completed/abandoned tasks are omitted, every active task (the in-progress one, or a pending task a live subagent is executing) is pulled to the head in todo order, remaining rows fill with the following pending tasks, and an explicit `… N more active todos` summary is shown when active work alone exceeds the preview cap ([#5873](https://github.com/can1357/oh-my-pi/issues/5873)).
+- Fixed legacy provider extensions failing to load when they use the historical synchronous auth-storage surface ([#5879](https://github.com/can1357/oh-my-pi/issues/5879)).
+- Fixed orphaned detached MCP stdio server process trees surviving session dispose by escalating stdin-EOF → group SIGTERM → group SIGKILL on close() (#5578)
+- Fixed `/new` starting an unsolicited old-context provider turn when a hidden steer (e.g. an `xd://` mount notice) was queued: the session transition is now an atomic boundary, so a queued steer/follow-up can no longer auto-resume against the pre-`/new` context while the session is disconnected mid-transition. `/compact` still resumes a steer/follow-up that arrives while it runs, draining the queue once it reconnects ([#5800](https://github.com/can1357/oh-my-pi/issues/5800)).
+- Fixed signed thinking-only Claude stops being discarded and retried as empty responses ([#5881](https://github.com/can1357/oh-my-pi/issues/5881)).
+- Fixed repeated URL reads and URL-backed searches returning stale same-session responses instead of refetching the resource ([#5803](https://github.com/can1357/oh-my-pi/issues/5803)).
+- Fixed `read`/`write` not recognizing ZIP-based `.jar`/`.war`/`.ear`/`.apk` files as archives, so `read lib.jar:META-INF/MANIFEST.MF` failed with path-not-found ([#5808](https://github.com/can1357/oh-my-pi/issues/5808)).
+- Fixed legacy binary `.doc`/`.ppt`/`.xls`/`.rtf` being advertised as convertible in `read`, `fetch`, and CLI `@file` handling despite having no markit converter, which surfaced an `Unsupported format` error instead of falling through to normal file handling ([#5808](https://github.com/can1357/oh-my-pi/issues/5808)).
+- Fixed Kimi Code transport selection to follow live per-model protocol metadata by default while preserving explicit OpenAI and Anthropic overrides ([#5893](https://github.com/can1357/oh-my-pi/issues/5893)).
+- Fixed repeated edit-tool rejections from local models by recovering comma-separated ranges and malformed trailers, while clarifying canonical string input and `.=` syntax ([#5805](https://github.com/can1357/oh-my-pi/issues/5805)).
+- Fixed LSP diagnostics and edit-time diagnostics writethrough for pull-only servers that advertise `textDocument/diagnostic` statically or through dynamic registration ([#5825](https://github.com/can1357/oh-my-pi/issues/5825)).
+- Fixed local `!` command output concatenating carriage-return progress updates by preserving them as readable line boundaries ([#5845](https://github.com/can1357/oh-my-pi/issues/5845)).
+- Fixed `hub`/`irc` peer discovery after process-crash resume by restoring persisted subagents as parked peers before listing the roster ([#5864](https://github.com/can1357/oh-my-pi/issues/5864)).
+
+### Removed
+
+- Removed the unreliable Bing and Yahoo HTML-scraping web search providers
+### Added
+
+- Added `--sandbox` to redirect startup into `~/.omp/sandbox` (or `--cwd`) before initialization, so sessions and normal project features operate entirely from that fixed directory instead of the launch directory.
+
+### Fixed
+
+- Fixed resumed sessions visibly replaying the transcript from the top in supported multiplexers by waiting briefly for synchronized-output capability detection before the first paint.
+- Fixed assistant code-frame borders being inset relative to transcript cards, and simplified Advisor cards to summarize finding severity in the header without repeated body badges.
 
 ## [17.0.2] - 2026-07-17
 
@@ -68,6 +143,30 @@
 - Added per-advisor on/off toggle (`enabled: false` in `WATCHDOG.yml`): advisors stay in the roster but their runtime is never built — they show `○` in `/advisor status` rather than disappearing. Existing configs are backward-compatible (defaults to `true` when absent).
 - Colored the status line's advisor `++` badge by roster health (green all running, yellow quota-exhausted, red failed, dim paused); per-advisor glyphs (`●`/`○`/`✕`) show in `/advisor status`.
 - Added real provider quota display (usage percent, window, reset timer) to `/advisor status` and the `/advisor configure` preview.
+### Added
+
+- Added persistent English/简体中文 display language selection across the TUI and model-facing prompts, including localized bundled tool, system, agent, memory, and workflow instructions.
+- Added `/last` to open a fullscreen, scrollable view of the active session's latest user turn.
+
+### Changed
+
+- Changed assistant fenced code blocks to compact language-labeled frames, with viewport-aware middle folding and Ctrl+O expansion for long content.
+- Changed Advisor transcript notes to an always-expanded rounded card with localized chrome, severity rails, and the degraded custom-message theme background.
+- Changed focused subagent navigation with configurable next/previous shortcuts, a readable `Main › subagent` status label, and a compact global-plan summary while viewing child sessions.
+
+### Fixed
+
+- Fixed completed todo lists remaining pinned above the editor, including localized Chinese todo titles.
+- Expanded Chinese localization across model-role labels, high-frequency settings, model/OAuth pickers, setup/usage/config/models CLI output, and the unified Hub/xd tool surface.
+- Fixed localized inline setting controls writing translated labels instead of raw schema values, which prevented options such as Tight Layout from being enabled in Chinese.
+- Fixed remaining English `Task` and Glob truncation status labels in the Simplified Chinese TUI.
+- Fixed Advisor transcript cards and configuration chrome leaving headers, severity badges, counts, default/unsaved markers, and overflow hints in English when the Simplified Chinese display language is active.
+- Fixed localized model-role chips and hook/status rows rendering CJK labels too tightly by adding explicit glyph, chip, and status spacing.
+- Fixed localized transcripts translating the native `read` tool identifier, and localized checkpoint, rewind, eval, resolution-device, and Agent Hub activity statuses with clearer Simplified Chinese wording.
+- Fixed fetched image responses with empty textual fallback content omitting the localized invalid-image explanation.
+- Fixed locally installed compiled `omp` binaries being unable to display `/changelog` because the launcher did not provide the package asset directory.
+
+## [17.0.1] - 2026-07-16
 
 ### Changed
 

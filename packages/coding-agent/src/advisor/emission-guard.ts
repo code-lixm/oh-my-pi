@@ -90,8 +90,32 @@ const SUPPRESSED_NORMALIZED_PHRASES: Record<string, true> = {
 	"on track": true,
 	continue: true,
 	"carry on": true,
+	// Waiting/silence self-talk — operational status is not advice. Keep the
+	// multilingual variants explicit and exact so concrete notes containing
+	// these words still pass (for example, "Do not wait for the summary").
+	silent: true,
+	"stay silent": true,
+	"remain silent": true,
+	"wait for summary": true,
+	"waiting for summary": true,
+	"silent wait for summary": true,
+	"silent waiting for summary": true,
+	"stay silent wait for summary": true,
+	"remain silent wait for summary": true,
+	静默: true,
+	保持静默: true,
+	继续静默: true,
+	等汇总: true,
+	等待汇总: true,
+	静默等汇总: true,
+	静默等待汇总: true,
+	"静默 等汇总": true,
+	"静默 等待汇总": true,
+	"保持静默 等汇总": true,
+	"保持静默 等待汇总": true,
+	"继续静默 等汇总": true,
+	"继续静默 等待汇总": true,
 };
-
 /**
  * Bounds the dedupe history. Sessions with very long advisor activity could
  * otherwise grow the set without bound. The reporter's pathological session

@@ -4,10 +4,10 @@
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import taskLabelSystemPrompt from "../prompts/system/task-label.md" with { type: "text" };
+import taskLabelSystemPromptZh from "../prompts/system/task-label.zh-CN.md" with { type: "text" };
 import { generateSessionTitle } from "../utils/title-generator";
-
-const TASK_LABEL_SYSTEM_PROMPT = prompt.render(taskLabelSystemPrompt);
 
 /** Compresses a delegated assignment into a one-sentence UI label via the tiny title model — fired by the executor spawn path because the task wire schema no longer carries a `description`; null on empty input or failure. */
 export async function generateTaskLabel(
@@ -27,7 +27,7 @@ export async function generateTaskLabel(
 			sessionId,
 			undefined,
 			undefined,
-			TASK_LABEL_SYSTEM_PROMPT,
+			prompt.render(selectPrompt(taskLabelSystemPrompt, taskLabelSystemPromptZh)),
 			signal,
 		);
 	} catch (err) {

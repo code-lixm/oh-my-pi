@@ -18,11 +18,15 @@ import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
+import subagentUserPromptTemplateZh from "../prompts/system/subagent-user-prompt.zh-CN.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
+import taskDescriptionTemplateZh from "../prompts/tools/task.zh-CN.md" with { type: "text" };
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
+import taskSummaryTemplateZh from "../prompts/tools/task-summary.zh-CN.md" with { type: "text" };
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { formatBytes, formatDuration } from "../tools/render-utils";
@@ -41,6 +45,7 @@ import {
 // Import review tools for side effects (registers subagent tool handlers)
 import "../tools/review";
 import type { AsyncJobManager } from "../async";
+import { selectPrompt } from "../prompts/prompt-locale";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
 import { generateTaskName } from "./name-generator";
@@ -51,7 +56,7 @@ import { repairTaskParams } from "./repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 
 function renderSubagentUserPrompt(assignment: string): string {
-	return prompt.render(subagentUserPromptTemplate, {
+	return prompt.render(selectPrompt(subagentUserPromptTemplate, subagentUserPromptTemplateZh), {
 		assignment: assignment.trim(),
 	});
 }
@@ -181,7 +186,7 @@ function renderDescription(
 		readOnly: isReadOnlyAgent(agent),
 		blocking: agent.blocking === true,
 	}));
-	return prompt.render(taskDescriptionTemplate, {
+	return prompt.render(selectPrompt(taskDescriptionTemplate, taskDescriptionTemplateZh), {
 		agents: renderedAgents,
 		spawningDisabled,
 		defaultAgent: spawnPolicy.defaultAgent,
@@ -208,12 +213,17 @@ function createTaskModeError(text: string): AgentToolResult<TaskToolDetails> {
  */
 function validateShapeParams(batchEnabled: boolean, params: TaskParams): string | undefined {
 	if (Object.hasOwn(params, "schema")) {
-		return "The task tool uses `outputSchema`; rename the stale `schema` field.";
+		return tSettingsUi(
+			"The task tool uses `outputSchema`; rename the stale `schema` field. In `task.batch`, each task entry uses `outputSchema`; flat task calls use top-level `outputSchema`. Otherwise rely on the selected agent definition's `output` schema or the inherited session schema; workflows needing ad-hoc structured output use eval `agent(prompt, schema)`.",
+		);
 	}
 	if (!batchEnabled) {
 		const disallowed = (["tasks", "context"] as const).filter(field => params[field] !== undefined);
 		if (disallowed.length > 0) {
-			return `task.batch is disabled, so the task tool does not accept ${disallowed.map(f => `\`${f}\``).join(" or ")}. Spawn one agent per call with \`task\`, or enable the task.batch setting.`;
+			return tSettingsUi(
+				"task.batch is disabled, so the task tool does not accept {fields}. Spawn one agent per call with `task`, or enable the task.batch setting.",
+				{ fields: disallowed.map(f => `\`${f}\``).join(" or ") },
+			);
 		}
 	}
 	return undefined;
@@ -234,15 +244,18 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 	const tasks = params.tasks;
 	if (batchEnabled && tasks !== undefined) {
 		if (!Array.isArray(tasks) || tasks.length === 0) {
-			return "Missing `tasks`. Provide at least one task item ({ name?, agent?, task }).";
+			return tSettingsUi("Missing `tasks`. Provide at least one task item ({ name?, agent?, task }).");
 		}
 		if (hasTask) {
-			return "Top-level `task` is not part of the batch shape. Put the work in `tasks[]` items.";
+			return tSettingsUi("Top-level `task` is not part of the batch shape. Put the work in `tasks[]` items.");
 		}
 		for (let i = 0; i < tasks.length; i++) {
 			const item = tasks[i];
 			if (!item || typeof item.task !== "string" || item.task.trim() === "") {
-				return `Task ${i + 1}${item?.name ? ` (\`${item.name}\`)` : ""} is missing \`task\`. Every task needs complete, self-contained instructions.`;
+				return tSettingsUi(
+					"Task {index}{nameSuffix} is missing `task`. Every task needs complete, self-contained instructions.",
+					{ index: i + 1, nameSuffix: item?.name ? ` (\`${item.name}\`)` : "" },
+				);
 			}
 		}
 		const seen = new Map<string, string>();
@@ -252,19 +265,24 @@ function validateSpawnParams(params: TaskParams, batchEnabled: boolean): string 
 			const key = name.toLowerCase();
 			const existing = seen.get(key);
 			if (existing !== undefined) {
-				return `Duplicate task name ${existing === name ? `\`${name}\`` : `\`${existing}\` / \`${name}\``}. Provided names must be unique within a call (case-insensitive).`;
+				return tSettingsUi(
+					"Duplicate task name {name}. Provided names must be unique within a call (case-insensitive).",
+					{ name: existing === name ? `\`${name}\`` : `\`${existing}\` / \`${name}\`` },
+				);
 			}
 			seen.set(key, name);
 		}
 		if (typeof params.context !== "string" || params.context.trim() === "") {
-			return "Missing `context`. Provide the shared background for this batch — goal, constraints, and any contract the tasks share.";
+			return tSettingsUi(
+				"Missing `context`. Provide the shared background for this batch — goal, constraints, and any contract the tasks share.",
+			);
 		}
 		return undefined;
 	}
 	if (!hasTask) {
 		return batchEnabled
-			? "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`."
-			: "Missing `task`. Provide complete, self-contained instructions for the agent.";
+			? tSettingsUi("Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`.")
+			: tSettingsUi("Missing `task`. Provide complete, self-contained instructions for the agent.");
 	}
 	return undefined;
 }
@@ -402,10 +420,9 @@ export function buildCoordinationAdvisory(
 	ircEnabled: boolean,
 ): string | undefined {
 	if (!depthCapacity || !ircEnabled || items.length < 2) return undefined;
-	return (
-		`Coordinate: ${items.length} siblings are running together. If their work overlaps, have them ` +
-		`message each other via \`hub\` (by id, or "all" to broadcast) before editing shared files — ` +
-		`live coordination beats a serial handoff. Check \`hub\` op:"list" to see who is doing what.`
+	return tSettingsUi(
+		"{count} subagents are running in parallel. Results return automatically; do not poll.\nWork may overlap? Use `hub` `send` so the relevant agents confirm ownership first.",
+		{ count: items.length },
 	);
 }
 
@@ -884,7 +901,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				content: [
 					{
 						type: "text",
-						text: `Failed to start background task job${failedSchedules.length === 1 ? "" : "s"}: ${failedSchedules.join("; ")}`,
+						text: tSettingsUi("Failed to start background task job{plural}: {details}", {
+							plural: failedSchedules.length === 1 ? "" : "s",
+							details: failedSchedules.join("; "),
+						}),
 					},
 				],
 				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
@@ -893,16 +913,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const scheduleFailureSummary =
 			failedSchedules.length > 0
-				? ` Failed to schedule ${failedSchedules.length} spawn${failedSchedules.length === 1 ? "" : "s"}: ${failedSchedules.join("; ")}.`
+				? tSettingsUi(" Failed to schedule {count} spawn{plural}: {details}.", {
+						count: failedSchedules.length,
+						plural: failedSchedules.length === 1 ? "" : "s",
+						details: failedSchedules.join("; "),
+					})
 				: "";
 		const coordinationHint = [
 			started.length === 1
 				? ircEnabled
-					? `DM \`${started[0].agentId}\` via \`hub\` send to coordinate while it runs; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
-					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task.`
+					? tSettingsUi(
+							"DM `{agentId}` via `hub` send to coordinate while it runs; use `hub` only to inspect (`jobs`), wait, or cancel a stuck task.",
+							{ agentId: started[0].agentId },
+						)
+					: tSettingsUi("Use `hub` to inspect (`jobs`), wait, or cancel a stuck task.")
 				: ircEnabled
-					? `DM these ids via \`hub\` send to coordinate while they run; use \`hub\` only to inspect (\`jobs\`), wait, or cancel a stuck task.`
-					: `Use \`hub\` to inspect (\`jobs\`), wait, or cancel a stuck task by id.`,
+					? tSettingsUi(
+							"DM these ids via `hub` send to coordinate while they run; use `hub` only to inspect (`jobs`), wait, or cancel a stuck task.",
+						)
+					: tSettingsUi("Use `hub` to inspect (`jobs`), wait, or cancel a stuck task by id."),
 			taskAsyncContractTemplate.trim(),
 		].join("\n");
 
@@ -910,7 +939,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (spawns.length === 1) {
 				const { agentId, jobId } = started[0];
 				onUpdate?.({
-					content: [{ type: "text", text: `Spawned agent \`${agentId}\`...` }],
+					content: [{ type: "text", text: tSettingsUi("Spawned agent `{agentId}`...", { agentId }) }],
 					details: buildAsyncDetails(),
 				});
 				return withPreflightFailures(
@@ -918,7 +947,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						content: [
 							{
 								type: "text",
-								text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first. ${coordinationHint}`,
+								text: tSettingsUi(
+									"Spawned agent `{agentId}` (job `{jobId}`). Its result auto-delivers on yield unless a settled `hub jobs`/`wait` snapshot consumes it first. {coordinationHint}",
+									{ agentId, jobId, coordinationHint },
+								),
 							},
 						],
 						details: buildAsyncDetails(),
@@ -927,7 +959,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 			const startedListing = started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n");
 			onUpdate?.({
-				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
+				content: [
+					{
+						type: "text",
+						text: tSettingsUi("Spawned {count} agent{plural}...", { count: started.length, plural: "s" }),
+					},
+				],
 				details: buildAsyncDetails(),
 			});
 			return withPreflightFailures(
@@ -935,7 +972,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [
 						{
 							type: "text",
-							text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${startedListing}\n${coordinationHint}`,
+							text: tSettingsUi(
+								"Spawned {count} background agent{plural} using {agentLabel}.{scheduleFailureSummary} Each result auto-delivers on yield unless a settled `hub jobs`/`wait` snapshot consumes it first.\n{startedListing}\n{coordinationHint}",
+								{
+									count: started.length,
+									plural: started.length === 1 ? "" : "s",
+									agentLabel,
+									scheduleFailureSummary,
+									startedListing,
+									coordinationHint,
+								},
+							),
 						},
 					],
 					details: buildAsyncDetails(),
@@ -951,7 +998,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			content: [
 				{
 					type: "text",
-					text: `Running ${syncLabel} inline; ${started.length} background agent${started.length === 1 ? "" : "s"} spawned...`,
+					text: tSettingsUi("Running {syncLabel} inline; {count} background agent{plural} spawned...", {
+						syncLabel,
+						count: started.length,
+						plural: started.length === 1 ? "" : "s",
+					}),
 				},
 			],
 			details: buildAsyncDetails(),
@@ -967,7 +1018,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						const spawn = spawns.find(candidate => candidate.index === index);
 						if (spawn) spawn.progress = { ...progress, index };
 						onUpdate({
-							content: [{ type: "text", text: `Running ${syncLabel} inline...` }],
+							content: [{ type: "text", text: tSettingsUi("Running {syncLabel} inline...", { syncLabel }) }],
 							details: buildAsyncDetails(),
 						});
 					}
@@ -1000,14 +1051,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const spawnedSummary =
 			started.length > 0
-				? `Spawned ${started.length} background agent${started.length === 1 ? "" : "s"}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n")}\n${coordinationHint}`
+				? tSettingsUi(
+						"Spawned {count} background agent{plural}.{scheduleFailureSummary} Each result auto-delivers on yield unless a settled `hub jobs`/`wait` snapshot consumes it first.\n{startedListing}\n{coordinationHint}",
+						{
+							count: started.length,
+							plural: started.length === 1 ? "" : "s",
+							scheduleFailureSummary,
+							startedListing: started
+								.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`)
+								.join("\n"),
+							coordinationHint,
+						},
+					)
 				: scheduleFailureSummary.trim();
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
 		return withPreflightFailures(
 			withAdvisory({
-				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+				content: [{ type: "text", text: text.length > 0 ? text : tSettingsUi("No results.") }],
 				details: buildAsyncDetails(),
 			}),
 		);
@@ -1036,13 +1098,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (aborted) {
 				const status = AgentRegistry.global().get(agentId)?.status;
 				if (status === "idle" || status === "parked") {
-					const followUp = ircEnabled ? "message it via `hub` to resume; " : "";
-					return `\n\n${agentId} was stopped but is still resumable — ${followUp}transcript at history://${agentId}`;
+					const followUp = ircEnabled ? tSettingsUi("message it via `hub` to resume; ") : "";
+					return `\n\n${tSettingsUi("{agentId} was stopped but is still resumable — {followUp}transcript at history://{agentId}", { agentId, followUp })}`;
 				}
-				return `\n\n${agentId} was aborted — transcript at history://${agentId}`;
+				return `\n\n${tSettingsUi("{agentId} was aborted — transcript at history://{agentId}", { agentId })}`;
 			}
-			const followUp = ircEnabled ? "message it via `hub` to follow up; " : "";
-			return `\n\n${agentId} is now idle — ${followUp}transcript at history://${agentId}`;
+			const followUp = ircEnabled ? tSettingsUi("message it via `hub` to follow up; ") : "";
+			return `\n\n${tSettingsUi("{agentId} is now idle — {followUp}transcript at history://{agentId}", { agentId, followUp })}`;
 		};
 		return manager.register(
 			"task",
@@ -1076,13 +1138,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					releasePermit();
 					progress.status = "aborted";
 					onSettled?.(true);
-					throw new Error("Aborted before execution");
+					throw new Error(tSettingsUi("Aborted before execution"));
 				}
 				try {
 					markRunning();
 					progress.status = "running";
 					await reportProgress(
-						`Running background task ${agentId}...`,
+						tSettingsUi("Running background task {agentId}...", { agentId }),
 						buildDetails() as unknown as Record<string, unknown>,
 					);
 					const forwardSyncProgress: AgentToolUpdateCallback<TaskToolDetails> = async update => {
@@ -1108,7 +1170,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							progress.retryFailure = nextProgress.retryFailure;
 						}
 						const updateText =
-							update.content.find(part => part.type === "text")?.text ?? `Running background task ${agentId}...`;
+							update.content.find(part => part.type === "text")?.text ??
+							tSettingsUi("Running background task {agentId}...", { agentId });
 						await reportProgress(updateText, buildDetails() as unknown as Record<string, unknown>);
 					};
 					const result = await this.#executeSync(
@@ -1143,8 +1206,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					}
 					onSettled?.(resultFailed);
 					const statusText = resultFailed
-						? `Background task ${agentId} failed.`
-						: `Background task ${agentId} complete.`;
+						? tSettingsUi("Background task {agentId} failed.", { agentId })
+						: tSettingsUi("Background task {agentId} complete.", { agentId });
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
 					const deliveryText = `${finalText}${buildFollowUpHint(singleResult?.aborted === true)}`;
 					if (resultFailed) {
@@ -1159,7 +1222,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.status = "failed";
 					progress.durationMs = Math.max(0, Date.now() - startedAt);
 					onSettled?.(true);
-					const statusText = `Background task ${agentId} failed.`;
+					const statusText = tSettingsUi("Background task {agentId} failed.", { agentId });
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
 					const message = error instanceof Error ? error.message : String(error);
 					const hint = AgentRegistry.global().get(agentId) ? buildFollowUpHint(false) : "";
@@ -1448,7 +1511,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// the parent so it can resume via irc instead of redoing the work.
 		const refStatus = AgentRegistry.global().get(result.id)?.status;
 		const resumable = result.aborted && (refStatus === "idle" || refStatus === "parked");
-		const summary = prompt.render(taskSummaryTemplate, {
+		const summary = prompt.render(selectPrompt(taskSummaryTemplate, taskSummaryTemplateZh), {
 			agentName: result.agent,
 			id: result.id,
 			status,

@@ -14,9 +14,15 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommand, CustomCommandAPI } from "../../../../extensibility/custom-commands/types";
 import type { HookCommandContext } from "../../../../extensibility/hooks/types";
+import { selectPrompt } from "../../../../prompts/prompt-locale";
 import reviewCustomRequestTemplate from "../../../../prompts/review-custom-request.md" with { type: "text" };
+import reviewCustomRequestTemplateZh from "../../../../prompts/review-custom-request.zh-CN.md" with { type: "text" };
 import reviewHeadlessRequestTemplate from "../../../../prompts/review-headless-request.md" with { type: "text" };
+import reviewHeadlessRequestTemplateZh from "../../../../prompts/review-headless-request.zh-CN.md" with {
+	type: "text",
+};
 import reviewRequestTemplate from "../../../../prompts/review-request.md" with { type: "text" };
+import reviewRequestTemplateZh from "../../../../prompts/review-request.zh-CN.md" with { type: "text" };
 import * as gh from "../../../../tools/gh";
 import * as git from "../../../../utils/git";
 import * as jj from "../../../../utils/jj";
@@ -249,7 +255,7 @@ function buildReviewPrompt(
 		hunksPreview: skipDiff ? getDiffPreview(f.hunks, linesPerFile) : "",
 	}));
 
-	return prompt.render(reviewRequestTemplate, {
+	return prompt.render(selectPrompt(reviewRequestTemplate, reviewRequestTemplateZh), {
 		mode,
 		files: filesWithExt,
 		excluded: stats.excluded,
@@ -268,11 +274,11 @@ function buildReviewPrompt(
 }
 
 function buildCustomReviewPrompt(instructions: string): string {
-	return prompt.render(reviewCustomRequestTemplate, { instructions });
+	return prompt.render(selectPrompt(reviewCustomRequestTemplate, reviewCustomRequestTemplateZh), { instructions });
 }
 
 function buildHeadlessReviewPrompt(focus?: string): string {
-	return prompt.render(reviewHeadlessRequestTemplate, { focus });
+	return prompt.render(selectPrompt(reviewHeadlessRequestTemplate, reviewHeadlessRequestTemplateZh), { focus });
 }
 
 const REVIEW_CONTEXT_PR_LIMIT = 3;

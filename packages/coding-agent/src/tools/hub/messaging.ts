@@ -10,18 +10,25 @@
  */
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { canSpawnAtDepth } from "../../task/types";
-import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import {
-	createCachedComponent,
+	Ellipsis,
+	framedBlock,
+	outputBlockContentWidth,
+	renderStatusLine,
+	renderTreeList,
+	truncateToWidth,
+} from "../../tui";
+import {
 	formatBadge,
 	formatErrorDetail,
 	getPreviewLines,
@@ -357,7 +364,7 @@ const BODY_LINE_WIDTH = 100;
 
 const PEER_STATUS_ORDER: Record<string, number> = { running: 0, idle: 1, parked: 2 };
 
-function ircGlyph(theme: Theme): string {
+export function ircGlyph(theme: Theme): string {
 	return theme.styledSymbol("tool.irc", "accent");
 }
 
@@ -378,17 +385,17 @@ function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
 function peerStatusBadge(status: string, theme: Theme): string {
 	switch (status) {
 		case "running":
-			return theme.fg("accent", `${theme.status.running} running`);
+			return theme.fg("accent", `${theme.status.running} ${tSettingsUi("running")}`);
 		case "idle":
-			return theme.fg("success", `${theme.status.enabled} idle`);
+			return theme.fg("success", `${theme.status.enabled} ${tSettingsUi("idle")}`);
 		case "parked":
-			return theme.fg("muted", `${theme.status.shadowed} parked`);
+			return theme.fg("muted", `${theme.status.shadowed} ${tSettingsUi("parked")}`);
 		default:
-			return theme.fg("error", `${theme.status.aborted} ${status}`);
+			return theme.fg("error", `${theme.status.aborted} ${tSettingsUi(status)}`);
 	}
 }
 
-function messageAge(ts: number | undefined): string {
+export function messageAge(ts: number | undefined): string {
 	if (!ts) return "";
 	return formatAge(Math.max(1, Math.round((Date.now() - ts) / 1000)));
 }
@@ -401,7 +408,7 @@ function textContent(result: { content: Array<{ type: string; text?: string }> }
  * Quote-bordered message body preview. `tone` separates outbound text (dim)
  * from received text (toolOutput); a trailing dim counter marks elided lines.
  */
-function bodyLines(
+export function bodyLines(
 	body: string,
 	expanded: boolean,
 	theme: Theme,
@@ -417,7 +424,9 @@ function bodyLines(
 	);
 	const hidden = total - Math.min(total, max);
 	if (hidden > 0) {
-		lines.push(`${indent}${quote} ${theme.fg("dim", `… +${hidden} more ${hidden === 1 ? "line" : "lines"}`)}`);
+		lines.push(
+			`${indent}${quote} ${theme.fg("dim", tSettingsUi(hidden === 1 ? "… +{count} more line" : "… +{count} more lines", { count: hidden }))}`,
+		);
 	}
 	return lines;
 }
@@ -426,27 +435,28 @@ function bodyLines(
 function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `IRC ${theme.nav.selected} ${args.to?.trim() || "…"}`;
+			return `${tSettingsUi("IRC")} ${theme.nav.selected} ${args.to?.trim() || "…"}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${args.from?.trim() || "anyone"}`;
+			return `${tSettingsUi("IRC")} ${theme.nav.back} ${args.from?.trim() || tSettingsUi("anyone")}`;
 		case "inbox":
-			return "IRC inbox";
+			return tSettingsUi("IRC inbox");
 		case "list":
-			return "IRC peers";
+			return tSettingsUi("IRC peers");
 		default:
-			return "Hub";
+			return tSettingsUi("Hub");
 	}
 }
 
 function callMeta(args: HubRenderArgs | undefined): string[] {
 	const meta: string[] = [];
 	if (args?.op === "send") {
-		if (args.to === "all") meta.push("broadcast");
-		if (args.await) meta.push("await reply");
-		if (args.replyTo) meta.push("reply");
+		if (args.to === "all") meta.push(tSettingsUi("broadcast"));
+		if (args.await) meta.push(tSettingsUi("await reply"));
+		if (args.replyTo) meta.push(tSettingsUi("reply"));
 	}
-	if (args?.op === "wait" && args.timeoutMs) meta.push(`timeout ${formatDuration(args.timeoutMs)}`);
-	if (args?.op === "inbox" && args.peek) meta.push("peek");
+	if (args?.op === "wait" && args.timeoutMs)
+		meta.push(tSettingsUi("timeout {duration}", { duration: formatDuration(args.timeoutMs) }));
+	if (args?.op === "inbox" && args.peek) meta.push(tSettingsUi("peek"));
 	return meta;
 }
 
@@ -455,7 +465,7 @@ function renderErrorResult(
 	args: HubRenderArgs | undefined,
 	theme: Theme,
 ): string[] {
-	const text = textContent(result) || "IRC call failed.";
+	const text = textContent(result) || tSettingsUi("IRC call failed.");
 	return [
 		renderStatusLine({ icon: "error", title: callTitle(args, theme), meta: callMeta(args) }, theme),
 		formatErrorDetail(text, theme),
@@ -484,27 +494,31 @@ export function createIrcMessageCard(
 	const from = card.from?.trim() || "?";
 	const title =
 		card.kind === "incoming"
-			? `IRC ${uiTheme.nav.back} ${from}`
+			? `${tSettingsUi("IRC")} ${uiTheme.nav.back} ${from}`
 			: card.kind === "autoreply"
-				? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-				: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+				? `${tSettingsUi("IRC")} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+				: `${tSettingsUi("IRC")} ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
-	if (card.kind === "autoreply") meta.push("auto");
-	if (card.replyTo) meta.push("reply");
+	if (card.kind === "autoreply") meta.push(tSettingsUi("auto"));
+	if (card.replyTo) meta.push(tSettingsUi("reply"));
 	const age = messageAge(card.timestamp);
 	if (age) meta.push(age);
-	return createCachedComponent(
-		getExpanded,
-		(width, expanded) => {
-			const lines = [renderStatusLine({ iconOverride: ircGlyph(uiTheme), title, meta }, uiTheme)];
-			if (body.trim()) {
-				lines.push(...bodyLines(body, expanded, uiTheme, { indent: "  ", collapsedLines: 3 }));
-			}
-			return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode));
-		},
-		{ paddingX: 1 },
-	);
+	return framedBlock(uiTheme, width => {
+		const contentWidth = outputBlockContentWidth(width);
+		const bodyRows = body.trim()
+			? bodyLines(body, getExpanded(), uiTheme, { indent: "  ", collapsedLines: 3 }).map(line =>
+					truncateToWidth(line, contentWidth, Ellipsis.Unicode),
+				)
+			: [];
+		return {
+			header: renderStatusLine({ iconOverride: ircGlyph(uiTheme), title, meta }, uiTheme),
+			sections: bodyRows.length > 0 ? [{ lines: bodyRows }] : [],
+			borderColor: "borderMuted",
+			applyBg: false,
+			width,
+		};
+	});
 }
 
 function renderSendResult(
@@ -516,11 +530,12 @@ function renderSendResult(
 ): string[] {
 	const receipts = details.receipts ?? [];
 	const to = details.to ?? args?.to?.trim() ?? "?";
-	const title = `IRC ${theme.nav.selected} ${to}`;
+	const title = `${tSettingsUi("IRC")} ${theme.nav.selected} ${to}`;
 
 	// Pre-delivery failures (validation) and empty broadcasts carry no receipts.
 	if (receipts.length === 0) {
-		const text = textContent(result) || (result.isError ? "Send failed." : "Nothing to deliver.");
+		const text =
+			textContent(result) || (result.isError ? tSettingsUi("Send failed.") : tSettingsUi("Nothing to deliver."));
 		return [
 			renderStatusLine({ icon: result.isError ? "error" : "warning", title }, theme),
 			result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
@@ -533,15 +548,16 @@ function renderSendResult(
 	const timedOut = waited === null;
 
 	const meta: string[] = [];
-	if (to === "all") meta.push("broadcast");
+	if (to === "all") meta.push(tSettingsUi("broadcast"));
 	if (receipts.length === 1) {
 		const receipt = receipts[0]!;
-		meta.push(theme.fg(outcomeColor(receipt.outcome), receipt.outcome));
+		meta.push(theme.fg(outcomeColor(receipt.outcome), tSettingsUi(receipt.outcome)));
 	} else {
-		if (delivered.length > 0) meta.push(theme.fg("success", `${delivered.length} delivered`));
-		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
+		if (delivered.length > 0)
+			meta.push(theme.fg("success", tSettingsUi("{count} delivered", { count: delivered.length })));
+		if (failedCount > 0) meta.push(theme.fg("error", tSettingsUi("{count} failed", { count: failedCount })));
 	}
-	if (timedOut) meta.push(theme.fg("warning", "no reply"));
+	if (timedOut) meta.push(theme.fg("warning", tSettingsUi("no reply")));
 
 	const icon = result.isError
 		? { icon: "error" as const }
@@ -562,7 +578,7 @@ function renderSendResult(
 					maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 					itemType: "recipient",
 					renderItem: receipt => {
-						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
+						const badge = formatBadge(tSettingsUi(receipt.outcome), outcomeColor(receipt.outcome), theme);
 						const error =
 							receipt.outcome === "failed" && receipt.error
 								? ` ${theme.fg("error", `${theme.format.dash} ${receipt.error}`)}`
@@ -582,7 +598,9 @@ function renderSendResult(
 		);
 		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
 	} else if (timedOut) {
-		lines.push(`  ${theme.fg("warning", "No reply yet — they may answer later; check inbox or wait again.")}`);
+		lines.push(
+			`  ${theme.fg("warning", tSettingsUi("No reply yet — they may answer later; check inbox or wait again."))}`,
+		);
 	}
 	return lines;
 }
@@ -596,19 +614,26 @@ function renderWaitResult(
 ): string[] {
 	const waited = details.waited;
 	if (!waited) {
-		const text = textContent(result) || "No message arrived.";
+		const text = textContent(result) || tSettingsUi("No message arrived.");
 		return [
 			renderStatusLine(
-				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.from?.trim() || "anyone"}`, meta: ["timed out"] },
+				{
+					icon: "warning",
+					title: `${tSettingsUi("IRC")} ${theme.nav.back} ${args?.from?.trim() || tSettingsUi("anyone")}`,
+					meta: [tSettingsUi("timed out")],
+				},
 				theme,
 			),
 			`  ${theme.fg("muted", replaceTabs(text))}`,
 		];
 	}
 	const meta = [messageAge(waited.ts)];
-	if (waited.replyTo) meta.push("reply");
+	if (waited.replyTo) meta.push(tSettingsUi("reply"));
 	return [
-		renderStatusLine({ iconOverride: ircGlyph(theme), title: `IRC ${theme.nav.back} ${waited.from}`, meta }, theme),
+		renderStatusLine(
+			{ iconOverride: ircGlyph(theme), title: `${tSettingsUi("IRC")} ${theme.nav.back} ${waited.from}`, meta },
+			theme,
+		),
 		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
 	];
 }
@@ -621,11 +646,18 @@ function renderInboxResult(
 ): string[] {
 	const messages = details.inbox ?? [];
 	if (messages.length === 0) {
-		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta: ["empty"] }, theme)];
+		return [
+			renderStatusLine(
+				{ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC inbox"), meta: [tSettingsUi("empty")] },
+				theme,
+			),
+		];
 	}
-	const meta = [`${messages.length} ${messages.length === 1 ? "message" : "messages"}`];
-	if (args?.peek) meta.push("peek");
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta }, theme);
+	const meta = [
+		tSettingsUi(messages.length === 1 ? "{count} message" : "{count} messages", { count: messages.length }),
+	];
+	if (args?.peek) meta.push(tSettingsUi("peek"));
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC inbox"), meta }, theme);
 	const items = renderTreeList<IrcMessage>(
 		{
 			items: messages,
@@ -634,7 +666,7 @@ function renderInboxResult(
 			itemType: "message",
 			renderItem: msg => {
 				const age = messageAge(msg.ts);
-				const replyBadge = msg.replyTo ? ` ${formatBadge("reply", "muted", theme)}` : "";
+				const replyBadge = msg.replyTo ? ` ${formatBadge(tSettingsUi("reply"), "muted", theme)}` : "";
 				const head = `${theme.fg("accent", msg.from)}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}`;
 				return [head, ...bodyLines(msg.body, expanded, theme, { collapsedLines: 1 })];
 			},
@@ -650,14 +682,19 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 			(PEER_STATUS_ORDER[a.status] ?? 9) - (PEER_STATUS_ORDER[b.status] ?? 9) || b.lastActivity - a.lastActivity,
 	);
 	if (peers.length === 0) {
-		return [renderStatusLine({ icon: "info", title: "IRC peers", meta: ["no other agents"] }, theme)];
+		return [
+			renderStatusLine(
+				{ icon: "info", title: tSettingsUi("IRC peers"), meta: [tSettingsUi("no other agents")] },
+				theme,
+			),
+		];
 	}
 	const counts = new Map<string, number>();
 	for (const peer of peers) counts.set(peer.status, (counts.get(peer.status) ?? 0) + 1);
-	const meta = [...counts].map(([status, count]) => `${count} ${status}`);
+	const meta = [...counts].map(([status, count]) => `${count} ${tSettingsUi(status)}`);
 	const unreadTotal = peers.reduce((sum, peer) => sum + peer.unread, 0);
-	if (unreadTotal > 0) meta.push(theme.fg("warning", `${unreadTotal} unread`));
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC peers", meta }, theme);
+	if (unreadTotal > 0) meta.push(theme.fg("warning", tSettingsUi("{count} unread", { count: unreadTotal })));
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC peers"), meta }, theme);
 	const items = renderTreeList(
 		{
 			items: peers,
@@ -665,8 +702,13 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 			maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 			itemType: "peer",
 			renderItem: peer => {
-				const kindText = peer.parentId ? `${peer.kind}${theme.sep.dot}of ${peer.parentId}` : peer.kind;
-				const unread = peer.unread > 0 ? ` ${formatBadge(`${peer.unread} unread`, "warning", theme)}` : "";
+				const kindText = peer.parentId
+					? `${peer.kind}${theme.sep.dot}${tSettingsUi("of {parentId}", { parentId: peer.parentId })}`
+					: peer.kind;
+				const unread =
+					peer.unread > 0
+						? ` ${formatBadge(tSettingsUi("{count} unread", { count: peer.unread }), "warning", theme)}`
+						: "";
 				const age = messageAge(peer.lastActivity);
 				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(peer.activity))}` : "";
 				const name = theme.fg("dim", replaceTabs(peer.displayName));
@@ -697,7 +739,7 @@ function buildResultLines(
 		case "list":
 			return result.isError ? renderErrorResult(result, args, theme) : renderListResult(details, expanded, theme);
 		default: {
-			const text = textContent(result) || (result.isError ? "Hub call failed." : "Done.");
+			const text = textContent(result) || (result.isError ? tSettingsUi("Hub call failed.") : tSettingsUi("Done."));
 			return [
 				renderStatusLine({ icon: result.isError ? "error" : "success", title: callTitle(args, theme) }, theme),
 				result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
@@ -708,13 +750,23 @@ function buildResultLines(
 
 /** Pending-call frame for messaging ops (send/wait-from/inbox/list). */
 export function messagingRenderCall(args: HubRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-	const lines = [
-		renderStatusLine({ icon: "pending", title: callTitle(args, uiTheme), meta: callMeta(args) }, uiTheme),
-	];
-	if (args?.op === "send" && args.message?.trim()) {
-		lines.push(...bodyLines(args.message, false, uiTheme, { indent: "  ", tone: "dim", collapsedLines: 1 }));
-	}
-	return new Text(lines.join("\n"), 0, 0);
+	return framedBlock(uiTheme, width => {
+		const contentWidth = outputBlockContentWidth(width);
+		const bodyRows =
+			args.op === "send" && args.message?.trim()
+				? bodyLines(args.message, false, uiTheme, { indent: "  ", tone: "dim", collapsedLines: 1 }).map(line =>
+						truncateToWidth(line, contentWidth, Ellipsis.Unicode),
+					)
+				: [];
+		return {
+			header: renderStatusLine({ icon: "pending", title: callTitle(args, uiTheme), meta: callMeta(args) }, uiTheme),
+			sections: bodyRows.length > 0 ? [{ lines: bodyRows }] : [],
+			state: "pending",
+			borderColor: "borderMuted",
+			applyBg: false,
+			width,
+		};
+	});
 }
 
 /** Result frame for messaging ops and message-carrying `wait` results. */
@@ -725,11 +777,19 @@ export function messagingRenderResult(
 	args?: HubRenderArgs,
 ): Component {
 	const details: Partial<CoordinationDetails> = result.details ?? {};
-	return createCachedComponent(
-		() => options.expanded,
-		(width, expanded) =>
-			buildResultLines(result, details, args, expanded, uiTheme).map(line =>
-				truncateToWidth(line, width, Ellipsis.Unicode),
-			),
-	);
+	return framedBlock(uiTheme, width => {
+		const contentWidth = outputBlockContentWidth(width);
+		const [header = "", ...bodyRows] = buildResultLines(result, details, args, options.expanded, uiTheme);
+		return {
+			header,
+			sections:
+				bodyRows.length > 0
+					? [{ lines: bodyRows.map(line => truncateToWidth(line, contentWidth, Ellipsis.Unicode)) }]
+					: [],
+			state: result.isError ? "error" : "success",
+			borderColor: result.isError ? "error" : "borderMuted",
+			applyBg: false,
+			width,
+		};
+	});
 }

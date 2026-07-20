@@ -10,9 +10,12 @@ import path from "node:path";
 import { formatHashlineHeader, formatNumberedLines, type SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { formatAge, formatBytes, isProbablyBinary, readImageMetadata } from "@oh-my-pi/pi-utils";
+import { formatAge, formatBytes, isProbablyBinary, prompt, readImageMetadata } from "@oh-my-pi/pi-utils";
 import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
+import { selectPrompt } from "../prompts/prompt-locale";
+import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
+import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };
 import type { FileMentionMessage } from "../session/messages";
 import {
 	DEFAULT_MAX_BYTES,
@@ -233,7 +236,10 @@ export async function generateFileMentionMessages(
 				if (autoResizeImages) {
 					try {
 						const resized = await resizeImage({ type: "image", data: base64Content, mimeType });
-						dimensionNote = formatDimensionNote(resized);
+						dimensionNote = formatDimensionNote(resized, {
+							format: params =>
+								prompt.render(selectPrompt(imageDimensionNote, imageDimensionNoteZh), params).trim(),
+						});
 						image = {
 							type: "image",
 							mimeType: resized.mimeType,

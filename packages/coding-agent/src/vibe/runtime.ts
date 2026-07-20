@@ -22,7 +22,9 @@ import { resolveAgentModelPatterns } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
+import { selectPrompt } from "../prompts/prompt-locale";
 import vibeTurnResultTemplate from "../prompts/tools/vibe-turn-result.md" with { type: "text" };
+import vibeTurnResultTemplateZh from "../prompts/tools/vibe-turn-result.zh-CN.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { getBundledAgent } from "../task/agents";
@@ -671,7 +673,7 @@ export class VibeSessionRegistry {
 		let text: string;
 		try {
 			text = prompt
-				.render(vibeTurnResultTemplate, {
+				.render(selectPrompt(vibeTurnResultTemplate, vibeTurnResultTemplateZh), {
 					id: record.id,
 					cli: record.cli,
 					turn: turnIndex,

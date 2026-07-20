@@ -45,8 +45,14 @@ import {
 	resolveModelOverride,
 } from "../../config/model-resolver";
 import { Settings } from "../../config/settings";
+import { tSettingsUi } from "../../i18n/settings-locale";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import agentCreationArchitectPrompt from "../../prompts/system/agent-creation-architect.md" with { type: "text" };
+import agentCreationArchitectPromptZh from "../../prompts/system/agent-creation-architect.zh-CN.md" with {
+	type: "text",
+};
 import agentCreationUserPrompt from "../../prompts/system/agent-creation-user.md" with { type: "text" };
+import agentCreationUserPromptZh from "../../prompts/system/agent-creation-user.zh-CN.md" with { type: "text" };
 import { createAgentSession } from "../../sdk";
 import { discoverAgents } from "../../task/discovery";
 import type { AgentDefinition, AgentSource } from "../../task/types";
@@ -101,18 +107,16 @@ const SOURCE_ORDER: Record<AgentSource, number> = {
 	bundled: 2,
 };
 
-const SOURCE_LABEL: Record<AgentSource, string> = {
-	project: "Project",
-	user: "User",
-	bundled: "Bundled",
-};
+function sourceLabel(source: AgentSource): string {
+	return tSettingsUi(source === "project" ? "Project" : source === "user" ? "User" : "Bundled");
+}
 
 const LIST_FOOTER =
-	" ↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close";
+	"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close";
 
 const IDENTIFIER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+){1,5}$/;
 function joinPatterns(patterns: string[]): string {
-	if (patterns.length === 0) return "(session model)";
+	if (patterns.length === 0) return tSettingsUi("(session model)");
 	return patterns.join(", ");
 }
 
@@ -123,7 +127,7 @@ function formatResolution(resolution: ModelResolution): string {
 }
 
 function matchAgent(agent: DashboardAgent, query: string): boolean {
-	const text = `${agent.name} ${agent.description} ${SOURCE_LABEL[agent.source]} ${agent.overrideModel ?? ""}`;
+	const text = `${agent.name} ${agent.description} ${sourceLabel(agent.source)} ${agent.overrideModel ?? ""}`;
 	return query
 		.trim()
 		.split(/\s+/)
@@ -166,14 +170,14 @@ function extractJsonObject(raw: string): string {
 function parseGeneratedAgentSpec(raw: string): GeneratedAgentSpec {
 	const parsed = JSON.parse(extractJsonObject(raw)) as Partial<GeneratedAgentSpec>;
 	if (!parsed || typeof parsed !== "object") {
-		throw new Error("Model output is not a JSON object");
+		throw new Error(tSettingsUi("Model output is not a JSON object"));
 	}
 	if (
 		typeof parsed.identifier !== "string" ||
 		typeof parsed.whenToUse !== "string" ||
 		typeof parsed.systemPrompt !== "string"
 	) {
-		throw new Error("Model output is missing required fields (identifier, whenToUse, systemPrompt)");
+		throw new Error(tSettingsUi("Model output is missing required fields (identifier, whenToUse, systemPrompt)"));
 	}
 
 	const identifier = parsed.identifier.trim();
@@ -181,13 +185,13 @@ function parseGeneratedAgentSpec(raw: string): GeneratedAgentSpec {
 	const systemPrompt = parsed.systemPrompt.trim();
 
 	if (!IDENTIFIER_PATTERN.test(identifier)) {
-		throw new Error("Generated identifier is invalid (must be lowercase kebab-case, 2+ words)");
+		throw new Error(tSettingsUi("Generated identifier is invalid (must be lowercase kebab-case, 2+ words)"));
 	}
 	if (!whenToUse.toLowerCase().startsWith("use this agent when")) {
-		throw new Error("Generated whenToUse must start with 'Use this agent when...'");
+		throw new Error(tSettingsUi("Generated whenToUse must start with 'Use this agent when...'"));
 	}
 	if (!systemPrompt) {
-		throw new Error("Generated systemPrompt is empty");
+		throw new Error(tSettingsUi("Generated systemPrompt is empty"));
 	}
 
 	return { identifier, whenToUse, systemPrompt };
@@ -204,13 +208,13 @@ class AgentListPane implements Component {
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
-		const searchPrefix = theme.fg("muted", "Search: ");
-		const searchText = this.searchQuery || theme.fg("dim", "type to filter");
+		const searchPrefix = theme.fg("muted", tSettingsUi("Search: "));
+		const searchText = this.searchQuery || theme.fg("dim", tSettingsUi("type to filter"));
 		lines.push(`${searchPrefix}${searchText}`);
 		lines.push("");
 
 		if (this.agents.length === 0) {
-			lines.push(theme.fg("muted", "  No agents found."));
+			lines.push(theme.fg("muted", `  ${tSettingsUi("No agents found.")}`));
 			return lines;
 		}
 
@@ -226,8 +230,8 @@ class AgentListPane implements Component {
 			const status = agent.disabled
 				? theme.fg("dim", theme.status.disabled)
 				: theme.fg("success", theme.status.enabled);
-			const source = theme.fg("dim", `[${SOURCE_LABEL[agent.source]}]`);
-			const override = agent.overrideModel ? ` ${theme.fg("warning", "(override)")}` : "";
+			const source = theme.fg("dim", `[${sourceLabel(agent.source)}]`);
+			const override = agent.overrideModel ? ` ${theme.fg("warning", tSettingsUi("(override)"))}` : "";
 			let line = ` ${status} ${replaceTabs(agent.name)} ${source}${override}`;
 
 			if (selected) {
@@ -267,42 +271,49 @@ class AgentInspectorPane implements Component {
 
 	render(width: number): readonly string[] {
 		if (!this.agent) {
-			return [theme.fg("muted", "Select an agent"), theme.fg("dim", "to inspect settings")];
+			return [
+				theme.fg("muted", tSettingsUi("Select an agent")),
+				theme.fg("dim", tSettingsUi("to inspect settings")),
+			];
 		}
 
 		const lines: string[] = [];
 		const state = this.agent.disabled
-			? theme.fg("dim", `${theme.status.disabled} Disabled`)
-			: theme.fg("success", `${theme.status.enabled} Enabled`);
+			? theme.fg("dim", `${theme.status.disabled} ${tSettingsUi("Disabled")}`)
+			: theme.fg("success", `${theme.status.enabled} ${tSettingsUi("Enabled")}`);
 
 		lines.push(theme.bold(theme.fg("accent", replaceTabs(this.agent.name))));
 		lines.push("");
-		lines.push(`${theme.fg("muted", "Status:")} ${state}`);
-		lines.push(`${theme.fg("muted", "Source:")} ${SOURCE_LABEL[this.agent.source]}`);
+		lines.push(`${theme.fg("muted", tSettingsUi("Status:"))} ${state}`);
+		lines.push(`${theme.fg("muted", tSettingsUi("Source:"))} ${sourceLabel(this.agent.source)}`);
 		lines.push("");
 
-		lines.push(`${theme.fg("muted", "Default pattern:")} ${replaceTabs(joinPatterns(this.defaultPatterns))}`);
 		lines.push(
-			`${theme.fg("muted", "Default resolves:")} ${this.defaultResolution ? this.#formatResolution(this.defaultResolution) : theme.fg("dim", "(unresolved)")}`,
+			`${theme.fg("muted", tSettingsUi("Default pattern:"))} ${replaceTabs(joinPatterns(this.defaultPatterns))}`,
 		);
 		lines.push(
-			`${theme.fg("muted", "Override:")} ${this.agent.overrideModel ? theme.fg("warning", replaceTabs(this.agent.overrideModel)) : theme.fg("dim", "(none)")}`,
+			`${theme.fg("muted", tSettingsUi("Default resolves:"))} ${this.defaultResolution ? this.#formatResolution(this.defaultResolution) : theme.fg("dim", tSettingsUi("(unresolved)"))}`,
 		);
-		lines.push(`${theme.fg("muted", "Effective pattern:")} ${replaceTabs(joinPatterns(this.effectivePatterns))}`);
 		lines.push(
-			`${theme.fg("muted", "Effective:")} ${this.effectiveResolution ? this.#formatResolution(this.effectiveResolution) : theme.fg("dim", "(unresolved)")}`,
+			`${theme.fg("muted", tSettingsUi("Override:"))} ${this.agent.overrideModel ? theme.fg("warning", replaceTabs(this.agent.overrideModel)) : theme.fg("dim", tSettingsUi("(none)"))}`,
 		);
-		lines.push(`${theme.fg("muted", "Prewalk:")} ${this.#prewalkLabel()}`);
+		lines.push(
+			`${theme.fg("muted", tSettingsUi("Effective pattern:"))} ${replaceTabs(joinPatterns(this.effectivePatterns))}`,
+		);
+		lines.push(
+			`${theme.fg("muted", tSettingsUi("Effective:"))} ${this.effectiveResolution ? this.#formatResolution(this.effectiveResolution) : theme.fg("dim", tSettingsUi("(unresolved)"))}`,
+		);
+		lines.push(`${theme.fg("muted", tSettingsUi("Prewalk:"))} ${this.#prewalkLabel()}`);
 
 		if (this.agent.filePath) {
 			lines.push("");
-			lines.push(theme.fg("muted", "Path:"));
+			lines.push(theme.fg("muted", tSettingsUi("Path:")));
 			lines.push(theme.fg("dim", `  ${replaceTabs(shortenPath(this.agent.filePath))}`));
 		}
 
 		if (this.agent.description) {
 			lines.push("");
-			lines.push(theme.fg("muted", "Description:"));
+			lines.push(theme.fg("muted", tSettingsUi("Description:")));
 			for (const wrapped of wrapTextWithAnsi(replaceTabs(this.agent.description), Math.max(10, width - 2))) {
 				lines.push(truncateToWidth(wrapped, width));
 			}
@@ -312,20 +323,20 @@ class AgentInspectorPane implements Component {
 	}
 	/** "off", "on → target" (with source: agent default vs override), or the unresolved pattern. */
 	#prewalkLabel(): string {
-		if (!this.agent) return theme.fg("dim", "off");
+		if (!this.agent) return theme.fg("dim", tSettingsUi("off"));
 		const override = this.agent.prewalkOverride?.trim();
 		const sourceTag = override
-			? theme.fg("warning", " (override)")
+			? theme.fg("warning", tSettingsUi(" (override)"))
 			: this.agent.prewalk !== undefined && this.agent.prewalk !== false
-				? theme.fg("dim", " (agent default)")
+				? theme.fg("dim", tSettingsUi(" (agent default)"))
 				: "";
 		if (!this.prewalkPattern) {
-			return `${theme.fg("dim", "off")}${override ? sourceTag : ""}`;
+			return `${theme.fg("dim", tSettingsUi("off"))}${override ? sourceTag : ""}`;
 		}
 		const target = this.prewalkResolution
 			? this.#formatResolution(this.prewalkResolution)
-			: theme.fg("dim", "(unresolved)");
-		return `${theme.fg("success", "on")} ${theme.fg("dim", `${replaceTabs(this.prewalkPattern)} →`)} ${target}${sourceTag}`;
+			: theme.fg("dim", tSettingsUi("(unresolved)"));
+		return `${theme.fg("success", tSettingsUi("on"))} ${theme.fg("dim", `${replaceTabs(this.prewalkPattern)} →`)} ${target}${sourceTag}`;
 	}
 
 	#formatResolution(resolution: ModelResolution): string {
@@ -371,7 +382,7 @@ export class AgentDashboard extends Container {
 	#settingsManager: Settings | null = null;
 	#allAgents: DashboardAgent[] = [];
 	#filteredAgents: DashboardAgent[] = [];
-	#tabs: SourceTab[] = [{ id: "all", label: "All", count: 0 }];
+	#tabs: SourceTab[] = [{ id: "all", label: tSettingsUi("All"), count: 0 }];
 	#activeTabIndex = 0;
 	#selectedIndex = 0;
 	#scrollOffset = 0;
@@ -464,7 +475,7 @@ export class AgentDashboard extends Container {
 		} catch (error) {
 			this.#allAgents = [];
 			this.#filteredAgents = [];
-			this.#tabs = [{ id: "all", label: "All", count: 0 }];
+			this.#tabs = [{ id: "all", label: tSettingsUi("All"), count: 0 }];
 			this.#activeTabIndex = 0;
 			this.#selectedIndex = 0;
 			this.#scrollOffset = 0;
@@ -476,7 +487,7 @@ export class AgentDashboard extends Container {
 	}
 
 	#buildTabs(agents: DashboardAgent[]): SourceTab[] {
-		const tabs: SourceTab[] = [{ id: "all", label: "All", count: agents.length }];
+		const tabs: SourceTab[] = [{ id: "all", label: tSettingsUi("All"), count: agents.length }];
 		const counts: Record<AgentSource, number> = { project: 0, user: 0, bundled: 0 };
 
 		for (const agent of agents) {
@@ -485,7 +496,7 @@ export class AgentDashboard extends Container {
 
 		for (const source of ["project", "user", "bundled"] as const) {
 			if (counts[source] > 0) {
-				tabs.push({ id: source, label: SOURCE_LABEL[source], count: counts[source] });
+				tabs.push({ id: source, label: sourceLabel(source), count: counts[source] });
 			}
 		}
 
@@ -521,7 +532,7 @@ export class AgentDashboard extends Container {
 	}
 
 	#footerLines(): number {
-		return Math.max(1, wrapTextWithAnsi(theme.fg("dim", LIST_FOOTER), this.#uiWidth()).length);
+		return Math.max(1, wrapTextWithAnsi(theme.fg("dim", tSettingsUi(LIST_FOOTER)), this.#uiWidth()).length);
 	}
 
 	/** Height budget for the two-column body, sized to the live terminal. */
@@ -604,8 +615,15 @@ export class AgentDashboard extends Container {
 			settingsOverride: selected.prewalkOverride,
 			agentPrewalk: selected.prewalk,
 		});
-		const state = selected.prewalkOverride ?? "agent default";
-		this.#notice = `Prewalk for ${selected.name}: ${state}${pattern ? ` (into ${pattern})` : ""}`;
+		const state =
+			selected.prewalkOverride === "on"
+				? tSettingsUi("on")
+				: selected.prewalkOverride === "off"
+					? tSettingsUi("off")
+					: tSettingsUi("agent default");
+		this.#notice = pattern
+			? tSettingsUi("Prewalk for {name}: {state} (into {pattern})", { name: selected.name, state, pattern })
+			: tSettingsUi("Prewalk for {name}: {state}", { name: selected.name, state });
 		this.#buildLayout();
 	}
 
@@ -642,7 +660,7 @@ export class AgentDashboard extends Container {
 		this.#editingAgentName = null;
 		this.#editInput = null;
 		this.#applyFilters();
-		this.#notice = `Updated model override for ${selected.name}`;
+		this.#notice = tSettingsUi("Updated model override for {name}", { name: selected.name });
 		this.#buildLayout();
 	}
 
@@ -701,7 +719,7 @@ export class AgentDashboard extends Container {
 		const description = rawDescription.trim();
 		this.#createDescription = description;
 		if (!description) {
-			this.#createError = "Description is required.";
+			this.#createError = tSettingsUi("Description is required.");
 			this.#buildLayout();
 			return;
 		}
@@ -727,7 +745,7 @@ export class AgentDashboard extends Container {
 	async #runAgentCreationArchitect(description: string): Promise<GeneratedAgentSpec> {
 		const modelRegistry = this.modelContext.modelRegistry;
 		if (!modelRegistry) {
-			throw new Error("Model registry unavailable in current session.");
+			throw new Error(tSettingsUi("Model registry unavailable in current session."));
 		}
 		await modelRegistry.refresh();
 
@@ -742,11 +760,16 @@ export class AgentDashboard extends Container {
 		const fallbackModel = modelRegistry.getAvailable()[0];
 		const selectedModel = model ?? fallbackModel;
 		if (!selectedModel) {
-			throw new Error("No available model to generate agent specification.");
+			throw new Error(tSettingsUi("No available model to generate agent specification."));
 		}
 
-		const systemPrompt = prompt.render(agentCreationArchitectPrompt, {});
-		const userPrompt = prompt.render(agentCreationUserPrompt, { request: description });
+		const systemPrompt = prompt.render(
+			selectPrompt(agentCreationArchitectPrompt, agentCreationArchitectPromptZh),
+			{},
+		);
+		const userPrompt = prompt.render(selectPrompt(agentCreationUserPrompt, agentCreationUserPromptZh), {
+			request: description,
+		});
 
 		const { session } = await createAgentSession({
 			cwd: this.cwd,
@@ -780,7 +803,7 @@ export class AgentDashboard extends Container {
 			await session.prompt(userPrompt, { expandPromptTemplates: false });
 			const raw = extractAssistantText(session.state.messages);
 			if (!raw) {
-				throw new Error("No response returned by agent creation architect.");
+				throw new Error(tSettingsUi("No response returned by agent creation architect."));
 			}
 			return parseGeneratedAgentSpec(raw);
 		} finally {
@@ -800,13 +823,17 @@ export class AgentDashboard extends Container {
 		});
 		const targetDir = dirs[0]?.path;
 		if (!targetDir) {
-			throw new Error(`Cannot resolve ${this.#createScope} agents directory.`);
+			throw new Error(
+				tSettingsUi("Cannot resolve {scope} agents directory.", {
+					scope: tSettingsUi(this.#createScope === "project" ? "Project" : "User"),
+				}),
+			);
 		}
 
 		const filePath = path.join(targetDir, `${spec.identifier}.md`);
 		try {
 			await fs.stat(filePath);
-			throw new Error(`Agent file already exists: ${shortenPath(filePath)}`);
+			throw new Error(tSettingsUi("Agent file already exists: {path}", { path: shortenPath(filePath) }));
 		} catch (error) {
 			if (!isEnoent(error)) {
 				throw error;
@@ -825,7 +852,10 @@ export class AgentDashboard extends Container {
 		await Bun.write(filePath, content);
 		await this.#reloadData();
 		this.#clearCreateFlow();
-		this.#notice = `Created agent ${spec.identifier} at ${shortenPath(filePath)}`;
+		this.#notice = tSettingsUi("Created agent {identifier} at {path}", {
+			identifier: spec.identifier,
+			path: shortenPath(filePath),
+		});
 		this.#rebuildAndRender();
 	}
 
@@ -913,19 +943,30 @@ export class AgentDashboard extends Container {
 		return parts.join("");
 	}
 	#renderCreateInput(): void {
-		this.addChild(new Text(theme.bold(theme.fg("accent", " Create New Agent")), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", ` ${tSettingsUi("Create New Agent")}`)), 0, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "Describe what the new agent should do:"), 0, 0));
+		this.addChild(new Text(theme.fg("muted", tSettingsUi("Describe what the new agent should do:")), 0, 0));
 		this.addChild(new Spacer(1));
 		if (this.#createInput) {
 			this.#createInput.setMaxHeight(Math.max(3, Math.min(8, this.#terminalRows() - 12)));
 			this.addChild(this.#createInput);
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", `Scope: ${this.#createScope}`), 0, 0));
+		this.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					tSettingsUi("Scope: {scope}", {
+						scope: tSettingsUi(this.#createScope === "project" ? "Project" : "User"),
+					}),
+				),
+				0,
+				0,
+			),
+		);
 		if (this.#createGenerating) {
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("accent", "Generating agent specification..."), 0, 0));
+			this.addChild(new Text(theme.fg("accent", tSettingsUi("Generating agent specification...")), 0, 0));
 			if (this.#createStreamingText) {
 				this.addChild(new Spacer(1));
 				const maxPreview = Math.max(3, this.#terminalRows() - 18);
@@ -938,7 +979,16 @@ export class AgentDashboard extends Container {
 				}
 				const tail = wrappedLines.slice(-maxPreview);
 				if (wrappedLines.length > maxPreview) {
-					this.addChild(new Text(theme.fg("dim", `  ... ${wrappedLines.length - maxPreview} lines above`), 0, 0));
+					this.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								`  ${tSettingsUi("... {count} more lines", { count: wrappedLines.length - maxPreview })}`,
+							),
+							0,
+							0,
+						),
+					);
 				}
 				for (const line of tail) {
 					this.addChild(new Text(theme.fg("dim", `  ${line}`), 0, 0));
@@ -950,8 +1000,8 @@ export class AgentDashboard extends Container {
 		}
 		this.addChild(new Spacer(1));
 		const hints = this.#createGenerating
-			? " Generating..."
-			: " Ctrl+Q/Ctrl+Enter: generate  Enter: newline  Tab: toggle scope  Esc: cancel";
+			? ` ${tSettingsUi("Generating agent specification...")}`
+			: ` ${tSettingsUi("Ctrl+Q/Ctrl+Enter: generate  Enter: newline  Tab: toggle scope  Esc: cancel")}`;
 		this.addChild(new Text(theme.fg("dim", hints), 0, 0));
 	}
 
@@ -959,17 +1009,30 @@ export class AgentDashboard extends Container {
 		const spec = this.#createSpec;
 		if (!spec) return;
 
-		this.addChild(new Text(theme.bold(theme.fg("accent", " Review Generated Agent")), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", ` ${tSettingsUi("Review Generated Agent")}`)), 0, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", `Identifier: ${spec.identifier}`), 0, 0));
-		this.addChild(new Text(theme.fg("muted", `Scope: ${this.#createScope}`), 0, 0));
+		this.addChild(
+			new Text(theme.fg("muted", tSettingsUi("Identifier: {identifier}", { identifier: spec.identifier })), 0, 0),
+		);
+		this.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					tSettingsUi("Scope: {scope}", {
+						scope: tSettingsUi(this.#createScope === "project" ? "Project" : "User"),
+					}),
+				),
+				0,
+				0,
+			),
+		);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "whenToUse:"), 0, 0));
+		this.addChild(new Text(theme.fg("muted", tSettingsUi("whenToUse:")), 0, 0));
 		for (const line of wrapTextWithAnsi(replaceTabs(spec.whenToUse), Math.max(20, this.#uiWidth() - 2)).slice(0, 8)) {
 			this.addChild(new Text(truncateToWidth(line, this.#uiWidth() - 2), 0, 0));
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("muted", "systemPrompt preview:"), 0, 0));
+		this.addChild(new Text(theme.fg("muted", tSettingsUi("systemPrompt preview:")), 0, 0));
 		const promptWidth = Math.max(20, this.#uiWidth() - 4);
 		const wrappedPrompt: string[] = [];
 		for (const raw of spec.systemPrompt.split("\n")) {
@@ -983,7 +1046,14 @@ export class AgentDashboard extends Container {
 		}
 		if (wrappedPrompt.length > promptPreview.length) {
 			this.addChild(
-				new Text(theme.fg("dim", `  ... ${wrappedPrompt.length - promptPreview.length} more lines`), 0, 0),
+				new Text(
+					theme.fg(
+						"dim",
+						`  ${tSettingsUi("... {count} more lines", { count: wrappedPrompt.length - promptPreview.length })}`,
+					),
+					0,
+					0,
+				),
 			);
 		}
 		if (this.#createError) {
@@ -991,7 +1061,13 @@ export class AgentDashboard extends Container {
 			this.addChild(new Text(theme.fg("error", replaceTabs(this.#createError)), 0, 0));
 		}
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", " Enter: save  Tab: toggle scope  R: regenerate  Esc: cancel"), 0, 0));
+		this.addChild(
+			new Text(
+				theme.fg("dim", ` ${tSettingsUi("Enter: save  Tab: toggle scope  R: regenerate  Esc: cancel")}`),
+				0,
+				0,
+			),
+		);
 	}
 
 	#uiWidth(): number {
@@ -1007,7 +1083,7 @@ export class AgentDashboard extends Container {
 	#buildLayout(): void {
 		this.clear();
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", " Agent Control Center")), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", ` ${tSettingsUi("Agent Control Center")}`)), 0, 0));
 		this.addChild(new Text(this.#renderTabBar(), 0, 0));
 		this.addChild(new Spacer(1));
 
@@ -1017,10 +1093,19 @@ export class AgentDashboard extends Container {
 		}
 
 		if (this.#loading) {
-			this.addChild(new Text(theme.fg("muted", "Loading agents..."), 0, 0));
+			this.addChild(new Text(theme.fg("muted", tSettingsUi("Loading agents...")), 0, 0));
 			this.addChild(new Spacer(1));
 		} else if (this.#loadError) {
-			this.addChild(new Text(theme.fg("error", `Failed to load agents: ${replaceTabs(this.#loadError)}`), 0, 0));
+			this.addChild(
+				new Text(
+					theme.fg(
+						"error",
+						tSettingsUi("Failed to load agents: {message}", { message: replaceTabs(this.#loadError) }),
+					),
+					0,
+					0,
+				),
+			);
 			this.addChild(new Spacer(1));
 		} else if (this.#createSpec) {
 			this.#renderCreateReview();
@@ -1036,27 +1121,43 @@ export class AgentDashboard extends Container {
 			const suggestions = this.#getModelSuggestions(draft);
 
 			this.addChild(
-				new Text(theme.bold(theme.fg("accent", `Model override: ${replaceTabs(this.#editingAgentName)}`)), 0, 0),
+				new Text(
+					theme.bold(
+						theme.fg(
+							"accent",
+							tSettingsUi("Model override: {name}", { name: replaceTabs(this.#editingAgentName) }),
+						),
+					),
+					0,
+					0,
+				),
 			);
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("muted", "Enter model pattern (empty clears override)"), 0, 0));
+			this.addChild(new Text(theme.fg("muted", tSettingsUi("Enter model pattern (empty clears override)")), 0, 0));
 			this.addChild(new Spacer(1));
 			this.addChild(this.#editInput);
 			this.addChild(new Spacer(1));
 
 			this.addChild(
-				new Text(theme.fg("muted", `Default pattern: ${replaceTabs(joinPatterns(defaultPatterns))}`), 0, 0),
-			);
-			this.addChild(
 				new Text(
-					`${theme.fg("muted", "Default resolves:")} ${defaultResolution ? formatResolution(defaultResolution) : theme.fg("dim", "(unresolved)")}`,
+					theme.fg(
+						"muted",
+						tSettingsUi("Default pattern: {pattern}", { pattern: replaceTabs(joinPatterns(defaultPatterns)) }),
+					),
 					0,
 					0,
 				),
 			);
 			this.addChild(
 				new Text(
-					`${theme.fg("muted", "Preview effective:")} ${previewResolution ? formatResolution(previewResolution) : theme.fg("dim", "(unresolved)")}`,
+					`${theme.fg("muted", tSettingsUi("Default resolves:"))} ${defaultResolution ? formatResolution(defaultResolution) : theme.fg("dim", tSettingsUi("(unresolved)"))}`,
+					0,
+					0,
+				),
+			);
+			this.addChild(
+				new Text(
+					`${theme.fg("muted", tSettingsUi("Preview effective:"))} ${previewResolution ? formatResolution(previewResolution) : theme.fg("dim", tSettingsUi("(unresolved)"))}`,
 					0,
 					0,
 				),
@@ -1064,14 +1165,14 @@ export class AgentDashboard extends Container {
 
 			if (suggestions.length > 0) {
 				this.addChild(new Spacer(1));
-				this.addChild(new Text(theme.fg("muted", "Suggestions:"), 0, 0));
+				this.addChild(new Text(theme.fg("muted", tSettingsUi("Suggestions:")), 0, 0));
 				for (const suggestion of suggestions) {
 					this.addChild(new Text(theme.fg("dim", `  ${suggestion}`), 0, 0));
 				}
 			}
 
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("dim", " Enter: save  Esc: cancel"), 0, 0));
+			this.addChild(new Text(theme.fg("dim", ` ${tSettingsUi("Enter: save  Esc: cancel")}`), 0, 0));
 		} else {
 			const selected = this.#selectedAgent();
 			const defaultPatterns = selected ? this.#defaultPatternsFor(selected) : [];
@@ -1105,7 +1206,7 @@ export class AgentDashboard extends Container {
 			const bodyHeight = this.#computeBodyHeight();
 			this.addChild(new TwoColumnBody(listPane, inspector, bodyHeight));
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("dim", LIST_FOOTER), 0, 0));
+			this.addChild(new Text(theme.fg("dim", tSettingsUi(LIST_FOOTER)), 0, 0));
 		}
 
 		this.addChild(new DynamicBorder());

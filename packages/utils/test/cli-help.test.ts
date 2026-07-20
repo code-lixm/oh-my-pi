@@ -1,5 +1,5 @@
-import { describe, expect, it, spyOn } from "bun:test";
-import { Args, Command, type CommandEntry, Flags, run } from "../src/cli";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { Args, type CliLocale, Command, type CommandEntry, Flags, getCliLocale, run, setCliLocale } from "../src/cli";
 
 class GoodCommand extends Command {
 	static description = "prints good things";
@@ -21,6 +21,17 @@ class BenchLikeCommand extends Command {
 		await this.parse(BenchLikeCommand);
 	}
 }
+
+let previousCliLocale: CliLocale;
+
+beforeEach(() => {
+	previousCliLocale = getCliLocale();
+	setCliLocale("en");
+});
+
+afterEach(() => {
+	setCliLocale(previousCliLocale);
+});
 
 describe("run() per-command help", () => {
 	// Contract: `omp <cmd> --help` must load only the requested command module.

@@ -5,6 +5,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
 import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { extractImagePathFromText } from "../../modes/components/custom-editor";
@@ -16,7 +17,9 @@ import { createPromptActionAutocompleteProvider } from "../../modes/prompt-actio
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
 import type { InteractiveModeContext } from "../../modes/types";
+import { selectPrompt } from "../../prompts/prompt-locale";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
+import manualContinuePromptZh from "../../prompts/system/manual-continue.zh-CN.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
@@ -484,6 +487,13 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.clipboard.copyLine")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleCopyCurrentLine());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.agents.next")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.cycleAgentSession("next"));
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.agents.previous")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.cycleAgentSession("previous"));
+		}
+
 		const hubKeys = new Set([
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
@@ -578,7 +588,7 @@ export class InputController {
 				// focused, refuse rather than dump the binary blob in a hidden buffer.
 				const focused = this.ctx.ui.getFocused();
 				if (focused && focused !== this.ctx.editor && hasPasteText(focused)) {
-					this.ctx.showStatus("Image paste is not supported in this prompt");
+					this.ctx.showStatus(tSettingsUi("Image paste is not supported in this prompt"));
 					return;
 				}
 				await this.#normalizeAndInsertPastedImage(image, `Unsupported pasted image format: ${image.mimeType}`);
@@ -624,7 +634,7 @@ export class InputController {
 				if (this.ctx.onInputCallback) {
 					this.ctx.editor.clearDraft();
 					this.ctx.onInputCallback({
-						text: manualContinuePrompt,
+						text: selectPrompt(manualContinuePrompt, manualContinuePromptZh),
 						cancelled: false,
 						started: true,
 						synthetic: true,
@@ -694,18 +704,20 @@ export class InputController {
 			// executeBuiltinSlashCommand, which already consumed allowed ones).
 			if (this.ctx.collabGuest) {
 				if (text.startsWith("/")) {
-					this.ctx.showStatus(`${text.split(/\s+/, 1)[0]} is host-only during a collab session`);
+					this.ctx.showStatus(
+						tSettingsUi("{command} is host-only during a collab session", { command: text.split(/\s+/, 1)[0] }),
+					);
 					this.ctx.editor.setText("");
 					return;
 				}
 				if (text.startsWith("!") || parsePythonCommandInput(text)) {
-					this.ctx.showStatus("Local execution is host-only during a collab session");
+					this.ctx.showStatus(tSettingsUi("Local execution is host-only during a collab session"));
 					this.ctx.editor.setText("");
 					return;
 				}
 				if (this.ctx.collabGuest.readOnly) {
 					// Keep the typed text: the prompt was not consumed.
-					this.ctx.showStatus("This collab link is read-only — prompting is disabled");
+					this.ctx.showStatus(tSettingsUi("This collab link is read-only — prompting is disabled"));
 					return;
 				}
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
@@ -737,7 +749,7 @@ export class InputController {
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.ctx.session.isBashRunning) {
-						this.ctx.showWarning("A bash command is already running. Press Esc to cancel it first.");
+						this.ctx.showWarning(tSettingsUi("A bash command is already running. Press Esc to cancel it first."));
 						this.ctx.editor.setText(text);
 						return;
 					}
@@ -756,7 +768,9 @@ export class InputController {
 				const { code, isExcluded } = pythonCommand;
 				if (code) {
 					if (this.ctx.session.isEvalRunning) {
-						this.ctx.showWarning("A Python execution is already running. Press Esc to cancel it first.");
+						this.ctx.showWarning(
+							tSettingsUi("A Python execution is already running. Press Esc to cancel it first."),
+						);
 						this.ctx.editor.setText(text);
 						return;
 					}
@@ -926,7 +940,7 @@ export class InputController {
 			return;
 		}
 		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
-			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
+			this.ctx.showStatus(tSettingsUi("Commands run in the main session — press ←← to return first"));
 			return; // editor text not cleared: Editor does not auto-clear on submit
 		}
 		this.ctx.editor.clearDraft(text);
@@ -996,7 +1010,7 @@ export class InputController {
 		// via an uncaught exception (issue #2036, originally for SIGTSTP — same
 		// shape for SIGSTOP). No-op on platforms that cannot suspend.
 		if (process.platform === "win32") {
-			this.ctx.showStatus("Suspend (Ctrl+Z) is not supported on this platform");
+			this.ctx.showStatus(tSettingsUi("Suspend (Ctrl+Z) is not supported on this platform"));
 			return;
 		}
 
@@ -1054,16 +1068,18 @@ export class InputController {
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender(true);
 			const reason = err instanceof Error ? err.message : String(err);
-			this.ctx.showError(`Failed to suspend: ${reason}`);
+			this.ctx.showError(tSettingsUi("Failed to suspend: {reason}", { reason }));
 		}
 	}
 
 	handleDequeue(): void {
 		const restored = this.restoreQueuedMessagesToEditor();
 		if (restored === 0) {
-			this.ctx.showStatus("No queued messages to restore");
+			this.ctx.showStatus(tSettingsUi("No queued messages to restore"));
 		} else {
-			this.ctx.showStatus(`Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`);
+			this.ctx.showStatus(
+				tSettingsUi("Restored {restored} queued message{s} to editor", { restored, s: restored > 1 ? "s" : "" }),
+			);
 		}
 	}
 
@@ -1119,14 +1135,14 @@ export class InputController {
 
 	async handleRetry(): Promise<void> {
 		if (this.ctx.collabGuest) {
-			this.ctx.showStatus("/retry is host-only during a collab session");
+			this.ctx.showStatus(tSettingsUi("/retry is host-only during a collab session"));
 			return;
 		}
 		const didRetry = await this.ctx.viewSession.retry();
 		if (didRetry) {
 			this.ctx.editor.clearDraft();
 		} else {
-			this.ctx.showStatus("Nothing to retry");
+			this.ctx.showStatus(tSettingsUi("Nothing to retry"));
 		}
 	}
 
@@ -1149,7 +1165,7 @@ export class InputController {
 		const splitMessages = splitQueuedMessages(text);
 		if (splitMessages.length === 0 && !options.images?.length) {
 			this.ctx.editor.clearDraft();
-			this.ctx.showWarning("Usage: /queue <message> (or start a prompt with -> / =>)");
+			this.ctx.showWarning(tSettingsUi("Usage: /queue <message> (or start a prompt with -> / =>)"));
 			return;
 		}
 
@@ -1174,8 +1190,8 @@ export class InputController {
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showStatus(
 				messages.length === 1
-					? "Queued message for after compaction"
-					: `Queued ${messages.length} messages for after compaction`,
+					? tSettingsUi("Queued message for after compaction")
+					: tSettingsUi("Queued {count} messages for after compaction", { count: messages.length }),
 			);
 			this.ctx.ui.requestRender();
 			return;
@@ -1240,11 +1256,11 @@ export class InputController {
 			this.ctx.showStatus(
 				startImmediately
 					? queuedCount === 1
-						? "Sent queued message"
-						: `Sent first message; queued ${queuedCount - 1} for later yields`
+						? tSettingsUi("Sent queued message")
+						: tSettingsUi("Sent first message; queued {count} for later yields", { count: queuedCount - 1 })
 					: queuedCount === 1
-						? "Queued message for when the agent yields"
-						: `Queued ${queuedCount} messages for when the agent yields`,
+						? tSettingsUi("Queued message for when the agent yields")
+						: tSettingsUi("Queued {count} messages for when the agent yields", { count: queuedCount }),
 			);
 		}
 		this.ctx.ui.requestRender();
@@ -1507,7 +1523,7 @@ export class InputController {
 				if (await this.#tryPasteClipboardImage()) return;
 				this.ctx.editor.pasteText(path);
 				this.ctx.ui.requestRender();
-				this.ctx.showStatus("Pasted path is not a supported image");
+				this.ctx.showStatus(tSettingsUi("Pasted path is not a supported image"));
 				return;
 			}
 			await this.#normalizeAndInsertPastedImage(
@@ -1544,15 +1560,18 @@ export class InputController {
 				);
 				this.ctx.showStatus(
 					overSsh
-						? `Image not found at ${displayPath}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.`
-						: `Image not found at ${displayPath}`,
+						? tSettingsUi(
+								"Image not found at {displayPath}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.",
+								{ displayPath },
+							)
+						: tSettingsUi("Image not found at {displayPath}", { displayPath }),
 				);
 				return;
 			}
 			if (await this.#tryPasteClipboardImage()) return;
 			this.ctx.editor.pasteText(path);
 			this.ctx.ui.requestRender();
-			this.ctx.showStatus("Failed to read pasted image path");
+			this.ctx.showStatus(tSettingsUi("Failed to read pasted image path"));
 		}
 	}
 
@@ -1597,7 +1616,7 @@ export class InputController {
 			// this keypress, so a miss here must not dead-end.
 			const text = await this.clipboard.readText();
 			if (!text) {
-				this.ctx.showStatus("Clipboard is empty");
+				this.ctx.showStatus(tSettingsUi("Clipboard is empty"));
 				return false;
 			}
 			// #3506: when the clipboard text is an explicit image file path,
@@ -1619,7 +1638,7 @@ export class InputController {
 			this.ctx.ui.requestRender();
 			return true;
 		} catch {
-			this.ctx.showStatus("Failed to read clipboard");
+			this.ctx.showStatus(tSettingsUi("Failed to read clipboard"));
 			return false;
 		}
 	}
@@ -1631,10 +1650,10 @@ export class InputController {
 				this.ctx.editor.insertText(text);
 				this.ctx.ui.requestRender();
 			} else {
-				this.ctx.showStatus("No text in clipboard to paste raw");
+				this.ctx.showStatus(tSettingsUi("No text in clipboard to paste raw"));
 			}
 		} catch {
-			this.ctx.showStatus("Failed to paste raw text from clipboard");
+			this.ctx.showStatus(tSettingsUi("Failed to paste raw text from clipboard"));
 		}
 	}
 
@@ -1658,20 +1677,23 @@ export class InputController {
 	 * inline paste marker, so the pasted content is never lost.
 	 */
 	async presentLargePasteMenu(text: string, lineCount: number): Promise<void> {
-		const WRAPPED_BLOCK = "Attach as a wrapped block";
-		const LOCAL_FILE = "Attach as local file";
-		const INLINE = "Paste inline";
+		const WRAPPED_BLOCK = tSettingsUi("Attach as a wrapped block");
+		const LOCAL_FILE = tSettingsUi("Attach as local file");
+		const INLINE = tSettingsUi("Paste inline");
 
 		let choice: string | undefined;
 		try {
 			choice = await this.ctx.showHookSelector(
-				`Pasted ${lineCount} lines`,
+				tSettingsUi("Pasted {lineCount} lines", { lineCount }),
 				[
-					{ label: WRAPPED_BLOCK, description: "Wrap the text in <attachment> tags, collapsed to a marker" },
-					{ label: LOCAL_FILE, description: "Save the text to a local://attachment file" },
-					{ label: INLINE, description: "Collapse the text to an inline paste marker" },
+					{
+						label: WRAPPED_BLOCK,
+						description: tSettingsUi("Wrap the text in <attachment> tags, collapsed to a marker"),
+					},
+					{ label: LOCAL_FILE, description: tSettingsUi("Save the text to a local://attachment file") },
+					{ label: INLINE, description: tSettingsUi("Collapse the text to an inline paste marker") },
 				],
-				{ helpText: "Esc to paste inline" },
+				{ helpText: tSettingsUi("Esc to paste inline") },
 			);
 		} catch (error) {
 			logger.warn("large-paste menu failed", { error: error instanceof Error ? error.message : String(error) });
@@ -1719,13 +1741,13 @@ export class InputController {
 			} while (await Bun.file(filePath).exists());
 			await Bun.write(filePath, text);
 			this.ctx.editor.insertText(`local://${name} `);
-			this.ctx.showStatus(`Saved ${lineCount} pasted lines to local://${name}`);
+			this.ctx.showStatus(tSettingsUi("Saved {lineCount} pasted lines to local://{name}", { lineCount, name }));
 		} catch (error) {
 			logger.warn("failed to save large paste to file", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			this.ctx.editor.insertPaste(text);
-			this.ctx.showError("Failed to save paste to a file — pasted inline instead");
+			this.ctx.showError(tSettingsUi("Failed to save paste to a file — pasted inline instead"));
 		}
 	}
 
@@ -1749,16 +1771,16 @@ export class InputController {
 		const { line } = this.ctx.editor.getCursor();
 		const text = this.ctx.editor.getLines()[line] || "";
 		if (!text) {
-			this.ctx.showStatus("Nothing to copy");
+			this.ctx.showStatus(tSettingsUi("Nothing to copy"));
 			return;
 		}
 		try {
 			copyToClipboard(text);
 			const sanitized = sanitizeText(text);
 			const preview = sanitized.length > 30 ? `${sanitized.slice(0, 30)}...` : sanitized;
-			this.ctx.showStatus(`Copied line: ${preview}`);
+			this.ctx.showStatus(tSettingsUi("Copied line: {preview}", { preview }));
 		} catch {
-			this.ctx.showWarning("Failed to copy to clipboard");
+			this.ctx.showWarning(tSettingsUi("Failed to copy to clipboard"));
 		}
 	}
 
@@ -1766,27 +1788,27 @@ export class InputController {
 	handleCopyPrompt(): void {
 		const text = this.ctx.editor.getText();
 		if (!text) {
-			this.ctx.showStatus("Nothing to copy");
+			this.ctx.showStatus(tSettingsUi("Nothing to copy"));
 			return;
 		}
 		try {
 			copyToClipboard(text);
 			const sanitized = sanitizeText(text);
 			const preview = sanitized.length > 30 ? `${sanitized.slice(0, 30)}...` : sanitized;
-			this.ctx.showStatus(`Copied: ${preview}`);
+			this.ctx.showStatus(tSettingsUi("Copied: {preview}", { preview }));
 		} catch {
-			this.ctx.showWarning("Failed to copy to clipboard");
+			this.ctx.showWarning(tSettingsUi("Failed to copy to clipboard"));
 		}
 	}
 
 	cycleThinkingLevel(): void {
 		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
+			this.ctx.showStatus(tSettingsUi("Model/thinking apply to the main session — press ←← to return first"));
 			return;
 		}
 		const newLevel = this.ctx.session.cycleThinkingLevel();
 		if (newLevel === undefined) {
-			this.ctx.showStatus("Current model does not support thinking");
+			this.ctx.showStatus(tSettingsUi("Current model does not support thinking"));
 		} else {
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorBorderColor();
@@ -1795,14 +1817,14 @@ export class InputController {
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
 		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
+			this.ctx.showStatus(tSettingsUi("Model/thinking apply to the main session — press ←← to return first"));
 			return;
 		}
 		try {
 			const cycleOrder = settings.get("cycleOrder");
 			const result = await this.ctx.session.cycleRoleModels(cycleOrder, direction);
 			if (!result) {
-				this.ctx.showStatus("Only one role model available");
+				this.ctx.showStatus(tSettingsUi("Only one role model available"));
 				return;
 			}
 
@@ -1854,7 +1876,7 @@ export class InputController {
 		const thinkingOff =
 			((this.ctx.viewSession ?? this.ctx.session)?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
 		if (thinkingOff && !this.ctx.hasDisplayableThinkingContent) {
-			this.ctx.showStatus("Thinking is off — enable thinking to show blocks");
+			this.ctx.showStatus(tSettingsUi("Thinking is off — enable thinking to show blocks"));
 			return;
 		}
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
@@ -1879,7 +1901,11 @@ export class InputController {
 		// of the whole transcript, matching setToolsExpanded()'s redraw.
 		this.ctx.ui.resetDisplay();
 
-		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
+		this.ctx.showStatus(
+			tSettingsUi("Thinking blocks: {state}", {
+				state: this.ctx.hideThinkingBlock ? tSettingsUi("hidden") : tSettingsUi("visible"),
+			}),
+		);
 	}
 
 	#getEditorTerminalPath(): string | null {
@@ -1904,7 +1930,7 @@ export class InputController {
 	async openExternalEditor(): Promise<void> {
 		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
-			this.ctx.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
+			this.ctx.showWarning(tSettingsUi("No editor configured. Set $VISUAL or $EDITOR environment variable."));
 			return;
 		}
 

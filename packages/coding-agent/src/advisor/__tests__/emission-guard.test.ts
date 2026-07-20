@@ -11,6 +11,7 @@ describe("normalizeAdvisorNote", () => {
 		expect(normalizeAdvisorNote("*Stop*")).toBe("stop");
 		expect(normalizeAdvisorNote("Done.")).toBe("done");
 		expect(normalizeAdvisorNote("No issue; continue.")).toBe("no issue continue");
+		expect(normalizeAdvisorNote("静默、等汇总。")).toBe("静默 等汇总");
 	});
 
 	it("returns empty string for whitespace-only input so callers can short-circuit", () => {
@@ -37,6 +38,12 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.accept("No issue; continue.")).toBe(false);
 		expect(guard.accept("LGTM")).toBe(false);
 		expect(guard.accept("No further watcher input needed.")).toBe(false);
+	});
+
+	it("suppresses the exact Chinese wait-status filler but keeps concrete advice containing the same words", () => {
+		const guard = new AdvisorEmissionGuard();
+		expect(guard.accept("静默、等汇总。")).toBe(false);
+		expect(guard.accept("不要等待汇总；先读取最新错误日志并给出导致重试风暴的具体调用栈。")).toBe(true);
 	});
 
 	it("dedupes by normalized text across the session, ignoring casing and trailing punctuation", () => {

@@ -26,7 +26,9 @@ import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
+import { selectPrompt } from "../prompts/prompt-locale";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
+import imageGenDescriptionZh from "../prompts/tools/image-gen.zh-CN.md" with { type: "text" };
 import { resolveReadPath } from "./path-utils";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
@@ -1104,7 +1106,9 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 	label: "GenerateImage",
 	strict: false,
 	approval: "write",
-	description: prompt.render(imageGenDescription),
+	get description() {
+		return prompt.render(selectPrompt(imageGenDescription, imageGenDescriptionZh));
+	},
 	parameters: imageGenSchema,
 	async execute(_toolCallId, params, _onUpdate, ctx, signal) {
 		return untilAborted(signal, async () => {

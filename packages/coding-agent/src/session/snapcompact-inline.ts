@@ -17,11 +17,17 @@
 import { countTokens } from "@oh-my-pi/pi-agent-core";
 import type { Context, ImageContent, Model, TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { selectPrompt } from "../prompts/prompt-locale";
 import contextFramesNote from "../prompts/system/snapcompact-context-frames-note.md" with { type: "text" };
+import contextFramesNoteZh from "../prompts/system/snapcompact-context-frames-note.zh-CN.md" with { type: "text" };
 import contextStub from "../prompts/system/snapcompact-context-stub.md" with { type: "text" };
+import contextStubZh from "../prompts/system/snapcompact-context-stub.zh-CN.md" with { type: "text" };
 import systemFramesNote from "../prompts/system/snapcompact-system-frames-note.md" with { type: "text" };
+import systemFramesNoteZh from "../prompts/system/snapcompact-system-frames-note.zh-CN.md" with { type: "text" };
 import systemStub from "../prompts/system/snapcompact-system-stub.md" with { type: "text" };
+import systemStubZh from "../prompts/system/snapcompact-system-stub.zh-CN.md" with { type: "text" };
 import toolResultNote from "../prompts/system/snapcompact-toolresult-note.md" with { type: "text" };
+import toolResultNoteZh from "../prompts/system/snapcompact-toolresult-note.zh-CN.md" with { type: "text" };
 
 export type SnapcompactSystemPromptMode = "none" | "agents-md" | "all";
 
@@ -94,7 +100,7 @@ function replaceContextSections(block: string, extracted: string[]): string {
 	for (const pattern of CONTEXT_SECTION_PATTERNS) {
 		replaced = replaced.replace(pattern, match => {
 			extracted.push(match.trim());
-			return contextStub.trim();
+			return selectPrompt(contextStub, contextStubZh).trim();
 		});
 	}
 	return replaced;
@@ -111,8 +117,8 @@ function selectSystemPromptImageTarget(
 		return {
 			scope: "all",
 			text,
-			replacement: [systemStub],
-			userNote: systemFramesNote,
+			replacement: [selectPrompt(systemStub, systemStubZh)],
+			userNote: selectPrompt(systemFramesNote, systemFramesNoteZh),
 		};
 	}
 
@@ -124,7 +130,7 @@ function selectSystemPromptImageTarget(
 		scope: "agents-md",
 		text,
 		replacement,
-		userNote: contextFramesNote,
+		userNote: selectPrompt(contextFramesNote, contextFramesNoteZh),
 	};
 }
 
@@ -483,7 +489,10 @@ export class SnapcompactInlineTransformer {
 			const target = targets.get(swap.id);
 			if (!target) continue;
 			const frames = await this.#framesFor(this.#toolCache, swap.id, target.text, shape);
-			messages[target.index] = { ...target.message, content: [{ type: "text", text: toolResultNote }, ...frames] };
+			messages[target.index] = {
+				...target.message,
+				content: [{ type: "text", text: selectPrompt(toolResultNote, toolResultNoteZh) }, ...frames],
+			};
 			changed = true;
 			savings.push({
 				toolCallId: swap.id,

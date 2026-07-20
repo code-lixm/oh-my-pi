@@ -13,6 +13,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
@@ -24,8 +25,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 	let session: AgentSession;
 	let mode: InteractiveMode;
 	let eventBus: EventBus;
+	let previousLocale: string;
 
 	beforeAll(async () => {
+		previousLocale = getSettingsUiLocale();
 		await initTheme();
 	});
 
@@ -41,14 +44,15 @@ describe("InteractiveMode todo HUD persistence", () => {
 		tempDir?.removeSync();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		setSettingsUiLocale(previousLocale);
 		resetSettingsForTest();
 	});
 
-	async function createMode(todoClearDelay: number): Promise<void> {
+	async function createMode(todoClearDelay: number, displayLanguage: "en" | "zh-CN" = "en"): Promise<void> {
 		await Settings.init({
 			inMemory: true,
 			cwd: tempDir.path(),
-			overrides: { "tasks.todoClearDelay": todoClearDelay },
+			overrides: { "tasks.todoClearDelay": todoClearDelay, displayLanguage },
 		});
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);
@@ -66,13 +70,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 				},
 			}),
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
-			settings: Settings.isolated({ "tasks.todoClearDelay": todoClearDelay }),
+			settings: Settings.isolated({ "tasks.todoClearDelay": todoClearDelay, displayLanguage }),
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
 	}
 
-	it("clears closed todos from the panel instantly without mutating session history", async () => {
+	it("hides terminal-only todos instantly without mutating session history", async () => {
 		await createMode(0);
 		const phases: TodoPhase[] = [
 			{
@@ -87,42 +91,103 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		mode.setTodos(session.getTodoPhases());
 
-		expect(renderTodos(mode)).not.toContain("done task");
-		expect(renderTodos(mode)).not.toContain("abandoned task");
+		expect(mode.todoContainer.render(120)).toHaveLength(0);
+		expect(
+			(mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.(),
+		).toBeUndefined();
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
-	it("leaves closed todos visible when auto-clear is disabled", async () => {
+	it("hides terminal-only todos even when auto-clear is disabled", async () => {
 		await createMode(-1);
+		const phases: TodoPhase[] = [
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "done task", status: "completed" },
+					{ content: "abandoned task", status: "abandoned" },
+					{ content: "verified task", status: "completed" },
+				],
+			},
+		];
+		session.setTodoPhases(phases);
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		mode.setTodos(session.getTodoPhases());
 
-		expect(renderTodos(mode)).toContain("done task");
+		expect(renderTodos(mode)).toBe("");
+		expect(
+			(mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.(),
+		).toBeUndefined();
+		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
-	it("clears closed todos after the configured delay", async () => {
+	it("clears closed todos after the configured delay while keeping open todos visible", async () => {
 		await createMode(1);
 		vi.useFakeTimers();
+		mode.toggleTodoExpansion();
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "done task", status: "completed" },
+					{ content: "pending task", status: "pending" },
+				],
+			},
+		]);
 		expect(renderTodos(mode)).toContain("done task");
+		expect(renderTodos(mode)).toContain("pending task");
 
 		vi.advanceTimersByTime(999);
 		expect(renderTodos(mode)).toContain("done task");
+		expect((mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.()).toBe(
+			0,
+		);
 
 		vi.advanceTimersByTime(1);
 		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).toContain("pending task");
+		expect((mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.()).toBe(
+			0,
+		);
 	});
 
-	it("keeps the anchored todo panel in the live region while visible", async () => {
+	it("keeps the anchored todo panel in the live region while any todo is still open", async () => {
 		await createMode(-1);
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "pending task", status: "pending" }] }]);
-		const liveRegion = mode.todoContainer as unknown as NativeScrollbackLiveRegion;
-		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBe(0);
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "pending task", status: "pending" },
+					{ content: "done task", status: "completed" },
+				],
+			},
+		]);
+		expect((mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.()).toBe(
+			0,
+		);
+		expect(mode.todoContainer.render(120)).not.toHaveLength(0);
 
-		mode.setTodos([]);
-		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBeUndefined();
+		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		expect(
+			(mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.(),
+		).toBeUndefined();
+		expect(mode.todoContainer.render(120)).toHaveLength(0);
+	});
+
+	it("localizes the HUD root title from displayLanguage", async () => {
+		await createMode(-1, "zh-CN");
+
+		mode.setTodos([{ name: "Implementation", tasks: [{ content: "pending task", status: "pending" }] }]);
+		const lines = mode.todoContainer
+			.render(80)
+			.flatMap(line => line.split("\n"))
+			.map(line => Bun.stripANSI(line));
+		const root = lines.find(line => line.includes("待办") || line.includes("Todos"));
+
+		expect(root).toContain("待办");
+		expect(root).not.toContain("Todos");
 	});
 
 	it("marks todos complete when subagent reconciliation reports a finished agent", async () => {
@@ -282,6 +347,38 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("more"))).toBe(false);
 		const root = lines.find(line => line.includes("Todos"));
 		expect(root).toContain("1/7");
+	});
+
+	it("collapses the main plan to a progress summary while focused and restores the tree after returning", () => {
+		const phases: TodoPhase[] = [
+			{
+				name: "Foundation",
+				tasks: [
+					{ content: "done task", status: "completed" },
+					{ content: "wire focus cycling", status: "in_progress" },
+				],
+			},
+			{
+				name: "Verification",
+				tasks: [{ content: "write regression tests", status: "pending" }],
+			},
+		];
+
+		Object.defineProperty(mode, "focusedAgentId", { value: "Worker", configurable: true });
+		mode.setTodos(phases);
+		const focused = renderTodos(mode);
+
+		expect(focused).toContain("Main · Global plan · 1/3");
+		expect(focused).not.toContain("Foundation");
+		expect(focused).not.toContain("wire focus cycling");
+
+		Object.defineProperty(mode, "focusedAgentId", { value: undefined, configurable: true });
+		mode.setTodos(phases);
+		const unfocused = renderTodos(mode);
+
+		expect(unfocused).not.toContain("Main · Global plan · 1/3");
+		expect(unfocused).toContain("Foundation");
+		expect(unfocused).toContain("wire focus cycling");
 	});
 
 	it("anchors the todo HUD as a native-scrollback live region while populated", () => {

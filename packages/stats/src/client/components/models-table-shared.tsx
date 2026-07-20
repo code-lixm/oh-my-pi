@@ -7,7 +7,10 @@
 
 import { format } from "date-fns";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import type React from "react";
 import { Line } from "react-chartjs-2";
+import { t } from "../locale/catalog";
+import { useLocale } from "../useLocale";
 import type { ChartTheme } from "./chart-shared";
 
 // Detail-table charts share the exact OMP chart chrome as the timeline charts;
@@ -250,6 +253,10 @@ export function TrendEmpty() {
 }
 
 /** Placeholder shown in the expanded detail-chart slot when data is missing. */
-export function DetailChartEmpty({ message = "No data available" }: { message?: string }) {
-	return <div className="h-full flex items-center justify-center text-[var(--text-muted)] text-sm">{message}</div>;
+export function DetailChartEmpty({ message }: { message?: string }) {
+	useLocale();
+	const finalMessage = message ?? t("state.empty.default");
+	return (
+		<div className="h-full flex items-center justify-center text-[var(--text-muted)] text-sm">{finalMessage}</div>
+	);
 }

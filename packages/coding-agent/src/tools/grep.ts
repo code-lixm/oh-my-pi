@@ -16,11 +16,14 @@ import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { LocalProtocolOptions } from "../internal-urls/local-protocol";
 import { InternalUrlRouter } from "../internal-urls/router";
 import type { InternalResource, ResolveContext } from "../internal-urls/types";
 import type { Theme } from "../modes/theme/theme";
+import { selectPrompt } from "../prompts/prompt-locale";
 import grepDescription from "../prompts/tools/grep.md" with { type: "text" };
+import grepDescriptionZh from "../prompts/tools/grep.zh-CN.md" with { type: "text" };
 import { DEFAULT_MAX_COLUMN, type TruncationResult, truncateHead, truncateLine } from "../session/streaming-output";
 import {
 	Ellipsis,
@@ -60,7 +63,6 @@ import {
 import {
 	createCachedComponent,
 	formatCodeFrameLine,
-	formatCount,
 	formatEmptyMessage,
 	formatErrorMessage,
 	formatMoreItems,
@@ -899,7 +901,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 
 	constructor(private readonly session: ToolSession) {
 		const displayMode = resolveFileDisplayMode(session);
-		this.description = prompt.render(grepDescription, {
+		this.description = prompt.render(selectPrompt(grepDescription, grepDescriptionZh), {
 			IS_HL_MODE: displayMode.hashLines,
 			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
 		});
@@ -1383,7 +1385,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					const skipPastEnd = canPaginate && normalizedSkip > 0 && totalFiles > 0 && skipFiles >= totalFiles;
 					const noMatchText = skipPastEnd
 						? `No more results (${totalFilesLabel} files total; skip=${normalizedSkip} is past the end)`
-						: "No matches found";
+						: tSettingsUi("No matches found");
 					const text = warningNote ? `${noMatchText}\n${warningNote}` : noMatchText;
 					// Zero matches is useless regardless of warnings: by the time
 					// compaction runs, the follow-up call has already corrected course.
@@ -1717,16 +1719,22 @@ export const grepToolRenderer = {
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];
-		if (paths.length) meta.push(`in ${paths.join(", ")}`);
-		if (args.case === false) meta.push("case:insensitive");
-		if (args.gitignore === false) meta.push("gitignore:false");
-		if (args.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
+		if (paths.length) meta.push(tSettingsUi("in {paths}", { paths: paths.join(", ") }));
+		if (args.case === false) meta.push(tSettingsUi("case:insensitive"));
+		if (args.gitignore === false) meta.push(tSettingsUi("gitignore:false"));
+		if (args.skip !== undefined && args.skip > 0) meta.push(tSettingsUi("skip:{count}", { count: args.skip }));
 
 		const text = renderStatusLine(
-			{ icon: "pending", title: "Grep", titleColor: "toolTitle", description: args.pattern || "?", meta },
+			{
+				icon: "pending",
+				title: tSettingsUi("Grep"),
+				titleColor: "toolTitle",
+				description: args.pattern || "?",
+				meta,
+			},
 			uiTheme,
 		);
-		return new Text(text, 1, 0);
+		return new Text(text, 0, 0);
 	},
 
 	renderResult(
@@ -1736,10 +1744,10 @@ export const grepToolRenderer = {
 		args?: GrepRenderArgs,
 	): Component {
 		const details = result.details;
-
 		if (result.isError || details?.error) {
-			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
+			const errorText =
+				details?.error || result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
+			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;
@@ -1747,17 +1755,17 @@ export const grepToolRenderer = {
 		if (!hasDetailedData) {
 			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
 			if (!textContent || textContent === "No matches found") {
-				return new Text(formatEmptyMessage("No matches found", uiTheme), 1, 0);
+				return new Text(formatEmptyMessage(tSettingsUi("No matches found"), uiTheme), 0, 0);
 			}
 			const lines = textContent.split("\n").filter(line => line.trim() !== "");
 			const description = args?.pattern ?? undefined;
 			const header = renderStatusLine(
 				{
 					iconOverride: grepStatusIcon(uiTheme),
-					title: "Grep",
+					title: tSettingsUi("Grep"),
 					titleColor: "toolTitle",
 					description,
-					meta: [formatCount("item", lines.length)],
+					meta: [tSettingsUi(lines.length === 1 ? "{count} item" : "{count} items", { count: lines.length })],
 				},
 				uiTheme,
 			);
@@ -1777,7 +1785,6 @@ export const grepToolRenderer = {
 					);
 					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 				},
-				{ paddingX: 1 },
 			);
 		}
 
@@ -1790,32 +1797,35 @@ export const grepToolRenderer = {
 		const missingPathsList = details?.missingPaths ?? [];
 		const missingNote =
 			missingPathsList.length > 0
-				? uiTheme.fg("warning", `skipped missing: ${missingPathsList.join(", ")}`)
+				? uiTheme.fg("warning", tSettingsUi("skipped missing: {paths}", { paths: missingPathsList.join(", ") }))
 				: undefined;
 
 		if (matchCount === 0) {
-			const meta = ["0 matches"];
+			const meta = [tSettingsUi("0 matches")];
 			const scopeMeta = searchScopeMeta(details);
 			if (scopeMeta) meta.push(scopeMeta);
 			const header = renderStatusLine(
-				{ icon: "warning", title: "Grep", titleColor: "toolTitle", description: args?.pattern, meta },
+				{ icon: "warning", title: tSettingsUi("Grep"), titleColor: "toolTitle", description: args?.pattern, meta },
 				uiTheme,
 			);
-			const lines = [header, formatEmptyMessage("No matches found", uiTheme)];
+			const lines = [header, formatEmptyMessage(tSettingsUi("No matches found"), uiTheme)];
 			if (missingNote) lines.push(missingNote);
-			return new Text(lines.join("\n"), 1, 0);
+			return new Text(lines.join("\n"), 0, 0);
 		}
 
-		const summaryParts = [formatCount("match", matchCount), formatCount("file", fileCount)];
+		const summaryParts = [
+			tSettingsUi(matchCount === 1 ? "{count} match" : "{count} matches", { count: matchCount }),
+			tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount }),
+		];
 		const meta = [...summaryParts];
 		const scopeMeta = searchScopeMeta(details);
 		if (scopeMeta) meta.push(scopeMeta);
-		if (truncated) meta.push(uiTheme.fg("warning", "truncated"));
+		if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
 		const description = args?.pattern ?? undefined;
 		const header = renderStatusLine(
 			{
 				...(truncated ? { icon: "warning" as const } : { iconOverride: grepStatusIcon(uiTheme) }),
-				title: "Grep",
+				title: tSettingsUi("Grep"),
 				titleColor: "toolTitle",
 				description,
 				meta,
@@ -1851,7 +1861,6 @@ export const grepToolRenderer = {
 				const matchLines = renderBudgetedSearchGroups(matchGroups, budget, matchCount, uiTheme, !options.expanded);
 				return [header, ...matchLines, ...extraLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 			},
-			{ paddingX: 1 },
 		);
 	},
 	mergeCallAndResult: true,

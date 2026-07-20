@@ -278,6 +278,7 @@ export class StatusLineComponent implements Component {
 	#vibeModeStatus: { enabled: boolean } | null = null;
 	#collabStatus: CollabStatus | null = null;
 	#focusedAgentId: string | undefined;
+	#focusedAgentDisplayName: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
 	// Git status caching (1s TTL)
@@ -351,14 +352,20 @@ export class StatusLineComponent implements Component {
 	}
 
 	/**
-	 * Re-point the status line at another session (focus proxy). Invalidate: model/context/usage all derive
-	 * from it. `focusedAgentId` is the focused subagent id while the view is proxied, undefined for main.
+	 * Re-point the status line at another session. Focus identity is retained so
+	 * segments can distinguish the proxied subagent from the main session.
 	 */
-	setSession(session: AgentSession, focusedAgentId?: string): void {
+	setSession(session: AgentSession, focusedAgentId?: string, focusedAgentDisplayName?: string): void {
 		const sessionChanged = this.session !== session;
-		if (!sessionChanged && this.#focusedAgentId === focusedAgentId) return;
+		if (
+			!sessionChanged &&
+			this.#focusedAgentId === focusedAgentId &&
+			this.#focusedAgentDisplayName === focusedAgentDisplayName
+		)
+			return;
 		this.session = session;
 		this.#focusedAgentId = focusedAgentId;
+		this.#focusedAgentDisplayName = focusedAgentDisplayName;
 		if (sessionChanged) {
 			this.#invalidateSessionCaches();
 			this.#closeStaleActiveWindow();
@@ -1054,6 +1061,7 @@ export class StatusLineComponent implements Component {
 		return {
 			session: this.session,
 			focusedAgentId: this.#focusedAgentId,
+			focusedAgentDisplayName: this.#focusedAgentDisplayName,
 			activeRepo: activeRepoCache.activeRepo,
 			width,
 			options: segmentOptions ?? {},
@@ -1334,8 +1342,11 @@ export class StatusLineComponent implements Component {
 			return [];
 		}
 
-		return Array.from(this.#hookStatuses.entries())
+		const sortedStatuses = Array.from(this.#hookStatuses.entries())
 			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => truncateToWidth(sanitizeStatusText(text), width));
+			.map(([, text]) => sanitizeStatusText(text));
+		const hookLine = sortedStatuses.join("  ");
+		if (visibleWidth(hookLine) <= width) return [hookLine];
+		return sortedStatuses.map(text => truncateToWidth(text, width));
 	}
 }

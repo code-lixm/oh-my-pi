@@ -66,6 +66,91 @@ const packageRoot = path.join(import.meta.dir, "..");
 const DISCOVERY_ONLY_PROVIDERS = new Set(["ollama", "vllm", "lm-studio", "litellm"]);
 const RETIRED_PROVIDERS = new Set(["wafer-pass", "wandb"]);
 
+// Minimal in-script i18n. Locale resolution: explicit OMP_LOCALE / PI_LOCALE >
+// LC_ALL > LANG; anything starting with "zh" maps to zh-CN, otherwise English.
+// Keep provider/model ids, URLs, counts, and dynamic error text untouched.
+type Locale = "en" | "zh-CN";
+const MESSAGES: Record<Locale, Record<string, string>> = {
+	en: {
+		warn_credentials: "Warning: Failed to retrieve credentials for {id}:",
+		no_credentials: "No {label} credentials found (env or agent.db), using fallback models",
+		fetching_models: "Fetching models from {label} model manager...",
+		dynamic_fetch_failed: "{label} dynamic fetch failed (stale cache merge), using fallback models",
+		discovery_no_models: "{label} discovery returned no models, using fallback models",
+		fetched_models: "Fetched {count} models from {label} model manager",
+		failed_fetch: "Failed to fetch {label} models:",
+		fetching_models_dev: "Fetching models from models.dev API...",
+		loaded_models_dev: "Loaded {count} tool-capable models from models.dev",
+		failed_models_dev: "Failed to load models.dev data:",
+		no_antigravity_creds: "No Antigravity or Gemini CLI credentials found, will use previous models.",
+		profile_tip: "Tip: If you are logged in under a specific profile, run with OMP_PROFILE=<name>.",
+		fetching_antigravity: "Fetching models from Antigravity API...",
+		antigravity_failed: "Antigravity API fetch failed, will use previous models",
+		fetched_antigravity: "Fetched {count} models from Antigravity API",
+		antigravity_no_models: "Antigravity API returned no models, will use previous models",
+		failed_antigravity: "Failed to fetch Antigravity models:",
+		no_codex_creds: "No Codex credentials found, will use previous models.",
+		fetching_codex: "Fetching models from Codex API...",
+		codex_failed: "Codex API fetch failed",
+		fetched_codex: "Fetched {count} models from Codex API",
+		failed_codex: "Failed to fetch Codex models:",
+		added_discovery: "Added {count} models from {label} discovery",
+		wrote_models: "Generated src/models.json",
+		stats_header: "Model Statistics:",
+		stats_total: "  Total tool-capable models: {count}",
+		stats_reasoning: "  Reasoning-capable models: {count}",
+		stats_provider: "  {provider}: {count} models",
+	},
+	"zh-CN": {
+		warn_credentials: "警告：获取 {id} 的凭据失败：",
+		no_credentials: "未找到 {label} 凭据（env 或 agent.db），将使用回退模型",
+		fetching_models: "正在从 {label} 模型管理器获取模型……",
+		dynamic_fetch_failed: "{label} 动态获取失败（过期缓存合并），将使用回退模型",
+		discovery_no_models: "{label} 动态发现未返回模型，将使用回退模型",
+		fetched_models: "已从 {label} 模型管理器获取 {count} 个模型",
+		failed_fetch: "获取 {label} 模型失败：",
+		fetching_models_dev: "正在从 models.dev API 获取模型……",
+		loaded_models_dev: "已从 models.dev 加载 {count} 个支持工具调用的模型",
+		failed_models_dev: "加载 models.dev 数据失败：",
+		no_antigravity_creds: "未找到 Antigravity 或 Gemini CLI 凭据，将使用既有模型。",
+		profile_tip: "提示：若已登录到指定 profile，请通过 OMP_PROFILE=<name> 运行。",
+		fetching_antigravity: "正在从 Antigravity API 获取模型……",
+		antigravity_failed: "Antigravity API 获取失败，将使用既有模型",
+		fetched_antigravity: "已从 Antigravity API 获取 {count} 个模型",
+		antigravity_no_models: "Antigravity API 未返回模型，将使用既有模型",
+		failed_antigravity: "获取 Antigravity 模型失败：",
+		no_codex_creds: "未找到 Codex 凭据，将使用既有模型。",
+		fetching_codex: "正在从 Codex API 获取模型……",
+		codex_failed: "Codex API 获取失败",
+		fetched_codex: "已从 Codex API 获取 {count} 个模型",
+		failed_codex: "获取 Codex 模型失败：",
+		added_discovery: "已从 {label} 发现添加 {count} 个模型",
+		wrote_models: "已生成 src/models.json",
+		stats_header: "模型统计：",
+		stats_total: "  支持工具调用的模型总数：{count}",
+		stats_reasoning: "  支持推理的模型数：{count}",
+		stats_provider: "  {provider}：{count} 个模型",
+	},
+};
+
+function detectLocale(): Locale {
+	const source =
+		[Bun.env.OMP_LOCALE, Bun.env.PI_LOCALE, Bun.env.LC_ALL, Bun.env.LANG].find(
+			(value): value is string => typeof value === "string" && value.length > 0,
+		) ?? "";
+	return source.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+}
+
+function t(key: string, params?: Record<string, string | number>): string {
+	const table = MESSAGES[detectLocale()] ?? MESSAGES.en;
+	const template = table[key] ?? MESSAGES.en[key] ?? key;
+	if (!params) return template;
+	return template.replace(/\{(\w+)\}/g, (match, name) => {
+		const value = params[name];
+		return value === undefined || value === null ? match : String(value);
+	});
+}
+
 async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscoveryConfig): Promise<string | undefined> {
 	for (const envVar of catalog.envVars ?? []) {
 		const value = $env[envVar as keyof typeof $env];
@@ -95,10 +180,7 @@ async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscove
 			authStorage.close();
 		}
 	} catch (err) {
-		console.warn(
-			`Warning: Failed to retrieve credentials for ${providerId}:`,
-			err instanceof Error ? err.message : String(err),
-		);
+		console.warn(t("warn_credentials", { id: providerId }), err instanceof Error ? err.message : String(err));
 	}
 
 	return undefined;
@@ -108,12 +190,12 @@ async function fetchProviderModelsFromCatalog(descriptor: CatalogProviderDescrip
 	const apiKey = await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery);
 
 	if (!apiKey && !allowsUnauthenticatedCatalogDiscovery(descriptor)) {
-		console.log(`No ${descriptor.catalogDiscovery.label} credentials found (env or agent.db), using fallback models`);
+		console.log(t("no_credentials", { label: descriptor.catalogDiscovery.label }));
 		return [];
 	}
 
 	try {
-		console.log(`Fetching models from ${descriptor.catalogDiscovery.label} model manager...`);
+		console.log(t("fetching_models", { label: descriptor.catalogDiscovery.label }));
 		const managerOptions = descriptor.createModelManagerOptions({ apiKey });
 		const manager = createModelManager(managerOptions);
 		const result = await manager.refresh("online");
@@ -125,36 +207,34 @@ async function fetchProviderModelsFromCatalog(descriptor: CatalogProviderDescrip
 		// Treat it like missing credentials so the prev-snapshot/curated-seed
 		// fallback applies instead.
 		if (result.stale) {
-			console.warn(
-				`${descriptor.catalogDiscovery.label} dynamic fetch failed (stale cache merge), using fallback models`,
-			);
+			console.warn(t("dynamic_fetch_failed", { label: descriptor.catalogDiscovery.label }));
 			return [];
 		}
 		const models = result.models.filter(model => model.provider === descriptor.providerId);
 		if (models.length === 0) {
-			console.warn(`${descriptor.catalogDiscovery.label} discovery returned no models, using fallback models`);
+			console.warn(t("discovery_no_models", { label: descriptor.catalogDiscovery.label }));
 			return [];
 		}
-		console.log(`Fetched ${models.length} models from ${descriptor.catalogDiscovery.label} model manager`);
+		console.log(t("fetched_models", { count: models.length, label: descriptor.catalogDiscovery.label }));
 		// The manager returns built models; models.json stores specs (sparse compat).
 		return models.map(model => toModelSpec(model));
 	} catch (error) {
-		console.error(`Failed to fetch ${descriptor.catalogDiscovery.label} models:`, error);
+		console.error(t("failed_fetch", { label: descriptor.catalogDiscovery.label }), error);
 		return [];
 	}
 }
 
 async function loadModelsDevData(): Promise<ModelSpec[]> {
 	try {
-		console.log("Fetching models from models.dev API...");
+		console.log(t("fetching_models_dev"));
 		const response = await fetch("https://models.dev/api.json");
 		const data = await response.json();
 		const models = mapModelsDevToModels(data as Record<string, unknown>, MODELS_DEV_PROVIDER_DESCRIPTORS);
 		models.sort((a, b) => a.id.localeCompare(b.id));
-		console.log(`Loaded ${models.length} tool-capable models from models.dev`);
+		console.log(t("loaded_models_dev", { count: models.length }));
 		return models;
 	} catch (error) {
-		console.error("Failed to load models.dev data:", error);
+		console.error(t("failed_models_dev"), error);
 		return [];
 	}
 }
@@ -387,10 +467,7 @@ async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuth
 			authStorage.close();
 		}
 	} catch (err) {
-		console.warn(
-			`Warning: Failed to retrieve credentials for ${provider}:`,
-			err instanceof Error ? err.message : String(err),
-		);
+		console.warn(t("warn_credentials", { id: provider }), err instanceof Error ? err.message : String(err));
 		return null;
 	}
 }
@@ -402,28 +479,28 @@ async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuth
 async function fetchAntigravityModels(): Promise<ModelSpec<"google-gemini-cli">[]> {
 	const access = await getOAuthAccessFromStorage("google-antigravity");
 	if (!access) {
-		console.log("No Antigravity or Gemini CLI credentials found, will use previous models.");
-		console.log("Tip: If you are logged in under a specific profile, run with OMP_PROFILE=<name>.");
+		console.log(t("no_antigravity_creds"));
+		console.log(t("profile_tip"));
 		return [];
 	}
 	try {
-		console.log("Fetching models from Antigravity API...");
+		console.log(t("fetching_antigravity"));
 		const discovered = await fetchAntigravityDiscoveryModels({
 			token: access.accessToken,
 			endpoint: ANTIGRAVITY_ENDPOINT,
 		});
 		if (discovered === null) {
-			console.warn("Antigravity API fetch failed, will use previous models");
+			console.warn(t("antigravity_failed"));
 			return [];
 		}
 		if (discovered.length > 0) {
-			console.log(`Fetched ${discovered.length} models from Antigravity API`);
+			console.log(t("fetched_antigravity", { count: discovered.length }));
 			return discovered;
 		}
-		console.warn("Antigravity API returned no models, will use previous models");
+		console.warn(t("antigravity_no_models"));
 		return [];
 	} catch (error) {
-		console.error("Failed to fetch Antigravity models:", error);
+		console.error(t("failed_antigravity"), error);
 		return [];
 	}
 }
@@ -447,12 +524,12 @@ function extractCodexAccountId(accessToken: string): string | null {
 async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-responses">[]> {
 	const access = await getOAuthAccessFromStorage("openai-codex");
 	if (!access) {
-		console.log("No Codex credentials found, will use previous models.");
-		console.log("Tip: If you are logged in under a specific profile, run with OMP_PROFILE=<name>.");
+		console.log(t("no_codex_creds"));
+		console.log(t("profile_tip"));
 		return [];
 	}
 	try {
-		console.log("Fetching models from Codex API...");
+		console.log(t("fetching_codex"));
 		const accessToken = access.accessToken;
 		const accountId = access.accountId ?? extractCodexAccountId(accessToken);
 		const codexDiscovery = await fetchCodexModels({
@@ -460,16 +537,16 @@ async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-resp
 			accountId: accountId ?? undefined,
 		});
 		if (codexDiscovery === null) {
-			console.warn("Codex API fetch failed");
+			console.warn(t("codex_failed"));
 			return [];
 		}
 		if (codexDiscovery.models.length > 0) {
-			console.log(`Fetched ${codexDiscovery.models.length} models from Codex API`);
+			console.log(t("fetched_codex", { count: codexDiscovery.models.length }));
 			return codexDiscovery.models;
 		}
 		return [];
 	} catch (error) {
-		console.error("Failed to fetch Codex models:", error);
+		console.error(t("failed_codex"), error);
 		return [];
 	}
 }
@@ -562,7 +639,7 @@ async function generateModels() {
 	const authoritativeSpecialDiscoveryProviders = new Set<string>();
 	for (const discovery of specialDiscoveries) {
 		if (discovery.models.length > 0) {
-			console.log(`Added ${discovery.models.length} models from ${discovery.label} discovery`);
+			console.log(t("added_discovery", { count: discovery.models.length, label: discovery.label }));
 			allModels.push(...discovery.models);
 			if (discovery.authoritative) {
 				authoritativeSpecialDiscoveryProviders.add(discovery.providerId);
@@ -666,19 +743,18 @@ async function generateModels() {
 
 	// Generate JSON file
 	await Bun.write(path.join(packageRoot, "src/models.json"), JSON.stringify(MODELS, null, "	"));
-	console.log("Generated src/models.json");
+	console.log(t("wrote_models"));
 
 	// Print statistics
 	const totalModels = allModels.length;
 	const reasoningModels = allModels.filter(m => m.reasoning).length;
 
-	console.log(`
-Model Statistics:`);
-	console.log(`  Total tool-capable models: ${totalModels}`);
-	console.log(`  Reasoning-capable models: ${reasoningModels}`);
+	console.log(`\n${t("stats_header")}`);
+	console.log(t("stats_total", { count: totalModels }));
+	console.log(t("stats_reasoning", { count: reasoningModels }));
 
 	for (const [provider, models] of Object.entries(MODELS)) {
-		console.log(`  ${provider}: ${Object.keys(models).length} models`);
+		console.log(t("stats_provider", { provider, count: Object.keys(models).length }));
 	}
 }
 
