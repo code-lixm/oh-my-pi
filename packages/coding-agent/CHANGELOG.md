@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
+
 ### Changed
 
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
@@ -12,6 +16,9 @@
 - Fixed interactive Bash PTY overlays filling most of the terminal with blank rows for short output; normal-buffer sessions now grow with visible content up to the viewport cap, while alternate-screen programs retain their full terminal geometry and horizontal-only borders follow `display.borderStyle`.
 - Fixed Advisor silence and waiting-status self-talk appearing as actionable suggestion cards, including localized variants such as `静默、等汇总。`.
 - Fixed newly added interactive session, agent dashboard, footer/status, selector, Bash/Advisor, startup, and argument-validation text bypassing the configured `displayLanguage`.
+- Fixed settings UI chrome (`TAB_METADATA` tab labels, `Model Role Storage` / `Enforce Seen-Line Guard` / `Generic Task Prewalk` groups, labels and descriptions, and the `options` arrays for Symbol Preset, Status Line preset/separator, output limits, sampling knobs, in-band tool dialects, model/image/memory/completion strategies, fallback chains, etc.) bypassing the configured `displayLanguage`; wrapped the remaining bare strings in `tSettingsUi(...)` and added matching translations.
+- Fixed setup wizard chrome (common header/footer, splash skip hint, theme/glyph/provider scene titles + subtitles + curated items, `Sign in` tab OAuth flow strings, `Web search` provider list/selection state, `outro` transition copy, `Plan Review` overlay title, extension dashboard `ALL` tab + kind display names) bypassing the configured `displayLanguage`; wrapped bare strings in `tSettingsUi(...)` and used getters / factory functions so the wizard refreshes its localized chrome after `displayLanguage` is changed.
+- Fixed short single-phase todo cards collapsing to only the final open task during progress updates despite their header reporting the full task count.
 
 ## [17.0.5] - 2026-07-18
 

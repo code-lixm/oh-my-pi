@@ -22,6 +22,7 @@ import {
 	isProviderEnabled,
 	loadCapability,
 } from "../../../discovery";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { readDisabledServers, readEnabledServers } from "../../../mcp/config-writer";
 import type {
 	DashboardState,
@@ -302,7 +303,8 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 				kind: "context-file",
 				name,
 				displayName: name,
-				description: file.level === "user" ? "User-level context" : "Project-level context",
+				description:
+					file.level === "user" ? tSettingsUi("User-level context") : tSettingsUi("Project-level context"),
 				trigger: file.level,
 				path: file.path,
 				source: sourceFromMeta(file._source),
@@ -438,25 +440,25 @@ export function applyFilter(extensions: Extension[], query: string): Extension[]
 function getKindDisplayName(kind: ExtensionKind): string {
 	switch (kind) {
 		case "extension-module":
-			return "Extension Modules";
+			return tSettingsUi("Extension Modules");
 		case "skill":
-			return "Skills";
+			return tSettingsUi("Skills");
 		case "rule":
-			return "Rules";
+			return tSettingsUi("Rules");
 		case "tool":
-			return "Tools";
+			return tSettingsUi("Tools");
 		case "mcp":
-			return "MCP Servers";
+			return tSettingsUi("MCP Servers");
 		case "prompt":
-			return "Prompts";
+			return tSettingsUi("Prompts");
 		case "instruction":
-			return "Instructions";
+			return tSettingsUi("Instructions");
 		case "context-file":
-			return "Context Files";
+			return tSettingsUi("Context Files");
 		case "hook":
-			return "Hooks";
+			return tSettingsUi("Hooks");
 		case "slash-command":
-			return "Slash Commands";
+			return tSettingsUi("Slash Commands");
 		default:
 			return kind;
 	}
@@ -479,7 +481,7 @@ export function buildProviderTabs(extensions: Extension[]): ProviderTab[] {
 	// ALL tab first
 	tabs.push({
 		id: "all",
-		label: "ALL",
+		label: tSettingsUi("ALL"),
 		enabled: true,
 		count: extensions.length,
 	});

@@ -1029,10 +1029,10 @@ export class ModelSelectorComponent extends Container {
 		const headerText =
 			showingThinking && this.#menuSelectedRole
 				? `  ${tSettingsUi("Thinking for: {roleName} ({modelId})", {
-						roleName: selectedRoleName,
-						modelId: selectedItem.id,
+						roleName: theme.bold(selectedRoleName),
+						modelId: theme.bold(selectedItem.id),
 					})}`
-				: `  ${tSettingsUi("Action for: {modelId}", { modelId: selectedItem.id })}`;
+				: `  ${tSettingsUi("Action for: {modelId}", { modelId: theme.bold(selectedItem.id) })}`;
 		const hintText = showingThinking
 			? `  ${tSettingsUi("Enter: confirm  Esc: back")}`
 			: `  ${tSettingsUi("Enter: continue  Esc: cancel")}`;
@@ -1057,13 +1057,22 @@ export class ModelSelectorComponent extends Container {
 		if (showingThinking && this.#menuSelectedRole) {
 			this.#menuContainer.addChild(
 				new Text(
-					theme.fg("text", `  Thinking for: ${theme.bold(selectedRoleName)} (${theme.bold(selectedItem.id)})`),
+					theme.fg(
+						"text",
+						`  ${tSettingsUi("Thinking for: {roleName} ({modelId})", { roleName: theme.bold(selectedRoleName), modelId: theme.bold(selectedItem.id) })}`,
+					),
 					0,
 					0,
 				),
 			);
 		} else {
-			this.#menuContainer.addChild(new Text(theme.fg("text", `  Action for: ${theme.bold(selectedItem.id)}`), 0, 0));
+			this.#menuContainer.addChild(
+				new Text(
+					theme.fg("text", `  ${tSettingsUi("Action for: {modelId}", { modelId: theme.bold(selectedItem.id) })}`),
+					0,
+					0,
+				),
+			);
 		}
 		this.#menuContainer.addChild(new Spacer(1));
 

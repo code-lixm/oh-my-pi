@@ -1,4 +1,5 @@
 import { padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { gradientEscape, gradientLogo, PI_LOGO, type ShineConfig } from "../../components/welcome";
 import { theme } from "../../theme/theme";
 
@@ -21,7 +22,9 @@ const RESET = "\x1b[0m";
 const MIN_SCENE_WIDTH = 56;
 const MIN_SCENE_HEIGHT = 22;
 
-const SKIP_HINT = "press enter to skip";
+function getSkipHint() {
+	return tSettingsUi("press enter to skip");
+}
 
 /** Density ramp for the rippling water, lightest → heaviest. */
 const WATER_RAMP = [
@@ -176,12 +179,12 @@ export function renderSetupSplash(width: number, height: number, elapsedMs: numb
 		}
 	});
 	// 4. skip hint on a cleared strip at the bottom so it stays legible over the water
-	const hintWidth = visibleWidth(SKIP_HINT);
+	const hintWidth = visibleWidth(getSkipHint());
 	const hintStart = Math.floor((w - hintWidth) / 2);
 	const hintRow = h - 1;
 	for (let x = hintStart - 1; x <= hintStart + hintWidth; x++) put(x, hintRow, " ");
 	let col = hintStart;
-	for (const ch of SKIP_HINT) put(col++, hintRow, ch === " " ? " " : theme.fg("dim", ch));
+	for (const ch of getSkipHint()) put(col++, hintRow, ch === " " ? " " : theme.fg("dim", ch));
 
 	return cells.map(row => row.join(""));
 }
@@ -196,6 +199,6 @@ function renderCompactSplash(width: number, height: number, phase: number, shine
 		const item = content[y - start];
 		lines.push(clampLine(item !== undefined ? centerLine(item, width) : "", width));
 	}
-	if (height > 2) lines[height - 2] = clampLine(centerLine(theme.fg("dim", SKIP_HINT), width), width);
+	if (height > 2) lines[height - 2] = clampLine(centerLine(theme.fg("dim", getSkipHint()), width), width);
 	return lines;
 }

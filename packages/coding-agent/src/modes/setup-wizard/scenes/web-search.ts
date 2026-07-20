@@ -6,6 +6,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import { SETTINGS_SCHEMA } from "../../../config/settings-schema";
+import { tSettingsUi } from "../../../i18n/settings-locale";
 import { getSearchProvider, setPreferredSearchProvider } from "../../../web/search/provider";
 import { isSearchProviderPreference, type SearchProviderId } from "../../../web/search/types";
 import { getSelectListTheme, theme } from "../../theme/theme";
@@ -14,11 +15,13 @@ import type { SetupSceneHost, SetupTab } from "./types";
 const MAX_VISIBLE = 8;
 
 /** Reuse the settings schema as the single source of truth for labels/descriptions. */
-const WEB_SEARCH_ITEMS: readonly SelectItem[] = SETTINGS_SCHEMA["providers.webSearch"].ui.options.map(option => ({
-	value: option.value,
-	label: option.label,
-	description: option.description,
-}));
+function getWebSearchItems(): readonly SelectItem[] {
+	return SETTINGS_SCHEMA["providers.webSearch"].ui.options.map(option => ({
+		value: option.value,
+		label: tSettingsUi(option.label),
+		description: option.description ? tSettingsUi(option.description) : undefined,
+	}));
+}
 
 type Availability = "checking" | boolean;
 
@@ -30,7 +33,9 @@ type Availability = "checking" | boolean;
  */
 export class WebSearchTab implements SetupTab {
 	readonly id = "web-search";
-	readonly label = "Web search";
+	get label() {
+		return tSettingsUi("Web search");
+	}
 	readonly modal = false;
 
 	#list: SelectList;
@@ -41,9 +46,9 @@ export class WebSearchTab implements SetupTab {
 	#listRowStart = 0;
 
 	constructor(private readonly host: SetupSceneHost) {
-		this.#list = new SelectList(WEB_SEARCH_ITEMS, MAX_VISIBLE, getSelectListTheme());
+		this.#list = new SelectList(getWebSearchItems(), MAX_VISIBLE, getSelectListTheme());
 		const current = host.ctx.settings.get("providers.webSearch");
-		const index = WEB_SEARCH_ITEMS.findIndex(item => item.value === current);
+		const index = getWebSearchItems().findIndex(item => item.value === current);
 		if (index >= 0) this.#list.setSelectedIndex(index);
 		this.#list.onSelectionChange = item => this.#onHighlight(item.value);
 		this.#list.onSelect = item => this.#apply(item.value);
@@ -77,7 +82,7 @@ export class WebSearchTab implements SetupTab {
 	}
 
 	render(width: number): readonly string[] {
-		const lines = [theme.fg("muted", "Choose the provider the web_search tool should prefer."), ""];
+		const lines = [theme.fg("muted", tSettingsUi("Choose the provider the web_search tool should prefer.")), ""];
 		this.#listRowStart = lines.length;
 		lines.push(...this.#list.render(width));
 		const selected = this.#list.getSelectedItem();
@@ -117,24 +122,28 @@ export class WebSearchTab implements SetupTab {
 		if (!isSearchProviderPreference(value)) return;
 		this.host.ctx.settings.set("providers.webSearch", value);
 		setPreferredSearchProvider(value);
-		const label = WEB_SEARCH_ITEMS.find(item => item.value === value)?.label ?? value;
-		this.#status = [theme.fg("success", `${theme.status.success} Web search set to ${label}`)];
+		const label = getWebSearchItems().find(item => item.value === value)?.label ?? value;
+		this.#status = [
+			theme.fg("success", `${theme.status.success} ${tSettingsUi("Web search set to {label}", { label })}`),
+		];
 		if (value !== "auto" && this.#availability.get(value as SearchProviderId) === false) {
-			this.#status.push(theme.fg("dim", "Not configured yet — add its API key or sign in to enable it."));
+			this.#status.push(
+				theme.fg("dim", tSettingsUi("Not configured yet — add its API key or sign in to enable it.")),
+			);
 		}
 		this.host.requestRender();
 	}
 
 	#readinessLines(value: string): string[] {
 		if (value === "auto") {
-			return [theme.fg("dim", "Automatically uses the first configured provider.")];
+			return [theme.fg("dim", tSettingsUi("Automatically uses the first configured provider."))];
 		}
 		const state = this.#availability.get(value as SearchProviderId);
 		if (state === undefined || state === "checking") {
-			return [theme.fg("dim", "Checking availability…")];
+			return [theme.fg("dim", tSettingsUi("Checking availability…"))];
 		}
 		return state
-			? [theme.fg("success", `${theme.status.success} Ready to use`)]
-			: [theme.fg("warning", `${theme.status.pending} Needs credentials`)];
+			? [theme.fg("success", `${theme.status.success} ${tSettingsUi("Ready to use")}`)]
+			: [theme.fg("warning", `${theme.status.pending} ${tSettingsUi("Needs credentials")}`)];
 	}
 }

@@ -52,7 +52,9 @@ import { joinPlanSections, parsePlanSections, sectionDeletionSpan } from "./plan
 import { renderSegmentTrack } from "./segment-track";
 
 /** Title shown in the overlay's top border. */
-const OVERLAY_TITLE = "Plan Review";
+function getOverlayTitle() {
+	return tSettingsUi("Plan Review");
+}
 /** Minimum plan-body rows kept visible even on short terminals. */
 const MIN_BODY_ROWS = 3;
 /** Sidebar gates: enough headings, a wide terminal, and a usable body column. */
@@ -863,7 +865,7 @@ export class PlanReviewOverlay implements Component {
 		const out: string[] = [];
 		if (sidebarShown) {
 			const { lines: sidebar, posForRow } = this.#renderSidebarLines(regionRows, sidebarWidth);
-			out.push(topBorderSplit(width, OVERLAY_TITLE, sidebarWidth));
+			out.push(topBorderSplit(width, getOverlayTitle(), sidebarWidth));
 			for (let i = 0; i < regionRows; i++) {
 				const pos = posForRow[i];
 				if (pos !== undefined) this.#tocClickRows.set(out.length, pos);
@@ -872,7 +874,7 @@ export class PlanReviewOverlay implements Component {
 			}
 			out.push(dividerSplit(width, sidebarWidth));
 		} else {
-			out.push(topBorder(width, OVERLAY_TITLE));
+			out.push(topBorder(width, getOverlayTitle()));
 			for (const line of body) {
 				this.#bodyClickRows.add(out.length);
 				out.push(row(line, width));

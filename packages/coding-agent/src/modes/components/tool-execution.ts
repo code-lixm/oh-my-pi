@@ -1112,8 +1112,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					const pendingText = renderStatusLine(
 						{
 							iconOverride: spinner,
-							title: "Edit",
-							description: theme.fg("dim", `${remaining} more file${remaining > 1 ? "s" : ""} pending…`),
+							title: tSettingsUi("Edit"),
+							description: theme.fg("dim", tSettingsUi("{count} more files pending…", { count: remaining })),
 						},
 						theme,
 					);
