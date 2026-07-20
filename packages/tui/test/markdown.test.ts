@@ -264,6 +264,16 @@ describe("Markdown component", () => {
 				.map(line => stripVTControlCharacters(line).trimEnd());
 		}
 
+		function renderTableLines(
+			text: string,
+			width: number,
+			themeOverrides: Partial<typeof defaultMarkdownTheme> = {},
+		): string[] {
+			return new Markdown(text, 0, 0, { ...defaultMarkdownTheme, ...themeOverrides })
+				.render(width)
+				.map(line => stripVTControlCharacters(line));
+		}
+
 		it("renders horizontal tables with only a header underline and space-aligned columns", () => {
 			const lines = renderTablePlainLines(
 				`| Name | Value |
@@ -320,6 +330,64 @@ describe("Markdown component", () => {
 			expect(lines.filter(line => /^-+$/.test(line))).toHaveLength(1);
 			expect(header.indexOf("B")).toBe(row.indexOf("2"));
 			expect(lines.join("\n")).not.toContain("| A | B |");
+		});
+
+		it("renders borderless tables as a three-rule layout without vertical borders or row dividers", () => {
+			const lines = renderTablePlainLines(
+				`| Name | Value |
+| --- | --- |
+| A | 12345 |
+| BB | 67890 |`,
+				80,
+				{ tableBorderStyle: "none" },
+			);
+
+			expect(lines).toHaveLength(6);
+			const [topRule, header, headerDivider, firstRow, secondRow, bottomRule] = lines;
+			const horizontalRules = lines.filter(line => /^-+$/.test(line));
+			expect(horizontalRules).toEqual([topRule, headerDivider, bottomRule]);
+			expect(topRule).toBe(headerDivider);
+			expect(bottomRule).toBe(topRule);
+
+			const tableWidth = visibleWidth(topRule);
+			expect(tableWidth).toBe(visibleWidth(header));
+			expect(tableWidth).toBe(visibleWidth(firstRow));
+			expect(tableWidth).toBe(visibleWidth(secondRow));
+
+			for (const line of [header, firstRow, secondRow]) {
+				expect(/[|+┌┐└┘├┤┬┴┼│]/u.test(line)).toBe(false);
+			}
+			expect(lines.slice(3, 5).some(line => /^-+$/.test(line))).toBe(false);
+			expect(header).toContain("Name");
+			expect(header).toContain("Value");
+			expect(firstRow).toContain("A");
+
+			expect(firstRow).toContain("12345");
+			expect(secondRow).toContain("BB");
+			expect(secondRow).toContain("67890");
+
+			const valueColumn = header.indexOf("Value");
+			expect(valueColumn).toBeGreaterThan(0);
+			expect(firstRow.indexOf("12345")).toBe(valueColumn);
+			expect(secondRow.indexOf("67890")).toBe(valueColumn);
+		});
+
+		it("keeps borderless three-rule tables within narrow width budgets", () => {
+			const width = 5;
+			const lines = renderTableLines(
+				`| A | B |
+| --- | --- |
+| 1 | 2 |
+| 3 | 4 |`,
+				width,
+				{ tableBorderStyle: "none" },
+			);
+
+			expect(lines).toEqual(["-----", "A   B", "-----", "1   2", "3   4", "-----"]);
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				expect(/[|+┌┐└┘├┤┬┴┼│]/u.test(line)).toBe(false);
+			}
 		});
 
 		it("keeps the full grid when tableBorderStyle is unset or full", () => {

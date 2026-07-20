@@ -3378,12 +3378,12 @@ export class AgentSession {
 	 * Route one accepted advice note from `advisor` to the primary. Concern and
 	 * blocker interrupt the running agent through the steering channel; once the
 	 * loop has yielded, `triggerTurn` resumes it. After a terminal text answer with
-	 * no queued work, a concern is preserved as a visible advisor card, while a
-	 * blocker wakes the primary to acknowledge work it handed off incorrectly.
-	 * After a deliberate user interrupt auto-resume is suppressed while idle/unwinding
-	 * (the note becomes a preserved card re-entering on resume); a live-streaming turn is
-	 * steered in directly. A plain nit always rides the non-interrupting YieldQueue
-	 * aside. Suppression by the per-advisor emission guard drops the note silently —
+	 * no queued work, every severity starts a new turn so the primary acts on the
+	 * review instead of leaving it for the user. After a deliberate user interrupt,
+	 * auto-resume is suppressed while idle/unwinding (the note becomes a preserved
+	 * card re-entering on resume); a live-streaming turn is steered in directly.
+	 * Away from the terminal-answer case, a plain nit rides the non-interrupting
+	 * YieldQueue aside. Suppression by the per-advisor emission guard drops the note silently —
 	 * the model still saw `Recorded.`, so it isn't tempted to rephrase the same note
 	 * past the dedupe.
 	 */
@@ -3439,8 +3439,8 @@ export class AgentSession {
 			});
 			return;
 		}
-		// A steered interrupting note only continues the run when the session can
-		// actually start (or is already running) a turn. Two idle cases cannot, so
+		// A steered note only continues the run when the session can actually start
+		// (or is already running) a turn. Two idle cases cannot, so
 		// `sendCustomMessage({ triggerTurn: true })` would silently bury the card in
 		// `#pendingNextTurnMessages` until the next user prompt — strictly worse than
 		// the visible preserved card. Preserve instead:
@@ -3463,11 +3463,10 @@ export class AgentSession {
 			});
 			return;
 		}
-		// Arm the post-interrupt immune window only now that a turn is actually
-		// being steered/triggered. A merely preserved card never interrupts, so
-		// arming earlier would downgrade the next `advisor.immuneTurns` worth of
-		// real concerns/blockers to skip-idle-flush asides (#5628 review).
-		this.#recordAdvisorInterruptDelivered();
+		// Arm the post-interrupt immune window only for an interrupting severity that
+		// is actually steered. A terminal nit now wakes the primary, but must not make
+		// later concern/blocker advice immune.
+		if (interrupting) this.#recordAdvisorInterruptDelivered();
 		void this.sendCustomMessage(
 			{ customType: "advisor", content, display: true, attribution: "agent", details },
 			{ deliverAs: "steer", triggerTurn: true },

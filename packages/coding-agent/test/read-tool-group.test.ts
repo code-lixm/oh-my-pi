@@ -71,7 +71,7 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered.toLowerCase()).not.toContain("ctrl+o");
 	});
 
-	it("renders zh-CN grouped read chrome with translated 读取 titles and column-1 headers", () => {
+	it("renders zh-CN grouped read chrome with raw Read titles and localized counts on column-1 headers", () => {
 		setSettingsUiLocale("zh-CN");
 
 		const empty = Bun.stripANSI(new ReadToolGroupComponent().render(120).join("\n"));
@@ -92,16 +92,16 @@ describe("ReadToolGroupComponent", () => {
 		const grouped = Bun.stripANSI(groupedComponent.render(120).join("\n"));
 
 		expect(visibleColumns(empty)).toEqual([1]);
-		expect(empty).toContain("读取");
-		expect(empty).not.toContain("Read");
+		expect(empty).toContain("Read");
+		expect(empty).not.toContain("读取");
 		expect(visibleColumns(single)).toEqual([1]);
-		expect(single).toContain(`读取: ${singlePath}`);
-		expect(single).not.toContain("Read");
-		expect(visibleColumns(grouped)).toEqual([1, 4, 4]);
-		expect(grouped).toContain("读取 2 个路径");
+		expect(single).toContain(`Read: ${singlePath}`);
+		expect(single).not.toContain("读取");
+		expect(visibleColumns(grouped)).toEqual([1, 1, 1]);
+		expect(grouped).toContain("Read 2 个路径");
 		expect(grouped).toContain(`${themeModule.theme.tree.branch} ${onePath}`);
 		expect(grouped).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
-		expect(grouped).not.toContain("Read");
+		expect(grouped).not.toContain("读取");
 	});
 
 	it("keeps direct read calls and grouped single-path reads on the same Read: <path> header text after the status icon", async () => {

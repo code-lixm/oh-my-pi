@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
+
 ## [17.0.5] - 2026-07-18
 
 ### Changed

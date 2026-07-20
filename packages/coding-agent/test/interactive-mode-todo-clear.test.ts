@@ -221,6 +221,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 	let authStorage: AuthStorage;
 	let session: AgentSession;
 	let mode: InteractiveMode;
+	let eventBus: EventBus;
 
 	beforeAll(async () => {
 		await initTheme();
@@ -234,6 +235,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 to exist in registry");
+		eventBus = new EventBus();
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -242,7 +244,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 			settings: Settings.isolated({}),
 			modelRegistry,
 		});
-		mode = new InteractiveMode(session, "test");
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
 	});
 
 	afterEach(async () => {
@@ -255,7 +257,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		resetSettingsForTest();
 	});
 
-	it("renders a Todos tree: stage progression header, active stage expanded, others collapsed", () => {
+	it("shows every task state when the active list fits under the collapsed cap", () => {
 		mode.setTodos([
 			{
 				name: "Foundation",
@@ -281,19 +283,74 @@ describe("InteractiveMode todo HUD anchor", () => {
 		// Root header carries overall stage progression (on stage 1 of 2).
 		const root = lines.find(line => line.includes("Todos"));
 		expect(root).toContain("1/2");
-		// Active stage: highlighted header with its own task progress, expanded as a
-		// connector tree; the completed task slid out of the open-task window.
+		// Small active lists stay fully visible: completed + active + pending all
+		// render together instead of hiding the completed row behind the cap.
 		expect(lines.some(line => line.includes("I. Foundation") && line.includes("1/3"))).toBe(true);
-		const secondLine = lines.find(line => line.includes("second task"));
-		expect(secondLine).toContain(theme.tree.branch);
-		expect(secondLine).toContain(theme.checkbox.unchecked);
-		expect(lines.some(line => line.includes("third task"))).toBe(true);
-		expect(lines.some(line => line.includes("first task"))).toBe(false);
+		const completedLine = lines.find(line => line.includes("first task"));
+		const inProgressLine = lines.find(line => line.includes("second task"));
+		const pendingLine = lines.find(line => line.includes("third task"));
+		expect(completedLine).toContain(theme.checkbox.checked);
+		expect(inProgressLine).toContain(theme.checkbox.unchecked);
+		expect(pendingLine).toContain(theme.checkbox.unchecked);
+		expect([completedLine, inProgressLine, pendingLine].filter(Boolean)).toHaveLength(3);
 		// Upcoming stage: header with its own progress, but collapsed (no task rows).
 		expect(lines.some(line => line.includes("II. Verification") && line.includes("0/1"))).toBe(true);
 		expect(lines.some(line => line.includes("run tests"))).toBe(false);
 		// No overflow rows — the header/progress counts imply what is hidden.
 		expect(lines.some(line => line.includes("more"))).toBe(false);
+	});
+
+	it("keeps every matched active todo visible when multiple live subagents match distant pending rows in a long phase", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "AdvisorUnwind",
+			index: 0,
+			agent: "task",
+			description: "Wire focused session unwind",
+			status: "started",
+			detached: true,
+		});
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "TodoHud",
+			index: 1,
+			agent: "task",
+			description: "Preserve all matched active todos",
+			status: "started",
+			detached: true,
+		});
+
+		mode.setTodos([
+			{
+				name: "HUD regressions",
+				tasks: [
+					{ content: "inventory entry points", status: "pending" },
+					{ content: "Wire focused session unwind", status: "pending" },
+					{ content: "capture progress snapshots", status: "pending" },
+					{ content: "stabilize HUD line budget", status: "pending" },
+					{ content: "review anchor rendering", status: "pending" },
+					{ content: "trim hidden rows", status: "pending" },
+					{ content: "document fallback semantics", status: "pending" },
+					{ content: "Preserve all matched active todos", status: "pending" },
+					{ content: "run targeted regression test", status: "pending" },
+				],
+			},
+		]);
+
+		const lines = mode.todoContainer
+			.render(120)
+			.flatMap(line => line.split("\n"))
+			.map(line => Bun.stripANSI(line));
+
+		expect(lines.some(line => line.includes("Wire focused session unwind"))).toBe(true);
+		expect(lines.some(line => line.includes("Preserve all matched active todos"))).toBe(true);
+		expect(lines.some(line => line.includes("capture progress snapshots"))).toBe(true);
+		expect(lines.some(line => line.includes("stabilize HUD line budget"))).toBe(true);
+		expect(lines.some(line => line.includes("review anchor rendering"))).toBe(true);
+		expect(lines.some(line => line.includes("inventory entry points"))).toBe(false);
+		expect(lines.some(line => line.includes("trim hidden rows"))).toBe(false);
+		expect(lines.some(line => line.includes("document fallback semantics"))).toBe(false);
+		expect(lines.some(line => line.includes("run targeted regression test"))).toBe(false);
+		expect(lines.some(line => line.includes("… 4 more todos"))).toBe(true);
 	});
 
 	it("renders nothing when there are no todos", () => {

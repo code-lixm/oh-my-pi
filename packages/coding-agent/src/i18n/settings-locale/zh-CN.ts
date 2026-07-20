@@ -416,7 +416,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Successfully connected to server": "已成功连接到服务器",
 	unanswered: "未回答",
 	underline: "下划线",
-	Ask: "询问",
+	Ask: "Ask",
 	"Ask ({seconds}s)": "询问（{seconds} 秒）",
 	"Review answers": "复核回答",
 	"Enter select \u00b7 n note": "Enter 选择 \u00b7 n 备注",
@@ -612,7 +612,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Quote {index}": "引用 {index}",
 	Qwen3: "Qwen3",
 	"Raw Provider Stream": "原始 Provider 流",
-	Read: "读取",
+	Read: "Read",
 	"Reloaded session": "会话已重载",
 	"Reloading MCP servers and runtime tools...": "正在重新加载 MCP 服务器和运行时工具...",
 	"Reset failed for {accountLabel}: {error}": "{accountLabel} 重置失败：{error}",
@@ -1426,7 +1426,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Block clone": "块克隆",
 	"Block shell commands that have dedicated tools": "阻止已有专用工具的 shell 命令",
 	"Branch Summaries": "分支摘要",
-	Browser: "浏览器",
+	Browser: "Browser",
 	"Built-in Rules": "内置规则",
 	"Bun:": "Bun：",
 	"Cache Miss Marker": "缓存未命中标记",
@@ -1474,7 +1474,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Copied /btw answer to clipboard": "已将 /btw 答案复制到剪贴板",
 	"Create Todos Automatically": "自动创建待办",
 	"Dark Theme": "深色主题",
-	Debug: "调试",
+	Debug: "Debug",
 	"Debug Tools": "调试工具",
 	"Debug transcript written to:\n{path}": "调试 transcript 已写入：\n{path}",
 	"Deduplicate Diagnostics": "诊断去重",
@@ -1623,7 +1623,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"GitHub Cache Soft TTL": "GitHub 缓存软 TTL",
 	"GitHub Gist": "GitHub Gist（代码片段）",
 	"GitHub View Cache": "GitHub 视图缓存",
-	Glob: "Glob（通配查找）",
+	Glob: "Glob",
 	Global: "全局",
 	"Global — all projects (~/.omp/agent/rules)": "全局 —— 所有项目（~/.omp/agent/rules）",
 	"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)":
@@ -1636,7 +1636,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Graphics:": "图形：",
 	"Greedy top token": "贪心取首 token",
 	"Greater-than signs": "大于号",
-	Grep: "Grep（正则搜索）",
+	Grep: "Grep",
 	"Grep Context After": "Grep 后置上下文",
 	"Grep Context Before": "Grep 前置上下文",
 	"HTTP SSE providers populate this view while a model response is streaming.":
@@ -1844,6 +1844,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Nucleus sampling cutoff (0-1, -1 = provider default)": "核采样截断值（0-1，-1 = 提供方默认值）",
 	"Obfuscate secrets before sending to AI providers": "在发送给 AI 提供方之前混淆密钥",
 	"Obsidian Vault": "Obsidian 知识库",
+	SiYuan: "思源笔记",
+	"SiYuan Workspace": "思源工作空间",
 	Off: "关闭",
 	"Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory":
 		"关闭、本地摘要流水线、Mnemopi SQLite 或 Hindsight 远程记忆",
@@ -2237,7 +2239,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Windows Projected File System": "Windows 投影文件系统",
 	"Workflow Keyword": "Workflowz 关键字",
 	"Worktree Base Directory": "Worktree 基础目录",
-	Write: "写入",
+	Write: "Write",
 	"Write to a project-local bank but merge project + shared recall results":
 		"写入项目本地存储库，但合并项目 + 共享的召回结果",
 	"Write visible TUI conversation to a temp txt": "将可见的 TUI 对话写入临时 txt",
@@ -2649,6 +2651,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"启用 github 工具（基于 op 的 dispatch，用于 repository、issue、pull request、diff、search、checkout、push 和 Actions watch 工作流）",
 	"Enable the vault:// internal URL for reading and editing Obsidian vault content via the Obsidian CLI. When disabled, vault:// resolution is refused and the vault:// entry is omitted from the system prompt.":
 		"启用 vault:// 内部 URL，以便通过 Obsidian CLI 读取和编辑 Obsidian vault 内容。禁用时会拒绝解析 vault://，并且 system prompt 中会省略 vault:// 条目。",
+	"Enable the SiYuan tool after verifying a compatible SiYuan Kernel CLI on PATH. macOS also requires the official SiYuan code signature.":
+		"验证 PATH 中存在兼容的 SiYuan Kernel CLI 后启用思源工具；macOS 还必须通过思源官方代码签名验证。",
+	"Default registered SiYuan workspace name or absolute path. Required for commands when multiple workspaces are registered unless supplied per call.":
+		"默认注册的思源工作空间名称或绝对路径。注册了多个工作空间且调用时未指定时必须设置。",
 	"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.":
 		"实验功能：将大型历史工具结果渲染为高密度 PNG 图像而非文本（仅限视觉模型）。可节省累计 read/search 输出的 tokens。",
 	"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.":
@@ -3132,7 +3138,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Remaining items: none.": "剩余项目：无。",
 	"Review incomplete (yield not called)": "审查未完成（未调用 yield）",
 	"Send failed.": "发送失败。",
-	Task: "任务",
+	Task: "Task",
 	"Timeout: {seconds}s (requested {requestedSeconds}s clamped)":
 		"超时：{seconds}s（请求的 {requestedSeconds}s 已被限制）",
 	"Todo operation failed": "待办操作失败",
@@ -3210,7 +3216,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Set as {roleLabel}": "设为 {roleLabel}",
 	"This turn has stopped. Fix the problem, then use /retry; this banner also closes when you send your next message.":
 		"本轮已停止。请修复问题，然后使用 /retry；发送下一条消息后，此横幅也会关闭。",
-	Todo: "待办",
+	Todo: "Todo",
 	"Tool: {toolName}": "工具：{toolName}",
 	"[isolated]": "[隔离]",
 	"auto-retry gave up after {attempt} attempts: ": "自动重试在尝试 {attempt} 次后放弃：",
@@ -3318,7 +3324,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	'Duplicate phase "{phase}" in init list': "init 列表中有重复阶段“{phase}”",
 	'Duplicate task "{content}" in init list': "init 列表中有重复任务“{content}”",
 	"Early maintenance": "较早压缩",
-	Edit: "编辑",
+	Edit: "Edit",
 	'Editing "{name}" · Enter / click edit field · Esc back': "正在编辑“{name}” · 按 Enter / 点击编辑字段 · 按 Esc 返回",
 	Editor: "编辑器",
 	"Editor exited without saving; todos unchanged.": "编辑器退出时未保存；todos 未更改。",
@@ -3755,7 +3761,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Cloud Providers": "云 Providers",
 	"Search & Tools": "搜索与工具",
 	Configuration: "配置",
-	Advise: "建议",
+	Advise: "Advise",
 	"Blocked: {message}": "已拦截：{message}",
 	"Original command: {command}": "原始命令：{command}",
 	"Backgrounded as job {jobId}; result will be delivered automatically.": "已转入后台任务 {jobId}；结果会自动发送。",

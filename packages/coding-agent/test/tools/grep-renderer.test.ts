@@ -4,7 +4,10 @@ import * as url from "node:url";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 import { grepToolRenderer } from "../../src/tools/grep";
+
+const initialSettingsUiLocale = getSettingsUiLocale();
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -18,6 +21,7 @@ beforeAll(async () => {
 
 afterEach(() => {
 	settings.clearOverride("tui.hyperlinks");
+	setSettingsUiLocale(initialSettingsUiLocale);
 });
 
 afterAll(() => {
@@ -52,6 +56,32 @@ describe("grepToolRenderer", () => {
 		expect(renderedLines[0]).toContain(uiTheme.fg("toolTitle", "Grep"));
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", uiTheme.symbol("icon.search")));
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", "Grep"));
+	});
+
+	it("keeps the Grep title unlocalized in zh-CN while localizing match counts", async () => {
+		setSettingsUiLocale("zh-CN");
+
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: {
+				matchCount: 1,
+				fileCount: 1,
+				displayContent: ["# src/", "## file.ts#abcd", "*12│const needle = true;"].join("\n"),
+			},
+		};
+
+		const renderedLines = grepToolRenderer
+			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "needle" })
+			.render(240);
+		const plainHeader = sanitizeText(renderedLines[0] ?? "");
+
+		expect(plainHeader.startsWith(`${uiTheme.symbol("icon.search")} Grep`)).toBe(true);
+		expect(plainHeader).toContain("1 个匹配");
+		expect(plainHeader).toContain("1 个文件");
+		expect(plainHeader).not.toContain("Grep（正则搜索）");
 	});
 
 	it("keeps truncation status in the header without a bottom notice", async () => {

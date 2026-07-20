@@ -374,6 +374,7 @@ export class UiHelpers {
 		const messages = sessionContext.messages;
 		const count = messages.length;
 		let errorAggregation: AssistantErrorAggregation<AssistantMessageComponent> | undefined;
+		const todoToolCallIds = new Set<string>();
 		for (let i = 0; i < count; i++) {
 			const message = messages[i]!;
 			if (message.role !== "assistant") errorAggregation = undefined;
@@ -426,6 +427,7 @@ export class UiHelpers {
 					if (content.type !== "toolCall") {
 						continue;
 					}
+					if (content.name === "todo") todoToolCallIds.add(content.id);
 					resolveWaitingPoll(content.name);
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
 					const partialJson = getStreamingPartialJson(content);
@@ -606,6 +608,18 @@ export class UiHelpers {
 				// Match tool results to pending tool components
 				const component = this.ctx.pendingTools.get(message.toolCallId);
 				if (component) {
+					if (
+						message.toolName === "hub" &&
+						component instanceof HubActivityGroupComponent &&
+						component.discardEmptyMessageWait(message, message.toolCallId)
+					) {
+						this.ctx.pendingTools.delete(message.toolCallId);
+						if (component.isEmpty) {
+							this.ctx.chatContainer.removeChild(component);
+							if (hubActivityGroup === component) hubActivityGroup = null;
+						}
+						continue;
+					}
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					if (
@@ -663,14 +677,13 @@ export class UiHelpers {
 		// A trailing waiting poll is final history on rebuild; seal it so it
 		// freezes (and its spinner timer stops) like every other block.
 		resolveWaitingPoll();
-		// A trailing todo snapshot is live state, not history: when the rebuild
-		// runs mid-turn (settings overlay close, focus attach during streaming),
-		// hand it back to the controller so a follow-up `todo` update keeps
-		// displacing instead of stacking. Idle rebuilds (resume / compaction)
-		// fall through to the seal path so the snapshot freezes as history.
+		// A trailing todo snapshot belongs to the active turn. During a mid-turn
+		// rebuild, remove it from the scrolling transcript: the anchored todo HUD is
+		// the single live representation. Idle rebuilds still seal and retain the
+		// persisted todo result as history.
 		if (todoSnapshot && this.ctx.viewSession.isStreaming) {
-			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
-			todoSnapshot = null;
+			resolveTodoSnapshot("todo");
+			this.ctx.eventController?.inheritDisplaceableTodo(null);
 		} else {
 			resolveTodoSnapshot();
 		}
@@ -687,6 +700,17 @@ export class UiHelpers {
 		// (`rebuildChatFromMessages` builds its context WITHOUT dangling calls and
 		// restores its own preserved live components afterwards — for that caller
 		// the map is empty here either way.)
+		if (this.ctx.viewSession.isStreaming) {
+			for (const toolCallId of todoToolCallIds) {
+				const component = this.ctx.pendingTools.get(toolCallId);
+				if (!(component instanceof ToolExecutionComponent)) continue;
+				if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+					this.ctx.chatContainer.removeChild(component);
+				}
+				component.seal();
+				this.ctx.pendingTools.delete(toolCallId);
+			}
+		}
 		if (this.ctx.viewSession.isStreaming) {
 			for (const [toolCallId, component] of this.ctx.pendingTools) {
 				component.setArgsComplete(toolCallId);

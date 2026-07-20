@@ -720,7 +720,7 @@ export interface DefaultTextStyle {
  * Each function takes text and returns styled text with ANSI codes.
  */
 export type MarkdownHeadingStyle = "compact" | "hierarchical";
-export type MarkdownTableBorderStyle = "full" | "horizontal";
+export type MarkdownTableBorderStyle = "full" | "horizontal" | "none";
 
 export interface MarkdownTheme {
 	heading: (text: string) => string;
@@ -2663,13 +2663,16 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			return lines;
 		}
 
-		const horizontalOnly = this.#theme.tableBorderStyle === "horizontal";
+		const borderStyle = this.#theme.tableBorderStyle ?? "full";
+		const noVerticalBorders = borderStyle !== "full";
+		const threeRuleLayout = borderStyle === "none";
 		// Full grids reserve side borders, cell padding, and column separators.
-		// Horizontal-only tables reserve three spaces between adjacent columns.
-		const borderOverhead = horizontalOnly ? 3 * (numCols - 1) : 3 * numCols + 1;
+		// Borderless layouts reserve only the fixed three-cell inter-column gutter.
+		const borderOverhead = noVerticalBorders ? 3 * (numCols - 1) : 3 * numCols + 1;
 		const availableForCells = availableWidth - borderOverhead;
 		if (availableForCells < numCols) {
-			// Too narrow to render a stable table. Fall back to raw markdown.
+			// Any table style needs at least 1 cell per column beyond its fixed frame/gutter
+			// overhead; otherwise preserve the existing raw-markdown fallback.
 			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
 			if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 				fallbackLines.push("");
@@ -2784,10 +2787,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		const t = this.#theme.symbols.table;
 		const h = t.horizontal;
 		const v = t.vertical;
+		const ruleWidth = columnWidths.reduce((total, width) => total + width, borderOverhead);
+		const borderlessRule = h.repeat(ruleWidth);
 
-		if (!horizontalOnly) {
+		if (!noVerticalBorders) {
 			const topBorderCells = columnWidths.map(w => h.repeat(w));
 			lines.push(`${t.topLeft}${h}${topBorderCells.join(`${h}${t.teeDown}${h}`)}${h}${t.topRight}`);
+		} else if (threeRuleLayout) {
+			lines.push(borderlessRule);
 		}
 
 		// Render header with wrapping
@@ -2803,11 +2810,11 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				return this.#theme.bold(padded);
 			});
-			lines.push(horizontalOnly ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
+			lines.push(noVerticalBorders ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
 		}
 
-		const separatorLine = horizontalOnly
-			? h.repeat(columnWidths.reduce((total, width) => total + width, borderOverhead))
+		const separatorLine = noVerticalBorders
+			? borderlessRule
 			: `${t.teeRight}${h}${columnWidths.map(w => h.repeat(w)).join(`${h}${t.cross}${h}`)}${h}${t.teeLeft}`;
 		lines.push(separatorLine);
 
@@ -2825,17 +2832,19 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					const text = cellLines[lineIdx] || "";
 					return text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				});
-				lines.push(horizontalOnly ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
+				lines.push(noVerticalBorders ? rowParts.join("   ") : `${v} ${rowParts.join(` ${v} `)} ${v}`);
 			}
 
-			if (!horizontalOnly && rowIndex < token.rows.length - 1) {
+			if (!noVerticalBorders && rowIndex < token.rows.length - 1) {
 				lines.push(separatorLine);
 			}
 		}
 
-		if (!horizontalOnly) {
+		if (!noVerticalBorders) {
 			const bottomBorderCells = columnWidths.map(w => h.repeat(w));
 			lines.push(`${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`);
+		} else if (threeRuleLayout) {
+			lines.push(borderlessRule);
 		}
 		this.#activeTableRenderSpecs?.push({
 			key: tableKey,

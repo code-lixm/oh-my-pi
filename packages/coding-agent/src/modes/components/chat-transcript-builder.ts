@@ -459,6 +459,18 @@ export class ChatTranscriptBuilder {
 			return;
 		}
 		if (!pending) return;
+		if (
+			message.toolName === "hub" &&
+			pending instanceof HubActivityGroupComponent &&
+			pending.discardEmptyMessageWait(message, message.toolCallId)
+		) {
+			this.#pendingTools.delete(message.toolCallId);
+			if (pending.isEmpty) {
+				this.container.removeChild(pending);
+				if (this.#hubActivityGroup === pending) this.#hubActivityGroup = null;
+			}
+			return;
+		}
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
 		if (message.toolName === "hub" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {

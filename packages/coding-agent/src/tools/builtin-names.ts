@@ -8,6 +8,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"debug",
 	"eval",
 	"github",
+	"siyuan",
 	"glob",
 	"grep",
 	"lsp",

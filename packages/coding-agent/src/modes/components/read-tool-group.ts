@@ -533,7 +533,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#appendSummaryRow(lines: string[], row: ReadSummaryRow, index: number, total: number): void {
 		const connector = index === total - 1 ? theme.tree.last : theme.tree.branch;
-		lines.push(`   ${theme.fg("dim", connector)} ${this.#formatRow(row)}`.trimEnd());
+		lines.push(`${theme.fg("dim", connector)} ${this.#formatRow(row)}`.trimEnd());
 	}
 
 	#formatRow(row: ReadSummaryRow): string {

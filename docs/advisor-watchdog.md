@@ -99,9 +99,9 @@ The `advise` tool accepts one note and an optional severity:
 
 | Severity | Delivery | Intended use |
 |---|---|---|
-| omitted / `nit` | Non-interrupting aside, batched into the primary transcript at the next step boundary. | Cleanup, simplification, low-risk edge cases. |
-| `concern` | Interrupting steering message when the delivery constraints below permit it. A late terminal-answer `concern` is preserved as a visible card instead. | Material risk, likely wrong direction, missing constraint, hallucinated API. |
-| `blocker` | Interrupting steering message when the delivery constraints below permit it. Unlike a `concern`, a terminal answer alone does not prevent it from triggering a turn. | Continuing would clearly waste work or produce broken output. |
+| omitted / `nit` | Non-interrupting aside at ordinary step boundaries; after a terminal answer with no queued work, a late note triggers a fresh turn. | Cleanup, simplification, low-risk edge cases. |
+| `concern` | Interrupting steering message when delivery constraints permit it, including a triggered turn after a terminal answer. | Material risk, likely wrong direction, missing constraint, hallucinated API. |
+| `blocker` | Interrupting steering message when delivery constraints permit it, including a triggered turn after a terminal answer. | Continuing would clearly waste work or produce broken output. |
 
 Interrupting advice is sent through the steering channel and can abort in-flight tools at the next steering boundary. Each note (interrupting or batched) is rendered into the primary transcript as an `<advisory>` element — severity rides a `severity` attribute, and a `guidance` attribute carries the "weigh, don't blindly obey" framing (the primary agent's system prompt never mentions advisories, so the tag is its only cue). Note bodies are XML-escaped so advice containing `<`, `>`, or `&` can't break the wrapper:
 
@@ -113,21 +113,21 @@ note text
 
 When you deliberately interrupt the agent (Esc, or a cancel from collab, ACP, RPC, the SDK, or an extension), the advisor stops auto-resuming it. An interrupting `concern`/`blocker` raised while the run is stopped is recorded as a visible advisor card instead of restarting the turn, and a concern already in flight when you interrupt is preserved the same way rather than driving a surprise resume. The advice re-enters context the next time you resume — a new message, the `.`/`c` continue shortcut, or a steer/follow-up.
 
-A normal yield the agent drove itself is treated differently from a deliberate interrupt, but it is not a blanket "always steers and resumes". The loop state and completed turn first determine the normal delivery path:
+A normal yield the agent drove itself is treated differently from a deliberate interrupt. The loop state and completed turn determine the normal delivery path:
 
-- **While the loop is still streaming** (the raise arrived before the yield, or during a resume you already drove), the note normally steers into the live turn.
-- **Once the loop has yielded and gone idle**, delivery keys on how the turn ended:
-  - If the primary's tail is a **terminal text answer with no queued work**, a late `concern` is preserved as a visible card rather than waking the agent to restate a completed turn (#4840) — it re-enters context on the next resume (a new message, `.`/`c`, or a steer/follow-up), exactly like the interrupt case. A `blocker` is the exception: it normally steers a triggered turn, because it means the agent handed off broken or unexercised work that must be acknowledged before the turn is considered done (#5628).
-  - Otherwise (the agent yielded mid-work, no terminal answer), an idle `concern`/`blocker` normally triggers a fresh turn so the advice is acted on immediately.
+- **While the loop is still streaming** (the raise arrived before the yield, or during a resume you already drove), `concern`/`blocker` notes normally steer into the live turn, while `nit` notes ride the next aside boundary.
+- **Once the loop has yielded and gone idle**:
+  - If the primary's tail is a **terminal text answer with no queued work**, every late severity—omitted/`nit`, `concern`, and `blocker`—triggers a fresh turn so the primary acts on the review instead of leaving it for the user. This terminal wake takes precedence over ordinary nit batching and `advisor.immuneTurns`.
+  - Otherwise (the agent yielded mid-work, no terminal answer), an idle `concern`/`blocker` normally triggers a fresh turn; a `nit` waits for the next step boundary.
 
 Two session/client constraints can still preserve a note whose normal delivery path is steering:
 
 - **Plan mode:** every would-be advisor steer is preserved as a visible card, even while the primary loop is streaming, because only user-driven turns converge on ask/resolve.
 - **ACP with deferred agent-initiated turns:** when `deferAgentInitiatedTurns` is enabled and the bridge has not allowed agent-initiated turns, an idle would-be steer is preserved because the client cannot represent the triggered turn as busy. Advice raised while the primary loop is already streaming can still steer into that live turn.
 
-So the advisor can steer and resume a run the agent ended on its own **while it is running or yielded mid-work and the current mode/client permits steering**. When steering is blocked instead, the note is either preserved as a card (the terminal-answer, plan-mode, and deferred-ACP cases above) or downgraded to a non-interrupting aside (the `advisor.immuneTurns` cooldown below); either way it waits for the next step boundary or resume rather than waking the agent.
+So the advisor can steer and resume a run the agent ended on its own **while it is running, after a terminal answer, or after it yielded mid-work when the current mode/client permits steering**. When steering is blocked by user-interrupt suppression, plan mode, deferred ACP, or a preserve-only host, the note is preserved as a card and re-enters context on the next user-driven resume.
 
-`advisor.immuneTurns` limits interruption frequency. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
+`advisor.immuneTurns` limits interruption frequency away from terminal-answer wakeups. After the advisor successfully delivers a `concern` or `blocker` through the steering channel, later concerns/blockers are routed as non-interrupting asides until the configured number of primary turns has completed. The default is `3`. `nit` notes are unchanged at ordinary boundaries, and advice raised while user-interrupt auto-resume suppression is active is still preserved instead of restarting a stopped run.
 
 ### Emission guard
 

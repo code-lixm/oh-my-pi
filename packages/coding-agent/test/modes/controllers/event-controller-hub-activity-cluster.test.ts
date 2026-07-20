@@ -3,12 +3,14 @@
  * 1. Live EventController path — one assistant turn containing hub send, hub wait(from),
  *    and hub list keeps every hub activity row plus an IRC incoming event inside one
  *    HubActivityGroupComponent.
- * 2. Visible assistant text between grouped hub calls breaks the live cluster: the first
- *    group finalizes, the text renders as assistant prose, and the later hub call starts a
- *    second HubActivityGroupComponent.
- * 3. Viewer rebuild path (ChatTranscriptBuilder) preserves the same grouping rules: a
- *    continuous hub+IRC run rebuilds as one group, while assistant prose between hub calls
- *    rebuilds as group → assistant prose → group.
+ * 2. A pure message wait(from) renders as pending while live, then disappears entirely when
+ *    its final non-error result is an empty timeout (`waited: null`) and the group would
+ *    otherwise be empty.
+ * 3. Visible assistant text between grouped hub calls breaks the live cluster; if the later
+ *    wait resolves to that empty timeout, only the prose and the earlier hub group remain.
+ * 4. Viewer rebuild path (ChatTranscriptBuilder) preserves the same grouping rules, including
+ *    suppressing historical empty wait(from) timeouts while keeping adjacent send-await no-reply
+ *    rows visible.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
@@ -23,7 +25,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import type { Component, TUI } from "@oh-my-pi/pi-tui";
 
 const HUB_SEND_ID = "hub-send";
 const HUB_WAIT_ID = "hub-wait";
@@ -129,6 +131,29 @@ function visibleAssistantComponents(container: TranscriptContainer): AssistantMe
 		(child): child is AssistantMessageComponent =>
 			child instanceof AssistantMessageComponent && child.render(120).length > 0,
 	);
+}
+function renderText(renderable: Component): string {
+	return Bun.stripANSI(renderable.render(120).join("\n"));
+}
+
+function createRebuildFixture() {
+	const requestRender = vi.fn(() => {});
+	const mockTui = {
+		requestRender,
+		requestComponentRender: vi.fn(() => {}),
+		resetDisplay: vi.fn(() => {}),
+		imageBudget: undefined,
+	} as unknown as TUI;
+	const builder = new ChatTranscriptBuilder({
+		ui: mockTui,
+		getTool: () => undefined,
+		getMessageRenderer: () => undefined,
+		cwd: process.cwd(),
+		hideThinkingBlock: () => false,
+		proseOnlyThinking: () => true,
+		requestRender,
+	});
+	return { builder };
 }
 
 function makeMessageEntry(id: string, timestamp: number, message: SessionMessageEntry["message"]): SessionMessageEntry {
@@ -299,6 +324,69 @@ describe("EventController hub activity cluster", () => {
 		expect(rendered).toContain("Worker");
 		expect(rendered).toContain("compiling");
 	});
+	it("removes a pure message wait(from) group after a successful no-reply timeout empties it", async () => {
+		const { controller, chatContainer } = createLiveFixture();
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: HUB_WAIT_ID,
+			toolName: "hub",
+			args: { op: "wait", from: "AuthLoader" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		const pendingGroup = hubGroups(chatContainer)[0];
+		expect(pendingGroup).toBeDefined();
+		expect(renderText(pendingGroup!)).toContain("AuthLoader");
+		expect(renderText(pendingGroup!)).toContain("pending");
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: HUB_WAIT_ID,
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "No reply from AuthLoader within 10s." }],
+				details: { op: "wait", waited: null },
+				useless: true,
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(renderText(chatContainer)).not.toContain("no reply");
+		expect(renderText(chatContainer)).not.toContain("AuthLoader");
+	});
+
+	it("keeps send await:true no-reply rows visible after the awaited send settles", async () => {
+		const { controller, chatContainer } = createLiveFixture();
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: HUB_SEND_ID,
+			toolName: "hub",
+			args: { op: "send", to: "Worker", message: "ping", await: true },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: HUB_SEND_ID,
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "Delivered to Worker, but no reply within 10s." }],
+				details: {
+					op: "send",
+					to: "Worker",
+					receipts: [{ to: "Worker", outcome: "woken" }],
+					waited: null,
+				},
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		const groups = hubGroups(chatContainer);
+		expect(groups).toHaveLength(1);
+		const rendered = renderText(groups[0]!);
+		expect(rendered).toContain("Worker");
+		expect(rendered).toContain("no reply");
+	});
 
 	it("displaces a running-only wait(ids) poll when the next grouped hub call arrives", async () => {
 		const { controller, chatContainer } = createLiveFixture();
@@ -404,33 +492,21 @@ describe("EventController hub activity cluster", () => {
 
 		expect(pendingTools.has(HUB_SEND_ID)).toBe(false);
 		expect(pendingTools.has(HUB_WAIT_ID)).toBe(false);
-		expect(groups[0]!.canAppend).toBe(false);
-		expect(Bun.stripANSI(groups[1]!.render(120).join("\n"))).toContain("no reply");
+		const remainingGroups = hubGroups(chatContainer);
+		expect(remainingGroups).toHaveLength(1);
+		expect(remainingGroups[0]).toBe(groups[0]);
+		expect(renderText(chatContainer)).not.toContain("no reply");
+		expect(renderText(chatContainer)).not.toContain("AuthLoader");
 
 		const assistantBlocks = visibleAssistantComponents(chatContainer);
 		expect(assistantBlocks).toHaveLength(1);
-		expect(Bun.stripANSI(assistantBlocks[0]!.render(120).join("\n"))).toContain("checking peers");
+		expect(renderText(assistantBlocks[0]!)).toContain("checking peers");
 	});
 });
 
 describe("ChatTranscriptBuilder hub activity cluster", () => {
 	it("rebuilds a continuous hub+IRC run as one HubActivityGroupComponent", () => {
-		const requestRender = vi.fn(() => {});
-		const mockTui = {
-			requestRender,
-			requestComponentRender: vi.fn(() => {}),
-			resetDisplay: vi.fn(() => {}),
-			imageBudget: undefined,
-		} as unknown as TUI;
-		const builder = new ChatTranscriptBuilder({
-			ui: mockTui,
-			getTool: () => undefined,
-			getMessageRenderer: () => undefined,
-			cwd: process.cwd(),
-			hideThinkingBlock: () => false,
-			proseOnlyThinking: () => true,
-			requestRender,
-		});
+		const { builder } = createRebuildFixture();
 
 		try {
 			builder.rebuild([
@@ -453,7 +529,7 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 			const groups = hubGroups(builder.container);
 			expect(groups).toHaveLength(1);
 			expect(visibleAssistantComponents(builder.container)).toHaveLength(0);
-			const rendered = Bun.stripANSI(groups[0]!.render(120).join("\n"));
+			const rendered = renderText(groups[0]!);
 			expect(rendered).toContain("Worker");
 			expect(rendered).toContain("AuthLoader");
 			expect(rendered).toContain("viewer cluster hello");
@@ -462,23 +538,84 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 		}
 	});
 
+	it("rebuild omits a pure message wait(from) timeout once its final result is an empty no-reply", () => {
+		const { builder } = createRebuildFixture();
+
+		try {
+			builder.rebuild([
+				makeMessageEntry(
+					"entry-1",
+					1_700_000_000_000,
+					makeAssistantMessage([
+						{ type: "toolCall", id: HUB_WAIT_ID, name: "hub", arguments: { op: "wait", from: "AuthLoader" } },
+					]),
+				),
+				makeMessageEntry("entry-2", 1_700_000_000_100, {
+					role: "toolResult",
+					toolCallId: HUB_WAIT_ID,
+					toolName: "hub",
+					content: [{ type: "text", text: "No message from AuthLoader within 10s." }],
+					details: { op: "wait", waited: null },
+					isError: false,
+					useless: true,
+					timestamp: 1_700_000_000_100,
+				}),
+			]);
+
+			expect(hubGroups(builder.container)).toHaveLength(0);
+			expect(renderText(builder.container)).not.toContain("no reply");
+			expect(renderText(builder.container)).not.toContain("AuthLoader");
+		} finally {
+			builder.dispose();
+		}
+	});
+
+	it("rebuild keeps send await:true no-reply rows visible", () => {
+		const { builder } = createRebuildFixture();
+
+		try {
+			builder.rebuild([
+				makeMessageEntry(
+					"entry-1",
+					1_700_000_001_000,
+					makeAssistantMessage([
+						{
+							type: "toolCall",
+							id: HUB_SEND_ID,
+							name: "hub",
+							arguments: { op: "send", to: "Worker", message: "ping", await: true },
+						},
+					]),
+				),
+				makeMessageEntry("entry-2", 1_700_000_001_100, {
+					role: "toolResult",
+					toolCallId: HUB_SEND_ID,
+					toolName: "hub",
+					content: [{ type: "text", text: "Delivered to Worker, but no reply within 10s." }],
+					details: {
+						op: "send",
+						to: "Worker",
+						receipts: [{ to: "Worker", outcome: "woken" }],
+						waited: null,
+					},
+					isError: false,
+					timestamp: 1_700_000_001_100,
+				}),
+			]);
+
+			const groups = hubGroups(builder.container);
+			expect(groups).toHaveLength(1);
+			expect(visibleAssistantComponents(builder.container)).toHaveLength(0);
+			const rendered = renderText(groups[0]!);
+			expect(rendered).toContain("Worker");
+			expect(rendered).toContain("no reply");
+		} finally {
+			builder.dispose();
+		}
+	});
+
 	it("rebuilds assistant prose between hub calls as group, prose, group", () => {
-		const requestRender = vi.fn(() => {});
-		const mockTui = {
-			requestRender,
-			requestComponentRender: vi.fn(() => {}),
-			resetDisplay: vi.fn(() => {}),
-			imageBudget: undefined,
-		} as unknown as TUI;
-		const builder = new ChatTranscriptBuilder({
-			ui: mockTui,
-			getTool: () => undefined,
-			getMessageRenderer: () => undefined,
-			cwd: process.cwd(),
-			hideThinkingBlock: () => false,
-			proseOnlyThinking: () => true,
-			requestRender,
-		});
+		const { builder } = createRebuildFixture();
 
 		try {
 			builder.rebuild([
@@ -508,9 +645,7 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 			expect(visible[2]).toBeInstanceOf(HubActivityGroupComponent);
 			expect((visible[0] as HubActivityGroupComponent).canAppend).toBe(false);
 			expect((visible[2] as HubActivityGroupComponent).canAppend).toBe(true);
-			expect(Bun.stripANSI((visible[1] as AssistantMessageComponent).render(120).join("\n"))).toContain(
-				"checking peers",
-			);
+			expect(renderText(visible[1] as AssistantMessageComponent)).toContain("checking peers");
 		} finally {
 			builder.dispose();
 		}

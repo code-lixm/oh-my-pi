@@ -9,8 +9,9 @@ const WIDTH = 36;
 const VIEWPORT_ROWS = 10;
 const MAX_OVERLAY_ROWS = Math.max(5, Math.floor(VIEWPORT_ROWS * 0.8));
 const MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 4);
+const NONE_MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 2);
 
-type BorderStyle = "full" | "horizontal";
+type BorderStyle = "full" | "horizontal" | "none";
 
 type Completion = {
 	exitCode: number | undefined;
@@ -28,11 +29,31 @@ function expectLineWidths(lines: readonly string[], width: number): void {
 	expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(width));
 }
 
+function expectNoFrameOrTreeGlyphs(lines: readonly string[]): void {
+	const text = strip(lines).join("\n");
+	const forbiddenGlyphs = [
+		uiTheme.boxRound.horizontal,
+		uiTheme.boxRound.vertical,
+		uiTheme.boxRound.topLeft,
+		uiTheme.boxRound.topRight,
+		uiTheme.boxRound.bottomLeft,
+		uiTheme.boxRound.bottomRight,
+		uiTheme.symbol("tree.branch"),
+		uiTheme.symbol("tree.last"),
+		uiTheme.symbol("tree.vertical"),
+		uiTheme.symbol("tree.horizontal"),
+		uiTheme.symbol("tree.hook"),
+	];
+	for (const glyph of forbiddenGlyphs) {
+		expect(text.includes(glyph)).toBe(false);
+	}
+}
+
 function contentRows(lines: readonly string[], borderStyle: BorderStyle): string[] {
 	return strip(lines)
-		.slice(2, -2)
+		.slice(borderStyle === "none" ? 1 : 2, borderStyle === "none" ? -1 : -2)
 		.map(line => {
-			const inner = borderStyle === "horizontal" ? line : line.slice(1, -1);
+			const inner = borderStyle === "horizontal" ? line : borderStyle === "none" ? line.slice(2) : line.slice(1, -1);
 			return inner.trimEnd();
 		});
 }
@@ -108,6 +129,67 @@ describe("BashInteractiveOverlayComponent render", () => {
 		expect(lines).toHaveLength(MAX_OVERLAY_ROWS);
 		expect(contentRows(lines, "full")).toEqual(["ALT SCREEN", "", "", ""]);
 		expect(contentRows(lines, "full")).toHaveLength(MAX_CONTENT_ROWS);
+		expectLineWidths(lines, WIDTH);
+	});
+	it("renders running none overlays as header + visible content + footer with a 2-cell gutter and no frame glyphs", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "none",
+			output: "left\r\nright",
+		});
+		const plain = strip(lines);
+
+		expect(lines).toHaveLength(4);
+		expect(contentRows(lines, "none")).toEqual(["left", "right"]);
+		for (const line of plain) {
+			expect(line.startsWith("  ")).toBe(true);
+		}
+		expectNoFrameOrTreeGlyphs(lines);
+		expectLineWidths(lines, WIDTH);
+	});
+
+	it("renders completed none overlays without reintroducing framed chrome for short normal buffers", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "none",
+			output: "done",
+			completion: { exitCode: 0, cancelled: false, timedOut: false },
+		});
+		const plain = strip(lines);
+
+		expect(lines).toHaveLength(3);
+		expect(contentRows(lines, "none")).toEqual(["done"]);
+		for (const line of plain) {
+			expect(line.startsWith("  ")).toBe(true);
+		}
+		expectNoFrameOrTreeGlyphs(lines);
+		expectLineWidths(lines, WIDTH);
+	});
+
+	it("uses maxOverlayRows - 2 content rows for alternate-buffer none overlays instead of the framed budget", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "none",
+			output: "\x1b[?1049hALT SCREEN",
+		});
+
+		expect(lines).toHaveLength(MAX_OVERLAY_ROWS);
+		expect(contentRows(lines, "none")).toEqual(["ALT SCREEN", "", "", "", "", ""]);
+		expect(contentRows(lines, "none")).toHaveLength(NONE_MAX_CONTENT_ROWS);
+		expectLineWidths(lines, WIDTH);
+	});
+
+	it("keeps short none normal buffers at content rows plus header/footer exactly", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "none",
+			output: "alpha\r\n\r\nomega",
+		});
+		const plain = strip(lines);
+		const content = contentRows(lines, "none");
+
+		expect(content).toEqual(["alpha", "", "omega"]);
+		expect(lines).toHaveLength(content.length + 2);
+		for (const line of plain) {
+			expect(line.startsWith("  ")).toBe(true);
+		}
+		expectNoFrameOrTreeGlyphs(lines);
 		expectLineWidths(lines, WIDTH);
 	});
 

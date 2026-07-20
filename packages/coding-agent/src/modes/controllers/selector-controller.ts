@@ -66,7 +66,7 @@ import {
 	setPreferredSearchProvider,
 } from "../../tools";
 import { shortenPath } from "../../tools/render-utils";
-import { setOutputBlockBorderStyle } from "../../tui/output-block";
+import { type OutputBlockBorderStyle, setOutputBlockBorderStyle } from "../../tui/output-block";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
@@ -511,7 +511,7 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			case "display.borderStyle": {
-				const borderStyle = value as "full" | "horizontal";
+				const borderStyle = value as OutputBlockBorderStyle;
 				setOutputBlockBorderStyle(borderStyle);
 				setMarkdownTableBorderStyle(borderStyle);
 				this.ctx.rebuildChatFromMessages();

@@ -50,6 +50,12 @@ function isWaitingPollEntry(entry: HubToolActivityEntry): boolean {
 	return Boolean(details?.jobs?.length && details.jobs.every(job => job.status === "running"));
 }
 
+function isEmptyMessageWaitResult(entry: HubToolActivityEntry, result: HubActivityResult): boolean {
+	if (entry.args.op !== "wait" || Array.isArray(entry.args.ids) || result.isError) return false;
+	const details = result.details as Partial<CoordinationDetails> | undefined;
+	return details?.waited === null;
+}
+
 function receiptStatus(receipts: readonly IrcDeliveryReceipt[], isError: boolean): { color: ThemeColor; text: string } {
 	if (isError || receipts.some(receipt => receipt.outcome === "failed")) {
 		const failed = receipts.filter(receipt => receipt.outcome === "failed").length;
@@ -231,6 +237,17 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const messages = details?.inbox ?? (details?.waited ? [details.waited] : []);
 		entry.messageAges = messages.map(message => messageAge(message.ts));
 		this.#invalidate();
+	}
+
+	discardEmptyMessageWait(result: HubActivityResult, toolCallId?: string): boolean {
+		if (!toolCallId) return false;
+		const entry = this.#toolEntries.get(toolCallId);
+		if (!entry || !isEmptyMessageWaitResult(entry, result)) return false;
+		const index = this.#entries.indexOf(entry);
+		if (index >= 0) this.#entries.splice(index, 1);
+		this.#toolEntries.delete(toolCallId);
+		this.#invalidate();
+		return true;
 	}
 
 	setArgsComplete(_toolCallId?: string): void {

@@ -4427,23 +4427,17 @@ describe("advisor", () => {
 			}
 		});
 
-		it("routes a non-interrupting nit to the aside queue regardless of state", () => {
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: "nit",
-					autoResumeSuppressed: true,
-					streaming: true,
-					aborting: true,
-				}),
-			).toBe("aside");
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: undefined,
-					autoResumeSuppressed: false,
-					streaming: false,
-					aborting: false,
-				}),
-			).toBe("aside");
+		it("routes non-interrupting notes to aside when no preservation override is active", () => {
+			for (const severity of [undefined, "nit"] as const) {
+				expect(
+					resolveAdvisorDeliveryChannel({
+						severity,
+						autoResumeSuppressed: false,
+						streaming: false,
+						aborting: false,
+					}),
+				).toBe("aside");
+			}
 		});
 
 		it("steers concern/blocker when no user interrupt is in effect", () => {
@@ -4461,28 +4455,18 @@ describe("advisor", () => {
 			}
 		});
 
-		it("preserves a late concern when the primary already ended with a terminal answer", () => {
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: "concern",
-					autoResumeSuppressed: false,
-					streaming: false,
-					aborting: false,
-					terminalAnswerNoQueuedWork: true,
-				}),
-			).toBe("preserve");
-		});
-
-		it("steers a late blocker after a terminal answer so the primary continues and acknowledges it (#5628)", () => {
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: "blocker",
-					autoResumeSuppressed: false,
-					streaming: false,
-					aborting: false,
-					terminalAnswerNoQueuedWork: true,
-				}),
-			).toBe("steer");
+		it("steers late terminal advice of every severity when the primary finished normally with no queued work", () => {
+			for (const severity of [undefined, "nit", "concern", "blocker"] as const) {
+				expect(
+					resolveAdvisorDeliveryChannel({
+						severity,
+						autoResumeSuppressed: false,
+						streaming: false,
+						aborting: false,
+						terminalAnswerNoQueuedWork: true,
+					}),
+				).toBe("steer");
+			}
 		});
 
 		it("routes interrupting notes to the aside queue during immune turns without overriding preservation", () => {
@@ -4505,8 +4489,8 @@ describe("advisor", () => {
 				}),
 			).toBe("preserve");
 		});
-		it("preserves an interrupting note while suppressed AND idle (no auto-resume of a stopped run)", () => {
-			for (const severity of ["concern", "blocker"] as const) {
+		it("preserves every severity while suppressed and idle so a user-stopped run does not wake", () => {
+			for (const severity of [undefined, "nit", "concern", "blocker"] as const) {
 				expect(
 					resolveAdvisorDeliveryChannel({
 						severity,
@@ -4516,19 +4500,6 @@ describe("advisor", () => {
 					}),
 				).toBe("preserve");
 			}
-		});
-
-		it("preserves an interrupting note while suppressed AND aborting, even though the turn still reports streaming", () => {
-			// Mid-abort teardown: steering would land after #extractQueuedAdvisorCards
-			// and could auto-resume on the stranded steer. Keep parking it.
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: "blocker",
-					autoResumeSuppressed: true,
-					streaming: true,
-					aborting: true,
-				}),
-			).toBe("preserve");
 		});
 
 		it("steers an interrupting note while suppressed once a turn is streaming again and not aborting (the fix)", () => {

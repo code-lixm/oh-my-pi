@@ -2,12 +2,20 @@
  * Bordered output container with optional header and sections.
  */
 import type { Component } from "@oh-my-pi/pi-tui";
-import { anchorRightBorder, ImageProtocol, padding, TERMINAL, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import {
+	anchorRightBorder,
+	ImageProtocol,
+	padding,
+	sliceByColumn,
+	TERMINAL,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@oh-my-pi/pi-tui";
 import { theme as activeTheme, getThemeEpoch, type Theme, type ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
-import { getStateBgColor, Hasher, padToWidth, truncateToWidth } from "./utils";
+import { getStateBgColor, getTreeContinuePrefix, Hasher, padToWidth, truncateToWidth } from "./utils";
 
 export interface OutputBlockOptions {
 	header?: string;
@@ -26,7 +34,7 @@ export interface OutputBlockOptions {
 
 const FRAMED_BLOCK_COMPONENT = Symbol("framedBlockComponent");
 
-export type OutputBlockBorderStyle = "full" | "horizontal";
+export type OutputBlockBorderStyle = "full" | "horizontal" | "none";
 
 let outputBlockBorderStyle: OutputBlockBorderStyle = "full";
 
@@ -51,8 +59,8 @@ type BlockRow =
 	| { kind: "content"; inner: string }
 	| { kind: "sixel"; raw: string };
 
-function normalizeContentPaddingLeft(value: number | undefined): number {
-	if (value === undefined || !Number.isFinite(value)) return 1;
+function normalizeContentPaddingLeft(value: number | undefined, borderStyle: OutputBlockBorderStyle): number {
+	if (value === undefined || !Number.isFinite(value)) return borderStyle === "none" ? 2 : 1;
 	return Math.max(0, Math.floor(value));
 }
 
@@ -62,7 +70,8 @@ function shouldApplyStateBg(state: State | undefined, override: boolean | undefi
 
 /**
  * Content width used by {@link renderOutputBlock}. Full borders reserve one
- * cell on each side; horizontal-only blocks expose those cells to content.
+ * cell on each side; borderless blocks use a two-cell content gutter, while
+ * horizontal-only blocks keep the historical one-cell gutter.
  * Renderers that size a tail window MUST use this helper so their visual-row
  * budget matches the active layout.
  */
@@ -72,13 +81,15 @@ export function outputBlockContentWidth(
 	borderStyle: OutputBlockBorderStyle = outputBlockBorderStyle,
 ): number {
 	const borderWidth = borderStyle === "full" ? 2 : 0;
-	return Math.max(1, width - borderWidth - normalizeContentPaddingLeft(contentPaddingLeft));
+	return Math.max(1, width - borderWidth - normalizeContentPaddingLeft(contentPaddingLeft, borderStyle));
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
 	const { header, headerMeta, state, sections = [], width } = options;
 	const applyBg = shouldApplyStateBg(state, options.applyBg);
-	const horizontalOnly = (options.borderStyle ?? outputBlockBorderStyle) === "horizontal";
+	const borderStyle = options.borderStyle ?? outputBlockBorderStyle;
+	const horizontalOnly = borderStyle === "horizontal";
+	const borderless = borderStyle === "none";
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h.repeat(3);
@@ -108,10 +119,98 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		};
 	})();
 
-	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
-	const borderWidth = horizontalOnly ? 0 : visibleWidth(v) * 2;
+	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft, borderStyle);
+	const borderWidth = borderStyle === "full" ? visibleWidth(v) * 2 : 0;
 	const contentWidth = Math.max(0, lineWidth - borderWidth - contentPaddingLeft);
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
+
+	if (borderless) {
+		const lines: string[] = [];
+		const pushLine = (line: string): void => {
+			lines.push(padToWidth(truncateToWidth(line, lineWidth), lineWidth, bgFn));
+		};
+		const pushContent = (line: string, prefix: string, alignTreeRoot: boolean): void => {
+			const plain = Bun.stripANSI(line);
+			const treePrefixes = [
+				{ glyph: theme.tree.branch, isLast: false },
+				{ glyph: theme.tree.last, isLast: true },
+			];
+			const tree = treePrefixes.find(candidate => plain.startsWith(`${candidate.glyph} `));
+			const rootAligned =
+				alignTreeRoot &&
+				(tree !== undefined ||
+					plain.startsWith(getTreeContinuePrefix(false, theme)) ||
+					plain.startsWith(getTreeContinuePrefix(true, theme)));
+			const effectivePrefix = rootAligned ? "" : prefix;
+			const availableWidth = Math.max(1, lineWidth - visibleWidth(effectivePrefix));
+			if (tree) {
+				const branchWidth = visibleWidth(`${tree.glyph} `);
+				const afterBranch = plain.slice(`${tree.glyph} `.length);
+				let hangingWidth = branchWidth;
+				for (const checkbox of [theme.checkbox.checked, theme.checkbox.unchecked]) {
+					if (afterBranch.startsWith(`${checkbox} `)) {
+						hangingWidth += visibleWidth(`${checkbox} `);
+						break;
+					}
+				}
+				if (hangingWidth < availableWidth) {
+					const head = sliceByColumn(line, 0, hangingWidth, true);
+					const body = sliceByColumn(line, hangingWidth, Math.max(0, visibleWidth(line) - hangingWidth), true);
+					const wrapped = wrapTextWithAnsi(body, Math.max(1, availableWidth - hangingWidth));
+					const continuation = tree.isLast
+						? padding(hangingWidth)
+						: `${theme.fg("dim", getTreeContinuePrefix(false, theme))}${padding(
+								Math.max(0, hangingWidth - branchWidth),
+							)}`;
+					pushLine(`${effectivePrefix}${head}${wrapped[0] ?? ""}`);
+					for (let i = 1; i < wrapped.length; i++) pushLine(`${effectivePrefix}${continuation}${wrapped[i]}`);
+					return;
+				}
+			}
+			const wrapped = wrapTextWithAnsi(line.trimEnd(), availableWidth);
+			if (wrapped.length === 0) {
+				pushLine(effectivePrefix);
+				return;
+			}
+			for (const wrappedLine of wrapped) pushLine(`${effectivePrefix}${wrappedLine}`);
+		};
+
+		const title = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
+		if (title) pushLine(title);
+		const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
+		let lastLabeledSection = -1;
+		for (let i = 0; i < normalizedSections.length; i++) {
+			if (normalizedSections[i]!.label) lastLabeledSection = i;
+		}
+		for (let sectionIndex = 0; sectionIndex < normalizedSections.length; sectionIndex++) {
+			const section = normalizedSections[sectionIndex]!;
+			let linePrefix = contentLeftPadding;
+			if (section.label) {
+				const isLast = sectionIndex === lastLabeledSection;
+				const branch = isLast ? theme.tree.last : theme.tree.branch;
+				pushLine(`${contentLeftPadding}${border(branch)} ${section.label}`);
+				linePrefix = `${contentLeftPadding}${border(getTreeContinuePrefix(isLast, theme))}`;
+			} else if (section.separator && sectionIndex > 0 && lines.length > 0) {
+				pushLine("");
+			}
+
+			const allLines = section.lines.flatMap(line => line.split("\n"));
+			const sixelLineMask = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getSixelLineMask(allLines) : undefined;
+			const sectionHasRootTree = allLines.some(line => {
+				const plain = Bun.stripANSI(line);
+				return plain.startsWith(`${theme.tree.branch} `) || plain.startsWith(`${theme.tree.last} `);
+			});
+			for (let lineIndex = 0; lineIndex < allLines.length; lineIndex++) {
+				const line = allLines[lineIndex]!;
+				if (sixelLineMask?.[lineIndex]) {
+					lines.push(line);
+					continue;
+				}
+				pushContent(line, linePrefix, !section.label && sectionHasRootTree);
+			}
+		}
+		return lines;
+	}
 
 	// ── Layout pass: collect row descriptors before emitting the bordered lines. ──
 	const rows: BlockRow[] = [];
@@ -243,7 +342,7 @@ export class CachedOutputBlock {
 		const h = new Hasher();
 		h.u32(getThemeEpoch());
 		h.u32(options.width);
-		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft));
+		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft, options.borderStyle ?? outputBlockBorderStyle));
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.state);

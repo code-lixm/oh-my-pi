@@ -6,7 +6,7 @@ import {
 	outputBlockContentWidth,
 	renderOutputBlock,
 } from "@oh-my-pi/pi-coding-agent/tui/output-block";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 
 /**
  * Regression teeth:
@@ -33,6 +33,26 @@ function render(options: Omit<OutputBlockOptions, "width"> & { width?: number })
 
 function plain(lines: readonly string[]): string[] {
 	return lines.map(line => Bun.stripANSI(line));
+}
+function padLine(text: string, width: number): string {
+	return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
+}
+
+function expectUniformWidth(lines: readonly string[], width: number): void {
+	expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(width));
+}
+
+function expectNoFrameGlyphs(text: string): void {
+	for (const glyph of [
+		darkTheme.boxRound.topLeft,
+		darkTheme.boxRound.topRight,
+		darkTheme.boxRound.bottomLeft,
+		darkTheme.boxRound.bottomRight,
+		darkTheme.boxRound.vertical,
+	]) {
+		expect(text).not.toContain(glyph);
+	}
+	expect(text).not.toContain(darkTheme.boxRound.horizontal.repeat(3));
 }
 
 function bgAnsi(name: BgName): string {
@@ -153,6 +173,91 @@ describe("output-block border style", () => {
 		expect(fullContentRows).toHaveLength(2);
 		expect(fullContentRows[0]!).toBe(`${v} ${"Y".repeat(WIDTH - 3)}${v}`);
 		expect(fullContentRows[1]!).toBe(`${v} YY${" ".repeat(WIDTH - 5)}${v}`);
+	});
+
+	it("renders borderless blocks with a flush header, a two-space body gutter, and no frame glyphs", () => {
+		const contentWidth = outputBlockContentWidth(WIDTH, undefined, "none");
+		const payload = "Z".repeat(contentWidth + 2);
+		const lines = plain(
+			render({
+				borderStyle: "none",
+				header: "Tool",
+				sections: [{ lines: [payload] }],
+			}),
+		);
+
+		expect(contentWidth).toBe(WIDTH - 2);
+		expect(lines).toHaveLength(3);
+		expectUniformWidth(lines, WIDTH);
+		expect(lines[0]).toBe(padLine("Tool", WIDTH));
+		expect(lines[1]).toBe(`  ${"Z".repeat(contentWidth)}`);
+		expect(lines[2]).toBe(padLine("  ZZ", WIDTH));
+		expectNoFrameGlyphs(lines.join("\n"));
+	});
+
+	it("keeps root todo tree prefixes at column zero and aligns wrapped continuation text under the checkbox body", () => {
+		const width = 18;
+		const branchBody = "甲乙丙丁戊己庚辛壬癸";
+		const lastBody = "子丑寅卯辰巳午未申酉";
+		const branchPrefix = `${darkTheme.tree.branch} ${darkTheme.checkbox.unchecked} `;
+		const branchContinuationPrefix = `${darkTheme.tree.vertical}  ${" ".repeat(visibleWidth(`${darkTheme.checkbox.unchecked} `))}`;
+		const lastPrefix = `${darkTheme.tree.last} ${darkTheme.checkbox.checked} `;
+		const lastContinuationPrefix = " ".repeat(visibleWidth(`${darkTheme.tree.last} ${darkTheme.checkbox.checked} `));
+		const lines = plain(
+			render({
+				width,
+				borderStyle: "none",
+				header: "Todos",
+				sections: [
+					{
+						lines: [
+							`${darkTheme.tree.branch} ${darkTheme.checkbox.unchecked} ${branchBody}`,
+							`${darkTheme.tree.last} ${darkTheme.checkbox.checked} ${lastBody}`,
+						],
+					},
+				],
+			}),
+		);
+
+		expectUniformWidth(lines, width);
+		expect(lines).toEqual([
+			padLine("Todos", width),
+			padLine(`${branchPrefix}甲乙丙丁戊己`, width),
+			padLine(`${branchContinuationPrefix}庚辛壬癸`, width),
+			padLine(`${lastPrefix}子丑寅卯辰巳`, width),
+			padLine(`${lastContinuationPrefix}午未申酉`, width),
+		]);
+	});
+
+	it("keeps labeled borderless sections on the section tree gutter, including nested tree rows", () => {
+		const width = 18;
+		const sectionBranchPrefix = `  ${darkTheme.tree.branch} `;
+		const sectionContinuePrefix = `  ${darkTheme.tree.vertical}  `;
+		const sectionLastPrefix = `  ${darkTheme.tree.last} `;
+		const sectionLastContinuePrefix = " ".repeat(visibleWidth(sectionLastPrefix));
+		const lines = plain(
+			render({
+				width,
+				borderStyle: "none",
+				header: "Result",
+				sections: [
+					{ label: "Stdout", lines: ["ABCDEFGHIJKLMNO", `${darkTheme.tree.last} child`] },
+					{ label: "Stderr", lines: ["PQRSTUVWXYZABCD"] },
+				],
+			}),
+		);
+
+		expectUniformWidth(lines, width);
+		expect(lines).toEqual([
+			padLine("Result", width),
+			padLine(`${sectionBranchPrefix}Stdout`, width),
+			padLine(`${sectionContinuePrefix}ABCDEFGHIJKLM`, width),
+			padLine(`${sectionContinuePrefix}NO`, width),
+			padLine(`${sectionContinuePrefix}${darkTheme.tree.last} child`, width),
+			padLine(`${sectionLastPrefix}Stderr`, width),
+			padLine(`${sectionLastContinuePrefix}PQRSTUVWXYZAB`, width),
+			padLine(`${sectionLastContinuePrefix}CD`, width),
+		]);
 	});
 
 	it("uses borderMuted for ordinary success blocks by default", () => {

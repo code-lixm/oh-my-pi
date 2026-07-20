@@ -246,10 +246,11 @@ export class BashInteractiveOverlayComponent implements Component {
 	}
 	render(width: number): readonly string[] {
 		const safeWidth = Math.max(20, width);
+		const borderless = this.borderStyle === "none";
 		const horizontalOnly = this.borderStyle === "horizontal";
 		const innerWidth = Math.max(1, safeWidth - (horizontalOnly ? 0 : 2));
 		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
-		const chromeRows = 4;
+		const chromeRows = borderless ? 2 : 4;
 		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
 		// Propagate terminal resize to PTY session
 		const currentCols = innerWidth;
@@ -285,12 +286,18 @@ export class BashInteractiveOverlayComponent implements Component {
 				: truncateToWidth(this.uiTheme.fg("dim", tSettingsUi("session finished")), innerWidth);
 		const visibleLines = this.#readViewport(innerWidth, maxContentRows);
 		const content = visibleLines.length > 0 ? visibleLines : [padding(innerWidth)];
+		const padLine = (line: string) => `${line}${padding(Math.max(0, innerWidth - visibleWidth(line)))}`;
+		if (borderless) {
+			const gutter = padding(2);
+			const gutterLine = (line: string) => `${gutter}${padLine(line)}`;
+			return [gutterLine(header), ...content.map(gutterLine), gutterLine(footer)];
+		}
 		const borderWidth = horizontalOnly ? safeWidth : innerWidth;
 		const borderColor = this.#borderColor();
 		const borderHorizontal = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.horizontal.repeat(borderWidth));
 		const borderVertical = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.vertical);
 		const boxLine = (line: string) => {
-			const padded = `${line}${padding(Math.max(0, innerWidth - visibleWidth(line)))}`;
+			const padded = padLine(line);
 			return horizontalOnly ? padded : `${borderVertical}${padded}${borderVertical}`;
 		};
 		const topBorder = horizontalOnly

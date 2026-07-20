@@ -1049,14 +1049,17 @@ export const todoToolRenderer = {
 					bodyLines.push(uiTheme.fg("accent", chalk.bold(formatPhaseDisplayName(phase.name, p + 1))));
 				}
 				const completionKeys = completionKeysByPhase.get(phase.name) ?? EMPTY_COMPLETION_KEYS;
-				// Collapsed: walking viewport — completed/abandoned omitted, active
-				// work (in-progress / subagent-matched) pulled to the head, then
-				// following pending tasks (#5873). Expanded: every task in order.
-				const treeLines = expanded
+				// A short single-phase plan fits in the collapsed card, so keep its full
+				// progress visible while tasks complete. Otherwise the header can report
+				// the total while the body shrinks to only the last open task, then jumps
+				// back to every closed task when the plan settles. Multi-phase and long
+				// plans retain the walking viewport to keep their cards bounded.
+				const showWholePhase = expanded || (!multiPhase && phase.tasks.length <= PREVIEW_LIMITS.COLLAPSED_ITEMS);
+				const treeLines = showWholePhase
 					? renderTreeList(
 							{
 								items: phase.tasks,
-								expanded,
+								expanded: true,
 								itemType: "todo",
 								renderItem: todo => formatTodoLine(todo, uiTheme, "", completionKeys, spinnerFrame),
 							},

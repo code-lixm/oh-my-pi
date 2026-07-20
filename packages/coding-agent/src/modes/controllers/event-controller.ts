@@ -684,6 +684,23 @@ export class EventController {
 		this.ctx.ui.requestRender();
 	}
 
+	/** Keep live todo updates in the anchored HUD instead of the scrolling
+	 * transcript. Persisted assistant/tool-result messages remain untouched, so
+	 * an idle history rebuild still renders the normal todo tool card. */
+	#suppressLiveTodoComponent(toolCallId: string): void {
+		const component = this.ctx.pendingTools.get(toolCallId);
+		if (component instanceof ToolExecutionComponent) {
+			if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+				this.ctx.chatContainer.removeChild(component);
+			}
+			component.seal();
+		}
+		this.ctx.pendingTools.delete(toolCallId);
+		this.#toolTimelineComponents.delete(toolCallId);
+		this.#toolArgsReveal.finish(toolCallId);
+		this.#resolveDisplaceableTodo("todo");
+	}
+
 	/**
 	 * Adopt a rebuilt-tail todo snapshot as the controller's tracked live
 	 * snapshot. Used by rebuild paths (settings/extensions overlay close, focus
@@ -784,6 +801,13 @@ export class EventController {
 			}
 			for (const content of this.ctx.streamingMessage.content) {
 				if (content.type !== "toolCall") continue;
+				if (content.name === "todo") {
+					this.#finalizeHubActivityGroup();
+					this.#resolveDisplaceablePoll(content.name);
+					this.#resetReadGroup();
+					this.#suppressLiveTodoComponent(content.id);
+					continue;
+				}
 				if (content.name !== "hub") this.#finalizeHubActivityGroup();
 				if (content.name === "read") {
 					if (!readArgsHaveTarget(content.arguments)) {
@@ -1029,6 +1053,12 @@ export class EventController {
 		this.#updateWorkingMessageFromIntent(event.intent);
 		this.#resolveDisplaceablePoll(event.toolName);
 		if (event.toolName !== "hub") this.#finalizeHubActivityGroup();
+		if (event.toolName === "todo") {
+			this.#resetReadGroup();
+			this.#suppressLiveTodoComponent(event.toolCallId);
+			this.ctx.ui.requestRender();
+			return;
+		}
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
@@ -1140,6 +1170,7 @@ export class EventController {
 		// which only fire `tool_execution_end`, never `_update` — do not leave
 		// the UI looking idle while the session keeps streaming (#3857).
 		this.#ensureWorkingLoaderWhileStreaming();
+		if (event.toolName === "todo") this.#suppressLiveTodoComponent(event.toolCallId);
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
 				const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -1169,8 +1200,24 @@ export class EventController {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
 			if (component) {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
+				const renderResult = { ...event.result, isError: event.isError };
+				if (
+					event.toolName === "hub" &&
+					component instanceof HubActivityGroupComponent &&
+					this.ctx.chatContainer.isBlockUncommitted(component) &&
+					component.discardEmptyMessageWait(renderResult, event.toolCallId)
+				) {
+					this.ctx.pendingTools.delete(event.toolCallId);
+					this.#backgroundTaskCallIds.delete(event.toolCallId);
+					if (component.isEmpty) {
+						this.ctx.chatContainer.removeChild(component);
+						if (this.#hubActivityGroup === component) this.#hubActivityGroup = undefined;
+					}
+					this.ctx.ui.requestRender();
+					return;
+				}
 				const isBackgroundTask = event.toolName === "task" && asyncState === "running";
-				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundTask, event.toolCallId);
+				component.updateResult(renderResult, isBackgroundTask, event.toolCallId);
 				if (isBackgroundTask) {
 					this.#backgroundTaskCallIds.add(event.toolCallId);
 				} else {

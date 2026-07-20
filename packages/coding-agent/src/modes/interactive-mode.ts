@@ -2030,10 +2030,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		const isMatched = (todo: TodoItem): boolean =>
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
 
-		// Task subtree for a phase. Collapsed runs the shared walking-viewport
-		// policy (completed/abandoned omitted, active work pulled to the head,
-		// then following pending tasks) so the HUD and the transient tool result
-		// can never disagree about the current work (#5873). Expanded lists all.
+		// Task subtree for a phase. Collapsed keeps the active stage within a
+		// fixed HUD budget, but preserves in-order neighboring state so short lists
+		// still show completed/current/pending progression like the editor-anchored
+		// screenshot. Expanded lists every task.
+		const selectActivePhaseHudTodos = (tasks: TodoItem[]): { items: TodoItem[]; summary: string } => {
+			if (tasks.length <= activeTaskCap) return { items: tasks, summary: "" };
+			return selectCollapsedTodos(tasks, isMatched, activeTaskCap);
+		};
+
 		const renderTasks = (phase: TodoPhase): string[] => {
 			if (expanded) {
 				return renderTreeList(
@@ -2045,7 +2050,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					theme,
 				);
 			}
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
+			const selection = selectActivePhaseHudTodos(phase.tasks);
 			return renderTreeList(
 				{
 					items: selection.items,

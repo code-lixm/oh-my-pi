@@ -442,6 +442,26 @@ describe("todoToolRenderer.renderResult phase collapsing", () => {
 		expect(rendered).not.toContain("c1");
 		expect(rendered).not.toContain("c2");
 	});
+	it("keeps all rows visible for a short single-phase live partial render", async () => {
+		const tasks = Array.from({ length: 7 }, (_, i) => `Task ${i + 1}`);
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", { op: "init", list: [{ phase: "Execution", items: tasks }] });
+		for (const task of tasks.slice(0, 5)) {
+			await tool.execute(`done-${task}`, { op: "done", task });
+		}
+		const result = await tool.execute("done-6", { op: "done", task: tasks[5] });
+		const component = todoToolRenderer.renderResult(result, { expanded: false, isPartial: true }, theme, {
+			op: "done",
+			task: tasks[5],
+		});
+		const rendered = Bun.stripANSI(component.render(100).join("\n"));
+
+		expect(rendered).toContain("7 tasks");
+		for (const task of tasks) {
+			expect(rendered).toContain(task);
+		}
+		expect(rendered).not.toContain("more todo");
+	});
 	it("falls back to in_progress / completed signals when call args are unavailable", async () => {
 		const result = await buildThreePhaseAfterDone();
 		// Transcript rebuilds may not carry call args; the active (Alpha) phase is
@@ -558,7 +578,7 @@ describe("selectCollapsedTodos walking viewport (#5873)", () => {
 });
 
 describe("todoToolRenderer i18n", () => {
-	it("localizes the zh-CN title and task count while preserving phase and task text", () => {
+	it("keeps the built-in zh-CN title literal while localizing task count and preserving user text", () => {
 		setSettingsUiLocale("zh-CN");
 		const result = {
 			content: [{ type: "text" as const, text: "" }],
@@ -591,9 +611,9 @@ describe("todoToolRenderer i18n", () => {
 			todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"),
 		);
 
-		expect(rendered).toContain("待办");
+		expect(rendered).toContain("Todo");
 		expect(rendered).toContain("8 个任务");
-		expect(rendered).not.toContain("Todo");
+		expect(rendered).not.toContain("待办");
 		expect(rendered).not.toContain("8 tasks");
 		expect(rendered).toContain("Phase Ω");
 		expect(rendered).toContain("AuthLoader literal");

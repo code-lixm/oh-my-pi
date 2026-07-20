@@ -4074,6 +4074,32 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"siyuan.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("SiYuan"),
+			description: tSettingsUi(
+				"Enable the SiYuan tool after verifying a compatible SiYuan Kernel CLI on PATH. macOS also requires the official SiYuan code signature.",
+			),
+		},
+	},
+
+	"siyuan.workspace": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("SiYuan Workspace"),
+			description: tSettingsUi(
+				"Default registered SiYuan workspace name or absolute path. Required for commands when multiple workspaces are registered unless supplied per call.",
+			),
+		},
+	},
+
 	"github.enabled": {
 		type: "boolean",
 		default: false,

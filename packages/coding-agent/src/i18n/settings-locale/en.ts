@@ -1909,6 +1909,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Nucleus sampling cutoff (0-1, -1 = provider default)": "Nucleus sampling cutoff (0-1, -1 = provider default)",
 	"Obfuscate secrets before sending to AI providers": "Obfuscate secrets before sending to AI providers",
 	"Obsidian Vault": "Obsidian Vault",
+	SiYuan: "SiYuan",
+	"SiYuan Workspace": "SiYuan Workspace",
 	Off: "Off",
 	"Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory":
 		"Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory",
@@ -2743,6 +2745,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Enable the github tool (op-based dispatch for repository, issue, pull request, diff, search, checkout, push, and Actions watch workflows)",
 	"Enable the vault:// internal URL for reading and editing Obsidian vault content via the Obsidian CLI. When disabled, vault:// resolution is refused and the vault:// entry is omitted from the system prompt.":
 		"Enable the vault:// internal URL for reading and editing Obsidian vault content via the Obsidian CLI. When disabled, vault:// resolution is refused and the vault:// entry is omitted from the system prompt.",
+	"Enable the SiYuan tool after verifying a compatible SiYuan Kernel CLI on PATH. macOS also requires the official SiYuan code signature.":
+		"Enable the SiYuan tool after verifying a compatible SiYuan Kernel CLI on PATH. macOS also requires the official SiYuan code signature.",
+	"Default registered SiYuan workspace name or absolute path. Required for commands when multiple workspaces are registered unless supplied per call.":
+		"Default registered SiYuan workspace name or absolute path. Required for commands when multiple workspaces are registered unless supplied per call.",
 	"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.":
 		"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.",
 	"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.":
