@@ -192,10 +192,9 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	const sections: Array<{ label?: string; lines: string[] }> = [{ lines: codeLines }];
-	if (outputLines.length > 0) {
-		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
-	}
+	const sections: Array<{ lines: string[] }> = [
+		{ lines: outputLines.length > 0 ? [...codeLines, "", ...outputLines] : codeLines },
+	];
 
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
 }
@@ -259,10 +258,9 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 		}
 	}
 
-	const sections: Array<{ label?: string; lines: string[] }> = [{ lines: contentLines }];
-	if (outputLines.length > 0) {
-		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
-	}
+	const sections: Array<{ lines: string[] }> = [
+		{ lines: outputLines.length > 0 ? [...contentLines, "", ...outputLines] : contentLines },
+	];
 
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
 }
