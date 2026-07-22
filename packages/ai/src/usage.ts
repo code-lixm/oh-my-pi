@@ -6,7 +6,7 @@
  */
 import { type } from "arktype";
 import type { FetchImpl, Provider } from "./types";
-export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "minutes" | "bytes" | "unknown";
+export type UsageUnit = "percent" | "tokens" | "requests" | "usd" | "currency" | "minutes" | "bytes" | "unknown";
 
 export type UsageStatus = "ok" | "warning" | "exhausted" | "unknown";
 
@@ -36,6 +36,8 @@ export interface UsageAmount {
 	remainingFraction?: number;
 	/** Unit for the amounts (percent, tokens, etc.). */
 	unit: UsageUnit;
+	/** ISO 4217 code when {@link unit} is `"currency"`. */
+	currency?: string;
 }
 
 /** Scope metadata describing what the limit applies to. */
@@ -181,7 +183,9 @@ export interface UsageCostHistoryQuery {
 
 // ─── Zod schemas (wire-shape validation for the broker `/v1/usage` endpoint) ─
 
-export const usageUnitSchema = type("'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'");
+export const usageUnitSchema = type(
+	"'percent' | 'tokens' | 'requests' | 'usd' | 'currency' | 'minutes' | 'bytes' | 'unknown'",
+);
 export const usageStatusSchema = type("'ok' | 'warning' | 'exhausted' | 'unknown'");
 
 export const usageWindowSchema = type({
@@ -198,7 +202,13 @@ export const usageAmountSchema = type({
 	"usedFraction?": "number",
 	"remainingFraction?": "number",
 	unit: usageUnitSchema,
-});
+	"currency?": "string",
+}).narrow(
+	(amount, ctx) =>
+		amount.unit !== "currency" ||
+		/^[A-Z]{3}$/.test(amount.currency ?? "") ||
+		ctx.mustBe('a currency amount with a three-letter uppercase ISO 4217 "currency" code'),
+);
 
 export const usageScopeSchema = type({
 	provider: "string",
@@ -297,6 +307,14 @@ export interface UsageProvider {
 	supports?(params: UsageFetchParams): boolean;
 	/** True when fetchUsage contacts upstream and can authenticate the credential for health checks. */
 	validatesCredentials?: boolean;
+}
+
+export type UsageProviderConfig = Omit<UsageProvider, "id">;
+
+export interface RuntimeUsageProviderRegistration {
+	name: Provider;
+	config: UsageProviderConfig;
+	sourceId: string;
 }
 
 /** Request context used when ranking usage for a specific model. */

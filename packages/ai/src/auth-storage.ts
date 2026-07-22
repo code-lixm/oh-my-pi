@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -29,6 +30,7 @@ import type { Provider } from "./types";
 import type {
 	CredentialRankingContext,
 	CredentialRankingStrategy,
+	RuntimeUsageProviderRegistration,
 	UsageCostHistoryEntry,
 	UsageCostHistoryQuery,
 	UsageCredential,
@@ -39,9 +41,10 @@ import type {
 	UsageLimit,
 	UsageLogger,
 	UsageProvider,
+	UsageProviderConfig,
 	UsageReport,
 } from "./usage";
-import { resolveUsedFraction } from "./usage";
+import { resolveUsedFraction, usageReportSchema } from "./usage";
 import { claudeRankingStrategy, claudeUsageProvider } from "./usage/claude";
 import { cursorUsageProvider } from "./usage/cursor";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
@@ -186,7 +189,7 @@ export interface CredentialHealthResult {
 	email?: string;
 	/** OAuth account id if known. */
 	accountId?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 	/** `true` when the refresh token lives on a remote broker (sentinel was present). */
@@ -735,7 +738,7 @@ export interface OAuthAccess {
 	projectId?: string;
 	enterpriseUrl?: string;
 	apiEndpoint?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -760,7 +763,7 @@ export interface OAuthAccessFailure {
 	projectId?: string;
 	enterpriseUrl?: string;
 	apiEndpoint?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 	error: string;
@@ -776,7 +779,7 @@ export interface OAuthAccountIdentity {
 	accountId?: string;
 	email?: string;
 	projectId?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -795,7 +798,7 @@ export interface OAuthAccountSummary {
 	email?: string;
 	projectId?: string;
 	enterpriseUrl?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -1127,6 +1130,8 @@ type UsageRankedCandidate<T extends AuthCredential> = UsageCandidate<T> & {
 type RankedOAuthCandidate = UsageRankedCandidate<OAuthCredential>;
 type RankedApiKeyCandidate = UsageRankedCandidate<ApiKeyCredential>;
 
+type RuntimeUsageProviderLayer = { sourceId: string; provider: UsageProvider };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AuthStorage Class
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1156,6 +1161,7 @@ export class AuthStorage {
 	#credentialBackoff: Map<string, Map<number, number>> = new Map();
 	/** Earliest time a freshly-set in-memory block may be cleared by live usage reconciliation. */
 	#credentialBackoffProbeAfter: Map<string, Map<number, number>> = new Map();
+	#runtimeUsageProviders: Map<Provider, RuntimeUsageProviderLayer[]> = new Map();
 	#usageProviderResolver?: (provider: Provider) => UsageProvider | undefined;
 	#rankingStrategyResolver?: (provider: Provider) => CredentialRankingStrategy | undefined;
 	#usageCache: UsageCache;
@@ -1310,14 +1316,17 @@ export class AuthStorage {
 	 * Used for CLI --api-key flag.
 	 */
 	setRuntimeApiKey(provider: string, apiKey: string): void {
+		if (this.#runtimeOverrides.get(provider) === apiKey) return;
 		this.#runtimeOverrides.set(provider, apiKey);
+		this.#invalidateLocalUsageProviderCache(provider);
 	}
 
 	/**
 	 * Remove a runtime API key override.
 	 */
 	removeRuntimeApiKey(provider: string): void {
-		this.#runtimeOverrides.delete(provider);
+		if (!this.#runtimeOverrides.delete(provider)) return;
+		this.#invalidateLocalUsageProviderCache(provider);
 	}
 
 	/**
@@ -1331,14 +1340,17 @@ export class AuthStorage {
 	 * still wins for the duration of a single invocation.
 	 */
 	setConfigApiKey(provider: string, apiKey: string): void {
+		if (this.#configOverrides.get(provider) === apiKey) return;
 		this.#configOverrides.set(provider, apiKey);
+		this.#invalidateLocalUsageProviderCache(provider);
 	}
 
 	/**
 	 * Remove a single config-sourced API key override.
 	 */
 	removeConfigApiKey(provider: string): void {
-		this.#configOverrides.delete(provider);
+		if (!this.#configOverrides.delete(provider)) return;
+		this.#invalidateLocalUsageProviderCache(provider);
 	}
 
 	/**
@@ -1346,9 +1358,52 @@ export class AuthStorage {
 	 * re-parsing `models.yml` so removed entries actually disappear.
 	 */
 	clearConfigApiKeys(): void {
+		const providers = [...this.#configOverrides.keys()];
 		this.#configOverrides.clear();
+		for (const provider of providers) this.#invalidateLocalUsageProviderCache(provider);
 	}
 
+	registerUsageProvider(name: Provider, config: UsageProviderConfig, sourceId: string): void {
+		const layers = (this.#runtimeUsageProviders.get(name) ?? []).filter(layer => layer.sourceId !== sourceId);
+		layers.push({ sourceId, provider: { ...config, id: name } });
+		this.#runtimeUsageProviders.set(name, layers);
+		this.#invalidateLocalUsageProviderCache(name);
+	}
+
+	unregisterUsageProviders(sourceId: string): void {
+		const affected = new Set<Provider>();
+		for (const [name, layers] of this.#runtimeUsageProviders) {
+			const filtered = layers.filter(layer => layer.sourceId !== sourceId);
+			if (filtered.length === layers.length) continue;
+			affected.add(name);
+			if (filtered.length === 0) {
+				this.#runtimeUsageProviders.delete(name);
+			} else {
+				this.#runtimeUsageProviders.set(name, filtered);
+			}
+		}
+		for (const provider of affected) this.#invalidateLocalUsageProviderCache(provider);
+	}
+
+	syncUsageProviders(registrations: RuntimeUsageProviderRegistration[]): void {
+		const next = new Map<Provider, RuntimeUsageProviderLayer[]>();
+		for (const registration of registrations) {
+			const layers = (next.get(registration.name) ?? []).filter(layer => layer.sourceId !== registration.sourceId);
+			layers.push({
+				sourceId: registration.sourceId,
+				provider: { ...registration.config, id: registration.name },
+			});
+			next.set(registration.name, layers);
+		}
+		const affected = new Set<Provider>([...this.#runtimeUsageProviders.keys(), ...next.keys()]);
+		this.#runtimeUsageProviders = next;
+		for (const provider of affected) this.#invalidateLocalUsageProviderCache(provider);
+	}
+
+	/** Monotonic revision for usage adapters, credentials, and cached reports. */
+	get usageRevision(): number {
+		return this.#usageCacheEpoch;
+	}
 	/**
 	 * Set a fallback resolver for API keys not found in storage or env vars.
 	 * Used for custom provider keys from models.json.
@@ -2766,6 +2821,62 @@ export class AuthStorage {
 		return this.#buildUsageRequest(provider, this.#buildUsageCredential(credential), baseUrl);
 	}
 
+	#invalidateLocalUsageProviderCache(provider: Provider, baseUrl?: string): void {
+		this.#usageCacheEpoch += 1;
+		this.#usageReportsInFlight.clear();
+		const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[provider];
+		const providerKey = versionOverride === undefined ? provider : `${versionOverride}:${provider}`;
+		const reportCacheKeyPrefix = `report:${providerKey}:`;
+		for (const key of [...this.#usageRequestInFlight.keys()]) {
+			if (key.startsWith(reportCacheKeyPrefix)) this.#usageRequestInFlight.delete(key);
+		}
+		for (const key of [...this.#usageHeaderIngestAt.keys()]) {
+			if (key.startsWith(reportCacheKeyPrefix)) this.#usageHeaderIngestAt.delete(key);
+		}
+		const deleteCachePrefix = this.#store.deleteCachePrefix?.bind(this.#store);
+		if (deleteCachePrefix) {
+			deleteCachePrefix(`${USAGE_CACHE_PREFIX}${reportCacheKeyPrefix}`);
+			return;
+		}
+		const expired = Date.now() - 1;
+		const overrideKey = this.#runtimeOverrides.get(provider) ?? this.#configOverrides.get(provider);
+		if (overrideKey) {
+			const cacheKey = this.#buildUsageReportCacheKey(
+				this.#buildUsageRequest(provider, { type: "api_key", apiKey: overrideKey }, baseUrl),
+			);
+			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+			return;
+		}
+		let entries = this.#getStoredCredentials(provider);
+		if (entries.length > 0) {
+			const dedupedEntries = this.#pruneDuplicateStoredCredentials(provider, entries);
+			if (dedupedEntries.length !== entries.length) {
+				this.#setStoredCredentials(provider, dedupedEntries);
+			}
+			entries = dedupedEntries;
+		}
+		if (entries.length === 0) {
+			const apiKey = getEnvApiKey(provider) ?? this.#fallbackResolver?.(provider);
+			if (!apiKey) return;
+			const cacheKey = this.#buildUsageReportCacheKey(
+				this.#buildUsageRequest(provider, { type: "api_key", apiKey }, baseUrl),
+			);
+			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+			return;
+		}
+		for (const entry of entries) {
+			const cacheKey = this.#buildUsageReportCacheKey(
+				entry.credential.type === "api_key"
+					? this.#buildUsageRequest(provider, { type: "api_key", apiKey: entry.credential.key }, baseUrl)
+					: this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl),
+			);
+			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
+		}
+	}
+
 	#buildRefreshableOauthCredential(credential: UsageCredential): OAuthCredential | null {
 		if (!credential.accessToken || !credential.refreshToken || credential.expiresAt === undefined) {
 			return null;
@@ -2875,11 +2986,50 @@ export class AuthStorage {
 		});
 	}
 
-	async #fetchUsageUncached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
-		const resolver = this.#usageProviderResolver;
-		if (!resolver) return null;
+	#resolveUsageProvider(provider: Provider): UsageProvider | undefined {
+		const layers = this.#runtimeUsageProviders.get(provider);
+		return layers?.[layers.length - 1]?.provider ?? this.#usageProviderResolver?.(provider);
+	}
 
-		const providerImpl = resolver(request.provider);
+	#validateUsageReport(
+		provider: Provider,
+		report: unknown,
+		source: "fetchUsage" | "parseRateLimitHeaders",
+	): UsageReport | null {
+		if (report === null) return null;
+		const validated = usageReportSchema(report);
+		if (validated instanceof type.errors) {
+			const candidate =
+				typeof report === "object" && report !== null ? (report as Record<string, unknown>) : undefined;
+			this.#usageLogger?.warn("AuthStorage usage report rejected", {
+				provider,
+				source,
+				error: validated.summary,
+			});
+			this.#usageLogger?.debug("AuthStorage usage report rejected shape", {
+				provider,
+				source,
+				hasRaw: candidate ? Object.hasOwn(candidate, "raw") : false,
+				fetchedAt: typeof candidate?.fetchedAt === "number" ? candidate.fetchedAt : undefined,
+				limits: Array.isArray(candidate?.limits) ? candidate.limits.length : undefined,
+			});
+			return null;
+		}
+		const parsed = validated as UsageReport;
+		if (parsed.provider !== provider || parsed.limits.some(limit => limit.scope.provider !== provider)) {
+			this.#usageLogger?.warn("AuthStorage usage report rejected provider mismatch", {
+				provider,
+				reportProvider: parsed.provider,
+				source,
+			});
+			return null;
+		}
+		const { raw: _raw, ...sanitized } = parsed;
+		return sanitized;
+	}
+
+	async #fetchUsageUncached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
+		const providerImpl = this.#resolveUsageProvider(request.provider);
 		if (!providerImpl) return null;
 
 		const timeoutSignal =
@@ -2946,11 +3096,15 @@ export class AuthStorage {
 		if (providerImpl.supports && !providerImpl.supports(params)) return null;
 
 		try {
-			const report = await providerImpl.fetchUsage(params, {
-				fetch: this.#usageFetch,
-				logger: this.#usageLogger,
-				listUsageCosts: query => this.#store.listUsageCosts?.(query) ?? [],
-			});
+			const report = this.#validateUsageReport(
+				request.provider,
+				await providerImpl.fetchUsage(params, {
+					fetch: this.#usageFetch,
+					logger: this.#usageLogger,
+					listUsageCosts: query => this.#store.listUsageCosts?.(query) ?? [],
+				}),
+				"fetchUsage",
+			);
 			// Attribute the report to the credential's organization. The orgId and
 			// orgName fallbacks apply independently: Claude's usage endpoint stamps
 			// orgId from the `anthropic-organization-id` response header but never
@@ -3018,7 +3172,7 @@ export class AuthStorage {
 			this.#usageCache.set(cacheKey, { value: lastGood, expiresAt: coolDown });
 			return lastGood;
 		})().finally(() => {
-			this.#usageRequestInFlight.delete(cacheKey);
+			if (this.#usageRequestInFlight.get(cacheKey) === promise) this.#usageRequestInFlight.delete(cacheKey);
 		});
 
 		this.#usageRequestInFlight.set(cacheKey, promise);
@@ -3133,8 +3287,6 @@ export class AuthStorage {
 		options?: { sessionId?: string; baseUrl?: string },
 	): boolean {
 		if (this.#fetchUsageReportsOverride) return false;
-		const parseHeaders = this.#usageProviderResolver?.(provider)?.parseRateLimitHeaders;
-		if (!parseHeaders) return false;
 
 		const credential = this.#resolveActiveOAuthCredential(provider, options?.sessionId);
 		if (!credential) return false;
@@ -3143,14 +3295,18 @@ export class AuthStorage {
 			this.#buildUsageRequestForOauth(provider, credential, options?.baseUrl),
 		);
 		const now = Date.now();
-		const parsedReport = parseHeaders(headers, now);
+		const parsedReport = this.#validateUsageReport(
+			provider,
+			this.#resolveUsageProvider(provider)?.parseRateLimitHeaders?.(headers, now) ?? null,
+			"parseRateLimitHeaders",
+		);
 		if (!parsedReport) return false;
 		// Throttled to one ingest per interval — except when a window reads
 		// exhausted: that snapshot must land immediately so the next getApiKey
 		// blocks the credential instead of burning a wire 429 on the wall.
 		const exhausted = parsedReport.limits.some(limit => this.#isUsageLimitExhausted(limit));
-		const last = this.#usageHeaderIngestAt.get(cacheKey);
-		if (!exhausted && last !== undefined && now - last < USAGE_HEADER_INGEST_INTERVAL_MS) return false;
+		const previousIngestAt = this.#usageHeaderIngestAt.get(cacheKey) ?? 0;
+		if (!exhausted && now - previousIngestAt < USAGE_HEADER_INGEST_INTERVAL_MS) return false;
 		const metadata: Record<string, unknown> = { ...(parsedReport.metadata ?? {}) };
 		if (credential.accountId && metadata.accountId === undefined) metadata.accountId = credential.accountId;
 		if (credential.email && metadata.email === undefined) metadata.email = credential.email;
@@ -3201,23 +3357,34 @@ export class AuthStorage {
 		return true;
 	}
 
-	#collectUsageRequests(options?: {
-		baseUrlResolver?: (provider: Provider) => string | undefined;
-	}): UsageRequestDescriptor[] {
-		const resolver = this.#usageProviderResolver;
-		if (!resolver) return [];
-
+	#collectUsageRequests(options?: { baseUrlResolver?: (provider: Provider) => string | undefined }): {
+		requests: UsageRequestDescriptor[];
+		clientOwnedProviders: Set<string>;
+	} {
 		const requests: UsageRequestDescriptor[] = [];
+		const clientOwnedProviders = new Set<string>();
 		const providers = new Set<string>([
 			...this.#data.keys(),
-			...DEFAULT_USAGE_PROVIDERS.map(provider => provider.id),
+			...this.#runtimeUsageProviders.keys(),
+			...this.#runtimeOverrides.keys(),
+			...this.#configOverrides.keys(),
+			...DEFAULT_USAGE_PROVIDER_MAP.keys(),
 		]);
 
 		for (const providerId of providers) {
 			const provider = providerId as Provider;
-			const providerImpl = resolver(provider);
+			const providerImpl = this.#resolveUsageProvider(provider);
 			if (!providerImpl) continue;
 			const baseUrl = options?.baseUrlResolver?.(provider);
+			const overrideKey = this.#runtimeOverrides.get(providerId) ?? this.#configOverrides.get(providerId);
+			if (overrideKey) {
+				const request = this.#buildUsageRequest(provider, { type: "api_key", apiKey: overrideKey }, baseUrl);
+				if (!providerImpl.supports || providerImpl.supports(request)) {
+					requests.push(request);
+					clientOwnedProviders.add(providerId);
+				}
+				continue;
+			}
 			let entries = this.#getStoredCredentials(providerId);
 			if (entries.length > 0) {
 				const dedupedEntries = this.#pruneDuplicateStoredCredentials(providerId, entries);
@@ -3228,13 +3395,12 @@ export class AuthStorage {
 			}
 
 			if (entries.length === 0) {
-				const runtimeKey = this.#runtimeOverrides.get(providerId);
-				const envKey = getEnvApiKey(providerId);
-				const apiKey = runtimeKey ?? envKey;
+				const apiKey = getEnvApiKey(providerId) ?? this.#fallbackResolver?.(providerId);
 				if (!apiKey) continue;
 				const request = this.#buildUsageRequest(provider, { type: "api_key", apiKey }, baseUrl);
 				if (providerImpl.supports && !providerImpl.supports(request)) continue;
 				requests.push(request);
+				clientOwnedProviders.add(providerId);
 				continue;
 			}
 
@@ -3249,7 +3415,7 @@ export class AuthStorage {
 			}
 		}
 
-		return requests;
+		return { requests, clientOwnedProviders };
 	}
 
 	#getUsageReportMetadataValue(report: UsageReport, key: string): string | undefined {
@@ -3283,15 +3449,14 @@ export class AuthStorage {
 		const identifiers: string[] = [];
 		const email = this.#getUsageReportMetadataValue(report, "email");
 		if (email) identifiers.push(`email:${email.toLowerCase()}`);
-		if (report.provider === "anthropic") {
-			// Anthropic: one account email can hold several organizations
-			// (Team seat + personal Max). Reports from different orgs must not
-			// merge — scope every identifier by org when the report carries one.
-			// When the email could not be recovered, fall back to the account
-			// (identical across orgs, hence the org qualifier is what keeps two
-			// subscriptions apart) so no-email reports still merge per org.
-			// Org-less reports (pre-upgrade caches) keep their bare identifiers
-			// and only merge among themselves.
+		if (report.provider === "anthropic" || report.provider === "openai-codex") {
+			// One account email can hold several org-scoped subscriptions
+			// (Anthropic organizations, ChatGPT workspaces). Reports from
+			// different orgs must not merge — scope every identifier by org
+			// when the report carries one; fall back to the account when the
+			// email could not be recovered so no-email reports still merge
+			// per org. Org-less reports (pre-upgrade caches) keep their bare
+			// identifiers and only merge among themselves.
 			if (identifiers.length === 0) {
 				const accountId =
 					this.#getUsageReportMetadataValue(report, "accountId") ?? this.#getUsageReportScopeAccountId(report);
@@ -3299,12 +3464,11 @@ export class AuthStorage {
 			}
 			const orgId = this.#getUsageReportMetadataValue(report, "orgId");
 			if (orgId) {
-				if (identifiers.length === 0) return [`anthropic:org:${orgId.toLowerCase()}`];
-				return identifiers.map(identifier => `anthropic:org:${orgId.toLowerCase()}|${identifier.toLowerCase()}`);
+				if (identifiers.length === 0) return [`${report.provider}:org:${orgId.toLowerCase()}`];
+				return identifiers.map(
+					identifier => `${report.provider}:org:${orgId.toLowerCase()}|${identifier.toLowerCase()}`,
+				);
 			}
-			return identifiers.map(identifier => `anthropic:${identifier.toLowerCase()}`);
-		}
-		if (report.provider === "openai-codex") {
 			return identifiers.map(identifier => `${report.provider}:${identifier.toLowerCase()}`);
 		}
 		const projectId =
@@ -3480,7 +3644,7 @@ export class AuthStorage {
 	 * providers without a usage API) — the latter never warrants a usage row.
 	 */
 	usageProviderFor(provider: Provider): UsageProvider | undefined {
-		return this.#usageProviderResolver?.(provider);
+		return this.#resolveUsageProvider(provider);
 	}
 
 	async fetchUsageReports(options?: {
@@ -3494,8 +3658,14 @@ export class AuthStorage {
 		// needing the caller to wire it explicitly.
 		const storeOverride = this.#store.fetchUsageReports?.bind(this.#store);
 		const override = this.#fetchUsageReportsOverride ?? storeOverride;
-		const shouldReconcileStoreHookReports =
-			this.#fetchUsageReportsOverride === undefined && storeOverride !== undefined;
+		const locallyOwnedProviders = new Set<string>(
+			[
+				...this.#runtimeUsageProviders.keys(),
+				...this.#runtimeOverrides.keys(),
+				...this.#configOverrides.keys(),
+			].filter(provider => this.#resolveUsageProvider(provider) !== undefined),
+		);
+		let storeReports: UsageReport[] | null | undefined;
 		if (override) {
 			// Reuse the in-flight map so concurrent callers (widget poll + format
 			// dispatch + credential selection) coalesce into one upstream call.
@@ -3507,18 +3677,29 @@ export class AuthStorage {
 				// Don't forward the caller signal into the shared fetch — first caller's
 				// abort would otherwise cancel the upstream for every peer.
 				shared = override().finally(() => {
-					this.#usageReportsInFlight.delete(OVERRIDE_KEY);
+					if (this.#usageReportsInFlight.get(OVERRIDE_KEY) === shared) {
+						this.#usageReportsInFlight.delete(OVERRIDE_KEY);
+					}
 				});
 				this.#usageReportsInFlight.set(OVERRIDE_KEY, shared);
 			}
 			const reports = await raceUsageWithSignal(shared, options?.signal);
-			if (shouldReconcileStoreHookReports && reports) this.#reconcileCodexUsageBlocksFromReports(reports);
-			return reports;
+			if (this.#fetchUsageReportsOverride !== undefined || storeOverride === undefined) return reports;
+			if (reports) this.#reconcileCodexUsageBlocksFromReports(reports);
+			storeReports = reports;
 		}
-		if (!this.#usageProviderResolver) return null;
+		if (!this.#usageProviderResolver && this.#runtimeUsageProviders.size === 0) return storeReports ?? null;
 
-		const requests = this.#collectUsageRequests(options);
-		if (requests.length === 0) return [];
+		const collected = this.#collectUsageRequests(options);
+		for (const provider of collected.clientOwnedProviders) locallyOwnedProviders.add(provider);
+		const requests =
+			storeReports === undefined
+				? collected.requests
+				: collected.requests.filter(request => locallyOwnedProviders.has(request.provider));
+		if (requests.length === 0) {
+			if (storeReports === null) return null;
+			return storeReports?.filter(report => !locallyOwnedProviders.has(report.provider)) ?? [];
+		}
 
 		this.#usageLogger?.debug("Usage fetch requested", {
 			providers: [...new Set(requests.map(request => request.provider))].sort(),
@@ -3551,7 +3732,10 @@ export class AuthStorage {
 			const reports = results.filter((report): report is UsageReport => report !== null);
 			const deduped = this.#dedupeUsageReports(reports);
 			// no outer cache write — see comment above.
-			const resolved = deduped;
+			const resolved = this.#dedupeUsageReports([
+				...(storeReports?.filter(report => !locallyOwnedProviders.has(report.provider)) ?? []),
+				...deduped,
+			]);
 			this.#usageLogger?.debug("Usage fetch resolved", {
 				reports: resolved.map(report => {
 					const accountLabel =
@@ -3570,7 +3754,7 @@ export class AuthStorage {
 			});
 			return resolved;
 		})().finally(() => {
-			this.#usageReportsInFlight.delete(cacheKey);
+			if (this.#usageReportsInFlight.get(cacheKey) === promise) this.#usageReportsInFlight.delete(cacheKey);
 		});
 
 		this.#usageReportsInFlight.set(cacheKey, promise);
@@ -3606,7 +3790,6 @@ export class AuthStorage {
 	async checkCredentials(options?: CheckCredentialsOptions): Promise<CredentialHealthResult[]> {
 		options?.signal?.throwIfAborted();
 		const stored = this.#store.listAuthCredentials();
-		const resolver = this.#usageProviderResolver;
 		const timeoutMs = options?.timeoutMs ?? this.#usageRequestTimeoutMs;
 		const completionProbe = options?.completionProbe;
 		const completionTimeoutMs = options?.completionTimeoutMs ?? timeoutMs;
@@ -3697,7 +3880,7 @@ export class AuthStorage {
 				continue;
 			}
 
-			const providerImpl = resolver?.(row.provider as Provider);
+			const providerImpl = this.#resolveUsageProvider(row.provider as Provider);
 			if (!providerImpl) {
 				base.reason = `no usage probe configured for provider ${row.provider}`;
 			} else if (providerImpl.supports && !providerImpl.supports(initialRequest)) {
@@ -3706,7 +3889,11 @@ export class AuthStorage {
 				base.reason = `usage probe for ${row.provider} does not validate credentials`;
 			} else {
 				try {
-					const report = await providerImpl.fetchUsage(params, ctx);
+					const report = this.#validateUsageReport(
+						providerImpl.id,
+						await providerImpl.fetchUsage(params, ctx),
+						"fetchUsage",
+					);
 					if (report === null) {
 						base.reason = "usage probe returned no data for this credential";
 					} else {
@@ -3715,8 +3902,7 @@ export class AuthStorage {
 						const email = this.#getUsageReportMetadataValue(report, "email");
 						if (accountId) base.accountId = accountId;
 						if (email) base.email = email;
-						const { raw: _raw, ...trimmed } = report;
-						base.report = trimmed;
+						base.report = report;
 					}
 				} catch (error) {
 					base.ok = false;
@@ -5148,16 +5334,7 @@ export class AuthStorage {
 	 * `/usage` reflects a freshly-redeemed reset instead of stale numbers.
 	 */
 	#invalidateUsageReportCache(provider: string, baseUrl?: string): void {
-		this.#usageCacheEpoch += 1;
-		const expired = Date.now() - 1;
-		for (const entry of this.#getStoredCredentials(provider)) {
-			if (entry.credential.type !== "oauth") continue;
-			const cacheKey = this.#buildUsageReportCacheKey(
-				this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl),
-			);
-			const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
-			this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
-		}
+		this.#invalidateLocalUsageProviderCache(provider as Provider, baseUrl);
 	}
 
 	/**
@@ -5168,9 +5345,12 @@ export class AuthStorage {
 	 */
 	async invalidateUsageCache(provider?: string, signal?: AbortSignal): Promise<void> {
 		if (provider) {
-			this.#invalidateUsageReportCache(provider);
+			this.#invalidateLocalUsageProviderCache(provider as Provider);
 		} else {
 			this.#usageCacheEpoch += 1;
+			this.#usageRequestInFlight.clear();
+			this.#usageHeaderIngestAt.clear();
+			this.#usageReportsInFlight.clear();
 			const expired = Date.now() - 1;
 			try {
 				const credentials = this.#store.listAuthCredentials();
@@ -5294,9 +5474,15 @@ export class AuthStorage {
 			if (credential.type !== "oauth") continue;
 			const credentialEmail = credential.email?.trim().toLowerCase();
 			const credentialAccountId = credential.accountId?.trim().toLowerCase();
-			if ((email && credentialEmail === email) || (accountId && credentialAccountId === accountId)) {
-				matches.push(entry.id);
-			}
+			// Every identity dimension present on BOTH sides must agree — the
+			// account id is shared workspace-wide and one email can span
+			// workspaces, so a single-dimension match can cross-link siblings.
+			const emailComparable = Boolean(email && credentialEmail);
+			const accountComparable = Boolean(accountId && credentialAccountId);
+			if (!emailComparable && !accountComparable) continue;
+			if (emailComparable && credentialEmail !== email) continue;
+			if (accountComparable && credentialAccountId !== accountId) continue;
+			matches.push(entry.id);
 		}
 		return matches;
 	}
@@ -5906,16 +6092,15 @@ function toStoredAuthCredential(row: AuthRow, credential: AuthCredential): Store
 
 function resolveProviderCredentialIdentityKey(provider: string, identifiers: string[]): string | null {
 	const emailIdentifier = identifiers.find(identifier => identifier.startsWith("email:"));
-	if (provider === "anthropic") {
-		// One Anthropic account email can hold several organizations (e.g. a
-		// Team seat plus a personal Max plan), each with its own org-scoped
-		// token and limit pools. Scope identity by org so both subscriptions
-		// can be stored side by side. The qualifier rides on whichever base
-		// identity is available — the account UUID is IDENTICAL across the
-		// orgs of one login account, so an unqualified account/project
-		// fallback would still collapse two subscriptions whenever the email
-		// could not be recovered. Org-less credentials (rows written before
-		// org capture existed) keep their bare key.
+	if (provider === "anthropic" || provider === "openai-codex") {
+		// One account email can hold several organizations/workspaces (e.g. a
+		// Team seat plus a personal plan), each with its own org-scoped token
+		// and limit pools. Scope identity by org so both subscriptions can be
+		// stored side by side. The qualifier rides on whichever base identity
+		// is available, so an unqualified account/project fallback would
+		// still collapse two subscriptions whenever the email could not be
+		// recovered. Org-less credentials (rows written before org capture
+		// existed) keep their bare key.
 		const base =
 			emailIdentifier ??
 			identifiers.find(identifier => identifier.startsWith("account:")) ??
@@ -5925,7 +6110,6 @@ function resolveProviderCredentialIdentityKey(provider: string, identifiers: str
 		// No base identity at all: the org alone still distinguishes the row.
 		return orgIdentifier ?? null;
 	}
-	if (provider === "openai-codex" && emailIdentifier) return emailIdentifier;
 	const accountIdentifier = identifiers.find(identifier => identifier.startsWith("account:"));
 	if (accountIdentifier) return accountIdentifier;
 	if (emailIdentifier) return emailIdentifier;
@@ -5962,9 +6146,9 @@ function matchesReplacementCredential(
 	if (incomingIdentityKey === existingIdentityKey) return true;
 	if (existingIdentityKey === null) return false;
 	// One-way upgrade, applied only when the INCOMING identity key carries the
-	// org qualifier (only anthropic keys do, so other providers never reach the
-	// checks below). An org-scoped login `org:<o>` claims (and re-keys) any
-	// existing row that denotes the same subscription:
+	// org qualifier (only anthropic and openai-codex keys do, so other
+	// providers never reach the checks below). An org-scoped login `org:<o>`
+	// claims (and re-keys) any existing row that denotes the same subscription:
 	//   - `org:<o>` — org-only row stored when identity recovery failed, claimed
 	//     once a later same-org login recovers a base identity;
 	//   - `<b>` for any base identity `<b>` (email/account/project) the incoming
@@ -5988,10 +6172,16 @@ function matchesReplacementCredential(
 		existing.type === "oauth" && existingIdentityKey.endsWith(`|${orgIdentifier}`)
 			? extractOAuthCredentialIdentifiers(existing)
 			: null;
+	// A base identifier that merely repeats the org qualifier's id carries no
+	// per-user identity (openai-codex stores the ChatGPT workspace id as both
+	// accountId and orgId, shared by every member) — letting it act as a
+	// claimable base would re-key another member's same-org row.
+	const orgQualifierId = orgIdentifier.slice("org:".length);
 	for (const identifier of incomingIdentifiers) {
 		const isBase =
 			identifier.startsWith("email:") || identifier.startsWith("account:") || identifier.startsWith("project:");
 		if (!isBase) continue;
+		if (identifier.slice(identifier.indexOf(":") + 1) === orgQualifierId) continue;
 		if (existingIdentityKey === identifier) return true;
 		if (existingIdentityKey === `${identifier}|${orgIdentifier}`) return true;
 		if (existingIdentifiers?.includes(identifier)) return true;

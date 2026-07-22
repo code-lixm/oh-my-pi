@@ -41,7 +41,13 @@ import {
 } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
-import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../../tui";
+import {
+	getOutputBlockBorderStyle,
+	isFramedBlockComponent,
+	markFramedBlockComponent,
+	renderStatusLine,
+	WidthAwareText,
+} from "../../tui";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
 
@@ -317,6 +323,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		isError?: boolean;
 		details?: any;
+		useless?: boolean;
 	};
 	// Edit preview state
 	#editMode?: EditMode;
@@ -397,11 +404,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#args = args;
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 
-		// Always create both - contentBox for custom tools/bash/tools with renderers, contentText for other built-ins.
-		// paddingY is 1 so background-tinted blocks (custom/extension tools and the
-		// generic fallback) get top/bottom breathing room. TranscriptContainer
-		// strips PLAIN-blank edges, so framed/minimal blocks (no bg set) drop these
-		// lines and keep their tight spacing — only tinted lines survive.
+		// Keep one shared content container for custom/built-in renderers and a
+		// width-aware fallback for tools without a renderer. Padding remains stable
+		// across framed and borderless layouts without relying on state backgrounds.
 		this.#contentBox = new Box(0, 1);
 		this.#contentText = new WidthAwareText(contentWidth => this.#formatToolExecution(contentWidth), 1, 1);
 
@@ -413,8 +418,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		} else {
 			this.addChild(this.#contentText);
 		}
-		// Tool blocks are visually distinct cards (background-tinted or framed),
-		// so keep their horizontal padding even when the user enables tight layout.
+		// Tool blocks keep their horizontal padding even when tight layout is enabled.
 		this.setIgnoreTight(true);
 
 		this.#updateSpinnerAnimation();
@@ -555,6 +559,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 			details?: any;
 			isError?: boolean;
+			useless?: boolean;
 		},
 		isPartial = false,
 		_toolCallId?: string,
@@ -950,12 +955,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderState.isPartial = this.#isPartial;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
-		// Non-self-framing tools (custom/extension renderers and the generic
-		// fallback) retain backgrounds only while pending or after an error.
-		// Completed success stays unfilled so persistent transcript history does
-		// not become a wall of tinted cards.
-		const stateBgKey = this.#isPartial ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : undefined;
-		const stateBgFn = stateBgKey ? (text: string) => theme.bg(stateBgKey, text) : undefined;
+		// Pending/running tools stay unfilled; only failures retain a semantic
+		// background so live execution does not flash a full-width color block.
+		const stateBgFn = this.#result?.isError ? (text: string) => theme.bg("toolErrorBg", text) : undefined;
 
 		// Check for custom tool rendering
 		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
@@ -1005,16 +1007,22 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			if (this.#result && tool.renderResult) {
 				try {
 					const renderResult = tool.renderResult as (
-						result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+						result: {
+							content: Array<{ type: string; text?: string }>;
+							details?: unknown;
+							isError?: boolean;
+							useless?: boolean;
+						},
 						options: { expanded: boolean; isPartial: boolean; spinnerFrame?: number },
 						theme: Theme,
 						args?: unknown,
-					) => Component;
+					) => Component | undefined;
 					const resultComponent = renderResult(
 						{
-							content: this.#result.content as any,
+							content: this.#result.content as Array<{ type: string; text?: string }>,
 							details: this.#result.details,
 							isError: this.#result.isError,
+							useless: this.#result.useless,
 						},
 						this.#renderState,
 						theme,
@@ -1045,9 +1053,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				}
 			}
 			// Custom tools that draw their own frame (task) render flush; plain
-			// extension renderers get the padded, state-tinted block back.
+			// extension renderers keep the shared padding and error-only background.
 			const customFramed = this.#contentBox.children.some(isFramedBlockComponent);
-			this.#contentBox.setPaddingX(customFramed ? 0 : 1);
+			this.#contentBox.setPaddingX(customFramed ? 0 : getOutputBlockBorderStyle() === "none" ? 0 : 1);
 			this.#contentBox.setBgFn(customFramed ? undefined : stateBgFn);
 		} else if (this.#toolName in toolRenderers) {
 			// Built-in tools with renderers
@@ -1158,9 +1166,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					try {
 						const resultComponent = renderer.renderResult(
 							{
-								content: this.#result.content as any,
+								content: this.#result.content as Array<{ type: string; text?: string }>,
 								details: this.#result.details,
 								isError: this.#result.isError,
+								useless: this.#result.useless,
 							},
 							this.#renderState,
 							theme,
@@ -1186,7 +1195,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				}
 			}
 			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
-			this.#contentBox.setPaddingX(builtInFramed ? 0 : 1);
+			this.#contentBox.setPaddingX(builtInFramed ? 0 : getOutputBlockBorderStyle() === "none" ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width

@@ -1660,7 +1660,7 @@ export class AcpAgent implements Agent {
 	 * when supported), and on approval keeps the chosen plan path, exits plan
 	 * mode, and notifies the client so the agent regains full tools.
 	 *
-	 * Mirrors `InteractiveMode.#handlePlanProposal` for the parts the agent sees
+	 * Mirrors `AgentSession.preparePlanForReview` for the parts the agent sees
 	 * (same `PlanApprovalDetails` shape). Clients without form-mode elicitation
 	 * get an auto-approve so plan mode is never stranded — the agent always has
 	 * a way out.

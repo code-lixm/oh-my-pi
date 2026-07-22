@@ -43,7 +43,12 @@ export type FirstResultViewportRepaint = boolean | ((args: unknown, options: Ren
 export type ToolRenderer = {
 	renderCall: (args: unknown, options: RenderResultOptions, theme: Theme) => Component;
 	renderResult: (
-		result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+		result: {
+			content: Array<{ type: string; text?: string }>;
+			details?: unknown;
+			isError?: boolean;
+			useless?: boolean;
+		},
 		options: RenderResultOptions & { renderContext?: Record<string, unknown> },
 		theme: Theme,
 		args?: unknown,

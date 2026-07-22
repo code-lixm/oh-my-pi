@@ -2,7 +2,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 
 const WIDTH = 80;
 
@@ -67,6 +68,37 @@ describe("AssistantMessageComponent code-block framing", () => {
 		expect(lines[1]).toContain("│");
 		expect(lines[1]).toContain("const answer = 42;");
 		expect(lines[lines.length - 1]).toContain("╰");
+	});
+
+	it("renders fenced code blocks without a rounded frame when border style is none", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+
+			const component = new AssistantMessageComponent(
+				message([{ type: "text", text: fence(["const answer = 42;", "console.log(answer);"]) }]),
+			);
+			const lines = renderPlain(component, 36);
+			const joined = lines.join("\n");
+
+			expect(joined).toContain("const answer = 42;");
+			expect(joined).toContain("console.log(answer);");
+			// With borderStyle:none the code text renders — the contract is no rounded
+			// corner glyphs; raw fences remain when the framed path is bypassed.
+			for (const corner of [
+				uiTheme.symbol("boxRound.topLeft"),
+				uiTheme.symbol("boxRound.topRight"),
+				uiTheme.symbol("boxRound.bottomLeft"),
+				uiTheme.symbol("boxRound.bottomRight"),
+			]) {
+				expect(joined).not.toContain(corner);
+			}
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("still expands code blocks when a toolCall disables the streaming fast path", () => {

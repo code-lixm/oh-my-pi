@@ -20,7 +20,6 @@ export interface OverviewRouteProps {
 }
 
 export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }: OverviewRouteProps) {
-	useLocale();
 	const locale = useLocale();
 	const {
 		data: overview,

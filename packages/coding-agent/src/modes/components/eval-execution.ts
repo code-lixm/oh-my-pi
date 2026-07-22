@@ -53,7 +53,12 @@ export class EvalExecutionComponent extends Container {
 		super();
 
 		const colorKey: ExecutionColorKey = this.excludeFromContext ? "dim" : "pythonMode";
-		const { contentContainer, loader } = buildExecutionFrame(this, ui, colorKey);
+		const { contentContainer, loader } = buildExecutionFrame(
+			this,
+			ui,
+			colorKey,
+			this.language === "js" ? "javascript" : "python",
+		);
 		this.#contentContainer = contentContainer;
 		this.#loader = loader;
 

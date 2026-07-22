@@ -24,6 +24,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { getSettingsUiLocale, type SettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 import planModeReminderPrompt from "../src/prompts/system/plan-mode-tool-decision-reminder.md" with { type: "text" };
 
 /** A stable, literal (non-templated) line of the reminder prompt, so the test
@@ -78,9 +79,11 @@ describe("AgentSession plan-mode convergence", () => {
 	let tempDir: TempDir;
 	let session: AgentSession | undefined;
 	const authStorages: AuthStorage[] = [];
+	let previousSettingsUiLocale: SettingsUiLocale;
 
 	beforeEach(() => {
 		tempDir = TempDir.createSync("@pi-plan-converge-");
+		previousSettingsUiLocale = getSettingsUiLocale();
 	});
 
 	afterEach(async () => {
@@ -89,6 +92,7 @@ describe("AgentSession plan-mode convergence", () => {
 		} finally {
 			session = undefined;
 			for (const authStorage of authStorages.splice(0)) authStorage.close();
+			setSettingsUiLocale(previousSettingsUiLocale);
 			await tempDir?.remove();
 		}
 	});
@@ -309,6 +313,25 @@ describe("AgentSession plan-mode convergence", () => {
 
 		expect(countReminders(harness.session.agent.state.messages)).toBe(2);
 		expect(harness.mock.calls.length).toBe(4);
+	});
+
+	it("preparePlanForReview localizes the zh-CN review result while preserving PlanApprovalDetails", async () => {
+		const harness = await createPlanSession([]);
+		setSettingsUiLocale("zh-CN");
+		const planPath = resolveLocalUrlToPath("local://roadmap-plan.md", {
+			getArtifactsDir: () => harness.session.sessionManager.getArtifactsDir(),
+			getSessionId: () => harness.session.sessionManager.getSessionId(),
+		});
+		await Bun.write(planPath, "# Roadmap\n\nImplement the reviewed plan.\n");
+
+		const result = await harness.session.preparePlanForReview("roadmap");
+
+		expect(result.content).toEqual([{ type: "text", text: "计划已准备好，等待审阅。" }]);
+		expect(result.details).toEqual({
+			planFilePath: "local://roadmap-plan.md",
+			title: "roadmap",
+			planExists: true,
+		});
 	});
 
 	it("restores the pre-plan tool set after PlanYolo approval", async () => {

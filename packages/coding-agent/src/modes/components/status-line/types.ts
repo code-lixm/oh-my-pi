@@ -1,3 +1,4 @@
+import type { UsageAmount, UsageStatus } from "@oh-my-pi/pi-ai";
 import type { CollabSessionState } from "../../../collab/protocol";
 import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
@@ -16,13 +17,27 @@ export interface CollabStatus {
 
 export interface StatusLineSegmentOptions {
 	model?: { showThinkingLevel?: boolean };
-	path?: { abbreviate?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
+	path?: { abbreviate?: boolean; basenameOnly?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
+	usage?: {
+		batteryWidth?: number;
+		batteryStyle?: "blocks" | "segmented";
+		showLabel?: boolean;
+		showPercentage?: boolean;
+		showTrack?: boolean;
+		latestOnly?: boolean;
+		maxItems?: number;
+		maxWidth?: number;
+		providers?: string[];
+		showResetTime?: boolean;
+		style?: "battery" | "text";
+	};
 	git?: { showBranch?: boolean; showStaged?: boolean; showUnstaged?: boolean; showUntracked?: boolean };
 	time?: { format?: "12h" | "24h"; showSeconds?: boolean };
 }
 
 export interface StatusLineSettings {
 	preset?: StatusLinePreset;
+	customPreset?: string | null;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
@@ -47,6 +62,24 @@ export type EffectiveStatusLineSettings = Required<
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type RGB = readonly [number, number, number];
+
+export interface StatusLineUsageItem {
+	provider: string;
+	label: string;
+	accountLabel?: string;
+	tier?: string;
+	durationMs?: number;
+	modelId?: string;
+	windowId?: string;
+	resetsAt?: number;
+	usedFraction?: number;
+	amount: UsageAmount;
+	status?: UsageStatus;
+}
+
+export interface StatusLineUsageSummary {
+	items: StatusLineUsageItem[];
+}
 
 export interface SegmentContext {
 	session: AgentSession;
@@ -118,11 +151,7 @@ export interface SegmentContext {
 	 * the worktree/branch is already shown by the git segment.
 	 */
 	worktree: { projectName: string; worktreeName: string } | null;
-	usage: {
-		tier?: string;
-		fiveHour?: { percent: number; resetMinutes?: number };
-		sevenDay?: { percent: number; resetHours?: number };
-	} | null;
+	usage: StatusLineUsageSummary | null;
 }
 
 export interface RenderedSegment {

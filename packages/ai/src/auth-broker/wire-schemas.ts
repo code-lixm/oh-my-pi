@@ -14,6 +14,7 @@
  */
 import { type } from "arktype";
 import { REMOTE_REFRESH_SENTINEL } from "../auth-storage";
+import { usageReportSchema } from "../usage";
 
 // ─── Credential payloads ───────────────────────────────────────────────────
 
@@ -157,67 +158,6 @@ export const healthzResponseSchema = type({
 
 // ─── Usage ─────────────────────────────────────────────────────────────────
 
-const usageUnitSchema = type("'percent' | 'tokens' | 'requests' | 'usd' | 'minutes' | 'bytes' | 'unknown'");
-const usageStatusSchema = type("'ok' | 'warning' | 'exhausted' | 'unknown'");
-
-const usageWindowSchema = type({
-	id: "string",
-	label: "string",
-	"durationMs?": "number",
-	"resetsAt?": "number",
-});
-
-const usageAmountSchema = type({
-	"used?": "number",
-	"limit?": "number",
-	"remaining?": "number",
-	"usedFraction?": "number",
-	"remainingFraction?": "number",
-	unit: usageUnitSchema,
-});
-
-const usageScopeSchema = type({
-	provider: "string",
-	"accountId?": "string",
-	"projectId?": "string",
-	"orgId?": "string",
-	"modelId?": "string",
-	"tier?": "string",
-	"windowId?": "string",
-	"shared?": "boolean",
-});
-
-const usageLimitSchema = type({
-	id: "string",
-	label: "string",
-	scope: usageScopeSchema,
-	"window?": usageWindowSchema,
-	amount: usageAmountSchema,
-	"status?": usageStatusSchema,
-	"notes?": "string[]",
-});
-
-const usageResetCreditDetailSchema = type({
-	"grantedAt?": "string",
-	"expiresAt?": "string",
-	"status?": "string",
-});
-
-const usageResetCreditsSchema = type({
-	availableCount: "number",
-	"credits?": usageResetCreditDetailSchema.array(),
-});
-
-const arkUsageReportSchema = type({
-	provider: "string",
-	fetchedAt: "number",
-	limits: usageLimitSchema.array(),
-	"resetCredits?": usageResetCreditsSchema,
-	"notes?": "string[]",
-	"metadata?": { "[string]": "unknown" },
-	"raw?": "unknown",
-});
-
 /**
  * Broker `/v1/usage` response. Reports are full {@link UsageReport}s minus the
  * heavy provider-specific `raw` field (the server strips it before send) — we
@@ -227,7 +167,7 @@ const arkUsageReportSchema = type({
 export const usageResponseSchema = type({
 	"+": "reject",
 	generatedAt: "number",
-	reports: arkUsageReportSchema.array(),
+	reports: usageReportSchema.array(),
 });
 
 // ─── Refresh ───────────────────────────────────────────────────────────────

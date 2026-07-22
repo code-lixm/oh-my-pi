@@ -1019,64 +1019,71 @@ describe("InteractiveMode plan review rendering", () => {
 		});
 	});
 
-	it("executes on the slider-selected tier, surviving #exitPlanMode's model restore", async () => {
-		// Regression: the model-tier slider's choice used to be applied BEFORE
-		// #approvePlan ran. #approvePlan → #exitPlanMode restores the model that
-		// was active before plan mode (#planModePreviousModelState), which silently
-		// reverted the operator's pick — sliding to "slow" still executed on the
-		// default model. The fix defers application until after the plan-mode exit.
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
-		const slow = session.modelRegistry.find("anthropic", "claude-opus-4-5");
-		const def = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
-		if (!slow || !def) throw new Error("Expected sonnet + opus to exist in registry");
+	it("localizes zh-CN slider tiers while keeping selection index-driven through plan-mode restore", async () => {
+		const previousLocale = getSettingsUiLocale();
+		setSettingsUiLocale("zh-CN");
 
-		// plan === default === the session model: this is what makes plan-mode entry
-		// record a previous-model state for #exitPlanMode to restore. slow differs,
-		// so an early application would be clobbered by that restore.
-		session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
-		session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
-		session.settings.setModelRole("plan", "anthropic/claude-sonnet-4-5");
+		try {
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const smol = session.modelRegistry.find("anthropic", "claude-haiku-4-5");
+			const slow = session.modelRegistry.find("anthropic", "claude-opus-4-5");
+			const def = session.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+			if (!smol || !slow || !def) throw new Error("Expected haiku + sonnet + opus to exist in registry");
 
-		const planFilePath = "local://PLAN.md";
-		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
-			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
-			getSessionId: () => session.sessionManager.getSessionId(),
-		});
-		await Bun.write(resolvedPlanPath, "# Plan\n\nRun this on the slow tier.");
+			// plan === default === the session model: this preserves the original
+			// restore path while exposing the zh-CN slider labels for all three
+			// built-in tiers.
+			session.settings.setModelRole("smol", "anthropic/claude-haiku-4-5");
+			session.settings.setModelRole("default", "anthropic/claude-sonnet-4-5");
+			session.settings.setModelRole("slow", "anthropic/claude-opus-4-5");
+			session.settings.setModelRole("plan", "anthropic/claude-sonnet-4-5");
 
-		await mode.handlePlanModeCommand();
-		expect(session.getPlanModeState()?.enabled).toBe(true);
-		expect(session.model?.id).toBe(def.id);
+			const planFilePath = "local://PLAN.md";
+			const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+				getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+				getSessionId: () => session.sessionManager.getSessionId(),
+			});
+			await Bun.write(resolvedPlanPath, "# Plan\n\nRun this on the deep-thinking tier.");
 
-		// Keep-context path avoids newSession() so the assertion isolates the
-		// exit-plan-mode restore from session-clear effects.
-		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
-		vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+			await mode.handlePlanModeCommand();
+			expect(session.getPlanModeState()?.enabled).toBe(true);
+			expect(session.model?.id).toBe(def.id);
 
-		let observedSegments: string[] = [];
-		vi.spyOn(mode, "showPlanReview").mockImplementation(
-			async (_planContent, _title, _options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
-				const slider = extra?.slider;
-				expect(slider).toBeDefined();
-				observedSegments = slider!.segments.map(segment => segment.label);
-				const slowIndex = slider!.segments.findIndex(segment => segment.label === "slow");
-				expect(slowIndex).toBeGreaterThanOrEqual(0);
-				// Simulate the operator sliding the tier to "slow" before approving.
-				slider!.onChange?.(slowIndex);
-				return "Approve and keep context";
-			},
-		);
+			// Keep-context path avoids newSession() so the assertion isolates the
+			// post-approval role application from session-clear effects.
+			vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+			vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
 
-		await mode.handlePlanApproval({
-			planFilePath,
-			planExists: true,
-			title: "PLAN",
-		});
+			let observedSegments: string[] = [];
+			vi.spyOn(mode, "showPlanReview").mockImplementation(
+				async (_planContent, _title, options, _dialogOptions, extra?: { slider?: HookSelectorSlider }) => {
+					const slider = extra?.slider;
+					expect(slider).toBeDefined();
+					observedSegments = slider!.segments.map(segment => segment.label);
+					expect(slider!.index).toBe(1);
+					expect(observedSegments).toEqual(["轻量", "默认", "深度思考"]);
+					expect(slider!.segments[2]?.label).toBe("深度思考");
+					// Select by slider index, not by display text, so localized labels stay
+					// presentation-only while the approved plan still runs on the chosen
+					// role/model.
+					slider!.onChange?.(2);
+					return options[2]!;
+				},
+			);
 
-		expect(observedSegments).toEqual(["default", "slow"]);
-		// The load-bearing assertion: the approved plan executes on the operator's
-		// selected tier, not the restored default.
-		expect(session.model?.id).toBe(slow.id);
+			await mode.handlePlanApproval({
+				planFilePath,
+				planExists: true,
+				title: "PLAN",
+			});
+
+			expect(observedSegments).toEqual(["轻量", "默认", "深度思考"]);
+			// The load-bearing assertion: the approved plan executes on the
+			// index-selected slow tier, not the restored default.
+			expect(session.model?.id).toBe(slow.id);
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
 	});
 
 	it("retains the plan model when the slider selection matches the active plan tier", async () => {

@@ -14,7 +14,7 @@
  * redraw — that per-event recompute is what previously froze large sessions.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -270,5 +270,80 @@ describe("StatusLineComponent context breakdown", () => {
 		const plain = comp.getTopBorder(80).content.replaceAll(/\x1b\[[0-9;]*m/g, "");
 		expect(plain).toContain("5K/?");
 		expect(plain).not.toContain("0.0%/0");
+	});
+});
+
+describe("StatusLineComponent named custom presets", () => {
+	it("resolves the named runtime custom preset instead of legacy custom layout and options", () => {
+		settings.set("statusLine.customPresets", {
+			work: {
+				label: "Work",
+				leftSegments: ["usage"],
+				rightSegments: [],
+				separator: "ascii",
+				segmentOptions: {
+					usage: { style: "battery", batteryStyle: "segmented", batteryWidth: 8, showPercentage: true },
+				},
+			},
+		});
+
+		const { session } = makeSession({ messages: [userMessage("hi")] });
+		const comp = new StatusLineComponent(session);
+		comp.updateSettings({
+			preset: "custom",
+			customPreset: "work",
+			leftSegments: ["pi", "path"],
+			rightSegments: ["mode", "context_pct"],
+			separator: "pipe",
+			segmentOptions: {
+				usage: { style: "text" },
+				path: { maxLength: 12 },
+			},
+		});
+
+		const effective = comp.getEffectiveSettingsForTest();
+		expect(effective.leftSegments).toEqual(["usage"]);
+		expect(effective.rightSegments).toEqual([]);
+		expect(effective.separator).toBe("ascii");
+		expect(effective.segmentOptions).toEqual({
+			usage: { style: "battery", batteryStyle: "segmented", batteryWidth: 8, showPercentage: true },
+		});
+	});
+
+	it("keeps legacy custom layout and options when customPreset is default", () => {
+		settings.set("statusLine.customPresets", {
+			work: {
+				label: "Work",
+				leftSegments: ["usage"],
+				rightSegments: [],
+				separator: "ascii",
+				segmentOptions: {
+					usage: { style: "battery", batteryStyle: "segmented", batteryWidth: 8, showPercentage: true },
+				},
+			},
+		});
+
+		const { session } = makeSession({ messages: [userMessage("hi")] });
+		const comp = new StatusLineComponent(session);
+		comp.updateSettings({
+			preset: "custom",
+			customPreset: "default",
+			leftSegments: ["pi", "usage"],
+			rightSegments: ["session_name", "mode"],
+			separator: "slash",
+			segmentOptions: {
+				usage: { style: "battery", batteryWidth: 7 },
+				path: { maxLength: 15 },
+			},
+		});
+
+		const effective = comp.getEffectiveSettingsForTest();
+		expect(effective.leftSegments).toEqual(["pi", "usage"]);
+		expect(effective.rightSegments).toEqual(["session_name", "mode"]);
+		expect(effective.separator).toBe("slash");
+		expect(effective.segmentOptions).toEqual({
+			usage: { style: "battery", batteryWidth: 7 },
+			path: { maxLength: 15 },
+		});
 	});
 });

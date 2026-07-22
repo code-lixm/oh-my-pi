@@ -663,6 +663,20 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"statusLine.customPreset": {
+		type: "string",
+		default: "default",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Custom Status Line"),
+			description: tSettingsUi("Select a named custom status line from statusLine.customPresets"),
+			options: "runtime",
+		},
+	},
+
+	"statusLine.customPresets": { type: "record", default: {} as Record<string, unknown> },
+
 	"statusLine.separator": {
 		type: "enum",
 		values: ["powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"] as const,

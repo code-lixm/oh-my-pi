@@ -1,13 +1,28 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
-import { calculateTokensPerSecond } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/token-rate";
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/types";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { calculateTokensPerSecond } from "@oh-my-pi/pi-coding-agent/utils/token-rate";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+
+let settingsState: SettingsTestState | undefined;
 
 beforeAll(async () => {
 	await initTheme();
+});
+
+beforeEach(async () => {
+	settingsState = beginSettingsTest();
+	await Settings.init({ inMemory: true });
+});
+
+afterEach(() => {
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
 });
 
 function assistantMessage(overrides?: Partial<AssistantMessage>): AssistantMessage {
@@ -29,6 +44,46 @@ function assistantMessage(overrides?: Partial<AssistantMessage>): AssistantMessa
 		timestamp: 1_000,
 		...overrides,
 	};
+}
+
+function makeStatusLineComponent(options?: {
+	messages?: AssistantMessage[];
+	isStreaming?: boolean;
+}): StatusLineComponent {
+	const messages = options?.messages ?? [];
+	const component = new StatusLineComponent({
+		messages,
+		state: { messages, model: { contextWindow: 200_000 } },
+		model: { contextWindow: 200_000 },
+		isStreaming: options?.isStreaming ?? false,
+		sessionManager: {
+			getUsageStatistics: () => ({
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				orchestrationInput: 0,
+				orchestrationOutput: 0,
+				orchestrationCacheRead: 0,
+				premiumRequests: 0,
+				cost: 0,
+			}),
+			getSessionName: () => "token-rate-test",
+		},
+		getAsyncJobSnapshot: () => ({ running: [] }),
+		getContextUsage: () => undefined,
+		contextUsageRevision: 0,
+		modelRegistry: { isUsingOAuth: () => false },
+	} as unknown as ConstructorParameters<typeof StatusLineComponent>[0]);
+	component.updateSettings({
+		preset: "custom",
+		leftSegments: ["token_rate"],
+		rightSegments: [],
+		separator: "powerline-thin",
+		sessionAccent: false,
+	});
+	return component;
 }
 
 function ctxWithTokenRate(tokensPerSecond: number | null): SegmentContext {
@@ -55,6 +110,19 @@ describe("token_rate status-line segment", () => {
 		expect(content).toMatch(/(?:\/s|\bs\b|\bsec(?:ond)?s?\b|\btps\b)/i);
 		expect(content).not.toContain("35.5/s");
 		expect(content).not.toMatch(/\b\d+(?:\.\d+)?\/s\b/);
+	});
+
+	it("adds worker throughput to the streaming main-session rate through the StatusLineComponent seam", () => {
+		const base = assistantMessage();
+		const component = makeStatusLineComponent({
+			isStreaming: true,
+			messages: [assistantMessage({ timestamp: 10_000, duration: undefined, usage: { ...base.usage, output: 30 } })],
+		});
+		vi.spyOn(Date, "now").mockReturnValue(12_000);
+
+		component.setVibeWorkerTokenRateProvider(() => 17.5);
+
+		expect(stripVTControlCharacters(component.getTopBorder(80).content)).toContain("32.5 tok/s");
 	});
 });
 

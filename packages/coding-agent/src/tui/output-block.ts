@@ -41,6 +41,9 @@ let outputBlockBorderStyle: OutputBlockBorderStyle = "full";
 export function setOutputBlockBorderStyle(style: OutputBlockBorderStyle): void {
 	outputBlockBorderStyle = style;
 }
+export function getOutputBlockBorderStyle(): OutputBlockBorderStyle {
+	return outputBlockBorderStyle;
+}
 
 export type FramedBlockComponent = Component & { [FRAMED_BLOCK_COMPONENT]?: true };
 
@@ -65,7 +68,7 @@ function normalizeContentPaddingLeft(value: number | undefined, borderStyle: Out
 }
 
 function shouldApplyStateBg(state: State | undefined, override: boolean | undefined): boolean {
-	return override ?? (state === "pending" || state === "running" || state === "error");
+	return override ?? state === "error";
 }
 
 /**
@@ -92,19 +95,12 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const borderless = borderStyle === "none";
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
-	const cap = h.repeat(3);
+	const cap = h;
 	const lineWidth = Math.max(0, width);
-	// Border colors: running/pending use accent, errors and warnings keep their
-	// semantic colors, and ordinary completed blocks share one neutral token.
+	// Border colors remain semantic while pending/running blocks stay unfilled;
+	// only explicitly enabled state backgrounds are painted.
 	const borderColor: ThemeColor =
-		options.borderColor ??
-		(state === "error"
-			? "error"
-			: state === "warning"
-				? "warning"
-				: state === "running" || state === "pending"
-					? "accent"
-					: "borderMuted");
+		options.borderColor ?? (state === "error" ? "error" : state === "warning" ? "warning" : "borderMuted");
 	const border = (text: string) => theme.fg(borderColor, text);
 	const bgFn = (() => {
 		if (!state || !applyBg) return undefined;

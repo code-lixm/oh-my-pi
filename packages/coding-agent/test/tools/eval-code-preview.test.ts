@@ -72,3 +72,92 @@ describe("eval renderer: viewport tail window for cell code", () => {
 		expect(rendered).not.toContain(firstLine);
 	});
 });
+
+describe("eval renderer: jsonOutputs with completed cells", () => {
+	let theme: Theme;
+
+	beforeAll(async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		theme = (await getThemeByName("dark"))!;
+		expect(theme).toBeDefined();
+		setThemeInstance(theme);
+	});
+
+	afterAll(() => {
+		resetSettingsForTest();
+	});
+
+	it("keeps embedded display JSON inside the completed cell without a duplicate trailing tree", () => {
+		const payload = { quasarLatchKey: "violet-otter", backupKey: "amber-newt", onlyInOutput: "thistle-wren-7" };
+		const component = evalToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					language: "js",
+					languages: ["js"],
+					cells: [
+						{
+							index: 0,
+							language: "js",
+							code: 'display({ quasarLatchKey: "violet-otter", backupKey: "amber-newt" })',
+							output: `stdout before\ndisplay[1]: ${JSON.stringify(payload)}\nstdout after`,
+							status: "complete",
+							statusEvents: [],
+						},
+					],
+					jsonOutputs: [payload],
+				},
+			},
+			{ expanded: false, isPartial: false, spinnerFrame: 0 },
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		const lines = rendered.split("\n");
+		const bottom = lines.findIndex(line => line.includes(theme.boxRound.bottomRight));
+
+		expect(bottom).toBeGreaterThan(-1);
+		expect(rendered).toContain(`display[1]: ${JSON.stringify(payload)}`);
+		expect(rendered.match(/onlyInOutput/g)?.length ?? 0).toBe(1);
+		expect(rendered.match(/"thistle-wren-7"/g)?.length ?? 0).toBe(1);
+		expect(lines.slice(0, bottom + 1).join("\n")).toContain(`display[1]: ${JSON.stringify(payload)}`);
+		expect(lines.slice(bottom + 1).join("\n")).not.toContain("quasarLatchKey");
+	});
+
+	it("renders a legacy single json output tree without display labels when no cells exist", () => {
+		const component = evalToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					jsonOutputs: [{ quasarLatchKey: "violet-otter" }],
+				},
+			},
+			{ expanded: false, isPartial: false, spinnerFrame: 0 },
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+
+		expect(rendered).toContain("quasarLatchKey");
+		expect(rendered).toContain('"violet-otter"');
+		expect(rendered).not.toContain("display[1]");
+	});
+
+	it("labels multiple legacy json outputs when no cells exist", () => {
+		const component = evalToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "" }],
+				details: {
+					jsonOutputs: [{ quasarLatchKey: "violet-otter" }, { nebulaLatchKey: "cinder-hawk" }],
+				},
+			},
+			{ expanded: false, isPartial: false, spinnerFrame: 0 },
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+
+		expect(rendered).toContain("display[1]");
+		expect(rendered).toContain("display[2]");
+		expect(rendered).toContain("quasarLatchKey");
+		expect(rendered).toContain('"cinder-hawk"');
+	});
+});

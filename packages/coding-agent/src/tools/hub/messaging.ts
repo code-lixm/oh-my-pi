@@ -10,7 +10,7 @@
  */
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { type Component, Container } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
@@ -557,13 +557,12 @@ function renderSendResult(
 			meta.push(theme.fg("success", tSettingsUi("{count} delivered", { count: delivered.length })));
 		if (failedCount > 0) meta.push(theme.fg("error", tSettingsUi("{count} failed", { count: failedCount })));
 	}
-	if (timedOut) meta.push(theme.fg("warning", tSettingsUi("no reply")));
+	// Successful send-await timeouts carry no actionable "no reply" signal: the
+	// receipt list already conveys what happened. Errors, real replies, and
+	// failed deliveries keep their existing treatment.
+	if (timedOut && result.isError) meta.push(theme.fg("warning", tSettingsUi("no reply")));
 
-	const icon = result.isError
-		? { icon: "error" as const }
-		: timedOut
-			? { icon: "warning" as const }
-			: { iconOverride: ircGlyph(theme) };
+	const icon = result.isError ? { icon: "error" as const } : { iconOverride: ircGlyph(theme) };
 	const lines = [renderStatusLine({ ...icon, title, meta }, theme)];
 
 	const sent = args?.message?.trim();
@@ -597,7 +596,7 @@ function renderSendResult(
 			`  ${theme.fg("dim", theme.nav.back)} ${theme.fg("accent", waited.from)}${age ? ` ${theme.fg("dim", age)}` : ""}`,
 		);
 		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
-	} else if (timedOut) {
+	} else if (timedOut && result.isError) {
 		lines.push(
 			`  ${theme.fg("warning", tSettingsUi("No reply yet — they may answer later; check inbox or wait again."))}`,
 		);
@@ -769,14 +768,41 @@ export function messagingRenderCall(args: HubRenderArgs, _options: RenderResultO
 	});
 }
 
+/**
+ * Whether a Hub tool result represents a semantically useless standalone
+ * message wait (no job ids, confirmed timeout, no error, executor's useless
+ * marker). Used by the framed result renderer to drop the card entirely and
+ * by the activity-group aggregator to drop the inline line. Errors, real
+ * replies, send-await timeouts, and job waits all fall through.
+ */
+export function isUselessEmptyWait(
+	result: { isError?: boolean; useless?: boolean },
+	details: Partial<CoordinationDetails>,
+	args?: HubRenderArgs,
+): boolean {
+	return (
+		args?.op === "wait" &&
+		(!args.ids || args.ids.length === 0) &&
+		details.waited === null &&
+		!result.isError &&
+		result.useless === true
+	);
+}
+
 /** Result frame for messaging ops and message-carrying `wait` results. */
 export function messagingRenderResult(
-	result: { content: Array<{ type: string; text?: string }>; details?: CoordinationDetails; isError?: boolean },
+	result: {
+		content: Array<{ type: string; text?: string }>;
+		details?: CoordinationDetails;
+		isError?: boolean;
+		useless?: boolean;
+	},
 	options: RenderResultOptions,
 	uiTheme: Theme,
 	args?: HubRenderArgs,
 ): Component {
 	const details: Partial<CoordinationDetails> = result.details ?? {};
+	if (isUselessEmptyWait(result, details, args)) return new Container();
 	return framedBlock(uiTheme, width => {
 		const contentWidth = outputBlockContentWidth(width);
 		const [header = "", ...bodyRows] = buildResultLines(result, details, args, options.expanded, uiTheme);

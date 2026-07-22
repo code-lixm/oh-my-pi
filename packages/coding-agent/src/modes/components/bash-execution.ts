@@ -54,7 +54,7 @@ export class BashExecutionComponent extends Container {
 
 		// Use dim border for excluded-from-context commands (!! prefix)
 		const colorKey = excludeFromContext ? "dim" : "bashMode";
-		const { contentContainer, loader } = buildExecutionFrame(this, ui, colorKey);
+		const { contentContainer, loader } = buildExecutionFrame(this, ui, colorKey, "shell");
 		this.#contentContainer = contentContainer;
 		this.#loader = loader;
 

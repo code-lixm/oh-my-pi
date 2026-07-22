@@ -11,7 +11,7 @@ import { type Component, Container, Loader, Text, type TUI } from "@oh-my-pi/pi-
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import { formatTruncationMetaNotice, type TruncationMeta } from "../../tools/output-meta";
-import { DynamicBorder } from "./dynamic-border";
+import { framedBlock, outputBlockContentWidth } from "../../tui";
 import { truncateToVisualLines } from "./visual-truncate";
 
 export type ExecutionStatus = "running" | "complete" | "cancelled" | "error";
@@ -20,22 +20,28 @@ export type ExecutionStatus = "running" | "complete" | "cancelled" | "error";
 export type ExecutionColorKey = "dim" | "bashMode" | "pythonMode";
 
 /**
- * Build the spacer + top border + content container + bottom border scaffold
- * that bash and eval execution components share. The caller appends the
- * header (command vs `>>>` prompt) and the returned loader to
- * `contentContainer` so per-mode order is preserved.
+ * Build the labeled rounded frame shared by bash and eval execution. The
+ * caller appends the command/code header and loader to the returned container.
+ *
+ * The frame itself is owned by the shared output-block primitive.
  */
 export function buildExecutionFrame(
 	parent: Container,
 	ui: TUI,
 	colorKey: ExecutionColorKey,
+	label: string,
 ): { contentContainer: Container; loader: Loader } {
-	const borderColor = (str: string) => theme.fg(colorKey, str);
-
-	parent.addChild(new DynamicBorder(borderColor));
-
 	const contentContainer = new Container();
-	parent.addChild(contentContainer);
+	parent.addChild(
+		framedBlock(theme, width => ({
+			header: theme.fg(colorKey, theme.bold(label)),
+			sections: [{ lines: contentContainer.render(outputBlockContentWidth(width, 0)) }],
+			width,
+			applyBg: false,
+			borderColor: colorKey,
+			contentPaddingLeft: 0,
+		})),
+	);
 
 	const loader = new Loader(
 		ui,
@@ -45,7 +51,6 @@ export function buildExecutionFrame(
 		getSymbolTheme().spinnerFrames,
 	);
 
-	parent.addChild(new DynamicBorder(borderColor));
 	return { contentContainer, loader };
 }
 

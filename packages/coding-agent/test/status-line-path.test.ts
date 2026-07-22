@@ -191,6 +191,68 @@ describe("status line path segment", () => {
 		}
 	});
 
+	it("shows only the final directory name when basenameOnly is enabled", () => {
+		const { home, projectsRoot } = createFakeHome();
+		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-basename-"));
+		const nestedDir = path.join(realProjectDir, "services", "api", "final-stop");
+		fs.mkdirSync(nestedDir, { recursive: true });
+		try {
+			setProjectDir(nestedDir);
+
+			const ctx = createPathContext();
+			ctx.options.path = { ...ctx.options.path, basenameOnly: true };
+
+			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+			expect(content).toBe(`${theme.icon.folder} final-stop`);
+			expect(content).not.toContain("services");
+			expect(content).not.toContain(path.basename(realProjectDir));
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(realProjectDir);
+			removeSyncWithRetries(home);
+		}
+	});
+
+	it("keeps the existing relative path display when basenameOnly is omitted", () => {
+		const { home, projectsRoot } = createFakeHome();
+		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-basename-off-"));
+		const nestedDir = path.join(realProjectDir, "services", "api", "final-stop");
+		fs.mkdirSync(nestedDir, { recursive: true });
+		try {
+			setProjectDir(nestedDir);
+
+			const expectedRelative = `${path.basename(realProjectDir)}${path.sep}services${path.sep}api${path.sep}final-stop`;
+			const content = Bun.stripANSI(renderSegment("path", createPathContext()).content);
+
+			expect(content).toBe(`${theme.icon.folder} ${expectedRelative}`);
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(realProjectDir);
+			removeSyncWithRetries(home);
+		}
+	});
+
+	it("keeps the existing relative path display when basenameOnly is false", () => {
+		const { home, projectsRoot } = createFakeHome();
+		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-basename-false-"));
+		const nestedDir = path.join(realProjectDir, "services", "api", "final-stop");
+		fs.mkdirSync(nestedDir, { recursive: true });
+		try {
+			setProjectDir(nestedDir);
+
+			const ctx = createPathContext();
+			ctx.options.path = { ...ctx.options.path, basenameOnly: false };
+			const expectedRelative = `${path.basename(realProjectDir)}${path.sep}services${path.sep}api${path.sep}final-stop`;
+			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+
+			expect(content).toBe(`${theme.icon.folder} ${expectedRelative}`);
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(realProjectDir);
+			removeSyncWithRetries(home);
+		}
+	});
+
 	it("renders the active nested repo suffix after the parent cwd", () => {
 		const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-parent-"));
 		const repoDir = path.join(parentDir, "pr-workspace");
@@ -261,6 +323,29 @@ describe("status line path segment in a linked worktree", () => {
 		expect(content).not.toContain(".tree");
 		expect(content).not.toContain("/xx");
 		expect(content).not.toContain(theme.icon.folder);
+	});
+
+	it("keeps linked-worktree dedupe semantics before taking the basename", () => {
+		const worktreeBase = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-wt-base-"));
+		const worktreeDir = path.join(worktreeBase, ".tree", "very-long-project", "feature-branch");
+		fs.mkdirSync(worktreeDir, { recursive: true });
+		try {
+			setProjectDir(worktreeDir);
+
+			const ctx = worktreeContext(
+				{ projectName: "very-long-project", worktreeName: "feature-branch" },
+				"feature-branch",
+			);
+			ctx.options.path = { ...ctx.options.path, basenameOnly: true };
+
+			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+			expect(content).toBe(`${theme.icon.worktree} very-long-project`);
+			expect(content).not.toContain("feature-branch");
+			expect(content).not.toContain(".tree");
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(worktreeBase);
+		}
 	});
 
 	it("keeps the worktree dir when it diverges from the branch", () => {

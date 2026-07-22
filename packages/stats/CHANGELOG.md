@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.
+
+## [17.0.6] - 2026-07-20
+
+### Changed
+
+- Clarified overview token accounting by separating uncached input from cache reads and showing the conversation-token total used by the agent breakdown.
+
 ## [17.0.5] - 2026-07-18
 
 ### Fixed

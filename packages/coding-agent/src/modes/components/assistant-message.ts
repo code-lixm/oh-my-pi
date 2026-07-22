@@ -22,6 +22,7 @@ import {
 	resolveImageOptions,
 	TRUNCATE_LENGTHS,
 } from "../../tools/render-utils";
+import { getOutputBlockBorderStyle } from "../../tui/output-block";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
@@ -29,13 +30,15 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
 /** Cache key for the assistant Markdown children's code-block display options. */
 const ASSISTANT_CODE_BLOCK_CACHE_KEY = "assistant:framed:v1";
 
-/** Build the shared {@link CodeBlockDisplayOptions} for assistant markdown children. */
-function buildAssistantCodeBlockOptions(): CodeBlockDisplayOptions {
+function buildAssistantCodeBlockOptions(): CodeBlockDisplayOptions | undefined {
+	const borderStyle = getOutputBlockBorderStyle();
+	if (borderStyle === "none") return undefined;
+
 	const expandKeyLabel = expandKeyHint();
 	const omitHintTemplate = tSettingsUi("… {count} more lines ({key} to expand)");
 	return {
 		frame: true,
-		cacheKey: `${ASSISTANT_CODE_BLOCK_CACHE_KEY}:${expandKeyLabel}:${omitHintTemplate}`,
+		cacheKey: `${ASSISTANT_CODE_BLOCK_CACHE_KEY}:${borderStyle}:${expandKeyLabel}:${omitHintTemplate}`,
 		getCollapsedBudget: previewWindowRows,
 		expandKeyLabel,
 		omitHintTemplate,
@@ -869,10 +872,12 @@ export class AssistantMessageComponent extends Container {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
-				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
+				if (!trimmed) continue;
+				// Set paddingY=0 to avoid extra spacing before tool executions
 				const md = new Markdown(trimmed, 0, 0, getMarkdownTheme());
-				md.setCodeBlockDisplayOptions(buildAssistantCodeBlockOptions());
+				const codeBlockOptions = buildAssistantCodeBlockOptions();
+				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);
 				this.#markdownChildren.push(md);
 				md.transientRenderCache = this.#lastUpdateTransient;
@@ -899,9 +904,9 @@ export class AssistantMessageComponent extends Container {
 				// Thinking traces in thinkingText color, italic
 				const md = new Markdown(thinkingText, 0, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
-					italic: true,
 				});
-				md.setCodeBlockDisplayOptions(buildAssistantCodeBlockOptions());
+				const codeBlockOptions = buildAssistantCodeBlockOptions();
+				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);
 				this.#markdownChildren.push(md);
 				md.transientRenderCache = this.#lastUpdateTransient;

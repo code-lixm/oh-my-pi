@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { bashToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/bash";
-import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
+import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { bashToolRenderer, createShellRenderer } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { formatStatusIcon, previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
+import {
+	CachedOutputBlock,
+	getOutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
@@ -18,6 +24,7 @@ describe("bashToolRenderer", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		terminal.imageProtocol = originalProtocol;
 	});
 
@@ -70,25 +77,130 @@ describe("bashToolRenderer", () => {
 		expect(rendered).not.toContain("\t");
 	});
 
-	it("renders the pending call as a bordered block with the command in the body", async () => {
+	it("renders partial call previews as neutral frames while preserving pending/running block state", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-		const component = bashToolRenderer.renderCall(
+		const blockRender = vi.spyOn(CachedOutputBlock.prototype, "render");
+		const runningLines = bashToolRenderer.renderCall(
+			{ command: "sleep 30" },
+			{ expanded: false, isPartial: true, spinnerFrame: 0 },
+			uiTheme,
+		);
+		const runningRendered = runningLines.render(60).join("\n");
+		expect(blockRender.mock.calls.at(-1)?.[0]).toMatchObject({ state: "running", applyBg: false });
+		blockRender.mockClear();
+		const pendingLines = bashToolRenderer.renderCall(
 			{ command: "sleep 30" },
 			{ expanded: false, isPartial: true },
 			uiTheme,
 		);
-		const lines = Bun.stripANSI(component.render(60).join("\n")).split("\n");
-		// A block frames the command: a header bar, the command row, and a bottom border.
-		expect(lines.length).toBeGreaterThanOrEqual(3);
-		const header = lines[0]!;
-		const body = lines.slice(1, -1).join("\n");
-		// Bash commands already carry a `$` prompt in the body, so the frame header
-		// stays a plain rule instead of repeating "Bash" in the title bar.
-		expect(header).not.toContain("Bash");
-		expect(header).not.toContain("sleep 30");
-		expect(body).toContain("$ sleep 30");
+		const pendingRendered = pendingLines.render(60).join("\n");
+		expect(blockRender.mock.calls.at(-1)?.[0]).toMatchObject({ state: "pending", applyBg: false });
+
+		const pendingBg = uiTheme.getBgAnsi("toolPendingBg");
+		// Pending/running blocks share the same theme background token.
+		const runningBg = uiTheme.getBgAnsi("toolPendingBg");
+		const borderMuted = uiTheme.getFgAnsi("borderMuted");
+
+		for (const rendered of [runningRendered, pendingRendered]) {
+			expect(rendered).not.toContain(pendingBg);
+			expect(rendered).not.toContain(runningBg);
+			const strippedLines = Bun.stripANSI(rendered).split("\n");
+			expect(strippedLines.length).toBeGreaterThanOrEqual(3);
+			const header = rendered.split("\n")[0] ?? "";
+			expect(header.startsWith(borderMuted)).toBe(true);
+			expect(strippedLines[0]).not.toContain("Bash");
+			expect(strippedLines[0]).not.toContain("sleep 30");
+			expect(strippedLines.slice(1, -1).join("\n")).toContain("$ sleep 30");
+		}
+	});
+
+	it("renders completed results borderlessly under display.borderStyle none", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+			const theme = await getThemeByName("dark");
+			expect(theme).toBeDefined();
+			const uiTheme = theme!;
+			const component = bashToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "line one\nline two\n\nWall time: 0.02 seconds" }],
+					details: { timeoutSeconds: 300, wallTimeMs: 20 },
+					isError: false,
+				},
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ command: "printf 'line one\\nline two\\n'" },
+			);
+			const plainLines = component.render(80).map(line => Bun.stripANSI(line).trimEnd());
+			const text = plainLines.join("\n");
+			const commandIndex = plainLines.findIndex(line => line.includes("$ printf 'line one\\nline two\\n'"));
+			// Search only after the command row so the "line one" sentinel does not
+			// falsely match the command literal embedded in the command string.
+			const outputIndex = plainLines.slice(commandIndex + 1).findIndex(line => line.includes("line one"));
+			// separator: true emits one blank line between command and output sections.
+			expect(
+				plainLines.slice(commandIndex + 1, commandIndex + 1 + outputIndex).some(line => line.trim().length === 0),
+			).toBe(true);
+
+			expect(text).toContain(uiTheme.symbol("tool.bash"));
+			expect(text).toContain("Bash");
+			expect(text).toContain("$ printf 'line one\\nline two\\n'");
+			expect(text).toContain("line one");
+			expect(text).toContain("line two");
+			expect(text).not.toContain("Output");
+			for (const glyph of [
+				uiTheme.tree.branch,
+				uiTheme.tree.last,
+				uiTheme.tree.vertical,
+				uiTheme.symbol("boxRound.topLeft"),
+				uiTheme.symbol("boxRound.topRight"),
+				uiTheme.symbol("boxRound.bottomLeft"),
+				uiTheme.symbol("boxRound.bottomRight"),
+			]) {
+				expect(text).not.toContain(glyph);
+			}
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
+
+	it("renders bash results with no internal divider between command and output", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			const theme = await getThemeByName("dark");
+			expect(theme).toBeDefined();
+			const uiTheme = theme!;
+
+			for (const borderStyle of ["full", "horizontal"] as const) {
+				setOutputBlockBorderStyle(borderStyle);
+				const component = bashToolRenderer.renderResult(
+					{
+						content: [{ type: "text", text: "line one\n\nWall time: 0.02 seconds" }],
+						details: { timeoutSeconds: 300, wallTimeMs: 20 },
+						isError: false,
+					},
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{ command: "printf 'line one\\n'" },
+				);
+				const text = component
+					.render(80)
+					.map(line => Bun.stripANSI(line))
+					.join("\n");
+				// New contract: no labeled "Output" divider between command and output
+				expect(text).not.toContain("Output:");
+				expect(text).not.toContain("Output ");
+				expect(text).toContain("line one");
+				// Command should be present
+				expect(text).toContain("$ printf");
+			}
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("shows the effective timeout from result details when it differs from call args", async () => {
@@ -281,10 +393,99 @@ describe("bashToolRenderer", () => {
 		expect(lines.some(line => line.includes("ctrl+o to expand"))).toBe(false);
 	});
 
+	it("drives real partial bash result cards through running vs pending block states without a whole-card state background", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "streaming output" }],
+			details: { timeoutSeconds: 5 },
+			isError: false,
+		};
+		const blockRender = vi.spyOn(CachedOutputBlock.prototype, "render");
+		const runningLines = bashToolRenderer
+			.renderResult(result, { expanded: false, isPartial: true, spinnerFrame: 0 }, uiTheme, { command: "sleep 1" })
+			.render(80);
+		expect(blockRender.mock.calls.at(-1)?.[0]).toMatchObject({ state: "running", applyBg: false });
+		blockRender.mockClear();
+		const pendingLines = bashToolRenderer
+			.renderResult(result, { expanded: false, isPartial: true }, uiTheme, { command: "sleep 1" })
+			.render(80);
+		expect(blockRender.mock.calls.at(-1)?.[0]).toMatchObject({ state: "pending", applyBg: false });
+
+		const pendingBg = uiTheme.getBgAnsi("toolPendingBg");
+		// Pending/running blocks share the same theme background token.
+		const runningBg = uiTheme.getBgAnsi("toolPendingBg");
+		const borderMuted = uiTheme.getFgAnsi("borderMuted");
+		const dim = uiTheme.getFgAnsi("dim");
+		const accent = uiTheme.getFgAnsi("accent");
+
+		for (const lines of [runningLines, pendingLines]) {
+			const rendered = lines.join("\n");
+			expect(rendered).not.toContain(pendingBg);
+			expect(rendered).not.toContain(runningBg);
+			const headerLine = lines[0]!;
+			expect(headerLine.startsWith(borderMuted)).toBe(true);
+			expect(headerLine.startsWith(dim)).toBe(false);
+			expect(headerLine.startsWith(accent)).toBe(false);
+			const plain = Bun.stripANSI(rendered);
+			expect(plain).toContain("$ sleep 1");
+			// New contract: no labeled divider between command and output
+			expect(plain).not.toContain("Output:");
+			expect(plain).toContain("streaming output");
+		}
+	});
+
+	it("shared shell renderer switches spinner-bearing partial results from pending to running without changing the neutral frame or adding a whole-card state background", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const headeredBashRenderer = createShellRenderer<{ command: string }>({
+			resolveTitle: () => "Bash",
+			resolveCommand: args => args?.command,
+		});
+		const result = {
+			content: [{ type: "text", text: "streaming output" }],
+			details: { timeoutSeconds: 5 },
+			isError: false,
+		};
+		const runningLines = headeredBashRenderer
+			.renderResult(result, { expanded: false, isPartial: true, spinnerFrame: 0 }, uiTheme, { command: "sleep 1" })
+			.render(80);
+		const pendingLines = headeredBashRenderer
+			.renderResult(result, { expanded: false, isPartial: true }, uiTheme, { command: "sleep 1" })
+			.render(80);
+		const runningIcon = Bun.stripANSI(formatStatusIcon("running", uiTheme, 0));
+		const pendingIcon = Bun.stripANSI(formatStatusIcon("pending", uiTheme));
+		const pendingBg = uiTheme.getBgAnsi("toolPendingBg");
+		// Pending/running blocks share the same theme background token.
+		const runningBg = uiTheme.getBgAnsi("toolPendingBg");
+		const borderMuted = uiTheme.getFgAnsi("borderMuted");
+		const dim = uiTheme.getFgAnsi("dim");
+		const accent = uiTheme.getFgAnsi("accent");
+
+		expect(Bun.stripANSI(runningLines[0] ?? "")).toContain(runningIcon);
+		expect(Bun.stripANSI(runningLines[0] ?? "")).not.toContain(pendingIcon);
+		expect(Bun.stripANSI(pendingLines[0] ?? "")).toContain(pendingIcon);
+		expect(Bun.stripANSI(pendingLines[0] ?? "")).not.toContain(runningIcon);
+
+		for (const lines of [runningLines, pendingLines]) {
+			const rendered = lines.join("\n");
+			expect(rendered).not.toContain(pendingBg);
+			expect(rendered).not.toContain(runningBg);
+			const headerLine = lines[0]!;
+			expect(headerLine.startsWith(borderMuted)).toBe(true);
+			expect(headerLine.startsWith(dim)).toBe(false);
+			expect(headerLine.startsWith(accent)).toBe(false);
+		}
+	});
+
 	it("highlights every line of a multi-line bash command in renderResult", async () => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
-		setThemeInstance(uiTheme!);
+		vi.spyOn(themeModule, "highlightCode").mockImplementation((code: string) =>
+			code.split("\n").map(line => `\u001b[38;5;45m${line}\u001b[39m`),
+		);
 		const command = 'for f in a b; do\n\techo "$f"\ndone';
 		const component = bashToolRenderer.renderResult(
 			{ content: [{ type: "text", text: "" }], details: {}, isError: false },

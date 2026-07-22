@@ -22,7 +22,13 @@ import bashDescriptionZh from "../prompts/tools/bash.zh-CN.md" with { type: "tex
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
+import {
+	CachedOutputBlock,
+	getOutputBlockBorderStyle,
+	markFramedBlockComponent,
+	type OutputBlockBorderStyle,
+	outputBlockContentWidth,
+} from "../tui/output-block";
 import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
@@ -1246,8 +1252,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
+					const borderless = getOutputBlockBorderStyle() === "none";
 					const header =
-						config.showHeader === false
+						config.showHeader === false && !borderless
 							? undefined
 							: renderStatusLine(
 									{
@@ -1261,6 +1268,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						{
 							header,
 							state: options.spinnerFrame !== undefined ? "running" : "pending",
+							applyBg: false,
 							sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
 							width,
 						},
@@ -1290,21 +1298,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const success = !isPartial && !isError;
 			const details = result.details;
 			const isTimeout = details?.timedOut === true;
-			const header =
-				config.showHeader === false
-					? undefined
-					: renderStatusLine(
-							success
-								? {
-										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-										title: config.resolveTitle(args, options),
-									}
-								: {
-										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
-										title: config.resolveTitle(args, options),
-									},
-							uiTheme,
-						);
 			const outputBlock = new CachedOutputBlock();
 
 			// Per-instance cache for the expensive inner lines computation. Mirrors
@@ -1322,7 +1315,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedRawOutput: string | undefined;
 			let cachedIsPartial: boolean | undefined;
 			let cachedLines: readonly string[] | undefined;
+			let cachedSpinnerFrame: number | undefined;
 			let cachedPreviewWindow: number | undefined;
+			let cachedBorderStyle: OutputBlockBorderStyle | undefined;
 
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1330,6 +1325,39 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const { renderContext } = options;
 					const expanded = renderContext?.expanded ?? options.expanded;
 					const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
+					const partialState =
+						options.isPartial === true
+							? options.spinnerFrame !== undefined
+								? "running"
+								: "pending"
+							: isError
+								? isTimeout
+									? "warning"
+									: "error"
+								: "success";
+					const borderStyle = getOutputBlockBorderStyle();
+					const borderless = borderStyle === "none";
+					const header =
+						config.showHeader === false && !borderless
+							? undefined
+							: renderStatusLine(
+									success
+										? {
+												iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+												title: config.resolveTitle(args, options),
+											}
+										: {
+												icon:
+													partialState === "running"
+														? "running"
+														: partialState === "pending"
+															? "pending"
+															: partialState,
+												spinnerFrame: partialState === "running" ? options.spinnerFrame : undefined,
+												title: config.resolveTitle(args, options),
+											},
+									uiTheme,
+								);
 
 					// Get output from context (preferred) or fall back to result content.
 					// Strip the LLM-facing notice appended by wrappedExecute so we don't
@@ -1346,7 +1374,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedExpanded === expanded &&
 						cachedRawOutput === rawOutput &&
 						cachedIsPartial === isPartial &&
-						cachedPreviewWindow === previewWindow
+						cachedSpinnerFrame === options.spinnerFrame &&
+						cachedPreviewWindow === previewWindow &&
+						cachedBorderStyle === borderStyle
 					) {
 						return cachedLines;
 					}
@@ -1452,14 +1482,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const framed = outputBlock.render(
 						{
 							header,
-							state: isPartial ? "pending" : isError ? (isTimeout ? "warning" : "error") : "success",
+							state: partialState,
+							applyBg: partialState === "error" || partialState === "warning",
 							sections: [
 								{
-									// Viewport-sized tail window in every state — streaming and final
-									// render identically; only ctrl+o uncaps.
-									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
+									lines: [
+										...capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
+										...(outputLines.length > 0 ? ["", ...outputLines] : []),
+									],
 								},
-								{ label: uiTheme.fg("toolTitle", tSettingsUi("Output")), lines: outputLines },
 							],
 							width,
 						},
@@ -1471,7 +1502,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = expanded;
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
+					cachedSpinnerFrame = options.spinnerFrame;
 					cachedPreviewWindow = previewWindow;
+					cachedBorderStyle = borderStyle;
 					cachedLines = framed;
 					return framed;
 				},
@@ -1483,7 +1516,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedExpanded = undefined;
 					cachedRawOutput = undefined;
 					cachedIsPartial = undefined;
+					cachedSpinnerFrame = undefined;
 					cachedPreviewWindow = undefined;
+					cachedBorderStyle = undefined;
 				},
 			});
 		},

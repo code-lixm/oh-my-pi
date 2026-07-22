@@ -121,8 +121,10 @@ Core methods:
 - `getCommands`
 - `getSessionName`, `setSessionName`
 - `setModel`, `getThinkingLevel`, `setThinkingLevel`
-- `registerProvider`
+- `registerProvider`, `registerUsageProvider`
 - `events` (shared event bus)
+
+`registerUsageProvider(name, config)` installs a normalized usage adapter for the same provider ID used by models and credentials. `config` supplies `fetchUsage(params, ctx)` plus optional `supports`, `parseRateLimitHeaders`, and `validatesCredentials` members; the host owns `id`, validates every returned `UsageReport`, strips provider-specific `raw` data at the `AuthStorage` boundary, and cleanly removes registrations when an extension disappears or fails to load. Amounts may use percentages, tokens, requests, time, bytes, USD, or `unit: "currency"` with an ISO 4217 `currency` code. The adapter feeds `omp usage`, the shared usage cache/history, and the status-line `usage` segment. Credential ranking consumes its reports only when that provider already has a registered ranking strategy.
 
 In interactive mode, `input` handlers run before the built-in first-message auto-title check. Extensions that call `await pi.setSessionName(...)` from `input` can set the persisted session name and prevent the default auto-generated title from running for that session.
 

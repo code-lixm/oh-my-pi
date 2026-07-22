@@ -722,15 +722,43 @@ export async function loadSessionExtensions(
 }
 
 /**
- * Load discovered/configured extensions and register their providers into
- * `modelRegistry`, then discover the dynamic provider catalogs. One-shot CLIs
- * (`omp bench`, dry-balance) build a bare {@link ModelRegistry} that only knows
- * built-in catalog providers; without this, providers contributed by an
- * extension (e.g. a custom OpenAI-compatible provider under
- * `~/.omp/agent/extensions/`) never reach model resolution. Mirrors the
- * session / `omp models` path: drain the queued provider registrations, then
- * `refreshRuntimeProviders` so dynamically-discovered models exist before
- * selectors are resolved.
+ * Apply extension-contributed provider registrations to the shared runtime.
+ * Model providers live on `modelRegistry`; usage adapters live on the same
+ * `AuthStorage` instance underneath it so fetches see the extension layer too.
+ */
+function syncExtensionProviderRegistrations(
+	modelRegistry: ModelRegistry,
+	extensionsResult: LoadExtensionsResult,
+): void {
+	const activeSources = extensionsResult.extensions.map(extension => extension.path);
+	const activeSourceSet = new Set(activeSources);
+	modelRegistry.syncExtensionSources(activeSources);
+	for (const sourceId of activeSourceSet) {
+		modelRegistry.clearSourceRegistrations(sourceId);
+	}
+	modelRegistry.authStorage.syncUsageProviders(
+		extensionsResult.runtime.pendingUsageProviderRegistrations.filter(registration =>
+			activeSourceSet.has(registration.sourceId),
+		),
+	);
+	extensionsResult.runtime.pendingUsageProviderRegistrations = [];
+	for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
+		if (!activeSourceSet.has(sourceId)) continue;
+		modelRegistry.registerProvider(name, config, sourceId);
+	}
+	extensionsResult.runtime.pendingProviderRegistrations = [];
+}
+
+/**
+ * Load discovered/configured extensions and register their providers into the
+ * shared `modelRegistry`/`authStorage`, then discover the dynamic provider
+ * catalogs. One-shot CLIs (`omp bench`, dry-balance, usage) build a bare
+ * {@link ModelRegistry} that only knows built-in providers; without this,
+ * providers or usage adapters contributed by an extension (e.g. a custom
+ * OpenAI-compatible provider under `~/.omp/agent/extensions/`) never reach
+ * model resolution or `fetchUsageReports()`. Mirrors the session path: drain
+ * the queued registrations, then `refreshRuntimeProviders` so
+ * dynamically-discovered models exist before selectors are resolved.
  */
 export async function loadCliExtensionProviders(
 	modelRegistry: ModelRegistry,
@@ -740,15 +768,7 @@ export async function loadCliExtensionProviders(
 ): Promise<void> {
 	const eventBus = new EventBus();
 	const extensionsResult = await loadSessionExtensions(options, cwd, settings, eventBus);
-	const activeSources = extensionsResult.extensions.map(extension => extension.path);
-	modelRegistry.syncExtensionSources(activeSources);
-	for (const sourceId of new Set(activeSources)) {
-		modelRegistry.clearSourceRegistrations(sourceId);
-	}
-	for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-		modelRegistry.registerProvider(name, config, sourceId);
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
+	syncExtensionProviderRegistrations(modelRegistry, extensionsResult);
 	await modelRegistry.refreshRuntimeProviders();
 }
 
@@ -2003,20 +2023,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 		}
 
-		// Process provider registrations queued during extension loading.
-		// This must happen before the runner is created so that models registered by
-		// extensions are available for model selection on session resume / fallback.
-		const activeExtensionSources = extensionsResult.extensions.map(extension => extension.path);
-		modelRegistry.syncExtensionSources(activeExtensionSources);
-		for (const sourceId of new Set(activeExtensionSources)) {
-			modelRegistry.clearSourceRegistrations(sourceId);
-		}
-		if (extensionsResult.runtime.pendingProviderRegistrations.length > 0) {
-			for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-				modelRegistry.registerProvider(name, config, sourceId);
-			}
-			extensionsResult.runtime.pendingProviderRegistrations = [];
-		}
+		// Process model and usage provider registrations queued during extension
+		// loading. This must happen before the runner is created so that
+		// extension-contributed models and usage adapters are visible during
+		// session restore / fallback.
+		syncExtensionProviderRegistrations(modelRegistry, extensionsResult);
 		// Hydrate cached runtime (extension) provider catalogs before model
 		// resolution. Dynamic-only providers have no synchronous registration side
 		// effect, so a cold --model/provider resume must see the same fresh SQLite

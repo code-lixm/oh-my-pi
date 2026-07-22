@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import * as syncApi from "../src/client/api.ts";
 import { SyncButton } from "../src/client/app/SyncButton.tsx";
 import { CATALOGS, t, tp } from "../src/client/locale/catalog.ts";
+import { OverviewRoute } from "../src/client/routes/OverviewRoute";
 import type { Locale } from "../src/client/useLocale.ts";
 import { DEFAULT_LOCALE, getLocale, SUPPORTED_LOCALES, setLocale, useLocale } from "../src/client/useLocale.ts";
 
@@ -242,6 +243,7 @@ describe("stats client locale resolution", () => {
 
 describe("stats client locale runtime behavior", () => {
 	let dom: DomHarness;
+	let testLocale: Locale;
 
 	beforeAll(() => {
 		dom = installDom("en-US");
@@ -254,12 +256,14 @@ describe("stats client locale runtime behavior", () => {
 	});
 
 	beforeEach(() => {
+		testLocale = getLocale();
 		resetRuntimeLocale("en", dom.localStorage);
 		dom.document.body.innerHTML = "";
 	});
 
 	afterEach(async () => {
 		await unmountActiveRoot();
+		setLocale(testLocale);
 		dom.document.body.innerHTML = "";
 		vi.restoreAllMocks();
 	});
@@ -346,5 +350,40 @@ describe("stats client locale runtime behavior", () => {
 			setLocale("zh-CN");
 		});
 		expect(container.textContent).toContain("同步失败：provider/raw:42");
+	});
+	it("renders the OverviewRoute token-usage panel with exact English and Chinese copy without fetching", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		fetchSpy.mockImplementation((async () => {
+			throw new Error("unexpected network call");
+		}) as typeof fetch);
+
+		const container = await mount(
+			createElement(OverviewRoute, { active: false, range: "24h", refreshTrigger: 0, onRequestClick: () => {} }),
+			dom.document,
+		);
+
+		// English
+		const panels = [...container.querySelectorAll(".stats-panel")];
+		const panel = panels.find(
+			c => c.querySelector(".stats-panel-title")?.textContent?.trim() === "Conversation Tokens by Agent",
+		);
+		expect(panel?.querySelector(".stats-panel-subtitle")?.textContent?.trim()).toBe(
+			"Uncached input + cache reads + cache writes + output, grouped by agent type",
+		);
+		expect(fetchSpy).not.toHaveBeenCalled();
+
+		// Switch to Chinese and re-check the same panel
+		await act(async () => {
+			setLocale("zh-CN");
+		});
+
+		const zhPanels = [...container.querySelectorAll(".stats-panel")];
+		const zhPanel = zhPanels.find(
+			c => c.querySelector(".stats-panel-title")?.textContent?.trim() === "按 Agent 划分的对话 Token",
+		);
+		expect(zhPanel?.querySelector(".stats-panel-subtitle")?.textContent?.trim()).toBe(
+			"未缓存输入 + 缓存读取 + 缓存写入 + 输出，按 Agent 类型分组",
+		);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });

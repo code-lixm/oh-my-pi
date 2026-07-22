@@ -125,12 +125,12 @@ describe("output-block border style", () => {
 
 		expect(lines).toHaveLength(4);
 		expect(lines.every(line => line.length === WIDTH)).toBe(true);
-		expect(lines[0]!.startsWith(`${darkTheme.boxRound.topLeft}${h.repeat(3)} Tool `)).toBe(true);
-		expect(lines[0]!.endsWith(darkTheme.boxRound.topRight)).toBe(true);
+		expect(lines[0]!).toBe(
+			`${darkTheme.boxRound.topLeft}${h} Tool ${h.repeat(WIDTH - 9)}${darkTheme.boxRound.topRight}`,
+		);
 		expect(lines[1]!).toBe(`${v} ${"X".repeat(contentWidth)}${v}`);
 		expect(lines[2]!).toBe(`${v} XX${" ".repeat(contentWidth - 2)}${v}`);
-		expect(lines[3]!.startsWith(`${darkTheme.boxRound.bottomLeft}${h.repeat(3)}`)).toBe(true);
-		expect(lines[3]!.endsWith(darkTheme.boxRound.bottomRight)).toBe(true);
+		expect(lines[3]!).toBe(`${darkTheme.boxRound.bottomLeft}${h.repeat(WIDTH - 2)}${darkTheme.boxRound.bottomRight}`);
 	});
 
 	it("renders horizontal blocks with only horizontal bars and frees both side-border columns to content", () => {
@@ -150,16 +150,11 @@ describe("output-block border style", () => {
 
 		expect(horizontal).toHaveLength(5);
 		expect(horizontal.every(line => line.length === WIDTH)).toBe(true);
-		expect(horizontal[0]!).toBe(`${h.repeat(3)} Tool ${h.repeat(WIDTH - 9)}`);
+		expect(horizontal[0]!).toBe(`${h} Tool ${h.repeat(WIDTH - 7)}`);
 		expect(horizontal[1]!).toBe(` ${payload}`);
-		expect(horizontal[2]!).toBe(`${h.repeat(3)} More ${h.repeat(WIDTH - 9)}`);
+		expect(horizontal[2]!).toBe(`${h} More ${h.repeat(WIDTH - 7)}`);
 		expect(horizontal[3]!).toBe(` ${tail}${" ".repeat(WIDTH - tail.length - 1)}`);
 		expect(horizontal[4]!).toBe(h.repeat(WIDTH));
-		expect(horizontal.join("\n").includes(v)).toBe(false);
-		expect(horizontal.join("\n").includes(darkTheme.boxRound.topLeft)).toBe(false);
-		expect(horizontal.join("\n").includes(darkTheme.boxRound.topRight)).toBe(false);
-		expect(horizontal.join("\n").includes(darkTheme.boxRound.bottomLeft)).toBe(false);
-		expect(horizontal.join("\n").includes(darkTheme.boxRound.bottomRight)).toBe(false);
 
 		expect(outputBlockContentWidth(WIDTH, undefined, "full")).toBe(WIDTH - 3);
 		const full = plain(
@@ -279,9 +274,9 @@ describe("output-block border style", () => {
 		expectBorderMutedTopFrame(bashLines);
 		const bashPlain = Bun.stripANSI(bashLines.join("\n"));
 		expect(bashPlain).toContain("$ printf 'ok'");
-		expect(bashPlain).toContain("Output");
+		// New contract: no labeled divider between command and output
+		expect(bashPlain).not.toContain("Output:");
 		expect(bashPlain).toContain("ok");
-
 		const writeLines = renderToolResult(
 			"write",
 			{ path: "src/example.ts", content: "export const answer = 42;\n" },
@@ -295,8 +290,8 @@ describe("output-block border style", () => {
 	});
 
 	it.each([
-		{ name: "pending defaults on", state: "pending", expectedBg: "toolPendingBg" },
-		{ name: "running defaults on", state: "running", expectedBg: "toolPendingBg" },
+		{ name: "pending emits no background", state: "pending", expectedBg: null },
+		{ name: "running emits no background", state: "running", expectedBg: null },
 		{ name: "error defaults on", state: "error", expectedBg: "toolErrorBg" },
 		{ name: "success defaults off", state: "success", expectedBg: null },
 		{ name: "warning defaults off", state: "warning", expectedBg: null },

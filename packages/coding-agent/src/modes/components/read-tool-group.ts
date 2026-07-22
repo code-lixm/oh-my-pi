@@ -6,7 +6,13 @@ import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
 import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
-import { fileHyperlink, renderCodeCell, renderStatusLine, tryResolveInternalUrlSync } from "../../tui";
+import {
+	fileHyperlink,
+	getOutputBlockBorderStyle,
+	renderCodeCell,
+	renderStatusLine,
+	tryResolveInternalUrlSync,
+} from "../../tui";
 import type { ToolExecutionHandle } from "./tool-execution";
 
 /**
@@ -318,7 +324,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
 		this.#showContentPreview = options.showContentPreview ?? false;
-		this.#text = new Text("", 1, 0);
+		this.#text = new Text("", getOutputBlockBorderStyle() === "none" ? 0 : 1, 0);
 		this.addChild(this.#text);
 		this.#updateDisplay();
 	}
@@ -424,7 +430,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 		// Clear previous children and rebuild the summary and preview blocks.
 		this.clear();
-		this.#text = new Text("", 1, 0);
+		this.#text = new Text("", getOutputBlockBorderStyle() === "none" ? 0 : 1, 0);
 
 		if (displayRows.length === 0) {
 			this.#text.setText(

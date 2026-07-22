@@ -550,7 +550,12 @@ export const hubToolRenderer = {
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: HubDetails; isError?: boolean },
+		result: {
+			content: Array<{ type: string; text?: string }>;
+			details?: HubDetails;
+			isError?: boolean;
+			useless?: boolean;
+		},
 		options: RenderResultOptions,
 		uiTheme: Theme,
 		args?: HubRenderArgs,

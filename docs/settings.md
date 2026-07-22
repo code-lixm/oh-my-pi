@@ -580,6 +580,17 @@ statusLine:
   separator: powerline-thin
   transparent: false
   showHookStatus: true
+  segmentOptions:
+    path:
+      basenameOnly: true      # show only the final directory name
+    usage:
+      providers: [minimax, opencode-go] # omit to follow the active model provider
+      style: battery              # text or compact battery bars
+      latestOnly: true            # shortest quota window per provider/account/model
+      batteryWidth: 5
+      maxItems: 2
+      maxWidth: 52
+      showResetTime: false
 
 terminal:
   showImages: true
@@ -607,7 +618,7 @@ tui:
 | `images.blockImages` | boolean | `false` | Never send images to providers. |
 | `tui.hyperlinks` | enum | `auto` | `off`, `auto`, `always`. |
 
-For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
+For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`. Add `usage` to either segment list to show normalized provider quotas and balances. Usage options support `providers` (ordered provider IDs; omit this option to follow only the active model provider), `style` (`text` or `battery`), `latestOnly` (keep the shortest-duration quota per provider/account/model), `batteryWidth`, `maxItems`, `maxWidth`, and `showResetTime`. Battery mode labels the quota with the active model ID and renders remaining quota as a compact colored block bar and value without window/reset labels. Path options support `basenameOnly` (last directory name only), `abbreviate`, `maxLength`, and `stripWorkPrefix`.
 
 ### Interaction
 

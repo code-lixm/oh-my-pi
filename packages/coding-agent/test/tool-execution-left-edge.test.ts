@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 const WIDTH = 140;
@@ -24,6 +25,11 @@ function leadingSpaces(line: string): number {
 function expectSingleOuterPadding(lines: readonly string[], label: string): void {
 	const firstLine = firstNonEmptyLine(lines);
 	expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(1);
+}
+
+function expectNoOuterPadding(lines: readonly string[], label: string): void {
+	const firstLine = firstNonEmptyLine(lines);
+	expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(0);
 }
 
 // Inline args — no gallery-cli import chain, no inspect-image-renderer.
@@ -196,6 +202,36 @@ describe("tool execution left-edge alignment", () => {
 		expect(leadingSpaces(readSuccess), "read success gutter").toBe(grepCol);
 		expectSingleOuterPadding(read.pending, "read pending");
 		expectSingleOuterPadding(read.success, "read success");
+	});
+
+	it("removes the outer gutter from unframed search blocks and ReadToolGroup when border style is none without shifting framed bash", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+
+			for (const toolName of ["grep", "glob", "ast_grep"] as const) {
+				const { pending, success } = renderToolLifecycle(toolName);
+				expectNoOuterPadding(pending, `${toolName} pending`);
+				expectNoOuterPadding(success, `${toolName} success`);
+			}
+
+			const read = renderReadGroupLifecycle();
+			expectNoOuterPadding(read.pending, "read pending");
+			expectNoOuterPadding(read.success, "read success");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { success: bashSuccess } = renderToolLifecycle("bash");
+		const firstLine = firstNonEmptyLine(bashSuccess);
+		expect(leadingSpaces(firstLine), `bash success: ${JSON.stringify(firstLine)}`).toBe(0);
+		expect(firstLine.startsWith(uiTheme!.boxRound.topLeft), `bash success: ${JSON.stringify(firstLine)}`).toBe(true);
 	});
 
 	// ─── framed built-in ─────────────────────────────────────────────────────

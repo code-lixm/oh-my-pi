@@ -1,7 +1,7 @@
 import { type Component, Container, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
-import { bodyLines, ircGlyph, messageAge } from "../../tools/hub/messaging";
+import { bodyLines, ircGlyph, isUselessEmptyWait, messageAge } from "../../tools/hub/messaging";
 import type { CoordinationDetails, HubRenderArgs } from "../../tools/hub/types";
 import { replaceTabs } from "../../tools/render-utils";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
@@ -12,6 +12,8 @@ type HubActivityResult = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: unknown;
 	isError?: boolean;
+	/** Executor marks a result contextually useless (e.g. clean wait timeout). */
+	useless?: boolean;
 };
 
 type HubToolActivityEntry = {
@@ -51,9 +53,9 @@ function isWaitingPollEntry(entry: HubToolActivityEntry): boolean {
 }
 
 function isEmptyMessageWaitResult(entry: HubToolActivityEntry, result: HubActivityResult): boolean {
-	if (entry.args.op !== "wait" || Array.isArray(entry.args.ids) || result.isError) return false;
-	const details = result.details as Partial<CoordinationDetails> | undefined;
-	return details?.waited === null;
+	if (!result) return false;
+	const details = (result.details ?? {}) as Partial<CoordinationDetails>;
+	return isUselessEmptyWait(result, details, entry.args);
 }
 
 function receiptStatus(receipts: readonly IrcDeliveryReceipt[], isError: boolean): { color: ThemeColor; text: string } {
@@ -351,12 +353,13 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const lines = activityBodyLines(head, body, expanded, "dim");
 		const waited = details.waited;
 		if (waited) lines.push(...this.#receivedMessageLines(waited, expanded, entry.messageAges?.[0]));
-		else if (waited === null) lines.push(`  ${theme.fg("warning", tSettingsUi("no reply"))}`);
+		else if (waited === null && entry.result?.isError)
+			lines.push(`  ${theme.fg("warning", tSettingsUi("no reply"))}`);
 		return lines;
 	}
 
 	#waitLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
-		if (Array.isArray(entry.args.ids)) return this.#jobWaitLines(entry, expanded);
+		if (entry.args.ids && entry.args.ids.length > 0) return this.#jobWaitLines(entry, expanded);
 		const details = (entry.result?.details ?? {}) as Partial<CoordinationDetails>;
 		if (!entry.result) {
 			const peer = entry.args.from?.trim() || tSettingsUi("anyone");
@@ -365,8 +368,12 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			];
 		}
 		if (details.waited) return this.#receivedMessageLines(details.waited, expanded, entry.messageAges?.[0]);
-		const color: ThemeColor = entry.result.isError ? "error" : "warning";
-		return [`  ${theme.fg(color, entry.result.isError ? tSettingsUi("failed") : tSettingsUi("no reply"))}`];
+		// Standalone-card suppression: a useless empty wait drops the entire
+		// entry on next rebuild. Otherwise any successful non-error timeout
+		// carries no actionable "no reply" signal (matches #sendLines).
+		if (isUselessEmptyWait(entry.result, details, entry.args)) return [];
+		if (!entry.result.isError) return [];
+		return [`  ${theme.fg("error", tSettingsUi("failed"))}`];
 	}
 
 	#inboxLines(entry: HubToolActivityEntry, expanded: boolean): string[] {

@@ -36,7 +36,9 @@ import type {
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
+	RuntimeUsageProviderRegistration,
 	ToolDefinition,
+	UsageProviderConfig,
 } from "./types";
 
 installLegacyPiSpecifierShim();
@@ -62,6 +64,7 @@ export class ExtensionRuntimeNotInitializedError extends Error {
 export class ExtensionRuntime implements IExtensionRuntime {
 	flagValues = new Map<string, boolean | string>();
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }> = [];
+	pendingUsageProviderRegistrations: RuntimeUsageProviderRegistration[] = [];
 
 	sendMessage(): void {
 		throw new ExtensionRuntimeNotInitializedError();
@@ -132,7 +135,7 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		config: ProviderConfig;
 		sourceId: string;
 	}> = [];
-
+	readonly pendingUsageProviderRegistrations: RuntimeUsageProviderRegistration[] = [];
 	constructor(
 		public readonly pi: typeof PiCodingAgent,
 		private readonly extension: Extension,
@@ -263,6 +266,10 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	registerProvider(name: string, config: ProviderConfig): void {
 		this.runtime.pendingProviderRegistrations.push({ name, config, sourceId: this.extension.path });
 	}
+
+	registerUsageProvider(name: string, config: UsageProviderConfig): void {
+		this.runtime.pendingUsageProviderRegistrations.push({ name, config, sourceId: this.extension.path });
+	}
 }
 
 /**
@@ -289,6 +296,8 @@ async function loadExtension(
 	runtime: IExtensionRuntime,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
+	const providerRegistrationCount = runtime.pendingProviderRegistrations.length;
+	const usageProviderRegistrationCount = runtime.pendingUsageProviderRegistrations.length;
 	try {
 		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
@@ -308,6 +317,8 @@ async function loadExtension(
 
 		return { extension, error: null };
 	} catch (err) {
+		runtime.pendingProviderRegistrations.splice(providerRegistrationCount);
+		runtime.pendingUsageProviderRegistrations.splice(usageProviderRegistrationCount);
 		const message = err instanceof Error ? err.message : String(err);
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
@@ -323,10 +334,18 @@ export async function loadExtensionFromFactory(
 	runtime: IExtensionRuntime,
 	name = "<inline>",
 ): Promise<Extension> {
+	const providerRegistrationCount = runtime.pendingProviderRegistrations.length;
+	const usageProviderRegistrationCount = runtime.pendingUsageProviderRegistrations.length;
 	const extension = createExtension(name, name);
 	const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
-	await factory(api);
-	return extension;
+	try {
+		await factory(api);
+		return extension;
+	} catch (error) {
+		runtime.pendingProviderRegistrations.splice(providerRegistrationCount);
+		runtime.pendingUsageProviderRegistrations.splice(usageProviderRegistrationCount);
+		throw error;
+	}
 }
 
 /**

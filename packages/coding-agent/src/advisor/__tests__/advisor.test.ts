@@ -16,6 +16,7 @@ import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
 import { YieldQueue } from "../../session/yield-queue";
 import { BUILTIN_TOOL_NAMES } from "../../tools/builtin-names";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "../../tui/output-block";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	AdviseTool,
@@ -4235,6 +4236,34 @@ describe("advisor", () => {
 			).render(7);
 
 			expect(lines.every(line => visibleWidth(line) <= 7)).toBe(true);
+		});
+
+		it("follows the global borderless style without rounded outer corners", async () => {
+			const previousBorderStyle = getOutputBlockBorderStyle();
+
+			try {
+				setOutputBlockBorderStyle("none");
+				const uiTheme = await getThemeByName("dark");
+				if (!uiTheme) throw new Error("theme unavailable");
+				const note = "watch the empty case";
+				const plainLines = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, uiTheme)
+					.render(60)
+					.map(line => stripAnsi(line).trimEnd());
+				const text = plainLines.join("\n");
+
+				expect(text).toContain("Advisor");
+				expect(text).toContain(note);
+				for (const corner of [
+					uiTheme.symbol("boxRound.topLeft"),
+					uiTheme.symbol("boxRound.topRight"),
+					uiTheme.symbol("boxRound.bottomLeft"),
+					uiTheme.symbol("boxRound.bottomRight"),
+				]) {
+					expect(text).not.toContain(corner);
+				}
+			} finally {
+				setOutputBlockBorderStyle(previousBorderStyle);
+			}
 		});
 
 		it("single-note cards contain zero tee-row separators", async () => {

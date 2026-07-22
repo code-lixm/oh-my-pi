@@ -68,7 +68,9 @@ import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import { clearSettingDefsCache, getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
 import { SnapcompactShapePreview } from "./snapcompact-shape-preview";
+import { readCustomStatusLinePresets } from "./status-line/custom-presets";
 import { getPreset } from "./status-line/presets";
+import type { StatusLineSegmentOptions } from "./status-line/types";
 
 /**
  * A submenu component for selecting from a list of options.
@@ -419,9 +421,11 @@ export interface SettingsRuntimeContext {
 /** Status line settings subset for preview */
 export interface StatusLinePreviewSettings {
 	preset?: StatusLinePreset;
+	customPreset?: string | null;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
+	segmentOptions?: StatusLineSegmentOptions;
 	sessionAccent?: boolean;
 	transparent?: boolean;
 	compactThinkingLevel?: boolean;
@@ -941,10 +945,10 @@ export class SettingsSelectorComponent implements Component {
 		done: (value?: string) => void,
 	): Container {
 		let options = def.options;
+		let customPresets = readCustomStatusLinePresets(undefined);
 
-		// Special case: inject runtime options for thinking level
+		// Special case: inject runtime options for thinking level, themes, and named custom status lines.
 		if (def.path === "defaultThinkingLevel") {
-			// Prepend `auto`; the rest are the model's runtime-supported efforts.
 			const levels: ConfiguredThinkingLevel[] = [AUTO_THINKING, ...this.context.availableThinkingLevels];
 			options = levels.map(level => {
 				const baseOpt = options.find(o => o.value === level);
@@ -952,6 +956,16 @@ export class SettingsSelectorComponent implements Component {
 			});
 		} else if (def.path === "theme.dark" || def.path === "theme.light") {
 			options = this.context.availableThemes.map(t => ({ value: t, label: t }));
+		} else if (def.path === "statusLine.customPreset") {
+			customPresets = readCustomStatusLinePresets(settings.get("statusLine.customPresets"));
+			options = [
+				{ value: "default", label: tSettingsUi("Default") },
+				...Object.entries(customPresets).map(([value, preset]) => ({
+					value,
+					label: preset.label,
+					description: preset.description,
+				})),
+			];
 		}
 
 		// Preview handlers
@@ -967,26 +981,46 @@ export class SettingsSelectorComponent implements Component {
 			onPreviewCancel = () => {
 				this.callbacks.onThemePreview?.(activeThemeBeforePreview);
 			};
+		} else if (def.path === "statusLine.customPreset") {
+			onPreview = value => {
+				const preset = customPresets[value];
+				this.callbacks.onStatusLinePreview?.({
+					preset: "custom",
+					customPreset: null,
+					leftSegments: preset?.leftSegments ?? settings.get("statusLine.leftSegments"),
+					rightSegments: preset?.rightSegments ?? settings.get("statusLine.rightSegments"),
+					separator: preset?.separator ?? settings.get("statusLine.separator"),
+					segmentOptions: preset?.segmentOptions ?? settings.get("statusLine.segmentOptions"),
+				});
+			};
+			onPreviewCancel = () => {
+				this.callbacks.onStatusLinePreview?.({ customPreset: settings.get("statusLine.customPreset") });
+			};
 		} else if (def.path === "statusLine.preset") {
 			onPreview = value => {
-				const presetDef = getPreset(
-					value as "default" | "minimal" | "compact" | "full" | "nerd" | "ascii" | "custom",
-				);
+				const preset = value as StatusLinePreset;
+				const presetDef = getPreset(preset);
+				const custom = preset === "custom";
 				this.callbacks.onStatusLinePreview?.({
-					preset: value as StatusLinePreset,
-					leftSegments: presetDef.leftSegments,
-					rightSegments: presetDef.rightSegments,
-					separator: presetDef.separator,
+					preset,
+					customPreset: settings.get("statusLine.customPreset"),
+					leftSegments: custom ? settings.get("statusLine.leftSegments") : presetDef.leftSegments,
+					rightSegments: custom ? settings.get("statusLine.rightSegments") : presetDef.rightSegments,
+					separator: custom ? settings.get("statusLine.separator") : presetDef.separator,
+					segmentOptions: settings.get("statusLine.segmentOptions"),
 				});
 			};
 			onPreviewCancel = () => {
 				const currentPreset = settings.get("statusLine.preset");
 				const presetDef = getPreset(currentPreset);
+				const custom = currentPreset === "custom";
 				this.callbacks.onStatusLinePreview?.({
 					preset: currentPreset,
-					leftSegments: presetDef.leftSegments,
-					rightSegments: presetDef.rightSegments,
-					separator: presetDef.separator,
+					customPreset: settings.get("statusLine.customPreset"),
+					leftSegments: custom ? settings.get("statusLine.leftSegments") : presetDef.leftSegments,
+					rightSegments: custom ? settings.get("statusLine.rightSegments") : presetDef.rightSegments,
+					separator: custom ? settings.get("statusLine.separator") : presetDef.separator,
+					segmentOptions: settings.get("statusLine.segmentOptions"),
 				});
 			};
 		} else if (def.path === "statusLine.separator") {
@@ -1237,9 +1271,11 @@ export class SettingsSelectorComponent implements Component {
 	#triggerStatusLinePreview(): void {
 		const statusLineSettings: StatusLinePreviewSettings = {
 			preset: settings.get("statusLine.preset"),
+			customPreset: settings.get("statusLine.customPreset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
 			rightSegments: settings.get("statusLine.rightSegments"),
 			separator: settings.get("statusLine.separator"),
+			segmentOptions: settings.get("statusLine.segmentOptions"),
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
 		};

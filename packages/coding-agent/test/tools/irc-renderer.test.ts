@@ -168,7 +168,7 @@ describe("hubToolRenderer send", () => {
 		);
 	});
 
-	it("flags an awaited send whose reply timed out", async () => {
+	it("keeps delivery receipt and outbound body visible when an awaited send gets no reply", async () => {
 		const uiTheme = await theme();
 		const rendered = lines(
 			hubToolRenderer.renderResult(
@@ -187,8 +187,11 @@ describe("hubToolRenderer send", () => {
 				{ op: "send", to: "AuthLoader", message: "ping", await: true },
 			),
 		);
-		expect(rendered[0]).toContain("no reply");
-		expect(rendered.some(line => line.includes("No reply yet"))).toBe(true);
+		expect(rendered[0]).toContain("AuthLoader");
+		expect(rendered[0]).toContain("injected");
+		expect(rendered.some(line => line.includes("ping"))).toBe(true);
+		expect(rendered.some(line => line.includes("no reply"))).toBe(false);
+		expect(rendered.some(line => line.includes("No reply yet"))).toBe(false);
 	});
 
 	it("renders a pending send in a rounded frame with the draft body inside and no pending background", async () => {
@@ -303,22 +306,20 @@ describe("hubToolRenderer wait", () => {
 		expect(bodyLine).toContain(uiTheme.boxRound.vertical);
 	});
 
-	it("marks a timed-out wait without inventing a consumed message body", async () => {
+	it("suppresses a successful semantic-empty wait result entirely", async () => {
 		const uiTheme = await theme();
-		const rendered = lines(
-			hubToolRenderer.renderResult(
-				{
-					content: [{ type: "text", text: "No message from AuthLoader within 2m." }],
-					details: { op: "wait", from: "Main", waited: null } satisfies CoordinationDetails,
-				},
-				{ expanded: false, isPartial: false },
-				uiTheme,
-				{ op: "wait", from: "AuthLoader" },
-			),
+		const component = hubToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "No message from AuthLoader within 2m." }],
+				details: { op: "wait", from: "Main", waited: null } satisfies CoordinationDetails,
+				isError: false,
+				useless: true,
+			},
+			{ expanded: false, isPartial: false },
+			uiTheme,
+			{ op: "wait", from: "AuthLoader" },
 		);
-		expect(rendered[0]).toContain("timed out");
-		expect(rendered.some(line => line.includes("No message from AuthLoader within 2m."))).toBe(true);
-		expect(rendered.some(line => line.includes("session-store rename is merged."))).toBe(false);
+		expect(component.render(80)).toEqual([]);
 	});
 
 	it("localizes zh-CN header and glyph spacing for wait", async () => {

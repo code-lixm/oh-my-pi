@@ -10,7 +10,14 @@ import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/r
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
-import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
+import type {
+	RenderedSegment,
+	SegmentContext,
+	StatusLineSegment,
+	StatusLineSegmentId,
+	StatusLineSegmentOptions,
+	StatusLineUsageItem,
+} from "./types";
 
 export type { SegmentContext } from "./types";
 
@@ -284,23 +291,24 @@ const pathSegment: StatusLineSegment = {
 		if (stripPrefix && ctx.worktree) {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
-			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			const displayLabel = opts.basenameOnly ? path.basename(label) : label;
+			const content = withIcon(theme.icon.worktree, clampPathLength(displayLabel, opts.maxLength ?? 40));
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
 		const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 		const { scratch, relative } = classifyProjectDir(projectDir);
-		let pwd = projectDir;
+		let pwd = opts.basenameOnly ? path.basename(path.normalize(projectDir)) || projectDir : projectDir;
 
-		if (stripPrefix) {
+		if (!opts.basenameOnly && stripPrefix) {
 			if (scratch) {
 				if (relative) pwd = relative;
 			} else {
 				pwd = stripDisplayRoot(pwd);
 			}
 		}
-		const repoSuffix = ctx.activeRepo ? ` ↳ ${ctx.activeRepo.relativeRepoRoot}` : "";
-		if (opts.abbreviate !== false) {
+		const repoSuffix = !opts.basenameOnly && ctx.activeRepo ? ` ↳ ${ctx.activeRepo.relativeRepoRoot}` : "";
+		if (!opts.basenameOnly && opts.abbreviate !== false) {
 			pwd = shortenPath(pwd);
 		}
 
@@ -614,59 +622,183 @@ const collabSegment: StatusLineSegment = {
 	},
 };
 
-function pickUsageColor(percent: number): "muted" | "warning" | "error" {
-	if (percent >= 80) return "error";
-	if (percent >= 50) return "warning";
+function pickUsageColor(item: StatusLineUsageItem): "muted" | "warning" | "error" {
+	if (item.status === "exhausted" || (item.usedFraction !== undefined && item.usedFraction >= 1)) return "error";
+	if (item.status === "warning" || (item.usedFraction !== undefined && item.usedFraction >= 0.8)) return "warning";
 	return "muted";
 }
 
-function formatUsageReset(value: number, unit: "m" | "h"): string {
-	if (unit === "m") {
-		// total minutes (5h window: max 300)
-		if (value < 60) return `${value}m`;
-		const hours = Math.floor(value / 60);
-		const mins = value % 60;
-		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+function formatUsageDuration(durationMs: number): string {
+	const minutes = Math.max(0, Math.round(durationMs / 60_000));
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+	const days = Math.floor(hours / 24);
+	const remainingHours = hours % 24;
+	return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+function usageWindowLabel(item: StatusLineUsageItem): string {
+	if (item.durationMs !== undefined && item.durationMs > 0) return formatUsageDuration(item.durationMs);
+	return truncateToWidth(sanitizeStatusText(item.label), TRUNCATE_LENGTHS.SHORT);
+}
+
+const CURRENCY_SYMBOLS: Record<string, string> = { CNY: "¥", EUR: "€", GBP: "£", JPY: "¥", USD: "$" };
+
+function formatCurrencyAmount(value: number, currency: string | undefined): string {
+	const code = sanitizeStatusText(currency?.trim().toUpperCase() || "currency");
+	const symbol = CURRENCY_SYMBOLS[code];
+	const digits = code === "JPY" ? 0 : 2;
+	return symbol ? `${symbol}${value.toFixed(digits)}` : `${code} ${value.toFixed(digits)}`;
+}
+
+function formatUsageValue(item: StatusLineUsageItem): string {
+	const { amount } = item;
+	if (amount.unit === "usd" || amount.unit === "currency") {
+		const remaining =
+			amount.remaining ??
+			(amount.limit !== undefined && amount.used !== undefined ? amount.limit - amount.used : undefined);
+		const value = remaining ?? amount.limit ?? amount.used;
+		return value === undefined ? "?" : formatCurrencyAmount(value, amount.unit === "usd" ? "USD" : amount.currency);
 	}
-	// total hours (7d window: max 168)
-	if (value < 24) return `${value}h`;
-	const days = Math.floor(value / 24);
-	const hours = value % 24;
-	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+	if (item.usedFraction !== undefined) return `${Math.round(item.usedFraction * 100)}%`;
+	const suffixByUnit: Partial<Record<typeof amount.unit, string>> = {
+		bytes: "B",
+		minutes: "min",
+		requests: "req",
+		tokens: "tok",
+	};
+	const suffix = suffixByUnit[amount.unit];
+	const withSuffix = (value: number): string => `${formatNumber(value)}${suffix ? ` ${suffix}` : ""}`;
+	if (amount.remaining !== undefined) return `${withSuffix(amount.remaining)} left`;
+	if (amount.used !== undefined && amount.limit !== undefined)
+		return `${withSuffix(amount.used)}/${withSuffix(amount.limit)}`;
+	if (amount.used !== undefined) return withSuffix(amount.used);
+	if (amount.limit !== undefined) return withSuffix(amount.limit);
+	return "?";
+}
+
+function latestUsageItems(items: StatusLineUsageItem[]): StatusLineUsageItem[] {
+	const latestByScope = new Map<string, StatusLineUsageItem>();
+	for (const item of items) {
+		const scope = `${item.provider}\0${item.accountLabel ?? ""}\0${item.modelId ?? ""}\0${item.tier ?? ""}`;
+		const current = latestByScope.get(scope);
+		const itemDuration = item.durationMs ?? Number.MAX_SAFE_INTEGER;
+		const currentDuration = current?.durationMs ?? Number.MAX_SAFE_INTEGER;
+		const itemReset = item.resetsAt ?? Number.MAX_SAFE_INTEGER;
+		const currentReset = current?.resetsAt ?? Number.MAX_SAFE_INTEGER;
+		if (
+			!current ||
+			itemDuration < currentDuration ||
+			(itemDuration === currentDuration && itemReset < currentReset)
+		) {
+			latestByScope.set(scope, item);
+		}
+	}
+	return [...latestByScope.values()];
+}
+const BATTERY_PARTIAL_BLOCKS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
+
+const BATTERY_SEGMENT = "▬";
+
+function usageBatteryColor(item: StatusLineUsageItem, remainingFraction: number): "success" | "warning" | "error" {
+	if (item.status === "exhausted" || remainingFraction < 0.2) return "error";
+	if (item.status === "warning" || remainingFraction < 0.6) return "warning";
+	return "success";
+}
+
+function formatSegmentedUsageBattery(
+	remainingFraction: number,
+	width: number,
+	color: "success" | "warning" | "error",
+): string {
+	const remainingCells = Math.round(remainingFraction * width);
+	const usedCells = width - remainingCells;
+	const used = usedCells > 0 ? theme.fg("muted", BATTERY_SEGMENT.repeat(usedCells)) : "";
+	const remaining = remainingCells > 0 ? theme.fg(color, BATTERY_SEGMENT.repeat(remainingCells)) : "";
+	return `${used}${remaining}`;
+}
+
+function formatUsageBattery(
+	item: StatusLineUsageItem,
+	width: number,
+	options: NonNullable<StatusLineSegmentOptions["usage"]>,
+): string | undefined {
+	const remainingFraction =
+		item.usedFraction !== undefined
+			? Math.max(0, Math.min(1, 1 - item.usedFraction))
+			: item.amount.remainingFraction !== undefined
+				? Math.max(0, Math.min(1, item.amount.remainingFraction))
+				: undefined;
+	if (remainingFraction === undefined) return undefined;
+	const color = usageBatteryColor(item, remainingFraction);
+	if (options.batteryStyle === "segmented") return formatSegmentedUsageBattery(remainingFraction, width, color);
+	const units = remainingFraction * width;
+	let fullBlocks = Math.floor(units);
+	let partialIndex = Math.round((units - fullBlocks) * 8);
+	if (partialIndex === 8) {
+		fullBlocks++;
+		partialIndex = 0;
+	}
+	const partial = BATTERY_PARTIAL_BLOCKS[partialIndex] ?? "";
+	const fill = `${"█".repeat(fullBlocks)}${partial}`;
+	const coloredFill = fill ? theme.fg(color, fill) : "";
+	const occupiedCells = fullBlocks + (partial ? 1 : 0);
+	const track = options.showTrack ? theme.fg("muted", "█".repeat(Math.max(0, width - occupiedCells))) : "";
+	const cells = coloredFill || track || theme.fg("warning", "░");
+	const percentage = options.showPercentage === false ? "" : ` ${Math.round(remainingFraction * 100)}`;
+	return `${cells}${coloredFill ? track : ""}${percentage}`;
 }
 
 const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
-		const u = ctx.usage;
-		if (!u || (!u.fiveHour && !u.sevenDay)) {
-			return { content: "", visible: false };
-		}
-		const parts: string[] = [];
-		if (u.tier) {
-			const tier = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
-			if (tier) parts.push(theme.fg("accent", tier));
-		}
-		if (u.fiveHour) {
-			const pct = u.fiveHour.percent;
-			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-			const reset =
-				u.fiveHour.resetMinutes !== undefined
-					? theme.fg("muted", ` (${formatUsageReset(u.fiveHour.resetMinutes, "m")})`)
-					: "";
-			parts.push(`5h ${pctText}${reset}`);
-		}
-		if (u.sevenDay) {
-			const pct = u.sevenDay.percent;
-			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-			const reset =
-				u.sevenDay.resetHours !== undefined
-					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
-					: "";
-			parts.push(`7d ${pctText}${reset}`);
-		}
-		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
-		return { content, visible: true };
+		const items = ctx.usage?.items ?? [];
+		if (items.length === 0) return { content: "", visible: false };
+		const options = ctx.options.usage ?? {};
+		const displayItems = options.latestOnly ? latestUsageItems(items) : items;
+		const maxItems = Math.max(1, Math.floor(options.maxItems ?? 2));
+		const selected = displayItems.slice(0, maxItems);
+		const activeModel = ctx.session?.state.model ?? ctx.session?.model;
+		const parts =
+			options.style === "battery"
+				? selected.flatMap(item => {
+						const batteryWidth = Math.max(3, Math.min(10, Math.floor(options.batteryWidth ?? 5)));
+						const battery = formatUsageBattery(item, batteryWidth, options);
+						if (!battery) return [];
+						if (options.showLabel === false) return [battery];
+						const activeModelId =
+							activeModel?.provider.toLowerCase() === item.provider ? activeModel.id : undefined;
+						const label = truncateToWidth(
+							sanitizeStatusText(activeModelId ?? item.modelId ?? item.provider),
+							TRUNCATE_LENGTHS.SHORT,
+						);
+						return [`${label} ${battery}`];
+					})
+				: selected.map(item => {
+						const provider = truncateToWidth(sanitizeStatusText(item.provider), TRUNCATE_LENGTHS.SHORT);
+						const account = item.accountLabel
+							? `/${truncateToWidth(sanitizeStatusText(item.accountLabel), TRUNCATE_LENGTHS.SHORT)}`
+							: "";
+						const model = item.modelId
+							? `/${truncateToWidth(sanitizeStatusText(item.modelId), TRUNCATE_LENGTHS.SHORT)}`
+							: "";
+						const tier = item.tier ? `${truncateToWidth(sanitizeStatusText(item.tier), 10)} ` : "";
+						const label = `${provider}${account}${model}:${tier}${usageWindowLabel(item)}`;
+						const value = theme.fg(pickUsageColor(item), formatUsageValue(item));
+						const reset =
+							options.showResetTime !== false && item.resetsAt !== undefined
+								? theme.fg("muted", ` (${formatUsageDuration(Math.max(0, item.resetsAt - Date.now()))})`)
+								: "";
+						return `${label} ${value}${reset}`;
+					});
+		const hidden = displayItems.length - selected.length;
+		if (hidden > 0 && options.style !== "battery") parts.push(theme.fg("dim", `+${hidden}`));
+		let content =
+			options.style === "battery" ? parts.join(theme.sep.dot) : withIcon(theme.icon.time, parts.join(theme.sep.dot));
+		if (options.maxWidth !== undefined) content = truncateToWidth(content, Math.max(4, options.maxWidth));
+		return { content, visible: content.length > 0 };
 	},
 };
 

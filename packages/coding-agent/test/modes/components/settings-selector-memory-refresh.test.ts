@@ -1,6 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
+import {
+	SettingsSelectorComponent,
+	type StatusLinePreviewSettings,
+} from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type CliLocale, getCliLocale, setCliLocale } from "@oh-my-pi/pi-utils/cli";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
@@ -57,6 +60,7 @@ function stubStdoutGeometry(cols: number): { restore(): void } {
 function createSelector(
 	onCancel: () => void = () => {},
 	onChange: (path: string, value: unknown) => void = () => {},
+	onStatusLinePreview?: (settings: StatusLinePreviewSettings) => void,
 ): SettingsSelectorComponent {
 	return new SettingsSelectorComponent(
 		{
@@ -69,6 +73,7 @@ function createSelector(
 		{
 			onChange,
 			onCancel,
+			onStatusLinePreview,
 		},
 	);
 }
@@ -78,6 +83,16 @@ function focusMemoryTab(comp: SettingsSelectorComponent): void {
 	for (let i = 0; i < 4; i++) {
 		comp.handleInput("\x1b[C");
 	}
+}
+
+function openAppearanceStatusLinePresetSubmenu(comp: SettingsSelectorComponent): void {
+	// Appearance is the default tab. Within its group-ordered rows, Status Line
+	// Preset follows the four Theme settings: Dark Theme, Light Theme, Symbol
+	// Preset, and Color-Blind Mode.
+	for (let i = 0; i < 4; i++) {
+		comp.handleInput("\x1b[B");
+	}
+	comp.handleInput("\n");
 }
 
 describe("SettingsSelectorComponent memory tab", () => {
@@ -258,5 +273,75 @@ describe("SettingsSelectorComponent memory tab", () => {
 
 		comp.handleInput("\x1b");
 		expect(cancelCount).toBe(1);
+	});
+});
+
+describe("SettingsSelectorComponent status line preset preview", () => {
+	it("previews custom with the configured usage battery segments and options", () => {
+		settings.set("statusLine.preset", "ascii");
+		settings.set("statusLine.leftSegments", ["pi", "usage"]);
+		settings.set("statusLine.rightSegments", ["session_name"]);
+		settings.set("statusLine.separator", "block");
+		settings.set("statusLine.segmentOptions", {
+			usage: { style: "battery", batteryStyle: "segmented" },
+		});
+
+		const configuredLeftSegments = settings.get("statusLine.leftSegments");
+		const configuredRightSegments = settings.get("statusLine.rightSegments");
+		const configuredSeparator = settings.get("statusLine.separator");
+		const configuredSegmentOptions = settings.get("statusLine.segmentOptions");
+		const previews: StatusLinePreviewSettings[] = [];
+		const comp = createSelector(undefined, undefined, preview => {
+			previews.push(preview);
+		});
+
+		openAppearanceStatusLinePresetSubmenu(comp);
+		comp.handleInput("\x1b[B");
+
+		expect(previews).toHaveLength(1);
+		expect(previews[0]).toMatchObject({
+			preset: "custom",
+			separator: configuredSeparator,
+			leftSegments: configuredLeftSegments,
+			rightSegments: configuredRightSegments,
+			segmentOptions: configuredSegmentOptions,
+		});
+		expect(previews[0]?.leftSegments).toBe(configuredLeftSegments);
+		expect(previews[0]?.rightSegments).toBe(configuredRightSegments);
+		expect(previews[0]?.segmentOptions).toBe(configuredSegmentOptions);
+	});
+
+	it("restores the configured custom usage battery preview on cancel", () => {
+		settings.set("statusLine.preset", "custom");
+		settings.set("statusLine.leftSegments", ["pi", "usage"]);
+		settings.set("statusLine.rightSegments", ["session_name", "mode"]);
+		settings.set("statusLine.separator", "block");
+		settings.set("statusLine.segmentOptions", {
+			usage: { style: "battery", batteryStyle: "segmented" },
+		});
+
+		const configuredLeftSegments = settings.get("statusLine.leftSegments");
+		const configuredRightSegments = settings.get("statusLine.rightSegments");
+		const configuredSeparator = settings.get("statusLine.separator");
+		const configuredSegmentOptions = settings.get("statusLine.segmentOptions");
+		const previews: StatusLinePreviewSettings[] = [];
+		const comp = createSelector(undefined, undefined, preview => {
+			previews.push(preview);
+		});
+
+		openAppearanceStatusLinePresetSubmenu(comp);
+		comp.handleInput("\x1b");
+
+		expect(previews).toHaveLength(1);
+		expect(previews[0]).toMatchObject({
+			preset: "custom",
+			separator: configuredSeparator,
+			leftSegments: configuredLeftSegments,
+			rightSegments: configuredRightSegments,
+			segmentOptions: configuredSegmentOptions,
+		});
+		expect(previews[0]?.leftSegments).toBe(configuredLeftSegments);
+		expect(previews[0]?.rightSegments).toBe(configuredRightSegments);
+		expect(previews[0]?.segmentOptions).toBe(configuredSegmentOptions);
 	});
 });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
+import { EvalExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/eval-execution";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
@@ -244,5 +245,158 @@ describe("BashExecutionComponent #clampDisplayLine", () => {
 			expect(visibleWidth("\x1b[7m")).toBe(0);
 			expect(visibleWidth("a\x1b[7mb")).toBe(2);
 		});
+	});
+});
+describe("BashExecutionComponent rounded legend frame", () => {
+	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+
+	beforeEach(async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		setThemeInstance(theme!);
+	});
+
+	it("renders one unified rounded legend frame without standalone DynamicBorder rows", async () => {
+		const component = new BashExecutionComponent("echo test", ui, false);
+		component.appendOutput("output line");
+		component.setComplete(0, false);
+
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const rendered = component.render(80);
+
+		// ALL four rounded corners must appear (not just some)
+		expect(rendered.some(line => line.includes(theme!.boxRound.topLeft))).toBe(true);
+		expect(rendered.some(line => line.includes(theme!.boxRound.topRight))).toBe(true);
+		expect(rendered.some(line => line.includes(theme!.boxRound.bottomLeft))).toBe(true);
+		expect(rendered.some(line => line.includes(theme!.boxRound.bottomRight))).toBe(true);
+
+		// NO line may consist entirely of ─ repeated (catches standalone DynamicBorder rows)
+		const pureHorizontalLines = rendered.filter(line => {
+			const stripped = Bun.stripANSI(line);
+			return stripped.length > 0 && stripped === theme!.boxRound.horizontal.repeat(stripped.length);
+		});
+		expect(pureHorizontalLines.length).toBe(0);
+
+		// Must NOT have an internal titled divider between command and output
+		const plain = rendered.map(line => Bun.stripANSI(line));
+		const hasOutputLabel = plain.some(line => /^[│┃]?\s*Output:?\s*$/.test(line.trim()));
+		expect(hasOutputLabel).toBe(false);
+	});
+
+	it("renders command and output content in the legend frame", async () => {
+		const component = new BashExecutionComponent("ls -la", ui, false);
+		component.appendOutput("file1.txt\nfile2.txt");
+		component.setComplete(0, false);
+
+		const rendered = component.render(80);
+		const plain = rendered.map(line => Bun.stripANSI(line));
+
+		// Command must appear
+		expect(plain.some(line => line.includes("$ ls -la"))).toBe(true);
+
+		// Output must appear (both lines in one appendOutput call)
+		expect(plain.some(line => line.includes("file1.txt"))).toBe(true);
+		expect(plain.some(line => line.includes("file2.txt"))).toBe(true);
+	});
+});
+describe("BashExecutionComponent streaming rebuild invariant", () => {
+	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+
+	beforeEach(async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		setThemeInstance(theme!);
+	});
+
+	it("appended output appears in the same rounded legend frame as the initial running state", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const bashSentinel = "streamed bash output";
+
+		// Render initial running frame (no output yet)
+		const component = new BashExecutionComponent("echo hello", ui, false);
+		const initialLines = component.render(80);
+		const initialPlain = initialLines.map(line => Bun.stripANSI(line));
+
+		// Verify initial frame has one rounded shell legend and the command body.
+		expect(initialLines.some(line => line.includes(theme!.boxRound.topLeft))).toBe(true);
+		expect(initialLines.some(line => line.includes(theme!.boxRound.bottomRight))).toBe(true);
+		expect(initialPlain[0]).toContain("shell");
+		expect(initialPlain.some(line => line.includes("$ echo hello"))).toBe(true);
+
+		// Simulate streaming: append output then re-render.
+		component.appendOutput(bashSentinel);
+		const rebuiltLines = component.render(80);
+		const rebuiltPlain = rebuiltLines.map(line => Bun.stripANSI(line));
+
+		// The same rounded legend frame must be used (same corners + shell legend).
+		expect(rebuiltLines.some(line => line.includes(theme!.boxRound.topLeft))).toBe(true);
+		expect(rebuiltLines.some(line => line.includes(theme!.boxRound.bottomRight))).toBe(true);
+		expect(rebuiltPlain[0]).toContain("shell");
+
+		// Streamed output must appear inside that same frame, not as a separate block.
+		expect(rebuiltPlain.some(line => line.includes(bashSentinel))).toBe(true);
+
+		const initialCornerCount =
+			(initialLines.join("").match(new RegExp(theme!.boxRound.topLeft, "g")) || []).length +
+			(initialLines.join("").match(new RegExp(theme!.boxRound.bottomRight, "g")) || []).length;
+		const rebuiltCornerCount =
+			(rebuiltLines.join("").match(new RegExp(theme!.boxRound.topLeft, "g")) || []).length +
+			(rebuiltLines.join("").match(new RegExp(theme!.boxRound.bottomRight, "g")) || []).length;
+
+		// Frame structure remains one legend frame across the streaming rebuild.
+		expect(rebuiltCornerCount).toBe(initialCornerCount);
+	});
+});
+describe("EvalExecutionComponent streaming rebuild invariant", () => {
+	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+
+	beforeEach(async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		setThemeInstance(theme!);
+	});
+
+	it("appended output appears in the same rounded legend frame as the initial running state", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const evalSentinel = "streamed eval output";
+
+		// Render initial running frame (no output yet).
+		const component = new EvalExecutionComponent("print(1)", ui, false, "python");
+		const initialLines = component.render(80);
+		const initialPlain = initialLines.map(line => Bun.stripANSI(line));
+
+		// Verify initial frame has one rounded python legend and the eval prompt.
+		expect(initialLines.some(line => line.includes(theme!.boxRound.topLeft))).toBe(true);
+		expect(initialLines.some(line => line.includes(theme!.boxRound.bottomRight))).toBe(true);
+		expect(initialPlain[0]).toContain("python");
+		expect(initialPlain.some(line => line.includes(">>>"))).toBe(true);
+
+		// Simulate streaming: append output then re-render.
+		component.appendOutput(evalSentinel);
+		const rebuiltLines = component.render(80);
+		const rebuiltPlain = rebuiltLines.map(line => Bun.stripANSI(line));
+
+		// The same rounded legend frame must be used (same corners + python legend).
+		expect(rebuiltLines.some(line => line.includes(theme!.boxRound.topLeft))).toBe(true);
+		expect(rebuiltLines.some(line => line.includes(theme!.boxRound.bottomRight))).toBe(true);
+		expect(rebuiltPlain[0]).toContain("python");
+
+		// Streamed output must appear inside that same frame, not as a separate block.
+		expect(rebuiltPlain.some(line => line.includes(evalSentinel))).toBe(true);
+
+		const initialCornerCount =
+			(initialLines.join("").match(new RegExp(theme!.boxRound.topLeft, "g")) || []).length +
+			(initialLines.join("").match(new RegExp(theme!.boxRound.bottomRight, "g")) || []).length;
+		const rebuiltCornerCount =
+			(rebuiltLines.join("").match(new RegExp(theme!.boxRound.topLeft, "g")) || []).length +
+			(rebuiltLines.join("").match(new RegExp(theme!.boxRound.bottomRight, "g")) || []).length;
+
+		// Frame structure remains one legend frame across the streaming rebuild.
+		expect(rebuiltCornerCount).toBe(initialCornerCount);
 	});
 });

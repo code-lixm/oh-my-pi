@@ -20,7 +20,7 @@ import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { tSettingsUi } from "../i18n/settings-locale";
-import { discoverAuthStorage } from "../sdk";
+import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 export interface UsageCommandArgs {
 	action?: string;
 	json?: boolean;
@@ -190,8 +190,9 @@ function formatProviderName(provider: string): string {
 		.join(" ");
 }
 
-function formatUnitValue(value: number, unit: UsageUnit): string {
+function formatUnitValue(value: number, unit: UsageUnit, currency?: string): string {
 	if (unit === "usd") return `$${value.toFixed(2)}`;
+	if (unit === "currency") return currency ? `${currency} ${value.toFixed(2)}` : value.toFixed(2);
 	return formatNumber(value);
 }
 
@@ -202,6 +203,7 @@ const UNIT_SUFFIX: Record<UsageUnit, string> = {
 	bytes: " bytes",
 	percent: "",
 	usd: "",
+	currency: "",
 	unknown: "",
 };
 
@@ -211,10 +213,12 @@ function describeAmount(limit: UsageLimit): string {
 	const absoluteUnit = amount.unit !== "percent" && amount.unit !== "unknown";
 	if (absoluteUnit && amount.used !== undefined && amount.limit !== undefined) {
 		parts.push(
-			`${formatUnitValue(amount.used, amount.unit)} / ${formatUnitValue(amount.limit, amount.unit)}${UNIT_SUFFIX[amount.unit]}`,
+			`${formatUnitValue(amount.used, amount.unit, amount.currency)} / ${formatUnitValue(amount.limit, amount.unit, amount.currency)}${UNIT_SUFFIX[amount.unit]}`,
 		);
 	} else if (absoluteUnit && amount.remaining !== undefined) {
-		parts.push(`${formatUnitValue(amount.remaining, amount.unit)}${UNIT_SUFFIX[amount.unit]} ${tSettingsUi("left")}`);
+		parts.push(
+			`${formatUnitValue(amount.remaining, amount.unit, amount.currency)}${UNIT_SUFFIX[amount.unit]} ${tSettingsUi("left")}`,
+		);
 	}
 	const fraction = resolveUsedFraction(limit);
 	if (fraction !== undefined) {
@@ -834,8 +838,10 @@ function redactReportForJson(
 }
 
 export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
-	await Settings.loadReadOnly({ cwd: getProjectDir() });
-	const authStorage = await discoverAuthStorage();
+	const cwd = getProjectDir();
+	const settings = await Settings.loadReadOnly({ cwd });
+	const modelRegistry = new ModelRegistry(await discoverAuthStorage());
+	const authStorage = modelRegistry.authStorage;
 	try {
 		if (cmd.action === "invalidate") {
 			const provider = cmd.provider?.toLowerCase();
@@ -883,7 +889,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			process.stdout.write(`${formatUsageHistory(entries, sinceMs, nowMs, redaction)}\n`);
 			return;
 		}
-		const modelRegistry = new ModelRegistry(authStorage);
+		await loadCliExtensionProviders(modelRegistry, settings, cwd);
 		const reports =
 			(await authStorage.fetchUsageReports({
 				baseUrlResolver: provider => modelRegistry.getProviderBaseUrl(provider),

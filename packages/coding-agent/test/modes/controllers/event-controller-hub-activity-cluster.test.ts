@@ -292,6 +292,7 @@ describe("EventController hub activity cluster", () => {
 		const rendered = Bun.stripANSI(group.render(120).join("\n"));
 		expect(rendered).toContain("Worker");
 		expect(rendered).toContain("AuthLoader");
+		expect(rendered).toContain("ready now");
 		expect(rendered).toContain("cluster hello");
 	});
 
@@ -356,7 +357,7 @@ describe("EventController hub activity cluster", () => {
 		expect(renderText(chatContainer)).not.toContain("AuthLoader");
 	});
 
-	it("keeps send await:true no-reply rows visible after the awaited send settles", async () => {
+	it("keeps awaited send receipts and outbound body visible without no-reply text", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -370,7 +371,7 @@ describe("EventController hub activity cluster", () => {
 			toolCallId: HUB_SEND_ID,
 			toolName: "hub",
 			result: {
-				content: [{ type: "text", text: "Delivered to Worker, but no reply within 10s." }],
+				content: [{ type: "text", text: "" }],
 				details: {
 					op: "send",
 					to: "Worker",
@@ -385,7 +386,10 @@ describe("EventController hub activity cluster", () => {
 		expect(groups).toHaveLength(1);
 		const rendered = renderText(groups[0]!);
 		expect(rendered).toContain("Worker");
-		expect(rendered).toContain("no reply");
+		expect(rendered).toContain("woken");
+		expect(rendered).toContain("ping");
+		expect(rendered).not.toContain("no reply");
+		expect(rendered).not.toContain("No reply yet");
 	});
 
 	it("displaces a running-only wait(ids) poll when the next grouped hub call arrives", async () => {
@@ -486,6 +490,7 @@ describe("EventController hub activity cluster", () => {
 			result: {
 				content: [{ type: "text", text: "No reply yet" }],
 				details: { op: "wait", waited: null },
+				useless: true,
 			},
 			isError: false,
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
@@ -570,7 +575,7 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 		}
 	});
 
-	it("rebuild keeps send await:true no-reply rows visible", () => {
+	it("rebuild keeps awaited send receipts and outbound body visible without no-reply text", () => {
 		const { builder } = createRebuildFixture();
 
 		try {
@@ -591,7 +596,7 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 					role: "toolResult",
 					toolCallId: HUB_SEND_ID,
 					toolName: "hub",
-					content: [{ type: "text", text: "Delivered to Worker, but no reply within 10s." }],
+					content: [{ type: "text", text: "" }],
 					details: {
 						op: "send",
 						to: "Worker",
@@ -608,7 +613,10 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 			expect(visibleAssistantComponents(builder.container)).toHaveLength(0);
 			const rendered = renderText(groups[0]!);
 			expect(rendered).toContain("Worker");
-			expect(rendered).toContain("no reply");
+			expect(rendered).toContain("woken");
+			expect(rendered).toContain("ping");
+			expect(rendered).not.toContain("no reply");
+			expect(rendered).not.toContain("No reply yet");
 		} finally {
 			builder.dispose();
 		}

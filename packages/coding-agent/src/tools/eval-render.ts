@@ -562,18 +562,6 @@ export const evalToolRenderer = {
 		// the styled `warningLine` below carries the same text in ⟨…⟩ form.
 		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
 
-		const jsonOutputs = details?.jsonOutputs ?? [];
-		const treeExpanded = options.renderContext?.expanded ?? options.expanded;
-		const treeDepth = treeExpanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-		const treeLineCap = treeExpanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-		const treeScalarLen = treeExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-		const labelOutputs = jsonOutputs.length > 1;
-		const jsonLines = jsonOutputs.flatMap((value, index) => {
-			const tree = renderJsonTreeLines(value, uiTheme, treeDepth, treeLineCap, treeScalarLen);
-			const body = tree.truncated ? [...tree.lines, uiTheme.fg("dim", "…")] : tree.lines;
-			return labelOutputs ? [uiTheme.fg("dim", `display[${index + 1}]`), ...body] : body;
-		});
-
 		const timeoutSeconds = options.renderContext?.timeout;
 		const timeoutLine =
 			typeof timeoutSeconds === "number"
@@ -652,12 +640,6 @@ export const evalToolRenderer = {
 							lines.push("");
 						}
 					}
-					if (jsonLines.length > 0) {
-						if (lines.length > 0) {
-							lines.push("");
-						}
-						lines.push(...jsonLines);
-					}
 					if (timeoutLine) {
 						lines.push(timeoutLine);
 					}
@@ -675,6 +657,17 @@ export const evalToolRenderer = {
 				},
 			});
 		}
+		const jsonOutputs = details?.jsonOutputs ?? [];
+		const treeExpanded = options.renderContext?.expanded ?? options.expanded;
+		const treeDepth = treeExpanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+		const treeLineCap = treeExpanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+		const treeScalarLen = treeExpanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+		const labelOutputs = jsonOutputs.length > 1;
+		const jsonLines = jsonOutputs.flatMap((value, index) => {
+			const tree = renderJsonTreeLines(value, uiTheme, treeDepth, treeLineCap, treeScalarLen);
+			const body = tree.truncated ? [...tree.lines, uiTheme.fg("dim", "…")] : tree.lines;
+			return labelOutputs ? [uiTheme.fg("dim", `display[${index + 1}]`), ...body] : body;
+		});
 
 		const displayOutput = output;
 		const combinedOutput = [displayOutput, ...jsonLines].filter(Boolean).join("\n");

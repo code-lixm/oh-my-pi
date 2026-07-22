@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
@@ -11,19 +11,22 @@ import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/activ
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
 import * as git from "../../../utils/git";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
+import { calculateTokensPerSecond } from "../../../utils/token-rate";
 import { sanitizeStatusText } from "../../shared";
 import { theme } from "../../theme/theme";
+import { readCustomStatusLinePresets } from "./custom-presets";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { getPreset } from "./presets";
 import { renderSegment, type SegmentContext } from "./segments";
 import { getSeparator } from "./separators";
-import { calculateTokensPerSecond } from "./token-rate";
 import type {
 	CollabStatus,
 	EffectiveStatusLineSettings,
 	StatusLineSegmentId,
 	StatusLineSegmentOptions,
 	StatusLineSettings,
+	StatusLineUsageItem,
+	StatusLineUsageSummary,
 } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -216,8 +219,9 @@ interface ActiveMeter {
 }
 
 const EMPTY_MESSAGES: readonly AgentMessage[] = [];
+const STATUS_USAGE_CACHE_TTL_MS = 5 * 60_000;
 const STATUS_USAGE_START_DELAY_MS = 0;
-const STATUS_USAGE_REFRESH_TIMEOUT_MS = 2_000;
+const STATUS_USAGE_REFRESH_TIMEOUT_MS = 5_000;
 
 function hasContextSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("context_pct") || segments.includes("context_total");
@@ -276,6 +280,13 @@ export class StatusLineComponent implements Component {
 	#loopModeStatus: SegmentContext["loopMode"] = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#vibeModeStatus: { enabled: boolean } | null = null;
+	/**
+	 * Injected aggregator that returns the aggregate tok/s of this session's
+	 * live vibe worker sessions, or null when no workers are streaming. Kept as
+	 * a callback so the render layer doesn't import the heavy vibe/task
+	 * dependency graph; interactive-mode wires it to VibeSessionRegistry.
+	 */
+	#vibeWorkerTokenRate: (() => number | null) | null = null;
 	#collabStatus: CollabStatus | null = null;
 	#focusedAgentId: string | undefined;
 	#focusedAgentDisplayName: string | undefined;
@@ -296,16 +307,14 @@ export class StatusLineComponent implements Component {
 	#lastTokensPerSecond: number | null = null;
 	#lastTokensPerSecondTimestamp: number | null = null;
 
-	// Provider usage caching (5-min TTL, OAuth/sub only)
-	#cachedUsage: {
-		tier?: string;
-		fiveHour?: { percent: number; resetMinutes?: number };
-		sevenDay?: { percent: number; resetHours?: number };
-	} | null = null;
+	// Provider usage caching (5-min TTL, normalized across provider-specific limits)
+	#cachedUsage: StatusLineUsageSummary | null = null;
 	#cachedUsageContextKey: string | null = null;
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
+	#requestRender: (() => void) | undefined;
 	#usageStartTimer: Timer | null = null;
+	#usageRefreshTimer: Timer | null = null;
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
 	// `getContextUsage()` anchors on the last assistant's real prompt-token
@@ -313,7 +322,11 @@ export class StatusLineComponent implements Component {
 	// message list + model window yields a stable result we can return verbatim.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
-	constructor(private session: AgentSession) {
+	constructor(
+		private session: AgentSession,
+		requestRender?: () => void,
+	) {
+		this.#requestRender = requestRender;
 		this.#settings = {
 			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
@@ -393,6 +406,12 @@ export class StatusLineComponent implements Component {
 	updateSettings(settings: StatusLineSettings): void {
 		this.#settings = settings;
 		this.#effectiveSettings = undefined;
+		const effective = this.#resolveSettings();
+		if (effective.leftSegments.includes("usage") || effective.rightSegments.includes("usage")) {
+			this.#ensureUsageRefreshTimer();
+		} else {
+			this.#clearUsageRefreshTimer();
+		}
 		if (this.#onBranchChange) this.#setupGitWatcher();
 	}
 
@@ -515,6 +534,17 @@ export class StatusLineComponent implements Component {
 		this.#vibeModeStatus = status ?? null;
 	}
 
+	/**
+	 * Inject the aggregator that returns the aggregate tok/s of this session's
+	 * live vibe worker sessions (null when no workers are streaming). Wired by
+	 * interactive-mode, which owns the VibeSessionRegistry coupling, so the
+	 * render layer stays off the heavy vibe/task dependency graph. Pass
+	 * `undefined` to clear.
+	 */
+	setVibeWorkerTokenRateProvider(provider: (() => number | null) | undefined): void {
+		this.#vibeWorkerTokenRate = provider ?? null;
+	}
+
 	setCollabStatus(status: CollabStatus | null): void {
 		this.#collabStatus = status;
 	}
@@ -568,6 +598,7 @@ export class StatusLineComponent implements Component {
 		this.#disposed = true;
 		this.#onBranchChange = null;
 		this.#clearUsageStartTimer();
+		this.#clearUsageRefreshTimer();
 		if (this.#gitWatcher) {
 			this.#gitWatcher.close();
 			this.#gitWatcher = null;
@@ -578,6 +609,29 @@ export class StatusLineComponent implements Component {
 		if (!this.#usageStartTimer) return;
 		clearTimeout(this.#usageStartTimer);
 		this.#usageStartTimer = null;
+	}
+
+	#ensureUsageRefreshTimer(): void {
+		if (this.#disposed || this.#usageRefreshTimer) return;
+		const elapsed = this.#usageFetchedAt > 0 ? Date.now() - this.#usageFetchedAt : 0;
+		const delay =
+			this.#usageFetchedAt > 0 ? Math.max(1, STATUS_USAGE_CACHE_TTL_MS - elapsed) : STATUS_USAGE_CACHE_TTL_MS;
+		this.#usageRefreshTimer = setTimeout(() => {
+			this.#usageRefreshTimer = null;
+			this.refreshUsageInBackground();
+		}, delay);
+		this.#usageRefreshTimer.unref?.();
+	}
+
+	#resetUsageRefreshTimer(): void {
+		this.#clearUsageRefreshTimer();
+		this.#ensureUsageRefreshTimer();
+	}
+
+	#clearUsageRefreshTimer(): void {
+		if (!this.#usageRefreshTimer) return;
+		clearTimeout(this.#usageRefreshTimer);
+		this.#usageRefreshTimer = null;
 	}
 
 	invalidate(): void {
@@ -754,6 +808,31 @@ export class StatusLineComponent implements Component {
 	}
 
 	#getTokensPerSecond(): number | null {
+		// Aggregate tok/s across the main session AND every live vibe worker.
+		// In vibe mode the director is often idle while workers stream, so the
+		// main session's own rate alone would show a stale/zero value while
+		// parallel work is actively generating tokens.
+		const workerRate = this.#getVibeWorkerTokensPerSecond();
+		if (workerRate !== null) {
+			// At least one worker is streaming — add the director's live rate
+			// only when it is itself streaming (a finalized last-turn rate would
+			// double-count and overstate throughput).
+			const mainRate = this.session.isStreaming ? calculateTokensPerSecond(this.session.state.messages, true) : 0;
+			return (mainRate ?? 0) + workerRate;
+		}
+
+		// No workers streaming — fall back to the main session's own rate with
+		// its sticky per-assistant-message cache so the badge doesn't flicker
+		// off in the brief gap between stream end and the finalized message.
+		return this.#getMainSessionTokensPerSecond();
+	}
+
+	/**
+	 * Main session's tok/s with sticky caching keyed on the last assistant
+	 * message timestamp. Preserves the pre-aggregation behavior when no vibe
+	 * workers are active.
+	 */
+	#getMainSessionTokensPerSecond(): number | null {
 		let lastAssistantTimestamp: number | null = null;
 		for (let i = this.session.state.messages.length - 1; i >= 0; i--) {
 			const message = this.session.state.messages[i];
@@ -783,19 +862,41 @@ export class StatusLineComponent implements Component {
 		return null;
 	}
 
+	/**
+	 * Aggregate tok/s across every live vibe worker session owned by this
+	 * session. Returns null when no workers are streaming (so the main
+	 * session's own rate shines through unchanged). The aggregation itself is
+	 * injected via {@link setVibeWorkerTokenRateProvider} to keep this render
+	 * layer off the heavy vibe/task dependency graph.
+	 */
+	#getVibeWorkerTokensPerSecond(): number | null {
+		return this.#vibeWorkerTokenRate?.() ?? null;
+	}
+
+	#getConfiguredUsageProviders(): string[] {
+		const configured = this.#resolveSettings().segmentOptions.usage?.providers ?? [];
+		return [...new Set(configured.map(provider => provider.trim().toLowerCase()).filter(Boolean))];
+	}
+
 	#getUsageContextKey(session: AgentSession): string {
-		const activeProvider = session.state.model?.provider ?? session.model?.provider ?? "";
-		if (!activeProvider) return "";
-		const identity = session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId);
-		// orgId is part of the key: rotating between two same-email Anthropic
-		// subscriptions must invalidate the cached usage immediately instead of
-		// showing the previous org's quota for the rest of the cache TTL.
+		const activeModel = session.state.model ?? session.model;
+		const activeProvider = activeModel?.provider ?? "";
+		const activeModelId = activeModel?.id ?? "";
+		const configuredProviders = this.#getConfiguredUsageProviders();
+		const authStorage = session.modelRegistry?.authStorage;
+		const identity = authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId);
+		const authGeneration = authStorage?.getGeneration() ?? 0;
+		const usageRevision = authStorage?.usageRevision ?? 0;
 		return [
+			configuredProviders.length > 0 ? configuredProviders.join(",") : activeProvider,
 			activeProvider,
+			activeModelId,
 			identity?.accountId ?? "",
 			identity?.email ?? "",
 			identity?.projectId ?? "",
 			identity?.orgId ?? "",
+			authGeneration,
+			usageRevision,
 		].join("\0");
 	}
 
@@ -804,6 +905,9 @@ export class StatusLineComponent implements Component {
 	 * cadence while a late successful fetch can still refresh the cached segment.
 	 */
 	refreshUsageInBackground(): void {
+		if (this.#disposed) return;
+		const effective = this.#resolveSettings();
+		if (!effective.leftSegments.includes("usage") && !effective.rightSegments.includes("usage")) return;
 		const now = Date.now();
 		const session = this.session;
 		const usageContextKey = this.#getUsageContextKey(session);
@@ -813,17 +917,34 @@ export class StatusLineComponent implements Component {
 			this.#cachedUsageContextKey = usageContextKey;
 		}
 		if (this.#usageInFlight || this.#usageStartTimer) return;
-		if (this.#usageFetchedAt > 0 && now - this.#usageFetchedAt < 5 * 60_000) return;
+		if (this.#usageFetchedAt > 0 && now - this.#usageFetchedAt < STATUS_USAGE_CACHE_TTL_MS) {
+			this.#ensureUsageRefreshTimer();
+			return;
+		}
 		const fetcher = (session as { fetchUsageReports?: (signal?: AbortSignal) => Promise<unknown> }).fetchUsageReports;
 		if (typeof fetcher !== "function") return;
+		this.#clearUsageRefreshTimer();
 		this.#usageInFlight = true;
 		this.#usageStartTimer = setTimeout(() => {
 			this.#usageStartTimer = null;
-			void this.#runUsageRefresh(session, fetcher);
+			void this.#runUsageRefresh(session, fetcher, usageContextKey);
 		}, STATUS_USAGE_START_DELAY_MS);
 	}
 
-	async #runUsageRefresh(session: AgentSession, fetcher: (signal?: AbortSignal) => Promise<unknown>): Promise<void> {
+	#isCurrentUsageContext(session: AgentSession, usageContextKey: string): boolean {
+		return (
+			!this.#disposed &&
+			this.session === session &&
+			this.#cachedUsageContextKey === usageContextKey &&
+			this.#getUsageContextKey(session) === usageContextKey
+		);
+	}
+
+	async #runUsageRefresh(
+		session: AgentSession,
+		fetcher: (signal?: AbortSignal) => Promise<unknown>,
+		usageContextKey: string,
+	): Promise<void> {
 		if (this.#disposed || this.session !== session) {
 			this.#usageInFlight = false;
 			return;
@@ -831,38 +952,53 @@ export class StatusLineComponent implements Component {
 		const signal = AbortSignal.timeout(STATUS_USAGE_REFRESH_TIMEOUT_MS);
 		let reportsPromise: Promise<unknown> | undefined;
 		try {
-			reportsPromise = fetcher.call(session, signal);
-			this.#applyUsageRefreshReports(session, await this.#raceUsageRefreshWithSignal(reportsPromise, signal));
+			// Keep the provider fetch on AuthStorage's bounded single-flight deadline.
+			// Passing this render timeout down would reject the caller wrapper too,
+			// making the intended late-success refresh impossible to observe.
+			reportsPromise = fetcher.call(session);
+			const result = await this.#raceUsageRefreshWithSignal(reportsPromise, signal);
+			this.#applyUsageRefreshReports(session, usageContextKey, result);
 		} catch {
-			if (this.session !== session) return;
+			if (!this.#isCurrentUsageContext(session, usageContextKey)) return;
 			this.#usageFetchedAt = Date.now();
+			this.#resetUsageRefreshTimer();
 			if (signal.aborted && reportsPromise) {
-				this.#observeLateUsageRefresh(session, reportsPromise);
+				this.#observeLateUsageRefresh(session, usageContextKey, reportsPromise);
 			}
 		} finally {
-			if (this.session === session) this.#usageInFlight = false;
+			if (this.session === session) {
+				this.#usageInFlight = false;
+				if (!this.#disposed && this.#getUsageContextKey(session) !== usageContextKey) {
+					this.refreshUsageInBackground();
+				}
+			}
 		}
 	}
 
-	#applyUsageRefreshReports(session: AgentSession, reports: unknown): void {
-		if (this.#disposed || this.session !== session) return;
-		const activeProvider = session.state.model?.provider ?? session.model?.provider;
+	#applyUsageRefreshReports(session: AgentSession, usageContextKey: string, reports: unknown): void {
+		if (!this.#isCurrentUsageContext(session, usageContextKey)) return;
+		const activeModel = session.state.model ?? session.model;
+		const activeProvider = activeModel?.provider;
+		const activeModelId = activeModel?.id;
 		const activeIdentity =
 			activeProvider && session.modelRegistry?.authStorage
 				? session.modelRegistry.authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId)
 				: undefined;
-		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
+		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeModelId, activeIdentity);
 		this.#usageFetchedAt = Date.now();
+		this.#resetUsageRefreshTimer();
+		this.#requestRender?.();
 	}
 
-	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>): void {
+	#observeLateUsageRefresh(session: AgentSession, usageContextKey: string, reportsPromise: Promise<unknown>): void {
 		void reportsPromise
 			.then(reports => {
-				this.#applyUsageRefreshReports(session, reports);
+				this.#applyUsageRefreshReports(session, usageContextKey, reports);
 			})
 			.catch(() => {
-				if (this.#disposed || this.session !== session) return;
+				if (!this.#isCurrentUsageContext(session, usageContextKey)) return;
 				this.#usageFetchedAt = Date.now();
+				this.#resetUsageRefreshTimer();
 			});
 	}
 
@@ -881,66 +1017,106 @@ export class StatusLineComponent implements Component {
 	#normalizeUsageReports(
 		reports: unknown,
 		activeProvider?: string,
+		activeModelId?: string,
 		activeIdentity?: OAuthAccountIdentity,
-	): {
-		tier?: string;
-		fiveHour?: { percent: number; resetMinutes?: number };
-		sevenDay?: { percent: number; resetHours?: number };
-	} | null {
+	): StatusLineUsageSummary | null {
 		if (!Array.isArray(reports)) return null;
-		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
-		let sevenDay: { percent: number; resetHours?: number } | undefined;
-		let fiveHourTier: string | undefined;
-		let sevenDayTier: string | undefined;
-		const now = Date.now();
-		for (const report of reports) {
-			if (!report || typeof report !== "object") continue;
-			const provider = (report as { provider?: unknown }).provider;
-			if (activeProvider && provider !== activeProvider) continue;
-			const limits = (report as { limits?: unknown }).limits;
-			if (!Array.isArray(limits)) continue;
-			for (const limit of limits) {
-				if (!limit || typeof limit !== "object") continue;
+		const configuredProviders = this.#getConfiguredUsageProviders();
+		const selectedProviders =
+			configuredProviders.length > 0
+				? new Set(configuredProviders)
+				: activeProvider
+					? new Set([activeProvider.toLowerCase()])
+					: undefined;
+		const providerOrder = new Map(configuredProviders.map((provider, index) => [provider, index]));
+		const byKey = new Map<string, StatusLineUsageItem>();
+
+		for (const [reportIndex, reportValue] of reports.entries()) {
+			if (!reportValue || typeof reportValue !== "object") continue;
+			const report = reportValue as UsageReport;
+			if (typeof report.provider !== "string" || !Array.isArray(report.limits)) continue;
+			const provider = report.provider.toLowerCase();
+			if (selectedProviders && !selectedProviders.has(provider)) continue;
+			const metadata = report.metadata;
+			const metadataAccount =
+				typeof metadata?.accountId === "string"
+					? metadata.accountId
+					: typeof metadata?.email === "string"
+						? metadata.email
+						: undefined;
+			const metadataProject = typeof metadata?.projectId === "string" ? metadata.projectId : undefined;
+			const metadataOrg = typeof metadata?.orgId === "string" ? metadata.orgId : undefined;
+
+			for (const limitValue of report.limits) {
+				if (!limitValue || typeof limitValue !== "object") continue;
+				const limit = limitValue as UsageLimit;
+				const limitModelId = typeof limit.scope?.modelId === "string" ? limit.scope.modelId : undefined;
 				if (
-					activeIdentity &&
-					!limitMatchesActiveAccount(report as UsageReport, limit as UsageLimit, activeIdentity)
+					provider === activeProvider?.toLowerCase() &&
+					activeModelId &&
+					limitModelId &&
+					limitModelId.toLowerCase() !== activeModelId.toLowerCase()
 				) {
 					continue;
 				}
-				const l = limit as {
-					scope?: { windowId?: string; tier?: string };
-					window?: { resetsAt?: number };
-					amount?: { usedFraction?: number };
-				};
-				const fraction = l.amount?.usedFraction;
-				if (typeof fraction !== "number") continue;
-				const windowId = l.scope?.windowId;
-				const tier = l.scope?.tier;
-				const resetsAt = l.window?.resetsAt;
-				// Accept tiered limits, but prefer untiered (backward compat with Anthropic).
-				// An untiered limit always replaces a tiered one; among same-tieredness, first wins.
-				if (windowId === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
-					fiveHour = {
-						percent: fraction * 100,
-						resetMinutes:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
-					};
-					fiveHourTier = tier || undefined;
+				if (
+					activeIdentity &&
+					provider === activeProvider?.toLowerCase() &&
+					!limitMatchesActiveAccount(report, limit, activeIdentity)
+				) {
+					continue;
 				}
-				if (windowId === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
-					sevenDay = {
-						percent: fraction * 100,
-						resetHours:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
-					};
-					sevenDayTier = tier || undefined;
+				if (!limit.amount || typeof limit.amount !== "object" || typeof limit.amount.unit !== "string") continue;
+				const tier = typeof limit.scope?.tier === "string" && limit.scope.tier ? limit.scope.tier : undefined;
+				const windowId = limit.window?.id ?? limit.scope?.windowId;
+				const accountParts = [
+					limit.scope?.accountId ?? metadataAccount,
+					limit.scope?.projectId ?? metadataProject,
+					limit.scope?.orgId ?? metadataOrg,
+				].filter((value): value is string => typeof value === "string" && value.length > 0);
+				const uniqueAccountParts = [...new Set(accountParts)];
+				const accountLabel = uniqueAccountParts.join("/") || undefined;
+				const accountKey = uniqueAccountParts.join("\0") || `report:${reportIndex}`;
+				const baseKey = `${provider}\0${accountKey}\0${limitModelId ?? ""}\0${windowId ?? limit.id}`;
+				const untieredKey = `${baseKey}\0untiered`;
+				let key: string;
+				if (tier === undefined) {
+					for (const candidate of byKey.keys()) {
+						if (candidate.startsWith(`${baseKey}\0tier:`)) byKey.delete(candidate);
+					}
+					key = untieredKey;
+				} else {
+					if (byKey.has(untieredKey)) continue;
+					key = `${baseKey}\0tier:${tier}`;
 				}
+				byKey.set(key, {
+					provider,
+					accountLabel,
+					label: limit.window?.label ?? limit.label,
+					tier,
+					modelId: limitModelId,
+					durationMs: limit.window?.durationMs,
+					windowId,
+					usedFraction: resolveUsedFraction(limit),
+					resetsAt: limit.window?.resetsAt,
+					amount: limit.amount,
+					status: limit.status,
+				});
 			}
 		}
-		if (!fiveHour && !sevenDay) return null;
-		// Single compact label; prefer the five-hour tier if displayed windows ever disagree.
-		const effectiveTier = fiveHourTier ?? sevenDayTier;
-		return { tier: effectiveTier, fiveHour, sevenDay };
+
+		const items = [...byKey.values()];
+		items.sort((left, right) => {
+			const providerDelta =
+				(providerOrder.get(left.provider) ?? Number.MAX_SAFE_INTEGER) -
+				(providerOrder.get(right.provider) ?? Number.MAX_SAFE_INTEGER);
+			if (providerDelta !== 0) return providerDelta;
+			const durationDelta =
+				(left.durationMs ?? Number.MAX_SAFE_INTEGER) - (right.durationMs ?? Number.MAX_SAFE_INTEGER);
+			if (durationDelta !== 0) return durationDelta;
+			return left.label.localeCompare(right.label);
+		});
+		return items.length > 0 ? { items } : null;
 	}
 
 	/**
@@ -1103,32 +1279,42 @@ export class StatusLineComponent implements Component {
 		const preset = this.#settings.preset ?? "default";
 		const presetDef = getPreset(preset);
 		const useCustomSegments = preset === "custom";
+		const customPresetId = useCustomSegments ? this.#settings.customPreset : undefined;
+		const customPreset =
+			customPresetId && customPresetId !== "default"
+				? readCustomStatusLinePresets(settings.get("statusLine.customPresets"))[customPresetId]
+				: undefined;
 		const mergedSegmentOptions: StatusLineSettings["segmentOptions"] = {};
+		const baseSegmentOptions = customPreset?.segmentOptions ?? presetDef.segmentOptions;
 
-		for (const [segment, options] of Object.entries(presetDef.segmentOptions ?? {})) {
+		for (const [segment, options] of Object.entries(baseSegmentOptions ?? {})) {
 			mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] = { ...(options as Record<string, unknown>) };
 		}
 
-		for (const [segment, options] of Object.entries(this.#settings.segmentOptions ?? {})) {
-			const current = mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] ?? {};
-			mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] = {
-				...(current as Record<string, unknown>),
-				...(options as Record<string, unknown>),
-			};
+		if (!customPreset) {
+			for (const [segment, options] of Object.entries(this.#settings.segmentOptions ?? {})) {
+				const current = mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] ?? {};
+				mergedSegmentOptions[segment as keyof StatusLineSegmentOptions] = {
+					...(current as Record<string, unknown>),
+					...(options as Record<string, unknown>),
+				};
+			}
 		}
 
 		const leftSegments = useCustomSegments
-			? (this.#settings.leftSegments ?? presetDef.leftSegments)
+			? (customPreset?.leftSegments ?? this.#settings.leftSegments ?? presetDef.leftSegments)
 			: presetDef.leftSegments;
 		const rightSegments = useCustomSegments
-			? (this.#settings.rightSegments ?? presetDef.rightSegments)
+			? (customPreset?.rightSegments ?? this.#settings.rightSegments ?? presetDef.rightSegments)
 			: presetDef.rightSegments;
 
 		return {
 			...this.#settings,
 			leftSegments,
 			rightSegments,
-			separator: this.#settings.separator ?? presetDef.separator,
+			separator: customPreset?.separator ?? this.#settings.separator ?? presetDef.separator,
+			transparent: customPreset?.transparent ?? this.#settings.transparent,
+			compactThinkingLevel: customPreset?.compactThinkingLevel ?? this.#settings.compactThinkingLevel,
 			segmentOptions: mergedSegmentOptions,
 		};
 	}

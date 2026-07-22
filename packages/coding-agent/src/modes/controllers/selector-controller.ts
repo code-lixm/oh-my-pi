@@ -189,9 +189,11 @@ export class SelectorController {
 						// Update status line with preview settings
 						this.ctx.statusLine.updateSettings({
 							preset: settings.get("statusLine.preset"),
+							customPreset: settings.get("statusLine.customPreset"),
 							leftSegments: settings.get("statusLine.leftSegments"),
 							rightSegments: settings.get("statusLine.rightSegments"),
 							separator: settings.get("statusLine.separator"),
+							segmentOptions: settings.get("statusLine.segmentOptions"),
 							showHookStatus: settings.get("statusLine.showHookStatus"),
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
@@ -218,9 +220,11 @@ export class SelectorController {
 						// Restore status line to saved settings
 						this.ctx.statusLine.updateSettings({
 							preset: settings.get("statusLine.preset"),
+							customPreset: settings.get("statusLine.customPreset"),
 							leftSegments: settings.get("statusLine.leftSegments"),
 							rightSegments: settings.get("statusLine.rightSegments"),
 							separator: settings.get("statusLine.separator"),
+							segmentOptions: settings.get("statusLine.segmentOptions"),
 							showHookStatus: settings.get("statusLine.showHookStatus"),
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
@@ -593,6 +597,7 @@ export class SelectorController {
 			case "git.enabled":
 			case "statusLinePreset":
 			case "statusLine.preset":
+			case "statusLine.customPreset":
 			case "statusLineSeparator":
 			case "statusLine.separator":
 			case "statusLineShowHooks":
@@ -613,6 +618,7 @@ export class SelectorController {
 			case "statusLineTimeShowSeconds": {
 				const statusLineSettings = {
 					preset: settings.get("statusLine.preset"),
+					customPreset: settings.get("statusLine.customPreset"),
 					leftSegments: settings.get("statusLine.leftSegments"),
 					rightSegments: settings.get("statusLine.rightSegments"),
 					separator: settings.get("statusLine.separator"),

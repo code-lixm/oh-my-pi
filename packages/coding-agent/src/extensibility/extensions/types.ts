@@ -25,10 +25,12 @@ import type {
 	Model,
 	ModelSpec,
 	ProviderResponseMetadata,
+	RuntimeUsageProviderRegistration,
 	SimpleStreamOptions,
 	Static,
 	TextContent,
 	TSchema,
+	UsageProviderConfig,
 } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import type { AutocompleteItem, AutocompleteProvider, Component, EditorTheme, KeyId, TUI } from "@oh-my-pi/pi-tui";
@@ -102,7 +104,7 @@ import type * as TypeBox from "../typebox";
 
 export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 export type { ExecOptions, ExecResult } from "../../exec/exec";
-export type { AgentToolResult, AgentToolUpdateCallback };
+export type { AgentToolResult, AgentToolUpdateCallback, RuntimeUsageProviderRegistration, UsageProviderConfig };
 
 // ============================================================================
 // UI Context
@@ -1272,6 +1274,15 @@ export interface ExtensionAPI {
 	 */
 	registerProvider(name: string, config: ProviderConfig): void;
 
+	/**
+	 * Register or override a usage provider adapter for a provider.
+	 *
+	 * The config shape matches `UsageProvider` without its `id`; the host layers
+	 * registrations by extension source so reloads cleanly replace or remove the
+	 * adapter without disturbing lower-priority providers.
+	 */
+	registerUsageProvider(name: string, config: UsageProviderConfig): void;
+
 	/** Shared event bus for extension communication. */
 	events: EventBus;
 }
@@ -1409,8 +1420,10 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) 
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
-	/** Provider registrations queued during extension loading, processed during session initialization */
+	/** Model-provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
+	/** Usage-provider registrations queued during extension loading, processed during session initialization */
+	pendingUsageProviderRegistrations: RuntimeUsageProviderRegistration[];
 }
 
 /** Action implementations for ExtensionAPI methods. */
