@@ -986,10 +986,12 @@ export class ProcessTerminal implements Terminal {
 			}
 
 			// OSC 11 replies can be split if the stdin buffer flushes a partial sequence.
-			// Accumulate fragments until the BEL/ST terminator arrives, then parse once.
+			// Keep accepting terminal protocol replies after the DA1 grace expires:
+			// Ghostty can complete its asynchronous color lookup later, and dropping
+			// that reply leaves auto-theme on its dark fallback until a manual refresh.
 			// If a new escape sequence arrives (not the ST terminator), abort buffering
 			// and forward it as normal input so user keystrokes are never swallowed.
-			if (this.#osc11Pending && (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;"))) {
+			if (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;")) {
 				if (this.#osc11ResponseBuffer && sequence.startsWith("\x1b") && sequence !== "\x1b\\") {
 					// New escape sequence arrived mid-buffer — not an OSC 11 continuation.
 					this.#osc11ResponseBuffer = "";

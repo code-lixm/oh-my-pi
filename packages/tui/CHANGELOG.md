@@ -5,6 +5,10 @@
 ### Added
 
 - Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
+
+### Fixed
+
+- Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
 ## [17.0.6] - 2026-07-20
 
 ### Fixed

@@ -543,6 +543,35 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		terminal.stop();
 	});
 
+	it("accepts a complete OSC 11 reply after the post-sentinel grace window expires", () => {
+		vi.useFakeTimers();
+		const { terminal, received } = setupTerminal();
+		const appearances: string[] = [];
+		terminal.onAppearanceChange(a => appearances.push(a));
+		const lightReply = "\x1b]11;rgb:ffff/ffff/ffff\x07";
+
+		try {
+			// Startup sentinels are FIFO-owned: keyboard first, OSC 11 second. Ghostty
+			// can answer both DA1 sentinels before its asynchronous OSC 11 color lookup.
+			process.stdin.emit("data", "\x1b[?1;2c");
+			process.stdin.emit("data", "\x1b[?1;2c");
+			expect(terminal.appearance).toBeUndefined();
+			expect(appearances).toEqual([]);
+
+			vi.advanceTimersByTime(101);
+			expect(terminal.appearance).toBeUndefined();
+			expect(appearances).toEqual([]);
+
+			process.stdin.emit("data", lightReply);
+
+			expect(terminal.appearance).toBe("light");
+			expect(appearances).toEqual(["light"]);
+			expect(received).toEqual([]);
+		} finally {
+			terminal.stop();
+		}
+	});
+
 	it("shutdown balances the single kitty push performed on detection", () => {
 		const { terminal, writes } = setupTerminal();
 

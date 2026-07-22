@@ -39,9 +39,7 @@ function expectNoOutputDivider(lines: readonly string[]): void {
 		expect(line).not.toContain("Output");
 	}
 
-	const internalHorizontalBars = lines
-		.slice(1, -1)
-		.filter(line => line.includes(theme.boxRound.horizontal));
+	const internalHorizontalBars = lines.slice(1, -1).filter(line => line.includes(theme.boxRound.horizontal));
 	expect(internalHorizontalBars).toEqual([]);
 }
 
