@@ -61,20 +61,16 @@ describe("buildAvailableSlashCommands zh-CN", () => {
 		expect(todoAppend?.usage).toBe("[<phase>] <task...>");
 
 		// /advisor subcommand descriptions all localize (on/off/status/dump/configure).
-		expect(byName.advisor?.subcommands?.find(sub => sub.name === "on")?.description).toContain(
-			"启用审阅助手",
-		);
-		expect(byName.advisor?.subcommands?.find(sub => sub.name === "off")?.description).toContain(
-			"禁用审阅助手",
-		);
+		expect(byName.advisor?.subcommands?.find(sub => sub.name === "on")?.description).toContain("启用审阅助手");
+		expect(byName.advisor?.subcommands?.find(sub => sub.name === "off")?.description).toContain("禁用审阅助手");
 		expect(byName.advisor?.subcommands?.find(sub => sub.name === "status")?.description).toContain(
 			"显示审阅助手状态",
 		);
 		const advisorDump = byName.advisor?.subcommands?.find(sub => sub.name === "dump");
 		expect(advisorDump?.description).toContain("复制审阅助手的转录");
 		expect(advisorDump?.usage).toBe("[raw]");
-		expect(
-			byName.advisor?.subcommands?.find(sub => sub.name === "configure")?.description,
-		).toContain("打开审阅助手配置编辑器");
+		expect(byName.advisor?.subcommands?.find(sub => sub.name === "configure")?.description).toContain(
+			"打开审阅助手配置编辑器",
+		);
 	});
 });
