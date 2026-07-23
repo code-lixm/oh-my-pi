@@ -10244,6 +10244,15 @@ export class AgentSession {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
+		// A pending auto-retry sleep on the outgoing model must not survive a
+		// model switch — otherwise the user sees a multi-second "stuck"
+		// window after picking a new model, then the new model inherits a
+		// spent retry counter. Aborting after the sync auth check (but before
+		// the async metadata refresh) preserves the outgoing retry when the
+		// user picks a model without a configured credential, while still
+		// unblocking the UI as soon as the choice is otherwise valid.
+		this.abortRetry();
+
 		const targetModel = await this.#modelRegistry.refreshSelectedModelMetadata(model);
 
 		this.#modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
@@ -10264,7 +10273,6 @@ export class AgentSession {
 		await this.#syncAfterModelChange(previousEditMode);
 		return { switched: true };
 	}
-
 	/**
 	 * Set model temporarily (for this session only).
 	 * Validates that a credential source is configured (synchronously, without
@@ -10282,8 +10290,15 @@ export class AgentSession {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
-		const targetModel = await this.#modelRegistry.refreshSelectedModelMetadata(model);
+		// Same rationale as setModel: abort any in-flight retry so the new
+		// model is not bound by a spent retry budget from the outgoing model.
+		// Aborting after the sync auth check (but before the async metadata
+		// refresh) preserves the outgoing retry when the user picks a model
+		// without a configured credential, while still unblocking the UI as
+		// soon as the choice is otherwise valid.
+		this.abortRetry();
 
+		const targetModel = await this.#modelRegistry.refreshSelectedModelMetadata(model);
 		this.#modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#clearActiveRetryFallback();
 		this.#setModelWithProviderSessionReset(targetModel);
@@ -15699,6 +15714,15 @@ export class AgentSession {
 
 		await this.#recordPendingRecoveredRetryError(message, id, { switchedCredential, switchedModel, delayMs });
 
+		// Create the abort controller BEFORE emitting `auto_retry_start`. The
+		// event handler may issue a model switch (e.g. user picks another model
+		// in the picker the instant a retry is scheduled); if the controller
+		// is not yet registered, `abortRetry()` would no-op and the new model
+		// would inherit the outgoing retry's pending sleep + spent counter.
+		const retryAbortController = new AbortController();
+		this.#retryAbortController?.abort();
+		this.#retryAbortController = retryAbortController;
+
 		await this.#emitSessionEvent({
 			type: "auto_retry_start",
 			attempt: this.#retryAttempt,
@@ -15720,9 +15744,6 @@ export class AgentSession {
 		this.#maybeInjectThinkingLoopRedirect(id);
 
 		// Wait with exponential backoff (abortable).
-		const retryAbortController = new AbortController();
-		this.#retryAbortController?.abort();
-		this.#retryAbortController = retryAbortController;
 		try {
 			await scheduler.wait(delayMs, { signal: retryAbortController.signal });
 		} catch {

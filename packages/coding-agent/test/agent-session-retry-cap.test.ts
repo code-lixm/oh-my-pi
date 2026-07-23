@@ -1508,4 +1508,100 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.stopReason).toBe("stop");
 		expect(last.content).toContainEqual({ type: "text", text: "recovered on second prompt" });
 	});
+
+	/**
+	 * Contract: a model switch issued while the auto-retry handler is still
+	 * in its `auto_retry_start` callback window must cancel the pending
+	 * retry on the outgoing model so the user-visible "stuck forever"
+	 * window collapses to the synchronous portion of the switch call. The
+	 * new model must start with a fresh retry budget.
+	 */
+	it.each(["setModel", "setModelTemporary"] as const)(
+		"cancels pending auto-retry when %s is called from auto_retry_start callback",
+		async setter => {
+			const initialModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const targetModel = getBundledModel("openai", "gpt-5");
+			if (!initialModel || !targetModel) {
+				throw new Error("Expected bundled initial and target test models to exist");
+			}
+			authStorage.setRuntimeApiKey("openai", "openai-test-key");
+
+			const error503 = "503 Service temporarily unavailable Service temporarily unavailable (type=api_error)";
+
+			const mockAnthropic = createMockModel({
+				handler: () => ({ throw: error503 }),
+			});
+			const mockOpenai = createMockModel({
+				handler: () => ({ content: ["ok after switch"], stopReason: "stop" }),
+			});
+
+			const requestedProviders: string[] = [];
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: initialModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (requestedModel, context, options) => {
+					requestedProviders.push(requestedModel.provider);
+					const target = requestedModel.provider === "openai" ? mockOpenai : mockAnthropic;
+					return target.stream(requestedModel, context, options);
+				},
+			});
+
+			const settings = Settings.isolated({ "compaction.enabled": false });
+			settings.setModelRole("default", `${initialModel.provider}/${initialModel.id}`);
+
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+			});
+
+			const retryEndEvents: AutoRetryEndEvent[] = [];
+			const {
+				promise: switchFinished,
+				resolve: resolveSwitchFinished,
+				reject: rejectSwitchFinished,
+			} = Promise.withResolvers<void>();
+			let switchPromise: Promise<unknown> | undefined;
+			// Capture a non-nullable reference so callbacks inside async
+			// closures narrow the session type without re-asserting.
+			const activeSession = session;
+			if (!activeSession) throw new Error("session not initialized");
+			activeSession.subscribe(event => {
+				if (event.type === "auto_retry_end") retryEndEvents.push(event);
+				// Drive the model switch from inside the auto_retry_start
+				// callback. This is exactly the race the production fix
+				// defends against: before the controller was registered
+				// before emit, `abortRetry()` would no-op for callbacks
+				// issued from this turn and the new model would inherit
+				// the outgoing retry's pending sleep.
+				if (event.type === "auto_retry_start" && switchPromise === undefined) {
+					switchPromise =
+						setter === "setModel"
+							? activeSession.setModel(targetModel, "default", { persist: false })
+							: activeSession.setModelTemporary(targetModel);
+					// Wrap the resolvers in lambdas so the success value
+					// (`Promise<unknown>`'s resolved value) is dropped
+					// before reaching the `void`-typed resolvers.
+					switchPromise.then(() => resolveSwitchFinished(), rejectSwitchFinished);
+				}
+			});
+
+			const promptPromise = activeSession.prompt("trigger persistent 503");
+			await switchFinished;
+			await promptPromise.catch(() => undefined);
+
+			expect(session.model?.provider).toBe(targetModel.provider);
+			expect(session.model?.id).toBe(targetModel.id);
+			const cancelledEnds = retryEndEvents.filter(
+				event => event.success === false && /cancel/i.test(event.finalError ?? ""),
+			);
+			expect(cancelledEnds.length).toBeGreaterThan(0);
+		},
+	);
 });
