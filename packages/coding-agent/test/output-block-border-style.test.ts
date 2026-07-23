@@ -92,6 +92,16 @@ function accentPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
 	const railFg = railColor === "borderMuted" ? surfaceTintFgAnsi(railColor, theme) : colorFgAnsi(railColor, theme);
 	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
 }
+function accentPadPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
+	// Block-internal pad rows render with the same rail glyph as content rows
+	// but a near-zero opacity tinted surface, so the bg hex differs.
+	const bg = theme.getSurfaceTintBgAnsi(railColor, 0.015);
+	const railFg = railColor === "borderMuted" ? surfaceTintFgAnsi(railColor, theme) : colorFgAnsi(railColor, theme);
+	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
+}
+function lineStartsWithAccentPrefix(line: string, railColor: ThemeColor, theme: Theme = darkTheme): boolean {
+	return line.startsWith(accentPrefix(railColor, theme)) || line.startsWith(accentPadPrefix(railColor, theme));
+}
 
 function expectAccentTintStopsBeforeRightInset(
 	lines: readonly string[],
@@ -100,9 +110,10 @@ function expectAccentTintStopsBeforeRightInset(
 	theme: Theme = darkTheme,
 ): void {
 	const expectedTintBg = surfaceTintBgAnsi(railColor, theme);
+	const expectedPadTintBg = theme.getSurfaceTintBgAnsi(railColor, 0.015);
 	for (const line of lines) {
 		expect(visibleWidth(line)).toBe(width);
-		expect(line).toContain(expectedTintBg);
+		expect(line.includes(expectedTintBg) || line.includes(expectedPadTintBg)).toBe(true);
 		expect(Bun.stripANSI(line).endsWith(" ")).toBe(true);
 		expect(line.endsWith("\x1b[49m ")).toBe(true);
 	}
@@ -210,7 +221,6 @@ describe("output-block border style", () => {
 		const width = 18;
 		const expectedContentWidth = width - 3;
 		const contentWidth = outputBlockContentWidth(width, undefined, "accent");
-		const successPrefix = accentPrefix("success");
 		const errorPrefix = accentPrefix("error");
 		const payload = "A".repeat(expectedContentWidth + 2);
 		const success = framedBlock(darkTheme, blockWidth => ({
@@ -256,8 +266,8 @@ describe("output-block border style", () => {
 		]);
 		expectNoFrameGlyphs(plain(success).join("\n"));
 		expectNoFrameGlyphs(plain(error).join("\n"));
-		expect(success.every(line => line.startsWith(successPrefix))).toBe(true);
-		expect(error.every(line => line.startsWith(errorPrefix))).toBe(true);
+		expect(success.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
+		expect(error.every(line => lineStartsWithAccentPrefix(line, "error"))).toBe(true);
 		expect(success.join("\n")).not.toContain(errorPrefix);
 		expectAccentTintStopsBeforeRightInset(success, "success", width);
 		expectAccentTintStopsBeforeRightInset(error, "error", width);
@@ -279,7 +289,7 @@ describe("output-block border style", () => {
 
 		expectUniformWidth(lines, width);
 		expect(plain(lines)).toEqual([padLine("▌ ", width), padLine("▌ Tool", width), padLine("▌ ", width)]);
-		expect(lines.every(line => line.startsWith(accentPrefix("success")))).toBe(true);
+		expect(lines.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
 		expectAccentTintStopsBeforeRightInset(lines, "success", width);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
 	});
@@ -318,7 +328,6 @@ describe("output-block border style", () => {
 	] as const)("paints accent $name rows with the matching surface tint after resets", spec => {
 		const width = 30;
 		const resetText = `pre\x1b[0mmid\x1b[49mpost`;
-		const expectedPrefix = accentPrefix(spec.railColor);
 		const expectedTintBg = surfaceTintBgAnsi(spec.railColor);
 		const otherTintBgs = (["borderMuted", "success", "error"] as const)
 			.filter(name => name !== spec.railColor)
@@ -341,7 +350,7 @@ describe("output-block border style", () => {
 			padLine("▌ ", width),
 		]);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
-		expect(lines.every(line => line.startsWith(expectedPrefix))).toBe(true);
+		expect(lines.every(line => lineStartsWithAccentPrefix(line, spec.railColor))).toBe(true);
 		expect(lines.every(line => line.endsWith("\x1b[49m "))).toBe(true);
 		expect(raw).toContain(`\x1b[0m${expectedTintBg}mid`);
 		expect(raw).toContain(`\x1b[49m${expectedTintBg}post`);

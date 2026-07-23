@@ -16,6 +16,7 @@ import { SecretObfuscator } from "../../secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../session/session-history-format";
 import { YieldQueue } from "../../session/yield-queue";
 import { BUILTIN_TOOL_NAMES } from "../../tools/builtin-names";
+import type { OutputBlockBorderStyle } from "../../tui/output-block";
 import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "../../tui/output-block";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
@@ -3826,6 +3827,15 @@ describe("advisor", () => {
 	});
 
 	describe("createAdvisorMessageCard", () => {
+		let previousBorderStyle: OutputBlockBorderStyle | undefined;
+		beforeEach(() => {
+			previousBorderStyle = getOutputBlockBorderStyle();
+			setOutputBlockBorderStyle("full");
+		});
+		afterEach(() => {
+			if (previousBorderStyle !== undefined) setOutputBlockBorderStyle(previousBorderStyle);
+		});
+
 		const stripAnsi = (text: string): string => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
 		const strip = (lines: readonly string[]): string => lines.map(stripAnsi).join("\n");
 

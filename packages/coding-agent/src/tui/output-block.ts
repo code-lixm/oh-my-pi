@@ -44,6 +44,11 @@ export const OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH = 2;
 export const OUTPUT_BLOCK_ACCENT_RIGHT_INSET = 1;
 export const OUTPUT_BLOCK_ACCENT_GLYPH = "▌";
 
+/** Tint opacity for block-internal padding rows (leading/trailing breathing
+ * rows inside the card). Kept near zero so intra-card padding reads as a
+ * plain blank rather than a tinted block — small intra-card padding. The
+ * inter-block plain margin is owned by the transcript container. */
+export const ACCENT_PAD_TINT_OPACITY = 0.015;
 /** Layout modes whose surface draws no box frame. `accent` uses a half-cell
  * `▌` glyph over a translucent-looking tint derived from the same semantic
  * color; `none` stays bare. */
@@ -163,6 +168,28 @@ export function renderOutputAccentLine(
 	return `${rail}${tintedBody}${rightInset}`;
 }
 
+/**
+ * Render a block-internal padding row (leading or trailing breathing row
+ * inside an accent card). The rail glyph and ANSI prefix match
+ * `renderOutputAccentLine` so block edges stay visually anchored, but the
+ * tinted surface background drops to a near-zero opacity so the row reads as
+ * part of the margin rather than a second tinted block — small intra-card
+ * padding. Inter-block plain margins remain owned by the transcript
+ * container.
+ */
+export function renderOutputAccentPadLine(width: number, theme: Theme, color: ThemeColor): string {
+	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
+	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));
+	if (surfaceWidth === 0) return rightInset;
+	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, ACCENT_PAD_TINT_OPACITY);
+	const railFgAnsi = color === "borderMuted" ? theme.getSurfaceTintFgAnsi(color) : theme.getFgAnsi(color);
+	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, tintedBgAnsi);
+	if (surfaceWidth === 1) return `${rail}${rightInset}`;
+	const contentWidth = Math.max(0, surfaceWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH);
+	const tintedBody = applyStableBackground(` ${" ".repeat(contentWidth)}`, tintedBgAnsi);
+	return `${rail}${tintedBody}${rightInset}`;
+}
+
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
 	const { header, headerMeta, state, sections = [], width } = options;
 	const applyBg = options.applyBg ?? false;
@@ -200,8 +227,18 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	if (borderless) {
 		const lines: string[] = [];
 		const borderlessLineWidth = Math.max(0, lineWidth - accentGutterWidth - accentRightInset);
+		// Block-internal padding rows render with the same tinted surface as the
+		// body, but the rail glyph uses the low-emphasis surface tint foreground
+		// instead of the full semantic color — visually lighter so the leading
+		// and trailing breathing rows read as part of the margin rather than a
+		// second tinted block. Inter-block plain margins remain owned by the
+		// transcript container.
 		const pushLine = (line: string): void => {
 			if (accentMode) {
+				if (line === "") {
+					lines.push(renderOutputAccentPadLine(lineWidth, theme, borderColor));
+					return;
+				}
 				lines.push(renderOutputAccentLine(line, lineWidth, theme, borderColor, options.accentTintOpacity));
 				return;
 			}
