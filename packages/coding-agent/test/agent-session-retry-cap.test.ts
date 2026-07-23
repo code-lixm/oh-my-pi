@@ -1431,4 +1431,81 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.stopReason).toBe("stop");
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after default 502 retry budget" });
 	});
+
+	/**
+	 * Contract: when the provider returns `503 Service temporarily unavailable`
+	 * for every retry, the retry budget must exhaust cleanly so the session
+	 * settles into a usable state where the user can issue a follow-up prompt
+	 * and receive a normal response. A stalled "I can't do anything" session
+	 * violates the interactive-loop contract even if every single retry was
+	 * a legitimate transient failure.
+	 */
+	it("recovers input after persistent 503 exhausts the retry budget", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+
+		const error503 = "503 Service temporarily unavailable Service temporarily unavailable (type=api_error)";
+
+		const mock = createMockModel();
+		let attempts = 0;
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				attempts += 1;
+				mock.push({ throw: error503 });
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({ "compaction.enabled": false });
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		// Skip the retry sleep so the test only measures the contract under test,
+		// not the exponential backoff timing.
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		// First prompt: every retry returns 503.
+		await session.prompt("trigger persistent 503");
+		await session.waitForIdle();
+
+		expect(retryEndEvents.length).toBeGreaterThan(0);
+		const finalRetryEnd = retryEndEvents.at(-1)!;
+		expect(finalRetryEnd).toMatchObject({ success: false });
+		expect(attempts).toBeGreaterThan(settings.get("retry.maxRetries"));
+
+		// Session must be back in a state that accepts a follow-up prompt.
+		expect(session.agent.state.isStreaming).toBe(false);
+
+		// Switch the mock to a successful response and verify a second prompt
+		// completes normally — the user-visible "stuck forever" contract.
+		const beforeSecondPrompt = mock.calls.length;
+		mock.push({ content: ["recovered on second prompt"] });
+		await session.prompt("follow-up after 503 storm");
+		await session.waitForIdle();
+
+		expect(mock.calls.length).toBeGreaterThan(beforeSecondPrompt);
+		const last = lastAssistant(session);
+		expect(last.stopReason).toBe("stop");
+		expect(last.content).toContainEqual({ type: "text", text: "recovered on second prompt" });
+	});
 });
