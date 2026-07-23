@@ -10,6 +10,9 @@
 - Added extension-defined usage provider adapters through `pi.registerUsageProvider(...)` and a generic status-line `usage` segment for provider/account/model quotas, arbitrary windows, and currency balances.
 - Added compact battery-style status-line usage rendering with optional labels and percentages, including a configurable half-height rectangular mode with right-aligned remaining quota and green/yellow/red thresholds.
 - Added configuration-driven named custom status-line presets through `statusLine.customPresets`; the settings selector displays each configured label and supports multiple selectable layouts.
+- Added a `background` value for `display.borderStyle` that renders tool cards with filled backgrounds instead of framed borders.
+- Added an `accent` value for `display.borderStyle` that replaces full frames with a half-cell `▌` semantic-color rail, a matching translucent-looking tint, and vertical card padding across standard tool blocks and interactive Bash sessions.
+- Added `display.basicToolDetails` to control completed `read`, `grep`, and `glob` detail visibility.
 
 ### Changed
 
@@ -17,11 +20,14 @@
 - Changed late Advisor notes of every severity to trigger a fresh primary-agent turn after a terminal answer with no queued work, while preserving deliberate user-interrupt, plan-mode, deferred-ACP, and headless safeguards.
 - Grouped uninterrupted Hub messaging, job waits, agent status, and IRC notifications into one compact expandable transcript activity block.
 - Changed the status-line usage segment to invalidate and filter quota data on active-model changes, while battery mode labels active-provider quota with the current model ID.
-- Changed Bash call previews and running results to use spinner/status indicators without repainting the whole card with a transient pending or running background; error and timeout backgrounds remain semantic.
+- Changed Bash call previews and results to use semantic foreground and outline colors without repainting the terminal surface; filled state colors are now reserved for the explicit `background` border style.
 - Changed Bash and Eval execution cards to use one rounded legend frame (`shell`, `python`, or `javascript`), with command/code and output in a single body separated only by blank space; streaming output now repaints inside the same frame.
+- Changed Assistant fenced code under the `accent` display style to a copy-safe presentation with no painted background that aligns with surrounding prose, uses the theme code color for plain-text fences, preserves syntax highlighting for supported languages, hides raw Markdown fences and language labels, preserves folding, and wraps over-wide lines without dropping content.
+- Changed focused subagent sessions into fullscreen read-only transcript views with dedicated agent navigation, model/status metadata, compact progress HUDs, and current-request average output TPS; direct user prompts now remain exclusive to the main agent.
 
 ### Fixed
 
+- Fixed exiting a fresh interactive session with no conversation printing an unusable `omp --resume <id>` hint even though the empty session was intentionally never persisted.
 - Fixed status-line usage balances remaining stale while the TUI was idle; successful, failed, and timed-out fetches now schedule a completion-aligned refresh at the five-minute cache TTL, with cleanup on disable and dispose.
 - Fixed custom status-line previews dropping user-defined segments and segment options when opening or cancelling the preset selector.
 - Fixed interactive Bash PTY overlays filling most of the terminal with blank rows for short output; normal-buffer sessions now grow with visible content up to the viewport cap, while alternate-screen programs retain their full terminal geometry and horizontal-only borders follow `display.borderStyle`.
@@ -30,6 +36,7 @@
 - Fixed built-in tool titles being translated under `displayLanguage: "zh-CN"`; identifiers such as `Read`, `Grep`, and `Glob` now remain unchanged while their descriptions and result metadata stay localized.
 - Fixed successful Hub message-wait timeouts leaving a standalone `IRC / no reply` card in live and rebuilt transcripts; empty waits now disappear while send timeouts, errors, replies, and job waits remain visible.
 - Fixed completed eval cells rendering structured `display()` JSON twice—once in the cell output and again as a detached tree beneath the card; cells now keep the single in-cell output while legacy no-cell results retain the tree fallback.
+- Fixed collapsed completed subagent cards repeating the completed JSON envelope; collapsed cards now hide the envelope status while expanded details still show the raw JSON.
 - Fixed `display.borderStyle: "none"` leaving framed Assistant Markdown code blocks and inconsistent Bash output chrome; borderless Bash cards now render as identity, command, blank line, and output without an `Output` subsection, while full and horizontal styles remain unchanged.
 - Fixed code and Markdown execution cells retaining an `Output` separator bar between source content and output; the sections now share one frame with a single blank row between them.
 - Fixed settings UI chrome (`TAB_METADATA` tab labels, `Model Role Storage` / `Enforce Seen-Line Guard` / `Generic Task Prewalk` groups, labels and descriptions, and the `options` arrays for Symbol Preset, Status Line preset/separator, output limits, sampling knobs, in-band tool dialects, model/image/memory/completion strategies, fallback chains, etc.) bypassing the configured `displayLanguage`; wrapped the remaining bare strings in `tSettingsUi(...)` and added matching translations.
@@ -37,7 +44,14 @@
 - Fixed the Plan Review execution-model slider rendering raw role identifiers under localized UIs; built-in roles now use the same localized display labels as the model selector while selection remains role/index-driven.
 - Fixed short single-phase todo cards collapsing to only the final open task during progress updates despite their header reporting the full task count.
 - Fixed live todo updates printing state snapshots into the scrolling transcript; successful updates now render only in the anchored HUD, which keeps completed tasks visible in short collapsed lists, while historical transcript rendering remains unchanged.
-## [17.0.7] - 2026-07-21
+- Fixed assistant prose and visible thinking rows in the live transcript rendering flush against the viewport edge while surrounding rows (user messages, tool cards, etc.) carry a 1-cell left pad; `AssistantMessageComponent` now builds its text and visible thinking `Markdown` children with `paddingX=1` so they share the same column as the rest of the transcript.
+- Fixed Advisor blocker cards using non-error severity chrome; blocker title, body, and border now use the error palette.
+- Fixed existing Advisor cards retaining a stale palette after active theme changes; blocker chrome now follows the active error foreground while remaining unfilled.
+- Fixed full-border framed cards drawing their left chrome in a separate viewport-edge column; all full framed cards now use the same one-cell left gutter as transcript text.
+- Fixed extension, hook, skill, reminder, summary, and rule-notification blocks painting wide background bands outside the shared transcript content gutter; default transcript surfaces now stay unfilled and use semantic outlines where applicable.
+- Fixed ordinary user messages losing their configured `userMessageBg` after the initial turn, and accent tool cards painting their tint through the rightmost terminal column.
+- Fixed the working-loader shimmer band jumping several cells in a single render after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): the per-loader capped clock now caps the per-render wall delta to one normal render cycle (default 80 ms), discards the surplus, and tracks animation time separately from the wall clock so subsequent renders do not pay back the stall.
+- Fixed the advisor staleness caveat appended to notes when newer primary turns arrived after the reviewed transcript window being hard-coded in English: the markdown wrapper now goes through `tSettingsUi(...)` with a `zh-CN` translation, so the advisory and transcript reflect the active `displayLanguage` like the rest of the advisor chrome.
 
 ### Fixed
 

@@ -17,7 +17,7 @@ import {
 import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
 import { getSettingsUiLocaleEpoch, tSettingsUi } from "../../i18n/settings-locale";
-import type { Theme } from "../../modes/theme/theme";
+import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
@@ -43,8 +43,11 @@ import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/rend
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import {
 	getOutputBlockBorderStyle,
+	isBorderlessOutputStyle,
 	isFramedBlockComponent,
 	markFramedBlockComponent,
+	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
+	renderOutputAccentLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -215,6 +218,71 @@ class SafeToolRendererComponent implements Component {
 		const dispose = this.#component.dispose;
 		if (dispose === undefined) return;
 		dispose.call(this.#component);
+	}
+}
+
+/**
+ * Adds the thin accent rail to renderer surfaces that do not already own their
+ * output-block chrome. Self-framing renderers receive the full width and draw
+ * the rail in `renderOutputBlock`; plain/custom fallback surfaces are narrowed
+ * by the same two cells before this wrapper prefixes each row.
+ */
+class ToolOutputSurfaceComponent implements Component {
+	readonly wantsKeyRelease: boolean | undefined;
+	#cache?: {
+		width: number;
+		childLines: readonly string[];
+		color: ThemeColor;
+		themeEpoch: number;
+		lines: readonly string[];
+	};
+
+	constructor(
+		private readonly child: Component,
+		private readonly isSelfFramed: () => boolean,
+		private readonly accentColor: () => ThemeColor,
+	) {
+		this.wantsKeyRelease = child.wantsKeyRelease;
+	}
+
+	render(width: number): readonly string[] {
+		const accentMode = getOutputBlockBorderStyle() === "accent" && !this.isSelfFramed();
+		if (!accentMode) {
+			this.#cache = undefined;
+			return this.child.render(width);
+		}
+		const innerWidth = Math.max(1, width - 2 - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
+		const childLines = this.child.render(innerWidth);
+		const color = this.accentColor();
+		const themeEpoch = getThemeEpoch();
+		if (
+			this.#cache?.width === width &&
+			this.#cache.childLines === childLines &&
+			this.#cache.color === color &&
+			this.#cache.themeEpoch === themeEpoch
+		) {
+			return this.#cache.lines;
+		}
+		const lines = [
+			renderOutputAccentLine("", width, theme, color),
+			...childLines.map(line => renderOutputAccentLine(line, width, theme, color)),
+			renderOutputAccentLine("", width, theme, color),
+		];
+		this.#cache = { width, childLines, color, themeEpoch, lines };
+		return lines;
+	}
+
+	handleInput(data: string): void {
+		this.child.handleInput?.call(this.child, data);
+	}
+
+	invalidate(): void {
+		this.#cache = undefined;
+		this.child.invalidate?.call(this.child);
+	}
+
+	dispose(): void {
+		this.child.dispose?.call(this.child);
 	}
 }
 /**
@@ -404,19 +472,36 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#args = args;
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 
-		// Keep one shared content container for custom/built-in renderers and a
-		// width-aware fallback for tools without a renderer. Padding remains stable
-		// across framed and borderless layouts without relying on state backgrounds.
-		this.#contentBox = new Box(0, 1);
-		this.#contentText = new WidthAwareText(contentWidth => this.#formatToolExecution(contentWidth), 1, 1);
+		// Accent cards paint their vertical padding inside the semantic surface;
+		// other styles retain the existing unpainted transcript spacing.
+		const accentMode = getOutputBlockBorderStyle() === "accent";
+		this.#contentBox = new Box(0, accentMode ? 0 : 1);
+		this.#contentText = new WidthAwareText(
+			contentWidth => this.#formatToolExecution(contentWidth),
+			1,
+			accentMode ? 0 : 1,
+		);
 
-		// Use Box for custom tools or built-in tools that have renderers
+		// Use Box for custom tools or built-in tools that have renderers. Only
+		// accent-mode instances need the surface wrapper; preserving the original
+		// direct child topology preserves the established full/none layout.
 		const hasRenderer = toolName in toolRenderers;
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
+		const accentColor = (): ThemeColor => (this.#result?.isError ? "error" : "borderMuted");
 		if (hasCustomRenderer || hasRenderer) {
-			this.addChild(this.#contentBox);
+			const surface = accentMode
+				? new ToolOutputSurfaceComponent(
+						this.#contentBox,
+						() => this.#contentBox.children.some(isFramedBlockComponent),
+						accentColor,
+					)
+				: this.#contentBox;
+			this.addChild(surface);
 		} else {
-			this.addChild(this.#contentText);
+			const surface = accentMode
+				? new ToolOutputSurfaceComponent(this.#contentText, () => false, accentColor)
+				: this.#contentText;
+			this.addChild(surface);
 		}
 		// Tool blocks keep their horizontal padding even when tight layout is enabled.
 		this.setIgnoreTight(true);
@@ -955,9 +1040,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderState.isPartial = this.#isPartial;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
-		// Pending/running tools stay unfilled; only failures retain a semantic
-		// background so live execution does not flash a full-width color block.
-		const stateBgFn = this.#result?.isError ? (text: string) => theme.bg("toolErrorBg", text) : undefined;
+		// Transcript blocks use semantic foreground and outline colors without
+		// painting the terminal surface. Explicit renderer-level backgrounds remain
+		// independent of the global border-style selection.
+		const borderlessMode = isBorderlessOutputStyle(getOutputBlockBorderStyle());
 
 		// Check for custom tool rendering
 		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
@@ -1053,10 +1139,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				}
 			}
 			// Custom tools that draw their own frame (task) render flush; plain
-			// extension renderers keep the shared padding and error-only background.
+			// extension renderers keep the shared padding.
 			const customFramed = this.#contentBox.children.some(isFramedBlockComponent);
-			this.#contentBox.setPaddingX(customFramed ? 0 : getOutputBlockBorderStyle() === "none" ? 0 : 1);
-			this.#contentBox.setBgFn(customFramed ? undefined : stateBgFn);
+			this.#contentBox.setPaddingX(customFramed || borderlessMode ? 0 : 1);
+			this.#contentBox.setBgFn(undefined);
 		} else if (this.#toolName in toolRenderers) {
 			// Built-in tools with renderers
 			const renderer = toolRenderers[this.#toolName];
@@ -1195,12 +1281,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				}
 			}
 			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
-			this.#contentBox.setPaddingX(builtInFramed ? 0 : getOutputBlockBorderStyle() === "none" ? 0 : 1);
+			this.#contentBox.setPaddingX(builtInFramed || borderlessMode ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
 			// instead of a fixed column cap.
-			this.#contentText.setCustomBgFn(stateBgFn);
+			this.#contentText.setCustomBgFn(undefined);
 			this.#contentText.invalidate();
 		}
 

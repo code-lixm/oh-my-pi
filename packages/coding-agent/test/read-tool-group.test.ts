@@ -9,6 +9,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { setBasicToolDetailsVisible } from "@oh-my-pi/pi-coding-agent/tui/basic-tool-display-policy";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function extractLinkUris(text: string): string[] {
@@ -38,10 +39,12 @@ describe("ReadToolGroupComponent", () => {
 
 	beforeEach(() => {
 		previousLocale = getSettingsUiLocale();
+		setBasicToolDetailsVisible(true);
 	});
 
 	afterEach(() => {
 		settings.clearOverride("tui.hyperlinks");
+		setBasicToolDetailsVisible(true);
 		setSettingsUiLocale(previousLocale);
 		vi.restoreAllMocks();
 	});
@@ -69,6 +72,88 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered).toContain(`Read: ${examplePath}`);
 		expect(rendered).not.toContain("line 1");
 		expect(rendered.toLowerCase()).not.toContain("ctrl+o");
+	});
+
+	it("hides read details behind the basic tool policy while preserving compact summaries", () => {
+		setBasicToolDetailsVisible(false);
+
+		const singlePath = path.resolve("/tmp/policy-off-single.ts");
+		const single = new ReadToolGroupComponent({ showContentPreview: true });
+		single.setExpanded(true);
+		single.updateArgs({ path: singlePath }, "read-policy-off-single");
+		single.updateResult(
+			{ content: [{ type: "text", text: "SINGLE_PREVIEW_SHOULD_BE_HIDDEN" }] },
+			false,
+			"read-policy-off-single",
+		);
+
+		const singlePlain = Bun.stripANSI(single.render(120).join("\n"));
+		const singleLines = singlePlain.split("\n").filter(line => line.trim().length > 0);
+		expect(singleLines).toHaveLength(1);
+		expect(singleLines[0]).toContain(`Read: ${singlePath}`);
+		expect(singlePlain).not.toContain("SINGLE_PREVIEW_SHOULD_BE_HIDDEN");
+
+		const onePath = path.resolve("/tmp/policy-off-one.ts");
+		const twoPath = path.resolve("/tmp/policy-off-two.ts");
+		const grouped = new ReadToolGroupComponent({ showContentPreview: true });
+		grouped.setExpanded(true);
+		grouped.updateArgs({ path: onePath }, "read-policy-off-one");
+		grouped.updateArgs({ path: twoPath }, "read-policy-off-two");
+		grouped.updateResult(
+			{ content: [{ type: "text", text: "GROUPED_ONE_PREVIEW_SHOULD_BE_HIDDEN" }] },
+			false,
+			"read-policy-off-one",
+		);
+		grouped.updateResult(
+			{ content: [{ type: "text", text: "GROUPED_TWO_PREVIEW_SHOULD_BE_HIDDEN" }] },
+			false,
+			"read-policy-off-two",
+		);
+
+		const groupedPlain = Bun.stripANSI(grouped.render(120).join("\n"));
+		const groupedLines = groupedPlain.split("\n").filter(line => line.trim().length > 0);
+		expect(groupedLines).toHaveLength(1);
+		expect(groupedLines[0]).toContain("Read 2 paths");
+		expect(groupedPlain).not.toContain(onePath);
+		expect(groupedPlain).not.toContain(twoPath);
+		expect(groupedPlain).not.toContain(themeModule.theme.tree.branch);
+		expect(groupedPlain).not.toContain(themeModule.theme.tree.last);
+		expect(groupedPlain).not.toContain("GROUPED_ONE_PREVIEW_SHOULD_BE_HIDDEN");
+		expect(groupedPlain).not.toContain("GROUPED_TWO_PREVIEW_SHOULD_BE_HIDDEN");
+	});
+
+	it("keeps read path lists and content previews visible while the basic tool policy is on", () => {
+		setBasicToolDetailsVisible(true);
+
+		const list = new ReadToolGroupComponent();
+		const onePath = path.resolve("/tmp/policy-on-one.ts");
+		const twoPath = path.resolve("/tmp/policy-on-two.ts");
+		list.updateArgs({ path: onePath }, "read-policy-on-one");
+		list.updateArgs({ path: twoPath }, "read-policy-on-two");
+		list.updateResult({ content: [{ type: "text", text: "one" }] }, false, "read-policy-on-one");
+		list.updateResult({ content: [{ type: "text", text: "two" }] }, false, "read-policy-on-two");
+
+		const listPlain = Bun.stripANSI(list.render(120).join("\n"));
+		expect(listPlain.split("\n").filter(line => line.trim().length > 0)).toHaveLength(3);
+		expect(listPlain).toContain("Read 2 paths");
+		expect(listPlain).toContain(`${themeModule.theme.tree.branch} ${onePath}`);
+		expect(listPlain).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
+
+		const previewPath = path.resolve("/tmp/policy-on-preview.ts");
+		const preview = new ReadToolGroupComponent({ showContentPreview: true });
+		preview.setExpanded(true);
+		preview.updateArgs({ path: previewPath }, "read-policy-on-preview");
+		preview.updateResult(
+			{ content: [{ type: "text", text: "POLICY_ON_PREVIEW_LINE_1\nPOLICY_ON_PREVIEW_LINE_2" }] },
+			false,
+			"read-policy-on-preview",
+		);
+
+		const previewPlain = Bun.stripANSI(preview.render(120).join("\n"));
+		expect(previewPlain.split("\n").filter(line => line.trim().length > 0).length).toBeGreaterThan(1);
+		expect(previewPlain).toContain(`Read ${previewPath}`);
+		expect(previewPlain).toContain("POLICY_ON_PREVIEW_LINE_1");
+		expect(previewPlain).toContain("POLICY_ON_PREVIEW_LINE_2");
 	});
 
 	it("renders zh-CN grouped read chrome with raw Read titles and localized counts on column-1 headers", () => {

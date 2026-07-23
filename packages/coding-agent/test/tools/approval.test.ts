@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AgentTool, ToolApproval } from "@oh-my-pi/pi-agent-core";
 import { LSP_READONLY_ACTIONS } from "@oh-my-pi/pi-coding-agent/lsp";
 import {
@@ -10,8 +10,20 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/approval";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { DEBUG_READONLY_ACTIONS } from "@oh-my-pi/pi-coding-agent/tools/debug";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 type ApprovalTool = Pick<AgentTool, "name" | "approval" | "formatApprovalDetails">;
+
+let previousSettingsUiLocale = getSettingsUiLocale();
+
+beforeEach(() => {
+	previousSettingsUiLocale = getSettingsUiLocale();
+	setSettingsUiLocale("en");
+});
+
+afterEach(() => {
+	setSettingsUiLocale(previousSettingsUiLocale);
+});
 
 function tool(
 	name: string,

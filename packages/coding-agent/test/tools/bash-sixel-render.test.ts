@@ -109,7 +109,7 @@ describe("bashToolRenderer", () => {
 			const strippedLines = Bun.stripANSI(rendered).split("\n");
 			expect(strippedLines.length).toBeGreaterThanOrEqual(3);
 			const header = rendered.split("\n")[0] ?? "";
-			expect(header.startsWith(borderMuted)).toBe(true);
+			expect(header.startsWith(` ${borderMuted}`)).toBe(true);
 			expect(strippedLines[0]).not.toContain("Bash");
 			expect(strippedLines[0]).not.toContain("sleep 30");
 			expect(strippedLines.slice(1, -1).join("\n")).toContain("$ sleep 30");
@@ -175,7 +175,7 @@ describe("bashToolRenderer", () => {
 			expect(theme).toBeDefined();
 			const uiTheme = theme!;
 
-			for (const borderStyle of ["full", "horizontal"] as const) {
+			for (const borderStyle of ["full", "accent"] as const) {
 				setOutputBlockBorderStyle(borderStyle);
 				const component = bashToolRenderer.renderResult(
 					{
@@ -425,9 +425,9 @@ describe("bashToolRenderer", () => {
 			expect(rendered).not.toContain(pendingBg);
 			expect(rendered).not.toContain(runningBg);
 			const headerLine = lines[0]!;
-			expect(headerLine.startsWith(borderMuted)).toBe(true);
-			expect(headerLine.startsWith(dim)).toBe(false);
-			expect(headerLine.startsWith(accent)).toBe(false);
+			expect(headerLine.startsWith(` ${borderMuted}`)).toBe(true);
+			expect(headerLine.startsWith(` ${dim}`)).toBe(false);
+			expect(headerLine.startsWith(` ${accent}`)).toBe(false);
 			const plain = Bun.stripANSI(rendered);
 			expect(plain).toContain("$ sleep 1");
 			// New contract: no labeled divider between command and output
@@ -474,9 +474,9 @@ describe("bashToolRenderer", () => {
 			expect(rendered).not.toContain(pendingBg);
 			expect(rendered).not.toContain(runningBg);
 			const headerLine = lines[0]!;
-			expect(headerLine.startsWith(borderMuted)).toBe(true);
-			expect(headerLine.startsWith(dim)).toBe(false);
-			expect(headerLine.startsWith(accent)).toBe(false);
+			expect(headerLine.startsWith(` ${borderMuted}`)).toBe(true);
+			expect(headerLine.startsWith(` ${dim}`)).toBe(false);
+			expect(headerLine.startsWith(` ${accent}`)).toBe(false);
 		}
 	});
 

@@ -221,4 +221,49 @@ describe("Loader component", () => {
 		expect(container.children).toEqual([]);
 		tui.stop();
 	});
+
+	it("advances the spinner by exactly one frame after a long event-loop stall with no catch-up across the next few ticks", () => {
+		vi.useFakeTimers();
+		// Bun's `vi.useFakeTimers()` drives setInterval but not `performance.now()`.
+		// Spy the latter so we can pin the wall clock independently.
+		let perfNow = 0;
+		const perfSpy = spyOn(performance, "now").mockImplementation(() => perfNow);
+		// `start()` reads `performance.now()` immediately for `#lastSpinnerTick`,
+		// so pin the baseline wall BEFORE constructing the loader.
+		perfNow = 1000;
+
+		const colorMessage = ((s: string) => s) as LoaderMessageColorFn & { animated: true };
+		colorMessage.animated = true;
+		const ui = { requestDirectWrite: vi.fn(), requestComponentRender: vi.fn() };
+		const loader = new Loader(ui as unknown as TUI, text => text, colorMessage, "Checking", ["0", "1", "2", "3"]);
+
+		// Baseline: one 33 ms tick at wall 1033. elapsed = 33 < SPINNER_ADVANCE_MS → no advance.
+		perfNow = 1033;
+		vi.advanceTimersByTime(33);
+		const baseline = loader.render(20).join("\n");
+		expect(baseline).toContain("0 Checking");
+
+		// Stall: perfNow jumps 300 ms with no setInterval tick. A naive catch-up
+		// (`floor(elapsed / 80) = 4`) would jump the spinner 4 frames in one tick.
+		perfNow = 1333;
+		vi.advanceTimersByTime(33);
+		const afterStall = loader.render(20).join("\n");
+		expect(afterStall).toContain("1 Checking");
+
+		// The cap must discard the 220 ms surplus — the next two normal ticks
+		// (elapsed 33, 66) must NOT advance, and only one further tick (elapsed 99)
+		// should reach the 80 ms threshold and produce frame 2.
+		perfNow = 1366;
+		vi.advanceTimersByTime(33);
+		expect(loader.render(20).join("\n")).toContain("1 Checking");
+		perfNow = 1399;
+		vi.advanceTimersByTime(33);
+		expect(loader.render(20).join("\n")).toContain("1 Checking");
+		perfNow = 1432;
+		vi.advanceTimersByTime(33);
+		expect(loader.render(20).join("\n")).toContain("2 Checking");
+
+		loader.stop();
+		perfSpy.mockRestore();
+	});
 });

@@ -66,7 +66,12 @@ import {
 	setPreferredSearchProvider,
 } from "../../tools";
 import { shortenPath } from "../../tools/render-utils";
-import { type OutputBlockBorderStyle, setOutputBlockBorderStyle } from "../../tui/output-block";
+import { setBasicToolDetailsVisible } from "../../tui";
+import {
+	type OutputBlockBorderStyle,
+	resolveMarkdownTableBorderStyle,
+	setOutputBlockBorderStyle,
+} from "../../tui/output-block";
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
@@ -507,6 +512,11 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
+			case "display.basicToolDetails":
+				setBasicToolDetailsVisible(value as boolean);
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
 			case "display.collapseCompacted":
 				// Rebuild swaps between the collapsed tail and the full inline
 				// history; full reset retires blocks already committed to native
@@ -517,7 +527,7 @@ export class SelectorController {
 			case "display.borderStyle": {
 				const borderStyle = value as OutputBlockBorderStyle;
 				setOutputBlockBorderStyle(borderStyle);
-				setMarkdownTableBorderStyle(borderStyle);
+				setMarkdownTableBorderStyle(resolveMarkdownTableBorderStyle(borderStyle));
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
@@ -1863,7 +1873,7 @@ export class SelectorController {
 			hub?.dispose();
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(this.ctx.editor);
-			this.ctx.ui.setFocus(this.ctx.editor);
+			if (!this.ctx.focusedAgentId) this.ctx.ui.setFocus(this.ctx.editor);
 			this.ctx.ui.requestRender();
 		};
 

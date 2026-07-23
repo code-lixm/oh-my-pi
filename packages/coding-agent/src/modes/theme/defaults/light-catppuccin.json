@@ -27,7 +27,8 @@
 		"surface0": "#ccd0da",
 		"base": "#eff1f5",
 		"mantle": "#e6e9ef",
-		"crust": "#dce0e8"
+		"crust": "#dce0e8",
+		"errorSurface": "#f5d3d8"
 	},
 	"colors": {
 		"accent": "mauve",
@@ -49,7 +50,7 @@
 		"customMessageLabel": "mauve",
 		"toolPendingBg": "surface0",
 		"toolSuccessBg": "mantle",
-		"toolErrorBg": "mantle",
+		"toolErrorBg": "errorSurface",
 		"toolTitle": "blue",
 		"toolOutput": "subtext0",
 		"mdHeading": "peach",

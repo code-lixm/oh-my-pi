@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import * as shimmerModule from "@oh-my-pi/pi-coding-agent/modes/theme/shimmer";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -194,8 +195,50 @@ describe("InteractiveMode working-message session accent cache", () => {
 		expect(getHex).toHaveBeenCalledTimes(1);
 
 		settings.set("statusLine.sessionAccent", true);
-		mode.loadingAnimation?.setMessage("Accent enabled");
 		expect(renderLoader(mode)).toContain(accentAnsi);
 		expect(getHex).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not let the shimmer band race after a long event-loop stall", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(5000);
+		let perfNow = 1000;
+		const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => perfNow);
+		// Capture the real `shimmerText` output at the four expected animationTime
+		// values the per-loader capped clock should reach — these are the baselines
+		// each `renderLoader(mode)` call must match. With the cap removed, the
+		// first post-stall render would jump 300 ms (~9 cells) and land on the
+		const message = "Working on the project documentation update";
+		const expectedTimes = [5000, 5080, 5113, 5146] as const;
+		const { mode } = await createHarness("Shimmer stability");
+		settings.set("display.shimmer", "classic");
+		settings.set("statusLine.sessionAccent", false);
+		const expectedBaselines = expectedTimes.map(t => shimmerModule.shimmerText(message, theme, undefined, t));
+		startStableLoader(mode);
+		mode.loadingAnimation?.setMessage(message);
+		// wall 1000: animationTime seeded at 5000 + 0 → 5000
+		perfNow = 1000;
+		const r0 = renderLoader(mode);
+		// wall 1300: 300 ms stall capped to 80 ms → 5080
+		perfNow = 1300;
+		const r1 = renderLoader(mode);
+		// wall 1333: +33 → 5113
+		perfNow = 1333;
+		const r2 = renderLoader(mode);
+		// wall 1366: +33 → 5146
+		perfNow = 1366;
+		const r3 = renderLoader(mode);
+		// Each render must contain the real shimmerText output for the *capped* time
+		// the per-loader clock should reach. With the cap broken, wall 1300/1333/1366
+		// would advance the band by 300/33/33 ms and the renders would contain the
+		// uncapped baselines (5300/5333/5366) instead — the toContain below fails.
+		// The four baselines are guaranteed distinct (shimmer band moves ≥1 cell
+		// per 33 ms tick); assert that to lock the contract.
+		const renders = [r0, r1, r2, r3];
+		const uniqueBaselines = new Set(expectedBaselines);
+		expect(uniqueBaselines.size).toBe(4);
+		for (let i = 0; i < renders.length; i++) {
+			expect(renders[i]).toContain(expectedBaselines[i]);
+		}
+		perfSpy.mockRestore();
 	});
 });

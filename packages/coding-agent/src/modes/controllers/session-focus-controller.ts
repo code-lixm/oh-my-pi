@@ -10,7 +10,6 @@
  */
 
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import type { InteractiveModeContext } from "../types";
@@ -23,7 +22,6 @@ export class SessionFocusController {
 	constructor(
 		private ctx: InteractiveModeContext,
 		private registry: AgentRegistry = AgentRegistry.global(),
-		private lifecycle: () => AgentLifecycleManager = () => AgentLifecycleManager.global(),
 	) {}
 
 	get focusedAgentId(): string | undefined {
@@ -35,24 +33,28 @@ export class SessionFocusController {
 		return this.#attachedSession;
 	}
 
-	/** Focus the main view on an agent's live session. Throws an Error with a user-displayable message. */
+	/** Focus a live agent in the fullscreen read-only transcript view. */
 	async focusAgent(id: string): Promise<void> {
 		if (this.ctx.collabGuest) throw new Error("Viewing agents is unavailable in a collab session.");
 		if (id === MAIN_AGENT_ID) return this.unfocus();
-		const session = await this.lifecycle().ensureLive(id);
+		const ref = this.registry.get(id);
+		if (!ref?.session || (ref.status !== "running" && ref.status !== "idle")) {
+			throw new Error(tSettingsUi("Agent {id} is not live", { id }));
+		}
+		const session = ref.session;
 		if (id === this.#focusedAgentId && session === this.#attachedSession) return;
 		this.#focusedAgentId = id;
 		this.#attachedSession = session;
-		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
+		this.#registryUnsubscribe ??= this.registry.onChange(event => this.#onRegistryEvent(event));
 		await this.#attach(session);
-		this.ctx.showStatus(tSettingsUi("Viewing agent {id} — Esc returns to main, ←← hops to parent", { id }));
+		this.ctx.showFocusedAgentView(id);
 	}
 
-	/** Cycle through Main and live subagents in stable creation order. */
+	/** Cycle through live subagents in stable creation order. Main is reached only via Esc. */
 	async cycleAgent(direction: "next" | "previous"): Promise<void> {
 		const agentIds = this.registry
 			.list()
-			.filter(ref => ref.kind === "sub" && (ref.status === "running" || ref.status === "idle"))
+			.filter(ref => ref.kind === "sub" && ref.session && (ref.status === "running" || ref.status === "idle"))
 			.sort((left, right) => left.createdAt - right.createdAt)
 			.map(ref => ref.id);
 		if (agentIds.length === 0) {
@@ -60,14 +62,14 @@ export class SessionFocusController {
 			return;
 		}
 
-		const targets = [MAIN_AGENT_ID, ...agentIds];
-		const current = this.#focusedAgentId ?? MAIN_AGENT_ID;
-		const currentIndex = Math.max(0, targets.indexOf(current));
-		const delta = direction === "next" ? 1 : -1;
-		const targetIndex = (currentIndex + delta + targets.length) % targets.length;
-		const target = targets[targetIndex]!;
-		if (target === MAIN_AGENT_ID) return this.unfocus();
-		return this.focusAgent(target);
+		const currentIndex = this.#focusedAgentId ? agentIds.indexOf(this.#focusedAgentId) : -1;
+		const targetIndex =
+			currentIndex < 0
+				? direction === "next"
+					? 0
+					: agentIds.length - 1
+				: (currentIndex + (direction === "next" ? 1 : -1) + agentIds.length) % agentIds.length;
+		return this.focusAgent(agentIds[targetIndex]!);
 	}
 
 	/** Focus the focused agent's parent agent, falling back to the main session. No-op when unfocused. */
@@ -86,6 +88,7 @@ export class SessionFocusController {
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		await this.#attach(this.ctx.session);
+		this.ctx.hideFocusedAgentView();
 		this.ctx.showStatus(tSettingsUi("Returned to main session"));
 	}
 
@@ -97,8 +100,9 @@ export class SessionFocusController {
 	#onRegistryEvent(event: RegistryEvent): void {
 		if (event.ref.id !== this.#focusedAgentId) return;
 		const gone = event.type === "removed";
-		const dead = event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
-		if (!gone && !dead) return;
+		const detached =
+			event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
+		if (!gone && !detached) return;
 		void this.unfocus().then(() => {
 			this.ctx.showStatus(
 				tSettingsUi("Agent {id} is {status}; returned to main session", {

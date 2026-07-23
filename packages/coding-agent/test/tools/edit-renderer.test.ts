@@ -434,8 +434,8 @@ describe("editToolRenderer", () => {
 
 		const lines = component.render(48).map(line => Bun.stripANSI(line));
 		expect(lines.every(line => visibleWidth(line) === 48)).toBe(true);
-		expect(lines[1]).toStartWith("│+1│");
-		expect(lines[1]).not.toStartWith("│ +1│");
+		expect(lines[1]).toStartWith(" │+1│");
+		expect(lines[1]).not.toStartWith(" │ +1│");
 	});
 
 	it("does not leak the first file's no-change preview into a multi-file delete result", async () => {
@@ -597,9 +597,9 @@ describe("editToolRenderer diff line wrapping", () => {
 		// the spaces-only continuation gutter rather than start as bare prose.
 		const tailRows = rows.filter(row => row.includes("zephyrQuota") || row.includes("marbledFinale"));
 		expect(tailRows.length).toBeGreaterThanOrEqual(1);
-		for (const row of tailRows) expect(row).toMatch(/^│\s+│/);
+		for (const row of tailRows) expect(row).toMatch(/^ │\s+│/);
 		// Every body row stays inside a code-frame gutter (`-42│`, `   +│`, `    │`).
-		for (const row of rows.slice(1, -1)) expect(row).toMatch(/^│\s*[+-]?\s*\d*│/);
+		for (const row of rows.slice(1, -1)) expect(row).toMatch(/^ │\s*[+-]?\s*\d*│/);
 	});
 
 	it("closes inverse video at every wrapped row end so frame padding stays uninverted", async () => {
@@ -627,6 +627,32 @@ describe("editToolRenderer diff line wrapping", () => {
 		for (const row of rows) expect(inverseActiveAtRowEnd(row)).toBe(false);
 	});
 
+	it.each([69, 71, 73, 81, 100] as const)(
+		"keeps every full-frame row exactly at assigned width %i for wrapped highlighted replacements",
+		async width => {
+			const previousLevel = chalk.level;
+			chalk.level = 3;
+			try {
+				const rows = await renderSingleLineReplacement(
+					"    the quarterly audit note retains archived monochrome courier ledgers with narrow labels for every stored crate before transfer",
+					"    the quarterly audit note now replaces archived monochrome courier ledgers with luminous carnival manifests, saffron lantern batches, cobalt ribbon inventories, and percussion rosters that overflow the assigned terminal frame after highlighting",
+					width,
+				);
+
+				expect(rows.length).toBeGreaterThan(3);
+				expect(rows.some(row => /\x1b\[7m/.test(row))).toBe(true);
+				for (const [rowIndex, row] of rows.entries()) {
+					expect(
+						visibleWidth(row),
+						`width=${width} row=${rowIndex} text=${JSON.stringify(Bun.stripANSI(row))}`,
+					).toBe(width);
+				}
+			} finally {
+				chalk.level = previousLevel;
+			}
+		},
+	);
+
 	// Error results reuse the same body-line wrapper as diff rows; these tests
 	// pin the boundary between prose that merely looks pipe-ish and real gutters.
 	async function renderErrorResultRows(errorText: string): Promise<string[]> {
@@ -653,8 +679,8 @@ describe("editToolRenderer diff line wrapping", () => {
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the `|` lead survived on row one.
 		expect(bodyRows.length).toBeGreaterThanOrEqual(2);
-		expect(bodyRows[0]).toMatch(/^│\| /);
-		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^│\s*\|/);
+		expect(bodyRows[0]).toMatch(/^ │\| /);
+		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^ │\s*\|/);
 	});
 
 	it("wraps spaces-then-bare-pipe error text generically instead of minting a gutter", async () => {
@@ -666,8 +692,8 @@ describe("editToolRenderer diff line wrapping", () => {
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the pipe lead survived on row one.
 		expect(bodyRows.length).toBeGreaterThanOrEqual(2);
-		expect(bodyRows[0]).toMatch(/^│\s+\| /);
-		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^│\s*\|/);
+		expect(bodyRows[0]).toMatch(/^ │\s+\| /);
+		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^ │\s*\|/);
 	});
 
 	it("wraps digit-leading pipe error text generically when the marker column is missing", async () => {
@@ -679,8 +705,8 @@ describe("editToolRenderer diff line wrapping", () => {
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the numbered lead survived on row one.
 		expect(bodyRows.length).toBeGreaterThanOrEqual(2);
-		expect(bodyRows[0]).toMatch(/^│123\| /);
-		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^│\s*\|/);
+		expect(bodyRows[0]).toMatch(/^ │123\| /);
+		for (const row of bodyRows.slice(1)) expect(row).not.toMatch(/^ │\s*\|/);
 	});
 
 	it("keeps the numbered ASCII-pipe gutter for canonical rows through the plain fallback", async () => {
@@ -706,7 +732,7 @@ describe("editToolRenderer diff line wrapping", () => {
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the row actually wrapped past its first visual line.
 		expect(bodyRows.length).toBeGreaterThanOrEqual(2);
-		expect(bodyRows[0]).toMatch(/^│-42\|/);
-		for (const row of bodyRows.slice(1)) expect(row).toMatch(/^│\s+\|/);
+		expect(bodyRows[0]).toMatch(/^ │-42\|/);
+		for (const row of bodyRows.slice(1)) expect(row).toMatch(/^ │\s+\|/);
 	});
 });

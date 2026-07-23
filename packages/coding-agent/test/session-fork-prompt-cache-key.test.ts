@@ -53,26 +53,34 @@ async function createMinimalSession(
 ): Promise<{ session: AgentSession; authStorage: AuthStorage }> {
 	const authStorage = await AuthStorage.create(tempDir.join("sdk-auth.db"));
 	authStorage.setRuntimeApiKey("openai", "test-key");
+	const isolatedSessionRoot = await fs.mkdtemp(path.join(tempDir.path(), "session-"));
+	const cwd = path.join(isolatedSessionRoot, "project");
+	const agentDir = path.join(isolatedSessionRoot, "agent");
+	await fs.mkdir(cwd, { recursive: true });
+	await fs.mkdir(agentDir, { recursive: true });
+	const modelRegistry = new ModelRegistry(authStorage, path.join(agentDir, "models.yml"));
 	const shouldSupplyModel = options.sessionManager?.getHeader()?.parentSession === undefined;
 	const result = await createAgentSession({
 		...options,
-		cwd: options.cwd ?? tempDir.path(),
-		agentDir: tempDir.path(),
+		cwd,
+		agentDir,
 		authStorage,
-		modelRegistry: undefined,
+		modelRegistry,
 		model: shouldSupplyModel ? (options.model ?? OPENAI_TEST_MODEL) : options.model,
 		settings: Settings.isolated({
 			"async.enabled": false,
 			"marketplace.autoUpdate": "off",
 		}),
 		disableExtensionDiscovery: true,
-		preloadedExtensions: undefined,
+		preloadedExtensionPaths: [],
+		preloadedCustomToolPaths: [],
+		rules: [],
 		skills: [],
 		contextFiles: [],
 		promptTemplates: [],
 		slashCommands: [],
 		workspaceTree: {
-			rootPath: options.cwd ?? tempDir.path(),
+			rootPath: cwd,
 			rendered: "",
 			truncated: false,
 			totalLines: 0,

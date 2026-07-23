@@ -13,6 +13,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
@@ -26,9 +27,13 @@ const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as
 
 type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
-function pollResult(statuses: JobStatus[], extra: { cancelled?: boolean; isError?: boolean } = {}) {
+function pollResult(
+	statuses: JobStatus[],
+	extra: { cancelled?: boolean; isError?: boolean } = {},
+	labelPrefix = "job",
+) {
 	return {
-		content: [{ type: "text" as const, text: "" }],
+		content: [{ type: "text" as const, text: extra.isError ? "poll failed" : "" }],
 		isError: extra.isError,
 		details: {
 			op: "wait" as const,
@@ -36,7 +41,7 @@ function pollResult(statuses: JobStatus[], extra: { cancelled?: boolean; isError
 				id: `j${i}`,
 				type: "task" as const,
 				status,
-				label: `job ${i}`,
+				label: `${labelPrefix} ${i}`,
 				durationMs: 1_000,
 			})),
 			...(extra.cancelled ? { cancelled: [{ id: "j0", status: "cancelled" as const }] } : {}),
@@ -62,7 +67,9 @@ function todoResult(items = ["investigate", "fix"]) {
 	};
 }
 
-function trackComponent(components: ToolExecutionComponent[], component: ToolExecutionComponent) {
+type SealableComponent = { seal(): void };
+
+function trackComponent<T extends SealableComponent>(components: SealableComponent[], component: T) {
 	components.push(component);
 	return component;
 }
@@ -148,7 +155,7 @@ describe("hub waiting-poll block lifecycle", () => {
 });
 
 describe("EventController displaces consecutive waiting polls", () => {
-	const created: ToolExecutionComponent[] = [];
+	const created: SealableComponent[] = [];
 
 	beforeEach(async () => {
 		resetSettingsForTest();
@@ -166,82 +173,99 @@ describe("EventController displaces consecutive waiting polls", () => {
 		const chatContainer = new TranscriptContainer();
 		const children = chatContainer.children;
 		const pendingTools = new Map();
+		const sessionStub = {
+			retryAttempt: 0,
+			getToolByName: () => undefined,
+			extensionRunner: undefined,
+			isTtsrAbortPending: false,
+		};
 		const ctx = {
 			isInitialized: true,
 			init: vi.fn(async () => {}),
-			ui: { requestRender: vi.fn() },
+			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 			statusLine: { invalidate: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
 			toolOutputExpanded: false,
+			effectiveHideThinkingBlock: false,
+			proseOnlyThinking: true,
 			pendingTools,
 			chatContainer,
-			session: { getToolByName: () => undefined },
-			showWarning: vi.fn(),
-			viewSession: { getToolByName: () => undefined },
+			session: sessionStub,
+			viewSession: sessionStub,
 			sessionManager: { getCwd: () => process.cwd() },
+			showWarning: vi.fn(),
+			showPinnedError: vi.fn(),
 			setTodos: vi.fn(),
+			clearTransientSessionUi: vi.fn(),
+			lastAssistantUsage: undefined,
 		} as unknown as InteractiveModeContext;
 		return { controller: new EventController(ctx), children, pendingTools };
 	}
 
-	async function runPoll(controller: EventController, children: Component[], toolCallId: string) {
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId,
-			toolName: "hub",
-			args: { op: "wait", ids: ["j0"] },
-		});
-		const component = children[children.length - 1] as ToolExecutionComponent;
-		trackComponent(created, component);
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId,
-			toolName: "hub",
-			result: pollResult(["running", "running"]),
-			isError: false,
-		});
-		return component;
+	function hubGroups(children: Component[]) {
+		return children.filter((child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent);
 	}
 
-	async function runTodo(controller: EventController, children: Component[], toolCallId: string, items?: string[]) {
+	function latestHubGroup(children: Component[]) {
+		const groups = hubGroups(children);
+		const group = groups[groups.length - 1];
+		if (!group) throw new Error("No HubActivityGroupComponent found in chat transcript");
+		if (!created.includes(group)) trackComponent(created, group);
+		return group;
+	}
+
+	function renderText(component: Component) {
+		return Bun.stripANSI(component.render(120).join("\n"));
+	}
+
+	async function runPoll(
+		controller: EventController,
+		children: Component[],
+		toolCallId: string,
+		statuses: JobStatus[] = ["running"],
+	) {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId,
-			toolName: "todo",
-			args: { op: "view" },
+			toolName: "hub",
+			args: { op: "wait", ids: [`${toolCallId}-j0`] },
 		});
-		const component = children[children.length - 1] as ToolExecutionComponent;
-		trackComponent(created, component);
+		const group = latestHubGroup(children);
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId,
-			toolName: "todo",
-			result: todoResult(items),
+			toolName: "hub",
+			result: pollResult(statuses, {}, `${toolCallId} job`),
 			isError: false,
 		});
-		return component;
+		return group;
 	}
 
 	it("removes the previous waiting poll when the next hub call starts", async () => {
 		const { controller, children } = createFixture();
 
-		const first = await runPoll(controller, children, "t1");
-		expect(children).toContain(first);
+		const firstGroup = await runPoll(controller, children, "t1");
+		expect(children).toContain(firstGroup);
+		expect(renderText(firstGroup)).toContain("t1 job 0");
 
-		const second = await runPoll(controller, children, "t2");
+		const secondGroup = await runPoll(controller, children, "t2");
 
-		// The stale "waiting" frame is gone; only the fresh poll remains.
-		expect(children).not.toContain(first);
-		expect(children).toContain(second);
-		// The displaced block is sealed so its spinner interval is stopped.
-		expect(first.isTranscriptBlockFinalized()).toBe(true);
+		// The stale row is displaced inside the current grouped hub block; the group
+		// stays live so another hub poll can replace this one instead of stacking.
+		expect(secondGroup).toBe(firstGroup);
+		expect(hubGroups(children)).toHaveLength(1);
+		const rendered = renderText(secondGroup);
+		expect(rendered).not.toContain("t1 job 0");
+		expect(rendered).toContain("t2 job 0");
+		expect(secondGroup.canAppend).toBe(true);
+		expect(secondGroup.isTranscriptBlockFinalized()).toBe(false);
 	});
 
-	it("seals the waiting poll in place when a different tool runs next", async () => {
+	it("seals the waiting poll group in place when a different tool runs next", async () => {
 		const { controller, children } = createFixture();
 
-		const poll = await runPoll(controller, children, "t1");
-		expect(poll.isTranscriptBlockFinalized()).toBe(false);
+		const pollGroup = await runPoll(controller, children, "t1");
+		expect(pollGroup.canAppend).toBe(true);
 
 		await controller.handleEvent({
 			type: "tool_execution_start",
@@ -249,151 +273,31 @@ describe("EventController displaces consecutive waiting polls", () => {
 			toolName: "bash",
 			args: { command: "ls" },
 		});
-		trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
+		const bash = children[children.length - 1] as ToolExecutionComponent;
+		trackComponent(created, bash);
 
-		// The poll frame stays — it is final history now, not displaceable.
-		expect(children).toContain(poll);
-		expect(poll.isTranscriptBlockFinalized()).toBe(true);
-		expect(poll.isDisplaceableBlock()).toBe(false);
+		// The grouped poll stays — it is final history now, not a live hub cluster.
+		expect(children).toContain(pollGroup);
+		expect(children).toContain(bash);
+		expect(renderText(pollGroup)).toContain("t1 job 0");
+		expect(pollGroup.canAppend).toBe(false);
+		expect(pollGroup.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("removes the previous todo snapshot when a later todo update lands in the same turn", async () => {
+	it("does not displace a poll group that observed completions", async () => {
 		const { controller, children } = createFixture();
 
-		const first = await runTodo(controller, children, "todo-1", ["plan", "read"]);
-		expect(children).toContain(first);
-		expect(first.isTranscriptBlockFinalized()).toBe(false);
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "bash-1",
-			toolName: "bash",
-			args: { command: "true" },
-		});
-		const bash = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
-		expect(children).toContain(first);
-		expect(children).toContain(bash);
-
-		const second = await runTodo(controller, children, "todo-2", ["fix", "test"]);
-
-		expect(children).not.toContain(first);
-		expect(children).toContain(bash);
-		expect(children).toContain(second);
-		expect(first.isTranscriptBlockFinalized()).toBe(true);
-	});
-
-	it("displaces a prior todo snapshot when a streamed second todo lands a successful result", async () => {
-		const { controller, children, pendingTools } = createFixture();
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "todo-1",
-			toolName: "todo",
-			args: { op: "view" },
-		});
-		const first = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
-
-		const second = trackComponent(created, new ToolExecutionComponent("todo", { op: "view" }, {}, undefined, uiStub));
-		children.push(second);
-		pendingTools.set("todo-2", second);
-
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: "todo-1",
-			toolName: "todo",
-			result: todoResult(["plan", "read"]),
-			isError: false,
-		});
-		expect(first.isTranscriptBlockFinalized()).toBe(false);
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "bash-1",
-			toolName: "bash",
-			args: { command: "true" },
-		});
-		const bash = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
-		expect(children).toContain(first);
-		expect(children).toContain(second);
-		expect(children).toContain(bash);
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "todo-2",
-			toolName: "todo",
-			args: { op: "view" },
-		});
-
-		// Start alone is no longer enough — the prior snapshot stays so a failed
-		// follow-up cannot strand the user without a current todo panel.
-		expect(children).toContain(first);
-		expect(first.isTranscriptBlockFinalized()).toBe(false);
-
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: "todo-2",
-			toolName: "todo",
-			result: todoResult(["fix", "test"]),
-			isError: false,
-		});
-
-		expect(children).not.toContain(first);
-		expect(children).toContain(second);
-		expect(children).toContain(bash);
-		expect(first.isTranscriptBlockFinalized()).toBe(true);
-	});
-
-	it("keeps the prior todo snapshot when a follow-up todo errors", async () => {
-		const { controller, children } = createFixture();
-
-		const first = await runTodo(controller, children, "todo-1", ["plan", "read"]);
-		expect(children).toContain(first);
-		expect(first.isTranscriptBlockFinalized()).toBe(false);
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "todo-2",
-			toolName: "todo",
-			args: { op: "view" },
-		});
-		const errored = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
-
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: "todo-2",
-			toolName: "todo",
-			result: { content: [{ type: "text", text: "Phase missing" }], details: undefined, isError: true },
-			isError: true,
-		});
-
-		expect(children).toContain(first);
-		expect(children).toContain(errored);
-		expect(first.isTranscriptBlockFinalized()).toBe(false);
-	});
-
-	it("does not displace a poll that observed completions", async () => {
-		const { controller, children } = createFixture();
-
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: "t1",
-			toolName: "hub",
-			args: { op: "wait", ids: ["j0"] },
-		});
-		const settled = trackComponent(created, children[children.length - 1] as ToolExecutionComponent);
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: "t1",
-			toolName: "hub",
-			result: pollResult(["completed", "running"]),
-			isError: false,
-		});
-
+		const settled = await runPoll(controller, children, "t1", ["completed", "running"]);
 		const next = await runPoll(controller, children, "t2");
 
-		// A poll that carried real results is kept as history.
-		expect(children).toContain(settled);
-		expect(children).toContain(next);
+		// A poll that carried real results is kept in the grouped history; only the
+		// all-running predecessor-removal path is skipped.
+		expect(next).toBe(settled);
+		expect(hubGroups(children)).toHaveLength(1);
+		const rendered = renderText(settled);
+		expect(rendered).toContain("t1 job 0");
+		expect(rendered).toContain("t2 job 0");
+		expect(settled.canAppend).toBe(true);
 	});
 });
 
@@ -408,13 +312,25 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		vi.restoreAllMocks();
 	});
 
-	it("removes the earlier todo snapshot when an assistant message replays two todo calls", () => {
+	function usage() {
+		return {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+	}
+
+	function createHelpersFixture(options: { streaming?: boolean } = {}) {
 		const chatContainer = new TranscriptContainer();
+		const eventController = { inheritDisplaceableTodo: vi.fn(), inheritHubActivityGroup: vi.fn() };
 		let helpers!: UiHelpers;
 		const ctx = {
 			chatContainer,
 			pendingTools: new Map(),
-			ui: { requestRender: vi.fn() },
+			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 			statusLine: { invalidate: vi.fn() },
 			updateEditorBorderColor: vi.fn(),
 			settings: { get: () => false },
@@ -423,134 +339,151 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 				retryAttempt: 0,
 				getToolByName: () => undefined,
 				sessionManager: { getCwd: () => process.cwd() },
+				isStreaming: options.streaming === true,
 			},
 			get viewSession() {
 				return (this as { session: unknown }).session;
 			},
+			eventController,
 			toolOutputExpanded: false,
 			hideThinkingBlock: false,
+			effectiveHideThinkingBlock: false,
+			proseOnlyThinking: true,
 			lastAssistantUsage: undefined,
 			clearTransientSessionUi: () => {},
 		} as unknown as InteractiveModeContext;
 		helpers = new UiHelpers(ctx);
+		return { helpers, chatContainer, eventController };
+	}
 
-		const usage = {
-			input: 1,
-			output: 1,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 2,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const assistant = {
+	function assistantWithToolCalls(content: Array<{ id: string; name: string; arguments: Record<string, unknown> }>) {
+		return {
 			role: "assistant",
-			content: [
-				{ type: "toolCall", id: "todo-1", name: "todo", arguments: { op: "view" } },
-				{ type: "toolCall", id: "todo-2", name: "todo", arguments: { op: "view" } },
-			],
+			content: content.map(tool => ({ type: "toolCall", ...tool })),
 			api: "anthropic-messages",
 			provider: "anthropic",
 			model: "claude-sonnet-4-5",
 			stopReason: "stop",
-			usage,
+			usage: usage(),
 			timestamp: Date.now(),
 		} as unknown as AgentMessage;
-		const firstResult = {
-			role: "toolResult",
-			toolCallId: "todo-1",
-			toolName: "todo",
-			content: [{ type: "text", text: "" }],
-			details: todoResult(["plan", "read"]).details,
-			timestamp: Date.now(),
-		} as unknown as AgentMessage;
-		const secondResult = {
-			role: "toolResult",
-			toolCallId: "todo-2",
-			toolName: "todo",
-			content: [{ type: "text", text: "" }],
-			details: todoResult(["fix", "test"]).details,
-			timestamp: Date.now(),
-		} as unknown as AgentMessage;
+	}
 
-		helpers.renderSessionContext({ messages: [assistant, firstResult, secondResult] } as SessionContext);
+	function todoToolResult(toolCallId: string, items: string[], errorText?: string) {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName: "todo",
+			content: [{ type: "text", text: errorText ?? "" }],
+			details: errorText ? undefined : todoResult(items).details,
+			isError: errorText !== undefined,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+	}
 
-		const todos = chatContainer.children.filter(
+	function hubToolResult(toolCallId: string, statuses: JobStatus[]) {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName: "hub",
+			content: [{ type: "text", text: "" }],
+			details: pollResult(statuses, {}, `${toolCallId} job`).details,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+	}
+
+	function todoComponents(chatContainer: TranscriptContainer) {
+		return chatContainer.children.filter(
 			(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
 		);
-		// Only the latest todo snapshot survives the rebuild; the trailing one is
-		// sealed as final history by the end-of-rebuild flush.
+	}
+
+	function renderText(component: Component) {
+		return Bun.stripANSI(component.render(120).join("\n"));
+	}
+
+	it("removes the earlier todo snapshot when a later todo update lands in the same turn", () => {
+		const { helpers, chatContainer } = createHelpersFixture();
+		const assistant = assistantWithToolCalls([
+			{ id: "todo-1", name: "todo", arguments: { op: "view" } },
+			{ id: "bash-1", name: "bash", arguments: { command: "true" } },
+			{ id: "todo-2", name: "todo", arguments: { op: "view" } },
+		]);
+		const bashResult = {
+			role: "toolResult",
+			toolCallId: "bash-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "ok" }],
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+
+		helpers.renderSessionContext({
+			messages: [
+				assistant,
+				todoToolResult("todo-1", ["plan", "read"]),
+				bashResult,
+				todoToolResult("todo-2", ["fix", "test"]),
+			],
+		} as SessionContext);
+
+		const todos = todoComponents(chatContainer).filter(component => /plan|read|fix|test/.test(renderText(component)));
 		expect(todos).toHaveLength(1);
-		expect(todos[0].isTranscriptBlockFinalized()).toBe(true);
+		expect(renderText(todos[0]!)).not.toContain("plan");
+		expect(renderText(todos[0]!)).toContain("fix");
+		expect(todos[0]!.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("hands the trailing todo snapshot to the controller during mid-turn rebuild", () => {
-		const chatContainer = new TranscriptContainer();
-		const inheritDisplaceableTodo = vi.fn();
-		let helpers!: UiHelpers;
-		const ctx = {
-			chatContainer,
-			pendingTools: new Map(),
-			ui: { requestRender: vi.fn() },
-			statusLine: { invalidate: vi.fn() },
-			updateEditorBorderColor: vi.fn(),
-			settings: { get: () => false },
-			addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
-			session: {
-				retryAttempt: 0,
-				getToolByName: () => undefined,
-				sessionManager: { getCwd: () => process.cwd() },
-				isStreaming: true,
-			},
-			get viewSession() {
-				return (this as { session: unknown }).session;
-			},
-			eventController: { inheritDisplaceableTodo },
-			toolOutputExpanded: false,
-			hideThinkingBlock: false,
-			lastAssistantUsage: undefined,
-			clearTransientSessionUi: () => {},
-		} as unknown as InteractiveModeContext;
-		helpers = new UiHelpers(ctx);
+	it("displaces a prior todo snapshot when a streamed second todo lands a successful result", () => {
+		const { helpers, chatContainer } = createHelpersFixture();
+		const assistant = assistantWithToolCalls([
+			{ id: "todo-1", name: "todo", arguments: { op: "view" } },
+			{ id: "todo-2", name: "todo", arguments: { op: "view" } },
+		]);
 
-		const usage = {
-			input: 1,
-			output: 1,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 2,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
-		const assistant = {
-			role: "assistant",
-			content: [{ type: "toolCall", id: "todo-1", name: "todo", arguments: { op: "view" } }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-			stopReason: "stop",
-			usage,
-			timestamp: Date.now(),
-		} as unknown as AgentMessage;
-		const result = {
-			role: "toolResult",
-			toolCallId: "todo-1",
-			toolName: "todo",
-			content: [{ type: "text", text: "" }],
-			details: todoResult(["plan", "read"]).details,
-			timestamp: Date.now(),
-		} as unknown as AgentMessage;
+		helpers.renderSessionContext({
+			messages: [assistant, todoToolResult("todo-1", ["plan", "read"]), todoToolResult("todo-2", ["fix", "test"])],
+		} as SessionContext);
 
-		helpers.renderSessionContext({ messages: [assistant, result] } as SessionContext);
-
-		const todos = chatContainer.children.filter(
-			(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
-		);
+		const todos = todoComponents(chatContainer).filter(component => /plan|read|fix|test/.test(renderText(component)));
 		expect(todos).toHaveLength(1);
-		// Mid-turn rebuild hands the live tail back to the controller — the
-		// snapshot stays displaceable so a follow-up `todo` event replaces it
-		// instead of stacking another panel.
-		expect(inheritDisplaceableTodo).toHaveBeenCalledTimes(1);
-		expect(inheritDisplaceableTodo).toHaveBeenCalledWith(todos[0]);
-		expect(todos[0].canBeDisplacedBy("todo")).toBe(true);
-		expect(todos[0].isTranscriptBlockFinalized()).toBe(false);
+		expect(renderText(todos[0]!)).not.toContain("plan");
+		expect(renderText(todos[0]!)).toContain("fix");
+	});
+
+	it("keeps the prior todo snapshot when a follow-up todo errors", () => {
+		const { helpers, chatContainer } = createHelpersFixture();
+		const assistant = assistantWithToolCalls([
+			{ id: "todo-1", name: "todo", arguments: { op: "view" } },
+			{ id: "todo-2", name: "todo", arguments: { op: "view" } },
+		]);
+
+		helpers.renderSessionContext({
+			messages: [
+				assistant,
+				todoToolResult("todo-1", ["plan", "read"]),
+				todoToolResult("todo-2", [], "Phase missing"),
+			],
+		} as SessionContext);
+
+		const renderedTodos = todoComponents(chatContainer).map(renderText);
+		expect(renderedTodos).toHaveLength(2);
+		expect(renderedTodos.some(text => text.includes("plan"))).toBe(true);
+		expect(renderedTodos.some(text => text.includes("Phase missing"))).toBe(true);
+	});
+
+	it("hands the trailing hub activity group to the controller during mid-turn rebuild", () => {
+		const { helpers, chatContainer, eventController } = createHelpersFixture({ streaming: true });
+		const assistant = assistantWithToolCalls([{ id: "hub-1", name: "hub", arguments: { op: "wait", ids: ["j0"] } }]);
+
+		helpers.renderSessionContext({ messages: [assistant, hubToolResult("hub-1", ["running"])] } as SessionContext);
+
+		const groups = chatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(groups).toHaveLength(1);
+		expect(renderText(groups[0]!)).toContain("hub-1 job 0");
+		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledTimes(1);
+		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledWith(groups[0]);
+		expect(groups[0]!.canAppend).toBe(true);
 	});
 });

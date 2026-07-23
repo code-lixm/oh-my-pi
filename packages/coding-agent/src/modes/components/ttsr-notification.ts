@@ -24,8 +24,8 @@ export class TtsrNotificationComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Use inverse warning color for yellow background effect
-		this.#box = new Box(1, 1, t => theme.inverse(theme.fg("warning", t)));
+		// Warning notifications use semantic foreground and outline colors only.
+		this.#box = new Box(1, 1);
 		this.#box.setIgnoreTight(true);
 		this.addChild(this.#box);
 
@@ -56,8 +56,7 @@ export class TtsrNotificationComponent extends Container {
 
 	#rebuild(): void {
 		this.#box.clear();
-		// fg colors conflict with inverse, so styling inside the block is limited
-		// to bold (names) and italic (descriptions).
+		this.#box.setBorder({ chars: theme.boxRound, color: text => theme.fg("warning", text) });
 		if (this.#rules.length === 1) {
 			this.#rebuildSingle(this.#rules[0]!);
 		} else {

@@ -3,7 +3,7 @@ import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { replaceTabs } from "../../tools/render-utils";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
-import { getMarkdownTheme, type Theme, type ThemeColor } from "../theme/theme";
+import { theme as activeTheme, getMarkdownTheme, type Theme, type ThemeColor } from "../theme/theme";
 
 function severityColor(severity: AdvisorSeverity | undefined): ThemeColor {
 	switch (severity ?? "nit") {
@@ -39,12 +39,17 @@ function hasMixedSeverities(notes: AdvisorMessageDetails["notes"]): boolean {
  * continuation indentation stays consistent without a custom quote rail.
  */
 export function createAdvisorMessageCard(details: AdvisorMessageDetails | undefined, uiTheme: Theme): Component {
+	return buildAdvisorCard(details, uiTheme);
+}
+
+function buildAdvisorCard(details: AdvisorMessageDetails | undefined, uiTheme: Theme): Component {
 	const notes = details?.notes ?? [];
 	const blockers = notes.filter(note => note.severity === "blocker").length;
 	const concerns = notes.filter(note => note.severity === "concern").length;
 	const nits = notes.length - blockers - concerns;
 	const cardSeverity = dominantSeverity(notes);
 	const mixedSeverities = hasMixedSeverities(notes);
+	const followsActiveTheme = uiTheme === activeTheme;
 	let title = tSettingsUi("Advisor");
 	if (notes.length > 0) {
 		if (mixedSeverities) {
@@ -63,14 +68,6 @@ export function createAdvisorMessageCard(details: AdvisorMessageDetails | undefi
 			title = tSettingsUi(nits === 1 ? "Advisor found {count} nit" : "Advisor found {count} nits", { count: nits });
 		}
 	}
-	const header = renderStatusLine(
-		{
-			icon: "info",
-			title,
-			titleColor: "customMessageLabel",
-		},
-		uiTheme,
-	);
 	const state = mixedSeverities
 		? undefined
 		: cardSeverity === "blocker"
@@ -80,14 +77,23 @@ export function createAdvisorMessageCard(details: AdvisorMessageDetails | undefi
 				: "success";
 
 	return framedBlock(uiTheme, width => {
+		const theme = followsActiveTheme ? activeTheme : uiTheme;
 		const contentWidth = outputBlockContentWidth(width);
+		const header = renderStatusLine(
+			{
+				icon: "info",
+				title,
+				titleColor: severityColor(cardSeverity),
+			},
+			theme,
+		);
 		const sections = notes.map(entry => {
 			const labelParts: string[] = [];
 			if (entry.advisor && entry.advisor !== "default") {
-				labelParts.push(uiTheme.fg("dim", `[${replaceTabs(entry.advisor)}]`));
+				labelParts.push(theme.fg("dim", `[${replaceTabs(entry.advisor)}]`));
 			}
-			const markdown = new Markdown(replaceTabs(entry.note), 0, 0, getMarkdownTheme(uiTheme), {
-				color: line => uiTheme.fg(severityColor(entry.severity), line),
+			const markdown = new Markdown(replaceTabs(entry.note), 0, 0, getMarkdownTheme(theme), {
+				color: line => theme.fg(severityColor(entry.severity), line),
 			});
 			return {
 				lines: [...(labelParts.length > 0 ? [labelParts.join(" ")] : []), ...markdown.render(contentWidth)],

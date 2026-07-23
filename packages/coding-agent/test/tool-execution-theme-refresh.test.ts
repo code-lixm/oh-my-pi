@@ -2,6 +2,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { getThemeByName, initTheme, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { TUI, type TUI as TUIType } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
@@ -16,6 +21,7 @@ const uiStub = {
 let darkTheme: Theme;
 let lightTheme: Theme;
 
+let previousBorderStyle: OutputBlockBorderStyle;
 type ToolResult = {
 	content: Array<{ type: string; text?: string }>;
 	details?: Record<string, unknown>;
@@ -68,22 +74,26 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+	previousBorderStyle = getOutputBlockBorderStyle();
+	setOutputBlockBorderStyle("accent");
 	setThemeInstance(darkTheme);
 });
 
 afterEach(async () => {
 	for (const component of created.splice(0)) component.stopAnimation();
+	setOutputBlockBorderStyle(previousBorderStyle);
 	await initTheme();
 });
 
-function errorBg(theme: Theme): string {
-	const ansi = theme.getBgAnsi("toolErrorBg");
+function surfaceTintBg(theme: Theme, color: "error" | "borderMuted"): string {
+	const ansi = theme.getSurfaceTintBgAnsi(color);
 	expect(ansi).toMatch(/\x1b\[48;/);
 	return ansi;
 }
-function successBg(theme: Theme): string {
-	const ansi = theme.getBgAnsi("toolSuccessBg");
-	expect(ansi).toMatch(/\x1b\[48;/);
+
+function borderMutedRailFg(theme: Theme): string {
+	const ansi = theme.getSurfaceTintFgAnsi("borderMuted");
+	expect(ansi).toMatch(/\x1b\[38;/);
 	return ansi;
 }
 
@@ -110,22 +120,22 @@ function renderCommittedTranscriptThemeFlip(scenario: Scenario): { initial: stri
 
 describe("ToolExecutionComponent theme refresh after transcript commit", () => {
 	for (const scenario of scenarios) {
-		it(`rebuilds committed ${scenario.name} cards with the active light error background`, () => {
-			const darkBg = errorBg(darkTheme);
-			const lightBg = errorBg(lightTheme);
-			expect(lightBg).not.toBe(darkBg);
+		it(`rebuilds committed ${scenario.name} cards with the active light error accent surface`, () => {
+			const darkErrorTint = surfaceTintBg(darkTheme, "error");
+			const lightErrorTint = surfaceTintBg(lightTheme, "error");
+			expect(lightErrorTint).not.toBe(darkErrorTint);
 
 			const { initial, afterFlip } = renderCommittedTranscriptThemeFlip(scenario);
 
-			expect(initial).toContain(darkBg);
-			expect(initial).not.toContain(lightBg);
+			expect(initial).toContain(darkErrorTint);
+			expect(initial).not.toContain(lightErrorTint);
 
-			expect(afterFlip).toContain(lightBg);
-			expect(afterFlip).not.toContain(darkBg);
+			expect(afterFlip).toContain(lightErrorTint);
+			expect(afterFlip).not.toContain(darkErrorTint);
 		});
 	}
 
-	it("keeps committed generic success output unfilled across a theme swap", () => {
+	it("rebuilds committed generic success output with the active muted accent surface", () => {
 		const genericSuccess: Scenario = {
 			name: "generic-success",
 			toolName: "generic_success_tool",
@@ -134,18 +144,25 @@ describe("ToolExecutionComponent theme refresh after transcript commit", () => {
 				content: [{ type: "text", text: "Completed without custom renderer" }],
 			},
 		};
-		const darkSuccessBg = successBg(darkTheme);
-		const lightSuccessBg = successBg(lightTheme);
-		expect(lightSuccessBg).not.toBe(darkSuccessBg);
+		const darkMutedTint = surfaceTintBg(darkTheme, "borderMuted");
+		const lightMutedTint = surfaceTintBg(lightTheme, "borderMuted");
+		const darkRailFg = borderMutedRailFg(darkTheme);
+		const lightRailFg = borderMutedRailFg(lightTheme);
+		expect(lightMutedTint).not.toBe(darkMutedTint);
+		expect(lightRailFg).not.toBe(darkRailFg);
 
 		const { initial, afterFlip } = renderCommittedTranscriptThemeFlip(genericSuccess);
 
 		expect(initial).toContain("Completed without custom renderer");
-		expect(initial).not.toContain(darkSuccessBg);
-		expect(initial).not.toContain(lightSuccessBg);
+		expect(initial).toContain(darkMutedTint);
+		expect(initial).toContain(darkRailFg);
+		expect(initial).not.toContain(lightMutedTint);
+		expect(initial).not.toContain(lightRailFg);
 
 		expect(afterFlip).toContain("Completed without custom renderer");
-		expect(afterFlip).not.toContain(lightSuccessBg);
-		expect(afterFlip).not.toContain(darkSuccessBg);
+		expect(afterFlip).toContain(lightMutedTint);
+		expect(afterFlip).toContain(lightRailFg);
+		expect(afterFlip).not.toContain(darkMutedTint);
+		expect(afterFlip).not.toContain(darkRailFg);
 	});
 });

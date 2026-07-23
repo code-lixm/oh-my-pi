@@ -81,7 +81,7 @@ describe("status line loop mode segment", () => {
 		const rendered = renderSegment("mode", createContext({ state: "paused" }));
 		const icon = theme.icon.pause || theme.icon.loop;
 
-		expect(Bun.stripANSI(rendered.content)).toBe(withIcon(icon, "Loop paused"));
-		expect(rendered.content).toBe(theme.fg("warning", withIcon(icon, "Loop paused")));
+		expect(Bun.stripANSI(rendered.content)).toBe(withIcon(icon, "Loop (paused)"));
+		expect(rendered.content).toBe(theme.fg("warning", withIcon(icon, "Loop (paused)")));
 	});
 });

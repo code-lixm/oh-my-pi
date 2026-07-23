@@ -153,7 +153,6 @@ export function computeDefaultSessionDir(
  * even when its target file is still absent, so relaunch/auto-resume reopens the
  * post-`/new` session instead of falling back to the pre-`/new` transcript. Once
  * the session materializes the caller rewrites the breadcrumb with `fresh:false`
- * so a later external delete is still treated as a genuinely stale crumb.
  */
 export function writeTerminalBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
 	const terminalId = getTerminalId();

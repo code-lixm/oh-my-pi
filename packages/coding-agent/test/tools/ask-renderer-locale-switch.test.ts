@@ -32,7 +32,7 @@ function renderResult(result: Parameters<typeof askToolRenderer.renderResult>[0]
 }
 
 describe("askToolRenderer locale switching", () => {
-	it("switches ask chrome to zh-CN at runtime while preserving literal user-provided labels", () => {
+	it("localizes ask call chrome to zh-CN while keeping the built-in Ask name and payload literals", () => {
 		const args: Parameters<typeof askToolRenderer.renderCall>[0] = {
 			question: "Choose the literal protocol/status tokens to keep.",
 			options: [
@@ -63,10 +63,10 @@ describe("askToolRenderer locale switching", () => {
 
 		setSettingsUiLocale("zh-CN");
 		const chinese = renderCall(args);
-		expect(chinese).toContain("询问");
+		expect(chinese).toContain("Ask");
 		expect(chinese).toContain("多项");
 		expect(chinese).toContain("选项：2");
-		expect(chinese).not.toContain("Ask");
+		expect(chinese).not.toContain("询问");
 		expect(chinese).not.toContain("multi");
 		expect(chinese).not.toContain("options:2");
 		expect(chinese).toContain("GET");
@@ -77,7 +77,7 @@ describe("askToolRenderer locale switching", () => {
 		expect(chinese).not.toBe(english);
 	});
 
-	it("switches result chrome to zh-CN at runtime while preserving selected literal values", () => {
+	it("keeps result cards on the Ask identifier while preserving the literal selected value", () => {
 		const result: Parameters<typeof askToolRenderer.renderResult>[0] = {
 			content: [{ type: "text", text: "" }],
 			details: {
@@ -94,16 +94,17 @@ describe("askToolRenderer locale switching", () => {
 		expect(english).toContain("Which upstream status should stay literal?");
 		expect(english).toContain("GET");
 		expect(english).toContain("Cancelled");
+		expect(english).toContain("◉ Cancelled");
 		expect(english).not.toContain("询问");
 
 		setSettingsUiLocale("zh-CN");
 		const chinese = renderResult(result);
-		expect(chinese).toContain("询问");
-		expect(chinese).not.toContain("Ask");
+		expect(chinese).toContain("Ask");
+		expect(chinese).not.toContain("询问");
 		expect(chinese).toContain("Which upstream status should stay literal?");
 		expect(chinese).toContain("GET");
 		expect(chinese).toContain("Cancelled");
+		expect(chinese).toContain("◉ Cancelled");
 		expect(chinese).not.toContain("已取消");
-		expect(chinese).not.toBe(english);
 	});
 });

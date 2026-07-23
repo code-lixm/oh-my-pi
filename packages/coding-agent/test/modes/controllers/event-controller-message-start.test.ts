@@ -247,9 +247,13 @@ describe("EventController IRC events inside HubActivityGroupComponent", () => {
 		vi.advanceTimersByTime(9_999);
 		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 1");
 
-		// After the TTL: event removed from group; group shows "pending" placeholder.
+		// After the TTL: the final entry is evicted and an empty group renders nothing.
 		vi.advanceTimersByTime(1);
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("pending");
+		const expiredLines = group.render(80);
+		const expiredText = Bun.stripANSI(expiredLines.join("\n"));
+		expect(expiredLines).toEqual([]);
+		expect(expiredText).not.toContain("Ready 1");
+		expect(expiredText).not.toContain("pending");
 		expect(requestRender).toHaveBeenCalledTimes(2);
 	});
 

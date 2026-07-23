@@ -3,9 +3,9 @@
  * 1. Live EventController path — one assistant turn containing hub send, hub wait(from),
  *    and hub list keeps every hub activity row plus an IRC incoming event inside one
  *    HubActivityGroupComponent.
- * 2. A pure message wait(from) renders as pending while live, then disappears entirely when
- *    its final non-error result is an empty timeout (`waited: null`) and the group would
- *    otherwise be empty.
+ * 2. An empty HubActivityGroupComponent renders no rows, and a pure message wait(from)
+ *    renders as pending while live, then disappears entirely when its final non-error
+ *    result is an empty timeout (`waited: null`) and the group would otherwise be empty.
  * 3. Visible assistant text between grouped hub calls breaks the live cluster; if the later
  *    wait resolves to that empty timeout, only the prose and the earlier hub group remain.
  * 4. Viewer rebuild path (ChatTranscriptBuilder) preserves the same grouping rules, including
@@ -167,6 +167,15 @@ function makeMessageEntry(id: string, timestamp: number, message: SessionMessage
 }
 
 describe("EventController hub activity cluster", () => {
+	it("renders an empty HubActivityGroupComponent as no rows", () => {
+		const group = new HubActivityGroupComponent();
+
+		expect(group.render(120)).toEqual([]);
+		const rendered = renderText(group);
+		expect(rendered).not.toContain("IRC");
+		expect(rendered).not.toContain("pending");
+	});
+
 	it("keeps send, wait(from), list, and irc:incoming inside one HubActivityGroupComponent", async () => {
 		const { controller, chatContainer, pendingTools } = createLiveFixture();
 		const started = makeAssistantMessage([]);
@@ -325,7 +334,8 @@ describe("EventController hub activity cluster", () => {
 		expect(rendered).toContain("Worker");
 		expect(rendered).toContain("compiling");
 	});
-	it("removes a pure message wait(from) group after a successful no-reply timeout empties it", async () => {
+
+	it("removes an empty message wait(from) group, then renders the next live IRC event", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -335,10 +345,13 @@ describe("EventController hub activity cluster", () => {
 			args: { op: "wait", from: "AuthLoader" },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 
-		const pendingGroup = hubGroups(chatContainer)[0];
-		expect(pendingGroup).toBeDefined();
-		expect(renderText(pendingGroup!)).toContain("AuthLoader");
-		expect(renderText(pendingGroup!)).toContain("pending");
+		const pendingGroups = hubGroups(chatContainer);
+		expect(pendingGroups).toHaveLength(1);
+		const pendingGroup = pendingGroups[0]!;
+		const pendingRendered = renderText(pendingGroup);
+		expect(pendingRendered).toContain("IRC");
+		expect(pendingRendered).toContain("AuthLoader");
+		expect(pendingRendered).toContain("pending");
 
 		await controller.handleEvent({
 			type: "tool_execution_end",
@@ -353,8 +366,21 @@ describe("EventController hub activity cluster", () => {
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 
 		expect(hubGroups(chatContainer)).toHaveLength(0);
-		expect(renderText(chatContainer)).not.toContain("no reply");
-		expect(renderText(chatContainer)).not.toContain("AuthLoader");
+		let rendered = renderText(chatContainer);
+		expect(rendered).not.toContain("no reply");
+		expect(rendered).not.toContain("AuthLoader");
+
+		await controller.handleEvent({
+			type: "irc_message",
+			message: makeIrcMessage("auth loader reported ready", "AuthLoader", 1_700_000_000_600),
+		});
+
+		const visibleGroups = hubGroups(chatContainer);
+		expect(visibleGroups).toHaveLength(1);
+		rendered = renderText(visibleGroups[0]!);
+		expect(rendered).toContain("IRC");
+		expect(rendered).toContain("AuthLoader");
+		expect(rendered).toContain("auth loader reported ready");
 	});
 
 	it("keeps awaited send receipts and outbound body visible without no-reply text", async () => {

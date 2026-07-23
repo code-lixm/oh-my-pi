@@ -120,14 +120,18 @@ export interface InteractiveModeContext {
 	readonly viewSession: AgentSession;
 	/** Id of the focused agent, undefined when the main session is attached. */
 	readonly focusedAgentId: string | undefined;
-	/** Focus the main view on an agent's live session (delegates to SessionFocusController.focusAgent). */
+	/** Focus a live subagent in the fullscreen read-only view. */
 	focusAgentSession(id: string): Promise<void>;
-	/** Cycle through the main session and currently live subagents. */
+	/** Cycle through live subagents; Main is reached only through unfocusSession. */
 	cycleAgentSession(direction: "next" | "previous"): Promise<void>;
-	/** Focus the focused agent's parent session, falling back to main (delegates to focusParent). */
+	/** Focus the focused agent's live parent, falling back to main. */
 	focusParentSession(): Promise<void>;
-	/** Return the view to the main session (delegates to SessionFocusController.unfocus). */
+	/** Return the view to the main session. */
 	unfocusSession(): Promise<void>;
+	/** Mount or retarget the fullscreen read-only focused-agent view. */
+	showFocusedAgentView(id: string): void;
+	/** Unmount the fullscreen focused-agent view and restore main-editor focus. */
+	hideFocusedAgentView(): void;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
 	clearTransientSessionUi(): void;
 	settings: Settings;

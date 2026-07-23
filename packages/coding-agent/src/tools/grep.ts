@@ -28,6 +28,7 @@ import { DEFAULT_MAX_COLUMN, type TruncationResult, truncateHead, truncateLine }
 import {
 	Ellipsis,
 	fileHyperlink,
+	getBasicToolDetailsVisible,
 	getTreeBranch,
 	getTreeContinuePrefix,
 	renderStatusLine,
@@ -1751,6 +1752,49 @@ export const grepToolRenderer = {
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;
+
+		if (!getBasicToolDetailsVisible()) {
+			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
+			const legacyEmpty = !textContent || textContent === "No matches found" || textContent.trim() === "";
+			const legacyLines = textContent?.split("\n").filter(line => line.trim().length > 0) ?? [];
+			const matchCount = hasDetailedData ? (details?.matchCount ?? 0) : legacyEmpty ? 0 : legacyLines.length;
+			const fileCount = hasDetailedData ? (details?.fileCount ?? 0) : 0;
+			const truncation = details?.meta?.truncation;
+			const limits = details?.meta?.limits;
+			const truncated = Boolean(
+				details?.truncated ||
+					truncation ||
+					limits?.columnTruncated ||
+					details?.fileLimitReached ||
+					details?.perFileLimitReached ||
+					details?.linesTruncated,
+			);
+			const meta = [
+				tSettingsUi(matchCount === 1 ? "{count} match" : "{count} matches", { count: matchCount }),
+				tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount }),
+			];
+			const scopeMeta = searchScopeMeta(details);
+			if (scopeMeta) {
+				meta.push(scopeMeta);
+			} else {
+				const paths = toPathList(args?.path ?? args?.paths);
+				if (paths.length > 0) meta.push(tSettingsUi("in {paths}", { paths: paths.join(", ") }));
+			}
+			if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
+			const header = renderStatusLine(
+				{
+					...(matchCount === 0 || truncated
+						? { icon: "warning" as const }
+						: { iconOverride: grepStatusIcon(uiTheme) }),
+					title: tSettingsUi("Grep"),
+					titleColor: "toolTitle",
+					description: args?.pattern,
+					meta,
+				},
+				uiTheme,
+			);
+			return new Text(header, 0, 0);
+		}
 
 		if (!hasDetailedData) {
 			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;

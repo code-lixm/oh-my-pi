@@ -1,7 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Box, Container } from "@oh-my-pi/pi-tui";
 import type { HookMessageRenderer } from "../../extensibility/hooks/types";
-import { theme } from "../../modes/theme/theme";
 import type { HookMessage } from "../../session/messages";
 import { renderFramedMessage } from "./message-frame";
 
@@ -23,8 +22,8 @@ export class HookMessageComponent extends Container {
 	) {
 		super();
 
-		// Create box with purple background (used for default rendering)
-		this.#box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		// Default hook messages use an outline without painting the transcript surface.
+		this.#box = new Box(1, 1);
 		this.#box.setIgnoreTight(true);
 
 		this.#rebuild();

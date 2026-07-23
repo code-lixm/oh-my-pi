@@ -2,6 +2,7 @@
  * Public exports for shared TUI components.
  */
 
+export * from "./basic-tool-display-policy";
 export * from "./code-cell";
 export * from "./file-list";
 export * from "./hyperlink";

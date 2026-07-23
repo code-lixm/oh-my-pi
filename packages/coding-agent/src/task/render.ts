@@ -524,6 +524,11 @@ function renderOutputSection(
 		if (trimmedOutput.startsWith("{") || trimmedOutput.startsWith("[")) {
 			try {
 				const parsed = JSON.parse(trimmedOutput);
+				const isCompletedEnvelope =
+					!!parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.status === "completed";
+				if (!expanded && isCompletedEnvelope) {
+					return lines;
+				}
 
 				if (!expanded) {
 					lines.push(`${continuePrefix}  ${theme.fg("dim", formatOutputInline(parsed, theme))}`);
@@ -566,6 +571,11 @@ function renderOutputSection(
 	if (trimmedOutput.startsWith("{") || trimmedOutput.startsWith("[")) {
 		try {
 			const parsed = JSON.parse(trimmedOutput);
+			const isCompletedEnvelope =
+				!!parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.status === "completed";
+			if (!expanded && isCompletedEnvelope) {
+				return lines;
+			}
 
 			// Collapsed: inline format like Args
 			if (!expanded) {

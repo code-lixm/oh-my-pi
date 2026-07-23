@@ -5,6 +5,14 @@
 ### Added
 
 - Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
+### Fixed
+
+- Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
+## [17.0.6] - 2026-07-20
+
+### Fixed
+
+- Fixed idle Loader animations on WSL repeatedly entering render scheduling after an expired ConPTY post-paint settle window instead of resuming direct component writes ([#6024](https://github.com/can1357/oh-my-pi/issues/6024)).
 
 ### Fixed
 

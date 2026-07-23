@@ -17,7 +17,7 @@ import { Settings } from "../config/settings";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
-import type { OutputBlockBorderStyle } from "../tui/output-block";
+import { isBorderlessOutputStyle, type OutputBlockBorderStyle, renderOutputAccentLine } from "../tui/output-block";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
@@ -246,11 +246,11 @@ export class BashInteractiveOverlayComponent implements Component {
 	}
 	render(width: number): readonly string[] {
 		const safeWidth = Math.max(20, width);
-		const borderless = this.borderStyle === "none";
-		const horizontalOnly = this.borderStyle === "horizontal";
-		const innerWidth = Math.max(1, safeWidth - (horizontalOnly ? 0 : 2));
+		const borderless = isBorderlessOutputStyle(this.borderStyle);
+		const accentMode = this.borderStyle === "accent";
+		const innerWidth = Math.max(1, safeWidth - (accentMode ? 3 : 2));
 		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
-		const chromeRows = borderless ? 2 : 4;
+		const chromeRows = borderless ? (accentMode ? 4 : 2) : 4;
 		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
 		// Propagate terminal resize to PTY session
 		const currentCols = innerWidth;
@@ -288,24 +288,20 @@ export class BashInteractiveOverlayComponent implements Component {
 		const content = visibleLines.length > 0 ? visibleLines : [padding(innerWidth)];
 		const padLine = (line: string) => `${line}${padding(Math.max(0, innerWidth - visibleWidth(line)))}`;
 		if (borderless) {
-			const gutter = padding(2);
-			const gutterLine = (line: string) => `${gutter}${padLine(line)}`;
-			return [gutterLine(header), ...content.map(gutterLine), gutterLine(footer)];
+			const borderColor = this.#borderColor();
+			const gutterLine = accentMode
+				? (line: string) => renderOutputAccentLine(padLine(line), safeWidth, this.uiTheme, borderColor)
+				: (line: string) => `${padding(2)}${padLine(line)}`;
+			return accentMode
+				? [gutterLine(""), gutterLine(header), ...content.map(gutterLine), gutterLine(footer), gutterLine("")]
+				: [gutterLine(header), ...content.map(gutterLine), gutterLine(footer)];
 		}
-		const borderWidth = horizontalOnly ? safeWidth : innerWidth;
 		const borderColor = this.#borderColor();
-		const borderHorizontal = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.horizontal.repeat(borderWidth));
+		const borderHorizontal = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.horizontal.repeat(innerWidth));
 		const borderVertical = this.uiTheme.fg(borderColor, this.uiTheme.boxRound.vertical);
-		const boxLine = (line: string) => {
-			const padded = padLine(line);
-			return horizontalOnly ? padded : `${borderVertical}${padded}${borderVertical}`;
-		};
-		const topBorder = horizontalOnly
-			? borderHorizontal
-			: `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topRight)}`;
-		const bottomBorder = horizontalOnly
-			? borderHorizontal
-			: `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomRight)}`;
+		const boxLine = (line: string) => `${borderVertical}${padLine(line)}${borderVertical}`;
+		const topBorder = `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.topRight)}`;
+		const bottomBorder = `${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomLeft)}${borderHorizontal}${this.uiTheme.fg(borderColor, this.uiTheme.boxRound.bottomRight)}`;
 		return [topBorder, boxLine(header), ...content.map(boxLine), boxLine(footer), bottomBorder];
 	}
 

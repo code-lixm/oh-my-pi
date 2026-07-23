@@ -8,7 +8,9 @@ import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tool
 import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
 import {
 	fileHyperlink,
+	getBasicToolDetailsVisible,
 	getOutputBlockBorderStyle,
+	isBorderlessOutputStyle,
 	renderCodeCell,
 	renderStatusLine,
 	tryResolveInternalUrlSync,
@@ -324,7 +326,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
 		this.#showContentPreview = options.showContentPreview ?? false;
-		this.#text = new Text("", getOutputBlockBorderStyle() === "none" ? 0 : 1, 0);
+		this.#text = new Text("", isBorderlessOutputStyle(getOutputBlockBorderStyle()) ? 0 : 1, 0);
 		this.addChild(this.#text);
 		this.#updateDisplay();
 	}
@@ -427,10 +429,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const entries = [...this.#entries.values()];
 		const displayTargets = this.#displayTargetsForEntries(entries);
 		const displayRows = this.#buildSummaryRows(displayTargets);
+		const showDetails = getBasicToolDetailsVisible();
 
 		// Clear previous children and rebuild the summary and preview blocks.
 		this.clear();
-		this.#text = new Text("", getOutputBlockBorderStyle() === "none" ? 0 : 1, 0);
+		this.#text = new Text("", isBorderlessOutputStyle(getOutputBlockBorderStyle()) ? 0 : 1, 0);
 
 		if (displayRows.length === 0) {
 			this.#text.setText(
@@ -442,14 +445,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 		if (displayRows.length === 1) {
 			const row = displayRows[0]!;
-			if (!this.#shouldRenderPreviewRow(row)) {
-				const status = this.#statusForTargets(row.targets);
-				const pathDisplay = this.#formatRowPath(row);
+			const status = this.#statusForTargets(row.targets);
+			const pathDisplay = this.#formatRowPath(row);
+			if (!showDetails || !this.#shouldRenderPreviewRow(row)) {
 				this.#text.setText(this.#renderHeader(status, pathDisplay));
 				this.addChild(this.#text);
 			}
-			for (const entry of this.#previewEntriesForRow(row)) {
-				this.#addContentPreview(entry);
+			if (showDetails) {
+				for (const entry of this.#previewEntriesForRow(row)) {
+					this.#addContentPreview(entry);
+				}
 			}
 			return;
 		}
@@ -458,19 +463,23 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const lines = [
 			this.#renderHeader(status, undefined, [tSettingsUi("{count} paths", { count: displayRows.length })]),
 		];
-		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
-		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
-		const rows = this.#buildSummaryRows(summaryTargets);
-		for (const [index, row] of rows.entries()) {
-			this.#appendSummaryRow(lines, row, index, rows.length);
+		if (showDetails) {
+			const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
+			const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
+			const rows = this.#buildSummaryRows(summaryTargets);
+			for (const [index, row] of rows.entries()) {
+				this.#appendSummaryRow(lines, row, index, rows.length);
+			}
 		}
 
 		this.#text.setText(lines.join("\n"));
 		this.addChild(this.#text);
 
-		for (const entry of entries) {
-			if (this.#shouldRenderPreview(entry)) {
-				this.#addContentPreview(entry);
+		if (showDetails) {
+			for (const entry of entries) {
+				if (this.#shouldRenderPreview(entry)) {
+					this.#addContentPreview(entry);
+				}
 			}
 		}
 	}

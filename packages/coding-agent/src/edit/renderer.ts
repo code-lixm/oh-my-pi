@@ -32,6 +32,7 @@ import {
 	fileHyperlink,
 	framedBlock,
 	Hasher,
+	outputBlockContentWidth,
 	type RenderCache,
 	renderStatusLine,
 	truncateToWidth,
@@ -434,7 +435,7 @@ function formatStreamingDiff(
 	// contentPaddingLeft is 0); only the visible suffix is syntax-colored, so
 	// the cheap raw-line wrap walk keeps the per-chunk cost bounded.
 	// innerWidth/budget are in the cache salt so a resize re-slices.
-	const innerWidth = Math.max(1, width - 2);
+	const innerWidth = outputBlockContentWidth(width, 0);
 	const budget = expanded ? previewWindowRows() : Math.min(EDIT_STREAMING_PREVIEW_LINES, previewWindowRows());
 	let text = cachedRenderedString(cache, uiTheme, expanded, `${rawPath}:${innerWidth}:${budget}`, diff, () => {
 		// "Cursor" tail window: pin the last rows to the bottom so freshly streamed
@@ -933,7 +934,7 @@ function renderSingleFileResult(
 		// Diff lines self-wrap with a continuation gutter; pre-wrap to the frame's
 		// inner width so renderOutputBlock's generic wrap is a no-op. Edit frames
 		// use a flush left border because code-frame gutters already provide padding.
-		const innerWidth = Math.max(1, width - 2);
+		const innerWidth = outputBlockContentWidth(width, 0);
 		const bodyLines = body.length > 0 ? body.split("\n").flatMap(line => wrapEditRendererLine(line, innerWidth)) : [];
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 

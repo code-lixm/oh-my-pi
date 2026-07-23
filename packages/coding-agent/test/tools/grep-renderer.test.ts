@@ -6,8 +6,10 @@ import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 import { grepToolRenderer } from "../../src/tools/grep";
+import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../src/tui/basic-tool-display-policy";
 
 const initialSettingsUiLocale = getSettingsUiLocale();
+const initialBasicToolDetailsVisible = getBasicToolDetailsVisible();
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -22,6 +24,7 @@ beforeAll(async () => {
 afterEach(() => {
 	settings.clearOverride("tui.hyperlinks");
 	setSettingsUiLocale(initialSettingsUiLocale);
+	setBasicToolDetailsVisible(initialBasicToolDetailsVisible);
 });
 
 afterAll(() => {
@@ -266,5 +269,100 @@ describe("grepToolRenderer", () => {
 		// Collapsed compacts to match lines only — no context.
 		expect(collapsedBody.some(line => line.includes("context before"))).toBe(false);
 		expect(collapsedBody.some(line => line.includes("more matches"))).toBe(true);
+	});
+
+	it("summarizes successful matches to one target/count header when basic details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: {
+				matchCount: 2,
+				fileCount: 2,
+				scopePath: "src",
+				displayContent: [
+					"# src/",
+					"## alpha.ts#aaaa",
+					"*4│const alphaHit = true;",
+					"## beta.ts#bbbb",
+					"*8│const betaHit = true;",
+				].join("\n"),
+			},
+		};
+
+		const plainLines = sanitizeText(
+			grepToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, {
+					pattern: "needle",
+					path: "src",
+				})
+				.render(240)
+				.join("\n"),
+		).split("\n");
+
+		expect(plainLines).toHaveLength(1);
+		const header = plainLines[0]!;
+		expect(header).toContain("Grep");
+		expect(header).toContain("needle");
+		expect(header).toContain("2 matches");
+		expect(header).toContain("2 files");
+		expect(header).toContain("src");
+		expect(header).not.toContain("alphaHit");
+		expect(header).not.toContain("betaHit");
+		expect(header).not.toContain("alpha.ts#aaaa");
+	});
+
+	it("keeps match details visible when basic details policy is on", async () => {
+		setBasicToolDetailsVisible(true);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: {
+				matchCount: 1,
+				fileCount: 1,
+				displayContent: ["# src/", "## visible.ts#abcd", "*12│const visibleMatch = true;"].join("\n"),
+			},
+		};
+
+		const plain = sanitizeText(
+			grepToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "visible" })
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(plain).toContain("visible.ts#abcd");
+		expect(plain).toContain("const visibleMatch = true;");
+	});
+
+	it("still renders grep error diagnostics when details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+
+		const rendered = sanitizeText(
+			grepToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "regex parse error: unclosed character class [needle" }],
+						details: { error: "regex parse error: unclosed character class [needle" },
+						isError: true,
+					} as never,
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{ pattern: "[needle", path: "src" },
+				)
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("Error:");
+		expect(rendered).toContain("regex parse error");
+		expect(rendered).toContain("unclosed character class");
 	});
 });

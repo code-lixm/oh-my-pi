@@ -183,7 +183,7 @@ export class PluginListComponent extends Container {
 
 			let details = `${kindBadge} ${theme.sep.dot} v${p.version}`;
 			if (featureCount > 0) {
-				details += ` ${theme.sep.dot} ${enabledCount}/${featureCount} features`;
+				details += ` ${theme.sep.dot} ${tSettingsUi("{enabled}/{total} features", { enabled: enabledCount, total: featureCount })}`;
 			}
 
 			return {
@@ -202,7 +202,7 @@ export class PluginListComponent extends Container {
 
 		let details = `${kindBadge} ${scopeTag} ${theme.sep.dot} v${version}`;
 		if (summary.shadowedBy) {
-			details += ` ${theme.sep.dot} shadowed by ${summary.shadowedBy}`;
+			details += ` ${theme.sep.dot} ${tSettingsUi("shadowed by")} ${summary.shadowedBy}`;
 		}
 
 		return {
@@ -426,7 +426,8 @@ export class MarketplacePluginDetailComponent extends Container {
 		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${plugin.id}`)), 0, 0));
 
 		const subtitleParts = [`[${plugin.scope}]`];
-		if (plugin.shadowedBy) subtitleParts.push(`${theme.status.shadowed} shadowed by ${plugin.shadowedBy}`);
+		if (plugin.shadowedBy)
+			subtitleParts.push(`${theme.status.shadowed} ${tSettingsUi("shadowed by")} ${plugin.shadowedBy}`);
 		this.addChild(new Text(theme.fg("muted", `  ${subtitleParts.join(" ")}`), 0, 0));
 		this.addChild(new Spacer(1));
 
@@ -462,19 +463,36 @@ export class MarketplacePluginDetailComponent extends Container {
 
 		// Read-only metadata. SettingsList rejects items without `values`/`submenu`,
 		// so we render the metadata as plain text rows beneath the toggle.
-		this.addChild(new Text(theme.fg("dim", `  version       ${entry?.version ?? "(unknown)"}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `  scope         ${plugin.scope}`), 0, 0));
+		this.addChild(
+			new Text(theme.fg("dim", `  ${tSettingsUi("version")}  ${entry?.version ?? tSettingsUi("(unknown)")}`), 0, 0),
+		);
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("scope")}  ${plugin.scope}`), 0, 0));
 		this.addChild(
 			new Text(
-				theme.fg("dim", `  install path  ${entry?.installPath ? shortenPath(entry.installPath) : "(unknown)"}`),
+				theme.fg(
+					"dim",
+					`  ${tSettingsUi("install path")}  ${entry?.installPath ? shortenPath(entry.installPath) : tSettingsUi("(unknown)")}`,
+				),
 				0,
 				0,
 			),
 		);
-		this.addChild(new Text(theme.fg("dim", `  installed at  ${entry?.installedAt ?? "(unknown)"}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `  last updated  ${entry?.lastUpdated ?? "(unknown)"}`), 0, 0));
+		this.addChild(
+			new Text(
+				theme.fg("dim", `  ${tSettingsUi("installed at")}  ${entry?.installedAt ?? tSettingsUi("(unknown)")}`),
+				0,
+				0,
+			),
+		);
+		this.addChild(
+			new Text(
+				theme.fg("dim", `  ${tSettingsUi("last updated")}  ${entry?.lastUpdated ?? tSettingsUi("(unknown)")}`),
+				0,
+				0,
+			),
+		);
 		if (entry?.gitCommitSha) {
-			this.addChild(new Text(theme.fg("dim", `  git sha       ${entry.gitCommitSha}`), 0, 0));
+			this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("git sha")}  ${entry.gitCommitSha}`), 0, 0));
 		}
 
 		this.addChild(new Spacer(1));

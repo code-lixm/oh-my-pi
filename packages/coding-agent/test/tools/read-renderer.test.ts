@@ -6,6 +6,7 @@ import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/componen
 import { theme as activeTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../src/tui/basic-tool-display-policy";
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -17,6 +18,8 @@ function extractLinkTexts(text: string): string[] {
 	);
 }
 
+const initialBasicToolDetailsVisible = getBasicToolDetailsVisible();
+
 beforeAll(async () => {
 	await initTheme();
 	resetSettingsForTest();
@@ -25,6 +28,7 @@ beforeAll(async () => {
 
 afterEach(() => {
 	settings.clearOverride("tui.hyperlinks");
+	setBasicToolDetailsVisible(initialBasicToolDetailsVisible);
 });
 
 afterAll(() => {
@@ -167,10 +171,141 @@ describe("readToolRenderer hyperlinks", () => {
 	});
 });
 
+describe("readToolRenderer basic details policy", () => {
+	it("summarizes a successful multi-line file read to one target/count header when details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const filePath = path.resolve("/tmp/omp-read/policy-file.ts");
+		const renderedLines = readToolRenderer
+			.renderResult(
+				{
+					content: [
+						{ type: "text", text: "export const alpha = 1;\nexport const beta = 2;\nexport const gamma = 3;" },
+					],
+					details: {
+						contentType: "text/plain",
+						displayContent: {
+							text: "export const alpha = 1;\nexport const beta = 2;\nexport const gamma = 3;",
+							startLine: 1,
+						},
+						summary: { lines: 3, elidedSpans: 0, elidedLines: 0 },
+					},
+				} as never,
+				{ expanded: true, isPartial: false },
+				theme!,
+				{ path: filePath },
+			)
+			.render(240)
+			.map(line => Bun.stripANSI(line));
+
+		expect(renderedLines).toHaveLength(1);
+		const header = renderedLines[0]!;
+		expect(header).toContain("Read");
+		expect(header).toContain(filePath);
+		expect(header).toContain("text/plain");
+		expect(header).toContain("3 lines");
+		expect(header).not.toContain("export const alpha");
+		expect(header).not.toContain("export const beta");
+		expect(header).not.toContain("export const gamma");
+	});
+
+	it("keeps file content visible when basic details policy is on", async () => {
+		setBasicToolDetailsVisible(true);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const filePath = path.resolve("/tmp/omp-read/policy-visible.ts");
+		const rendered = Bun.stripANSI(
+			readToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "visible policy-on content" }],
+						details: {
+							contentType: "text/plain",
+							displayContent: { text: "visible policy-on content", startLine: 1 },
+						},
+					} as never,
+					{ expanded: true, isPartial: false },
+					theme!,
+					{ path: filePath },
+				)
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("visible policy-on content");
+	});
+
+	it("summarizes a successful URL read to one target/status header when details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const renderedLines = readToolRenderer
+			.renderResult(
+				{
+					content: [{ type: "text", text: "---\n\nhello" }],
+					details: {
+						kind: "url",
+						url: "http://example.com/start",
+						finalUrl: "http://example.com/final",
+						contentType: "text/plain",
+						method: "fetch",
+						truncated: false,
+						notes: [],
+					},
+				} as never,
+				{ expanded: true, isPartial: false },
+				theme!,
+				{ path: "http://example.com/start" },
+			)
+			.render(240)
+			.map(line => Bun.stripANSI(line));
+
+		expect(renderedLines).toHaveLength(1);
+		const header = renderedLines[0]!;
+		expect(header).toContain("read:");
+		expect(header).toContain("http://example.com/start");
+		expect(header).toContain("text/plain");
+		expect(header).toContain("· fetch");
+		expect(header).not.toContain("hello");
+	});
+
+	it("still renders read error diagnostics when details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+
+		const missingPath = path.resolve("/tmp/omp-read/missing.txt");
+		const rendered = Bun.stripANSI(
+			readToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: `Error: ENOENT: no such file or directory, open '${missingPath}'` }],
+						isError: true,
+					} as never,
+					{ expanded: false, isPartial: false },
+					theme!,
+					{ path: missingPath },
+				)
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("ENOENT");
+		expect(rendered).toContain(missingPath);
+	});
+});
+
 describe("read ToolExecutionComponent framing", () => {
-	it("renders framed read results inside the standard tool container padding", () => {
+	it.each([
+		{ name: "local URL", path: "local://shared-frame.md" },
+		{ name: "internal URL", path: "skill://system-prompts/README.md" },
+	] as const)("renders framed $name read results on the shared one-column gutter", ({ path }) => {
 		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
-		const component = new ToolExecutionComponent("read", { path: "src/example.ts" }, {}, undefined, uiStub);
+		const component = new ToolExecutionComponent("read", { path }, {}, undefined, uiStub);
 		component.updateResult(
 			{
 				content: [{ type: "text", text: "export const x = 1;" }],
@@ -185,16 +320,28 @@ describe("read ToolExecutionComponent framing", () => {
 		try {
 			const lines = component.render(80).map(line => Bun.stripANSI(line));
 			const topBorderIndex = lines.findIndex(
-				line => line.includes(activeTheme.boxRound.topLeft) && line.includes("Read"),
+				line => line.trimStart().startsWith(activeTheme.boxRound.topLeft) && line.includes("Read"),
 			);
 
 			const bottomBorderIndex = lines.findIndex(
-				(line, index) => index > topBorderIndex && line.includes(activeTheme.boxRound.bottomLeft),
+				(line, index) => index > topBorderIndex && line.trimStart().startsWith(activeTheme.boxRound.bottomLeft),
+			);
+			const frameRows = lines.filter(line =>
+				[
+					activeTheme.boxRound.topLeft,
+					activeTheme.boxRound.teeRight,
+					activeTheme.boxRound.vertical,
+					activeTheme.boxRound.bottomLeft,
+				].includes(line.trimStart()[0] ?? ""),
 			);
 
 			expect(topBorderIndex).toBeGreaterThanOrEqual(0);
 			expect(lines[topBorderIndex + 1]).toContain("export const x = 1;");
 			expect(bottomBorderIndex).toBeGreaterThan(topBorderIndex);
+			expect(frameRows.length).toBeGreaterThan(2);
+			for (const row of frameRows) {
+				expect(row.length - row.trimStart().length, JSON.stringify(row)).toBe(1);
+			}
 		} finally {
 			component.stopAnimation();
 		}

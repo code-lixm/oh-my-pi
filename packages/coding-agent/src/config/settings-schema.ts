@@ -1041,25 +1041,25 @@ export const SETTINGS_SCHEMA = {
 
 	"display.borderStyle": {
 		type: "enum",
-		values: ["full", "horizontal", "none"] as const,
-		default: "full",
+		values: ["full", "none", "accent"] as const,
+		default: "accent",
 		ui: {
 			tab: "appearance",
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Border Style"),
-			description: tSettingsUi(
-				"Choose full borders, horizontal-only lines, or borderless containers with three-line Markdown tables",
-			),
+			description: tSettingsUi("Choose accent gutters (the system default), full borders, or borderless containers"),
 			options: [
+				{
+					value: "accent",
+					label: tSettingsUi("Accent Gutter"),
+					description: tSettingsUi(
+						"System default: replace full frames with a half-cell color rail, matching translucent-looking tint, and vertical breathing room; native selection may include the rail glyph and ordinary whitespace",
+					),
+				},
 				{
 					value: "full",
 					label: tSettingsUi("Full"),
 					description: tSettingsUi("Draw complete borders and table grids"),
-				},
-				{
-					value: "horizontal",
-					label: tSettingsUi("Horizontal Only"),
-					description: tSettingsUi("Remove vertical borders and keep structural horizontal separators"),
 				},
 				{
 					value: "none",
@@ -1070,6 +1070,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.basicToolDetails": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Basic Tool Details"),
+			description: tSettingsUi("Show detailed read, grep, and glob results instead of one-line summaries"),
+		},
+	},
 	"display.shimmer": {
 		type: "enum",
 		values: ["classic", "kitt", "disabled"] as const,

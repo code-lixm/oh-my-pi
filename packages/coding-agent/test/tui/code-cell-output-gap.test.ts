@@ -31,7 +31,7 @@ function expectExactlyOneBlankLineBetweenContentAndOutput(
 	const outputIndex = lineContaining(lines, outputNeedle);
 
 	expect(outputIndex).toBe(contentIndex + 2);
-	expect(lines[contentIndex + 1]).toMatch(/^│\s*│$/);
+	expect(lines[contentIndex + 1]).toMatch(/^ │\s*│$/);
 }
 
 function expectNoOutputDivider(lines: readonly string[]): void {

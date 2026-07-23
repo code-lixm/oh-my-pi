@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { SessionFocusController } from "@oh-my-pi/pi-coding-agent/modes/controllers/session-focus-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
@@ -45,6 +44,8 @@ interface Harness {
 	main: SessionStub;
 	handledEvents: unknown[];
 	setSessionCalls: Array<[AgentSession, string | undefined, string | undefined]>;
+	showFocusedAgentViewCalls: string[];
+	hideFocusedAgentViewCalls: () => number;
 	counts: {
 		clearTransientSessionUi: () => number;
 		resetTranscriptAnchors: () => number;
@@ -57,6 +58,8 @@ function makeHarness(): Harness {
 	const main = makeSessionStub();
 	const handledEvents: unknown[] = [];
 	const setSessionCalls: Array<[AgentSession, string | undefined, string | undefined]> = [];
+	const showFocusedAgentViewCalls: string[] = [];
+	let hideFocusedAgentViewCalls = 0;
 	let clearTransientSessionUi = 0;
 	let resetTranscriptAnchors = 0;
 	let renderInitialMessages = 0;
@@ -87,6 +90,12 @@ function makeHarness(): Harness {
 		renderInitialMessages: () => {
 			renderInitialMessages++;
 		},
+		showFocusedAgentView: (id: string) => {
+			showFocusedAgentViewCalls.push(id);
+		},
+		hideFocusedAgentView: () => {
+			hideFocusedAgentViewCalls++;
+		},
 		updateEditorBorderColor() {},
 		ui: { requestRender() {} },
 		showStatus() {},
@@ -94,8 +103,7 @@ function makeHarness(): Harness {
 	} as unknown as InteractiveModeContext;
 
 	const registry = new AgentRegistry();
-	const lifecycle = new AgentLifecycleManager(registry);
-	const controller = new SessionFocusController(ctx, registry, () => lifecycle);
+	const controller = new SessionFocusController(ctx, registry);
 
 	return {
 		ctx,
@@ -104,6 +112,8 @@ function makeHarness(): Harness {
 		main,
 		handledEvents,
 		setSessionCalls,
+		showFocusedAgentViewCalls,
+		hideFocusedAgentViewCalls: () => hideFocusedAgentViewCalls,
 		counts: {
 			clearTransientSessionUi: () => clearTransientSessionUi,
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
@@ -123,7 +133,7 @@ async function flushAsync(): Promise<void> {
 }
 
 describe("SessionFocusController", () => {
-	it("focusAgent retargets subscription, transcript anchors, and status line onto the worker session", async () => {
+	it("focusAgent retargets subscription, transcript anchors, status line, and the read-only view", async () => {
 		const h = makeHarness();
 		const worker = makeSessionStub();
 		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID, "Build agent");
@@ -137,10 +147,30 @@ describe("SessionFocusController", () => {
 		expect(h.counts.resetTranscriptAnchors()).toBe(1);
 		expect(h.counts.renderInitialMessages()).toBe(1);
 		expect(h.setSessionCalls).toEqual([[worker.session, "Worker", "Build agent"]]);
+		expect(h.showFocusedAgentViewCalls).toEqual(["Worker"]);
+		expect(h.hideFocusedAgentViewCalls()).toBe(0);
 
 		const event = { type: "message_start", message: { role: "user" } };
 		await worker.emit(event);
 		expect(h.handledEvents).toEqual([event]);
+	});
+
+	it("unfocus hides the read-only view and restores the main session", async () => {
+		const h = makeHarness();
+		const worker = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID, "Build agent");
+
+		await h.controller.focusAgent("Worker");
+		await h.controller.unfocus();
+
+		expect(h.controller.focusedAgentId).toBeUndefined();
+		expect(h.controller.target).toBeUndefined();
+		expect(h.setSessionCalls).toEqual([
+			[worker.session, "Worker", "Build agent"],
+			[h.main.session, undefined, undefined],
+		]);
+		expect(h.showFocusedAgentViewCalls).toEqual(["Worker"]);
+		expect(h.hideFocusedAgentViewCalls()).toBe(1);
 	});
 
 	it("mid-turn attach synthesizes agent_start, and an orphaned assistant message_update gets a synthesized message_start", async () => {
@@ -163,7 +193,7 @@ describe("SessionFocusController", () => {
 		expect(h.handledEvents.slice(3)).toEqual([{ type: "message_update", message }]);
 	});
 
-	it("cycles across Main and live subagents in createdAt order while skipping non-switchable refs", async () => {
+	it("cycles only across live subagents in createdAt order, wrapping without visiting Main", async () => {
 		const h = makeHarness();
 		const ignoredAdvisor = makeSessionStub();
 		const ignoredParked = makeSessionStub();
@@ -224,7 +254,7 @@ describe("SessionFocusController", () => {
 		expect(h.controller.focusedAgentId).toBe("Later");
 
 		await h.controller.cycleAgent("next");
-		expect(h.controller.focusedAgentId).toBeUndefined();
+		expect(h.controller.focusedAgentId).toBe("Earlier");
 
 		await h.controller.cycleAgent("previous");
 		expect(h.controller.focusedAgentId).toBe("Later");
@@ -233,16 +263,18 @@ describe("SessionFocusController", () => {
 		expect(h.controller.focusedAgentId).toBe("Earlier");
 
 		await h.controller.cycleAgent("previous");
-		expect(h.controller.focusedAgentId).toBeUndefined();
+		expect(h.controller.focusedAgentId).toBe("Later");
 
 		expect(h.setSessionCalls).toEqual([
 			[earlier.session, "Earlier", "Build plan"],
 			[later.session, "Later", "Run tests"],
-			[h.main.session, undefined, undefined],
+			[earlier.session, "Earlier", "Build plan"],
 			[later.session, "Later", "Run tests"],
 			[earlier.session, "Earlier", "Build plan"],
-			[h.main.session, undefined, undefined],
+			[later.session, "Later", "Run tests"],
 		]);
+		expect(h.showFocusedAgentViewCalls).toEqual(["Earlier", "Later", "Earlier", "Later", "Earlier", "Later"]);
+		expect(h.hideFocusedAgentViewCalls()).toBe(0);
 	});
 
 	it("focusParent walks parentId to a registered non-main agent, then re-attaches the main session", async () => {
@@ -271,21 +303,26 @@ describe("SessionFocusController", () => {
 		]);
 	});
 
-	it("parking the focused agent auto-unfocuses back to the main session", async () => {
-		const h = makeHarness();
-		const worker = makeSessionStub();
-		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID, "Queued worker");
+	it("auto-unfocuses and hides the read-only view when the focused ref detaches", async () => {
+		for (const status of ["parked", "aborted"] as const) {
+			const h = makeHarness();
+			const worker = makeSessionStub();
+			registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID, "Queued worker");
 
-		await h.controller.focusAgent("Worker");
-		expect(h.controller.focusedAgentId).toBe("Worker");
+			await h.controller.focusAgent("Worker");
+			expect(h.controller.focusedAgentId).toBe("Worker");
 
-		h.registry.setStatus("Worker", "parked");
-		await flushAsync();
+			h.registry.setStatus("Worker", status);
+			await flushAsync();
 
-		expect(h.controller.focusedAgentId).toBeUndefined();
-		expect(h.setSessionCalls).toEqual([
-			[worker.session, "Worker", "Queued worker"],
-			[h.main.session, undefined, undefined],
-		]);
+			expect(h.controller.focusedAgentId).toBeUndefined();
+			expect(h.controller.target).toBeUndefined();
+			expect(h.setSessionCalls).toEqual([
+				[worker.session, "Worker", "Queued worker"],
+				[h.main.session, undefined, undefined],
+			]);
+			expect(h.showFocusedAgentViewCalls).toEqual(["Worker"]);
+			expect(h.hideFocusedAgentViewCalls()).toBe(1);
+		}
 	});
 });

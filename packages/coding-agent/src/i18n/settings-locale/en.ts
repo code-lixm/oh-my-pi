@@ -128,17 +128,17 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Display: "Display",
 	"Border Style": "Border Style",
 	Branch: "Branch",
-	"Choose full borders, horizontal-only lines, or borderless containers with three-line Markdown tables":
-		"Choose full borders, horizontal-only lines, or borderless containers with three-line Markdown tables",
+	"Choose accent gutters (the system default), full borders, or borderless containers":
+		"Choose accent gutters (the system default), full borders, or borderless containers",
 	"Choose glyph mode": "Choose glyph mode",
 	Full: "Full",
 	"Draw complete borders and table grids": "Draw complete borders and table grids",
-	"Horizontal Only": "Horizontal Only",
-	"Remove vertical borders and keep structural horizontal separators":
-		"Remove vertical borders and keep structural horizontal separators",
 	Borderless: "Borderless",
 	"Remove container frames while keeping task trees and three-line tables":
 		"Remove container frames while keeping task trees and three-line tables",
+	"Accent Gutter": "Accent Gutter",
+	"System default: replace full frames with a half-cell color rail, matching translucent-looking tint, and vertical breathing room; native selection may include the rail glyph and ordinary whitespace":
+		"System default: replace full frames with a half-cell color rail, matching translucent-looking tint, and vertical breathing room; native selection may include the rail glyph and ordinary whitespace",
 	Images: "Images",
 	"Imported {phaseCount} phase(s), {taskCount} task(s) from {source}.":
 		"Imported {phaseCount} phase(s), {taskCount} task(s) from {source}.",
@@ -633,7 +633,16 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Session shared": "Session shared",
 	"Set up Oh My Pi in terminal": "Set up Oh My Pi in terminal",
 	Skills: "Skills",
+	Subagent: "Subagent",
 	Subagents: "Subagents",
+	"Main needs input · Esc return": "Main needs input · Esc return",
+	"Waiting for progress…": "Waiting for progress…",
+	"{count} tools": "{count} tools",
+	"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand":
+		"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand",
+	"last {rate}": "last {rate}",
+	"retry failed after {attempt}": "retry failed after {attempt}",
+	"retry {attempt}/{max} · {delay}": "retry {attempt}/{max} · {delay}",
 	"Successfully logged in to {providerId}": "Successfully logged in to {providerId}",
 	Summarize: "Summarize",
 	"Summarize branch?": "Summarize branch?",
@@ -1388,6 +1397,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Advisor is not active for this session.": "Advisor is not active for this session.",
 	"Agent Idle TTL": "Agent Idle TTL",
 	"Agent {id} is {status}; returned to main session": "Agent {id} is {status}; returned to main session",
+	"Agent {id} is gone; returned to main session": "Agent {id} is gone; returned to main session",
+	"Agent {id} is not live": "Agent {id} is not live",
 	"Allow retry recovery to switch to configured fallback models":
 		"Allow retry recovery to switch to configured fallback models",
 	"Allow the eval tool to dispatch JavaScript cells to the in-process runtime":
@@ -1464,6 +1475,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Backend for the tts tool: local on-device neural TTS (Kokoro-82M) or xAI Grok Voice",
 	"Base URL of a self-hosted SearXNG instance used for web search":
 		"Base URL of a self-hosted SearXNG instance used for web search",
+	"Basic Tool Details": "Basic Tool Details",
 	"Bash Auto-Background": "Bash Auto-Background",
 	"Bash Interceptor": "Bash Interceptor",
 	"Batch Task Calls": "Batch Task Calls",
@@ -2143,6 +2155,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Show newly added onboarding steps once per setup version":
 		"Show newly added onboarding steps once per setup version",
 	"Show per-turn token usage on assistant messages": "Show per-turn token usage on assistant messages",
+	"Show detailed read, grep, and glob results instead of one-line summaries":
+		"Show detailed read, grep, and glob results instead of one-line summaries",
 	"Show terminal cursor for IME support": "Show terminal cursor for IME support",
 	"Show token budget alongside the goal indicator in the status line":
 		"Show token budget alongside the goal indicator in the status line",
@@ -4572,4 +4586,15 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Compact: context unavailable": "Compact: context unavailable",
 	"Force: no active tools": "Force: no active tools",
 	"Force: {count} active tools": "Force: {count} active tools",
+	"shadowed by": "shadowed by",
+	version: "version",
+	scope: "scope",
+	"install path": "install path",
+	"installed at": "installed at",
+	"last updated": "last updated",
+	"git sha": "git sha",
+	"(unknown)": "(unknown)",
+	"{enabled}/{total} features": "{enabled}/{total} features",
+	"Note: newer primary turns arrived after this reviewed window — verify this still applies.":
+		"Note: newer primary turns arrived after this reviewed window — verify this still applies.",
 };

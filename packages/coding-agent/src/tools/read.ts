@@ -55,7 +55,15 @@ import {
 	truncateHeadBytes,
 	truncateLine,
 } from "../session/streaming-output";
-import { fileHyperlink, renderCodeCell, renderMarkdownCell, renderStatusLine, tryResolveInternalUrlSync } from "../tui";
+import {
+	fileHyperlink,
+	getBasicToolDetailsVisible,
+	renderCodeCell,
+	renderMarkdownCell,
+	renderStatusLine,
+	tryResolveInternalUrlSync,
+	urlHyperlink,
+} from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -3404,6 +3412,62 @@ function formatReadPathLink(
 	return `${linkedPath}${selectorSuffix}`;
 }
 
+function appendReadOffsetLimit(display: string, args: ReadRenderArgs | undefined): string {
+	if (args?.offset === undefined && args?.limit === undefined) return display;
+	const startLine = args.offset ?? 1;
+	const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
+	return `${display}:${startLine}${endLine ? `-${endLine}` : ""}`;
+}
+
+function readSummaryMeta(
+	details: ReadToolDetails | undefined,
+	uiTheme: Theme,
+	options: { imageMimeType?: string } = {},
+): string[] {
+	const meta: string[] = [];
+	const contentType = details?.contentType ?? options.imageMimeType;
+	if (contentType) meta.push(contentType);
+	if (details?.summary) {
+		meta.push(
+			tSettingsUi(details.summary.lines === 1 ? "{count} line" : "{count} lines", { count: details.summary.lines }),
+		);
+		meta.push(
+			tSettingsUi(
+				details.summary.elidedSpans === 1 ? "(summary: {count} elided span)" : "(summary: {count} elided spans)",
+				{ count: details.summary.elidedSpans },
+			),
+		);
+		if (details.summary.elidedLines > 0) meta.push(`${details.summary.elidedLines.toLocaleString()}ln elided`);
+	}
+	if (details?.conflictCount && details.conflictCount > 0) {
+		const n = details.conflictCount;
+		meta.push(
+			uiTheme.fg("warning", tSettingsUi(n === 1 ? "(⚠ {count} conflict)" : "(⚠ {count} conflicts)", { count: n })),
+		);
+	}
+	if (details?.meta?.truncation || details?.truncation) {
+		meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
+	}
+	return meta;
+}
+function renderReadUrlSummaryStatusLine(
+	rawPath: string,
+	details: ReadUrlToolDetails | undefined,
+	uiTheme: Theme,
+): string {
+	const split = splitReadRenderPath(rawPath);
+	const target = split.path || rawPath || details?.finalUrl || details?.url || "…";
+	const descriptionBase = urlHyperlink(target, shortenPath(target));
+	const description = split.sel ? `${descriptionBase}:${split.sel}` : descriptionBase;
+	const truncated = Boolean(details?.truncated || details?.meta?.truncation);
+	const meta = [details?.contentType, details?.method].filter((value): value is string => Boolean(value?.trim()));
+	if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
+	return renderStatusLine(
+		{ icon: truncated ? "warning" : "success", title: tSettingsUi("read"), description, meta },
+		uiTheme,
+	);
+}
+
 export const readToolRenderer = {
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = readRenderPath(args);
@@ -3437,6 +3501,21 @@ export const readToolRenderer = {
 		const urlDetails = result.details as ReadUrlToolDetails | undefined;
 		const baseRawPathForKind =
 			typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
+		if (
+			!result.isError &&
+			!getBasicToolDetailsVisible() &&
+			(urlDetails?.kind === "url" || isReadableUrlPath(baseRawPathForKind))
+		) {
+			return new Text(
+				renderReadUrlSummaryStatusLine(
+					readRenderPath(args) || baseRawPathForKind,
+					urlDetails?.kind === "url" ? urlDetails : undefined,
+					uiTheme,
+				),
+				0,
+				0,
+			);
+		}
 		if (urlDetails?.kind === "url" || isReadableUrlPath(baseRawPathForKind)) {
 			return renderReadUrlResult(
 				result as {
@@ -3529,6 +3608,24 @@ export const readToolRenderer = {
 				},
 				uiTheme,
 			);
+			if (!getBasicToolDetailsVisible()) {
+				let imageMimeType: string | undefined;
+				if (imageContent && typeof imageContent === "object" && "mimeType" in imageContent) {
+					imageMimeType = typeof imageContent.mimeType === "string" ? imageContent.mimeType : undefined;
+				}
+				const meta = readSummaryMeta(details, uiTheme, { imageMimeType });
+				const summaryHeader = renderStatusLine(
+					{
+						icon: suffix ? "warning" : undefined,
+						iconOverride: suffix ? undefined : uiTheme.fg("toolTitle", uiTheme.symbol("icon.file")),
+						title: tSettingsUi("Read"),
+						description: `${displayPath}${correction}`,
+						meta,
+					},
+					uiTheme,
+				);
+				return new Text(summaryHeader, 0, 0);
+			}
 			const detailLines = contentText ? contentText.split("\n").map(line => uiTheme.fg("toolOutput", line)) : [];
 			const lines = [...detailLines, ...warningLines];
 			const outputBlock = new CachedOutputBlock();
@@ -3566,6 +3663,24 @@ export const readToolRenderer = {
 		const correction = suffix
 			? ` ${uiTheme.fg("dim", tSettingsUi("(corrected from {path})", { path: shortenPath(suffix.from) }))}`
 			: "";
+		if (!getBasicToolDetailsVisible()) {
+			const description = appendReadOffsetLimit(
+				displayPath ? `${displayPath}${correction}` : shortenPath(rawPath),
+				args,
+			);
+			const truncated = Boolean(details?.meta?.truncation || details?.truncation);
+			const header = renderStatusLine(
+				{
+					icon: truncated ? "warning" : "success",
+					title: tSettingsUi("Read"),
+					titleColor: "toolTitle",
+					description: description || undefined,
+					meta: readSummaryMeta(details, uiTheme),
+				},
+				uiTheme,
+			);
+			return new Text(header, 0, 0);
+		}
 		let title = displayPath
 			? tSettingsUi("Read {path}", { path: `${displayPath}${correction}` })
 			: tSettingsUi("Read");

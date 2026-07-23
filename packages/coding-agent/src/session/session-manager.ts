@@ -56,7 +56,7 @@ import {
 	type TtsrInjectionEntry,
 	type UsageStatistics,
 } from "./session-entries";
-import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
+import { listAllSessions, listSessions, type SessionInfo } from "./session-listing";
 import { loadEntriesFromFile, readTitleSlotFromFile, resolveBlobRefsInEntries } from "./session-loader";
 import { generateId, migrateToCurrentVersion } from "./session-migrations";
 import {
@@ -104,8 +104,14 @@ function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
  * any nested artifact — must resolve back up to the top-level session so
  * `--continue` resumes the real conversation instead of a subagent transcript.
  */
-function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
+function resolveBreadcrumbToInteractiveRoot(sessionFile: string, options?: { targetExists?: boolean }): string {
 	let current = path.resolve(sessionFile);
+	// A fresh `/new` breadcrumb may intentionally point at a top-level session
+	// file that does not exist yet. Never walk a missing target through an
+	// artifacts-dir parent: that would erase the hard boundary and resume the
+	// pre-`/new` session.
+	if (options?.targetExists === false) return current;
+
 	// Walk up while the containing dir is itself a session's artifacts dir
 	// (`<dir>.jsonl` exists). Capped to defend against pathological layouts.
 	for (let depth = 0; depth < 8; depth++) {
@@ -180,6 +186,21 @@ function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
 		default:
 			return false;
 	}
+}
+
+async function hasRecoverableSessionState(sessionFile: string, storage: SessionStorage): Promise<boolean> {
+	const artifactsDir = artifactsDirectoryFor(sessionFile);
+	if (artifactsDir && storage.existsSync(path.join(artifactsDir, "draft.txt"))) return true;
+
+	const entries = await loadEntriesFromFile(sessionFile, storage);
+	return entries.some(entry => entry.type !== "session" && !isDraftOnlyMetadataEntry(entry as SessionEntry));
+}
+
+async function findMostRecentRecoverableSession(sessionDir: string, storage: SessionStorage): Promise<string | null> {
+	for (const session of await listSessions(sessionDir, storage)) {
+		if (await hasRecoverableSessionState(session.path, storage)) return session.path;
+	}
+	return null;
 }
 
 function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
@@ -1252,8 +1273,9 @@ export class SessionManager {
 
 	/**
 	 * Drop only session files that this manager saw materialized for a draft and
-	 * that still contain no durable conversation or extension state. Explicit
-	 * ensureOnDisk() records (ACP session/new, handoff) stay resumable.
+	 * that no longer have recoverable draft content. Explicit ensureOnDisk()
+	 * records (ACP session/new, handoff) may stay on disk for direct references,
+	 * but header-only files are not considered recoverable by continueRecent().
 	 */
 	async #dropIfEmptyAndNoDraft(): Promise<void> {
 		if (!this.#draftOnlySessionCleanupArmed) return;
@@ -1337,6 +1359,10 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.#sessionFile;
+	}
+
+	isSessionPersisted(): boolean {
+		return this.#sessionFile !== undefined && this.#storage.existsSync(this.#sessionFile);
 	}
 
 	getArtifactsDir(): string | null {
@@ -2074,69 +2100,74 @@ export class SessionManager {
 		let chosenSession: string | null | undefined;
 
 		if (breadcrumb) {
-			// A fresh `/new` boundary whose JSONL was never materialized (lazy
-			// new-session persistence, then a process exit before any assistant
-			// output). Honor the boundary: start fresh rather than falling back to
-			// findMostRecentSession(), which would resurrect the pre-`/new`
-			// transcript. A materialized (or genuinely stale/deleted) crumb reports
-			// exists=false only when fresh, so this never masks a real stale crumb.
-			if (breadcrumb.fresh && !breadcrumb.exists) {
-				const manager = new SessionManager(cwd, dir, true, storage);
-				manager.#resetToNewSession();
-				return manager;
-			}
-
-			// Recover stale crumbs: a subagent open (pre-fix) may have pointed this
-			// terminal's breadcrumb at an artifact child; resume the parent instead.
-			breadcrumb.sessionFile = resolveBreadcrumbToInteractiveRoot(breadcrumb.sessionFile);
+			breadcrumb.sessionFile = resolveBreadcrumbToInteractiveRoot(breadcrumb.sessionFile, {
+				targetExists: breadcrumb.exists,
+			});
+			const breadcrumbFile = path.resolve(breadcrumb.sessionFile);
+			const breadcrumbRecoverable = breadcrumb.exists
+				? await hasRecoverableSessionState(breadcrumbFile, storage)
+				: false;
 			const breadcrumbCwd = path.resolve(breadcrumb.cwd);
-			if (breadcrumbCwd === resolvedCwd) {
-				chosenSession = breadcrumb.sessionFile;
+
+			if (breadcrumb.fresh && !breadcrumb.exists && breadcrumbCwd === resolvedCwd) {
+				// A current-cwd `/new` breadcrumb whose lazy JSONL never materialized is
+				// an explicit hard boundary. Start empty instead of falling back to an
+				// older recoverable transcript from before `/new`.
+				chosenSession = null;
 			} else {
-				// The terminal's last session started in a different cwd. If that cwd is
-				// gone (worktree move/rename) and this location has no sessions of its
-				// own, re-root the moved session here instead of starting fresh. When an
-				// explicit sessionDir is reused across the move, the stale breadcrumb file
-				// may be the newest entry there; prefer a genuine current-cwd session.
-				let newestInTargetDir = await findMostRecentSession(dir, storage);
-				const breadcrumbFile = path.resolve(breadcrumb.sessionFile);
-				const breadcrumbCwdMissing = !fs.existsSync(breadcrumbCwd);
-				const newestIsBreadcrumb = newestInTargetDir ? path.resolve(newestInTargetDir) === breadcrumbFile : false;
-				let currentProjectAlreadyHasSession = false;
+				if (breadcrumbCwd === resolvedCwd) {
+					if (breadcrumbRecoverable) chosenSession = breadcrumbFile;
+				} else {
+					// The terminal's last session started in a different cwd. If that cwd is
+					// gone (worktree move/rename) and this location has no sessions of its
+					// own, re-root the moved session here instead of starting fresh. When an
+					// explicit sessionDir is reused across the move, the stale breadcrumb file
+					// may be the newest entry there; prefer a genuine current-cwd session.
+					let newestInTargetDir = await findMostRecentRecoverableSession(dir, storage);
+					const breadcrumbCwdMissing = !fs.existsSync(breadcrumbCwd);
+					const newestIsBreadcrumb = newestInTargetDir
+						? path.resolve(newestInTargetDir) === breadcrumbFile
+						: false;
+					let currentProjectAlreadyHasSession = false;
 
-				if (breadcrumbCwdMissing && newestIsBreadcrumb) {
-					const localSession = (await SessionManager.list(cwd, dir, storage)).find(
-						session =>
-							path.resolve(session.path) !== breadcrumbFile &&
-							session.cwd &&
-							path.resolve(session.cwd) === resolvedCwd,
-					);
-					if (localSession) {
-						newestInTargetDir = localSession.path;
-						currentProjectAlreadyHasSession = true;
+					if (breadcrumbCwdMissing && newestIsBreadcrumb) {
+						for (const session of await SessionManager.list(cwd, dir, storage)) {
+							if (
+								path.resolve(session.path) === breadcrumbFile ||
+								!session.cwd ||
+								path.resolve(session.cwd) !== resolvedCwd ||
+								!(await hasRecoverableSessionState(session.path, storage))
+							) {
+								continue;
+							}
+							newestInTargetDir = session.path;
+							currentProjectAlreadyHasSession = true;
+							break;
+						}
 					}
-				}
 
-				const looksLikeMovedProject =
-					breadcrumbCwdMissing &&
-					(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
-				if (looksLikeMovedProject) {
-					logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
-					// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
-					// session: open() now falls back to the launch cwd for a missing
-					// recorded cwd, which would no-op moveTo when it equals `cwd`.
-					const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage, {
-						initialCwd: breadcrumbCwd,
-					});
-					await manager.moveTo(cwd, sessionDir);
-					return manager;
-				}
+					const looksLikeMovedProject =
+						breadcrumbRecoverable &&
+						breadcrumbCwdMissing &&
+						(newestInTargetDir === null || (newestIsBreadcrumb && !currentProjectAlreadyHasSession));
+					if (looksLikeMovedProject) {
+						logger.info("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
+						// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
+						// session: open() now falls back to the launch cwd for a missing
+						// recorded cwd, which would no-op moveTo when it equals `cwd`.
+						const manager = await SessionManager.open(breadcrumb.sessionFile, undefined, storage, {
+							initialCwd: breadcrumbCwd,
+						});
+						await manager.moveTo(cwd, sessionDir);
+						return manager;
+					}
 
-				chosenSession = newestInTargetDir;
+					chosenSession = newestInTargetDir;
+				}
 			}
 		}
 
-		if (chosenSession === undefined) chosenSession = await findMostRecentSession(dir, storage);
+		if (chosenSession === undefined) chosenSession = await findMostRecentRecoverableSession(dir, storage);
 
 		const manager = new SessionManager(cwd, dir, true, storage);
 		if (chosenSession) await manager.setSessionFile(chosenSession);

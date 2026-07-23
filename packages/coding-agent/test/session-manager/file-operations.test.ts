@@ -6,7 +6,15 @@ import type { FileEntry, SessionHeader } from "@oh-my-pi/pi-coding-agent/session
 import { findMostRecentSession, resolveResumableSession } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getConfigRootDir, getSessionsDir, removeSyncWithRetries, Snowflake, setAgentDir } from "@oh-my-pi/pi-utils";
+import { getTerminalId } from "@oh-my-pi/pi-tui";
+import {
+	getConfigRootDir,
+	getSessionsDir,
+	getTerminalSessionsDir,
+	removeSyncWithRetries,
+	Snowflake,
+	setAgentDir,
+} from "@oh-my-pi/pi-utils";
 
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
@@ -221,6 +229,8 @@ describe("SessionManager temp cwd session dirs", () => {
 
 describe("SessionManager legacy session migration persistence", () => {
 	let tempDir: string;
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	function makeAssistantMessage() {
 		return {
@@ -246,11 +256,26 @@ describe("SessionManager legacy session migration persistence", () => {
 		return entries.find((entry): entry is SessionHeader => entry.type === "session");
 	}
 
+	function clearTerminalBreadcrumb() {
+		const terminalId = getTerminalId();
+		if (!terminalId) return;
+		fs.rmSync(path.join(getTerminalSessionsDir(), terminalId), { force: true });
+	}
+
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-"));
+		setAgentDir(path.join(tempDir, "agent"));
+		clearTerminalBreadcrumb();
 	});
 
 	afterEach(() => {
+		clearTerminalBreadcrumb();
+		if (originalAgentDir) {
+			setAgentDir(originalAgentDir);
+		} else {
+			setAgentDir(fallbackAgentDir);
+			delete process.env.PI_CODING_AGENT_DIR;
+		}
 		removeSyncWithRetries(tempDir);
 	});
 
@@ -367,7 +392,8 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(persistedEntries[1].id).toBeDefined();
 		expect(persistedEntries[1].parentId).toBeNull();
 	});
-	it("keeps the last non-empty session resumable after starting a fresh session", async () => {
+
+	it("honors a fresh /new boundary instead of recovering an older transcript", async () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -382,10 +408,87 @@ describe("SessionManager legacy session migration persistence", () => {
 
 		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
-			expect(resumed.getSessionFile()).toBe(previousSessionFile);
+			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
+			expect(JSON.stringify(resumed.getEntries())).not.toContain("hello");
+			expect(resumed.getEntries()).toHaveLength(0);
 		} finally {
 			await resumed.close();
 			await session.close();
+		}
+	});
+
+	it("skips persisted empty sessions but resumes a newer non-empty session", async () => {
+		const previous = SessionManager.create(tempDir, tempDir);
+		previous.appendMessage({ role: "user", content: "previous", timestamp: Date.now() - 1 });
+		previous.appendMessage(makeAssistantMessage());
+		await previous.flush();
+		const previousSessionFile = previous.getSessionFile();
+		if (!previousSessionFile) throw new Error("Expected persisted session file");
+		await previous.close();
+
+		const empty = SessionManager.create(tempDir, tempDir);
+		await empty.ensureOnDisk();
+		await empty.flush();
+		const emptySessionFile = empty.getSessionFile();
+		if (!emptySessionFile) throw new Error("Expected empty session file");
+		await empty.close();
+
+		fs.utimesSync(previousSessionFile, new Date("2025-01-01T00:00:00Z"), new Date("2025-01-01T00:00:00Z"));
+		fs.utimesSync(emptySessionFile, new Date("2025-01-01T00:00:01Z"), new Date("2025-01-01T00:00:01Z"));
+
+		clearTerminalBreadcrumb();
+		let resumed = await SessionManager.continueRecent(tempDir, tempDir);
+		try {
+			expect(resumed.getSessionFile()).toBe(previousSessionFile);
+		} finally {
+			await resumed.close();
+		}
+
+		const newer = SessionManager.create(tempDir, tempDir);
+		newer.appendMessage({ role: "user", content: "newer", timestamp: Date.now() - 1 });
+		newer.appendMessage(makeAssistantMessage());
+		await newer.flush();
+		const newerSessionFile = newer.getSessionFile();
+		if (!newerSessionFile) throw new Error("Expected newer session file");
+		await newer.close();
+		fs.utimesSync(newerSessionFile, new Date("2025-01-01T00:00:02Z"), new Date("2025-01-01T00:00:02Z"));
+
+		clearTerminalBreadcrumb();
+		resumed = await SessionManager.continueRecent(tempDir, tempDir);
+		try {
+			expect(resumed.getSessionFile()).toBe(newerSessionFile);
+		} finally {
+			await resumed.close();
+		}
+	});
+
+	it("prefers a newer draft-only session over an older non-empty transcript", async () => {
+		const previous = SessionManager.create(tempDir, tempDir);
+		previous.appendMessage({ role: "user", content: "previous", timestamp: Date.now() - 1 });
+		previous.appendMessage(makeAssistantMessage());
+		await previous.flush();
+		const previousSessionFile = previous.getSessionFile();
+		if (!previousSessionFile) throw new Error("Expected persisted session file");
+		await previous.close();
+
+		const draftOnly = SessionManager.create(tempDir, tempDir);
+		draftOnly.appendModelChange("anthropic/claude-sonnet-4-20250514");
+		await draftOnly.saveDraft("resume this draft");
+		await draftOnly.flush();
+		const draftOnlySessionFile = draftOnly.getSessionFile();
+		if (!draftOnlySessionFile) throw new Error("Expected draft session file");
+		await draftOnly.close();
+
+		fs.utimesSync(previousSessionFile, new Date("2025-01-01T00:00:00Z"), new Date("2025-01-01T00:00:00Z"));
+		fs.utimesSync(draftOnlySessionFile, new Date("2025-01-01T00:00:01Z"), new Date("2025-01-01T00:00:01Z"));
+		clearTerminalBreadcrumb();
+
+		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
+		try {
+			expect(resumed.getSessionFile()).toBe(draftOnlySessionFile);
+			expect(await resumed.consumeDraft()).toBe("resume this draft");
+		} finally {
+			await resumed.close();
 		}
 	});
 });

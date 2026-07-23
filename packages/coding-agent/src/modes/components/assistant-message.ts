@@ -22,27 +22,33 @@ import {
 	resolveImageOptions,
 	TRUNCATE_LENGTHS,
 } from "../../tools/render-utils";
-import { getOutputBlockBorderStyle } from "../../tui/output-block";
+import { getOutputBlockBorderStyle, isBorderlessOutputStyle } from "../../tui/output-block";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
 
 /** Cache key for the assistant Markdown children's code-block display options. */
-const ASSISTANT_CODE_BLOCK_CACHE_KEY = "assistant:framed:v1";
+const ASSISTANT_CODE_BLOCK_CACHE_KEY = "assistant:code-block:v4";
 
 function buildAssistantCodeBlockOptions(): CodeBlockDisplayOptions | undefined {
 	const borderStyle = getOutputBlockBorderStyle();
-	if (borderStyle === "none") return undefined;
-
 	const expandKeyLabel = expandKeyHint();
 	const omitHintTemplate = tSettingsUi("… {count} more lines ({key} to expand)");
-	return {
-		frame: true,
+	const common = {
 		cacheKey: `${ASSISTANT_CODE_BLOCK_CACHE_KEY}:${borderStyle}:${expandKeyLabel}:${omitHintTemplate}`,
 		getCollapsedBudget: previewWindowRows,
 		expandKeyLabel,
 		omitHintTemplate,
 	};
+	if (borderStyle === "accent") {
+		return {
+			...common,
+			frame: false,
+			plainPaddingX: 0,
+		};
+	}
+	if (isBorderlessOutputStyle(borderStyle)) return undefined;
+	return { ...common, frame: true };
 }
 
 /**
@@ -875,7 +881,10 @@ export class AssistantMessageComponent extends Container {
 				const trimmed = content.text.trim();
 				if (!trimmed) continue;
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				const md = new Markdown(trimmed, 0, 0, getMarkdownTheme());
+				// paddingX=1 aligns the assistant body's prose with sibling transcript
+				// rows (UserMessage, tool cards) that all carry a 1-cell left gutter.
+				// paddingY=0 still avoids extra spacing before tool executions.
+				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme());
 				const codeBlockOptions = buildAssistantCodeBlockOptions();
 				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);
@@ -901,8 +910,10 @@ export class AssistantMessageComponent extends Container {
 							(c.type === "thinking" && resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
 					);
 
-				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(thinkingText, 0, 0, getMarkdownTheme(), {
+				// Thinking traces in thinkingText color, italic. paddingX=1
+				// keeps the visible thinking line aligned with sibling transcript
+				// rows (text prose, UserMessage, tool cards) — see the text branch.
+				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 				});
 				const codeBlockOptions = buildAssistantCodeBlockOptions();

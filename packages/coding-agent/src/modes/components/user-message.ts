@@ -1,6 +1,6 @@
 import { Container, Markdown } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
-import { framedBlock, outputBlockContentWidth } from "../../tui";
+import { applyStableBackground, framedBlock, outputBlockContentWidth } from "../../tui";
 import { hasImageMarker, imageReferenceHyperlink, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 
@@ -25,7 +25,6 @@ export class UserMessageComponent extends Container {
 	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
 		super();
 		const framedImageMessage = hasImageMarker(text);
-		const bgColor = (value: string) => theme.bg("userMessageBg", value);
 		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
 		// bubble too — matching the live editor glow. The Markdown component routes code spans and
 		// fenced blocks through its own code styling (never `color`), so those are already excluded;
@@ -45,8 +44,10 @@ export class UserMessageComponent extends Container {
 						: theme.fg("accent", `\x1b[1m${label}\x1b[22m`),
 			});
 		const md = new Markdown(text, framedImageMessage ? 0 : 1, framedImageMessage ? 0 : 1, getMarkdownTheme(), {
-			bgColor: framedImageMessage ? undefined : bgColor,
 			color,
+			bgColor: synthetic
+				? undefined
+				: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
 		});
 		md.setIgnoreTight(true);
 		if (framedImageMessage) {

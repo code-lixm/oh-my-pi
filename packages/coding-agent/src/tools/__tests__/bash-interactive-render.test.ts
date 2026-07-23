@@ -11,7 +11,7 @@ const MAX_OVERLAY_ROWS = Math.max(5, Math.floor(VIEWPORT_ROWS * 0.8));
 const MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 4);
 const NONE_MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 2);
 
-type BorderStyle = "full" | "horizontal" | "none";
+type BorderStyle = "full" | "none" | "accent";
 
 type Completion = {
 	exitCode: number | undefined;
@@ -50,10 +50,15 @@ function expectNoFrameOrTreeGlyphs(lines: readonly string[]): void {
 }
 
 function contentRows(lines: readonly string[], borderStyle: BorderStyle): string[] {
+	const start = borderStyle === "none" ? 1 : 2;
+	const end = borderStyle === "none" ? -1 : -2;
 	return strip(lines)
-		.slice(borderStyle === "none" ? 1 : 2, borderStyle === "none" ? -1 : -2)
+		.slice(start, end)
 		.map(line => {
-			const inner = borderStyle === "horizontal" ? line : borderStyle === "none" ? line.slice(2) : line.slice(1, -1);
+			if (borderStyle === "accent") {
+				return line.replace(/^▌ /, "").trimEnd();
+			}
+			const inner = borderStyle === "full" ? line.slice(1, -1) : line.slice(2);
 			return inner.trimEnd();
 		});
 }
@@ -164,6 +169,36 @@ describe("BashInteractiveOverlayComponent render", () => {
 		expectLineWidths(lines, WIDTH);
 	});
 
+	it("renders running accent overlays with tinted padding rows around the header/content/footer chrome", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "accent",
+			output: "left\r\nright",
+		});
+		const plain = strip(lines);
+
+		expect(lines).toHaveLength(6);
+		expect(contentRows(lines, "accent")).toEqual(["left", "right"]);
+		expect(plain[0]).toBe(`▌ ${" ".repeat(WIDTH - 2)}`);
+		expect(plain.at(-1)).toBe(`▌ ${" ".repeat(WIDTH - 2)}`);
+		for (const line of plain) {
+			expect(line.startsWith("▌ ")).toBe(true);
+		}
+		expectNoFrameOrTreeGlyphs(lines);
+		expectLineWidths(lines, WIDTH);
+	});
+
+	it("uses maxOverlayRows - 4 content rows for alternate-buffer accent overlays", async () => {
+		const lines = await renderOverlay({
+			borderStyle: "accent",
+			output: "\x1b[?1049hALT SCREEN",
+		});
+
+		expect(lines).toHaveLength(MAX_OVERLAY_ROWS);
+		expect(contentRows(lines, "accent")).toEqual(["ALT SCREEN", "", "", ""]);
+		expect(contentRows(lines, "accent")).toHaveLength(MAX_CONTENT_ROWS);
+		expectLineWidths(lines, WIDTH);
+	});
+
 	it("uses maxOverlayRows - 2 content rows for alternate-buffer none overlays instead of the framed budget", async () => {
 		const lines = await renderOverlay({
 			borderStyle: "none",
@@ -208,26 +243,6 @@ describe("BashInteractiveOverlayComponent render", () => {
 			expect(line.startsWith(uiTheme.boxRound.vertical)).toBe(true);
 			expect(line.endsWith(uiTheme.boxRound.vertical)).toBe(true);
 		}
-		expectLineWidths(lines, WIDTH);
-	});
-
-	it("renders horizontal overlays with only horizontal bars, equal widths, and no vertical or rounded glyphs", async () => {
-		const lines = await renderOverlay({
-			borderStyle: "horizontal",
-			output: "left\r\nright",
-			completion: { exitCode: 0, cancelled: false, timedOut: false },
-		});
-		const plain = strip(lines);
-		const text = plain.join("\n");
-
-		expect(plain[0]!).toBe(uiTheme.boxRound.horizontal.repeat(WIDTH));
-		expect(plain.at(-1)!).toBe(uiTheme.boxRound.horizontal.repeat(WIDTH));
-		expect(contentRows(lines, "horizontal")).toEqual(["left", "right"]);
-		expect(text.includes(uiTheme.boxRound.vertical)).toBe(false);
-		expect(text.includes(uiTheme.boxRound.topLeft)).toBe(false);
-		expect(text.includes(uiTheme.boxRound.topRight)).toBe(false);
-		expect(text.includes(uiTheme.boxRound.bottomLeft)).toBe(false);
-		expect(text.includes(uiTheme.boxRound.bottomRight)).toBe(false);
 		expectLineWidths(lines, WIDTH);
 	});
 });

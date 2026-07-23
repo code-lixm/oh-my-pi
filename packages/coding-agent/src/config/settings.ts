@@ -1204,6 +1204,17 @@ export class Settings {
 			}
 		}
 
+		// display.borderStyle: horizontal and background layouts now use the
+		// system accent presentation so legacy persisted values cannot bypass the
+		// reduced enum at runtime.
+		const displayObj = raw.display as Record<string, unknown> | undefined;
+		if (displayObj?.borderStyle === "horizontal" || displayObj?.borderStyle === "background") {
+			displayObj.borderStyle = "accent";
+		}
+		if (raw["display.borderStyle"] === "horizontal" || raw["display.borderStyle"] === "background") {
+			raw["display.borderStyle"] = "accent";
+		}
+
 		// task.isolation.enabled (boolean) -> task.isolation.mode (enum)
 		const taskObj = raw.task as Record<string, unknown> | undefined;
 		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;

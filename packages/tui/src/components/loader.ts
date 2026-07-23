@@ -85,9 +85,16 @@ export class Loader extends Text {
 			const elapsed = now - this.#lastSpinnerTick;
 			const shouldAdvanceSpinner = elapsed >= SPINNER_ADVANCE_MS;
 			if (shouldAdvanceSpinner) {
+				// Always advance a single frame per tick. The catch-up math
+				// (`floor(elapsed / SPINNER_ADVANCE_MS)`) makes the spinner visibly
+				// jump when the event loop stalls — one callback fires after the
+				// stall with `elapsed` already past multiple SPINNER_ADVANCE_MS.
+				// On a real miss (`steps > 1`) reset the baseline to `now` so the
+				// next normal tick starts fresh; otherwise preserve the 33ms
+				// remainder so the 80ms cadence stays exact.
 				const steps = Math.floor(elapsed / SPINNER_ADVANCE_MS);
-				this.#currentFrame = (this.#currentFrame + steps) % this.#frames.length;
-				this.#lastSpinnerTick += steps * SPINNER_ADVANCE_MS;
+				this.#currentFrame = (this.#currentFrame + 1) % this.#frames.length;
+				this.#lastSpinnerTick = steps > 1 ? now : this.#lastSpinnerTick + SPINNER_ADVANCE_MS;
 			}
 			if (shouldAdvanceSpinner || this.#ui?.synchronizedOutput === true) {
 				this.#updateDisplay();

@@ -86,7 +86,9 @@ export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): b
  */
 export function annotateForStaleness(note: string, hasFreshBacklog: boolean): string {
 	if (!hasFreshBacklog) return note;
-	return `${note}\n\n_(Note: newer primary turns arrived after this reviewed window — verify this still applies.)_`;
+	return `${note}\n\n_(${tSettingsUi(
+		"Note: newer primary turns arrived after this reviewed window — verify this still applies.",
+	)})_`;
 }
 
 /** How an advisor note is routed to the primary. */

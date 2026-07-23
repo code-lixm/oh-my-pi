@@ -21,6 +21,59 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 // whole change segments grew and shrank tick to tick (the stutter), and the
 // earlier high-water fix padded the deficit with blank rows (the "large
 // rectangle that is half empty" regression). The tail window has neither.
+
+const TERMINAL_ENV_KEYS = [
+	"TERM_PROGRAM",
+	"GHOSTTY_RESOURCES_DIR",
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+] as const;
+type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
+type TerminalEnvSnapshot = Record<TerminalEnvKey, { bun: string | undefined; process: string | undefined }>;
+
+let terminalEnvSnapshot: TerminalEnvSnapshot | undefined;
+
+function restoreEnvValue(env: Record<string, string | undefined>, key: TerminalEnvKey, value: string | undefined) {
+	if (value === undefined) {
+		delete env[key];
+	} else {
+		env[key] = value;
+	}
+}
+
+function neutralizeTerminalEnv(): TerminalEnvSnapshot {
+	const snapshot = Object.fromEntries(
+		TERMINAL_ENV_KEYS.map(key => [key, { bun: Bun.env[key], process: process.env[key] }]),
+	) as TerminalEnvSnapshot;
+	for (const key of TERMINAL_ENV_KEYS) {
+		delete Bun.env[key];
+		delete process.env[key];
+	}
+	Bun.env.TERM = "xterm-256color";
+	process.env.TERM = "xterm-256color";
+	return snapshot;
+}
+
+function restoreTerminalEnv(snapshot: TerminalEnvSnapshot | undefined) {
+	if (!snapshot) return;
+	for (const key of TERMINAL_ENV_KEYS) {
+		restoreEnvValue(Bun.env, key, snapshot[key].bun);
+		restoreEnvValue(process.env, key, snapshot[key].process);
+	}
+}
+
+beforeEach(() => {
+	terminalEnvSnapshot = neutralizeTerminalEnv();
+});
+
+afterEach(() => {
+	restoreTerminalEnv(terminalEnvSnapshot);
+	terminalEnvSnapshot = undefined;
+});
 describe("streaming edit preview height (stable, full tail window)", () => {
 	const oldBlock = ["function foo() {", "  const x = 1;", "  return x;", "}"].join("\n");
 	const tail = ["", "function bar() {", "  return 2;", "}", "", "function baz() {", "  return 3;", "}", ""].join("\n");
@@ -380,11 +433,11 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 });
 
 describe("streaming tool call preview height (bounded across renderers)", () => {
-	beforeAll(async () => {
+	beforeEach(async () => {
 		// `evalToolRenderer.renderCall` walks the theme during highlighting; the
 		// bash/eval pending previews exercised below DO NOT read
 		// `settings.*`, so the global Settings singleton is intentionally left
-		// untouched here. Resetting/initialising it in `beforeEach` raced with
+		// untouched here. Resetting/initialising Settings in `beforeEach` raced with
 		// parallel test files that do the same dance (issue #2582), flipping the
 		// proxy under us and timing the eval test out.
 		await initTheme();
@@ -416,7 +469,7 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 		const topBorder = strippedLines.find(line => line.includes(activeTheme.boxRound.topLeft));
 
 		expect(topBorder).toBeDefined();
-		expect(topBorder?.[0]).toBe(activeTheme.boxRound.topLeft);
+		expect(topBorder?.[1]).toBe(activeTheme.boxRound.topLeft);
 		expect(topBorder?.endsWith(activeTheme.boxRound.topRight)).toBe(true);
 		expect(visibleWidth(topBorder ?? "")).toBe(width);
 	});

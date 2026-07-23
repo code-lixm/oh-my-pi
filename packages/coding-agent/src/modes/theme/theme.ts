@@ -18,7 +18,16 @@ import type {
 	SettingsListTheme,
 	SymbolTheme,
 } from "@oh-my-pi/pi-tui";
-import { adjustHsv, colorLuma, getCustomThemesDir, isEnoent, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
+import {
+	adjustHsv,
+	colorLuma,
+	getCustomThemesDir,
+	hexToRgb,
+	isEnoent,
+	logger,
+	relativeLuminance,
+	rgbToHex,
+} from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
 import { LRUCache } from "lru-cache/raw";
@@ -1486,6 +1495,8 @@ export class Theme {
 	readonly #hexFgColors: Record<ThemeColor, string>;
 	/** Resolved hex strings for background colors — populated at construction. */
 	readonly #hexBgColors: Record<ThemeBg, string>;
+	/** Theme surface used to preblend translucent-looking terminal backgrounds. */
+	readonly #surfaceBgHex: string;
 	#symbols: SymbolMap;
 	#spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>>;
 	/**
@@ -1501,6 +1512,7 @@ export class Theme {
 	constructor(
 		fgColors: Record<ThemeColor, string | number>,
 		bgColors: Record<ThemeBg, string | number>,
+		surfaceBg: string | number,
 		private readonly mode: ColorMode,
 		private readonly symbolPreset: SymbolPreset,
 		symbolOverrides: Partial<Record<SymbolKey, string>>,
@@ -1509,6 +1521,7 @@ export class Theme {
 		this.statusLineLuminance = colorLuma(bgColors.statusLineBg);
 		this.#statusLineContrastLuminance = relativeLuminance(bgColors.statusLineBg);
 		const slIsLight = this.statusLineLuminance !== undefined && this.statusLineLuminance > 0.5;
+		this.#surfaceBgHex = resolveToHex(surfaceBg, slIsLight);
 
 		this.#fgColors = {} as Record<ThemeColor, string>;
 		this.#hexFgColors = {} as Record<ThemeColor, string>;
@@ -1654,6 +1667,39 @@ export class Theme {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
 		return ansi;
+	}
+
+	/**
+	 * Preblend a semantic foreground over the theme page surface. Terminals do
+	 * not support alpha backgrounds, so this emits the equivalent opaque RGB.
+	 */
+	getSurfaceTintBgAnsi(color: ThemeColor, opacity = 0.1): string {
+		const base = hexToRgb(this.#surfaceBgHex);
+		const target = hexToRgb(this.getColorHex(color));
+		const ratio = Math.max(0, Math.min(1, opacity));
+		return bgAnsi(
+			rgbToHex({
+				r: base.r + (target.r - base.r) * ratio,
+				g: base.g + (target.g - base.g) * ratio,
+				b: base.b + (target.b - base.b) * ratio,
+			}),
+			this.mode,
+		);
+	}
+
+	/** Preblend a low-emphasis foreground over the theme page surface. */
+	getSurfaceTintFgAnsi(color: ThemeColor, opacity = 0.58): string {
+		const base = hexToRgb(this.#surfaceBgHex);
+		const target = hexToRgb(this.getColorHex(color));
+		const ratio = Math.max(0, Math.min(1, opacity));
+		return fgAnsi(
+			rgbToHex({
+				r: base.r + (target.r - base.r) * ratio,
+				g: base.g + (target.g - base.g) * ratio,
+				b: base.b + (target.b - base.b) * ratio,
+			}),
+			this.mode,
+		);
 	}
 
 	/**
@@ -2112,7 +2158,8 @@ function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Th
 	const symbolPreset: SymbolPreset = symbolPresetOverride ?? themeJson.symbols?.preset ?? "unicode";
 	const symbolOverrides = themeJson.symbols?.overrides ?? {};
 	const spinnerFramesOverrides = normalizeSpinnerFramesOverride(themeJson.symbols?.spinnerFrames);
-	return new Theme(fgColors, bgColors, colorMode, symbolPreset, symbolOverrides, spinnerFramesOverrides);
+	const surfaceBg = resolveThemeExportColors(themeJson).pageBg ?? resolvedColors.statusLineBg;
+	return new Theme(fgColors, bgColors, surfaceBg, colorMode, symbolPreset, symbolOverrides, spinnerFramesOverrides);
 }
 
 async function loadTheme(name: string, options: CreateThemeOptions = {}): Promise<Theme> {
@@ -2956,6 +3003,7 @@ export function getMarkdownTheme(themeOverride?: Theme): MarkdownTheme {
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
+			if (!validLang) return code.split("\n").map(line => activeTheme.fg("mdCodeBlock", line));
 			const highlighted = highlightCached(code, validLang, activeTheme);
 			if (highlighted !== null) return highlighted.split("\n");
 			return code.split("\n").map(line => activeTheme.fg("mdCodeBlock", line));

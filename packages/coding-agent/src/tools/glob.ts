@@ -15,7 +15,15 @@ import { selectPrompt } from "../prompts/prompt-locale";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
 import globDescriptionZh from "../prompts/tools/glob.zh-CN.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
-import { Ellipsis, fileHyperlink, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
+import {
+	Ellipsis,
+	fileHyperlink,
+	getBasicToolDetailsVisible,
+	renderFileList,
+	renderStatusLine,
+	renderTreeList,
+	truncateToWidth,
+} from "../tui";
 import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
 import { formatFullOutputReference, type OutputMeta } from "./output-meta";
@@ -538,6 +546,38 @@ export const globToolRenderer = {
 
 		const hasDetailedData = details?.fileCount !== undefined;
 		const textContent = result.content?.find(c => c.type === "text")?.text;
+
+		if (!getBasicToolDetailsVisible()) {
+			const legacyLines = textContent?.split("\n").filter(line => line.trim().length > 0) ?? [];
+			const legacyEmpty =
+				!textContent ||
+				textContent.includes("No files matching") ||
+				textContent.includes("No files found") ||
+				textContent.trim() === "";
+			const fileCount = hasDetailedData ? (details?.fileCount ?? 0) : legacyEmpty ? 0 : legacyLines.length;
+			const truncation = details?.truncation ?? details?.meta?.truncation;
+			const limits = details?.meta?.limits;
+			const truncated = Boolean(
+				details?.truncated || truncation || details?.resultLimitReached || limits?.resultLimit,
+			);
+			const meta = [tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount })];
+			const scopePath = details?.scopePath ?? formatGlobRenderPaths(args);
+			if (scopePath) meta.push(tSettingsUi("in {paths}", { paths: scopePath }));
+			if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
+			const header = renderStatusLine(
+				{
+					...(fileCount === 0 || truncated
+						? { icon: "warning" as const }
+						: { iconOverride: globStatusIcon(uiTheme) }),
+					title: tSettingsUi("Glob"),
+					titleColor: "toolTitle",
+					description: formatGlobRenderPaths(args) || "*",
+					meta,
+				},
+				uiTheme,
+			);
+			return new Text(header, 0, 0);
+		}
 
 		if (!hasDetailedData) {
 			if (

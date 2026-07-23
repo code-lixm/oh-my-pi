@@ -4,7 +4,13 @@ import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
 import { bodyLines, ircGlyph, isUselessEmptyWait, messageAge } from "../../tools/hub/messaging";
 import type { CoordinationDetails, HubRenderArgs } from "../../tools/hub/types";
 import { replaceTabs } from "../../tools/render-utils";
-import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
+import {
+	CachedOutputBlock,
+	markFramedBlockComponent,
+	type OutputBlockOptions,
+	outputBlockContentWidth,
+	renderStatusLine,
+} from "../../tui";
 import { type ThemeColor, theme } from "../theme/theme";
 import type { ToolExecutionHandle } from "./tool-execution";
 
@@ -161,7 +167,14 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	#version = 0;
 	constructor() {
 		super();
-		this.#frame = framedBlock(theme, width => this.#buildFrame(width));
+		const block = new CachedOutputBlock();
+		this.#frame = markFramedBlockComponent({
+			render: (width: number): readonly string[] => {
+				const options = this.#buildFrame(width);
+				return options ? block.render(options, theme) : [];
+			},
+			invalidate: () => block.invalidate(),
+		});
 		this.addChild(this.#frame);
 	}
 
@@ -301,7 +314,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		return true;
 	}
 
-	#buildFrame(width: number) {
+	#buildFrame(width: number): OutputBlockOptions | undefined {
 		const contentWidth = outputBlockContentWidth(width);
 		const renderExpanded = this.#finalized && this.#expanded;
 		const rows: string[] = [];
@@ -319,12 +332,17 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			else stablePrefix = false;
 		}
 
+		if (rows.length === 0) {
+			this.#settledRows = 0;
+			return undefined;
+		}
+
 		// The top/header row is stable because it never includes a live count or age.
 		// The moving bottom border is deliberately excluded.
 		this.#settledRows = settledContentRows > 0 ? 1 + settledContentRows : 0;
 		return {
 			header: renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC") }, theme),
-			sections: [{ lines: rows.length > 0 ? rows : [theme.fg("dim", tSettingsUi("pending"))] }],
+			sections: [{ lines: rows }],
 			borderColor: "borderMuted" as const,
 			applyBg: false,
 			width,

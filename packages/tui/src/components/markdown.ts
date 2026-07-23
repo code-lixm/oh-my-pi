@@ -644,7 +644,7 @@ const RENDER_CACHE_MAX_SIZE = 512 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 32 * 1024;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
-/** Sentinel marker used by {@link Markdown.#renderFramedCodeBlock} to splice the omit hint line into the rendered body without consuming a real source line. */
+/** Sentinel inserted into folded code bodies where either display mode renders the omission hint. */
 const OMIT_SENTINEL = "\u0000OMIT\u0000";
 
 interface RenderCacheEntry {
@@ -751,32 +751,29 @@ export interface MarkdownTheme {
 }
 
 /**
- * Opt-in code-block display options for Markdown. When provided, fenced code
- * blocks render as a compact rounded frame with the language label embedded in
- * the top border (no raw ``` lines, no vertical padding inside the frame) and
- * bodies that exceed the resolved collapsed budget collapse head+omission+tail.
- * Designed for assistant Markdown children; non-Assistant callers should leave
- * this unset to preserve the original fence rendering.
+ * Opt-in fenced-code presentation. Both modes hide the raw Markdown fences and
+ * retain syntax highlighting plus head/omission/tail folding. `frame: true`
+ * draws the compact rounded frame; `frame: false` renders a copy-safe padded
+ * surface with optional background styling.
  */
 export interface CodeBlockDisplayOptions {
-	/** Render fenced code as a rounded frame; required to opt into framing. */
-	frame: true;
+	/** Framed or copy-safe plain-surface presentation. */
+	frame: boolean;
 	/** Stable cache key; change it when the rendered output for a given body+width would differ. */
 	cacheKey: string;
 	/**
 	 * Resolve the current collapsed budget (e.g. viewport-derived). Re-evaluated
-	 * on every render so the fold tracks live resize — intentionally outside
-	 * the render signature; the resolved value is captured at render time.
+	 * on every render so the fold tracks live resize.
 	 */
 	getCollapsedBudget: () => number;
 	/** Expand key label embedded in the omission hint, e.g. `ctrl+o`. */
 	expandKeyLabel: string;
-	/**
-	 * Pre-localized omit hint template. `{count}` is the number of hidden
-	 * lines; `{key}` is the {@link expandKeyLabel}. The whole line is painted
-	 * with the dimmed style before display, so callers should pass plain text.
-	 */
+	/** Pre-localized omit hint template with `{count}` and `{key}` placeholders. */
 	omitHintTemplate: string;
+	/** Horizontal padding for `frame: false`; ignored by framed blocks. */
+	plainPaddingX?: number;
+	/** Optional exact-width background painter for `frame: false`. */
+	plainBackground?: (text: string) => string;
 }
 
 /**
@@ -1199,9 +1196,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	}
 
 	/**
-	 * Opt into the compact rounded-frame code-block render. Pass `undefined`
-	 * to restore the legacy fence rendering. Caches are invalidated so the
-	 * next render sees the new configuration.
+	 * Opt into fence-free framed or plain code-block rendering. Pass `undefined`
+	 * to restore the legacy raw-fence presentation. Caches are invalidated so
+	 * the next render sees the new configuration.
 	 */
 	setCodeBlockDisplayOptions(options: CodeBlockDisplayOptions | undefined): this {
 		this.#codeBlockDisplayOptions = options;
@@ -1930,6 +1927,30 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		};
 	}
 
+	#resolveCodeBlockBody(
+		body: string,
+		lang: string | undefined,
+		options: CodeBlockDisplayOptions,
+	): { visibleBodyLines: string[]; hiddenCount: number } {
+		const rawLines = body.length === 0 ? [""] : body.split("\n");
+		const bodyLines = this.#highlightCodeBody(rawLines, lang);
+		const totalLines = bodyLines.length;
+		const budget = Math.max(1, Math.floor(options.getCollapsedBudget()));
+		if (this.#expanded || totalLines <= budget) return { visibleBodyLines: bodyLines, hiddenCount: 0 };
+		if (budget < 3) {
+			const split = Math.max(1, Math.floor(budget / 2));
+			return {
+				visibleBodyLines: [...bodyLines.slice(0, split), ...bodyLines.slice(totalLines - split)],
+				hiddenCount: Math.max(0, totalLines - split * 2),
+			};
+		}
+		const half = Math.max(1, Math.floor((budget - 1) / 2));
+		return {
+			visibleBodyLines: [...bodyLines.slice(0, half), OMIT_SENTINEL, ...bodyLines.slice(totalLines - half)],
+			hiddenCount: Math.max(0, totalLines - half * 2),
+		};
+	}
+
 	/**
 	 * Render an opted-in fenced code block as a compact rounded frame: language
 	 * embedded in the top border, no raw ``` lines, no vertical padding inside
@@ -1951,8 +1972,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		options: CodeBlockDisplayOptions,
 	): string[] {
 		const langLabel = (lang ?? "").trim().split(/\s+/, 1)[0] ?? "";
-		const rawLines = body.length === 0 ? [""] : body.split("\n");
-		const bodyLines = this.#highlightCodeBody(rawLines, lang);
+		const { visibleBodyLines, hiddenCount } = this.#resolveCodeBlockBody(body, lang, options);
 
 		const border = this.#theme.codeBlockBorder;
 		const box = this.#theme.symbols.boxRound;
@@ -1960,8 +1980,15 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		// Narrow-width fallback: no frame, just plain wrapped body lines.
 		if (width < 8) {
 			const wrapped: string[] = [];
-			for (const line of bodyLines) {
-				wrapped.push(...wrapTextWithAnsi(line, width));
+			for (const line of visibleBodyLines) {
+				if (line === OMIT_SENTINEL) {
+					const hint = options.omitHintTemplate
+						.replace("{count}", String(hiddenCount))
+						.replace("{key}", options.expandKeyLabel);
+					wrapped.push(...wrapTextWithAnsi(border(hint), width));
+				} else {
+					wrapped.push(...wrapTextWithAnsi(line, width));
+				}
 			}
 			return wrapped;
 		}
@@ -1969,26 +1996,6 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		// Inner content width = full width minus the two vertical bars and
 		// the single space padding on each side (matches lsp/render.ts pattern).
 		const innerContentWidth = Math.max(1, width - 4);
-
-		const totalLines = bodyLines.length;
-		const budget = Math.max(1, Math.floor(options.getCollapsedBudget()));
-		let visibleBodyLines: string[];
-		let hiddenCount = 0;
-		if (this.#expanded || totalLines <= budget) {
-			visibleBodyLines = bodyLines;
-		} else if (budget < 3) {
-			// Budget too small to fit head + omit + tail — fold without the omit
-			// row so the visible count stays within the budget.
-			const split = Math.max(1, Math.floor(budget / 2));
-			visibleBodyLines = [...bodyLines.slice(0, split), ...bodyLines.slice(totalLines - split)];
-			hiddenCount = Math.max(0, totalLines - split * 2);
-		} else {
-			// Fold: head + omit + tail. Omit consumes one slot, leaving budget-1
-			// for head/tail split evenly.
-			const half = Math.max(1, Math.floor((budget - 1) / 2));
-			visibleBodyLines = [...bodyLines.slice(0, half), OMIT_SENTINEL, ...bodyLines.slice(totalLines - half)];
-			hiddenCount = Math.max(0, totalLines - half * 2);
-		}
 
 		const frameRows: string[] = [];
 		frameRows.push(this.#renderFrameBorder(box.topLeft, langLabel, box.topRight, box.horizontal, width, border));
@@ -2004,6 +2011,42 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		}
 		frameRows.push(this.#renderFrameBorder(box.bottomLeft, "", box.bottomRight, box.horizontal, width, border));
 		return frameRows;
+	}
+
+	/** Render fenced code without raw fences or box glyphs. */
+	#renderPlainCodeBlock(
+		body: string,
+		lang: string | undefined,
+		width: number,
+		options: CodeBlockDisplayOptions,
+	): string[] {
+		const { visibleBodyLines, hiddenCount } = this.#resolveCodeBlockBody(body, lang, options);
+		const requestedPadding = Math.max(0, Math.floor(options.plainPaddingX ?? 1));
+		const horizontalPadding = Math.min(requestedPadding, Math.max(0, Math.floor((width - 1) / 2)));
+		const innerWidth = Math.max(1, width - horizontalPadding * 2);
+		const rows: string[] = [];
+		for (const line of visibleBodyLines) {
+			const content =
+				line === OMIT_SENTINEL
+					? this.#theme.codeBlockBorder(
+							options.omitHintTemplate
+								.replace("{count}", String(hiddenCount))
+								.replace("{key}", options.expandKeyLabel),
+						)
+					: line;
+			const wrappedLines = wrapTextWithAnsi(content, innerWidth);
+			for (const wrapped of wrappedLines.length > 0 ? wrappedLines : [""]) {
+				const row = `${padding(horizontalPadding)}${wrapped}${padding(
+					Math.max(0, innerWidth - visibleWidth(wrapped)) + horizontalPadding,
+				)}`;
+				rows.push(
+					options.plainBackground
+						? applyBackgroundToLine(row, width, options.plainBackground)
+						: row + padding(Math.max(0, width - visibleWidth(row))),
+				);
+			}
+		}
+		return rows;
 	}
 
 	/**
@@ -2151,7 +2194,11 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 
 				const displayOptions = this.#codeBlockDisplayOptions;
 				if (displayOptions) {
-					lines.push(...this.#renderFramedCodeBlock(token.text, token.lang, width, displayOptions));
+					lines.push(
+						...(displayOptions.frame
+							? this.#renderFramedCodeBlock(token.text, token.lang, width, displayOptions)
+							: this.#renderPlainCodeBlock(token.text, token.lang, width, displayOptions)),
+					);
 					if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
 						lines.push("");
 					}

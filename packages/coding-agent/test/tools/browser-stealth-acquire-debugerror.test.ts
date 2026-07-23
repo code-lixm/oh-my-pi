@@ -9,17 +9,12 @@
  * postmortem handler killed the whole OMP process (parent session + every
  * subagent).
  *
- * The test drives the real patched `FrameManager` with a `send()` that always
- * rejects (a mid-flight CDP failure) and asserts the acquire path emits no
- * unhandled `TypeError`.
- *
- * Real timers are deliberate here (see repo rule ts-no-test-timers): the fatal
- * path is the coalescing acquirer's fire-and-forget `void this.#acquireWorlds()`
- * retrigger, whose rejection escapes only to the global `unhandledRejection`
- * handler — there is no promise or event the test can await, and fake timers
- * serialise the two concurrent acquires so the retrigger (and thus the bug)
- * never fires. Short real delays let the event loop interleave the acquires the
- * way it does in production.
+ * The test drives the real patched `FrameManager` with controllable CDP
+ * promises. Keeping the first acquire pending lets both worlds share it and
+ * queue the fire-and-forget retry; rejecting those promises manually exercises
+ * the bug path without wall-clock sleeps. It then asserts the acquire path
+ * emits no unhandled `TypeError` while preserving the original rejection for
+ * callers.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -28,32 +23,38 @@ import { FrameManager } from "puppeteer-core/lib/puppeteer/cdp/FrameManager.js";
 import { MAIN_WORLD, PUPPETEER_WORLD } from "puppeteer-core/lib/puppeteer/cdp/IsolatedWorlds.js";
 import { EventEmitter } from "puppeteer-core/lib/puppeteer/common/EventEmitter.js";
 import { TimeoutSettings } from "puppeteer-core/lib/puppeteer/common/TimeoutSettings.js";
-import { debugError } from "puppeteer-core/lib/puppeteer/common/util.js";
 
-const ACQUIRE_TIMEOUT_MS = 40;
+type PendingSend = {
+	method: string;
+	reject: (reason: Error) => void;
+};
 
-// A CDP session double whose every `send` rejects, modelling a navigation that
-// tears the target's execution contexts down mid-acquire.
-class RejectingSession extends EventEmitter<Record<string, unknown>> {
+// A CDP session double whose `send` calls stay pending until the test rejects
+// them, modelling navigation tearing the target's execution contexts down at a
+// precise point in the acquire/retry sequence.
+class ControlledRejectingSession extends EventEmitter<Record<string, unknown>> {
+	readonly sends: PendingSend[] = [];
+
 	constructor(readonly sessionId: string) {
 		super();
 	}
 	id(): string {
 		return this.sessionId;
 	}
-	send(): Promise<never> {
-		return Promise.reject(new Error("mid-flight CDP failure"));
+	send(method: string): Promise<never> {
+		const { promise, reject } = Promise.withResolvers<never>();
+		this.sends.push({ method, reject });
+		return promise;
 	}
 	target(): unknown {
 		return { _targetId: "T", type: () => "page" };
 	}
 }
 
-function makeFrameManager(session: RejectingSession): FrameManager {
+function makeFrameManager(session: ControlledRejectingSession): FrameManager {
 	const browser = { isNetworkEnabled: () => false, isIssuesEnabled: () => false, connected: true };
 	const page = { browser: () => browser, isClosed: () => false, emit() {}, once() {}, off() {} };
 	const timeoutSettings = new TimeoutSettings();
-	timeoutSettings.setDefaultTimeout(ACQUIRE_TIMEOUT_MS);
 	// The patched FrameManager only touches the members exercised here; the
 	// puppeteer-internal `CdpCDPSession` / `CdpPage` types are far wider than the
 	// acquire path needs, so the doubles cross the boundary with a cast.
@@ -73,45 +74,52 @@ describe("stealth FrameManager world acquire — issue #5296", () => {
 		process.off("unhandledRejection", onUnhandled);
 	});
 
-	it("keeps disabled debugError undefined so bare calls would crash", () => {
-		// The precondition that makes the bug fatal: with the puppeteer:error
-		// channel off, the logger the patch used is not callable.
-		expect(debugError).toBeUndefined();
-	});
-
-	it("does not emit an unhandled TypeError when acquire fails mid-flight", async () => {
-		const session = new RejectingSession("S1");
+	it("preserves CDP acquire failures without emitting debugError TypeErrors", async () => {
+		const session = new ControlledRejectingSession("S1");
 		const frameManager = makeFrameManager(session);
 		const frame = new CdpFrame(frameManager, "F1", undefined, session as never);
 		frameManager._frameTree.addFrame(frame);
 
 		// Navigation installs the lazy context providers and invalidates the old
-		// contexts; the async handler must settle before we pull a context.
+		// contexts; wait one event-loop turn so the async listener completes after
+		// the already-present frame resolves from the frame tree.
 		session.emit("Page.frameNavigated", {
 			frame: { id: "F1", parentId: undefined, url: "about:blank" },
 			type: "Navigation",
 		});
-		await Bun.sleep(20);
+		const navigationHandled = Promise.withResolvers<void>();
+		setImmediate(navigationHandled.resolve);
+		await navigationHandled.promise;
 
-		// Concurrent pulls on both worlds force the coalescing acquirer to
-		// re-run (`void this.#acquireWorlds` in its `finally`), which is the exact
-		// path where `#doAcquireWorlds`'s catch previously threw a bare
-		// `debugError(error)`.
+		// Concurrent pulls on both worlds share the first pending CDP acquire and
+		// queue the retry (`void this.#acquireWorlds` in `finally`), which is the
+		// path where the old patch called the bare `debugError(error)`.
 		const main = frame.worlds[MAIN_WORLD];
 		const util = frame.worlds[PUPPETEER_WORLD];
-		const results = await Promise.allSettled([main.evaluate(() => 1), util.evaluate(() => 1)]);
+		const mainEvaluate = main.evaluate(() => 1);
+		const utilEvaluate = util.evaluate(() => 1);
 
-		// Let the re-triggered acquire settle and any stray rejection surface.
-		await Bun.sleep(ACQUIRE_TIMEOUT_MS + 40);
+		expect(session.sends.map(send => send.method)).toEqual(["Page.createIsolatedWorld"]);
+		const acquireError = new Error("mid-flight CDP failure");
+		session.sends[0]?.reject(acquireError);
 
-		const typeErrors = rejections.filter(
-			(reason): reason is TypeError => reason instanceof Error && reason.name === "TypeError",
-		);
-		expect(typeErrors).toHaveLength(0);
+		const results = await Promise.allSettled([mainEvaluate, utilEvaluate]);
+
+		// The queued fire-and-forget retry must have started; reject it and give the
+		// runtime one event-loop turn to report any unhandled rejection.
+		expect(session.sends.map(send => send.method)).toEqual(["Page.createIsolatedWorld", "Page.createIsolatedWorld"]);
+		session.sends[1]?.reject(new Error("retry CDP failure"));
+		const unhandledRejectionsFlushed = Promise.withResolvers<void>();
+		setImmediate(unhandledRejectionsFlushed.resolve);
+		await unhandledRejectionsFlushed.promise;
+
 		expect(rejections).toHaveLength(0);
 
-		// The failure is still observable as an ordinary, recoverable evaluate
-		// error rather than a silent process death.
-		expect(results.every(r => r.status === "rejected")).toBe(true);
+		// The original CDP failure is still observable as the evaluate rejection;
+		// the fix must not turn it into a debugError TypeError, a timeout, or a
+		// silent successful acquire.
+		const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+		expect(rejected).toHaveLength(2);
+		expect(rejected.map(r => r.reason)).toEqual([acquireError, acquireError]);
 	});
 });

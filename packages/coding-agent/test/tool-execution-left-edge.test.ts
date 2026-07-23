@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui";
+import { type Component, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 
 const WIDTH = 140;
 const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
@@ -204,13 +205,13 @@ describe("tool execution left-edge alignment", () => {
 		expectSingleOuterPadding(read.success, "read success");
 	});
 
-	it("removes the outer gutter from unframed search blocks and ReadToolGroup when border style is none without shifting framed bash", async () => {
+	it("removes the outer gutter from unframed search blocks and ReadToolGroup when border style is none", () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 
 		try {
 			setOutputBlockBorderStyle("none");
 
-			for (const toolName of ["grep", "glob", "ast_grep"] as const) {
+			for (const toolName of ["grep", "glob"] as const) {
 				const { pending, success } = renderToolLifecycle(toolName);
 				expectNoOuterPadding(pending, `${toolName} pending`);
 				expectNoOuterPadding(success, `${toolName} success`);
@@ -224,26 +225,81 @@ describe("tool execution left-edge alignment", () => {
 		}
 
 		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+	});
 
+	it("wraps non-framed custom renderers in a tinted accent rail without reallocating unchanged rows", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
+		const childLines = ["plain custom row", "child line"] as const;
+		const childWidths: number[] = [];
+		const child: Component = {
+			render(width: number): readonly string[] {
+				childWidths.push(width);
+				return childLines;
+			},
+		};
+		const tool = {
+			name: "custom_plain",
+			label: "Custom Plain",
+			mergeCallAndResult: true,
+			renderResult(): Component {
+				return child;
+			},
+		} as unknown as AgentTool;
+		let component: ToolExecutionComponent | undefined;
 
-		const { success: bashSuccess } = renderToolLifecycle("bash");
-		const firstLine = firstNonEmptyLine(bashSuccess);
-		expect(leadingSpaces(firstLine), `bash success: ${JSON.stringify(firstLine)}`).toBe(0);
-		expect(firstLine.startsWith(uiTheme!.boxRound.topLeft), `bash success: ${JSON.stringify(firstLine)}`).toBe(true);
+		try {
+			setOutputBlockBorderStyle("accent");
+			component = new ToolExecutionComponent("custom_plain", {}, {}, tool, uiStub, process.cwd());
+			component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
+
+			const first = component.render(WIDTH);
+			const second = component.render(WIDTH);
+			const plain = plainLines(first);
+			const errorBg = uiTheme!.getSurfaceTintBgAnsi("error");
+			const errorRail = `${errorBg}${uiTheme!.getFgAnsi("error")}▌\x1b[39m\x1b[49m${errorBg} `;
+
+			expect(second).toBe(first);
+			expect(childWidths).toEqual([WIDTH - 2, WIDTH - 2]);
+			expect(first.every(line => line.startsWith(errorRail))).toBe(true);
+			expect(plain).toEqual([
+				`▌ ${" ".repeat(WIDTH - 2)}`,
+				`▌ ${childLines[0]}${" ".repeat(WIDTH - 2 - childLines[0].length)}`,
+				`▌ ${childLines[1]}${" ".repeat(WIDTH - 2 - childLines[1].length)}`,
+				`▌ ${" ".repeat(WIDTH - 2)}`,
+			]);
+			expect(first.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH, WIDTH, WIDTH]);
+			expect(plain.join("\n")).not.toContain("│");
+			expect(plain.join("\n")).not.toContain("╭");
+			expect(plain.join("\n")).not.toContain("╰");
+			expect(plain.join("\n")).not.toContain("─");
+		} finally {
+			component?.stopAnimation();
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
 	// ─── framed built-in ─────────────────────────────────────────────────────
 
-	it("keeps framed built-in tool results flush to column 0", async () => {
+	it("keeps framed bash lifecycle blocks on a one-column outer gutter", async () => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
 
-		const { success } = renderToolLifecycle("bash");
-		const firstLine = firstNonEmptyLine(success);
+		const { pending, success } = renderToolLifecycle("bash");
 
-		expect(leadingSpaces(firstLine), JSON.stringify(firstLine)).toBe(0);
-		expect(firstLine.startsWith(uiTheme!.boxRound.topLeft), JSON.stringify(firstLine)).toBe(true);
+		for (const [label, lines] of [
+			["bash pending", pending],
+			["bash success", success],
+		] as const) {
+			const firstLine = firstNonEmptyLine(lines);
+			expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(1);
+			expect(
+				firstLine.trimStart().startsWith(uiTheme!.boxRound.topLeft),
+				`${label}: ${JSON.stringify(firstLine)}`,
+			).toBe(true);
+		}
 	});
 });

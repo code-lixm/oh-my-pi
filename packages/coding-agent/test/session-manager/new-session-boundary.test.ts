@@ -4,6 +4,7 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { readTerminalBreadcrumbEntry } from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
 
 import { makeAssistantMessage } from "./helpers";
@@ -36,7 +37,7 @@ describe("SessionManager.continueRecent /new boundary", () => {
 		await fsp.rm(testAgentDir, { recursive: true, force: true });
 	});
 
-	it("does not resume the pre-/new transcript when the new session produced no output", async () => {
+	it("treats a fresh /new breadcrumb as a hard boundary and does not resume the pre-/new transcript", async () => {
 		// Persisted old session with recognizable context (assistant output → file on disk).
 		const old = SessionManager.create(cwd);
 		old.appendMessage({ role: "user", content: "pre-new work", timestamp: 1 });
@@ -55,6 +56,12 @@ describe("SessionManager.continueRecent /new boundary", () => {
 		if (!freshFile) throw new Error("Expected a fresh session file path");
 		expect(path.resolve(freshFile)).not.toBe(path.resolve(oldFile));
 		expect(fs.existsSync(freshFile)).toBe(false); // lazy: not yet on disk
+		expect(await readTerminalBreadcrumbEntry()).toEqual({
+			cwd,
+			exists: false,
+			fresh: true,
+			sessionFile: freshFile,
+		});
 		await resumed.close();
 
 		// Relaunch with auto-resume: must NOT fall back to the pre-/new transcript.
@@ -63,7 +70,6 @@ describe("SessionManager.continueRecent /new boundary", () => {
 			const dump = JSON.stringify(relaunched.getEntries());
 			expect(dump).not.toContain("pre-new work");
 			expect(relaunched.getEntries()).toHaveLength(0);
-			// Reopens the fresh session established by `/new`, not the old file.
 			expect(path.resolve(relaunched.getSessionFile() ?? "")).not.toBe(path.resolve(oldFile));
 		} finally {
 			await relaunched.close();

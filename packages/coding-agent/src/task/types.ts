@@ -416,6 +416,10 @@ export interface AgentProgress {
 	/** Cumulative billing cost in USD, accumulated incrementally from message_end events. */
 	cost: number;
 	durationMs: number;
+	/** Current assistant request's average output tokens/sec. Updated while streaming when provider usage is available. */
+	tokensPerSecond?: number;
+	/** True while tokensPerSecond describes an in-flight assistant request; false means the last completed request. */
+	tokensPerSecondLive?: boolean;
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;

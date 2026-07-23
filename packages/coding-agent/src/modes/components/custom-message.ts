@@ -20,8 +20,8 @@ export class CustomMessageComponent extends Container {
 	) {
 		super();
 
-		// Create box with custom background (used for default rendering)
-		this.#box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		// Default extension messages use an outline without painting the transcript surface.
+		this.#box = new Box(1, 1);
 		this.#box.setIgnoreTight(true);
 
 		this.#rebuild();

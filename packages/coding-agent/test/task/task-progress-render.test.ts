@@ -407,7 +407,7 @@ describe("task progress rendering", () => {
 		expect(expanded).not.toContain("more agents");
 	});
 
-	it("localizes the zh-CN title and agent count while preserving agent ids", async () => {
+	it("localizes the zh-CN agent count while preserving the Task title and agent ids", async () => {
 		setSettingsUiLocale("zh-CN");
 		const theme = (await getThemeByName("dark"))!;
 		const details: TaskToolDetails = {
@@ -430,10 +430,11 @@ describe("task progress rendering", () => {
 				.render(120)
 				.join("\n"),
 		);
+		const header = rendered.split("\n").find(line => line.includes("2 个代理")) ?? "";
 
-		expect(rendered).toContain("任务");
-		expect(rendered).toContain("2 个代理");
-		expect(rendered).not.toContain("Task");
+		expect(header).toContain("Task");
+		expect(header).toContain("2 个代理");
+		expect(header).not.toContain("任务");
 		expect(rendered).not.toContain("2 agents");
 		expect(rendered).toContain("LiveOne");
 		expect(rendered).toContain("待保持原文-Agent");

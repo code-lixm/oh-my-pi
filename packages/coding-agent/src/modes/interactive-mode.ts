@@ -100,7 +100,7 @@ import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compa
 import planModeCompactInstructionsPromptZh from "../prompts/system/plan-mode-compact-instructions.zh-CN.md" with {
 	type: "text",
 };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -131,7 +131,8 @@ import {
 	todoMatchesAnyDescription,
 } from "../tools/todo";
 import { vocalizer } from "../tts/vocalizer";
-import { setOutputBlockBorderStyle } from "../tui/output-block";
+import { setBasicToolDetailsVisible } from "../tui";
+import { resolveMarkdownTableBorderStyle, setOutputBlockBorderStyle } from "../tui/output-block";
 import { renderTreeList } from "../tui/tree-list";
 import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
@@ -147,6 +148,7 @@ import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
 import type { EvalExecutionComponent } from "./components/eval-execution";
+import { FocusedAgentView } from "./components/focused-agent-view";
 import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "./components/hook-selector";
@@ -227,6 +229,34 @@ const RESUME_APPEARANCE_WAIT_MS = 200;
 // that swallows mode reports cannot stall resumed sessions indefinitely.
 const RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS = 200;
 
+// Cap shimmer time so a long event-loop stall does not visibly jump the band
+// (or the spinner frame) by multiple cells at once. Sized to the worst-case
+// non-synchronized-output render cadence (~80ms) so normal speed is preserved
+// while a stall discards the surplus into a single step. Each working loader
+// owns its own clock via `createCappedClock` so unrelated animations are not
+// coupled through shared module state.
+const SHIMMER_MAX_DELTA_MS = 80;
+
+function createCappedClock(
+	maxDeltaMs: number,
+	options?: { wall?: () => number; animationStart?: number },
+): () => number {
+	// `wall` measures real elapsed time (monotonic, advances during stalls);
+	// `animationTime` is the time we *hand to consumers* (shimmer, spinner)
+	// and never advances faster than `maxDeltaMs` per call. The wall clock is
+	// always advanced to `cur` after a cap so a 300 ms stall discards the 220 ms
+	// surplus into one step — not paid back across the next few ticks.
+	const wall = options?.wall ?? (() => performance.now());
+	let lastWall = wall();
+	let animationTime = options?.animationStart ?? Date.now();
+	return () => {
+		const cur = wall();
+		const delta = Math.max(0, Math.min(cur - lastWall, maxDeltaMs));
+		lastWall = cur;
+		animationTime += delta;
+		return animationTime;
+	};
+}
 interface WorkingMessageAccent {
 	main: string;
 	dim: string;
@@ -259,11 +289,11 @@ function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPa
 	return entry;
 }
 
-function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
+function renderWorkingMessage(message: string, accent?: WorkingMessageAccent, time: number = Date.now()): string {
 	const palettes = accent ? workingMessagePalettes(accent) : undefined;
 	const palette = palettes?.main;
 	const hint = interruptHint();
-	if (!message.endsWith(hint)) return shimmerText(message, theme, palette);
+	if (!message.endsWith(hint)) return shimmerText(message, theme, palette, time);
 	const header = message.slice(0, -hint.length);
 	return shimmerSegments(
 		[
@@ -271,6 +301,7 @@ function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): s
 			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
 		],
 		theme,
+		time,
 	);
 }
 
@@ -585,6 +616,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planModeHasEntered = false;
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
+	#focusedAgentView: FocusedAgentView | undefined;
+	#focusedAgentViewOverlay: OverlayHandle | undefined;
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
@@ -629,6 +662,56 @@ export class InteractiveMode implements InteractiveModeContext {
 	async unfocusSession(): Promise<void> {
 		await this.#focusController.unfocus();
 		this.#renderTodoList();
+	}
+	showFocusedAgentView(id: string): void {
+		if (this.#focusedAgentView) {
+			this.#focusedAgentView.setAgentId(id);
+			this.ui.setFocus(this.#focusedAgentView);
+			this.ui.requestRender();
+			return;
+		}
+		const registry = AgentRegistry.global();
+		const view = new FocusedAgentView({
+			agentId: id,
+			registry,
+			transcript: this.chatContainer,
+			getProgress: agentId => this.#observerRegistry.getSessions().find(session => session.id === agentId)?.progress,
+			getViewableAgentIds: () =>
+				registry
+					.list()
+					.filter(
+						ref =>
+							ref.kind === "sub" &&
+							(ref.id === this.focusedAgentId ||
+								(Boolean(ref.session) && (ref.status === "running" || ref.status === "idle"))),
+					)
+					.sort((left, right) => left.createdAt - right.createdAt)
+					.map(ref => ref.id),
+			mainNeedsInput: () => this.editorContainer.children[0] !== this.editor,
+			nextKeys: this.keybindings.getKeys("app.agents.next"),
+			previousKeys: this.keybindings.getKeys("app.agents.previous"),
+			expandKeys: this.keybindings.getKeys("app.tools.expand"),
+			onCycle: direction => void this.cycleAgentSession(direction),
+			onClose: () => void this.unfocusSession(),
+			onToggleExpanded: () => this.toggleToolOutputExpansion(),
+			requestRender: () => this.ui.requestRender(),
+		});
+		this.#focusedAgentView = view;
+		this.#focusedAgentViewOverlay = this.ui.showOverlay(view, {
+			width: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		this.ui.setFocus(view);
+		this.ui.requestRender();
+	}
+
+	hideFocusedAgentView(): void {
+		this.#focusedAgentViewOverlay?.hide();
+		this.#focusedAgentViewOverlay = undefined;
+		this.#focusedAgentView = undefined;
+		this.ui.setFocus(this.editorContainer.children[0] ?? this.editor);
+		this.ui.requestRender();
 	}
 	clearTransientSessionUi(): void {
 		if (this.loadingAnimation) {
@@ -715,9 +798,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		setTuiTight(settings.get("tui.tight"));
 		setMarkdownHeadingStyle(settings.get("tui.markdownHeadingStyle"));
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
+		setBasicToolDetailsVisible(this.settings.get("display.basicToolDetails"));
 		const borderStyle = settings.get("display.borderStyle");
 		setOutputBlockBorderStyle(borderStyle);
-		setMarkdownTableBorderStyle(borderStyle);
+		setMarkdownTableBorderStyle(resolveMarkdownTableBorderStyle(borderStyle));
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
 		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
@@ -994,6 +1078,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.hookWidgetContainerBelow);
 		this.ui.setFocus(this.editor);
+		// A main-session ask/selector may mount while the read-only subagent overlay
+		// is open and move TUI focus underneath it. Keep the visible overlay as the
+		// sole input owner; Esc returns to Main, where the pending prompt is waiting.
+		this.ui.addInputListener(data => {
+			const view = this.#focusedAgentView;
+			if (!view || this.ui.getFocused() === view) return undefined;
+			view.handleInput(data);
+			return { consume: true };
+		});
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
@@ -3946,6 +4039,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		this.#focusedAgentViewOverlay?.hide();
+		this.#focusedAgentViewOverlay = undefined;
+		this.#focusedAgentView = undefined;
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
 		}
@@ -4032,10 +4128,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
-		// Print resumption hint if this is a persisted session
+		// Print a resumption hint only when teardown left a session record on disk.
+		// Fresh empty sessions reserve an id/path but are intentionally never materialized.
 		const sessionId = this.sessionManager.getSessionId();
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile) {
+		if (sessionId && this.sessionManager.isSessionPersisted()) {
 			process.stderr.write(`\n${chalk.dim(`Resume this session with ${APP_NAME} --resume ${sessionId}`)}\n`);
 		}
 
@@ -4278,8 +4374,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loadingAnimation) {
 			this.#clearWorkingMessageAccentCache();
 			this.statusContainer.disposeChildren();
+			// Each working-loader owns a private capped clock so a long event-loop
+			// stall discards surplus time instead of jumping the shimmer band
+			// several cells at once. See `createCappedClock` for the contract.
+			const shimmerClock = createCappedClock(SHIMMER_MAX_DELTA_MS);
 			const messageColorFn = ((message: string) =>
-				renderWorkingMessage(message, this.#getWorkingMessageAccent())) as LoaderMessageColorFn & {
+				renderWorkingMessage(message, this.#getWorkingMessageAccent(), shimmerClock())) as LoaderMessageColorFn & {
 				animated?: true;
 			};
 			// Shimmer drives the 30fps redraw; when it is disabled the working

@@ -3,11 +3,14 @@ import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 import { globToolRenderer } from "../../src/tools/glob";
+import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../src/tui/basic-tool-display-policy";
 
 const initialSettingsUiLocale = getSettingsUiLocale();
+const initialBasicToolDetailsVisible = getBasicToolDetailsVisible();
 
 afterEach(() => {
 	setSettingsUiLocale(initialSettingsUiLocale);
+	setBasicToolDetailsVisible(initialBasicToolDetailsVisible);
 });
 
 describe("globToolRenderer", () => {
@@ -181,5 +184,83 @@ describe("globToolRenderer", () => {
 		for (const file of files) {
 			expect(zhPlain).toContain(file);
 		}
+	});
+
+	it("summarizes successful file matches to one target/count header when basic details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const files = ["src/a.ts", "src/b.ts", "src/c.ts"];
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: { fileCount: files.length, files, scopePath: "src" },
+		};
+
+		const plainLines = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
+				.render(240)
+				.join("\n"),
+		).split("\n");
+
+		expect(plainLines).toHaveLength(1);
+		const header = plainLines[0]!;
+		expect(header).toContain("Glob");
+		expect(header).toContain("src/**/*.ts");
+		expect(header).toContain("3 files");
+		expect(header).toContain("src");
+		for (const file of files) {
+			expect(header).not.toContain(file);
+		}
+	});
+
+	it("keeps file-list details visible when basic details policy is on", async () => {
+		setBasicToolDetailsVisible(true);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const files = ["src/visible-a.ts", "src/visible-b.ts"];
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: { fileCount: files.length, files, cwd: "/project" },
+		};
+
+		const plain = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(plain).toContain("src/visible-a.ts");
+		expect(plain).toContain("src/visible-b.ts");
+	});
+
+	it("still renders glob error diagnostics when details are hidden", async () => {
+		setBasicToolDetailsVisible(false);
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+
+		const rendered = sanitizeText(
+			globToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "Glob failed: EACCES permission denied scanning /private" }],
+						details: { error: "EACCES permission denied scanning /private" },
+						isError: true,
+					} as never,
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{ paths: "/private/**/*" },
+				)
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("Error:");
+		expect(rendered).toContain("EACCES");
+		expect(rendered).toContain("/private");
 	});
 });

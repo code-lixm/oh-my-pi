@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type Component, TUI } from "@oh-my-pi/pi-tui";
@@ -31,17 +31,67 @@ function plainBuffer(term: VirtualTerminal): string[] {
 		.filter(Boolean);
 }
 
+const TERMINAL_ENV_KEYS = [
+	"TERM_PROGRAM",
+	"GHOSTTY_RESOURCES_DIR",
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+] as const;
+type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
+type TerminalEnvSnapshot = Record<TerminalEnvKey, { bun: string | undefined; process: string | undefined }>;
+
+function restoreEnvValue(env: Record<string, string | undefined>, key: TerminalEnvKey, value: string | undefined) {
+	if (value === undefined) {
+		delete env[key];
+	} else {
+		env[key] = value;
+	}
+}
+
+function neutralizeTerminalEnv(): TerminalEnvSnapshot {
+	const snapshot = Object.fromEntries(
+		TERMINAL_ENV_KEYS.map(key => [key, { bun: Bun.env[key], process: process.env[key] }]),
+	) as TerminalEnvSnapshot;
+	for (const key of TERMINAL_ENV_KEYS) {
+		delete Bun.env[key];
+		delete process.env[key];
+	}
+	Bun.env.TERM = "xterm-256color";
+	process.env.TERM = "xterm-256color";
+	return snapshot;
+}
+
+function restoreTerminalEnv(snapshot: TerminalEnvSnapshot | undefined) {
+	if (!snapshot) return;
+	for (const key of TERMINAL_ENV_KEYS) {
+		restoreEnvValue(Bun.env, key, snapshot[key].bun);
+		restoreEnvValue(process.env, key, snapshot[key].process);
+	}
+}
+
 describe("ToolExecutionComponent write repaint seam", () => {
 	const components: ToolExecutionComponent[] = [];
 
-	beforeAll(async () => {
+	let terminalEnvSnapshot: TerminalEnvSnapshot | undefined;
+
+	beforeEach(async () => {
+		terminalEnvSnapshot = neutralizeTerminalEnv();
 		await initTheme();
 	});
 
 	afterEach(() => {
-		for (const component of components) component.stopAnimation();
-		components.length = 0;
-		vi.restoreAllMocks();
+		try {
+			for (const component of components) component.stopAnimation();
+			components.length = 0;
+			vi.restoreAllMocks();
+		} finally {
+			restoreTerminalEnv(terminalEnvSnapshot);
+			terminalEnvSnapshot = undefined;
+		}
 	});
 
 	function makeComponent(args: unknown) {

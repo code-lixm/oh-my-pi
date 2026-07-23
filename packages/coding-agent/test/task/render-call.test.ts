@@ -76,13 +76,13 @@ describe("task renderer: streaming call preview", () => {
 		expect(out).toContain("First");
 	});
 
-	it("localizes the task call title to zh-CN", () => {
+	it("keeps the built-in Task tool title untranslated in zh-CN", () => {
 		setSettingsUiLocale("zh-CN");
 		const out = render({ name: "Worker", task: "检查中文任务标题。" });
 		const header = out.split("\n")[0] ?? "";
 
-		expect(header).toContain("任务");
-		expect(header).not.toContain("Task");
+		expect(header).toContain("Task");
+		expect(header).not.toContain("任务");
 	});
 
 	it("always renders the full task markdown, collapsed or expanded", () => {

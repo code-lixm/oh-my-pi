@@ -15,18 +15,17 @@
  */
 import * as fs from "node:fs";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
+import { type Component, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
-import { getEditorTheme, theme } from "../theme/theme";
+import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
@@ -40,8 +39,6 @@ export interface AgentTranscriptViewerDeps {
 	remote?: AgentHubRemote;
 	/** Progress/cost snapshot source for the stats line. */
 	observers?: SessionObserverRegistry;
-	/** Revive+prompt path for messageable local agents. Lazy to avoid touching the global. */
-	lifecycle?: () => AgentLifecycleManager;
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
@@ -140,8 +137,6 @@ export class AgentTranscriptViewer implements Component {
 	#builder: ChatTranscriptBuilder;
 	#scrollView: ScrollView;
 	#followBottom = true;
-	#editor: Editor | undefined;
-	#notice: string | undefined;
 	#expanded = false;
 
 	#localState: LocalTranscriptState | undefined;
@@ -173,21 +168,9 @@ export class AgentTranscriptViewer implements Component {
 			scrollbar: "auto",
 			theme: { track: t => theme.fg("dim", t), thumb: t => theme.fg("accent", t) },
 		});
-		if (this.#sendable) {
-			this.#editor = new Editor(getEditorTheme());
-			this.#editor.setMaxHeight(4);
-			this.#editor.onSubmit = text => this.#submit(text);
-		}
 		this.#refresh();
 		this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
 		this.#pollTimer.unref?.();
-	}
-
-	/** Advisor transcripts are read-only; everything else may be messaged. */
-	get #sendable(): boolean {
-		const ref = this.deps.registry.get(this.deps.agentId);
-		if (!ref || ref.kind === "advisor") return false;
-		return Boolean(this.deps.remote || this.deps.lifecycle);
 	}
 
 	dispose(): void {
@@ -462,11 +445,6 @@ export class AgentTranscriptViewer implements Component {
 		}
 
 		if (matchesKey(data, "escape")) {
-			if (this.#editor && this.#editor.getText().trim() !== "") {
-				this.#editor.setText("");
-				this.deps.requestRender();
-				return;
-			}
 			this.deps.onClose();
 			return;
 		}
@@ -480,14 +458,7 @@ export class AgentTranscriptViewer implements Component {
 			}
 		}
 
-		// Once the reader starts typing a message, the editor owns every key.
-		const editorEmpty = !this.#editor || this.#editor.getText().trim() === "";
-		if (editorEmpty && this.#handleScroll(data)) return;
-
-		if (this.#editor) {
-			this.#editor.handleInput(data);
-			this.deps.requestRender();
-		}
+		this.#handleScroll(data);
 	}
 
 	/** Returns true when the key was a scroll command. ScrollView owns the offset. */
@@ -517,33 +488,6 @@ export class AgentTranscriptViewer implements Component {
 		this.#followBottom = this.#scrollView.getScrollOffset() >= this.#scrollView.getMaxScrollOffset();
 	}
 
-	#submit(text: string): void {
-		const trimmed = text.trim();
-		this.#editor?.setText("");
-		if (!trimmed) return;
-		this.#notice = undefined;
-		const id = this.deps.agentId;
-		if (this.deps.remote) {
-			this.deps.remote.chat(id, trimmed);
-			this.deps.requestRender();
-			return;
-		}
-		const lifecycle = this.deps.lifecycle;
-		if (!lifecycle) return;
-		void (async () => {
-			try {
-				// Revives a parked agent; returns the live session for running/idle.
-				const session = await lifecycle().ensureLive(id);
-				// Steers a mid-turn agent; sends a normal prompt to an idle one.
-				await session.prompt(trimmed, { streamingBehavior: "steer" });
-			} catch (error) {
-				this.#notice = error instanceof Error ? error.message : String(error);
-			}
-			this.deps.requestRender();
-		})();
-		this.deps.requestRender();
-	}
-
 	// ========================================================================
 	// Render
 	// ========================================================================
@@ -562,15 +506,13 @@ export class AgentTranscriptViewer implements Component {
 
 		const headerLines = this.#headerLines(ref?.status, ref?.kind, ref?.parentId);
 		const footerLines = this.#footerLines();
-		const noticeLine = this.#notice
-			? ` ${theme.fg("error", sanitizeErrorLine(this.#notice, innerWidth))}`
-			: this.#remoteError && !this.#builder.isEmpty
+		const noticeLine =
+			this.#remoteError && !this.#builder.isEmpty
 				? ` ${theme.fg("error", sanitizeErrorLine(this.#remoteError, innerWidth))}`
 				: undefined;
-		const editorLines = this.#editor ? this.#editor.render(innerWidth) : [];
 
-		// Chrome: top border + header rows + divider border + (notice) + editor + footer + bottom border.
-		const chrome = headerLines.length + 2 + editorLines.length + footerLines.length + (noticeLine ? 1 : 0) + 1;
+		// Chrome: three borders + header rows + optional notice + footer rows.
+		const chrome = headerLines.length + 3 + footerLines.length + (noticeLine ? 1 : 0);
 		const viewportHeight = Math.max(3, termHeight - chrome);
 
 		const contentLines = this.#builder.isEmpty
@@ -586,7 +528,6 @@ export class AgentTranscriptViewer implements Component {
 		lines.push(...new DynamicBorder().render(width));
 		for (const row of this.#scrollView.render(width)) lines.push(row);
 		if (noticeLine) lines.push(noticeLine);
-		for (const editorLine of editorLines) lines.push(` ${editorLine}`);
 		lines.push(...footerLines);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
@@ -599,7 +540,11 @@ export class AgentTranscriptViewer implements Component {
 				"dim",
 				` ${parentId ? `${kind} ${theme.sep.dot} ${tSettingsUi("of {parentId}", { parentId })}` : kind}`,
 			);
-			const modelLabel = this.#model ? theme.fg("muted", `${theme.sep.dot}${this.#model}`) : "";
+			const progress = this.deps.observers
+				?.getSessions()
+				.find(session => session.id === this.deps.agentId)?.progress;
+			const model = progress?.resolvedModel ?? this.#model;
+			const modelLabel = model ? theme.fg("muted", `${theme.sep.dot}${replaceTabs(model)}`) : "";
 			lines.push(`${theme.bold(this.deps.agentId)} ${statusBadge(status)}${kindTag}${modelLabel}`);
 		}
 		return lines;
@@ -609,13 +554,9 @@ export class AgentTranscriptViewer implements Component {
 		const lines: string[] = [];
 		const statsLine = this.#statsLine();
 		if (statsLine) lines.push(` ${statsLine}`);
-		const hint = this.#editor
-			? tSettingsUi("Enter:send  Esc:close  {expandKey}:expand  empty input → j/k:scroll  g/G:top/bottom", {
-					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
-				})
-			: tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
-					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
-				});
+		const hint = tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
+			expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
+		});
 		lines.push(` ${theme.fg("dim", hint)}`);
 		return lines;
 	}
@@ -627,6 +568,11 @@ export class AgentTranscriptViewer implements Component {
 		const progress = observed?.progress;
 		if (!progress) return "";
 		const stats: string[] = [];
+		if (progress.tokensPerSecond && progress.tokensPerSecond > 0) {
+			const rate = `${progress.tokensPerSecond.toFixed(1)} tok/s`;
+			stats.push(progress.tokensPerSecondLive ? rate : `last ${rate}`);
+		}
+		if (progress.tokens > 0) stats.push(`${formatNumber(progress.tokens)} tok`);
 		if (progress.contextTokens && progress.contextTokens > 0) {
 			stats.push(
 				progress.contextWindow && progress.contextWindow > 0

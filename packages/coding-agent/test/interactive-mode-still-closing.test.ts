@@ -36,7 +36,7 @@ describe("InteractiveMode long shutdown status", () => {
 		if (!model) throw new Error("expected bundled model");
 		session = new AgentSession({
 			agent: new Agent({ initialState: { model, systemPrompt: ["test"], tools: [], messages: [] } }),
-			sessionManager: SessionManager.inMemory(tempDir.path()),
+			sessionManager: SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions")),
 			settings: Settings.isolated(),
 			modelRegistry,
 		});
@@ -81,5 +81,48 @@ describe("InteractiveMode long shutdown status", () => {
 		vi.advanceTimersByTime(10_000);
 		await flushMicrotasks();
 		expect(statuses).toHaveLength(2);
+	});
+
+	it("does not print a resume hint for a new session that never reached storage", async () => {
+		const stderrChunks: unknown[] = [];
+		vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+			stderrChunks.push(chunk);
+			return true;
+		}) as typeof process.stderr.write);
+
+		expect(mode.sessionManager.isSessionPersisted()).toBe(false);
+		await mode.shutdown();
+
+		expect(mode.sessionManager.isSessionPersisted()).toBe(false);
+		expect(stderrChunks.map(String).join("")).not.toContain("Resume this session");
+	});
+
+	it("prints a resume hint with the session id after a session file exists", async () => {
+		const sessionFile = path.join(tempDir.path(), "sessions", "recoverable.jsonl");
+		await mode.sessionManager.setSessionFile(sessionFile);
+		const sessionId = mode.sessionManager.getSessionId();
+		const stderrChunks: unknown[] = [];
+		vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+			stderrChunks.push(chunk);
+			return true;
+		}) as typeof process.stderr.write);
+
+		expect(sessionId).toBeTruthy();
+		expect(mode.sessionManager.isSessionPersisted()).toBe(true);
+		await mode.shutdown();
+
+		const stderr = stderrChunks.map(String).join("");
+		expect(stderr).toContain("Resume this session");
+		expect(stderr).toContain(sessionId);
+	});
+
+	it("reports persistence only after setSessionFile materializes storage", async () => {
+		expect(mode.sessionManager.isSessionPersisted()).toBe(false);
+
+		const sessionFile = path.join(tempDir.path(), "sessions", "explicit.jsonl");
+		await mode.sessionManager.setSessionFile(sessionFile);
+
+		expect(mode.sessionManager.isSessionPersisted()).toBe(true);
+		expect(await Bun.file(sessionFile).exists()).toBe(true);
 	});
 });

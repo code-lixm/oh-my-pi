@@ -56,6 +56,7 @@ import { normalizeSchema } from "../tools/jtd-to-json-schema";
 import { buildOutputValidator, summarizeValidationFailure } from "../tools/output-schema-validator";
 import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
+import { calculateTokensPerSecond } from "../utils/token-rate";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { generateTaskLabel } from "./label";
@@ -1260,6 +1261,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			case "message_start":
 				if (event.message?.role === "assistant") {
 					resetRecentOutput();
+					progress.tokensPerSecond = undefined;
+					progress.tokensPerSecondLive = true;
 				}
 				break;
 
@@ -1401,6 +1404,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 			case "message_update": {
 				if (event.message?.role !== "assistant") break;
+				const liveTokensPerSecond = calculateTokensPerSecond([event.message], true, now);
+				if (liveTokensPerSecond !== null) {
+					progress.tokensPerSecond = liveTokensPerSecond;
+					progress.tokensPerSecondLive = true;
+				}
 				const assistantEvent = (
 					event as AgentEvent & {
 						assistantMessageEvent?: { type?: string; delta?: string };
@@ -1425,6 +1433,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				// Extract text from assistant and toolResult messages (not user prompts)
 				const role = event.message?.role;
 				if (role === "assistant") {
+					if (progress.tokensPerSecond !== undefined) progress.tokensPerSecondLive = false;
 					progress.requests += 1;
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
@@ -1479,6 +1488,25 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					// Only count assistant messages (not tool results, etc.)
 					if (role === "assistant") {
 						const costRecord = isRecord(messageUsage.cost) ? messageUsage.cost : undefined;
+						const finalOutputTokens = getNumberField(messageUsage, "output");
+						if (event.message?.role === "assistant" && finalOutputTokens !== undefined) {
+							const finalTokensPerSecond = calculateTokensPerSecond(
+								[
+									{
+										role: "assistant",
+										timestamp: event.message.timestamp,
+										duration: event.message.duration ?? now - event.message.timestamp,
+										usage: { output: finalOutputTokens },
+									},
+								],
+								false,
+								now,
+							);
+							if (finalTokensPerSecond !== null) {
+								progress.tokensPerSecond = finalTokensPerSecond;
+								progress.tokensPerSecondLive = false;
+							}
+						}
 						hasUsage = true;
 						accumulatedUsage.input += getNumberField(messageUsage, "input") ?? 0;
 						accumulatedUsage.output += getNumberField(messageUsage, "output") ?? 0;

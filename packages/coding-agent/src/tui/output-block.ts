@@ -34,15 +34,41 @@ export interface OutputBlockOptions {
 
 const FRAMED_BLOCK_COMPONENT = Symbol("framedBlockComponent");
 
-export type OutputBlockBorderStyle = "full" | "horizontal" | "none";
+export type OutputBlockBorderStyle = "full" | "none" | "accent";
 
-let outputBlockBorderStyle: OutputBlockBorderStyle = "full";
+/** Width reserved for the half-cell accent glyph plus one plain gap. */
+export const OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH = 2;
+/** Keep accent surfaces one cell shy of the terminal edge. */
+export const OUTPUT_BLOCK_ACCENT_RIGHT_INSET = 1;
+
+/** Layout modes whose surface draws no box frame. `accent` uses a half-cell
+ * `▌` glyph over a translucent-looking tint derived from the same semantic
+ * color; `none` stays bare. */
+const BORDERLESS_OUTPUT_STYLES: Record<OutputBlockBorderStyle, boolean> = {
+	full: false,
+	none: true,
+	accent: true,
+};
+
+export function isBorderlessOutputStyle(style: OutputBlockBorderStyle): boolean {
+	return BORDERLESS_OUTPUT_STYLES[style];
+}
+
+let outputBlockBorderStyle: OutputBlockBorderStyle = "accent";
 
 export function setOutputBlockBorderStyle(style: OutputBlockBorderStyle): void {
 	outputBlockBorderStyle = style;
 }
 export function getOutputBlockBorderStyle(): OutputBlockBorderStyle {
 	return outputBlockBorderStyle;
+}
+
+/**
+ * Borderless output layouts use Markdown's borderless table layout so tables
+ * mirror their surrounding blocks instead of reintroducing a container frame.
+ */
+export function resolveMarkdownTableBorderStyle(style: OutputBlockBorderStyle): "full" | "none" {
+	return style === "full" ? "full" : "none";
 }
 
 export type FramedBlockComponent = Component & { [FRAMED_BLOCK_COMPONENT]?: true };
@@ -63,66 +89,108 @@ type BlockRow =
 	| { kind: "sixel"; raw: string };
 
 function normalizeContentPaddingLeft(value: number | undefined, borderStyle: OutputBlockBorderStyle): number {
-	if (value === undefined || !Number.isFinite(value)) return borderStyle === "none" ? 2 : 1;
+	if (value === undefined || !Number.isFinite(value)) {
+		return borderStyle === "accent" ? 0 : isBorderlessOutputStyle(borderStyle) ? 2 : 1;
+	}
 	return Math.max(0, Math.floor(value));
-}
-
-function shouldApplyStateBg(state: State | undefined, override: boolean | undefined): boolean {
-	return override ?? state === "error";
 }
 
 /**
  * Content width used by {@link renderOutputBlock}. Full borders reserve one
- * cell on each side; borderless blocks use a two-cell content gutter, while
- * horizontal-only blocks keep the historical one-cell gutter.
- * Renderers that size a tail window MUST use this helper so their visual-row
- * budget matches the active layout.
+ * outer-left gutter cell plus one cell on each side of the inner frame;
+ * `none` uses a two-cell content indent; `accent` reserves its painted-space
+ * rail and gap independently from optional content padding. Renderers that
+ * size a tail window MUST use this helper so their visual-row budget matches
+ * the active layout.
  */
 export function outputBlockContentWidth(
 	width: number,
 	contentPaddingLeft?: number,
 	borderStyle: OutputBlockBorderStyle = outputBlockBorderStyle,
 ): number {
+	const outerLeftGutter = borderStyle === "full" && width > 0 ? 1 : 0;
 	const borderWidth = borderStyle === "full" ? 2 : 0;
-	return Math.max(1, width - borderWidth - normalizeContentPaddingLeft(contentPaddingLeft, borderStyle));
+	const accentGutterWidth = borderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH : 0;
+	const accentRightInset = borderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_RIGHT_INSET : 0;
+	return Math.max(
+		1,
+		width -
+			outerLeftGutter -
+			borderWidth -
+			accentGutterWidth -
+			accentRightInset -
+			normalizeContentPaddingLeft(contentPaddingLeft, borderStyle),
+	);
+}
+
+/** Keep a background fill active across nested SGR resets in styled content. */
+export function applyStableBackground(text: string, bgAnsi: string): string {
+	const stabilized = text
+		.replace(/\x1b\[(?:0)?m/g, match => `${match}${bgAnsi}`)
+		.replace(/\x1b\[49m/g, match => `${match}${bgAnsi}`);
+	return `${bgAnsi}${stabilized}\x1b[49m`;
+}
+
+/**
+ * Prefix one row with a half-cell `▌` accent glyph. The body background is a
+ * low-opacity preblend of the same semantic color over the theme surface.
+ */
+export function renderOutputAccentLine(line: string, width: number, theme: Theme, color: ThemeColor): string {
+	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
+	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));
+	if (surfaceWidth === 0) return rightInset;
+	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, 0.06);
+	const railFgAnsi = color === "borderMuted" ? theme.getSurfaceTintFgAnsi(color) : theme.getFgAnsi(color);
+	const rail = applyStableBackground(`${railFgAnsi}▌\x1b[39m`, tintedBgAnsi);
+	if (surfaceWidth === 1) return `${rail}${rightInset}`;
+	const contentWidth = Math.max(0, surfaceWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH);
+	const content = contentWidth > 0 ? padToWidth(truncateToWidth(line, contentWidth), contentWidth) : "";
+	const tintedBody = applyStableBackground(` ${content}`, tintedBgAnsi);
+	return `${rail}${tintedBody}${rightInset}`;
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
 	const { header, headerMeta, state, sections = [], width } = options;
-	const applyBg = shouldApplyStateBg(state, options.applyBg);
+	const applyBg = options.applyBg ?? false;
 	const borderStyle = options.borderStyle ?? outputBlockBorderStyle;
-	const horizontalOnly = borderStyle === "horizontal";
-	const borderless = borderStyle === "none";
+	const borderless = isBorderlessOutputStyle(borderStyle);
+	const accentMode = borderStyle === "accent";
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h;
 	const lineWidth = Math.max(0, width);
 	// Border colors remain semantic while pending/running blocks stay unfilled;
-	// only explicitly enabled state backgrounds are painted.
+	// callers can still opt into state backgrounds through `applyBg`.
 	const borderColor: ThemeColor =
 		options.borderColor ?? (state === "error" ? "error" : state === "warning" ? "warning" : "borderMuted");
 	const border = (text: string) => theme.fg(borderColor, text);
 	const bgFn = (() => {
 		if (!state || !applyBg) return undefined;
 		const bgAnsi = theme.getBgAnsi(getStateBgColor(state));
-		// Keep block background stable even if inner content contains SGR resets (e.g. "\x1b[0m"),
-		// which would otherwise clear the outer background mid-line.
-		return (text: string) => {
-			const stabilized = text
-				.replace(/\x1b\[(?:0)?m/g, m => `${m}${bgAnsi}`)
-				.replace(/\x1b\[49m/g, m => `${m}${bgAnsi}`);
-			return `${bgAnsi}${stabilized}\x1b[49m`;
-		};
+		return (text: string) => applyStableBackground(text, bgAnsi);
 	})();
 
+	const outerLeftGutter = borderStyle === "full" && lineWidth > 0 ? 1 : 0;
+	const frameLineWidth = Math.max(0, lineWidth - outerLeftGutter);
 	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft, borderStyle);
 	const borderWidth = borderStyle === "full" ? visibleWidth(v) * 2 : 0;
-	const contentWidth = Math.max(0, lineWidth - borderWidth - contentPaddingLeft);
+	const accentGutterWidth = accentMode ? OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH : 0;
+	const accentRightInset = accentMode ? OUTPUT_BLOCK_ACCENT_RIGHT_INSET : 0;
+	const contentWidth = Math.max(
+		0,
+		frameLineWidth - borderWidth - accentGutterWidth - accentRightInset - contentPaddingLeft,
+	);
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
+	const outerLeftPadding = outerLeftGutter > 0 ? padding(outerLeftGutter) : "";
 
 	if (borderless) {
 		const lines: string[] = [];
+		const borderlessLineWidth = Math.max(0, lineWidth - accentGutterWidth - accentRightInset);
 		const pushLine = (line: string): void => {
+			if (accentMode) {
+				lines.push(renderOutputAccentLine(line, lineWidth, theme, borderColor));
+				return;
+			}
 			lines.push(padToWidth(truncateToWidth(line, lineWidth), lineWidth, bgFn));
 		};
 		const pushContent = (line: string, prefix: string, alignTreeRoot: boolean): void => {
@@ -138,7 +206,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 					plain.startsWith(getTreeContinuePrefix(false, theme)) ||
 					plain.startsWith(getTreeContinuePrefix(true, theme)));
 			const effectivePrefix = rootAligned ? "" : prefix;
-			const availableWidth = Math.max(1, lineWidth - visibleWidth(effectivePrefix));
+			const availableWidth = Math.max(1, borderlessLineWidth - visibleWidth(effectivePrefix));
 			if (tree) {
 				const branchWidth = visibleWidth(`${tree.glyph} `);
 				const afterBranch = plain.slice(`${tree.glyph} `.length);
@@ -171,6 +239,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 			for (const wrappedLine of wrapped) pushLine(`${effectivePrefix}${wrappedLine}`);
 		};
 
+		if (accentMode) pushLine("");
 		const title = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
 		if (title) pushLine(title);
 		const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
@@ -205,6 +274,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				pushContent(line, linePrefix, !section.label && sectionHasRootTree);
 			}
 		}
+		if (accentMode) pushLine("");
 		return lines;
 	}
 
@@ -259,38 +329,35 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const H = rows.length;
 
 	const renderBar = (row: { leftChar: string; rightChar: string; label?: string; meta?: string }): string => {
-		const leftGlyphs = horizontalOnly ? cap : `${row.leftChar}${cap}`;
-		const rightGlyph = horizontalOnly ? "" : row.rightChar;
-		if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
+		const leftGlyphs = `${row.leftChar}${cap}`;
+		const rightGlyph = row.rightChar;
+		if (frameLineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
 		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
 		if (!labelText) {
-			const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
+			const fillCount = Math.max(0, frameLineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
 			return `${border(leftGlyphs)}${border(h.repeat(fillCount))}${border(rightGlyph)}`;
 		}
 		const rawLabel = ` ${labelText} `;
 		const leftWidth = visibleWidth(leftGlyphs);
 		const rightWidth = visibleWidth(rightGlyph);
-		const maxLabelWidth = Math.max(0, lineWidth - leftWidth - rightWidth);
+		const maxLabelWidth = Math.max(0, frameLineWidth - leftWidth - rightWidth);
 		const trimmedLabel = truncateToWidth(rawLabel, maxLabelWidth);
 		const labelWidth = visibleWidth(trimmedLabel);
-		const fillCount = Math.max(0, lineWidth - leftWidth - labelWidth - rightWidth);
+		const fillCount = Math.max(0, frameLineWidth - leftWidth - labelWidth - rightWidth);
 		const fillGlyphs = h.repeat(fillCount);
 		return `${border(leftGlyphs)}${trimmedLabel}${border(fillGlyphs)}${border(rightGlyph)}`;
 	};
 
 	const renderBottom = (row: { leftChar: string; rightChar: string }): string => {
-		if (horizontalOnly) return border(h.repeat(lineWidth));
 		const leftGlyphs = `${row.leftChar}${cap}`;
 		const rightGlyph = row.rightChar;
-		const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
+		const fillCount = Math.max(0, frameLineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
 		const fillGlyphs = h.repeat(fillCount);
 		return `${border(leftGlyphs)}${border(fillGlyphs)}${border(rightGlyph)}`;
 	};
 
 	const renderContent = (inner: string): string =>
-		horizontalOnly
-			? `${contentLeftPadding}${inner}`
-			: anchorRightBorder(`${border(v)}${contentLeftPadding}${inner}`, border(v), lineWidth);
+		anchorRightBorder(`${border(v)}${contentLeftPadding}${inner}`, border(v), frameLineWidth);
 
 	const lines: string[] = [];
 	for (let r = 0; r < H; r++) {
@@ -299,9 +366,9 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 			lines.push(row.raw);
 			continue;
 		}
-		const line =
+		const frameLine =
 			row.kind === "bar" ? renderBar(row) : row.kind === "bottom" ? renderBottom(row) : renderContent(row.inner);
-		lines.push(padToWidth(line, lineWidth, bgFn));
+		lines.push(padToWidth(outerLeftPadding ? `${outerLeftPadding}${frameLine}` : frameLine, lineWidth, bgFn));
 	}
 
 	return lines;
@@ -335,16 +402,17 @@ export class CachedOutputBlock {
 	}
 
 	#buildKey(options: OutputBlockOptions): bigint {
+		const effectiveStyle = options.borderStyle ?? outputBlockBorderStyle;
 		const h = new Hasher();
 		h.u32(getThemeEpoch());
 		h.u32(options.width);
-		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft, options.borderStyle ?? outputBlockBorderStyle));
+		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft, effectiveStyle));
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.state);
 		h.optional(options.borderColor);
-		h.bool(shouldApplyStateBg(options.state, options.applyBg));
-		h.str(options.borderStyle ?? outputBlockBorderStyle);
+		h.bool(options.applyBg ?? false);
+		h.str(effectiveStyle);
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);

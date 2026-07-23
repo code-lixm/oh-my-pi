@@ -377,7 +377,7 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..2116367ee34bb86948bf956c2afa2f69
          this._frameTree.addFrame(frame);
          this.emit(FrameManagerEvent.FrameAttached, frame);
      }
-@@ -376,6 +391,177 @@ export class FrameManager extends EventEmitter {
+@@ -376,6 +391,168 @@ export class FrameManager extends EventEmitter {
          frame._navigated(framePayload);
          this.emit(FrameManagerEvent.FrameNavigated, frame);
          frame.emit(FrameEvent.FrameNavigated, navigationType);
@@ -420,7 +420,7 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..2116367ee34bb86948bf956c2afa2f69
 +        const promise = this.#doAcquireWorlds(frame).finally(() => {
 +            this.#acquirePromises.delete(id);
 +            if (this.#acquireQueued.delete(id) && this.frame(id)) {
-+                void this.#acquireWorlds(frame);
++                void this.#acquireWorlds(frame).catch(debugCatchError);
 +            }
 +        });
 +        this.#acquirePromises.set(id, promise);
@@ -452,13 +452,11 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..2116367ee34bb86948bf956c2afa2f69
 +        try {
 +            // Utility (PUPPETEER) world: Page.createIsolatedWorld returns the new
 +            // context id directly — works for any frameId on the session.
-+            const iso = await session
-+                .send('Page.createIsolatedWorld', {
++            const iso = await session.send('Page.createIsolatedWorld', {
 +                frameId: frame._id,
 +                worldName: UTILITY_WORLD_NAME,
 +                grantUniveralAccess: true,
-+            })
-+                .catch(debugCatchError);
++            });
 +            const utilityId = iso && typeof iso.executionContextId === 'number' ? iso.executionContextId : undefined;
 +            if (utilityId !== undefined) {
 +                this.#onExecutionContextCreated({
@@ -500,6 +498,7 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..2116367ee34bb86948bf956c2afa2f69
 +        }
 +        catch (error) {
 +            debugCatchError(error);
++            throw error;
 +        }
 +    }
 +    // xxx-stealth: resolve a frame's MAIN-world execution context id without
@@ -519,38 +518,30 @@ index 2322aa136a47b446e2a7b2c4f0bc751f2fb821d0..2116367ee34bb86948bf956c2afa2f69
 +            return Number.isNaN(id) ? undefined : id;
 +        };
 +        if (this.#frameIsTopOfSession(frame)) {
-+            const globalThis = await session
-+                .send('Runtime.evaluate', {
++            const globalThis = await session.send('Runtime.evaluate', {
 +                expression: 'globalThis',
 +                serializationOptions: { serialization: 'idOnly' },
-+            })
-+                .catch(debugCatchError);
++            });
 +            return parse(globalThis?.result?.objectId);
 +        }
 +        if (utilityId === undefined) {
 +            return undefined;
 +        }
-+        const utilDoc = await session
-+            .send('Runtime.evaluate', {
++        const utilDoc = await session.send('Runtime.evaluate', {
 +            expression: 'document',
 +            contextId: utilityId,
 +            serializationOptions: { serialization: 'idOnly' },
-+        })
-+            .catch(debugCatchError);
++        });
 +        const utilDocObjectId = utilDoc?.result?.objectId;
 +        if (typeof utilDocObjectId !== 'string') {
 +            return undefined;
 +        }
-+        const described = await session
-+            .send('DOM.describeNode', { objectId: utilDocObjectId })
-+            .catch(debugCatchError);
++        const described = await session.send('DOM.describeNode', { objectId: utilDocObjectId });
 +        const backendNodeId = described?.node?.backendNodeId;
 +        if (typeof backendNodeId !== 'number') {
 +            return undefined;
 +        }
-+        const mainNode = await session
-+            .send('DOM.resolveNode', { backendNodeId })
-+            .catch(debugCatchError);
++        const mainNode = await session.send('DOM.resolveNode', { backendNodeId });
 +        return parse(mainNode?.object?.objectId);
      }
      async #createIsolatedWorld(session, name) {
@@ -573,19 +564,14 @@ index b0619734a9eeb884f3ac4ffff39b540226aaf818..7e577d8a0200f0201742fd0a471edc97
      constructor(frameOrWorker, timeoutSettings, worldId) {
          super(timeoutSettings);
          this.#frameOrWorker = frameOrWorker;
-@@ -72,6 +79,19 @@ export class IsolatedWorld extends Realm {
+@@ -72,6 +79,14 @@ export class IsolatedWorld extends Realm {
       * Waits for the next context to be set on the isolated world.
       */
      async #waitForExecutionContext() {
 +        // xxx-stealth: pull the context on demand before falling back to
 +        // waiting for a (never-arriving) push event.
 +        if (this.#contextProvider && !this.#context && !this.disposed) {
-+            try {
-+                await this.#contextProvider();
-+            }
-+            catch {
-+                // fall through to the event wait below
-+            }
++            await this.#contextProvider();
 +            if (this.#context) {
 +                return this.#context;
 +            }

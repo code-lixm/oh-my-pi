@@ -176,7 +176,11 @@ export function shimmerEnabled(): boolean {
  *   - One ANSI open/close pair per **run of same-tier chars**, not per char.
  *   - No per-char allocations beyond the run buffer.
  */
-export function shimmerSegments(segments: readonly ShimmerSegment[], theme: ShimmerTheme): string {
+export function shimmerSegments(
+	segments: readonly ShimmerSegment[],
+	theme: ShimmerTheme,
+	time: number = Date.now(),
+): string {
 	const mode = resolveMode();
 
 	// Pre-scan: total code-point count (positions the band) and resolved palette.
@@ -204,7 +208,7 @@ export function shimmerSegments(segments: readonly ShimmerSegment[], theme: Shim
 		return out;
 	}
 
-	const time = Date.now();
+	const effectiveTime = time;
 	const intensityFn = mode === "kitt" ? kittIntensity : classicIntensity;
 
 	// Fast-path window: outside `[bandLo, bandHi]` the intensity is guaranteed
@@ -213,7 +217,7 @@ export function shimmerSegments(segments: readonly ShimmerSegment[], theme: Shim
 	// message the classic band spans ~12 cells, so ~80% of the per-char loop
 	// disappears — the intensity call and the tier compare were the residual
 	// per-frame cost after #4353 removed the allocation hotspot (issue #4377).
-	const { lo: bandLo, hi: bandHi } = activeBand(mode, time, total);
+	const { lo: bandLo, hi: bandHi } = activeBand(mode, effectiveTime, total);
 
 	let out = "";
 	let index = 0;
@@ -300,6 +304,11 @@ function countCodePoints(text: string): number {
 	return n;
 }
 
-export function shimmerText(text: string, theme: ShimmerTheme, palette?: ShimmerPalette): string {
-	return shimmerSegments([{ text, palette }], theme);
+export function shimmerText(
+	text: string,
+	theme: ShimmerTheme,
+	palette?: ShimmerPalette,
+	time: number = Date.now(),
+): string {
+	return shimmerSegments([{ text, palette }], theme, time);
 }

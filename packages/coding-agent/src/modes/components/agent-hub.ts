@@ -299,7 +299,6 @@ export class AgentHubOverlayComponent extends Container {
 			registry: this.#registry,
 			remote: this.#remote,
 			observers: this.#observers,
-			lifecycle: this.#remote ? undefined : this.#lifecycle,
 			ui: this.#ui,
 			getTool: this.#getTool,
 			getMessageRenderer: this.#getMessageRenderer,
@@ -548,23 +547,27 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	/**
-	 * Enter on a row: focus the main view on the agent's live session and close
-	 * the hub. The transcript then renders through the regular session pipeline —
-	 * exact parity by construction. Collab guests (no local sessions) keep the
-	 * in-hub chat view.
+	 * Enter on a live row opens its fullscreen read-only transcript and closes
+	 * the hub. Persisted/advisor/collab rows use the file/remote-backed viewer.
 	 */
 	#activateAgent(ref: AgentRef): void {
 		this.#notice = undefined;
 		const focusAgent = this.#focusAgent;
-		// Advisor refs are read-only transcripts with no live/ revivable session;
-		// open the in-hub chat view (file-backed) instead of trying to focus one.
-		if (ref.kind === "advisor" || this.#remote || !focusAgent) {
+		// Advisors and non-live agents have no attachable session; their persisted
+		// transcript remains available through the same read-only fullscreen viewer.
+		if (
+			ref.kind === "advisor" ||
+			ref.status === "parked" ||
+			ref.status === "aborted" ||
+			this.#remote ||
+			!focusAgent
+		) {
 			this.openChat(ref.id);
 			return;
 		}
 		void (async () => {
 			try {
-				await focusAgent(ref.id); // ensureLive inside revives parked agents; no parking, no session files
+				await focusAgent(ref.id);
 				this.#onDone();
 			} catch (error) {
 				this.#notice = error instanceof Error ? error.message : String(error);
