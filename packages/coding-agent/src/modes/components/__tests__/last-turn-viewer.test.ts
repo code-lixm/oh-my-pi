@@ -1,12 +1,34 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../config/settings";
+import { getSettingsUiLocale, type SettingsUiLocale, setSettingsUiLocale } from "../../../i18n/settings-locale";
 import type { SessionMessageEntry } from "../../../session/session-entries";
 import { getThemeByName, setThemeInstance } from "../../theme/theme";
 import { LastTurnViewer } from "../last-turn-viewer";
 
 const strip = (lines: readonly string[]): string => Bun.stripANSI(lines.join("\n")).replace(/\x1b\]133;[AB]\x07/g, "");
+
+function withLocale<T>(locale: SettingsUiLocale, fn: () => T): T {
+	const previousLocale = getSettingsUiLocale();
+	setSettingsUiLocale(locale);
+	try {
+		return fn();
+	} finally {
+		setSettingsUiLocale(previousLocale);
+	}
+}
+
+function renderWithRows(viewer: LastTurnViewer, width: number, rows: number): readonly string[] {
+	const stdout = process.stdout as typeof process.stdout & { rows?: number };
+	const previousRows = stdout.rows;
+	stdout.rows = rows;
+	try {
+		return viewer.render(width);
+	} finally {
+		stdout.rows = previousRows;
+	}
+}
 
 const ui = {
 	requestRender() {},
@@ -105,6 +127,52 @@ describe("LastTurnViewer", () => {
 		expect(latestOnlyText).toContain("latest-reply");
 		expect(latestOnlyText).not.toContain("earlier-question");
 		expect(latestOnlyText).not.toContain("earlier-reply");
+	});
+
+	it("renders the localized shortcut hint once on the right edge of the title row", () => {
+		withLocale("zh-CN", () => {
+			const width = 80;
+			const rows = 12;
+			const title = "最近一轮";
+			const hint = "Esc:关闭  j/k:滚动  g/G:顶部/底部";
+			const viewer = makeViewer([userEntry("layout-question"), assistantEntry("layout-answer-tail")]);
+			viewers.push(viewer);
+
+			const rendered = strip(renderWithRows(viewer, width, rows)).split("\n");
+			const text = rendered.join("\n");
+			const headerLine = rendered[1];
+
+			expect(rendered.length).toBeLessThanOrEqual(rows);
+			expect(text.split(hint).length - 1).toBe(1);
+			expect(headerLine.trimStart().startsWith(title)).toBe(true);
+			expect(headerLine.endsWith(hint)).toBe(true);
+
+			const hintStart = headerLine.indexOf(hint);
+			expect(hintStart).toBeGreaterThan(headerLine.indexOf(title) + title.length);
+			expect(visibleWidth(headerLine.slice(0, hintStart)) + visibleWidth(hint)).toBe(width - 1);
+			expect(visibleWidth(headerLine.slice(headerLine.indexOf(title) + title.length, hintStart))).toBeGreaterThan(1);
+			expect(rendered.slice(2).some(line => line.includes(hint))).toBe(false);
+		});
+	});
+
+	it("keeps narrow localized shortcut hints in the header without overflowing or adding a footer", () => {
+		withLocale("zh-CN", () => {
+			const width = 22;
+			const rows = 8;
+			const title = "最近一轮";
+			const fullHint = "Esc:关闭  j/k:滚动  g/G:顶部/底部";
+			const viewer = makeViewer([userEntry("narrow-question"), assistantEntry("narrow-answer-tail")]);
+			viewers.push(viewer);
+
+			const rendered = strip(renderWithRows(viewer, width, rows)).split("\n");
+			const headerLine = rendered[1];
+
+			expect(rendered.every(line => visibleWidth(line) <= width)).toBe(true);
+			expect(headerLine.trimStart().startsWith(title)).toBe(true);
+			expect(headerLine).toContain("Esc");
+			expect(headerLine).not.toContain(fullHint);
+			expect(rendered.slice(2).some(line => line.includes("Esc") || line.includes(fullHint))).toBe(false);
+		});
 	});
 
 	it("closes on Esc without requesting a rerender", () => {

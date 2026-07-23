@@ -1,8 +1,17 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Component, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	matchesKey,
+	padding,
+	routeSgrMouseInput,
+	ScrollView,
+	type TUI,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import type { SessionMessageEntry } from "../../session/session-entries";
+import { truncateToWidth } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
@@ -79,19 +88,24 @@ export class LastTurnViewer implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const header = tSettingsUi("Last turn");
-		const footer = tSettingsUi("Esc:close  j/k:scroll  g/G:top/bottom");
-		const viewportHeight = Math.max(3, (process.stdout.rows || 40) - 5);
+		const title = theme.bold(theme.fg("accent", tSettingsUi("Last turn")));
+		const hint = theme.fg("dim", tSettingsUi("Esc:close  j/k:scroll  g/G:top/bottom"));
+		const headerWidth = Math.max(1, width - 2);
+		const hintWidth = Math.max(headerWidth - visibleWidth(title) - 2, 0);
+		const visibleHint = hintWidth > 0 ? truncateToWidth(hint, hintWidth) : "";
+		const header = visibleHint
+			? `${title}${padding(headerWidth - visibleWidth(title) - visibleWidth(visibleHint))}${visibleHint}`
+			: truncateToWidth(title, headerWidth);
+		const viewportHeight = Math.max(3, (process.stdout.rows || 40) - 4);
 		const contentWidth = Math.max(1, width - 1);
 		this.#scrollView.setLines(this.#builder.container.render(contentWidth));
 		this.#scrollView.setHeight(viewportHeight);
 
 		return [
 			...new DynamicBorder().render(width),
-			` ${theme.bold(theme.fg("accent", header))}`,
+			` ${header}`,
 			...new DynamicBorder().render(width),
 			...this.#scrollView.render(width),
-			` ${theme.fg("dim", footer)}`,
 			...new DynamicBorder().render(width),
 		];
 	}

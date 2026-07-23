@@ -102,6 +102,8 @@ function buildAdvisorCard(details: AdvisorMessageDetails | undefined, uiTheme: T
 
 		return {
 			header,
+			applyBg: state === "warning" || state === "error",
+			accentTintOpacity: state === "warning" || state === "error" ? 0.14 : undefined,
 			sections,
 			state,
 			borderColor: mixedSeverities ? "borderMuted" : severityColor(cardSeverity),

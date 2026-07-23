@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { type Component, Text, TUI } from "@oh-my-pi/pi-tui";
 import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
@@ -14,6 +15,35 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 function toolResult(text: string) {
 	return { content: [{ type: "text", text }] };
+}
+
+function editArgs() {
+	return {
+		edits: [
+			{ path: "src/alpha.ts", old_text: "export const alpha = 1;", new_text: "export const alpha = 2;" },
+			{ path: "src/beta.ts", old_text: "export const beta = 1;", new_text: "export const beta = 2;" },
+		],
+	};
+}
+
+function editResult(perFileResults: Array<{ path: string; diff: string; oldText: string; newText: string }>) {
+	return {
+		content: [{ type: "text", text: "edited" }],
+		details: { perFileResults },
+	};
+}
+
+function editPerFile(path: string, before: string, after: string) {
+	return {
+		path,
+		diff: [`-1|${before}`, `+1|${after}`].join("\n"),
+		oldText: `${before}\n`,
+		newText: `${after}\n`,
+	};
+}
+
+function plainRows(rows: readonly string[]): string[] {
+	return rows.map(row => Bun.stripANSI(row).trimEnd());
 }
 
 // The repaint flag stays armed for any streamed-args shape (raw JSON buffer
@@ -83,6 +113,75 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 		resetDisplay.mockClear();
 		return { component, resetDisplay };
 	}
+
+	function makeEditComponent() {
+		const resetDisplay = vi.fn();
+		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay } as unknown as TUI;
+		const component = new ToolExecutionComponent("edit", editArgs(), {}, undefined, ui);
+		components.push(component);
+		component.setArgsComplete();
+		resetDisplay.mockClear();
+		return { component, resetDisplay };
+	}
+
+	it("repaints once when a painted provisional multi-file edit result settles with leading accent padding", () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("accent");
+			const { component, resetDisplay } = makeEditComponent();
+			const partial = editResult([
+				editPerFile("src/alpha.ts", "export const alpha = 1;", "export const alpha = 2;"),
+			]);
+			const final = editResult([
+				editPerFile("src/alpha.ts", "export const alpha = 1;", "export const alpha = 2;"),
+				editPerFile("src/beta.ts", "export const beta = 1;", "export const beta = 2;"),
+			]);
+
+			component.updateResult(partial, true);
+			const partialRows = plainRows(component.render(100));
+			expect(partialRows.some(row => row.includes("Edit:") && row.includes("src/alpha.ts"))).toBe(true);
+			expect(partialRows.some(row => row.includes("1 more file pending"))).toBe(true);
+
+			component.updateResult(final, false);
+
+			expect(resetDisplay).toHaveBeenCalledTimes(1);
+			const finalRows = plainRows(component.render(100));
+			expect(finalRows[0]?.trim()).toBe("▌");
+			const firstSemanticRowIndex = finalRows.findIndex(row => row.trim() !== "" && row.trim() !== "▌");
+			expect(firstSemanticRowIndex).toBeGreaterThan(0);
+			const firstSemanticRow = finalRows[firstSemanticRowIndex];
+			expect(firstSemanticRow).toContain("Edit:");
+			expect(firstSemanticRow).toContain("src/alpha.ts");
+			expect(finalRows.some(row => row.includes("Edit:") && row.includes("src/beta.ts"))).toBe(true);
+			expect(finalRows.some(row => row.includes("1 more file pending"))).toBe(false);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
+
+	it("does not repaint when the provisional multi-file edit result never reaches the terminal", () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("accent");
+			const { component, resetDisplay } = makeEditComponent();
+
+			component.updateResult(
+				editResult([editPerFile("src/alpha.ts", "export const alpha = 1;", "export const alpha = 2;")]),
+				true,
+			);
+			component.updateResult(
+				editResult([
+					editPerFile("src/alpha.ts", "export const alpha = 1;", "export const alpha = 2;"),
+					editPerFile("src/beta.ts", "export const beta = 1;", "export const beta = 2;"),
+				]),
+				false,
+			);
+
+			expect(resetDisplay).not.toHaveBeenCalled();
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
 
 	it("forces a viewport repaint when a painted streamed placeholder receives its first result", () => {
 		const { component, resetDisplay } = makeComponent({ __partialJson: '{"host"' });

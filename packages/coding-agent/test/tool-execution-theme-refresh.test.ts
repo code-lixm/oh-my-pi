@@ -86,7 +86,7 @@ afterEach(async () => {
 });
 
 function surfaceTintBg(theme: Theme, color: "error" | "borderMuted"): string {
-	const ansi = theme.getSurfaceTintBgAnsi(color);
+	const ansi = theme.getSurfaceTintBgAnsi(color, 0.06);
 	expect(ansi).toMatch(/\x1b\[48;/);
 	return ansi;
 }

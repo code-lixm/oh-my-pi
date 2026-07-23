@@ -32,7 +32,6 @@ import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type
 import systemPromptTemplateZh from "./prompts/system/system-prompt.zh-CN.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { usesCodexTaskPrompt } from "./task/prompt-policy";
-import { shortenPath } from "./tools/render-utils";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -724,7 +723,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 
 	const date = formatLocalCalendarDate();
 	const dateTime = date;
-	const promptCwd = shortenPath(normalizePromptPath(resolvedCwd));
+	const promptCwd = normalizePromptPath(resolvedCwd);
 	const activeRepoContextPrompt = renderActiveRepoContextPrompt(activeRepoContext);
 
 	// Build tool metadata for system prompt rendering.

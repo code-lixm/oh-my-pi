@@ -329,6 +329,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		let helpers!: UiHelpers;
 		const ctx = {
 			chatContainer,
+			transcriptMessageComponents: new WeakMap(),
 			pendingTools: new Map(),
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 			statusLine: { invalidate: vi.fn() },
@@ -433,8 +434,8 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		expect(todos[0]!.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("displaces a prior todo snapshot when a streamed second todo lands a successful result", () => {
-		const { helpers, chatContainer } = createHelpersFixture();
+	it("hands the trailing todo snapshot to the controller during mid-turn rebuild", () => {
+		const { helpers, chatContainer, eventController } = createHelpersFixture({ streaming: true });
 		const assistant = assistantWithToolCalls([
 			{ id: "todo-1", name: "todo", arguments: { op: "view" } },
 			{ id: "todo-2", name: "todo", arguments: { op: "view" } },
@@ -444,10 +445,12 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			messages: [assistant, todoToolResult("todo-1", ["plan", "read"]), todoToolResult("todo-2", ["fix", "test"])],
 		} as SessionContext);
 
-		const todos = todoComponents(chatContainer).filter(component => /plan|read|fix|test/.test(renderText(component)));
-		expect(todos).toHaveLength(1);
-		expect(renderText(todos[0]!)).not.toContain("plan");
-		expect(renderText(todos[0]!)).toContain("fix");
+		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(todoComponents(chatContainer)).toHaveLength(0);
+		expect(rendered).not.toContain("plan");
+		expect(rendered).not.toContain("fix");
+		expect(eventController.inheritDisplaceableTodo).toHaveBeenCalledTimes(1);
+		expect(eventController.inheritDisplaceableTodo).toHaveBeenCalledWith(null);
 	});
 
 	it("keeps the prior todo snapshot when a follow-up todo errors", () => {

@@ -6,6 +6,7 @@ import {
 	type RenderStablePrefix,
 	type ViewportTailProvider,
 } from "@oh-my-pi/pi-tui";
+import { OUTPUT_BLOCK_ACCENT_GLYPH } from "../../tui/output-block";
 
 /**
  * A transcript block that is still mutating (a foreground tool awaiting its
@@ -89,6 +90,17 @@ function setBlockCommittedRows(child: Component, rows: number): void {
 const NON_WHITESPACE = /\S/;
 function isPlainBlank(line: string): boolean {
 	return !NON_WHITESPACE.test(line);
+}
+
+/** A block's own blank edge already supplies separation, including accent-tinted
+ * padding whose only visible glyph is the vertical rail. */
+function isVisualSeparationRow(line: string): boolean {
+	const visible = Bun.stripANSI(line).trim();
+	return visible === "" || visible === OUTPUT_BLOCK_ACCENT_GLYPH;
+}
+
+function needsBlockSeparator(aboveLastRow: string, belowFirstRow: string): boolean {
+	return !isVisualSeparationRow(aboveLastRow) && !isVisualSeparationRow(belowFirstRow);
 }
 
 // Strip leading/trailing plain-blank rows so each block contributes only its
@@ -290,10 +302,10 @@ export class TranscriptContainer
 	 * as if this never ran. Calling each block's render() still warms its own
 	 * per-width cache, which that settle render then reuses for free.
 	 *
-	 * Consecutive visible blocks are joined by exactly one blank separator, the
-	 * same rule render() applies, so the result equals the bottom of a full
-	 * render except for an at-most-one-row separator on the topmost included
-	 * block — a transient discrepancy the settle paint overwrites.
+	 * Consecutive visible blocks receive one blank separator only when neither
+	 * block already supplies visual edge padding. The same rule as render()
+	 * keeps this tail byte-equivalent apart from an at-most-one-row separator
+	 * on the topmost included block, which the settle paint overwrites.
 	 */
 	renderViewportTail(width: number, maxRows: number): readonly string[] {
 		width = Math.max(1, width);
@@ -303,17 +315,17 @@ export class TranscriptContainer
 		for (let i = this.children.length - 1; i >= 0 && total < maxRows; i--) {
 			const contribution = stripPlainBlankEdges(this.children[i]!.render(width));
 			if (contribution.length === 0) continue;
-			// One blank separator sits between this block and the (already
-			// collected) visible block below it.
-			if (collected.length > 0) total += 1;
+			// A block's own visual edge padding replaces the generic separator.
+			const below = collected.at(-1);
+			if (below && needsBlockSeparator(contribution.at(-1)!, below[0]!)) total += 1;
 			collected.push(contribution);
 			total += contribution.length;
 		}
 		if (collected.length === 0) return EMPTY_TAIL;
 		const rows: string[] = [];
 		for (let k = collected.length - 1; k >= 0; k--) {
-			if (rows.length > 0) rows.push("");
 			const body = collected[k]!;
+			if (rows.length > 0 && needsBlockSeparator(rows.at(-1)!, body[0]!)) rows.push("");
 			for (let j = 0; j < body.length; j++) rows.push(body[j]!);
 		}
 		return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows;
@@ -457,11 +469,10 @@ export class TranscriptContainer
 			}
 
 			// Every block is separated from preceding visible content by exactly one
-			// blank row — skipped when it opens the transcript or the prior row is
-			// already a plain blank (a fragment's own trailing pad), never doubling.
-			// `lines[row - 1]` is valid in both modes: reused rows are still present
-			// in the persistent array, re-pushed rows were just written.
-			const sep = row > 0 && !isPlainBlank(lines[row - 1]!) ? 1 : 0;
+			// blank row unless either adjacent edge already provides visual padding.
+			// Accent cards therefore keep one tinted breathing row without also paying
+			// for a redundant plain separator.
+			const sep = row > 0 && needsBlockSeparator(lines[row - 1]!, contribution[0]!) ? 1 : 0;
 
 			// The separator before the first live block stays in the committed
 			// prefix (it is deterministic once the prior block's body is

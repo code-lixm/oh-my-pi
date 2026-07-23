@@ -75,6 +75,17 @@ type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
 };
+type AddMessageOptions = {
+	populateHistory?: boolean;
+	imageLinks?: readonly (string | undefined)[];
+	reuseSettledComponent?: boolean;
+};
+
+type RenderSessionContextOptions = {
+	updateFooter?: boolean;
+	populateHistory?: boolean;
+	reuseSettledComponents?: boolean;
+};
 
 function imageLinksForMessage(
 	message: Extract<AgentMessage, { role: "developer" | "user" }>,
@@ -127,10 +138,7 @@ export class UiHelpers {
 		this.ctx.lastStatusText = text;
 	}
 
-	addMessageToChat(
-		message: AgentMessage,
-		options?: { populateHistory?: boolean; imageLinks?: readonly (string | undefined)[] },
-	): Component[] {
+	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -240,13 +248,22 @@ export class UiHelpers {
 				const textContent = this.ctx.getUserMessageText(message);
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
-					const imageLinks =
-						options?.imageLinks ??
-						imageLinksForMessage(
-							message,
-							this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
-						);
-					const userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+					const cached = options?.reuseSettledComponent
+						? this.ctx.transcriptMessageComponents.get(message)
+						: undefined;
+					let userComponent: UserMessageComponent;
+					if (cached instanceof UserMessageComponent) {
+						userComponent = cached;
+					} else {
+						const imageLinks =
+							options?.imageLinks ??
+							imageLinksForMessage(
+								message,
+								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
+							);
+						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						this.ctx.transcriptMessageComponents.set(message, userComponent);
+					}
 					this.ctx.chatContainer.addChild(userComponent);
 					if (options?.populateHistory && message.role === "user" && !isSynthetic) {
 						this.ctx.editor.addToHistory(textContent);
@@ -255,10 +272,16 @@ export class UiHelpers {
 				break;
 			}
 			case "assistant": {
-				const assistantComponent = createAssistantMessageComponent(
-					this.ctx,
-					splitAssistantMessageToolTimeline(message).beforeTools,
-				);
+				const cached = options?.reuseSettledComponent
+					? this.ctx.transcriptMessageComponents.get(message)
+					: undefined;
+				const assistantComponent =
+					cached instanceof AssistantMessageComponent
+						? cached
+						: createAssistantMessageComponent(this.ctx, splitAssistantMessageToolTimeline(message).beforeTools);
+				if (cached !== assistantComponent) {
+					this.ctx.transcriptMessageComponents.set(message, assistantComponent);
+				}
 				this.ctx.chatContainer.addChild(assistantComponent);
 				break;
 			}
@@ -279,10 +302,7 @@ export class UiHelpers {
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
-	renderSessionContext(
-		sessionContext: SessionContext,
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
-	): void {
+	renderSessionContext(sessionContext: SessionContext, options: RenderSessionContextOptions = {}): void {
 		// Preserved: message_start handler owns this lifecycle (see #783)
 		this.ctx.pendingTools.clear();
 		// Reseed the cache-invalidation baseline: this rebuild re-derives every
@@ -387,7 +407,7 @@ export class UiHelpers {
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
 				if (assistantHasVisibleContent(timeline.beforeTools)) finalizeHubActivityGroup();
-				this.ctx.addMessageToChat(message);
+				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
 				if (assistantComponent) {

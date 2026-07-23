@@ -20,7 +20,7 @@ import {
 	truncateToWidth,
 } from "../tools/render-utils";
 import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, resolveBareOutputBlockBorderStyle } from "../tui/output-block";
 import type { LspParams, LspToolDetails } from "./types";
 
 // =============================================================================
@@ -188,6 +188,7 @@ export function renderResult(
 					],
 					width,
 					applyBg: false,
+					borderStyle: resolveBareOutputBlockBorderStyle(),
 				},
 				theme,
 			);
@@ -665,4 +666,5 @@ export const lspToolRenderer = {
 	renderResult,
 	mergeCallAndResult: true,
 	inline: true,
+	transcriptSurface: "bare" as const,
 };

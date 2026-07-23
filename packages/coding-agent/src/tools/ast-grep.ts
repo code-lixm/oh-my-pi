@@ -403,6 +403,7 @@ const COLLAPSED_MATCH_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
 
 export const astGrepToolRenderer = {
 	inline: true,
+	transcriptSurface: "bare" as const,
 	renderCall(args: AstGrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		const scopePaths = toPathList(args.path ?? args.paths);

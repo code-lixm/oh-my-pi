@@ -17,9 +17,15 @@ import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/extensions";
+import {
+	discoverAndLoadExtensions,
+	ExtensionRunner,
+	emitSessionShutdownEvent,
+	loadExtensions,
+} from "../extensibility/extensions";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { discoverAuthStorage } from "../sdk";
+import { SessionManager } from "../session/session-manager";
 import { EventBus } from "../utils/event-bus";
 
 export type ModelsAction = "ls" | "find" | "refresh";
@@ -304,27 +310,41 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 				eventBus,
 				disabledExtensionIds,
 			);
+	const extensionRunner =
+		extensionsResult.extensions.length > 0
+			? new ExtensionRunner(
+					extensionsResult.extensions,
+					extensionsResult.runtime,
+					cwd,
+					SessionManager.inMemory(cwd),
+					modelRegistry,
+				)
+			: undefined;
 
-	for (const { path: extPath, error } of extensionsResult.errors) {
-		process.stderr.write(`${tSettingsUi("Failed to load extension: {path}: {error}", { path: extPath, error })}\n`);
-	}
+	try {
+		for (const { path: extPath, error } of extensionsResult.errors) {
+			process.stderr.write(
+				`${tSettingsUi("Failed to load extension: {path}: {error}", { path: extPath, error })}\n`,
+			);
+		}
 
-	// Mirror sdk.ts: drain pending provider registrations into the registry.
-	const activeSources = extensionsResult.extensions.map(extension => extension.path);
-	const activeSourceSet = new Set(activeSources);
-	modelRegistry.syncExtensionSources(activeSources);
-	for (const sourceId of activeSourceSet) {
-		modelRegistry.clearSourceRegistrations(sourceId);
-	}
-	for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
-		if (!activeSourceSet.has(sourceId)) continue;
-		modelRegistry.registerProvider(name, config, sourceId);
-	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
-	// Discover runtime (extension) provider catalogs now that they are registered.
-	await modelRegistry.refreshRuntimeProviders(action === "refresh" ? "online" : "online-if-uncached");
+		// Mirror sdk.ts: drain pending provider registrations into the registry.
+		const activeSources = extensionsResult.extensions.map(extension => extension.path);
+		modelRegistry.syncExtensionSources(activeSources);
+		for (const sourceId of new Set(activeSources)) {
+			modelRegistry.clearSourceRegistrations(sourceId);
+		}
+		for (const { name, config, sourceId } of extensionsResult.runtime.pendingProviderRegistrations) {
+			modelRegistry.registerProvider(name, config, sourceId);
+		}
+		extensionsResult.runtime.pendingProviderRegistrations = [];
+		// Discover runtime (extension) provider catalogs now that they are registered.
+		await modelRegistry.refreshRuntimeProviders(action === "refresh" ? "online" : "online-if-uncached");
 
-	renderProviderModels(modelRegistry, action, pattern, json);
+		renderProviderModels(modelRegistry, action, pattern, json);
+	} finally {
+		await emitSessionShutdownEvent(extensionRunner);
+	}
 }
 
 /**

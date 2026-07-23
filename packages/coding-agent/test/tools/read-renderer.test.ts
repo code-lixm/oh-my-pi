@@ -5,6 +5,7 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { theme as activeTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../src/tui/basic-tool-display-policy";
 
@@ -304,20 +305,24 @@ describe("read ToolExecutionComponent framing", () => {
 		{ name: "local URL", path: "local://shared-frame.md" },
 		{ name: "internal URL", path: "skill://system-prompts/README.md" },
 	] as const)("renders framed $name read results on the shared one-column gutter", ({ path }) => {
-		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
-		const component = new ToolExecutionComponent("read", { path }, {}, undefined, uiStub);
-		component.updateResult(
-			{
-				content: [{ type: "text", text: "export const x = 1;" }],
-				details: {
-					displayContent: { text: "export const x = 1;", startLine: 1 },
-					contentType: "text/plain",
-				},
-			},
-			false,
-		);
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		let component: ToolExecutionComponent | undefined;
 
 		try {
+			setOutputBlockBorderStyle("full");
+			const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
+			component = new ToolExecutionComponent("read", { path }, {}, undefined, uiStub);
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "export const x = 1;" }],
+					details: {
+						displayContent: { text: "export const x = 1;", startLine: 1 },
+						contentType: "text/plain",
+					},
+				},
+				false,
+			);
+
 			const lines = component.render(80).map(line => Bun.stripANSI(line));
 			const topBorderIndex = lines.findIndex(
 				line => line.trimStart().startsWith(activeTheme.boxRound.topLeft) && line.includes("Read"),
@@ -343,7 +348,10 @@ describe("read ToolExecutionComponent framing", () => {
 				expect(row.length - row.trimStart().length, JSON.stringify(row)).toBe(1);
 			}
 		} finally {
-			component.stopAnimation();
+			component?.stopAnimation();
+			setOutputBlockBorderStyle(previousBorderStyle);
 		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 });

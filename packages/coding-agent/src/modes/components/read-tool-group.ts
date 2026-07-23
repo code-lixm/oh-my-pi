@@ -13,6 +13,7 @@ import {
 	isBorderlessOutputStyle,
 	renderCodeCell,
 	renderStatusLine,
+	resolveBareOutputBlockBorderStyle,
 	tryResolveInternalUrlSync,
 } from "../../tui";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -679,6 +680,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						codeStartLine: entry.codeStartLine,
 						codeLineNumbers: entry.codeLineNumbers,
 						width,
+						borderStyle: resolveBareOutputBlockBorderStyle(),
 					},
 					theme,
 				);

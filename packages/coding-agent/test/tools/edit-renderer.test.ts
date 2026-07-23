@@ -10,6 +10,7 @@ import { editToolRenderer } from "@oh-my-pi/pi-coding-agent/edit/renderer";
 import { renderDiff } from "@oh-my-pi/pi-coding-agent/modes/components/diff";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { Text, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
@@ -24,6 +25,16 @@ async function getUiTheme() {
 	const theme = await themeModule.getThemeByName("dark");
 	expect(theme).toBeDefined();
 	return theme!;
+}
+
+async function withFullOutputBlockBorderStyle<T>(run: () => T | Promise<T>): Promise<T> {
+	const previousBorderStyle = getOutputBlockBorderStyle();
+	try {
+		setOutputBlockBorderStyle("full");
+		return await run();
+	} finally {
+		setOutputBlockBorderStyle(previousBorderStyle);
+	}
 }
 
 async function waitForRenderedText(
@@ -393,49 +404,53 @@ describe("editToolRenderer", () => {
 	});
 
 	it("renders change stats inline on the result header with no separate metadata or stats row", async () => {
-		const uiTheme = await getUiTheme();
-		const diff = [" 115│ ctx", "-116│ old", "+117│ new one", "+118│ new two"].join("\n");
-		const component = editToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "Updated demo.go" }],
-				details: { diff, op: "update" },
-			},
-			{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
-			uiTheme,
-			{ file_path: "demo.go" },
-		);
+		await withFullOutputBlockBorderStyle(async () => {
+			const uiTheme = await getUiTheme();
+			const diff = [" 115│ ctx", "-116│ old", "+117│ new one", "+118│ new two"].join("\n");
+			const component = editToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "Updated demo.go" }],
+					details: { diff, op: "update" },
+				},
+				{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
+				uiTheme,
+				{ file_path: "demo.go" },
+			);
 
-		const lines = Bun.stripANSI(component.render(160).join("\n")).split("\n");
-		// Stats ride on the header line next to the path…
-		expect(lines[0]).toContain("demo.go");
-		expect(lines[0]).toContain("+2");
-		expect(lines[0]).toContain("-1");
-		expect(lines[0]).toContain("+2/-1");
-		// …only there (no standalone stats row), and the diff starts immediately
-		// below the header (no blank line, no lone lang-icon metadata row).
-		expect(lines[1]).toContain("115│ ctx");
-		expect(lines.filter(line => line.includes("+2/-1"))).toHaveLength(1);
+			const lines = Bun.stripANSI(component.render(160).join("\n")).split("\n");
+			// Stats ride on the header line next to the path…
+			expect(lines[0]).toContain("demo.go");
+			expect(lines[0]).toContain("+2");
+			expect(lines[0]).toContain("-1");
+			expect(lines[0]).toContain("+2/-1");
+			// …only there (no standalone stats row), and the diff starts immediately
+			// below the header (no blank line, no lone lang-icon metadata row).
+			expect(lines[1]).toContain("115│ ctx");
+			expect(lines.filter(line => line.includes("+2/-1"))).toHaveLength(1);
+		});
 	});
 
 	it("renders completed edit gutters without inherited frame padding", async () => {
-		const uiTheme = await getUiTheme();
-		const component = editToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "Updated demo.ts" }],
-				details: {
-					diff: "+1│const renamedIdentifier = computeValueFromSomeVeryLongInputName();",
-					op: "update",
+		await withFullOutputBlockBorderStyle(async () => {
+			const uiTheme = await getUiTheme();
+			const component = editToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "Updated demo.ts" }],
+					details: {
+						diff: "+1│const renamedIdentifier = computeValueFromSomeVeryLongInputName();",
+						op: "update",
+					},
 				},
-			},
-			{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
-			uiTheme,
-			{ file_path: "demo.ts" },
-		);
+				{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
+				uiTheme,
+				{ file_path: "demo.ts" },
+			);
 
-		const lines = component.render(48).map(line => Bun.stripANSI(line));
-		expect(lines.every(line => visibleWidth(line) === 48)).toBe(true);
-		expect(lines[1]).toStartWith(" │+1│");
-		expect(lines[1]).not.toStartWith(" │ +1│");
+			const lines = component.render(48).map(line => Bun.stripANSI(line));
+			expect(lines.every(line => visibleWidth(line) === 48)).toBe(true);
+			expect(lines[1]).toStartWith(" │+1│");
+			expect(lines[1]).not.toStartWith(" │ +1│");
+		});
 	});
 
 	it("does not leak the first file's no-change preview into a multi-file delete result", async () => {
@@ -585,13 +600,15 @@ describe("editToolRenderer diff line wrapping", () => {
 		// renderDiff blanks the repeated line number on the `+` row of a
 		// single-line replacement (`   +│`); the wrapper must still recognize that
 		// gutter instead of falling back to generic wrapping at column 0.
-		const rows = (
-			await renderSingleLineReplacement(
-				"    the previous synopsis paragraph rambled across quarterly reconciliation notes enumerating every provisional ledger amendment the archival committee had deferred pending review by the regional custodians during the extended winter recess of the auditing season",
-				"    the revised synopsis paragraph now catalogues seasonal festival logistics enumerating lantern shipments drum rehearsals and ribbon inventories that the parade stewards confirmed before dawn, closing with the zephyrQuota tally and the marbledFinale banner",
-				100,
-			)
-		).map(row => Bun.stripANSI(row));
+		const rows = await withFullOutputBlockBorderStyle(async () =>
+			(
+				await renderSingleLineReplacement(
+					"    the previous synopsis paragraph rambled across quarterly reconciliation notes enumerating every provisional ledger amendment the archival committee had deferred pending review by the regional custodians during the extended winter recess of the auditing season",
+					"    the revised synopsis paragraph now catalogues seasonal festival logistics enumerating lantern shipments drum rehearsals and ribbon inventories that the parade stewards confirmed before dawn, closing with the zephyrQuota tally and the marbledFinale banner",
+					100,
+				)
+			).map(row => Bun.stripANSI(row)),
+		);
 
 		// The tail of the added line lands on continuation rows, which must carry
 		// the spaces-only continuation gutter rather than start as bare prose.
@@ -600,6 +617,16 @@ describe("editToolRenderer diff line wrapping", () => {
 		for (const row of tailRows) expect(row).toMatch(/^ │\s+│/);
 		// Every body row stays inside a code-frame gutter (`-42│`, `   +│`, `    │`).
 		for (const row of rows.slice(1, -1)) expect(row).toMatch(/^ │\s*[+-]?\s*\d*│/);
+	});
+
+	it("renders ill-formed UTF-16 replacements natively", async () => {
+		// Native word diffs operate directly over UTF-16 code units, so lone
+		// surrogates render and highlight without throwing mid-render.
+		const rows = (await renderSingleLineReplacement("alpha \ud800 beta", "alpha \ud801 beta", 100)).map(row =>
+			Bun.stripANSI(row),
+		);
+		expect(rows.some(row => row.includes("-42"))).toBe(true);
+		expect(rows.some(row => row.includes("+"))).toBe(true);
 	});
 
 	it("closes inverse video at every wrapped row end so frame padding stays uninverted", async () => {
@@ -673,8 +700,10 @@ describe("editToolRenderer diff line wrapping", () => {
 	it("does not give pipe-leading error text a phantom diff gutter when wrapping", async () => {
 		// Error text is not a diff row even when it starts with `|`: an empty
 		// gutter must wrap generically, not spawn `|` continuation prefixes.
-		const rows = await renderErrorResultRows(
-			"| pipe-leading diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+		const rows = await withFullOutputBlockBorderStyle(() =>
+			renderErrorResultRows(
+				"| pipe-leading diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+			),
 		);
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the `|` lead survived on row one.
@@ -686,8 +715,10 @@ describe("editToolRenderer diff line wrapping", () => {
 	it("wraps spaces-then-bare-pipe error text generically instead of minting a gutter", async () => {
 		// A digit-less ASCII "|" gutter never comes out of formatCodeFrameLine or
 		// canonical diff rows; indented bare-pipe error text must wrap generically.
-		const rows = await renderErrorResultRows(
-			"   | indented bare-pipe diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+		const rows = await withFullOutputBlockBorderStyle(() =>
+			renderErrorResultRows(
+				"   | indented bare-pipe diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+			),
 		);
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the pipe lead survived on row one.
@@ -699,8 +730,10 @@ describe("editToolRenderer diff line wrapping", () => {
 	it("wraps digit-leading pipe error text generically when the marker column is missing", async () => {
 		// Canonical ASCII-pipe rows always carry a marker column (`-42|`, ` 42|`);
 		// `123|` prose has a digit there instead, so it is not a diff row.
-		const rows = await renderErrorResultRows(
-			"123| numbered pipe-leading diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+		const rows = await withFullOutputBlockBorderStyle(() =>
+			renderErrorResultRows(
+				"123| numbered pipe-leading diagnostic output that is quite long and should certainly wrap at the render width because it keeps going on and on with more words than fit in one row of the frame",
+			),
 		);
 		const bodyRows = rows.slice(1, -1);
 		// Precondition: the text actually wrapped, and the numbered lead survived on row one.
@@ -713,26 +746,28 @@ describe("editToolRenderer diff line wrapping", () => {
 		// Without renderContext the plain fallback passes canonical rows through
 		// verbatim; a numbered "-42|" row must still take the gutter path and
 		// carry an "   |" continuation gutter, not generic prose wrapping.
-		const uiTheme = await getUiTheme();
-		const component = editToolRenderer.renderResult(
-			{
-				content: [{ type: "text", text: "Updated demo.ts" }],
-				details: {
-					diff: "-42|    the previous synopsis paragraph rambled across quarterly reconciliation notes enumerating every provisional ledger amendment the archival committee had deferred pending review by the regional custodians",
-					op: "update",
-					path: "demo.ts",
+		await withFullOutputBlockBorderStyle(async () => {
+			const uiTheme = await getUiTheme();
+			const component = editToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: "Updated demo.ts" }],
+					details: {
+						diff: "-42|    the previous synopsis paragraph rambled across quarterly reconciliation notes enumerating every provisional ledger amendment the archival committee had deferred pending review by the regional custodians",
+						op: "update",
+						path: "demo.ts",
+					},
 				},
-			},
-			{ expanded: true, isPartial: false },
-			uiTheme,
-			{ file_path: "demo.ts" },
-		);
+				{ expanded: true, isPartial: false },
+				uiTheme,
+				{ file_path: "demo.ts" },
+			);
 
-		const rows = component.render(100).map(row => Bun.stripANSI(row));
-		const bodyRows = rows.slice(1, -1);
-		// Precondition: the row actually wrapped past its first visual line.
-		expect(bodyRows.length).toBeGreaterThanOrEqual(2);
-		expect(bodyRows[0]).toMatch(/^ │-42\|/);
-		for (const row of bodyRows.slice(1)) expect(row).toMatch(/^ │\s+\|/);
+			const rows = component.render(100).map(row => Bun.stripANSI(row));
+			const bodyRows = rows.slice(1, -1);
+			// Precondition: the row actually wrapped past its first visual line.
+			expect(bodyRows.length).toBeGreaterThanOrEqual(2);
+			expect(bodyRows[0]).toMatch(/^ │-42\|/);
+			for (const row of bodyRows.slice(1)) expect(row).toMatch(/^ │\s+\|/);
+		});
 	});
 });

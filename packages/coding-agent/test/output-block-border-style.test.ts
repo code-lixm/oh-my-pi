@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { getThemeByName, initTheme, type Theme, type ThemeColor } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
+	framedBlock,
 	getOutputBlockBorderStyle,
 	type OutputBlockBorderStyle,
 	type OutputBlockOptions,
@@ -205,28 +206,28 @@ describe("output-block border style", () => {
 		expectNoFrameGlyphs(lines.join("\n"));
 	});
 
-	it("renders accent blocks as a copy-safe colored rail with tinted rows that stop before the right edge", () => {
+	it("renders self-framed accent header+body blocks with tinted breathing rails and no internal separator", () => {
 		const width = 18;
 		const expectedContentWidth = width - 3;
 		const contentWidth = outputBlockContentWidth(width, undefined, "accent");
 		const successPrefix = accentPrefix("success");
 		const errorPrefix = accentPrefix("error");
 		const payload = "A".repeat(expectedContentWidth + 2);
-		const success = render({
-			width,
+		const success = framedBlock(darkTheme, blockWidth => ({
+			width: blockWidth,
 			borderStyle: "accent",
 			header: "Tool",
 			state: "success",
 			borderColor: "success",
 			sections: [{ lines: [payload] }],
-		});
-		const error = render({
-			width,
+		})).render(width);
+		const error = framedBlock(darkTheme, blockWidth => ({
+			width: blockWidth,
 			borderStyle: "accent",
 			header: "Tool",
 			state: "error",
 			sections: [{ lines: ["boom"] }],
-		});
+		})).render(width);
 		const singleColumn = render({
 			width: 1,
 			borderStyle: "accent",
@@ -247,7 +248,12 @@ describe("output-block border style", () => {
 			padLine("▌ AA", width),
 			padLine("▌ ", width),
 		]);
-		expect(plain(error)[2]).toBe(padLine("▌ boom", width));
+		expect(plain(error)).toEqual([
+			padLine("▌ ", width),
+			padLine("▌ Tool", width),
+			padLine("▌ boom", width),
+			padLine("▌ ", width),
+		]);
 		expectNoFrameGlyphs(plain(success).join("\n"));
 		expectNoFrameGlyphs(plain(error).join("\n"));
 		expect(success.every(line => line.startsWith(successPrefix))).toBe(true);
@@ -259,6 +265,23 @@ describe("output-block border style", () => {
 		expectUniformWidth(singleColumn, 1);
 		expect(singleColumn.every(line => line === " ")).toBe(true);
 		expect(singleColumn.join("")).not.toContain(surfaceTintBgAnsi("success"));
+	});
+
+	it("keeps header-only accent blocks framed by one tinted breathing row at each edge", () => {
+		const width = 18;
+		const lines = render({
+			width,
+			borderStyle: "accent",
+			header: "Tool",
+			state: "success",
+			borderColor: "success",
+		});
+
+		expectUniformWidth(lines, width);
+		expect(plain(lines)).toEqual([padLine("▌ ", width), padLine("▌ Tool", width), padLine("▌ ", width)]);
+		expect(lines.every(line => line.startsWith(accentPrefix("success")))).toBe(true);
+		expectAccentTintStopsBeforeRightInset(lines, "success", width);
+		expectNoFrameGlyphs(plain(lines).join("\n"));
 	});
 
 	it("omitting borderStyle renders the Accent Gutter default exactly like explicit accent", () => {

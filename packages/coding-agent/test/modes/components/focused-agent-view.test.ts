@@ -5,6 +5,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
+import { type KeyId, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 const initialLocale = getSettingsUiLocale();
@@ -25,6 +26,10 @@ function pinRows(rows: number): void {
 
 function strip(lines: readonly string[]): string {
 	return Bun.stripANSI(lines.join("\n"));
+}
+
+function expectLinesWithinWidth(lines: readonly string[], width: number): void {
+	for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 }
 
 function session(modelId: string, thinkingLevel: string = "off"): AgentSession {
@@ -66,6 +71,9 @@ function makeView(options: {
 	progressById?: Record<string, AgentProgress | undefined>;
 	transcriptLines?: string[];
 	mainNeedsInput?: () => boolean;
+	nextKeys?: KeyId[];
+	previousKeys?: KeyId[];
+	expandKeys?: KeyId[];
 	onCycle?: (direction: "next" | "previous") => void;
 	onClose?: () => void;
 	onToggleExpanded?: () => void;
@@ -81,9 +89,9 @@ function makeView(options: {
 		getProgress: id => options.progressById?.[id],
 		getViewableAgentIds: () => ["Worker", "Other"],
 		mainNeedsInput: options.mainNeedsInput ?? (() => false),
-		nextKeys: ["n"],
-		previousKeys: ["p"],
-		expandKeys: ["o"],
+		nextKeys: options.nextKeys ?? ["n"],
+		previousKeys: options.previousKeys ?? ["p"],
+		expandKeys: options.expandKeys ?? ["o"],
 		onCycle: options.onCycle ?? (() => {}),
 		onClose: options.onClose ?? (() => {}),
 		onToggleExpanded: options.onToggleExpanded ?? (() => {}),
@@ -135,6 +143,89 @@ describe("FocusedAgentView", () => {
 		expect(rendered).not.toContain("follow-up");
 	});
 
+	it("right-aligns complete controls in the header when they fit and gives the transcript the saved row", () => {
+		setSettingsUiLocale("en");
+		pinRows(12);
+		const registry = new AgentRegistry();
+		registerSub(registry, "Worker", "Build worker", session("claude-live"));
+		const transcriptLines = Array.from({ length: 20 }, (_, index) => `trace-${String(index).padStart(2, "0")}`);
+		const progressById = { Worker: progress() };
+		const responsiveOptions = {
+			registry,
+			progressById,
+			transcriptLines,
+			mainNeedsInput: () => true,
+		};
+		const controls = "p:previous · n:next · Esc:Main · j/k:scroll · o:expand";
+		const wideWidth = 120;
+		const narrowWidth = 70;
+
+		expect(visibleWidth(controls)).toBeLessThanOrEqual(wideWidth - 2 - 24 - 2);
+		const wide = makeView(responsiveOptions)
+			.render(wideWidth)
+			.map(line => Bun.stripANSI(line));
+		const narrow = makeView(responsiveOptions)
+			.render(narrowWidth)
+			.map(line => Bun.stripANSI(line));
+
+		expect(wide[1]).toContain("Subagent 1/2");
+		expect(wide[1]).toContain("Build worker");
+		expect(wide[1].endsWith(controls)).toBe(true);
+		expect(wide.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
+		expect(wide.at(-3)).toContain("Main needs input");
+		expect(wide.at(-2)).toContain("running");
+		expect(wide.at(-1)).not.toContain(controls);
+		expect(wide.filter(line => line.includes("trace-")).length).toBe(
+			narrow.filter(line => line.includes("trace-")).length + 1,
+		);
+		expectLinesWithinWidth(wide, wideWidth);
+		expectLinesWithinWidth(narrow, narrowWidth);
+	});
+
+	it("keeps localized remapped controls in the footer when CJK-width labels cannot leave 24 identity cells", () => {
+		setSettingsUiLocale("zh-CN");
+		pinRows(12);
+		const width = 82;
+		const registry = new AgentRegistry();
+		const displayName = "响应式导航检查员甲乙丙丁";
+		registerSub(registry, "Worker", displayName, session("模型/实时"));
+		const controls = "shift+tab:上一个 · tab:下一个 · Esc:主任务 · j/k:滚动 · enter:展开";
+		const view = makeView({
+			registry,
+			progressById: { Worker: progress() },
+			transcriptLines: [
+				"trace-cjk-00",
+				"trace-cjk-01",
+				"trace-cjk-02",
+				"trace-cjk-03",
+				"trace-cjk-04",
+				"trace-cjk-05",
+			],
+			previousKeys: ["shift+tab", "p"],
+			nextKeys: ["tab", "n"],
+			expandKeys: ["enter", "o"],
+		});
+
+		expect(visibleWidth(displayName)).toBe(24);
+		expect(visibleWidth(controls)).toBeGreaterThan(width - 2 - 24 - 2);
+		const rendered = view.render(width).map(line => Bun.stripANSI(line));
+
+		expect(rendered[1]).toContain("子代理 1/2");
+		expect(rendered[1]).toContain(displayName);
+		expect(rendered[1]).not.toContain(controls);
+		expect(rendered[1]).not.toContain("shift+tab");
+		expect(rendered[1]).not.toContain("Esc:主任务");
+		expect(rendered[1]).not.toContain("j/k:滚动");
+		expect(rendered[1]).not.toContain("enter:展开");
+		expect(rendered.at(-3)).toContain("运行中");
+		expect(rendered.at(-2)).toContain(controls);
+		expect(rendered.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
+		expect(rendered.join("\n")).not.toContain("p:上一个");
+		expect(rendered.join("\n")).not.toContain("n:下一个");
+		expect(rendered.join("\n")).not.toContain("o:展开");
+		expectLinesWithinWidth(rendered, width);
+	});
+
 	it("falls back to the live session model and labels finalized TPS as last", () => {
 		setSettingsUiLocale("en");
 		pinRows(14);
@@ -145,7 +236,7 @@ describe("FocusedAgentView", () => {
 			progressById: { Worker: progress({ tokensPerSecond: 8, tokensPerSecondLive: false }) },
 		});
 
-		const rendered = strip(view.render(100));
+		const rendered = strip(view.render(140));
 
 		expect(rendered).toContain("claude-live");
 		expect(rendered).toContain("high");
@@ -199,11 +290,11 @@ describe("FocusedAgentView", () => {
 			},
 		});
 
-		expect(strip(view.render(100))).toContain("Build worker");
-		expect(strip(view.render(100))).toContain("provider/worker");
+		expect(strip(view.render(140))).toContain("Build worker");
+		expect(strip(view.render(140))).toContain("provider/worker");
 
 		view.setAgentId("Other");
-		const rendered = strip(view.render(100));
+		const rendered = strip(view.render(140));
 		expect(rendered).toContain("Subagent 2/2");
 		expect(rendered).toContain("Review worker");
 		expect(rendered).toContain("provider/review");

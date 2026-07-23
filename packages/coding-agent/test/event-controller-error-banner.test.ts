@@ -116,6 +116,7 @@ function createFixture(streamingMessage?: AssistantMessage) {
 		streamingMessage,
 		chatContainer,
 		proseOnlyThinking: true,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		showPinnedError,

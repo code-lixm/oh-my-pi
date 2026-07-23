@@ -241,12 +241,13 @@ class ToolOutputSurfaceComponent implements Component {
 		private readonly child: Component,
 		private readonly isSelfFramed: () => boolean,
 		private readonly accentColor: () => ThemeColor,
+		private readonly bareSurface = false,
 	) {
 		this.wantsKeyRelease = child.wantsKeyRelease;
 	}
 
 	render(width: number): readonly string[] {
-		const accentMode = getOutputBlockBorderStyle() === "accent" && !this.isSelfFramed();
+		const accentMode = getOutputBlockBorderStyle() === "accent" && !this.bareSurface && !this.isSelfFramed();
 		if (!accentMode) {
 			this.#cache = undefined;
 			return this.child.render(width);
@@ -263,11 +264,7 @@ class ToolOutputSurfaceComponent implements Component {
 		) {
 			return this.#cache.lines;
 		}
-		const lines = [
-			renderOutputAccentLine("", width, theme, color),
-			...childLines.map(line => renderOutputAccentLine(line, width, theme, color)),
-			renderOutputAccentLine("", width, theme, color),
-		];
+		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
 		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}
@@ -486,6 +483,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// accent-mode instances need the surface wrapper; preserving the original
 		// direct child topology preserves the established full/none layout.
 		const hasRenderer = toolName in toolRenderers;
+		const bareSurface = toolRenderers[toolName]?.transcriptSurface === "bare";
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
 		const accentColor = (): ThemeColor => (this.#result?.isError ? "error" : "borderMuted");
 		if (hasCustomRenderer || hasRenderer) {
@@ -494,6 +492,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						this.#contentBox,
 						() => this.#contentBox.children.some(isFramedBlockComponent),
 						accentColor,
+						bareSurface,
 					)
 				: this.#contentBox;
 			this.addChild(surface);

@@ -5,6 +5,7 @@ import {
 	initTheme,
 	setThemeInstance,
 	type Theme,
+	type ThemeColor,
 } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { CachedOutputBlock, framedBlock, type OutputBlockOptions } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 
@@ -23,8 +24,8 @@ const WIDTH = 72;
 let darkTheme: Theme;
 let lightTheme: Theme;
 
-function successBg(theme: Theme): string {
-	const ansi = theme.getBgAnsi("toolSuccessBg");
+function surfaceTintBg(theme: Theme, color: ThemeColor): string {
+	const ansi = theme.getSurfaceTintBgAnsi(color, 0.06);
 	expect(ansi).toMatch(/\x1b\[48;/);
 	return ansi;
 }
@@ -70,7 +71,7 @@ describe("output-block theme refresh", () => {
 
 	it("invalidates CachedOutputBlock when only the theme epoch changes", () => {
 		setThemeInstance(darkTheme);
-		const darkBg = successBg(darkTheme);
+		const darkBg = surfaceTintBg(darkTheme, "borderMuted");
 		const options = buildOptions(WIDTH);
 		const block = new CachedOutputBlock();
 
@@ -83,8 +84,8 @@ describe("output-block theme refresh", () => {
 	});
 
 	it("rebuilds CachedOutputBlock from dark ANSI to light ANSI with a new array", () => {
-		const darkBg = successBg(darkTheme);
-		const lightBg = successBg(lightTheme);
+		const darkBg = surfaceTintBg(darkTheme, "borderMuted");
+		const lightBg = surfaceTintBg(lightTheme, "borderMuted");
 		const options = buildOptions(WIDTH);
 		const block = new CachedOutputBlock();
 
@@ -103,8 +104,8 @@ describe("output-block theme refresh", () => {
 
 	it("makes framedBlock follow the replaced active theme with a new array", () => {
 		setThemeInstance(darkTheme);
-		const darkBg = successBg(darkTheme);
-		const lightBg = successBg(lightTheme);
+		const darkBg = surfaceTintBg(darkTheme, "borderMuted");
+		const lightBg = surfaceTintBg(lightTheme, "borderMuted");
 		const component = framedBlock(darkTheme, width => buildOptions(width));
 
 		const first = component.render(WIDTH);

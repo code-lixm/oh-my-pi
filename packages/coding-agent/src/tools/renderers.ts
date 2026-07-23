@@ -56,6 +56,8 @@ export type ToolRenderer = {
 	mergeCallAndResult?: boolean;
 	/** Render without background box, inline in the response flow */
 	inline?: boolean;
+	/** Transcript surface policy. Bare renderers skip the accent rail/tint wrapper. */
+	transcriptSurface?: "default" | "bare";
 	/**
 	 * Whether the renderer's pending-call path visibly consumes
 	 * `options.spinnerFrame`. Used to avoid scheduling repaint ticks for live

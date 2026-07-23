@@ -8,7 +8,8 @@ import { BashInteractiveOverlayComponent } from "../bash-interactive";
 const WIDTH = 36;
 const VIEWPORT_ROWS = 10;
 const MAX_OVERLAY_ROWS = Math.max(5, Math.floor(VIEWPORT_ROWS * 0.8));
-const MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 4);
+const FULL_MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 4);
+const ACCENT_MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 3);
 const NONE_MAX_CONTENT_ROWS = Math.max(1, MAX_OVERLAY_ROWS - 2);
 
 type BorderStyle = "full" | "none" | "accent";
@@ -51,7 +52,7 @@ function expectNoFrameOrTreeGlyphs(lines: readonly string[]): void {
 
 function contentRows(lines: readonly string[], borderStyle: BorderStyle): string[] {
 	const start = borderStyle === "none" ? 1 : 2;
-	const end = borderStyle === "none" ? -1 : -2;
+	const end = borderStyle === "full" ? -2 : -1;
 	return strip(lines)
 		.slice(start, end)
 		.map(line => {
@@ -133,7 +134,7 @@ describe("BashInteractiveOverlayComponent render", () => {
 
 		expect(lines).toHaveLength(MAX_OVERLAY_ROWS);
 		expect(contentRows(lines, "full")).toEqual(["ALT SCREEN", "", "", ""]);
-		expect(contentRows(lines, "full")).toHaveLength(MAX_CONTENT_ROWS);
+		expect(contentRows(lines, "full")).toHaveLength(FULL_MAX_CONTENT_ROWS);
 		expectLineWidths(lines, WIDTH);
 	});
 	it("renders running none overlays as header + visible content + footer with a 2-cell gutter and no frame glyphs", async () => {
@@ -169,17 +170,18 @@ describe("BashInteractiveOverlayComponent render", () => {
 		expectLineWidths(lines, WIDTH);
 	});
 
-	it("renders running accent overlays with tinted padding rows around the header/content/footer chrome", async () => {
+	it("renders running accent overlays as header, one separator row, content, and footer", async () => {
 		const lines = await renderOverlay({
 			borderStyle: "accent",
 			output: "left\r\nright",
 		});
 		const plain = strip(lines);
 
-		expect(lines).toHaveLength(6);
+		expect(lines).toHaveLength(5);
 		expect(contentRows(lines, "accent")).toEqual(["left", "right"]);
-		expect(plain[0]).toBe(`▌ ${" ".repeat(WIDTH - 2)}`);
-		expect(plain.at(-1)).toBe(`▌ ${" ".repeat(WIDTH - 2)}`);
+		expect(plain[0]!).toContain("Console");
+		expect(plain[1]).toBe(`▌ ${" ".repeat(WIDTH - 2)}`);
+		expect(plain.at(-1)!).toContain("esc");
 		for (const line of plain) {
 			expect(line.startsWith("▌ ")).toBe(true);
 		}
@@ -187,15 +189,15 @@ describe("BashInteractiveOverlayComponent render", () => {
 		expectLineWidths(lines, WIDTH);
 	});
 
-	it("uses maxOverlayRows - 4 content rows for alternate-buffer accent overlays", async () => {
+	it("uses maxOverlayRows - 3 content rows for alternate-buffer accent overlays", async () => {
 		const lines = await renderOverlay({
 			borderStyle: "accent",
 			output: "\x1b[?1049hALT SCREEN",
 		});
 
 		expect(lines).toHaveLength(MAX_OVERLAY_ROWS);
-		expect(contentRows(lines, "accent")).toEqual(["ALT SCREEN", "", "", ""]);
-		expect(contentRows(lines, "accent")).toHaveLength(MAX_CONTENT_ROWS);
+		expect(contentRows(lines, "accent")).toEqual(["ALT SCREEN", "", "", "", ""]);
+		expect(contentRows(lines, "accent")).toHaveLength(ACCENT_MAX_CONTENT_ROWS);
 		expectLineWidths(lines, WIDTH);
 	});
 

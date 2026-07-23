@@ -10,6 +10,7 @@ import {
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { setBasicToolDetailsVisible } from "@oh-my-pi/pi-coding-agent/tui/basic-tool-display-policy";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 function extractLinkUris(text: string): string[] {
@@ -157,87 +158,114 @@ describe("ReadToolGroupComponent", () => {
 	});
 
 	it("renders zh-CN grouped read chrome with raw Read titles and localized counts on column-1 headers", () => {
-		setSettingsUiLocale("zh-CN");
+		const previousBorderStyle = getOutputBlockBorderStyle();
 
-		const empty = Bun.stripANSI(new ReadToolGroupComponent().render(120).join("\n"));
+		try {
+			setOutputBlockBorderStyle("full");
+			setSettingsUiLocale("zh-CN");
 
-		const singleComponent = new ReadToolGroupComponent();
-		const singlePath = path.resolve("/tmp/zh-single.ts");
-		singleComponent.updateArgs({ path: singlePath }, "read-zh-single");
-		singleComponent.updateResult({ content: [{ type: "text", text: "line 1" }] }, false, "read-zh-single");
-		const single = Bun.stripANSI(singleComponent.render(120).join("\n"));
+			const empty = Bun.stripANSI(new ReadToolGroupComponent().render(120).join("\n"));
 
-		const groupedComponent = new ReadToolGroupComponent();
-		const onePath = path.resolve("/tmp/zh-one.ts");
-		const twoPath = path.resolve("/tmp/zh-two.ts");
-		groupedComponent.updateArgs({ path: onePath }, "read-zh-one");
-		groupedComponent.updateArgs({ path: twoPath }, "read-zh-two");
-		groupedComponent.updateResult({ content: [{ type: "text", text: "one" }] }, false, "read-zh-one");
-		groupedComponent.updateResult({ content: [{ type: "text", text: "two" }] }, false, "read-zh-two");
-		const grouped = Bun.stripANSI(groupedComponent.render(120).join("\n"));
+			const singleComponent = new ReadToolGroupComponent();
+			const singlePath = path.resolve("/tmp/zh-single.ts");
+			singleComponent.updateArgs({ path: singlePath }, "read-zh-single");
+			singleComponent.updateResult({ content: [{ type: "text", text: "line 1" }] }, false, "read-zh-single");
+			const single = Bun.stripANSI(singleComponent.render(120).join("\n"));
 
-		expect(visibleColumns(empty)).toEqual([1]);
-		expect(empty).toContain("Read");
-		expect(empty).not.toContain("读取");
-		expect(visibleColumns(single)).toEqual([1]);
-		expect(single).toContain(`Read: ${singlePath}`);
-		expect(single).not.toContain("读取");
-		expect(visibleColumns(grouped)).toEqual([1, 1, 1]);
-		expect(grouped).toContain("Read 2 个路径");
-		expect(grouped).toContain(`${themeModule.theme.tree.branch} ${onePath}`);
-		expect(grouped).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
-		expect(grouped).not.toContain("读取");
+			const groupedComponent = new ReadToolGroupComponent();
+			const onePath = path.resolve("/tmp/zh-one.ts");
+			const twoPath = path.resolve("/tmp/zh-two.ts");
+			groupedComponent.updateArgs({ path: onePath }, "read-zh-one");
+			groupedComponent.updateArgs({ path: twoPath }, "read-zh-two");
+			groupedComponent.updateResult({ content: [{ type: "text", text: "one" }] }, false, "read-zh-one");
+			groupedComponent.updateResult({ content: [{ type: "text", text: "two" }] }, false, "read-zh-two");
+			const grouped = Bun.stripANSI(groupedComponent.render(120).join("\n"));
+
+			expect(visibleColumns(empty)).toEqual([1]);
+			expect(empty).toContain("Read");
+			expect(empty).not.toContain("读取");
+			expect(visibleColumns(single)).toEqual([1]);
+			expect(single).toContain(`Read: ${singlePath}`);
+			expect(single).not.toContain("读取");
+			expect(visibleColumns(grouped)).toEqual([1, 1, 1]);
+			expect(grouped).toContain("Read 2 个路径");
+			expect(grouped).toContain(`${themeModule.theme.tree.branch} ${onePath}`);
+			expect(grouped).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
+			expect(grouped).not.toContain("读取");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
 	it("keeps direct read calls and grouped single-path reads on the same Read: <path> header text after the status icon", async () => {
-		const theme = await themeModule.getThemeByName("dark");
-		expect(theme).toBeDefined();
+		const previousBorderStyle = getOutputBlockBorderStyle();
 
-		const examplePath = path.resolve("/tmp/consistent.ts");
-		const direct = Bun.stripANSI(
-			readToolRenderer
-				.renderCall({ path: `${examplePath}:7-9` }, { expanded: false, isPartial: false }, theme!)
-				.render(120)
-				.join("\n"),
-		);
+		try {
+			setOutputBlockBorderStyle("full");
+			const theme = await themeModule.getThemeByName("dark");
+			expect(theme).toBeDefined();
 
-		const component = new ReadToolGroupComponent();
-		component.updateArgs({ path: `${examplePath}:7-9` }, "read-consistent");
-		component.updateResult({ content: [{ type: "text", text: "line 7" }] }, false, "read-consistent");
-		const grouped = Bun.stripANSI(component.render(120).join("\n"));
-		const directHeader = direct.split("\n").find(line => line.trim().length > 0) ?? "";
-		const groupedHeader = grouped.split("\n").find(line => line.trim().length > 0) ?? "";
-		const directHeaderText = directHeader.slice(directHeader.indexOf("Read")).trimEnd();
-		const groupedHeaderText = groupedHeader.slice(groupedHeader.indexOf("Read")).trimEnd();
+			const examplePath = path.resolve("/tmp/consistent.ts");
+			const direct = Bun.stripANSI(
+				readToolRenderer
+					.renderCall({ path: `${examplePath}:7-9` }, { expanded: false, isPartial: false }, theme!)
+					.render(120)
+					.join("\n"),
+			);
 
-		expect(directHeader.search(/\S/)).toBe(0);
-		expect(groupedHeader.search(/\S/)).toBe(1);
-		expect(directHeaderText).toBe(`Read: ${examplePath}:7-9`);
-		expect(groupedHeaderText).toBe(directHeaderText);
+			const component = new ReadToolGroupComponent();
+			component.updateArgs({ path: `${examplePath}:7-9` }, "read-consistent");
+			component.updateResult({ content: [{ type: "text", text: "line 7" }] }, false, "read-consistent");
+			const grouped = Bun.stripANSI(component.render(120).join("\n"));
+			const directHeader = direct.split("\n").find(line => line.trim().length > 0) ?? "";
+			const groupedHeader = grouped.split("\n").find(line => line.trim().length > 0) ?? "";
+			const directHeaderText = directHeader.slice(directHeader.indexOf("Read")).trimEnd();
+			const groupedHeaderText = groupedHeader.slice(groupedHeader.indexOf("Read")).trimEnd();
+
+			expect(directHeader.search(/\S/)).toBe(0);
+			expect(groupedHeader.search(/\S/)).toBe(1);
+			expect(directHeaderText).toBe(`Read: ${examplePath}:7-9`);
+			expect(groupedHeaderText).toBe(directHeaderText);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
 	it("uses the file icon, toolTitle color, and a column-1 header for completed reads", () => {
-		const component = new ReadToolGroupComponent();
-		const examplePath = path.resolve("/tmp/example.ts");
-		component.updateArgs({ path: examplePath }, "read-success");
-		component.updateResult(
-			{
-				content: [{ type: "text", text: "line 1" }],
-			},
-			false,
-			"read-success",
-		);
+		const previousBorderStyle = getOutputBlockBorderStyle();
 
-		const rendered = component.render(120).join("\n");
-		const plain = Bun.stripANSI(rendered);
-		const headerLine = plain.split("\n").find(line => line.trim().length > 0) ?? "";
+		try {
+			setOutputBlockBorderStyle("full");
+			const component = new ReadToolGroupComponent();
+			const examplePath = path.resolve("/tmp/example.ts");
+			component.updateArgs({ path: examplePath }, "read-success");
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "line 1" }],
+				},
+				false,
+				"read-success",
+			);
 
-		expect(headerLine.search(/\S/)).toBe(1);
-		expect(headerLine.includes(themeModule.theme.symbol("icon.file"))).toBe(true);
-		expect(headerLine.slice(headerLine.indexOf("Read")).trimEnd()).toBe(`Read: ${examplePath}`);
-		expect(plain).not.toContain(themeModule.theme.status.enabled);
-		expect(rendered).toContain(themeModule.theme.fg("toolTitle", themeModule.theme.symbol("icon.file")));
-		expect(rendered).toContain(themeModule.theme.fg("toolTitle", "Read"));
+			const rendered = component.render(120).join("\n");
+			const plain = Bun.stripANSI(rendered);
+			const headerLine = plain.split("\n").find(line => line.trim().length > 0) ?? "";
+
+			expect(headerLine.search(/\S/)).toBe(1);
+			expect(headerLine.includes(themeModule.theme.symbol("icon.file"))).toBe(true);
+			expect(headerLine.slice(headerLine.indexOf("Read")).trimEnd()).toBe(`Read: ${examplePath}`);
+			expect(plain).not.toContain(themeModule.theme.status.enabled);
+			expect(rendered).toContain(themeModule.theme.fg("toolTitle", themeModule.theme.symbol("icon.file")));
+			expect(rendered).toContain(themeModule.theme.fg("toolTitle", "Read"));
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
 	it("renders multi-read summaries as Read + N paths while keeping child rows marker-free", () => {

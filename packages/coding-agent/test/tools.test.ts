@@ -1775,6 +1775,7 @@ function b() {
 			expect(output).toMatch(/\*2\|match one/);
 			expect(output).toMatch(/ 3\|after/);
 			expect(output).toMatch(/\*5\|match two/);
+			expect(result.details?.fileLocations).toEqual([{ path: "context.txt", lineNumbers: [2, 5] }]);
 		});
 
 		it("inserts a gap separator between non-contiguous match blocks", async () => {
@@ -1819,6 +1820,10 @@ function b() {
 			expect(secondOutput).not.toContain("# file-2.txt");
 			expect(secondOutput).toContain("# file-3.txt");
 			expect(secondOutput).toContain("# file-4.txt");
+			expect(second.details?.fileLocations).toEqual([
+				{ path: "skip-dir/file-3.txt", lineNumbers: [1] },
+				{ path: "skip-dir/file-4.txt", lineNumbers: [1] },
+			]);
 		});
 
 		it("respects the case parameter (case-sensitive by default, case-insensitive if false)", async () => {
@@ -1991,6 +1996,12 @@ function b() {
 			expect(result.details?.fileLimitReached).toBe(DEFAULT_FILE_LIMIT);
 			expect(output).toContain(`Showing files 1-${DEFAULT_FILE_LIMIT} of ${totalFiles}`);
 			expect(output).toContain(`Use skip=${DEFAULT_FILE_LIMIT}`);
+			expect(result.details?.fileLocations).toEqual(
+				Array.from({ length: DEFAULT_FILE_LIMIT }, (_, index) => ({
+					path: `file-limit-dir/f-${String(index + 1).padStart(2, "0")}.txt`,
+					lineNumbers: [1],
+				})),
+			);
 		});
 
 		it("should cap matches per file in multi-file scopes", async () => {

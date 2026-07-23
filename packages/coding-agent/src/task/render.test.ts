@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "../config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "../modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "../tui/output-block";
 import { renderResult } from "./render";
 import { taskToolRenderer } from "./renderer";
 import type { AgentProgress, SingleResult, TaskToolDetails } from "./types";
@@ -304,15 +305,22 @@ describe("task live progress rendering", () => {
 			results: [makeSingleResult(0, { id: "FrameAgent", task: "verify frame gutter", output: "frame result" })],
 			totalDurationMs: 1,
 		};
-		const lines = renderResultLines(details, true, uiTheme);
-		const frameBorderGlyphs = [uiTheme.boxRound.topLeft, uiTheme.boxRound.bottomLeft];
-		const frameRows = lines.filter(line => frameBorderGlyphs.includes(line.trimStart()[0] ?? ""));
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("full");
+			const lines = renderResultLines(details, true, uiTheme);
+			const frameBorderGlyphs = [uiTheme.boxRound.topLeft, uiTheme.boxRound.bottomLeft];
+			const frameRows = lines.filter(line => frameBorderGlyphs.includes(line.trimStart()[0] ?? ""));
 
-		expect(frameRows).toHaveLength(2);
-		for (const row of frameRows) {
-			expect(row.length - row.trimStart().length, JSON.stringify(row)).toBe(1);
+			expect(frameRows).toHaveLength(2);
+			for (const row of frameRows) {
+				expect(row.length - row.trimStart().length, JSON.stringify(row)).toBe(1);
+			}
+			expect(lines.join("\n")).toContain("FrameAgent");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
 		}
-		expect(lines.join("\n")).toContain("FrameAgent");
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
 	it("caps collapsed nested task progress at four rows plus an elision line", () => {

@@ -1,4 +1,4 @@
-import { type Component, matchesKey, routeSgrMouseInput, ScrollView } from "@oh-my-pi/pi-tui";
+import { type Component, matchesKey, padding, routeSgrMouseInput, ScrollView, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import { tSettingsUi } from "../../i18n/settings-locale";
@@ -9,6 +9,9 @@ import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { DynamicBorder } from "./dynamic-border";
 import type { TranscriptContainer } from "./transcript-container";
+
+const HEADER_CONTROL_GAP = 2;
+const MIN_HEADER_IDENTITY_WIDTH = 24;
 
 export interface FocusedAgentViewDeps {
 	agentId: string;
@@ -86,13 +89,21 @@ export class FocusedAgentView implements Component {
 		const innerWidth = Math.max(20, width - 2);
 		const ref = this.deps.registry.get(this.#agentId);
 		const progress = this.deps.getProgress(this.#agentId);
-		const header = this.#header(ref, progress, innerWidth);
+		const headerContent = this.#header(ref, progress);
+		const hint = this.#hint();
+		const hintWidth = visibleWidth(hint);
+		const headerContentWidth = innerWidth - hintWidth - HEADER_CONTROL_GAP;
+		const hintInHeader = headerContentWidth >= MIN_HEADER_IDENTITY_WIDTH;
+		let header = truncateToWidth(headerContent, innerWidth);
+		if (hintInHeader) {
+			header = truncateToWidth(headerContent, headerContentWidth);
+			header += `${padding(innerWidth - visibleWidth(header) - hintWidth)}${hint}`;
+		}
 		const stats = this.#stats(progress, innerWidth);
 		const alert = this.deps.mainNeedsInput()
 			? theme.fg("warning", tSettingsUi("Main needs input · Esc return"))
 			: undefined;
-		const hint = this.#hint(innerWidth);
-		const chromeRows = 6 + (alert ? 1 : 0);
+		const chromeRows = (hintInHeader ? 5 : 6) + (alert ? 1 : 0);
 		const viewportHeight = Math.max(3, terminalRows - chromeRows);
 		const contentLines = this.deps.transcript.render(Math.max(1, width - 1));
 		this.#scrollView.setLines(
@@ -104,11 +115,13 @@ export class FocusedAgentView implements Component {
 		const border = new DynamicBorder().render(width);
 		const lines: string[] = [...border, ` ${header}`, ...border, ...this.#scrollView.render(width)];
 		if (alert) lines.push(` ${truncateToWidth(alert, innerWidth)}`);
-		lines.push(` ${stats}`, ` ${hint}`, ...border);
+		lines.push(` ${stats}`);
+		if (!hintInHeader) lines.push(` ${truncateToWidth(hint, innerWidth)}`);
+		lines.push(...border);
 		return lines;
 	}
 
-	#header(ref: AgentRef | undefined, progress: AgentProgress | undefined, width: number): string {
+	#header(ref: AgentRef | undefined, progress: AgentProgress | undefined): string {
 		const ids = this.deps.getViewableAgentIds();
 		const index = Math.max(0, ids.indexOf(this.#agentId));
 		const ordinal = ids.length > 0 ? `${index + 1}/${ids.length}` : "1/1";
@@ -131,7 +144,7 @@ export class FocusedAgentView implements Component {
 		]
 			.filter(Boolean)
 			.join(theme.sep.dot);
-		return truncateToWidth(content, width);
+		return content;
 	}
 
 	#stats(progress: AgentProgress | undefined, width: number): string {
@@ -189,20 +202,17 @@ export class FocusedAgentView implements Component {
 		return truncateToWidth(parts.join(theme.sep.dot), width);
 	}
 
-	#hint(width: number): string {
+	#hint(): string {
 		const previous = this.deps.previousKeys[0] ?? "alt+k";
 		const next = this.deps.nextKeys[0] ?? "alt+j";
 		const expand = this.deps.expandKeys[0] ?? "ctrl+o";
 		return theme.fg(
 			"dim",
-			truncateToWidth(
-				tSettingsUi("{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand", {
-					previous,
-					next,
-					expand,
-				}),
-				width,
-			),
+			tSettingsUi("{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand", {
+				previous,
+				next,
+				expand,
+			}),
 		);
 	}
 

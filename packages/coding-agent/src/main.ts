@@ -900,6 +900,7 @@ export async function buildSessionOptions(
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
 			modelRegistry,
+			availableModels: modelRegistry.getAvailable(),
 			settings: activeSettings,
 			preferences: modelMatchPreferences,
 		});
@@ -972,21 +973,35 @@ export async function buildSessionOptions(
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(tSettingsUi("Warning: {warning}", { warning: resolved.warning }))}\n`);
 		}
+		// Prewalk is an optional optimization (off by default): switch to a fast
+		// model at the first edit. If its hand-off target can't be resolved or has
+		// no configured auth, warn and leave prewalk unarmed rather than aborting
+		// startup and locking the user out of the app (issue #6064).
 		if (resolved.error || !resolved.model) {
-			throw new Error(
-				resolved.error ??
-					tSettingsUi('Model "{model}" not found', { model: parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET }),
+			const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
+			const reason = resolved.error ?? tSettingsUi('Model "{model}" not found', { model: target });
+			process.stderr.write(
+				`${chalk.yellow(
+					tSettingsUi("Warning: {warning}", {
+						warning: `${tSettingsUi("Prewalk")} ${tSettingsUi("disabled")} — ${reason}`,
+					}),
+				)}\n`,
 			);
-		}
-		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			throw new Error(
-				tSettingsUi("No API key for {provider}/{model}", {
-					provider: resolved.model.provider,
-					model: resolved.model.id,
-				}),
+		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
+			const reason = tSettingsUi("No API key for {provider}/{model}", {
+				provider: resolved.model.provider,
+				model: resolved.model.id,
+			});
+			process.stderr.write(
+				`${chalk.yellow(
+					tSettingsUi("Warning: {warning}", {
+						warning: `${tSettingsUi("Prewalk")} ${tSettingsUi("disabled")} — ${reason}`,
+					}),
+				)}\n`,
 			);
+		} else {
+			options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 		}
-		options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 	}
 
 	if (parsed.planYoloInto !== undefined && !parsed.planYolo) {

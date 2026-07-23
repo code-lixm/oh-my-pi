@@ -73,6 +73,9 @@ const KEY_INPUT: Record<string, string> = {
 	LEFT: "\u001b[D",
 };
 
+/** Terminal daemon lifecycle states — the process is no longer running. */
+const TERMINAL_STATES: Partial<Record<DaemonState, true>> = { exited: true, failed: true };
+
 /** Structured launch state retained for compact TUI rendering. */
 export interface LaunchToolDetails {
 	op: LaunchParams["op"];
@@ -228,6 +231,8 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 				lines.push(
 					`NOT ready — readiness timed out after ${params.ready?.timeout ?? 30}s${cause}. The process is still running (state: ${daemon.state}); follow its logs or stop it.`,
 				);
+			} else if (params.ready && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
+				lines.push("Process exited before readiness was observed.");
 			}
 			return lines.join("\n");
 		}
@@ -448,6 +453,8 @@ export function launchRenderResult(
 								: tSettingsUi("Readiness timed out; the process is still running."),
 						),
 					);
+				} else if (params.ready && daemon && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
+					body.push(theme.fg("warning", "Process exited before readiness was observed."));
 				}
 				break;
 			}

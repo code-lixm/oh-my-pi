@@ -33,6 +33,7 @@ export const searchFixtures: Record<string, GalleryFixture> = {
 			details: {
 				scopePath: "packages/tui/src",
 				searchPath: "/Users/dev/Projects/pi/packages/tui/src",
+				cwd: "/Users/dev/Projects/pi",
 				matchCount: 5,
 				fileCount: 3,
 				files: [
@@ -44,6 +45,11 @@ export const searchFixtures: Record<string, GalleryFixture> = {
 					{ path: "packages/tui/src/components/SearchBox.tsx", count: 2 },
 					{ path: "packages/tui/src/components/StatusBar.tsx", count: 1 },
 					{ path: "packages/tui/src/hooks/useDebounced.ts", count: 2 },
+				],
+				fileLocations: [
+					{ path: "packages/tui/src/components/SearchBox.tsx", lineNumbers: [18, 19] },
+					{ path: "packages/tui/src/components/StatusBar.tsx", lineNumbers: [27] },
+					{ path: "packages/tui/src/hooks/useDebounced.ts", lineNumbers: [9, 10] },
 				],
 				truncated: false,
 				displayContent: [

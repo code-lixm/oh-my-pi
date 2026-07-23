@@ -27,6 +27,7 @@ function createContext() {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		chatContainer,
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn() },
@@ -83,6 +84,7 @@ function createRebuildContext(transcript: SessionContext) {
 	let helpers!: UiHelpers;
 	const ctx = {
 		chatContainer,
+		transcriptMessageComponents: new WeakMap(),
 		pendingMessagesContainer: new TranscriptContainer(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],

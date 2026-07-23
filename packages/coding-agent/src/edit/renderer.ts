@@ -723,6 +723,7 @@ export const editToolRenderer = {
 	// at that seam the stale streaming rows survive above the new frame (issue:
 	// tool-execution-ssh/write/edit streaming repaint regressions in mux panes).
 	forceFirstResultViewportRepaint: true,
+	forceResultViewportRepaintOnSettle: true,
 
 	renderCall(
 		args: EditRenderArgs,

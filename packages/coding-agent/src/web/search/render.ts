@@ -20,7 +20,7 @@ import {
 	truncateToWidth,
 } from "../../tools/render-utils";
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, resolveBareOutputBlockBorderStyle } from "../../tui/output-block";
 import { getSearchProviderLabel } from "./provider";
 import type { SearchResponse } from "./types";
 
@@ -66,7 +66,16 @@ function renderSearchErrorPanel(message: string, providerLabel: string | undefin
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
 		render(width: number): readonly string[] {
-			return outputBlock.render({ header, state: "error", sections: [{ lines: [body] }], width }, theme);
+			return outputBlock.render(
+				{
+					header,
+					state: "error",
+					sections: [{ lines: [body] }],
+					width,
+					borderStyle: resolveBareOutputBlockBorderStyle(),
+				},
+				theme,
+			);
 		},
 		invalidate() {
 			outputBlock.invalidate();
@@ -234,6 +243,7 @@ export function renderSearchResult(
 						{ label: theme.fg("toolTitle", "Metadata"), lines: metaLines },
 					],
 					width,
+					borderStyle: resolveBareOutputBlockBorderStyle(),
 				},
 				theme,
 			);
@@ -256,6 +266,7 @@ export function renderSearchCall(
 }
 
 export const webSearchToolRenderer = {
+	transcriptSurface: "bare" as const,
 	renderCall: renderSearchCall,
 	renderResult: renderSearchResult,
 	mergeCallAndResult: true,

@@ -250,7 +250,7 @@ export class BashInteractiveOverlayComponent implements Component {
 		const accentMode = this.borderStyle === "accent";
 		const innerWidth = Math.max(1, safeWidth - (accentMode ? 3 : 2));
 		const maxOverlayRows = Math.max(5, Math.floor(this.getTerminalRows() * 0.8));
-		const chromeRows = borderless ? (accentMode ? 4 : 2) : 4;
+		const chromeRows = borderless ? (accentMode ? 3 : 2) : 4;
 		const maxContentRows = Math.max(1, maxOverlayRows - chromeRows);
 		// Propagate terminal resize to PTY session
 		const currentCols = innerWidth;
@@ -293,7 +293,7 @@ export class BashInteractiveOverlayComponent implements Component {
 				? (line: string) => renderOutputAccentLine(padLine(line), safeWidth, this.uiTheme, borderColor)
 				: (line: string) => `${padding(2)}${padLine(line)}`;
 			return accentMode
-				? [gutterLine(""), gutterLine(header), ...content.map(gutterLine), gutterLine(footer), gutterLine("")]
+				? [gutterLine(header), gutterLine(""), ...content.map(gutterLine), gutterLine(footer)]
 				: [gutterLine(header), ...content.map(gutterLine), gutterLine(footer)];
 		}
 		const borderColor = this.#borderColor();

@@ -2,8 +2,12 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui";
+import { getThemeByName, initTheme, type Theme, type ThemeColor } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui";
 import { type Component, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 
 const WIDTH = 140;
@@ -33,7 +37,38 @@ function expectNoOuterPadding(lines: readonly string[], label: string): void {
 	expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(0);
 }
 
-// Inline args — no gallery-cli import chain, no inspect-image-renderer.
+const ACCENT_SURFACE_COLORS = ["borderMuted", "success", "error", "warning"] as const satisfies readonly ThemeColor[];
+
+function withBorderStyle<T>(
+	style: OutputBlockBorderStyle,
+	run: () => T,
+): { previous: OutputBlockBorderStyle; value: T } {
+	const previous = getOutputBlockBorderStyle();
+	try {
+		setOutputBlockBorderStyle(style);
+		return { previous, value: run() };
+	} finally {
+		setOutputBlockBorderStyle(previous);
+	}
+}
+
+function expectVisibleSnippets(lines: readonly string[], label: string, snippets: readonly string[]): void {
+	const text = plainLines(lines).join("\n");
+	for (const snippet of snippets) {
+		expect(text, `${label}: missing ${JSON.stringify(snippet)} in ${JSON.stringify(text)}`).toContain(snippet);
+	}
+}
+
+function expectNoAccentSurface(lines: readonly string[], label: string, uiTheme: Theme): void {
+	const raw = lines.join("\n");
+	const text = plainLines(lines).join("\n");
+	expect(text, `${label}: rail leaked into ${JSON.stringify(text)}`).not.toContain("▌");
+	for (const color of ACCENT_SURFACE_COLORS) {
+		expect(raw, `${label}: ${color} tint leaked`).not.toContain(uiTheme.getSurfaceTintBgAnsi(color, 0.06));
+	}
+}
+
+// Inline args keep rendering tests independent of the real tool executors.
 function inlineArgsFor(name: string): unknown {
 	switch (name) {
 		case "grep":
@@ -42,6 +77,14 @@ function inlineArgsFor(name: string): unknown {
 			return { pattern: "*.test.ts" };
 		case "ast_grep":
 			return { pattern: "useState($A)", language: "tsx", path: "packages/tui/src" };
+		case "read":
+			return { path: "packages/coding-agent/src/example.ts" };
+		case "lsp":
+			return { action: "diagnostics", file: "src/example.ts" };
+		case "inspect_image":
+			return { path: "/tmp/swatch.png", question: "What is shown?" };
+		case "web_search":
+			return { query: "latest Bun release" };
 		case "irc":
 			return { op: "send", to: "Worker", message: "status?" };
 		case "job":
@@ -86,7 +129,40 @@ function inlineResultFor(name: string): ToolResult {
 				details: {
 					matchCount: 1,
 					fileCount: 1,
+					filesSearched: 3,
 					displayContent: "# src/\n## a.ts\n*1│const x = useState()\n  meta: $A=0",
+				},
+			};
+		case "read":
+			return {
+				content: [{ type: "text", text: "1:export const answer = 42;" }],
+				details: {
+					displayContent: { text: "export const answer = 42;", startLine: 1 },
+					contentType: "text/typescript",
+				},
+			};
+		case "lsp":
+			return {
+				content: [{ type: "text", text: "OK" }],
+				details: { action: "diagnostics", request: inlineArgsFor("lsp") },
+			};
+		case "inspect_image":
+			return {
+				content: [{ type: "text", text: "A tiny red square.\nSecond observation." }],
+				details: { model: "gpt-4.1", imagePath: "/tmp/swatch.png", mimeType: "image/png" },
+			};
+		case "web_search":
+			return {
+				content: [{ type: "text", text: "Bun shipped a release." }],
+				details: {
+					response: {
+						provider: "exa",
+						answer: "Bun shipped a release.",
+						sources: [{ title: "Example Article", url: "https://example.com/article", ageSeconds: 86_400 }],
+						searchQueries: ["latest Bun release"],
+						model: "exa-answer",
+						authMode: "api_key",
+					},
 				},
 			};
 		case "irc":
@@ -114,13 +190,13 @@ function inlineResultFor(name: string): ToolResult {
 	}
 }
 
-function renderToolLifecycle(name: string): { pending: string[]; success: string[] } {
+function renderToolLifecycle(name: string, stripAnsi = true): { pending: string[]; success: string[] } {
 	const args = inlineArgsFor(name);
 	const component = new ToolExecutionComponent(name, args, {}, undefined, uiStub, process.cwd());
 
 	try {
 		// Pending: args still incomplete, no result yet.
-		const pending = plainLines(component.render(WIDTH));
+		const pendingRaw = component.render(WIDTH);
 
 		// Switch to args-complete pending state.
 		component.updateArgs(args);
@@ -129,9 +205,12 @@ function renderToolLifecycle(name: string): { pending: string[]; success: string
 		// Success: result is settled.
 		const result = inlineResultFor(name);
 		component.updateResult(result, false);
-		const success = plainLines(component.render(WIDTH));
+		const successRaw = component.render(WIDTH);
 
-		return { pending, success };
+		return {
+			pending: stripAnsi ? plainLines(pendingRaw) : [...pendingRaw],
+			success: stripAnsi ? plainLines(successRaw) : [...successRaw],
+		};
 	} finally {
 		component.stopAnimation();
 	}
@@ -158,51 +237,78 @@ describe("tool execution left-edge alignment", () => {
 
 	// ─── non-framed built-ins ─────────────────────────────────────────────────
 
-	it("keeps non-framed grep pending and result title rows on a one-column outer gutter", () => {
-		const { pending, success } = renderToolLifecycle("grep");
-		expectSingleOuterPadding(pending, "grep pending");
-		expectSingleOuterPadding(success, "grep success");
+	it.each(["grep", "glob", "ast_grep"] as const)(
+		"keeps non-framed %s pending and result title rows on a one-column outer gutter under full style",
+		toolName => {
+			const { previous } = withBorderStyle("full", () => {
+				const { pending, success } = renderToolLifecycle(toolName);
+				expectSingleOuterPadding(pending, `${toolName} pending`);
+				expectSingleOuterPadding(success, `${toolName} success`);
+			});
+
+			expect(getOutputBlockBorderStyle()).toBe(previous);
+		},
+	);
+
+	it.each([
+		{ toolName: "grep", snippets: ["Grep", "useState"] },
+		{ toolName: "glob", snippets: ["Glob", "a.test.ts", "b.test.ts"] },
+		{ toolName: "ast_grep", snippets: ["AST Grep", "useState", "meta: $A=0"] },
+	] as const)("renders bare $toolName wrappers under global accent while preserving status and body", async spec => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("accent", () => {
+			const { pending, success } = renderToolLifecycle(spec.toolName, false);
+			expectNoOuterPadding(plainLines(pending), `${spec.toolName} pending`);
+			expectNoOuterPadding(plainLines(success), `${spec.toolName} success`);
+			expectNoAccentSurface(pending, `${spec.toolName} pending`, uiTheme!);
+			expectNoAccentSurface(success, `${spec.toolName} success`, uiTheme!);
+			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
-	it("keeps non-framed glob pending and result title rows on a one-column outer gutter", () => {
-		const { pending, success } = renderToolLifecycle("glob");
-		expectSingleOuterPadding(pending, "glob pending");
-		expectSingleOuterPadding(success, "glob success");
+	it("keeps non-framed irc pending and result title rows on a one-column outer gutter under full style", () => {
+		const { previous } = withBorderStyle("full", () => {
+			const { pending, success } = renderToolLifecycle("irc");
+			expectSingleOuterPadding(pending, "irc pending");
+			expectSingleOuterPadding(success, "irc success");
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
-	it("keeps non-framed ast_grep pending and result title rows on a one-column outer gutter", () => {
-		const { pending, success } = renderToolLifecycle("ast_grep");
-		expectSingleOuterPadding(pending, "ast_grep pending");
-		expectSingleOuterPadding(success, "ast_grep success");
-	});
+	it("keeps non-framed job pending and result title rows on a one-column outer gutter under full style", () => {
+		const { previous } = withBorderStyle("full", () => {
+			const { pending, success } = renderToolLifecycle("job");
+			expectSingleOuterPadding(pending, "job pending");
+			expectSingleOuterPadding(success, "job success");
+		});
 
-	it("keeps non-framed irc pending and result title rows on a one-column outer gutter", () => {
-		const { pending, success } = renderToolLifecycle("irc");
-		expectSingleOuterPadding(pending, "irc pending");
-		expectSingleOuterPadding(success, "irc success");
-	});
-
-	it("keeps non-framed job pending and result title rows on a one-column outer gutter", () => {
-		const { pending, success } = renderToolLifecycle("job");
-		expectSingleOuterPadding(pending, "job pending");
-		expectSingleOuterPadding(success, "job success");
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
 	// ─── ReadToolGroup alignment ─────────────────────────────────────────────
 
-	it("keeps ReadToolGroup title rows on the same column as non-framed tool execution blocks", () => {
-		const grepCol = leadingSpaces(firstNonEmptyLine(renderToolLifecycle("grep").pending));
-		const read = renderReadGroupLifecycle();
+	it("keeps ReadToolGroup title rows on the same column as non-framed tool execution blocks under full style", () => {
+		const { previous } = withBorderStyle("full", () => {
+			const grepCol = leadingSpaces(firstNonEmptyLine(renderToolLifecycle("grep").pending));
+			const read = renderReadGroupLifecycle();
 
-		const readPending = firstNonEmptyLine(read.pending);
-		const readSuccess = firstNonEmptyLine(read.success);
+			const readPending = firstNonEmptyLine(read.pending);
+			const readSuccess = firstNonEmptyLine(read.success);
 
-		expect(readPending).toContain("Read");
-		expect(readSuccess).toContain("Read");
-		expect(leadingSpaces(readPending), "read pending gutter").toBe(grepCol);
-		expect(leadingSpaces(readSuccess), "read success gutter").toBe(grepCol);
-		expectSingleOuterPadding(read.pending, "read pending");
-		expectSingleOuterPadding(read.success, "read success");
+			expect(readPending).toContain("Read");
+			expect(readSuccess).toContain("Read");
+			expect(leadingSpaces(readPending), "read pending gutter").toBe(grepCol);
+			expect(leadingSpaces(readSuccess), "read success gutter").toBe(grepCol);
+			expectSingleOuterPadding(read.pending, "read pending");
+			expectSingleOuterPadding(read.success, "read success");
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
 	it("removes the outer gutter from unframed search blocks and ReadToolGroup when border style is none", () => {
@@ -211,7 +317,7 @@ describe("tool execution left-edge alignment", () => {
 		try {
 			setOutputBlockBorderStyle("none");
 
-			for (const toolName of ["grep", "glob"] as const) {
+			for (const toolName of ["grep", "glob", "ast_grep"] as const) {
 				const { pending, success } = renderToolLifecycle(toolName);
 				expectNoOuterPadding(pending, `${toolName} pending`);
 				expectNoOuterPadding(success, `${toolName} success`);
@@ -225,6 +331,72 @@ describe("tool execution left-edge alignment", () => {
 		}
 
 		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+	});
+
+	it.each([
+		{ toolName: "read", snippets: ["Read", "export const answer = 42;"] },
+		{ toolName: "lsp", snippets: ["LSP diagnostics", "src/example.ts", "OK"] },
+		{
+			toolName: "inspect_image",
+			snippets: ["Inspect", "Question:", "What is shown?", "A tiny red square.", "gpt-4.1", "image/png"],
+		},
+		{
+			toolName: "web_search",
+			snippets: [
+				"Web Search",
+				"latest Bun release",
+				"Answer",
+				"Bun shipped a release.",
+				"Sources",
+				"Example Article",
+				"Provider:",
+			],
+		},
+	] as const)("maps self-framed $toolName result from accent to bare without dropping sections", async spec => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("accent", () => {
+			const { success } = renderToolLifecycle(spec.toolName, false);
+			const text = plainLines(success).join("\n");
+			expectNoOuterPadding(plainLines(success), `${spec.toolName} success`);
+			expectNoAccentSurface(success, `${spec.toolName} success`, uiTheme!);
+			expect(text, `${spec.toolName} should not keep the full frame under accent`).not.toContain(
+				uiTheme!.boxRound.topLeft,
+			);
+			expect(text, `${spec.toolName} should not keep the full frame under accent`).not.toContain(
+				uiTheme!.boxRound.bottomLeft,
+			);
+			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+
+	it("preserves explicit full and none geometry for direct read results", async () => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous: previousFull } = withBorderStyle("full", () => {
+			const { success } = renderToolLifecycle("read");
+			const text = success.join("\n");
+			expectSingleOuterPadding(success, "read full success");
+			expect(text).toContain(uiTheme!.boxRound.topLeft);
+			expect(text).toContain(uiTheme!.boxRound.bottomLeft);
+			expectVisibleSnippets(success, "read full success", ["Read", "export const answer = 42;"]);
+		});
+		expect(getOutputBlockBorderStyle()).toBe(previousFull);
+
+		const { previous: previousNone } = withBorderStyle("none", () => {
+			const { success } = renderToolLifecycle("read", false);
+			const text = plainLines(success).join("\n");
+			expectNoOuterPadding(plainLines(success), "read none success");
+			expect(text).not.toContain(uiTheme!.boxRound.topLeft);
+			expect(text).not.toContain(uiTheme!.boxRound.bottomLeft);
+			expectNoAccentSurface(success, "read none success", uiTheme!);
+			expectVisibleSnippets(success, "read none success", ["Read", "export const answer = 42;"]);
+		});
+		expect(getOutputBlockBorderStyle()).toBe(previousNone);
 	});
 
 	it("wraps non-framed custom renderers in a tinted accent rail without reallocating unchanged rows", async () => {
@@ -257,19 +429,18 @@ describe("tool execution left-edge alignment", () => {
 			const first = component.render(WIDTH);
 			const second = component.render(WIDTH);
 			const plain = plainLines(first);
-			const errorBg = uiTheme!.getSurfaceTintBgAnsi("error");
+			const errorBg = uiTheme!.getSurfaceTintBgAnsi("error", 0.06);
 			const errorRail = `${errorBg}${uiTheme!.getFgAnsi("error")}▌\x1b[39m\x1b[49m${errorBg} `;
 
 			expect(second).toBe(first);
-			expect(childWidths).toEqual([WIDTH - 2, WIDTH - 2]);
+			expect(childWidths).toEqual([WIDTH - 3, WIDTH - 3]);
 			expect(first.every(line => line.startsWith(errorRail))).toBe(true);
+			expect(first.join("\n")).toContain(errorBg);
 			expect(plain).toEqual([
-				`▌ ${" ".repeat(WIDTH - 2)}`,
 				`▌ ${childLines[0]}${" ".repeat(WIDTH - 2 - childLines[0].length)}`,
 				`▌ ${childLines[1]}${" ".repeat(WIDTH - 2 - childLines[1].length)}`,
-				`▌ ${" ".repeat(WIDTH - 2)}`,
 			]);
-			expect(first.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH, WIDTH, WIDTH]);
+			expect(first.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH]);
 			expect(plain.join("\n")).not.toContain("│");
 			expect(plain.join("\n")).not.toContain("╭");
 			expect(plain.join("\n")).not.toContain("╰");
@@ -284,22 +455,26 @@ describe("tool execution left-edge alignment", () => {
 
 	// ─── framed built-in ─────────────────────────────────────────────────────
 
-	it("keeps framed bash lifecycle blocks on a one-column outer gutter", async () => {
+	it("keeps framed bash lifecycle blocks on a one-column outer gutter under full style", async () => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
 
-		const { pending, success } = renderToolLifecycle("bash");
+		const { previous } = withBorderStyle("full", () => {
+			const { pending, success } = renderToolLifecycle("bash");
 
-		for (const [label, lines] of [
-			["bash pending", pending],
-			["bash success", success],
-		] as const) {
-			const firstLine = firstNonEmptyLine(lines);
-			expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(1);
-			expect(
-				firstLine.trimStart().startsWith(uiTheme!.boxRound.topLeft),
-				`${label}: ${JSON.stringify(firstLine)}`,
-			).toBe(true);
-		}
+			for (const [label, lines] of [
+				["bash pending", pending],
+				["bash success", success],
+			] as const) {
+				const firstLine = firstNonEmptyLine(lines);
+				expect(leadingSpaces(firstLine), `${label}: ${JSON.stringify(firstLine)}`).toBe(1);
+				expect(
+					firstLine.trimStart().startsWith(uiTheme!.boxRound.topLeft),
+					`${label}: ${JSON.stringify(firstLine)}`,
+				).toBe(true);
+			}
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 });

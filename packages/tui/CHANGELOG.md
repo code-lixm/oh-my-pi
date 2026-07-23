@@ -17,6 +17,14 @@
 ### Fixed
 
 - Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
+## [17.0.8] - 2026-07-22
+
+### Fixed
+
+- Fixed an issue where OSC 8 hyperlinks with inline markup corrupted Markdown table column widths.
+- Prevented duplicate autocomplete suggestions for slash commands and their matching aliases.
+- Fixed terminal background color detection during screen refreshes (Ctrl+L) inside tmux when passthrough is enabled.
+
 ## [17.0.6] - 2026-07-20
 
 ### Fixed

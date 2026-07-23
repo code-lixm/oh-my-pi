@@ -3,7 +3,7 @@ import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
-import { framedBlock, renderStatusLine } from "../tui";
+import { framedBlock, renderStatusLine, resolveBareOutputBlockBorderStyle } from "../tui";
 import { formatErrorDetail, formatExpandHint, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
 
 interface InspectImageRenderArgs {
@@ -33,6 +33,7 @@ function questionLine(question: string, uiTheme: Theme): string {
 }
 
 export const inspectImageToolRenderer = {
+	transcriptSurface: "bare" as const,
 	renderCall(args: InspectImageRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = typeof args.path === "string" ? args.path : "";
 		const pathDisplay = rawPath ? shortenPath(rawPath) : "…";
@@ -86,6 +87,7 @@ export const inspectImageToolRenderer = {
 					state: "error",
 					borderColor: "error",
 					applyBg: false,
+					borderStyle: resolveBareOutputBlockBorderStyle(),
 					width,
 				};
 			});
@@ -130,6 +132,7 @@ export const inspectImageToolRenderer = {
 				state: "success",
 				borderColor: "borderMuted",
 				applyBg: false,
+				borderStyle: resolveBareOutputBlockBorderStyle(),
 				width,
 			};
 		});

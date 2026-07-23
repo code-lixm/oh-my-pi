@@ -29,8 +29,6 @@ import {
 	Ellipsis,
 	fileHyperlink,
 	getBasicToolDetailsVisible,
-	getTreeBranch,
-	getTreeContinuePrefix,
 	renderStatusLine,
 	renderTreeList,
 	truncateToWidth,
@@ -42,7 +40,7 @@ import { type ArchiveReader, type ExtractedArchiveFile, openArchive, parseArchiv
 import type { ToolSession } from ".";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
-import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
+import { formatGroupedFiles } from "./grouped-file-output";
 import { formatMatchLine } from "./match-line-format";
 import type { OutputMeta } from "./output-meta";
 import {
@@ -866,11 +864,13 @@ export interface GrepToolDetails {
 	fileCount?: number;
 	files?: string[];
 	fileMatches?: Array<{ path: string; count: number }>;
+	/** Final, user-visible match locations after deduplication, pagination, and per-file caps.
+	 * Context lines are intentionally excluded. */
+	fileLocations?: Array<{ path: string; lineNumbers: number[] }>;
 	truncated?: boolean;
 	error?: string;
-	/** Pre-formatted text for the user-visible TUI render. Mirrors the model-facing
-	 * `result.text` lines but uses a `│` gutter and `*` to mark match lines (vs space for
-	 * context). The TUI uses this directly so it never parses model-facing hashline anchors. */
+	/** Legacy pre-formatted code-frame text. Retained for historical transcript compatibility;
+	 * current TUI results prefer `fileLocations` and do not render source snippets. */
 	displayContent?: string;
 	/** Absolute base directory used during search. Used by the renderer to resolve
 	 * display-relative paths to absolute paths for OSC 8 hyperlinks. */
@@ -1519,6 +1519,16 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						path,
 						count: fileMatchCounts.get(path) ?? 0,
 					})),
+					fileLocations: fileList.map(path => ({
+						path,
+						lineNumbers: [
+							...new Set(
+								(matchesByFile.get(path) ?? [])
+									.map(match => match.lineNumber)
+									.filter(lineNumber => lineNumber > 0),
+							),
+						].sort((a, b) => a - b),
+					})),
 					truncated,
 					fileLimitReached: fileLimitReached ? DEFAULT_FILE_LIMIT : undefined,
 					perFileLimitReached: perFileLimitReached ? perFileMatchCap : undefined,
@@ -1556,12 +1566,14 @@ interface GrepRenderArgs {
 }
 
 const COLLAPSED_TEXT_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
-/** Line budget for the expanded view. Larger than collapsed so expanding
- * reveals more matches with context, but still bounded so a single hot file
- * whose matches span the whole file can't dump its entire length. */
+/** Line budget for the expanded compact location list. Expansion reveals more files,
+ * never source snippets, and remains bounded for broad searches. */
 const EXPANDED_TEXT_LIMIT = PREVIEW_LIMITS.EXPANDED_LINES * 2;
 
-const SEARCH_CODE_FRAME_LINE_RE = /^\s*\*?(\d+)│/;
+interface GrepFileLocation {
+	path: string;
+	lineNumbers: readonly number[];
+}
 
 function searchScopeMeta(details: GrepToolDetails | undefined): string | undefined {
 	if (!details?.scopePath) return undefined;
@@ -1569,145 +1581,68 @@ function searchScopeMeta(details: GrepToolDetails | undefined): string | undefin
 	return `in ${label}`;
 }
 
-function linkUrlLikeSearchHeader(raw: string, styled: string): { line: string; absPath?: string } {
-	const resolvedPath = tryResolveInternalUrlSync(raw);
-	if (resolvedPath) return { line: fileHyperlink(resolvedPath, styled), absPath: resolvedPath };
-	return { line: uriHyperlink(raw, styled) };
-}
+function formatLineRanges(lineNumbers: readonly number[]): { text: string; firstLine?: number } {
+	const sorted = [...new Set(lineNumbers.filter(lineNumber => Number.isInteger(lineNumber) && lineNumber > 0))].sort(
+		(a, b) => a - b,
+	);
+	if (sorted.length === 0) return { text: "" };
 
-function parseSearchDisplayLineNumber(line: string): number | undefined {
-	const match = SEARCH_CODE_FRAME_LINE_RE.exec(line);
-	if (!match) return undefined;
-	return Number.parseInt(match[1]!, 10);
-}
-
-const SEARCH_MATCH_LINE_RE = /^\s*\*\d+(?:│|[:|])/;
-
-interface RenderedSearchLine {
-	raw: string;
-	styled: string;
-}
-
-function isSearchMatchLine(line: string): boolean {
-	return SEARCH_MATCH_LINE_RE.test(line);
-}
-
-function isSearchHeaderLine(line: string): boolean {
-	return /^#+ /.test(line);
-}
-
-const URL_HEADER_PREFIX_RE = /^#+\s+/;
-
-function renderSearchDisplayLines(
-	lines: readonly string[],
-	headerBase: string | undefined,
-	fileScope: string | undefined,
-	uiTheme: Theme,
-): RenderedSearchLine[] {
-	const contexts = classifyGroupedLines(lines, headerBase, fileScope);
-	// `classifyGroupedLines` can't resolve internal URLs (TUI-only), so track the
-	// resolved URL target here and use it for the body lines that follow.
-	let urlFile: string | undefined;
-	return lines.map((line, index) => {
-		const ctx = contexts[index]!;
-		if (ctx.kind === "dir") {
-			urlFile = undefined;
-			const styled = uiTheme.fg("accent", line);
-			return { raw: line, styled: ctx.headerPath ? fileHyperlink(ctx.headerPath, styled) : styled };
+	const ranges: string[] = [];
+	let start = sorted[0]!;
+	let end = start;
+	for (const lineNumber of sorted.slice(1)) {
+		if (lineNumber === end + 1) {
+			end = lineNumber;
+			continue;
 		}
-		if (ctx.kind === "file") {
-			if (ctx.isUrl) {
-				const raw = line
-					.replace(URL_HEADER_PREFIX_RE, "")
-					.trimEnd()
-					.replace(/\s+\([^)]*\)\s*$/, "");
-				const linked = linkUrlLikeSearchHeader(raw, uiTheme.fg("accent", line));
-				urlFile = linked.absPath;
-				return { raw: line, styled: linked.line };
-			}
-			urlFile = undefined;
-			// Root-level files keep the bright accent; nested file headers are dimmed.
-			const styled = uiTheme.fg(ctx.depth === 1 ? "accent" : "dim", line);
-			return { raw: line, styled: ctx.headerPath ? fileHyperlink(ctx.headerPath, styled) : styled };
-		}
-		const styled = uiTheme.fg("toolOutput", line);
-		const lineNumber = parseSearchDisplayLineNumber(line);
-		const filePath = ctx.filePath ?? urlFile;
-		return {
-			raw: line,
-			styled: filePath && lineNumber !== undefined ? fileHyperlink(filePath, styled, { line: lineNumber }) : styled,
-		};
-	});
+		ranges.push(start === end ? String(start) : `${start}-${end}`);
+		start = lineNumber;
+		end = lineNumber;
+	}
+	ranges.push(start === end ? String(start) : `${start}-${end}`);
+	return { text: ranges.join(","), firstLine: sorted[0] };
 }
 
-function compactSearchPreviewGroup(group: RenderedSearchLine[]): RenderedSearchLine[] {
-	const compact = group.filter(line => isSearchHeaderLine(line.raw) || isSearchMatchLine(line.raw));
-	return compact.length > 0 ? compact : group;
+function grepFileLocations(details: GrepToolDetails): GrepFileLocation[] {
+	if (details.fileLocations && details.fileLocations.length > 0) return details.fileLocations;
+	const files = details.files ?? details.fileMatches?.map(file => file.path) ?? [];
+	return files.map(path => ({ path, lineNumbers: [] }));
 }
 
-function countPreviewMatches(lines: readonly RenderedSearchLine[], hasMarkedMatches: boolean): number {
-	if (hasMarkedMatches) return lines.reduce((count, line) => count + (isSearchMatchLine(line.raw) ? 1 : 0), 0);
-	return lines.reduce((count, line) => count + (!isSearchHeaderLine(line.raw) && line.raw.length > 0 ? 1 : 0), 0);
+function renderGrepFileLocation(location: GrepFileLocation, details: GrepToolDetails, uiTheme: Theme): string {
+	const ranges = formatLineRanges(location.lineNumbers);
+	const styledPath = uiTheme.fg("accent", replaceTabs(location.path));
+	const resolvedInternalPath = tryResolveInternalUrlSync(location.path);
+	let linkedPath: string;
+	if (resolvedInternalPath) {
+		linkedPath = fileHyperlink(resolvedInternalPath, styledPath, { line: ranges.firstLine });
+	} else if (location.path.includes("://")) {
+		linkedPath = uriHyperlink(location.path, styledPath);
+	} else {
+		const absolutePath = path.isAbsolute(location.path)
+			? location.path
+			: details.cwd
+				? path.resolve(details.cwd, location.path)
+				: undefined;
+		linkedPath = absolutePath ? fileHyperlink(absolutePath, styledPath, { line: ranges.firstLine }) : styledPath;
+	}
+	return ranges.text ? `${linkedPath}${uiTheme.fg("dim", `:${ranges.text}`)}` : linkedPath;
 }
 
-function renderBudgetedSearchGroups(
-	groups: RenderedSearchLine[][],
+function renderGrepFileLocations(
+	details: GrepToolDetails,
 	maxLines: number,
-	matchCount: number,
+	reservedLines: number,
 	uiTheme: Theme,
-	compact: boolean,
 ): string[] {
-	if (maxLines <= 0) return [];
-	const renderedGroups = groups
-		.map(group => (compact ? compactSearchPreviewGroup(group) : group))
-		.filter(group => group.length > 0);
-	if (renderedGroups.length === 0) return [];
-
-	let totalLines = 0;
-	let totalMarkedMatches = 0;
-	let totalFallbackMatches = 0;
-	for (const group of renderedGroups) {
-		totalLines += group.length;
-		totalMarkedMatches += countPreviewMatches(group, true);
-		totalFallbackMatches += countPreviewMatches(group, false);
-	}
-	const hasMarkedMatches = totalMarkedMatches > 0;
-	const needsSummary = totalLines > maxLines;
-	const contentBudget = needsSummary ? Math.max(maxLines - 1, 0) : maxLines;
-	const visibleGroups: RenderedSearchLine[][] = [];
-	let visibleLineCount = 0;
-	let visibleMatches = 0;
-	for (const group of renderedGroups) {
-		if (visibleLineCount >= contentBudget) break;
-		const available = contentBudget - visibleLineCount;
-		const take = Math.min(group.length, available);
-		if (take <= 0) break;
-		const visibleGroup = group.slice(0, take);
-		visibleGroups.push(visibleGroup);
-		visibleLineCount += visibleGroup.length;
-		visibleMatches += countPreviewMatches(visibleGroup, hasMarkedMatches);
-	}
-
-	const totalMatches = hasMarkedMatches ? totalMarkedMatches : Math.max(matchCount, totalFallbackMatches);
-	const hiddenMatches = Math.max(totalMatches - visibleMatches, 0);
-	const hiddenLines = Math.max(totalLines - visibleLineCount, 0);
-	const hasSummary = needsSummary && (hiddenMatches > 0 || hiddenLines > 0);
-	const lines: string[] = [];
-	for (let i = 0; i < visibleGroups.length; i++) {
-		const group = visibleGroups[i]!;
-		const isLast = !hasSummary && i === visibleGroups.length - 1;
-		const prefix = `${uiTheme.fg("dim", getTreeBranch(isLast, uiTheme))} `;
-		const continuePrefix = uiTheme.fg("dim", getTreeContinuePrefix(isLast, uiTheme));
-		lines.push(`${prefix}${replaceTabs(group[0]!.styled)}`);
-		for (let j = 1; j < group.length; j++) {
-			lines.push(`${continuePrefix}${replaceTabs(group[j]!.styled)}`);
-		}
-	}
-	if (hasSummary) {
-		const hiddenLabel =
-			hiddenMatches > 0 ? formatMoreItems(hiddenMatches, "match") : formatMoreItems(hiddenLines, "line");
-		lines.push(`${uiTheme.fg("dim", uiTheme.tree.last)} ${uiTheme.fg("muted", hiddenLabel)}`);
-	}
+	const locations = grepFileLocations(details);
+	const availableLines = Math.max(maxLines - reservedLines, 0);
+	if (availableLines === 0 || locations.length === 0) return [];
+	const needsSummary = locations.length > availableLines;
+	const visibleCount = needsSummary ? Math.max(availableLines - 1, 0) : locations.length;
+	const lines = locations.slice(0, visibleCount).map(location => renderGrepFileLocation(location, details, uiTheme));
+	const hiddenFiles = locations.length - visibleCount;
+	if (hiddenFiles > 0) lines.push(uiTheme.fg("muted", formatMoreItems(hiddenFiles, "file")));
 	return lines;
 }
 
@@ -1717,6 +1652,7 @@ function grepStatusIcon(uiTheme: Theme): string {
 
 export const grepToolRenderer = {
 	inline: true,
+	transcriptSurface: "bare" as const,
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];
@@ -1827,7 +1763,9 @@ export const grepToolRenderer = {
 						},
 						uiTheme,
 					);
-					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
+					return [header, ...(listLines.length > 0 ? ["", ...listLines] : [])].map(l =>
+						truncateToWidth(l, width, Ellipsis.Omit),
+					);
 				},
 			);
 		}
@@ -1852,7 +1790,7 @@ export const grepToolRenderer = {
 				{ icon: "warning", title: tSettingsUi("Grep"), titleColor: "toolTitle", description: args?.pattern, meta },
 				uiTheme,
 			);
-			const lines = [header, formatEmptyMessage(tSettingsUi("No matches found"), uiTheme)];
+			const lines = [header, "", formatEmptyMessage(tSettingsUi("No matches found"), uiTheme)];
 			if (missingNote) lines.push(missingNote);
 			return new Text(lines.join("\n"), 0, 0);
 		}
@@ -1862,8 +1800,6 @@ export const grepToolRenderer = {
 			tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount }),
 		];
 		const meta = [...summaryParts];
-		const scopeMeta = searchScopeMeta(details);
-		if (scopeMeta) meta.push(scopeMeta);
 		if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
 		const description = args?.pattern ?? undefined;
 		const header = renderStatusLine(
@@ -1877,33 +1813,22 @@ export const grepToolRenderer = {
 			uiTheme,
 		);
 
-		const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text ?? "";
-		const allLines = textContent.split("\n");
-		// Resolve hyperlinks once over the whole output so a nested directory stack
-		// reconstructs correctly across blank-line group boundaries.
-		// Header/match display paths are cwd-relative, so resolve them against cwd
-		// (falling back to searchPath for legacy results that predate `cwd`); the
-		// scoped file's absolute path seeds body lines in single-file searches.
-		const renderedLines = renderSearchDisplayLines(
-			allLines,
-			details?.cwd ?? details?.searchPath,
-			details?.searchPath,
-			uiTheme,
-		);
-		const matchGroups = groupLineIndicesByBlank(allLines).map(indices => indices.map(i => renderedLines[i]!));
-
 		const extraLines: string[] = [];
 		if (missingNote) extraLines.push(missingNote);
 
 		return createCachedComponent(
 			() => options.expanded,
 			width => {
-				const budget = Math.max(
-					(options.expanded ? EXPANDED_TEXT_LIMIT : COLLAPSED_TEXT_LIMIT) - extraLines.length,
-					0,
+				const locationLines = renderGrepFileLocations(
+					details!,
+					options.expanded ? EXPANDED_TEXT_LIMIT : COLLAPSED_TEXT_LIMIT,
+					extraLines.length,
+					uiTheme,
 				);
-				const matchLines = renderBudgetedSearchGroups(matchGroups, budget, matchCount, uiTheme, !options.expanded);
-				return [header, ...matchLines, ...extraLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
+				const bodyLines = [...locationLines, ...extraLines];
+				return [header, ...(bodyLines.length > 0 ? ["", ...bodyLines] : [])].map(l =>
+					truncateToWidth(l, width, Ellipsis.Omit),
+				);
 			},
 		);
 	},

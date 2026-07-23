@@ -5,8 +5,10 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
+import { ToolExecutionComponent } from "../../src/modes/components/tool-execution";
 import { grepToolRenderer } from "../../src/tools/grep";
 import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../src/tui/basic-tool-display-policy";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "../../src/tui/output-block";
 
 const initialSettingsUiLocale = getSettingsUiLocale();
 const initialBasicToolDetailsVisible = getBasicToolDetailsVisible();
@@ -32,52 +34,125 @@ afterAll(() => {
 });
 
 describe("grepToolRenderer", () => {
-	it("renders grep from column 0 while keeping toolTitle success headers", async () => {
+	const projectRoot = path.resolve("/tmp/omp-project");
+
+	function resultWithLocations(
+		fileLocations: Array<{ path: string; lineNumbers: number[] }>,
+		overrides: Record<string, unknown> = {},
+	) {
+		return {
+			content: [{ type: "text", text: "" }],
+			details: {
+				cwd: projectRoot,
+				searchPath: path.join(projectRoot, "src"),
+				scopePath: "src",
+				matchCount: fileLocations.reduce((count, location) => count + location.lineNumbers.length, 0),
+				fileCount: fileLocations.length,
+				files: fileLocations.map(location => location.path),
+				fileLocations,
+				...overrides,
+			},
+		};
+	}
+
+	it("renders compact file locations from column 0 and coalesces sorted unique adjacent matches", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				displayContent: ["# src/", "## file.ts#abcd", "*12│const needle = true;"].join("\n"),
-			},
-		};
+		const staleSnippetPayload = [
+			"# src/",
+			"## alpha.ts#abcd",
+			" 49│context before should stay hidden",
+			"*50│const alphaSnippetShouldNotRender = true;",
+			" 54│context after should stay hidden",
+		].join("\n");
+		const result = resultWithLocations(
+			[
+				{ path: "src/alpha.ts", lineNumbers: [53, 50, 51, 53, 52, 60] },
+				{ path: "src/beta.ts", lineNumbers: [12] },
+			],
+			{ displayContent: staleSnippetPayload },
+		);
 
 		const renderedLines = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "needle" })
+			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "FLAG", path: "src" })
 			.render(240);
-		const plainLines = sanitizeText(renderedLines.join("\n")).split("\n");
+		const plainLines = sanitizeText(renderedLines.join("\n"))
+			.split("\n")
+			.map(line => line.trimEnd());
+		const [header, separator, ...bodyLines] = plainLines;
 
-		expect(plainLines[0]!.search(/\S/)).toBe(0);
-		expect(plainLines[0]!.startsWith(`${uiTheme.symbol("icon.search")} Grep`)).toBe(true);
-		expect(plainLines[1]).toBe(`└─ # src/`);
-		expect(plainLines[2]).toBe(`   ## file.ts#abcd`);
-		expect(plainLines[3]).toBe(`   *12│const needle = true;`);
+		expect(header!.search(/\S/)).toBe(0);
+		expect(header!.startsWith(`${uiTheme.symbol("icon.search")} Grep`)).toBe(true);
+		expect(header).toContain("FLAG");
+		expect(header).toContain("7 matches");
+		expect(header).toContain("2 files");
+		expect(header).not.toContain("in src");
+		expect(separator).toBe("");
+		expect(bodyLines).toEqual(["src/alpha.ts:50-53,60", "src/beta.ts:12"]);
+		expect(plainLines.filter(line => line === "")).toHaveLength(1);
+		const plain = plainLines.join("\n");
+		expect(plain).not.toContain("alphaSnippetShouldNotRender");
+		expect(plain).not.toContain("context before should stay hidden");
+		expect(plain).not.toContain("#abcd");
+		expect(plain).not.toContain("│");
 		expect(renderedLines[0]).toContain(uiTheme.fg("toolTitle", uiTheme.symbol("icon.search")));
 		expect(renderedLines[0]).toContain(uiTheme.fg("toolTitle", "Grep"));
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", uiTheme.symbol("icon.search")));
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", "Grep"));
 	});
 
-	it("keeps the Grep title unlocalized in zh-CN while localizing match counts", async () => {
+	it("renders grep under accent with a single header/body separator and no decorative blank rows", async () => {
+		const previousBasicToolDetailsVisible = getBasicToolDetailsVisible();
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		const args = { pattern: "needle", path: "src" };
+		const result = resultWithLocations([{ path: "src/file.ts", lineNumbers: [12] }]);
+		const component = new ToolExecutionComponent("grep", args, {}, undefined, {
+			requestRender() {},
+			requestComponentRender() {},
+			resetDisplay() {},
+		});
+
+		try {
+			setBasicToolDetailsVisible(true);
+			setOutputBlockBorderStyle("accent");
+			component.updateArgs(args);
+			component.setArgsComplete();
+			component.updateResult(result, false);
+
+			const plainLines = sanitizeText(component.render(240).join("\n"))
+				.split("\n")
+				.map(line => line.trimEnd());
+
+			expect(plainLines).toHaveLength(3);
+			expect(plainLines[0]!).toContain("Grep: needle");
+			expect(plainLines[0]!).not.toContain("in src");
+			expect(plainLines[1]).toBe("");
+			expect(plainLines[2]).toBe("src/file.ts:12");
+			expect(plainLines.filter(line => line === "")).toHaveLength(1);
+		} finally {
+			component.stopAnimation();
+			setOutputBlockBorderStyle(previousBorderStyle);
+			setBasicToolDetailsVisible(previousBasicToolDetailsVisible);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+		expect(getBasicToolDetailsVisible()).toBe(previousBasicToolDetailsVisible);
+	});
+
+	it("keeps the Grep title unlocalized in zh-CN while localizing compact match counts", async () => {
 		setSettingsUiLocale("zh-CN");
 
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				displayContent: ["# src/", "## file.ts#abcd", "*12│const needle = true;"].join("\n"),
-			},
-		};
+		const result = resultWithLocations([{ path: "src/file.ts", lineNumbers: [12] }]);
 
 		const renderedLines = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "needle" })
+			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, {
+				pattern: "needle",
+				path: "src",
+			})
 			.render(240);
 		const plainHeader = sanitizeText(renderedLines[0] ?? "");
 
@@ -85,212 +160,136 @@ describe("grepToolRenderer", () => {
 		expect(plainHeader).toContain("1 个匹配");
 		expect(plainHeader).toContain("1 个文件");
 		expect(plainHeader).not.toContain("Grep（正则搜索）");
+		expect(plainHeader).not.toContain("in src");
 	});
 
-	it("keeps truncation status in the header without a bottom notice", async () => {
+	it("keeps truncation and missing-path warnings while rendering only compact locations", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-
-		const result = {
-			content: [
-				{
-					type: "text",
-					text: ["alpha:1", "alpha:2", "", "beta:1", "beta:2", "", "gamma:1", "gamma:2"].join("\n"),
-				},
+		const result = resultWithLocations(
+			[
+				{ path: "src/alpha.ts", lineNumbers: [10] },
+				{ path: "src/beta.ts", lineNumbers: [20] },
+				{ path: "src/gamma.ts", lineNumbers: [30] },
 			],
-			details: {
-				matchCount: 6,
-				fileCount: 3,
+			{
+				truncated: true,
 				fileLimitReached: 3,
 				perFileLimitReached: 20,
-				truncated: true,
+				missingPaths: ["missing.ts"],
+				displayContent: "*10│const snippetShouldNotRender = true;",
 			},
-		};
+		);
 
-		const collapsed = grepToolRenderer.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
-			pattern: "needle",
-		});
-		const renderedLines = sanitizeText(collapsed.render(200).join("\n")).split("\n");
-		const bodyLines = renderedLines.slice(1);
+		const renderedLines = sanitizeText(
+			grepToolRenderer
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
+					pattern: "needle",
+					path: "src",
+				})
+				.render(200)
+				.join("\n"),
+		)
+			.split("\n")
+			.map(line => line.trimEnd());
+		const plain = renderedLines.join("\n");
 
 		expect(renderedLines[0]).toContain("truncated");
-		expect(bodyLines).toHaveLength(6);
-		expect(renderedLines.join("\n")).not.toContain("truncated:");
-		expect(renderedLines.join("\n")).not.toContain("skip to paginate");
-		expect(renderedLines.join("\n")).not.toContain("matches per file");
-		expect(bodyLines.some(line => line.includes("gamma:1"))).toBe(true);
+		expect(renderedLines[0]).not.toContain("in src");
+		expect(renderedLines[1]).toBe("");
+		expect(renderedLines.slice(2)).toEqual([
+			"src/alpha.ts:10",
+			"src/beta.ts:20",
+			"src/gamma.ts:30",
+			"skipped missing: missing.ts",
+		]);
+		expect(plain).not.toContain("truncated:");
+		expect(plain).not.toContain("skip to paginate");
+		expect(plain).not.toContain("matches per file");
+		expect(plain).not.toContain("snippetShouldNotRender");
+		expect(plain).not.toContain("│");
 	});
 
-	it("shows actual matches when one grouped search section is larger than the collapsed budget", async () => {
+	it("keeps collapsed and expanded views location-only while bounding them by file rows", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 3,
-				fileCount: 3,
-				displayContent: [
-					"# src/",
-					"## first.ts#aaaa",
-					" 1│before",
-					"*2│const firstFlag = true;",
-					" 3│after",
-					"## second.ts#bbbb",
-					"*4│const secondFlag = true;",
-					"## third.ts#cccc",
-					"*5│const thirdFlag = true;",
-				].join("\n"),
-			},
-		};
-
-		const collapsed = grepToolRenderer.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
-			pattern: "Flag",
+		const locations = Array.from({ length: 10 }, (_, index) => ({
+			path: `src/file-${String(index + 1).padStart(2, "0")}.ts`,
+			lineNumbers: [index * 10 + 1],
+		}));
+		const result = resultWithLocations(locations, {
+			displayContent: "*1│const snippetShouldNeverRender = true;\n*2│const secondSnippetShouldNeverRender = true;",
 		});
-		const renderedLines = sanitizeText(collapsed.render(240).join("\n")).split("\n");
-		const bodyLines = renderedLines.slice(1);
-
-		expect(bodyLines).toHaveLength(6);
-		expect(bodyLines.some(line => line.includes("const firstFlag = true;"))).toBe(true);
-		expect(bodyLines.some(line => line.includes("const secondFlag = true;"))).toBe(true);
-		expect(bodyLines.some(line => line.includes("1 more match"))).toBe(true);
-		expect(bodyLines.some(line => line.includes("before"))).toBe(false);
-		expect(bodyLines.some(line => line.includes("thirdFlag"))).toBe(false);
-	});
-
-	it("links grouped file headers and code-frame lines to filesystem targets", async () => {
-		settings.override("tui.hyperlinks", "always");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
-
-		const projectRoot = path.resolve("/tmp/omp-project");
-		const filePath = path.join(projectRoot, "src", "file.ts");
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				searchPath: projectRoot,
-				scopePath: "src",
-				displayContent: ["# src/", "## file.ts#abcd", "*12│const needle = true;"].join("\n"),
-			},
-		};
-
-		const rendered = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "needle" })
-			.render(240)
-			.join("\n");
-		const fileUri = url.pathToFileURL(path.resolve(filePath)).href;
-		const lineUri = new URL(fileUri);
-		lineUri.searchParams.set("line", "12");
-		const uris = extractLinkUris(rendered);
-
-		expect(uris).toContain(fileUri);
-		expect(uris).toContain(lineUri.href);
-	});
-
-	it("links single-file code-frame lines to the searched file", async () => {
-		settings.override("tui.hyperlinks", "always");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
-
-		const filePath = path.resolve("/tmp/omp-project/file.ts");
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				searchPath: filePath,
-				scopePath: "file.ts",
-				displayContent: "*7│needle();",
-			},
-		};
-
-		const rendered = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "needle" })
-			.render(240)
-			.join("\n");
-
-		const lineUri = new URL(url.pathToFileURL(path.resolve(filePath)).href);
-		lineUri.searchParams.set("line", "7");
-		expect(extractLinkUris(rendered)).toContain(lineUri.href);
-	});
-
-	it("bounds the expanded single-file view instead of dumping every match", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
-
-		// One file's matches collapse into a single blank-line group (no `#`/`##`
-		// headers, `│...` gap separators). Before the fix the expanded renderer
-		// dumped the entire span because the tree list ignored the line budget.
-		const clusters = Array.from({ length: 12 }, (_, i) => i * 100 + 1);
-		const displayContent = clusters
-			.map((line, idx) => {
-				const cluster = [` ${line}│ context before`, `*${line + 1}│ MATCH ${idx}`, ` ${line + 2}│ context after`];
-				return idx === 0 ? cluster.join("\n") : ["    │...", ...cluster].join("\n");
-			})
-			.join("\n");
-
-		const filePath = path.resolve("/tmp/omp-project/renderer.ts");
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: clusters.length,
-				fileCount: 1,
-				searchPath: filePath,
-				scopePath: "renderer.ts",
-				displayContent,
-			},
-		};
-
 		const render = (expanded: boolean) =>
 			sanitizeText(
 				grepToolRenderer
-					.renderResult(result as never, { expanded, isPartial: false }, uiTheme, { pattern: "needle" })
+					.renderResult(result as never, { expanded, isPartial: false }, uiTheme, {
+						pattern: "needle",
+						path: "src",
+					})
 					.render(200)
 					.join("\n"),
-			).split("\n");
+			)
+				.split("\n")
+				.map(line => line.trimEnd());
 
-		const expanded = render(true);
-		const expandedBody = expanded.slice(1);
-		// Bounded: must not render all 12 clusters (36+ lines).
-		expect(expandedBody.length).toBeLessThan(clusters.length * 3);
-		expect(expandedBody.some(line => line.includes("more matches"))).toBe(true);
-		// Expanded keeps surrounding context lines (unlike the compact collapsed view).
-		expect(expandedBody.some(line => line.includes("context before"))).toBe(true);
+		const collapsedBody = render(false).slice(2);
+		const expandedBody = render(true).slice(2);
 
-		const collapsedBody = render(false).slice(1);
-		expect(collapsedBody.length).toBeLessThan(expandedBody.length);
-		// Collapsed compacts to match lines only — no context.
-		expect(collapsedBody.some(line => line.includes("context before"))).toBe(false);
-		expect(collapsedBody.some(line => line.includes("more matches"))).toBe(true);
+		expect(collapsedBody).toHaveLength(6);
+		expect(collapsedBody.slice(0, 5)).toEqual([
+			"src/file-01.ts:1",
+			"src/file-02.ts:11",
+			"src/file-03.ts:21",
+			"src/file-04.ts:31",
+			"src/file-05.ts:41",
+		]);
+		expect(collapsedBody[5]).toContain("5 more files");
+		expect(collapsedBody.join("\n")).not.toContain("file-06.ts");
+		expect(expandedBody).toEqual(locations.map(location => `${location.path}:${location.lineNumbers[0]}`));
+		const allBody = [...collapsedBody, ...expandedBody].join("\n");
+		expect(allBody).not.toContain("snippetShouldNeverRender");
+		expect(allBody).not.toContain("│");
 	});
 
-	it("summarizes successful matches to one target/count header when basic details are hidden", async () => {
+	it("OSC8-links the compact file path to the file at its first selected match line", async () => {
+		settings.override("tui.hyperlinks", "always");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = resultWithLocations([{ path: "src/linked.ts", lineNumbers: [20, 7, 8] }]);
+
+		const rendered = grepToolRenderer
+			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, {
+				pattern: "needle",
+				path: "src",
+			})
+			.render(240)
+			.join("\n");
+		const firstLineUri = new URL(url.pathToFileURL(path.join(projectRoot, "src", "linked.ts")).href);
+		firstLineUri.searchParams.set("line", "7");
+		const laterLineUri = new URL(url.pathToFileURL(path.join(projectRoot, "src", "linked.ts")).href);
+		laterLineUri.searchParams.set("line", "20");
+
+		expect(sanitizeText(rendered)).toContain("src/linked.ts:7-8,20");
+		expect(extractLinkUris(rendered)).toContain(firstLineUri.href);
+		expect(extractLinkUris(rendered)).not.toContain(laterLineUri.href);
+	});
+
+	it("summarizes successful matches with scope when basic details are hidden", async () => {
 		setBasicToolDetailsVisible(false);
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 2,
-				fileCount: 2,
-				scopePath: "src",
-				displayContent: [
-					"# src/",
-					"## alpha.ts#aaaa",
-					"*4│const alphaHit = true;",
-					"## beta.ts#bbbb",
-					"*8│const betaHit = true;",
-				].join("\n"),
-			},
-		};
+		const result = resultWithLocations(
+			[
+				{ path: "src/alpha.ts", lineNumbers: [4] },
+				{ path: "src/beta.ts", lineNumbers: [8] },
+			],
+			{ displayContent: "## alpha.ts#aaaa\n*4│const alphaHitShouldNotRender = true;" },
+		);
 
 		const plainLines = sanitizeText(
 			grepToolRenderer
@@ -308,35 +307,34 @@ describe("grepToolRenderer", () => {
 		expect(header).toContain("needle");
 		expect(header).toContain("2 matches");
 		expect(header).toContain("2 files");
-		expect(header).toContain("src");
-		expect(header).not.toContain("alphaHit");
-		expect(header).not.toContain("betaHit");
-		expect(header).not.toContain("alpha.ts#aaaa");
+		expect(header).toContain("in src");
+		expect(header).not.toContain("alpha.ts:4");
+		expect(header).not.toContain("alphaHitShouldNotRender");
+		expect(header).not.toContain("#aaaa");
 	});
 
-	it("keeps match details visible when basic details policy is on", async () => {
-		setBasicToolDetailsVisible(true);
+	it("keeps scope on zero-match detailed headers", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
-		const result = {
-			content: [{ type: "text", text: "" }],
-			details: {
-				matchCount: 1,
-				fileCount: 1,
-				displayContent: ["# src/", "## visible.ts#abcd", "*12│const visibleMatch = true;"].join("\n"),
-			},
-		};
+		const result = resultWithLocations([], { matchCount: 0, fileCount: 0, files: [] });
 
-		const plain = sanitizeText(
+		const plainLines = sanitizeText(
 			grepToolRenderer
-				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { pattern: "visible" })
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
+					pattern: "absent",
+					path: "src",
+				})
 				.render(240)
 				.join("\n"),
-		);
+		)
+			.split("\n")
+			.map(line => line.trimEnd());
 
-		expect(plain).toContain("visible.ts#abcd");
-		expect(plain).toContain("const visibleMatch = true;");
+		expect(plainLines[0]).toContain("0 matches");
+		expect(plainLines[0]).toContain("in src");
+		expect(plainLines[1]).toBe("");
+		expect(plainLines[2]).toContain("No matches found");
 	});
 
 	it("still renders grep error diagnostics when details are hidden", async () => {

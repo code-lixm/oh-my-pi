@@ -63,6 +63,7 @@ function createFixture(
 		updateEditorTopBorder: vi.fn(),
 		streamingComponent: { updateContent: vi.fn(), markTranscriptBlockFinalized: vi.fn() },
 		streamingMessage,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools,
 		noteDisplayableThinkingContent: vi.fn(() => false),
 		chatContainer,

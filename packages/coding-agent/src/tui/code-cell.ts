@@ -10,7 +10,7 @@ import {
 	formatStatusIcon,
 	replaceTabs,
 } from "../tools/render-utils";
-import { renderOutputBlock } from "./output-block";
+import { type OutputBlockBorderStyle, renderOutputBlock } from "./output-block";
 import type { State } from "./types";
 
 export interface CodeCellOptions {
@@ -40,6 +40,7 @@ export interface CodeCellOptions {
 	 */
 	showLanguage?: boolean;
 	width: number;
+	borderStyle?: OutputBlockBorderStyle;
 	codeStartLine?: number;
 	codeLineNumbers?: Array<number | null>;
 }
@@ -196,7 +197,10 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		{ lines: outputLines.length > 0 ? [...codeLines, "", ...outputLines] : codeLines },
 	];
 
-	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
+	return renderOutputBlock(
+		{ header: title, headerMeta: meta, state, sections, width, borderStyle: options.borderStyle },
+		theme,
+	);
 }
 
 export interface MarkdownCellOptions {
@@ -212,6 +216,7 @@ export interface MarkdownCellOptions {
 	contentMaxLines?: number;
 	expanded?: boolean;
 	width: number;
+	borderStyle?: OutputBlockBorderStyle;
 }
 
 export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): string[] {
@@ -262,5 +267,8 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 		{ lines: outputLines.length > 0 ? [...contentLines, "", ...outputLines] : contentLines },
 	];
 
-	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
+	return renderOutputBlock(
+		{ header: title, headerMeta: meta, state, sections, width, borderStyle: options.borderStyle },
+		theme,
+	);
 }

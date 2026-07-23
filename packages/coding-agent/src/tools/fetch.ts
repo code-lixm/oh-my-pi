@@ -23,7 +23,7 @@ import type { ToolSession } from "../sdk";
 import type { AgentStorage } from "../session/agent-storage";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
 import { renderStatusLine, urlHyperlink } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, resolveBareOutputBlockBorderStyle } from "../tui/output-block";
 import { webpExclusionForModel } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { CONVERTIBLE_EXTENSIONS } from "../utils/markit";
@@ -1653,7 +1653,7 @@ export async function fetchReadUrl(
 ): Promise<ReadUrlEntry> {
 	const { path: url, raw = false } = params;
 
-	const effectiveTimeout = clampTimeout("fetch", 30);
+	const effectiveTimeout = clampTimeout("fetch", 30, session.settings.get("tools.maxTimeout"));
 
 	if (signal?.aborted) {
 		throw new ToolAbortError();
@@ -1824,7 +1824,16 @@ export function renderReadUrlResult(
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
 			render: (width: number) =>
-				outputBlock.render({ header, state: "error", sections: [{ lines: errorLines }], width }, uiTheme),
+				outputBlock.render(
+					{
+						header,
+						state: "error",
+						sections: [{ lines: errorLines }],
+						width,
+						borderStyle: resolveBareOutputBlockBorderStyle(),
+					},
+					uiTheme,
+				),
 			invalidate: () => outputBlock.invalidate(),
 		});
 	}
@@ -1912,6 +1921,7 @@ export function renderReadUrlResult(
 					],
 					width,
 					applyBg: false,
+					borderStyle: resolveBareOutputBlockBorderStyle(),
 				},
 				uiTheme,
 			);

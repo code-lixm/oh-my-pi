@@ -24,6 +24,8 @@ export interface OutputBlockOptions {
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
 	applyBg?: boolean;
+	/** Accent-mode surface tint strength. Omit for the standard subtle tool-card tint. */
+	accentTintOpacity?: number;
 	contentPaddingLeft?: number;
 	/** Override the state-derived border color. Used for muted "legacy" tool
 	 * frames that should not visually compete with framed-output tools. */
@@ -40,6 +42,7 @@ export type OutputBlockBorderStyle = "full" | "none" | "accent";
 export const OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH = 2;
 /** Keep accent surfaces one cell shy of the terminal edge. */
 export const OUTPUT_BLOCK_ACCENT_RIGHT_INSET = 1;
+export const OUTPUT_BLOCK_ACCENT_GLYPH = "▌";
 
 /** Layout modes whose surface draws no box frame. `accent` uses a half-cell
  * `▌` glyph over a translucent-looking tint derived from the same semantic
@@ -61,6 +64,11 @@ export function setOutputBlockBorderStyle(style: OutputBlockBorderStyle): void {
 }
 export function getOutputBlockBorderStyle(): OutputBlockBorderStyle {
 	return outputBlockBorderStyle;
+}
+
+/** Keep observation surfaces bare under the accent layout while preserving explicit full/none selections. */
+export function resolveBareOutputBlockBorderStyle(): OutputBlockBorderStyle {
+	return outputBlockBorderStyle === "accent" ? "none" : outputBlockBorderStyle;
 }
 
 /**
@@ -135,13 +143,19 @@ export function applyStableBackground(text: string, bgAnsi: string): string {
  * Prefix one row with a half-cell `▌` accent glyph. The body background is a
  * low-opacity preblend of the same semantic color over the theme surface.
  */
-export function renderOutputAccentLine(line: string, width: number, theme: Theme, color: ThemeColor): string {
+export function renderOutputAccentLine(
+	line: string,
+	width: number,
+	theme: Theme,
+	color: ThemeColor,
+	tintOpacity = 0.06,
+): string {
 	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));
 	if (surfaceWidth === 0) return rightInset;
-	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, 0.06);
+	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, tintOpacity);
 	const railFgAnsi = color === "borderMuted" ? theme.getSurfaceTintFgAnsi(color) : theme.getFgAnsi(color);
-	const rail = applyStableBackground(`${railFgAnsi}▌\x1b[39m`, tintedBgAnsi);
+	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, tintedBgAnsi);
 	if (surfaceWidth === 1) return `${rail}${rightInset}`;
 	const contentWidth = Math.max(0, surfaceWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH);
 	const content = contentWidth > 0 ? padToWidth(truncateToWidth(line, contentWidth), contentWidth) : "";
@@ -188,7 +202,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		const borderlessLineWidth = Math.max(0, lineWidth - accentGutterWidth - accentRightInset);
 		const pushLine = (line: string): void => {
 			if (accentMode) {
-				lines.push(renderOutputAccentLine(line, lineWidth, theme, borderColor));
+				lines.push(renderOutputAccentLine(line, lineWidth, theme, borderColor, options.accentTintOpacity));
 				return;
 			}
 			lines.push(padToWidth(truncateToWidth(line, lineWidth), lineWidth, bgFn));
@@ -239,10 +253,12 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 			for (const wrappedLine of wrapped) pushLine(`${effectivePrefix}${wrappedLine}`);
 		};
 
-		if (accentMode) pushLine("");
 		const title = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
-		if (title) pushLine(title);
 		const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
+		const hasContent =
+			Boolean(title) || normalizedSections.some(section => section.label !== undefined || section.lines.length > 0);
+		if (accentMode && hasContent) pushLine("");
+		if (title) pushLine(title);
 		let lastLabeledSection = -1;
 		for (let i = 0; i < normalizedSections.length; i++) {
 			if (normalizedSections[i]!.label) lastLabeledSection = i;
@@ -274,7 +290,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				pushContent(line, linePrefix, !section.label && sectionHasRootTree);
 			}
 		}
-		if (accentMode) pushLine("");
+		if (accentMode && hasContent) pushLine("");
 		return lines;
 	}
 
@@ -413,6 +429,7 @@ export class CachedOutputBlock {
 		h.optional(options.borderColor);
 		h.bool(options.applyBg ?? false);
 		h.str(effectiveStyle);
+		h.u32(Math.round((options.accentTintOpacity ?? 0.06) * 10_000));
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);

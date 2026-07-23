@@ -513,6 +513,7 @@ function globStatusIcon(uiTheme: Theme): string {
 
 export const globToolRenderer = {
 	inline: true,
+	transcriptSurface: "bare" as const,
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.limit !== undefined) meta.push(tSettingsUi("limit:{count}", { count: args.limit }));

@@ -455,13 +455,24 @@ describe("TranscriptContainer spacing", () => {
 		expect(container.render(40)).toEqual(["a", "", "body"]);
 	});
 
-	it("preserves background-colored padding rows (block-internal design)", () => {
+	it("lets background-colored padding rows replace the generic separator", () => {
 		const bgPad = "\x1b[48;2;0;0;0m   \x1b[0m";
 		const container = new TranscriptContainer();
 		container.addChild(new MutableBlock(["a"]));
-		// The ANSI-bearing padding row is not "plain blank", so it survives stripping.
+		// The ANSI-bearing padding row is block-owned breathing room, so the
+		// container must not stack its own plain separator above it.
 		container.addChild(new MutableBlock([bgPad, "x", bgPad]));
-		expect(container.render(40)).toEqual(["a", "", bgPad, "x", bgPad]);
+		expect(container.render(40)).toEqual(["a", bgPad, "x", bgPad]);
+	});
+
+	it("lets accent-rail blank edge rows replace the generic separator", () => {
+		const accentPad = "\x1b[48;2;0;0;0m▌   \x1b[0m";
+		const container = new TranscriptContainer();
+		container.addChild(new MutableBlock(["a"]));
+		container.addChild(new MutableBlock([accentPad, "x", accentPad]));
+		container.addChild(new MutableBlock(["b"]));
+
+		expect(container.render(40)).toEqual(["a", accentPad, "x", accentPad, "b"]);
 	});
 
 	it("does not double the gap when a block carries its own trailing blank", () => {
@@ -690,6 +701,25 @@ describe("TranscriptContainer renderViewportTail", () => {
 		// A mid-block fold still yields the exact bottom rows.
 		expect([...container.renderViewportTail(W, 4)]).toEqual(full.slice(full.length - 4));
 		expect([...container.renderViewportTail(W, 1)]).toEqual(["b3b"]);
+	});
+
+	it("uses padded block edges instead of stacking separators in viewport tails", () => {
+		const cases = [
+			{ name: "background-colored edge", pad: "\x1b[48;2;0;0;0m   \x1b[0m" },
+			{ name: "accent-rail edge", pad: "\x1b[48;2;0;0;0m▌   \x1b[0m" },
+		] as const;
+
+		for (const { name, pad } of cases) {
+			const container = new TranscriptContainer();
+			container.addChild(new MutableBlock([`${name} before`]));
+			container.addChild(new MutableBlock([pad, `${name} body`, pad]));
+			container.addChild(new MutableBlock([`${name} after`]));
+			const expected = [`${name} before`, pad, `${name} body`, pad, `${name} after`];
+
+			expect(container.render(W)).toEqual(expected);
+			expect([...container.renderViewportTail(W, expected.length)]).toEqual(expected);
+			expect([...container.renderViewportTail(W, 4)]).toEqual(expected.slice(1));
+		}
 	});
 
 	it("renders only the blocks needed to fill the request", () => {
