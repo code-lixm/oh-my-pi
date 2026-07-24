@@ -50,7 +50,8 @@ export interface AdvisorMessageDetails {
  * stays a clean `<advisory>` block. The primary agent's system prompt never
  * mentions advisories, so this is its only cue for how to treat them.
  */
-const ADVISOR_GUIDANCE = "weigh, don't blindly obey";
+const ADVISOR_GUIDANCE =
+	"advice, not authority; reconcile with user corrections, current evidence, and completed actions; never retry a rejected path without new evidence";
 
 /**
  * Render a batch of advisor notes as the agent-facing message body: one

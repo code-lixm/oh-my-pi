@@ -193,9 +193,18 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	const sections: Array<{ lines: string[] }> = [
-		{ lines: outputLines.length > 0 ? [...codeLines, "", ...outputLines] : codeLines },
-	];
+	// `code` is the canonical body signal: an empty/whitespace-only source must
+	// not surface as padding rows even when the caller attached an explicit
+	// `codeLineNumbers: []` (the read tool does this for empty bodies). Without
+	// this guard the empty body would inflate the cell with trailing whitespace.
+	const codeText = (options.code ?? "").trim();
+	const hasBody = codeText.length > 0;
+	const bodyLines = hasBody ? codeLines : [];
+	const combined: string[] =
+		bodyLines.length > 0 && outputLines.length > 0
+			? [...bodyLines, "", ...outputLines]
+			: [...bodyLines, ...outputLines];
+	const sections: Array<{ lines: string[] }> = [{ lines: combined }];
 
 	return renderOutputBlock(
 		{ header: title, headerMeta: meta, state, sections, width, borderStyle: options.borderStyle },
@@ -263,9 +272,13 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 		}
 	}
 
-	const sections: Array<{ lines: string[] }> = [
-		{ lines: outputLines.length > 0 ? [...contentLines, "", ...outputLines] : contentLines },
-	];
+	// `content` is the canonical body signal for markdown cells.
+	const contentText = (options.content ?? "").trim();
+	const combined: string[] =
+		contentText.length > 0 && outputLines.length > 0
+			? [...contentLines, "", ...outputLines]
+			: [...contentLines, ...outputLines];
+	const sections: Array<{ lines: string[] }> = [{ lines: combined }];
 
 	return renderOutputBlock(
 		{ header: title, headerMeta: meta, state, sections, width, borderStyle: options.borderStyle },

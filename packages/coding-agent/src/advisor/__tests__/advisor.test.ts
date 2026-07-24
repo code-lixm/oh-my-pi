@@ -842,6 +842,15 @@ describe("advisor", () => {
 			expect(content.split('severity="').length - 1).toBe(1);
 		});
 
+		it("frames advisory guidance as reconcilable evidence rather than authority", () => {
+			const content = formatAdvisorBatchContent([{ note: "review this decision" }]);
+			const guidance = content.match(/guidance="([^"]*)"/)?.[1];
+
+			expect(guidance).toContain("advice, not authority");
+			expect(guidance).toContain("reconcile with user corrections, current evidence, and completed actions");
+			expect(guidance).toContain("never retry a rejected path without new evidence");
+		});
+
 		it("emits an advisor attribute only for named advisors, escaping the name", () => {
 			const content = formatAdvisorBatchContent([
 				{ note: "named note", advisor: 'Arch "X"' },
@@ -4582,17 +4591,17 @@ describe("advisor", () => {
 					{
 						name: "single concern",
 						notes: [{ note: "watch null locale branch", severity: "concern" as const }],
-						expectedTitle: "专家建议发现 1 条隐患",
+						expectedTitle: "审阅助手发现 1 条隐患",
 					},
 					{
 						name: "single nit",
 						notes: [{ note: "rename helper only", severity: "nit" as const }],
-						expectedTitle: "专家建议发现 1 条小建议",
+						expectedTitle: "审阅助手发现 1 条小建议",
 					},
 					{
 						name: "single blocker",
 						notes: [{ note: "delete tmp/cache manually", severity: "blocker" as const }],
-						expectedTitle: "专家建议发现 1 个阻断问题",
+						expectedTitle: "审阅助手发现 1 个阻断问题",
 					},
 					{
 						name: "mixed summary",
@@ -4601,7 +4610,7 @@ describe("advisor", () => {
 							{ note: "watch null locale branch", severity: "concern" as const },
 							{ note: "rename helper only", severity: "nit" as const },
 						],
-						expectedTitle: "专家建议发现 3 条问题",
+						expectedTitle: "审阅助手发现 3 条问题",
 					},
 				]) {
 					const lines = createAdvisorMessageCard({ notes: testCase.notes }, uiTheme).render(80);
@@ -5329,8 +5338,8 @@ describe("advisor", () => {
 					],
 				});
 				const text = strip(overlay.render(200));
-				expect(text).toContain("专家建议配置");
-				expect(text).toContain("+ 添加专家建议");
+				expect(text).toContain("审阅助手配置");
+				expect(text).toContain("+ 添加审阅助手");
 				expect(text).toContain("保存并应用");
 				expect(text).toContain("read, grep, glob （默认）");
 				expect(text).toMatch(/还有 \d+ 个/);
@@ -5364,7 +5373,7 @@ describe("advisor", () => {
 				overlay.render(120);
 				overlay.handleInput("\x1b[<0;4;3M");
 				const text = strip(overlay.render(120));
-				expect(text).toContain("专家建议配置");
+				expect(text).toContain("审阅助手配置");
 				expect(text).toContain("未保存");
 			} finally {
 				setSettingsUiLocale(previousLocale);

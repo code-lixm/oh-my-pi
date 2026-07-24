@@ -862,6 +862,9 @@ export interface GrepToolDetails {
 	matchCount?: number;
 	fileCount?: number;
 	files?: string[];
+	/** User-visible input scopes that were searched, after delimiter expansion and unavailable-input filtering.
+	 * Globs, selectors, and internal URLs retain their user-supplied display form. */
+	searchedPaths?: string[];
 	fileMatches?: Array<{ path: string; count: number }>;
 	/** Final, user-visible match locations after deduplication, pagination, and per-file caps.
 	 * Context lines are intentionally excluded. */
@@ -1365,6 +1368,14 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				// double up (the unreadable selector also failed the scope's existence check).
 				const archiveUnreadablePaths = new Set(archiveUnreadable.map(s => s.replace(/ \(.*\)$/, "")));
 				const missingPathsForNote = missingPaths.filter(p => !archiveUnreadablePaths.has(p));
+				const unavailablePaths = new Set([...missingPaths, ...archiveUnreadablePaths]);
+				const searchedPaths = pathSpecs
+					.filter((spec, index) => {
+						if (virtualInputIndexes.has(index)) return true;
+						const resolvedPath = internalResolution.resolvedPathsByInput[index] ?? spec.clean;
+						return !unavailablePaths.has(spec.original) && !unavailablePaths.has(resolvedPath);
+					})
+					.map(spec => spec.original);
 				const missingPathsNote =
 					missingPathsForNote.length > 0 ? `Skipped missing paths: ${missingPathsForNote.join(", ")}` : undefined;
 				const warningNote =
@@ -1379,6 +1390,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						matchCount: 0,
 						fileCount: 0,
 						files: [],
+						searchedPaths,
 						truncated: false,
 						missingPaths: missingPaths.length > 0 ? missingPaths : undefined,
 					};
@@ -1528,6 +1540,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 							),
 						].sort((a, b) => a - b),
 					})),
+					searchedPaths,
 					truncated,
 					fileLimitReached: fileLimitReached ? DEFAULT_FILE_LIMIT : undefined,
 					perFileLimitReached: perFileLimitReached ? perFileMatchCap : undefined,
@@ -1652,7 +1665,10 @@ export const grepToolRenderer = {
 			},
 			uiTheme,
 		);
-		return new Text(text, 0, 0);
+		return createCachedComponent(
+			() => false,
+			width => [truncateToWidth(text, width, Ellipsis.Omit)],
+		);
 	},
 
 	renderResult(
@@ -1665,7 +1681,11 @@ export const grepToolRenderer = {
 		if (result.isError || details?.error) {
 			const errorText =
 				details?.error || result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
-			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
+			const text = formatErrorMessage(errorText, uiTheme);
+			return createCachedComponent(
+				() => false,
+				width => [truncateToWidth(text, width, Ellipsis.Omit)],
+			);
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;
@@ -1710,7 +1730,10 @@ export const grepToolRenderer = {
 				},
 				uiTheme,
 			);
-			return new Text(header, 0, 0);
+			return createCachedComponent(
+				() => false,
+				width => [truncateToWidth(header, width, Ellipsis.Omit)],
+			);
 		}
 
 		if (!hasDetailedData) {
@@ -1764,16 +1787,37 @@ export const grepToolRenderer = {
 				: undefined;
 
 		if (matchCount === 0) {
+			const legacyPaths = toPathList(args?.path ?? args?.paths);
+			const searchedPaths =
+				details?.searchedPaths ??
+				(legacyPaths.length > 0 ? legacyPaths : details?.scopePath ? [details.scopePath] : []);
 			const meta = [tSettingsUi("0 matches")];
-			const scopeMeta = searchScopeMeta(details);
-			if (scopeMeta) meta.push(scopeMeta);
+			if (searchedPaths.length === 0) {
+				const scopeMeta = searchScopeMeta(details);
+				if (scopeMeta) meta.push(scopeMeta);
+			}
 			const header = renderStatusLine(
 				{ icon: "warning", title: tSettingsUi("Grep"), titleColor: "toolTitle", description: args?.pattern, meta },
 				uiTheme,
 			);
-			const lines = [header, "", formatEmptyMessage(tSettingsUi("No matches found"), uiTheme)];
-			if (missingNote) lines.push(missingNote);
-			return new Text(lines.join("\n"), 0, 0);
+			return createCachedComponent(
+				() => options.expanded,
+				width => {
+					const emptyLabel = tSettingsUi("No matches found");
+					const fileLines = renderFileList(
+						{
+							files: searchedPaths.map(path => ({ path, meta: emptyLabel })),
+							expanded: options.expanded,
+							maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
+						},
+						uiTheme,
+					);
+					const fallbackLines = fileLines.length === 0 ? [formatEmptyMessage(emptyLabel, uiTheme)] : fileLines;
+					return [header, ...fallbackLines, ...(missingNote ? [missingNote] : [])].map(line =>
+						truncateToWidth(line, width, Ellipsis.Omit),
+					);
+				},
+			);
 		}
 
 		const summaryParts = [

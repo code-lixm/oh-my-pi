@@ -56,6 +56,16 @@ omp config set startup.showSplash true
 
 This only controls the startup splash animation. It does not rerun setup or change setup state, and `startup.quiet: true` still suppresses all startup chrome including the splash.
 
+### Outbound proxy
+
+Set `network.proxy` once to route provider and service requests through an HTTP(S) proxy on every `omp` startup:
+
+```bash
+omp config set network.proxy http://127.0.0.1:7890
+```
+
+The setting supplies `PI_PROXY` for pi-ai transports and `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` for Bun-native transports. Provider-specific `PI_PROXY_<PROVIDER>` values still take precedence. `NO_PROXY` and `no_proxy` remain user-controlled for hosts that must bypass the proxy. Use `omp config reset network.proxy` to return to inherited proxy environment variables.
+
 ### Subcommands
 
 | Command | Effect |

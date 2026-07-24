@@ -762,7 +762,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#runtimeKeys(runtime: InteractiveRuntime): string[] {
 		const sessionManager = runtime.session.sessionManager;
-		return [sessionManager.getSessionId(), sessionManager.getSessionFile()].filter((key): key is string => Boolean(key));
+		return [sessionManager.getSessionId(), sessionManager.getSessionFile()].filter((key): key is string =>
+			Boolean(key),
+		);
 	}
 
 	#registerRuntime(runtime: InteractiveRuntime): void {
@@ -811,14 +813,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
-
 	async #disposeAllRuntimeSessions(reason?: Parameters<SessionTeardown>[0]): Promise<void> {
 		const runtimes = [...new Set(this.#runtimes.values())];
 		for (const runtime of runtimes) {
 			if (runtime === this.#primaryRuntime) continue;
 			await runtime.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
 		}
-		await this.#primaryRuntime.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
+		await this.#primaryRuntime.session.dispose({
+			mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+			reason,
+		});
 	}
 	async attachLiveTopLevelRuntime(sessionPath: string): Promise<boolean | undefined> {
 		const runtime = this.#runtimes.get(sessionPath);
@@ -836,7 +840,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		for (const unsubscribe of this.#runtimeUnsubscribers.splice(0)) unsubscribe();
-		this.#runtimeTeardown = undefined;
 		this.clearTransientSessionUi();
 		this.#eventController.resetTranscriptAnchors();
 		this.session.setSessionBeforeSwitchReconciler?.(null);
@@ -869,9 +872,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#rebuildSessionCommands(): void {
-		const hookCommands = (this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []).map(
-			cmd => ({ name: cmd.name, description: cmd.description ?? tSettingsUi("(hook command)"), getArgumentCompletions: cmd.getArgumentCompletions }),
-		);
+		const hookCommands = (
+			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
+		).map(cmd => ({
+			name: cmd.name,
+			description: cmd.description ?? tSettingsUi("(hook command)"),
+			getArgumentCompletions: cmd.getArgumentCompletions,
+		}));
 		const customCommands = this.session.customCommands.map(loaded => ({
 			name: loaded.command.name,
 			description: `${loaded.command.description} (${loaded.source})`,
@@ -886,13 +893,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#installRuntimeBindings(): void {
-		this.#runtimeTeardown = createSessionTeardown({
-			getDraftText: () => this.editor.getText(),
-			beginDispose: () => this.session.beginDispose(),
-			saveDraft: text => this.sessionManager.saveDraft(text),
-			disposeSession: reason =>
-				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
-		});
 		this.#runtimeUnsubscribers.push(
 			this.sessionManager.onSessionNameChanged(() => {
 				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
@@ -930,7 +930,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#runtimeFactory?: InteractiveRuntimeFactory;
 	#runtimes = new Map<string, InteractiveRuntime>();
 	#runtimeUnsubscribers: Array<() => void> = [];
-	#runtimeTeardown?: SessionTeardown;
 	#activeRuntime: InteractiveRuntime;
 	#primaryRuntime: InteractiveRuntime;
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };

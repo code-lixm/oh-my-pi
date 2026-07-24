@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 import { ToolExecutionComponent } from "../../src/modes/components/tool-execution";
@@ -324,7 +325,7 @@ describe("grepToolRenderer", () => {
 		expect(header).not.toContain("#aaaa");
 	});
 
-	it("keeps scope on zero-match detailed headers", async () => {
+	it("renders an argument search path as its zero-match tree row when detailed paths are absent", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -334,18 +335,143 @@ describe("grepToolRenderer", () => {
 			grepToolRenderer
 				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
 					pattern: "absent",
-					path: "src",
+					path: "src/empty.ts",
 				})
 				.render(240)
 				.join("\n"),
 		)
 			.split("\n")
 			.map(line => line.trimEnd());
+		const [header, ...bodyLines] = plainLines;
 
-		expect(plainLines[0]).toContain("0 matches");
-		expect(plainLines[0]).toContain("in src");
-		expect(plainLines[1]).toBe("");
-		expect(plainLines[2]).toContain("No matches found");
+		expect(header).toContain("0 matches");
+		expect(bodyLines).toEqual([`└─ ${uiTheme.getLangIcon("typescript")} src/empty.ts No matches found`]);
+		expect(plainLines).not.toContain("");
+		expect(plainLines).not.toContain("No matches found");
+	});
+
+	it("renders detailed zero matches as adjacent localized file tree rows", async () => {
+		setSettingsUiLocale("zh-CN");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const searchedPaths = [
+			"packages/coding-agent/src/system-prompt.test.ts",
+			"packages/coding-agent/src/config/prompt-templates.ts",
+		];
+		const result = resultWithLocations([], {
+			matchCount: 0,
+			fileCount: 0,
+			files: [],
+			searchedPaths,
+		});
+
+		const plainLines = sanitizeText(
+			grepToolRenderer
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, {
+					pattern: "absent",
+					path: "packages/coding-agent/src",
+				})
+				.render(240)
+				.join("\n"),
+		)
+			.split("\n")
+			.map(line => line.trimEnd());
+		const [header, ...bodyLines] = plainLines;
+
+		expect(header).toContain("Grep");
+		expect(header).toContain("absent");
+		expect(header).toContain("0 个匹配");
+		expect(bodyLines).toEqual([
+			`├─ ${uiTheme.getLangIcon("typescript")} packages/coding-agent/src/system-prompt.test.ts 未找到匹配项`,
+			`└─ ${uiTheme.getLangIcon("typescript")} packages/coding-agent/src/config/prompt-templates.ts 未找到匹配项`,
+		]);
+		expect(plainLines).not.toContain("");
+		expect(plainLines).not.toContain("未找到匹配项");
+	});
+
+	it("keeps pending Grep calls to one truncated line at narrow widths", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const width = 32;
+
+		const renderedLines = grepToolRenderer
+			.renderCall(
+				{
+					pattern: "(?:long-regex-alternative-one|long-regex-alternative-two)-with-suffix",
+					path: ["packages/coding-agent/src/modes/interactive", "packages/coding-agent/src/tools"],
+				},
+				{ expanded: false, isPartial: false },
+				uiTheme,
+			)
+			.render(width);
+		const plainLine = Bun.stripANSI(renderedLines[0] ?? "");
+
+		expect(renderedLines).toHaveLength(1);
+		expect(visibleWidth(plainLine)).toBeLessThanOrEqual(width);
+		expect(plainLine).toContain("Grep");
+	});
+
+	it("truncates grep error diagnostics at narrow render widths", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const width = 32;
+		const errorText = "regex_parse_error_unclosed_character_class_requiring_nonwrapping_diagnostic_truncation";
+
+		const renderedLines = grepToolRenderer
+			.renderResult(
+				{
+					content: [{ type: "text", text: errorText }],
+					details: { error: errorText },
+					isError: true,
+				} as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ pattern: "needle", path: "src" },
+			)
+			.render(width);
+		const plainLines = renderedLines.flatMap(line => Bun.stripANSI(line).split("\n"));
+
+		expect(plainLines).toHaveLength(1);
+		expect(plainLines.join("\n")).toContain("Error:");
+		expect(plainLines.every(line => visibleWidth(line) <= width)).toBe(true);
+	});
+
+	it("keeps hidden-detail grep summaries to one truncated line at narrow widths", async () => {
+		const previousBasicToolDetailsVisible = getBasicToolDetailsVisible();
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const width = 32;
+
+		try {
+			setBasicToolDetailsVisible(false);
+			const renderedLines = grepToolRenderer
+				.renderResult(
+					{
+						content: [{ type: "text", text: "" }],
+						details: { matchCount: 2, fileCount: 1, files: ["src/match.ts"] },
+					} as never,
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{
+						pattern: "(?:long-regex-alternative-one|long-regex-alternative-two)-with-suffix",
+						path: "packages/coding-agent/src/modes/interactive/very-long-search-scope",
+					},
+				)
+				.render(width);
+			const plainLines = renderedLines.flatMap(line => Bun.stripANSI(line).split("\n"));
+
+			expect(plainLines).toHaveLength(1);
+			expect(plainLines[0]).toContain("Grep");
+			expect(visibleWidth(plainLines[0] ?? "")).toBeLessThanOrEqual(width);
+		} finally {
+			setBasicToolDetailsVisible(previousBasicToolDetailsVisible);
+		}
+
+		expect(getBasicToolDetailsVisible()).toBe(previousBasicToolDetailsVisible);
 	});
 
 	it("still renders grep error diagnostics when details are hidden", async () => {

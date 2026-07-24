@@ -41,6 +41,7 @@ import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-pro
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { withFileLock } from "./file-lock";
+import { applyNetworkProxy } from "./network-proxy";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -55,6 +56,12 @@ function applyDisplayLanguage(value: unknown): void {
 	setSettingsUiLocale(value);
 	setPromptLocale(value);
 	setCliLocale(value);
+}
+
+function applyConfiguredNetworkProxy(value: unknown): void {
+	if (applyNetworkProxy(value) === "invalid") {
+		logger.warn("Settings: network.proxy must be an absolute HTTP(S) URL; ignoring configured proxy");
+	}
 }
 
 // Re-export types that callers need
@@ -1058,7 +1065,7 @@ export class Settings {
 		this.#project = await projectPromise;
 		this.#configOverlay = await this.#loadConfigOverlays();
 		this.#rebuildMerged();
-		applyDisplayLanguage(this.get("displayLanguage"));
+		applyConfiguredNetworkProxy(this.get("network.proxy"));
 		return this;
 	}
 
@@ -2008,6 +2015,7 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"secrets.enabled": value => {
 		configureCredentialRedaction(value === true);
 	},
+	"network.proxy": applyConfiguredNetworkProxy,
 	"hindsight.bankId": () => hindsightScopeSignal.fire(),
 	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
 	"hindsight.scoping": () => hindsightScopeSignal.fire(),

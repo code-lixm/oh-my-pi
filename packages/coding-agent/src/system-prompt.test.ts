@@ -282,4 +282,19 @@ describe("system prompt locale", () => {
 		expect(chinese).not.toContain("Capitalized");
 		expect(chinese).not.toContain("a concise intent");
 	});
+
+	it("renders decision discipline in both prompt locales", async () => {
+		setPromptLocale("en");
+		const english = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
+
+		setPromptLocale("zh-CN");
+		const chinese = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
+
+		expect(english).toContain("A long-unchanged input cannot alone explain a new regression");
+		expect(english).toContain("NEVER retry it without new evidence that resolves the rejection");
+		expect(english).toContain("Reconcile advisories with user corrections, current evidence, and completed actions");
+		expect(chinese).toContain("长期未变的输入不能单独解释新回归");
+		expect(chinese).toContain("没有能解决该否定的新证据，NEVER 重试");
+		expect(chinese).toContain("将 advisory 与用户纠正、当前证据和已完成操作核对");
+	});
 });

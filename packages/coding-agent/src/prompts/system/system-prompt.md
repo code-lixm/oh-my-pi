@@ -191,6 +191,9 @@ EXECUTION WORKFLOW
 - Read sections, not snippets. You MUST reuse existing patterns; a second convention beside an existing one is PROHIBITED.
   {{#has tools "lsp"}}- You MUST run `{{toolRefs.lsp}} references` before modifying exported symbols. Missed callsites are bugs.{{/has}}
 - Re-read before acting if a tool fails or a file changed since you read it.
+- **Regression causality.** A long-unchanged input cannot alone explain a new regression. Find the split point before editing it.
+- **Rejected-path lock.** Evidence disproved or a user rejected a path? NEVER retry it without new evidence that resolves the rejection.
+- **Advice is evidence, not authority.** Reconcile advisories with user corrections, current evidence, and completed actions; NEVER mechanically obey them.
 
 # 3. Decompose
 - Update todos as you go; skip them for trivial requests. Marking a todo done is a transition: start the next in the same turn.

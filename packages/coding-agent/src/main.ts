@@ -1541,27 +1541,32 @@ export async function runRootCommand(
 
 		const interactiveRuntimeFactory: InteractiveRuntimeFactory | undefined = isInteractive
 			? async nextCwd => {
-				const nextSessionManager = SessionManager.create(nextCwd);
-				const nextEventBus = new EventBus();
-				const nextExtensions = await loadSessionExtensions(sessionOptions, nextCwd, settingsInstance, nextEventBus);
-				const next = await createSession({
-					...sessionOptions,
-					cwd: nextCwd,
-					sessionManager: nextSessionManager,
-					eventBus: nextEventBus,
-					preloadedExtensions: nextExtensions,
-					agentId: `top-level:${nextSessionManager.getSessionId()}`,
-					agentDisplayName: "main",
-					ownsAgentLifecycle: false,
-				});
-				return {
-					session: next.session,
-					setToolUIContext: next.setToolUIContext,
-					lspServers: next.lspServers,
-					mcpManager: next.mcpManager,
-					eventBus: nextEventBus,
-				};
-			}
+					const nextSessionManager = SessionManager.create(nextCwd);
+					const nextEventBus = new EventBus();
+					const nextExtensions = await loadSessionExtensions(
+						sessionOptions,
+						nextCwd,
+						settingsInstance,
+						nextEventBus,
+					);
+					const next = await createSession({
+						...sessionOptions,
+						cwd: nextCwd,
+						sessionManager: nextSessionManager,
+						eventBus: nextEventBus,
+						preloadedExtensions: nextExtensions,
+						agentId: `top-level:${nextSessionManager.getSessionId()}`,
+						agentDisplayName: "main",
+						ownsAgentLifecycle: false,
+					});
+					return {
+						session: next.session,
+						setToolUIContext: next.setToolUIContext,
+						lspServers: next.lspServers,
+						mcpManager: next.mcpManager,
+						eventBus: nextEventBus,
+					};
+				}
 			: undefined;
 
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub

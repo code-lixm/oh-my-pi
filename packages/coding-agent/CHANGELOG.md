@@ -14,6 +14,7 @@
 - Added an `accent` value for `display.borderStyle` that replaces full frames with a half-cell `▌` semantic-color rail, a matching translucent-looking tint, and vertical card padding across standard tool blocks and interactive Bash sessions.
 - Added `display.basicToolDetails` to control completed `read`, `grep`, and `glob` detail visibility.
 - Added live top-level session switching: `/new` keeps the previous in-process session running in the background, while `/resume` reattaches live sessions without interrupting them.
+- Added compact battery-style status-line usage rendering with remaining-quota blocks, deterministic latest-window selection, and configurable battery width.
 
 ### Changed
 
@@ -30,6 +31,8 @@
 
 ### Fixed
 
+- Fixed the primary agent mechanically following Advisor interruptions and re-entering user-rejected or evidence-disproved approaches; prompts now require regression split-point analysis, reconciliation with current evidence and completed actions, and new evidence before retrying a rejected path.
+- Fixed detailed Grep zero-match results switching to a detached warning line; they now retain the normal status header and render each searched scope as an adjacent localized file-tree row.
 - Fixed user prompts queued while switching or resuming sessions remaining stranded after the agent event subscription reconnected, which left the resumed conversation appearing idle but unable to continue.
 - Fixed accent-style fallback tool surfaces missing the internal top and bottom breathing rows used by self-framed cards, making activity and tool card spacing consistent.
 - Fixed exiting a fresh interactive session with no conversation printing an unusable `omp --resume <id>` hint even though the empty session was intentionally never persisted.

@@ -4,18 +4,14 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import type { InteractiveRuntime } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveRuntime } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-async function createSession(
-	tempDir: TempDir,
-	name: string,
-	modelRegistry: ModelRegistry,
-): Promise<AgentSession> {
+async function createSession(tempDir: TempDir, name: string, modelRegistry: ModelRegistry): Promise<AgentSession> {
 	const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 	await sessionManager.setSessionFile(path.join(tempDir.path(), `${name}.jsonl`));
 	const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -50,19 +46,10 @@ describe("InteractiveMode live top-level sessions", () => {
 		live = await createSession(tempDir, "live", modelRegistry);
 		const runtime: InteractiveRuntime = { session: live, setToolUIContext: () => {} };
 		runtimeFactoryCalls = 0;
-		mode = new InteractiveMode(
-			original,
-			"test",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			async () => {
-				runtimeFactoryCalls++;
-				return runtime;
-			},
-		);
+		mode = new InteractiveMode(original, "test", undefined, undefined, undefined, undefined, undefined, async () => {
+			runtimeFactoryCalls++;
+			return runtime;
+		});
 		mode.ui.requestRender = vi.fn();
 	});
 

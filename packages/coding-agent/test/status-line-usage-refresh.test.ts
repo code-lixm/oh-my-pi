@@ -160,7 +160,7 @@ describe("StatusLineComponent usage refresh", () => {
 		vi.advanceTimersByTime(5_000);
 		await flushMicrotasks();
 
-		// TTL expired, new timer scheduled, advanceTimersByTime(0) fires the 0ms start timer
+		// The timeout records a fresh fetch attempt, so no zero-delay retry is scheduled.
 		component.refreshUsageInBackground();
 		vi.advanceTimersByTime(0);
 		await flushMicrotasks();

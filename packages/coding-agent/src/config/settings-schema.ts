@@ -149,7 +149,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Developer",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
-	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+	providers: ["Services", "Network", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 
 /** Status line segment identifiers */
@@ -5127,6 +5127,20 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Hide Secrets"),
 			description: tSettingsUi(
 				"Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers",
+			),
+		},
+	},
+
+	// Outbound network
+	"network.proxy": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Network"),
+			label: tSettingsUi("Proxy URL"),
+			description: tSettingsUi(
+				"Route outbound provider and service requests through this HTTP(S) proxy. Leave empty to use inherited proxy environment variables.",
 			),
 		},
 	},
