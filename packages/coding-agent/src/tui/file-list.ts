@@ -10,8 +10,12 @@ export interface FileEntry {
 	/** Absolute filesystem path. When provided together with {@link FileListOptions.hyperlinkFn}, the
 	 * rendered path text is wrapped in an OSC 8 hyperlink. */
 	absPath?: string;
+	/** Optional one-based target line for filesystem hyperlinks. */
+	line?: number;
 	isDirectory?: boolean;
 	meta?: string;
+	/** Optional non-filesystem link wrapper, for entries such as internal URLs. */
+	link?: (displayText: string) => string;
 }
 
 export interface FileListOptions {
@@ -19,9 +23,9 @@ export interface FileListOptions {
 	expanded?: boolean;
 	maxCollapsed?: number;
 	showIcons?: boolean;
-	/** When provided, called with the entry's absolute path and the ANSI-styled display string to
-	 * optionally wrap the path in an OSC 8 hyperlink. Only invoked when {@link FileEntry.absPath} is set. */
-	hyperlinkFn?: (absPath: string, displayText: string) => string;
+	/** When provided, called with the entry's absolute path, ANSI-styled display string, and optional
+	 * target line to wrap filesystem paths in an OSC 8 hyperlink. Only invoked when {@link FileEntry.absPath} is set. */
+	hyperlinkFn?: (absPath: string, displayText: string, opts?: { line?: number }) => string;
 }
 
 export function renderFileList(options: FileListOptions, theme: Theme): string[] {
@@ -46,7 +50,11 @@ export function renderFileList(options: FileListOptions, theme: Theme): string[]
 				const meta = entry.meta ? ` ${theme.fg("dim", entry.meta)}` : "";
 				const iconPrefix = icon ? `${icon} ` : "";
 				const pathStr = theme.fg(labelColor, displayPath);
-				const linkedPath = entry.absPath && hyperlinkFn ? hyperlinkFn(entry.absPath, pathStr) : pathStr;
+				const linkedPath = entry.link
+					? entry.link(pathStr)
+					: entry.absPath && hyperlinkFn
+						? hyperlinkFn(entry.absPath, pathStr, { line: entry.line })
+						: pathStr;
 				return `${iconPrefix}${linkedPath}${meta}`;
 			},
 		},

@@ -29,6 +29,7 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string } 
 	const flush = vi.fn(async () => {
 		if (opts.flushFails) throw new Error("disk full");
 	});
+	const attachLiveTopLevelRuntime = vi.fn(async () => undefined);
 	const ctx = {
 		session: { switchSession },
 		sessionManager: { getCwd: () => state.cwd, getSessionDir: () => "/tmp" },
@@ -52,8 +53,9 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string } 
 		},
 		editor,
 		editorContainer: { children: [editor], clear: vi.fn(), addChild: vi.fn() },
+		attachLiveTopLevelRuntime,
 	} as unknown as InteractiveModeContext;
-	return { ctx, switchSession, applyCwdChange, state, editor, hide, setFocus, flush, getSelector: () => selector };
+	return { ctx, attachLiveTopLevelRuntime, switchSession, applyCwdChange, state, editor, hide, setFocus, flush, getSelector: () => selector };
 }
 
 describe("SelectorController.handleResumeSession preflight flush", () => {
@@ -74,7 +76,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 	it("proceeds and returns true when flush succeeds", async () => {
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-preflight-"));
 		try {
-			const { ctx, switchSession, applyCwdChange, state } = createResumeContext({ sourceCwd: tmpDir });
+			const { ctx, attachLiveTopLevelRuntime, switchSession, applyCwdChange, state } = createResumeContext({ sourceCwd: tmpDir });
 			const targetCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-target-"));
 			switchSession.mockImplementation(async () => {
 				state.cwd = targetCwd;
@@ -86,6 +88,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 
 			expect(result).toBe(true);
 			expect(ctx.settings.flush).toHaveBeenCalled();
+			expect(attachLiveTopLevelRuntime).toHaveBeenCalledWith("/tmp/some-session.jsonl");
 			expect(ctx.clearTransientSessionUi).toHaveBeenCalled();
 			expect(switchSession).toHaveBeenCalledWith("/tmp/some-session.jsonl");
 			expect(applyCwdChange).toHaveBeenCalledWith(targetCwd);

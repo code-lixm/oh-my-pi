@@ -1511,6 +1511,8 @@ export class SelectorController {
 	}
 
 	async handleResumeSession(sessionPath: string, options?: { settingsFlushed?: boolean }): Promise<boolean> {
+		const liveAttach = await this.ctx.attachLiveTopLevelRuntime(sessionPath);
+		if (liveAttach !== undefined) return liveAttach;
 		const previousCwd = this.ctx.sessionManager.getCwd();
 		// Flush pending settings writes before switching sessions so a save
 		// failure leaves the session, process project dir, and Settings in the

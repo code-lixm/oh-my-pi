@@ -2,6 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { getThemeByName, initTheme, type Theme, type ThemeColor } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
+	getBasicToolDetailsVisible,
+	setBasicToolDetailsVisible,
+} from "@oh-my-pi/pi-coding-agent/tui/basic-tool-display-policy";
+import {
 	ACCENT_PAD_TINT_OPACITY,
 	framedBlock,
 	getOutputBlockBorderStyle,
@@ -137,7 +141,7 @@ function fgAnsi(name: FgName): string {
 }
 
 function renderToolResult(
-	toolName: "bash" | "write",
+	toolName: "bash" | "read" | "write",
 	args: Record<string, unknown>,
 	result: {
 		content: Array<{ type: string; text?: string }>;
@@ -478,6 +482,36 @@ describe("output-block border style", () => {
 			expect(writePlain).toContain("src/example.ts");
 			expect(writePlain).toContain("export const answer = 42;");
 		});
+	});
+
+	// This test lives here because renderToolResult exercises the full ToolExecutionComponent path.
+	it("renders complete agent read results with the accent rail when details are visible", () => {
+		const previousStyle = getOutputBlockBorderStyle();
+		const previousDetailsVisible = getBasicToolDetailsVisible();
+		try {
+			setBasicToolDetailsVisible(true);
+			setOutputBlockBorderStyle("accent");
+			const content = "READ_AGENT_RESULT_MARKER\nsecond result line";
+			const lines = renderToolResult(
+				"read",
+				{ path: "agent://ExportCommandScout" },
+				{
+					content: [{ type: "text", text: content }],
+					details: { displayContent: { text: content } },
+				},
+			);
+			const rendered = lines.join("\n");
+			const renderedPlain = Bun.stripANSI(rendered);
+
+			expect(renderedPlain).toContain("agent://ExportCommandScout");
+			expect(renderedPlain).toContain("READ_AGENT_RESULT_MARKER");
+			expect(renderedPlain).toContain("second result line");
+			expect(lines.some(line => Bun.stripANSI(line).trimStart().startsWith("▌"))).toBe(true);
+			expect(rendered).toContain(surfaceTintBgAnsi("borderMuted"));
+		} finally {
+			setOutputBlockBorderStyle(previousStyle);
+			setBasicToolDetailsVisible(previousDetailsVisible);
+		}
 	});
 
 	it.each([

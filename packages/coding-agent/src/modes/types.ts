@@ -91,6 +91,17 @@ export interface InteractiveModeInitOptions {
 	waitForInitialAppearance?: boolean;
 }
 
+/** Independent top-level session resources that can be foregrounded by the shared interactive TUI. */
+export interface InteractiveRuntime {
+	session: AgentSession;
+	setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	lspServers?: LspStartupServerInfo[];
+	mcpManager?: MCPManager;
+	eventBus?: EventBus;
+}
+
+export type InteractiveRuntimeFactory = (cwd: string) => Promise<InteractiveRuntime>;
+
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
 
 export interface InteractiveModeContext {
@@ -123,6 +134,10 @@ export interface InteractiveModeContext {
 	/** Focus a live subagent in the fullscreen read-only view. */
 	focusAgentSession(id: string): Promise<void>;
 	/** Cycle through live subagents; Main is reached only through unfocusSession. */
+	/** Create and foreground a separate in-process top-level runtime; undefined preserves legacy destructive behavior. */
+	startNewTopLevelRuntime(): Promise<boolean | undefined>;
+	/** Attach an existing live top-level runtime; undefined means use cold restore. */
+	attachLiveTopLevelRuntime(sessionPath: string): Promise<boolean | undefined>;
 	cycleAgentSession(direction: "next" | "previous"): Promise<void>;
 	/** Focus the focused agent's live parent, falling back to main. */
 	focusParentSession(): Promise<void>;

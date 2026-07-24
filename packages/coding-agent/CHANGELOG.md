@@ -13,6 +13,7 @@
 - Added a `background` value for `display.borderStyle` that renders tool cards with filled backgrounds instead of framed borders.
 - Added an `accent` value for `display.borderStyle` that replaces full frames with a half-cell `▌` semantic-color rail, a matching translucent-looking tint, and vertical card padding across standard tool blocks and interactive Bash sessions.
 - Added `display.basicToolDetails` to control completed `read`, `grep`, and `glob` detail visibility.
+- Added live top-level session switching: `/new` keeps the previous in-process session running in the background, while `/resume` reattaches live sessions without interrupting them.
 
 ### Changed
 

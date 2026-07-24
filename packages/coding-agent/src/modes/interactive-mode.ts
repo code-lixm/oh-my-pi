@@ -220,6 +220,8 @@ import type {
 	CompactionQueuedMessage,
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
+	InteractiveRuntime,
+	InteractiveRuntimeFactory,
 	InteractiveSelectorDialogOptions,
 	SubmittedUserInput,
 	TodoItem,
@@ -638,9 +640,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewAnnotationState = new Map<string, PlanReviewAnnotationState>();
 	/** Annotation state held until the associated queued refinement actually starts. */
 	#planReviewAnnotationStateBySubmission = new WeakMap<SubmittedUserInput, string>();
-	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
+	lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
-	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	#toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #btwController: BtwController;
 	readonly #tanCommandController: TanCommandController;
@@ -757,6 +759,155 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lastAssistantUsage = undefined;
 		this.pendingTools.clear();
 	}
+
+	#runtimeKeys(runtime: InteractiveRuntime): string[] {
+		const sessionManager = runtime.session.sessionManager;
+		return [sessionManager.getSessionId(), sessionManager.getSessionFile()].filter((key): key is string => Boolean(key));
+	}
+
+	#registerRuntime(runtime: InteractiveRuntime): void {
+		for (const key of this.#runtimeKeys(runtime)) this.#runtimes.set(key, runtime);
+	}
+
+	#bindMcpManager(mcpManager?: MCPManager): void {
+		mcpManager?.setAuthHandler((serverName, challenge) =>
+			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
+		);
+	}
+
+	#bindRuntimeEventBus(eventBus?: EventBus): void {
+		this.#eventBus = eventBus;
+		if (!eventBus) return;
+		this.#runtimeUnsubscribers.push(
+			eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
+				if (this.settings.get("startup.quiet")) return;
+				this.#handleLspStartupEvent(data as LspStartupEvent);
+			}),
+			eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, data => {
+				if (!isMcpConnectionStatusEvent(data)) {
+					logger.warn("Ignoring malformed mcp:connection-status event", { data });
+					return;
+				}
+				this.#handleMcpConnectionStatusEvent(data);
+			}),
+		);
+	}
+
+	#hasBlockingSessionDialog(): boolean {
+		return Boolean(this.hookSelector || this.hookInput || this.hookEditor || this.#planReviewOverlay);
+	}
+
+	async startNewTopLevelRuntime(): Promise<boolean | undefined> {
+		if (!this.#runtimeFactory) return undefined;
+		if (this.#hasBlockingSessionDialog()) {
+			this.showWarning(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
+			return false;
+		}
+		const runtime = await this.#runtimeFactory(this.sessionManager.getCwd());
+		this.#registerRuntime(runtime);
+		return this.#attachTopLevelRuntime(
+			runtime,
+			tSettingsUi("New session started; previous session continues in background."),
+		);
+	}
+
+
+	async #disposeAllRuntimeSessions(reason?: Parameters<SessionTeardown>[0]): Promise<void> {
+		const runtimes = [...new Set(this.#runtimes.values())];
+		for (const runtime of runtimes) {
+			if (runtime === this.#primaryRuntime) continue;
+			await runtime.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
+		}
+		await this.#primaryRuntime.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
+	}
+	async attachLiveTopLevelRuntime(sessionPath: string): Promise<boolean | undefined> {
+		const runtime = this.#runtimes.get(sessionPath);
+		if (!runtime) return undefined;
+		if (this.#hasBlockingSessionDialog()) {
+			this.showWarning(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
+			return false;
+		}
+		return this.#attachTopLevelRuntime(runtime, tSettingsUi("Resumed live session"));
+	}
+
+	async #attachTopLevelRuntime(runtime: InteractiveRuntime, label: string): Promise<boolean> {
+		if (runtime === this.#activeRuntime) return true;
+		await this.unfocusSession();
+		this.unsubscribe?.();
+		this.unsubscribe = undefined;
+		for (const unsubscribe of this.#runtimeUnsubscribers.splice(0)) unsubscribe();
+		this.#runtimeTeardown = undefined;
+		this.clearTransientSessionUi();
+		this.#eventController.resetTranscriptAnchors();
+		this.session.setSessionBeforeSwitchReconciler?.(null);
+		this.session.setSessionSwitchReconciler?.(null);
+		this.#toolUiContextSetter({} as ExtensionUIContext, false);
+		this.#activeRuntime = runtime;
+		this.session = runtime.session;
+		this.sessionManager = runtime.session.sessionManager;
+		this.settings = runtime.session.settings;
+		this.agent = runtime.session.agent;
+		this.#toolUiContextSetter = runtime.setToolUIContext;
+		this.lspServers = runtime.lspServers;
+		this.mcpManager = runtime.mcpManager;
+		this.#bindRuntimeEventBus(runtime.eventBus);
+		this.#bindMcpManager(runtime.mcpManager);
+		this.#observerRegistry.resetSessions();
+		if (runtime.eventBus) this.#observerRegistry.subscribeToEventBus(runtime.eventBus);
+		this.resetObserverRegistry();
+		this.statusLine.setSession(this.session);
+		this.#installRuntimeBindings();
+		await this.initHooksAndCustomTools();
+		this.#rebuildSessionCommands();
+		this.renderInitialMessages({ clearTerminalHistory: true });
+		await this.reloadTodos();
+		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		this.updateEditorBorderColor();
+		this.showStatus(label);
+		this.ui.requestRender(true, { clearScrollback: true });
+		return true;
+	}
+
+	#rebuildSessionCommands(): void {
+		const hookCommands = (this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []).map(
+			cmd => ({ name: cmd.name, description: cmd.description ?? tSettingsUi("(hook command)"), getArgumentCompletions: cmd.getArgumentCompletions }),
+		);
+		const customCommands = this.session.customCommands.map(loaded => ({
+			name: loaded.command.name,
+			description: `${loaded.command.description} (${loaded.source})`,
+		}));
+		this.#pendingSlashCommands = [
+			...buildTuiBuiltinSlashCommands({ ctx: this }),
+			...hookCommands,
+			...customCommands,
+			...this.#rebuildSkillCommandsFromSession(),
+		];
+		void this.refreshSlashCommandState(this.sessionManager.getCwd());
+	}
+
+	#installRuntimeBindings(): void {
+		this.#runtimeTeardown = createSessionTeardown({
+			getDraftText: () => this.editor.getText(),
+			beginDispose: () => this.session.beginDispose(),
+			saveDraft: text => this.sessionManager.saveDraft(text),
+			disposeSession: reason =>
+				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
+		});
+		this.#runtimeUnsubscribers.push(
+			this.sessionManager.onSessionNameChanged(() => {
+				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				this.#handleSessionAccentInputsChanged();
+			}),
+			this.session.subscribe(event => void this.#handleGoalSessionEvent(event)),
+			this.session.subscribeCommandMetadataChanged(() => this.#rebuildSessionCommands()),
+		);
+		this.session.setSessionBeforeSwitchReconciler?.(async () => {
+			await this.#liveCommandController.stop();
+			await this.#quiesceVibeForSessionSwitch();
+		});
+		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
+		this.#subscribeToAgent();
+	}
 	readonly #uiHelpers: UiHelpers;
 	#sttController: STTController | undefined;
 	#voiceAnimationInterval: NodeJS.Timeout | undefined;
@@ -776,6 +927,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, string>();
 	#welcomeComponent?: WelcomeComponent;
+	#runtimeFactory?: InteractiveRuntimeFactory;
+	#runtimes = new Map<string, InteractiveRuntime>();
+	#runtimeUnsubscribers: Array<() => void> = [];
+	#runtimeTeardown?: SessionTeardown;
+	#activeRuntime: InteractiveRuntime;
+	#primaryRuntime: InteractiveRuntime;
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
 	constructor(
@@ -786,38 +943,25 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
+		runtimeFactory?: InteractiveRuntimeFactory,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
+		this.#runtimeFactory = runtimeFactory;
+		this.#activeRuntime = { session, setToolUIContext, lspServers, mcpManager, eventBus };
+		this.#primaryRuntime = this.#activeRuntime;
+		this.#registerRuntime(this.#activeRuntime);
 		this.#version = version;
 		this.#changelogMarkdown = changelogMarkdown;
 		this.#toolUiContextSetter = setToolUIContext;
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
-		this.mcpManager?.setAuthHandler((serverName, challenge) =>
-			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
-		);
-		this.#eventBus = eventBus;
-		if (eventBus) {
-			this.#eventBusUnsubscribers.push(
-				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
-					if (this.settings.get("startup.quiet")) return;
-					this.#handleLspStartupEvent(data as LspStartupEvent);
-				}),
-			);
-			this.#eventBusUnsubscribers.push(
-				eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, data => {
-					if (!isMcpConnectionStatusEvent(data)) {
-						logger.warn("Ignoring malformed mcp:connection-status event", { data });
-						return;
-					}
-					this.#handleMcpConnectionStatusEvent(data);
-				}),
-			);
-		}
+		this.#bindRuntimeEventBus(eventBus);
+		this.#bindMcpManager(mcpManager);
+		// Per-runtime EventBus handlers are installed by #bindRuntimeEventBus().
 
 		setTuiTight(settings.get("tui.tight"));
 		setMarkdownHeadingStyle(settings.get("tui.markdownHeadingStyle"));
@@ -1001,8 +1145,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			getDraftText: () => this.editor.getText(),
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
-			disposeSession: reason =>
-				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
+			disposeSession: reason => this.#disposeAllRuntimeSessions(reason),
 		});
 		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
 		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
@@ -1175,17 +1318,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
-		// Single side-effect point for title changes: every setSessionName caller
-		// (first-input titling, /rename, extension renames, plan seeding, replan
-		// refresh) gets the terminal title + accent updates from here. Registered
-		// before initHooksAndCustomTools/#reconcileModeFromSession/#enterPlanMode —
-		// all of which can reach setSessionName during init.
-		this.#eventBusUnsubscribers.push(
-			this.sessionManager.onSessionNameChanged(() => {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-				this.#handleSessionAccentInputsChanged();
-			}),
-		);
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
 		this.ui.requestRender(true);
@@ -1193,12 +1325,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Initialize hooks with TUI-based UI context
 		await this.initHooksAndCustomTools();
 
-		// Restore mode from session (e.g. plan mode on resume)
-		this.session.setSessionBeforeSwitchReconciler?.(async () => {
-			await this.#liveCommandController.stop();
-			await this.#quiesceVibeForSessionSwitch();
-		});
-		this.session.setSessionSwitchReconciler?.(() => this.#reconcileModeFromSession({ preserveActiveGoal: true }));
+		// Bind the current runtime before reconciling its restored mode so future
+		// top-level attachments can remove the complete set atomically.
+		this.#installRuntimeBindings();
 		await this.#reconcileModeFromSession();
 
 		// Brand-new sessions optionally start in plan mode when the user has made it
@@ -1239,13 +1368,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			logger.warn("Failed to restore session draft", { error: String(err) });
 		}
 
-		// Subscribe to agent events
-		this.#subscribeToAgent();
-
-		this.#eventBusUnsubscribers.push(
-			this.session.subscribe(event => {
-				void this.#handleGoalSessionEvent(event);
-			}),
+		this.#runtimeUnsubscribers.push(
 			onStatusLineSessionAccentChanged(() => {
 				this.#syncStatusLineSettings();
 				this.#handleSessionAccentInputsChanged();
@@ -1254,13 +1377,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(
 			onModelRolesChanged(() => {
 				void this.#reapplyPlanModeModelOnRoleChange();
-			}),
-		);
-		this.#eventBusUnsubscribers.push(
-			this.session.subscribeCommandMetadataChanged(() => {
-				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-				const skillCommands = this.#rebuildSkillCommandsFromSession();
-				this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
 			}),
 		);
 		// Set up theme file watcher
@@ -4184,6 +4300,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			unsubscribe();
 		}
 		this.#eventBusUnsubscribers = [];
+		for (const unsubscribe of this.#runtimeUnsubscribers) {
+			unsubscribe();
+		}
+		this.#runtimeUnsubscribers = [];
 		this.#observerRegistry.dispose();
 		this.#agentRegistryUnsubscribe?.();
 		this.#agentRegistryUnsubscribe = undefined;
@@ -4239,7 +4359,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.#signalTeardown) {
 				await this.#signalTeardown();
 			} else {
-				await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+				await this.#disposeAllRuntimeSessions();
 			}
 		} finally {
 			clearTimeout(stillClosingTimer);

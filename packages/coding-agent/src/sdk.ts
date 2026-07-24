@@ -484,6 +484,8 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Whether this top-level session owns process-global agent lifecycle teardown. Defaults to true for main sessions. */
+	ownsAgentLifecycle?: boolean;
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -3216,11 +3218,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					// begins — the lifecycle await below opens an async gap before
 					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
-					if (agentKind === "main") {
-						// Top-level teardown owns the global agent lifecycle: park timers,
-						// adopted subagent sessions, revivers. Tear it down while shared
-						// resources (kernels, MCP, LSP) are still live. Subagent disposal
-						// must NOT touch the global lifecycle.
+					if (agentKind === "main" && options.ownsAgentLifecycle !== false) {
+						// The primary top-level runtime owns process-global park timers,
+						// adopted subagent sessions, and revivers. Additional interactive
+						// top-level runtimes remain live until the shared TUI exits.
 						const vibeRegistry = VibeSessionRegistry.global();
 						const vibeParentSession = {
 							getAgentId: () => resolvedAgentId,

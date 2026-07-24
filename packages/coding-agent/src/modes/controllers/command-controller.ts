@@ -1037,6 +1037,8 @@ export class CommandController {
 	}
 
 	async handleClearCommand(): Promise<void> {
+		const attached = await this.ctx.startNewTopLevelRuntime();
+		if (attached !== undefined) return;
 		await this.#runNewSessionFlow();
 	}
 

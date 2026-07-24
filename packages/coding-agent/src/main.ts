@@ -62,7 +62,7 @@ import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
-import type { SubmittedUserInput } from "./modes/types";
+import type { InteractiveRuntimeFactory, SubmittedUserInput } from "./modes/types";
 import { createWarpEventBridgeExtension } from "./modes/warp-events";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import {
@@ -424,6 +424,7 @@ async function runInteractiveMode(
 	initialMessage?: string,
 	initialImages?: ImageContent[],
 	joinLink?: string,
+	runtimeFactory?: InteractiveRuntimeFactory,
 ): Promise<void> {
 	const mode = new InteractiveMode(
 		session,
@@ -433,6 +434,7 @@ async function runInteractiveMode(
 		lspServers,
 		mcpManager,
 		eventBus,
+		runtimeFactory,
 	);
 
 	// Cold-launch gate: the full setup wizard (every scene + the overlay and
@@ -528,7 +530,7 @@ async function runInteractiveMode(
 
 	while (true) {
 		const input = await mode.getUserInput();
-		await submitInteractiveInput(mode, session, input);
+		await submitInteractiveInput(mode, mode.session, input);
 	}
 }
 
@@ -1537,6 +1539,31 @@ export async function runRootCommand(
 			preloadedExtensions: extensionsResult,
 		});
 
+		const interactiveRuntimeFactory: InteractiveRuntimeFactory | undefined = isInteractive
+			? async nextCwd => {
+				const nextSessionManager = SessionManager.create(nextCwd);
+				const nextEventBus = new EventBus();
+				const nextExtensions = await loadSessionExtensions(sessionOptions, nextCwd, settingsInstance, nextEventBus);
+				const next = await createSession({
+					...sessionOptions,
+					cwd: nextCwd,
+					sessionManager: nextSessionManager,
+					eventBus: nextEventBus,
+					preloadedExtensions: nextExtensions,
+					agentId: `top-level:${nextSessionManager.getSessionId()}`,
+					agentDisplayName: "main",
+					ownsAgentLifecycle: false,
+				});
+				return {
+					session: next.session,
+					setToolUIContext: next.setToolUIContext,
+					lspServers: next.lspServers,
+					mcpManager: next.mcpManager,
+					eventBus: nextEventBus,
+				};
+			}
+			: undefined;
+
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
 		// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
@@ -1630,6 +1657,7 @@ export async function runRootCommand(
 				initialMessage,
 				initialImages,
 				parsedArgs.join,
+				interactiveRuntimeFactory,
 			);
 		} else {
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.

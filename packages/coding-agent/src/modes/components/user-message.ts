@@ -46,9 +46,10 @@ export class UserMessageComponent extends Container {
 			});
 		const md = new Markdown(text, framedImageMessage ? 0 : 1, framedImageMessage ? 0 : 1, getMarkdownTheme(), {
 			color,
-			bgColor: synthetic
-				? undefined
-				: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
+			bgColor:
+				synthetic || framedImageMessage
+					? undefined
+					: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
 		});
 		md.setIgnoreTight(true);
 		if (framedImageMessage) {
@@ -56,6 +57,7 @@ export class UserMessageComponent extends Container {
 				framedBlock(theme, width => ({
 					sections: [{ lines: [...md.render(outputBlockContentWidth(width))] }],
 					borderColor: "borderMuted",
+					borderStyle: "full",
 					applyBg: false,
 					width,
 				})),

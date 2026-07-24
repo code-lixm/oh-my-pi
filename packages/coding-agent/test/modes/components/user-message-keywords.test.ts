@@ -8,6 +8,7 @@ import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components
 import { getEditorTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { Container, visibleWidth } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
@@ -26,6 +27,7 @@ function render(text: string): string {
 }
 
 const stripUserControls = (text: string) => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
+const BACKGROUND_SGR = /\x1b\[(?:4[0-7]|10[0-7]|48;(?:5;\d+|2;\d+;\d+;\d+))m/;
 
 describe("UserMessageComponent magic-keyword highlighting", () => {
 	it("gradient-paints a magic keyword in the rendered (sent) message bubble", () => {
@@ -149,31 +151,46 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		expect(raw).toContain(imageUri);
 	});
 
-	it("wraps metadata-bearing image placeholders in a rounded frame without the user bubble background", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
-		const rendered = new UserMessageComponent("see [Image #1, 2024x464] now").render(80);
-		const plain = rendered.map(stripUserControls);
-		expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(true);
-		expect(plain[0]?.trimEnd().endsWith(uiTheme.boxRound.topRight)).toBe(true);
-		expect(plain.at(-1)?.trimStart().startsWith(uiTheme.boxRound.bottomLeft)).toBe(true);
-		expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(true);
-		expect(plain.map(line => visibleWidth(line))).toEqual(Array(plain.length).fill(80));
-		expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(false);
-		const bodyLine = plain.find(line => line.includes("[Image #1, 2024x464]"));
-		expect(bodyLine).toBeDefined();
-		expect(bodyLine).toContain(uiTheme.boxRound.vertical);
+	it("uses a full rounded frame without accent rail, tint, or bubble background for image placeholders under accent output styling", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("accent");
+			const theme = await getThemeByName("dark");
+			expect(theme).toBeDefined();
+			const uiTheme = theme!;
+			const rendered = new UserMessageComponent("see [Image #1, 2024x464] now").render(80);
+			const plain = rendered.map(stripUserControls);
+
+			expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(true);
+			expect(plain[0]?.trimEnd().endsWith(uiTheme.boxRound.topRight)).toBe(true);
+			expect(plain.at(-1)?.trimStart().startsWith(uiTheme.boxRound.bottomLeft)).toBe(true);
+			expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(true);
+			expect(plain.map(line => visibleWidth(line))).toEqual(Array(plain.length).fill(80));
+			expect(rendered.every(line => !BACKGROUND_SGR.test(line))).toBe(true);
+			const bodyLine = plain.find(line => line.includes("[Image #1, 2024x464]"));
+			expect(bodyLine).toBeDefined();
+			expect(bodyLine?.trimStart().startsWith(uiTheme.boxRound.vertical)).toBe(true);
+			expect(bodyLine?.trimEnd().endsWith(uiTheme.boxRound.vertical)).toBe(true);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
-	it("keeps ordinary text messages on the existing bubble background without adding a rounded frame", async () => {
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		const uiTheme = theme!;
-		const rendered = new UserMessageComponent("plain user text").render(80);
-		const plain = rendered.map(stripUserControls);
-		expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(true);
-		expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(false);
-		expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(false);
+	it("keeps ordinary text messages on the existing bubble background under accent output styling without adding a rounded frame", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("accent");
+			const theme = await getThemeByName("dark");
+			expect(theme).toBeDefined();
+			const uiTheme = theme!;
+			const rendered = new UserMessageComponent("plain user text").render(80);
+			const plain = rendered.map(stripUserControls);
+
+			expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(true);
+			expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(false);
+			expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(false);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 });

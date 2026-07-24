@@ -55,7 +55,7 @@ describe("grepToolRenderer", () => {
 		};
 	}
 
-	it("renders compact file locations from column 0 and coalesces sorted unique adjacent matches", async () => {
+	it("renders detailed matches as icon tree rows and coalesces sorted unique adjacent ranges", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -80,7 +80,7 @@ describe("grepToolRenderer", () => {
 		const plainLines = sanitizeText(renderedLines.join("\n"))
 			.split("\n")
 			.map(line => line.trimEnd());
-		const [header, separator, ...bodyLines] = plainLines;
+		const [header, ...bodyLines] = plainLines;
 
 		expect(header!.search(/\S/)).toBe(0);
 		expect(header!.startsWith(`${uiTheme.symbol("icon.search")} Grep`)).toBe(true);
@@ -88,9 +88,11 @@ describe("grepToolRenderer", () => {
 		expect(header).toContain("7 matches");
 		expect(header).toContain("2 files");
 		expect(header).not.toContain("in src");
-		expect(separator).toBe("");
-		expect(bodyLines).toEqual(["src/alpha.ts:50-53,60", "src/beta.ts:12"]);
-		expect(plainLines.filter(line => line === "")).toHaveLength(1);
+		expect(bodyLines).toEqual([
+			`├─ ${uiTheme.getLangIcon("typescript")} src/alpha.ts :50-53,60`,
+			`└─ ${uiTheme.getLangIcon("typescript")} src/beta.ts :12`,
+		]);
+		expect(plainLines.filter(line => line === "")).toHaveLength(0);
 		const plain = plainLines.join("\n");
 		expect(plain).not.toContain("alphaSnippetShouldNotRender");
 		expect(plain).not.toContain("context before should stay hidden");
@@ -102,7 +104,10 @@ describe("grepToolRenderer", () => {
 		expect(renderedLines[0]).not.toContain(uiTheme.fg("accent", "Grep"));
 	});
 
-	it("renders grep under accent with a single header/body separator and no decorative blank rows", async () => {
+	it("keeps the accent-wrapped header directly adjacent to its tree row", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
 		const previousBasicToolDetailsVisible = getBasicToolDetailsVisible();
 		const previousBorderStyle = getOutputBlockBorderStyle();
 		const args = { pattern: "needle", path: "src" };
@@ -124,12 +129,11 @@ describe("grepToolRenderer", () => {
 				.split("\n")
 				.map(line => line.trimEnd());
 
-			expect(plainLines).toHaveLength(3);
+			expect(plainLines).toHaveLength(2);
 			expect(plainLines[0]!).toContain("Grep: needle");
 			expect(plainLines[0]!).not.toContain("in src");
-			expect(plainLines[1]).toBe("");
-			expect(plainLines[2]).toBe("src/file.ts:12");
-			expect(plainLines.filter(line => line === "")).toHaveLength(1);
+			expect(plainLines[1]).toBe(`└─ ${uiTheme.getLangIcon("typescript")} src/file.ts :12`);
+			expect(plainLines.filter(line => line === "")).toHaveLength(0);
 		} finally {
 			component.stopAnimation();
 			setOutputBlockBorderStyle(previousBorderStyle);
@@ -163,7 +167,7 @@ describe("grepToolRenderer", () => {
 		expect(plainHeader).not.toContain("in src");
 	});
 
-	it("keeps truncation and missing-path warnings while rendering only compact locations", async () => {
+	it("keeps truncation and missing-path warnings around tree file locations", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -197,11 +201,10 @@ describe("grepToolRenderer", () => {
 
 		expect(renderedLines[0]).toContain("truncated");
 		expect(renderedLines[0]).not.toContain("in src");
-		expect(renderedLines[1]).toBe("");
-		expect(renderedLines.slice(2)).toEqual([
-			"src/alpha.ts:10",
-			"src/beta.ts:20",
-			"src/gamma.ts:30",
+		expect(renderedLines.slice(1)).toEqual([
+			`├─ ${uiTheme.getLangIcon("typescript")} src/alpha.ts :10`,
+			`├─ ${uiTheme.getLangIcon("typescript")} src/beta.ts :20`,
+			`└─ ${uiTheme.getLangIcon("typescript")} src/gamma.ts :30`,
 			"skipped missing: missing.ts",
 		]);
 		expect(plain).not.toContain("truncated:");
@@ -211,7 +214,7 @@ describe("grepToolRenderer", () => {
 		expect(plain).not.toContain("│");
 	});
 
-	it("keeps collapsed and expanded views location-only while bounding them by file rows", async () => {
+	it("keeps collapsed and expanded views location-only while folding file tree rows", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -235,26 +238,34 @@ describe("grepToolRenderer", () => {
 				.split("\n")
 				.map(line => line.trimEnd());
 
-		const collapsedBody = render(false).slice(2);
-		const expandedBody = render(true).slice(2);
+		const collapsedBody = render(false).slice(1);
+		const expandedBody = render(true).slice(1);
+		const icon = uiTheme.getLangIcon("typescript");
 
-		expect(collapsedBody).toHaveLength(6);
-		expect(collapsedBody.slice(0, 5)).toEqual([
-			"src/file-01.ts:1",
-			"src/file-02.ts:11",
-			"src/file-03.ts:21",
-			"src/file-04.ts:31",
-			"src/file-05.ts:41",
+		expect(collapsedBody).toEqual([
+			`├─ ${icon} src/file-01.ts :1`,
+			`├─ ${icon} src/file-02.ts :11`,
+			`├─ ${icon} src/file-03.ts :21`,
+			`├─ ${icon} src/file-04.ts :31`,
+			`├─ ${icon} src/file-05.ts :41`,
+			`├─ ${icon} src/file-06.ts :51`,
+			`├─ ${icon} src/file-07.ts :61`,
+			`├─ ${icon} src/file-08.ts :71`,
+			"└─ … 2 more files",
 		]);
-		expect(collapsedBody[5]).toContain("5 more files");
-		expect(collapsedBody.join("\n")).not.toContain("file-06.ts");
-		expect(expandedBody).toEqual(locations.map(location => `${location.path}:${location.lineNumbers[0]}`));
+		expect(collapsedBody.join("\n")).not.toContain("file-09.ts");
+		expect(expandedBody).toEqual(
+			locations.map(
+				(location, index) =>
+					`${index === locations.length - 1 ? "└─" : "├─"} ${icon} ${location.path} :${location.lineNumbers[0]}`,
+			),
+		);
 		const allBody = [...collapsedBody, ...expandedBody].join("\n");
 		expect(allBody).not.toContain("snippetShouldNeverRender");
 		expect(allBody).not.toContain("│");
 	});
 
-	it("OSC8-links the compact file path to the file at its first selected match line", async () => {
+	it("OSC8-links the tree file path to its first selected match line", async () => {
 		settings.override("tui.hyperlinks", "always");
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
@@ -273,8 +284,8 @@ describe("grepToolRenderer", () => {
 		const laterLineUri = new URL(url.pathToFileURL(path.join(projectRoot, "src", "linked.ts")).href);
 		laterLineUri.searchParams.set("line", "20");
 
-		expect(sanitizeText(rendered)).toContain("src/linked.ts:7-8,20");
-		expect(extractLinkUris(rendered)).toContain(firstLineUri.href);
+		expect(sanitizeText(rendered)).toContain(`└─ ${uiTheme.getLangIcon("typescript")} src/linked.ts :7-8,20`);
+		expect(extractLinkUris(rendered)).toEqual([firstLineUri.href]);
 		expect(extractLinkUris(rendered)).not.toContain(laterLineUri.href);
 	});
 

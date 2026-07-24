@@ -29,6 +29,7 @@ import {
 	Ellipsis,
 	fileHyperlink,
 	getBasicToolDetailsVisible,
+	renderFileList,
 	renderStatusLine,
 	renderTreeList,
 	truncateToWidth,
@@ -64,9 +65,7 @@ import {
 	formatCodeFrameLine,
 	formatEmptyMessage,
 	formatErrorMessage,
-	formatMoreItems,
 	PREVIEW_LIMITS,
-	replaceTabs,
 } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -1566,9 +1565,6 @@ interface GrepRenderArgs {
 }
 
 const COLLAPSED_TEXT_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
-/** Line budget for the expanded compact location list. Expansion reveals more files,
- * never source snippets, and remains bounded for broad searches. */
-const EXPANDED_TEXT_LIMIT = PREVIEW_LIMITS.EXPANDED_LINES * 2;
 
 interface GrepFileLocation {
 	path: string;
@@ -1609,41 +1605,26 @@ function grepFileLocations(details: GrepToolDetails): GrepFileLocation[] {
 	return files.map(path => ({ path, lineNumbers: [] }));
 }
 
-function renderGrepFileLocation(location: GrepFileLocation, details: GrepToolDetails, uiTheme: Theme): string {
+function grepFileEntry(location: GrepFileLocation, details: GrepToolDetails) {
 	const ranges = formatLineRanges(location.lineNumbers);
-	const styledPath = uiTheme.fg("accent", replaceTabs(location.path));
+	const meta = ranges.text ? `:${ranges.text}` : undefined;
 	const resolvedInternalPath = tryResolveInternalUrlSync(location.path);
-	let linkedPath: string;
 	if (resolvedInternalPath) {
-		linkedPath = fileHyperlink(resolvedInternalPath, styledPath, { line: ranges.firstLine });
-	} else if (location.path.includes("://")) {
-		linkedPath = uriHyperlink(location.path, styledPath);
-	} else {
-		const absolutePath = path.isAbsolute(location.path)
-			? location.path
-			: details.cwd
-				? path.resolve(details.cwd, location.path)
-				: undefined;
-		linkedPath = absolutePath ? fileHyperlink(absolutePath, styledPath, { line: ranges.firstLine }) : styledPath;
+		return { path: location.path, absPath: resolvedInternalPath, line: ranges.firstLine, meta };
 	}
-	return ranges.text ? `${linkedPath}${uiTheme.fg("dim", `:${ranges.text}`)}` : linkedPath;
-}
-
-function renderGrepFileLocations(
-	details: GrepToolDetails,
-	maxLines: number,
-	reservedLines: number,
-	uiTheme: Theme,
-): string[] {
-	const locations = grepFileLocations(details);
-	const availableLines = Math.max(maxLines - reservedLines, 0);
-	if (availableLines === 0 || locations.length === 0) return [];
-	const needsSummary = locations.length > availableLines;
-	const visibleCount = needsSummary ? Math.max(availableLines - 1, 0) : locations.length;
-	const lines = locations.slice(0, visibleCount).map(location => renderGrepFileLocation(location, details, uiTheme));
-	const hiddenFiles = locations.length - visibleCount;
-	if (hiddenFiles > 0) lines.push(uiTheme.fg("muted", formatMoreItems(hiddenFiles, "file")));
-	return lines;
+	if (location.path.includes("://")) {
+		return {
+			path: location.path,
+			meta,
+			link: (displayText: string) => uriHyperlink(location.path, displayText),
+		};
+	}
+	const absolutePath = path.isAbsolute(location.path)
+		? location.path
+		: details.cwd
+			? path.resolve(details.cwd, location.path)
+			: undefined;
+	return { path: location.path, absPath: absolutePath, line: ranges.firstLine, meta };
 }
 
 function grepStatusIcon(uiTheme: Theme): string {
@@ -1819,16 +1800,16 @@ export const grepToolRenderer = {
 		return createCachedComponent(
 			() => options.expanded,
 			width => {
-				const locationLines = renderGrepFileLocations(
-					details!,
-					options.expanded ? EXPANDED_TEXT_LIMIT : COLLAPSED_TEXT_LIMIT,
-					extraLines.length,
+				const fileLines = renderFileList(
+					{
+						files: grepFileLocations(details!).map(location => grepFileEntry(location, details!)),
+						expanded: options.expanded,
+						maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
+						hyperlinkFn: fileHyperlink,
+					},
 					uiTheme,
 				);
-				const bodyLines = [...locationLines, ...extraLines];
-				return [header, ...(bodyLines.length > 0 ? ["", ...bodyLines] : [])].map(l =>
-					truncateToWidth(l, width, Ellipsis.Omit),
-				);
+				return [header, ...fileLines, ...extraLines].map(line => truncateToWidth(line, width, Ellipsis.Omit));
 			},
 		);
 	},
