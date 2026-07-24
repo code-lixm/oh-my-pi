@@ -254,6 +254,7 @@ describe("output-block border style", () => {
 		expectUniformWidth(success, width);
 		expectUniformWidth(error, width);
 		expect(plain(success)).toEqual([
+			padLine("▌ ", width),
 			padLine("▌ Tool", width),
 			padLine("▌ ", width),
 			padLine(`▌ ${"A".repeat(expectedContentWidth)}`, width),
@@ -261,6 +262,7 @@ describe("output-block border style", () => {
 			padLine("▌ ", width),
 		]);
 		expect(plain(error)).toEqual([
+			padLine("▌ ", width),
 			padLine("▌ Tool", width),
 			padLine("▌ ", width),
 			padLine("▌ boom", width),
@@ -288,9 +290,8 @@ describe("output-block border style", () => {
 			state: "success",
 			borderColor: "success",
 		});
-
+		expect(plain(lines)).toEqual([padLine("▌ ", width), padLine("▌ Tool", width), padLine("▌ ", width)]);
 		expectUniformWidth(lines, width);
-		expect(plain(lines)).toEqual([padLine("▌ Tool", width), padLine("▌ ", width)]);
 		expect(lines.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
 		expectAccentTintStopsBeforeRightInset(lines, "success", width);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
@@ -346,6 +347,7 @@ describe("output-block border style", () => {
 
 		expectUniformWidth(lines, width);
 		expect(plain(lines)).toEqual([
+			padLine("▌ ", width),
 			padLine("▌ Tool", width),
 			padLine("▌ ", width),
 			padLine("▌ premidpost", width),

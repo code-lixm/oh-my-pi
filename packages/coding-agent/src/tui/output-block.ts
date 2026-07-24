@@ -289,8 +289,11 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 
 		const title = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
 		const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
-		// Drop the leading accent pad so the title hugs the top of the card;
-		// a title-vs-body breathing row replaces the old top pad.
+		const hasContent =
+			Boolean(title) || normalizedSections.some(section => section.label !== undefined || section.lines.length > 0);
+		// Restore the leading accent pad so the title sits one breathing row
+		// below the card's top edge; keep the title-vs-body pad for the gap
+		if (accentMode && title) pushLine("");
 		if (title) pushLine(title);
 		const hasBody = normalizedSections.some(section => section.label !== undefined || section.lines.length > 0);
 		if (accentMode && hasBody) pushLine("");
@@ -325,7 +328,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				pushContent(line, linePrefix, !section.label && sectionHasRootTree);
 			}
 		}
-		if (accentMode && (hasBody || title)) pushLine("");
+		if (accentMode && hasContent) pushLine("");
 		return lines;
 	}
 
