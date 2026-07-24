@@ -17,6 +17,22 @@
 ### Fixed
 
 - Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
+## [17.1.0] - 2026-07-24
+
+### Added
+
+- Added Text.setStyleFn() to apply foreground stylers at render time, allowing components to dynamically re-resolve colors after invalidation instead of baking in the palette active at construction.
+
+### Fixed
+
+- Fixed an issue where exiting or tearing down the TUI left the terminal in cursor-key/keypad application mode (DECCKM), which broke arrow keys in the parent shell. Both stop() and emergencyTerminalRestore() now correctly emit standard rmkx resets.
+
+## [17.0.9] - 2026-07-23
+
+### Added
+
+- Added `SelectList.setMaxVisible()` so hosts can refit the visible row budget to available height after construction.
+
 ## [17.0.8] - 2026-07-22
 
 ### Fixed

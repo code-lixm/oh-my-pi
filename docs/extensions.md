@@ -121,8 +121,11 @@ Core methods:
 - `getCommands`
 - `getSessionName`, `setSessionName`
 - `setModel`, `getThinkingLevel`, `setThinkingLevel`
+- `getServiceTiers`, `setServiceTier`
 - `registerProvider`, `registerUsageProvider`
 - `events` (shared event bus)
+
+`getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, or `priority`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
 
 `registerUsageProvider(name, config)` installs a normalized usage adapter for the same provider ID used by models and credentials. `config` supplies `fetchUsage(params, ctx)` plus optional `supports`, `parseRateLimitHeaders`, and `validatesCredentials` members; the host owns `id`, validates every returned `UsageReport`, strips provider-specific `raw` data at the `AuthStorage` boundary, and cleanly removes registrations when an extension disappears or fails to load. Amounts may use percentages, tokens, requests, time, bytes, USD, or `unit: "currency"` with an ISO 4217 `currency` code. The adapter feeds `omp usage`, the shared usage cache/history, and the status-line `usage` segment. Credential ranking consumes its reports only when that provider already has a registered ranking strategy.
 

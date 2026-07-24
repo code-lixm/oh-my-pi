@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [17.1.0] - 2026-07-24
+
+### Added
+
+- Added Bedrock Converse prompt-cache compatibility limits, including 5-minute checkpoint support for Nova models (Lite, Micro, Pro, Premier, Nova 2 Lite) and 1-hour Claude retention.
+- Added native Meta Model API provider and Muse Spark 1.1 support, featuring Responses API reasoning replay, image input, and reasoning-effort controls.
+- Added Vercel AI Gateway integration features, including opt-in automatic prompt-cache compatibility, provider routing preferences, and Responses cache-anchor and cache-lifetime controls.
+- Added prompt-cache breakpoint capability metadata for OpenAI GPT-5.6, with opt-in support for older models and compatible endpoints.
+- Added native alibaba-token-plan provider with QwenCloud Token Plan Individual discovery and a curated chat-model fallback catalog.
+
+## [17.0.9] - 2026-07-23
+
 ### Changed
 
 - Renamed `codex-auto-review` model to `GPT-5.3 Codex Spark` with updated pricing and capabilities

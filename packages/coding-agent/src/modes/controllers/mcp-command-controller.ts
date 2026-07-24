@@ -39,6 +39,7 @@ import {
 	getSmitheryApiKey,
 	getSmitheryLoginUrl,
 	pollSmitheryCliAuthSession,
+	type SmitheryCliPollResponse,
 	saveSmitheryApiKey,
 } from "../../mcp/smithery-auth";
 import { SmitheryConnectError } from "../../mcp/smithery-connect";
@@ -48,10 +49,11 @@ import {
 	searchSmitheryRegistry,
 	toConfigName,
 } from "../../mcp/smithery-registry";
-import type { MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
+import type { MCPAuthChallenge, MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
+import { isTimeoutError } from "../../utils/fetch-timeout";
 import { openPath } from "../../utils/open";
 import { ChatBlock } from "../components/chat-block";
 import { MCPAddWizard } from "../components/mcp-add-wizard";
@@ -1083,7 +1085,10 @@ export class MCPCommandController {
 		return next;
 	}
 
-	async #resolveOAuthEndpointsFromServer(config: MCPServerConfig): Promise<OAuthEndpoints> {
+	async #resolveOAuthEndpointsFromServer(
+		config: MCPServerConfig,
+		authChallenge?: MCPAuthChallenge,
+	): Promise<OAuthEndpoints> {
 		// Stdio servers manage credentials inside the child process; OMP's OAuth
 		// flow only applies to http/sse transports. Without this guard the
 		// unauthenticated preflight below spawns the child, which happily reuses
@@ -1109,13 +1114,20 @@ export class MCPCommandController {
 			connectionError = error as Error;
 		}
 
-		// Server connected fine without auth — reauth is not needed
-		if (connectionSucceeded) {
+		// Server connected fine without auth — reauth is not needed. A tool-level
+		// challenge overrides this: servers may allow the anonymous handshake yet
+		// protect individual tool calls with `_meta["mcp/www_authenticate"]`.
+		if (connectionSucceeded && !authChallenge) {
 			throw new Error("Server connection succeeded without OAuth; reauthorization is not required.");
 		}
 
-		// Analyze the connection error to extract OAuth endpoints
-		const authResult = analyzeAuthError(connectionError!, "url" in config ? config.url : undefined);
+		// Tool calls can carry richer RFC 6750/RFC 9728 hints than the original
+		// connection error. Feed those hints through the same analyzer so
+		// resource_metadata and scope reach protected-resource discovery.
+		const authError = authChallenge
+			? new Error(`${connectionError?.message ?? "HTTP 401"}\n${authChallenge.wwwAuthenticate.join("\n")}`)
+			: connectionError!;
+		const authResult = analyzeAuthError(authError, "url" in config ? config.url : undefined);
 		let oauth = authResult.authType === "oauth" ? (authResult.oauth ?? null) : null;
 
 		if (!oauth && (config.type === "http" || config.type === "sse") && config.url) {
@@ -1827,21 +1839,30 @@ export class MCPCommandController {
 		}
 	}
 
-	async #handleReauth(name: string | undefined): Promise<void> {
+	/** Reauthorize a server after a tool-level OAuth challenge. */
+	async handleMCPAuthChallenge(name: string, challenge: MCPAuthChallenge): Promise<MCPServerConfig | undefined> {
+		return this.#handleReauth(name, { silent: true, reload: false, authChallenge: challenge });
+	}
+
+	async #handleReauth(
+		name: string | undefined,
+		options: { silent?: boolean; reload?: boolean; authChallenge?: MCPAuthChallenge } = {},
+	): Promise<MCPServerConfig | undefined> {
 		if (!name) {
-			this.ctx.showError(tSettingsUi("Server name required. Usage: /mcp reauth <name>"));
+			if (!options.silent) this.ctx.showError(tSettingsUi("Server name required. Usage: /mcp reauth <name>"));
 			return;
 		}
 
 		try {
 			const found = await this.#resolveServerForAuth(name);
 			if (!found) {
-				this.ctx.showError(tSettingsUi('Server "{name}" not found.', { name }));
+				if (!options.silent) this.ctx.showError(tSettingsUi('Server "{name}" not found.', { name }));
 				return;
 			}
 
 			if (found.config.enabled === false) {
-				this.ctx.showError(tSettingsUi('Server "{name}" is disabled. Run /mcp enable {name} first.', { name }));
+				if (!options.silent)
+					this.ctx.showError(tSettingsUi('Server "{name}" is disabled. Run /mcp enable {name} first.', { name }));
 				return;
 			}
 
@@ -1849,7 +1870,12 @@ export class MCPCommandController {
 			const authStorage = this.ctx.session.modelRegistry.authStorage;
 			const baseConfig = this.#stripOAuthAuth(found.config);
 			const runtimeBaseConfig = expandEnvVarsDeep(baseConfig);
-			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig);
+			// Resolve endpoints first: this fails fast for stdio transports and
+			// probes http/sse with { oauth: false }, so nothing destructive has
+			// happened yet if the server turns out not to need (or support) OAuth.
+			// Use the same env-expanded config shape runtime discovery passes to
+			// MCPManager; the raw file value may contain `${...}` placeholders.
+			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig, options.authChallenge);
 			const serverUrl =
 				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
 			const configuredClientId = found.config.oauth?.clientId ?? currentAuth?.clientId;
@@ -1860,7 +1886,11 @@ export class MCPCommandController {
 			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
 			const flowClientSecret = userClientSecret ?? storedClientSecret ?? "";
 
-			this.#showMessage(["", theme.fg("muted", tSettingsUi('Reauthorizing "{name}"...', { name })), ""].join("\n"));
+			if (!options.silent) {
+				this.#showMessage(
+					["", theme.fg("muted", tSettingsUi('Reauthorizing "{name}"...', { name })), ""].join("\n"),
+				);
+			}
 
 			const currentAuthResource = currentAuth?.resource ? expandEnvVarsDeep(currentAuth.resource) : undefined;
 			const oauthResource =
@@ -1890,44 +1920,55 @@ export class MCPCommandController {
 			}
 
 			const urlKeyedId = serverUrl ? mcpOAuthCredentialId(serverUrl) : undefined;
-			if (currentAuth || oauthResult.credentialId !== urlKeyedId) {
-				const updated = this.#persistOAuthResult(baseConfig, oauthResult, {
-					tokenUrl: oauth.tokenUrl,
-					clientId: oauth.clientId,
-					userClientSecret,
-					resource: oauthResource,
-					stripSameOriginResource: oauthResourceIsFallback,
-				});
-				await updateMCPServer(found.filePath, name, updated);
+			const shouldPersist = currentAuth || oauthResult.credentialId !== urlKeyedId;
+			const updatedConfig = shouldPersist
+				? this.#persistOAuthResult(baseConfig, oauthResult, {
+						tokenUrl: oauth.tokenUrl,
+						clientId: oauth.clientId,
+						userClientSecret,
+						resource: oauthResource,
+						stripSameOriginResource: oauthResourceIsFallback,
+					})
+				: baseConfig;
+			if (shouldPersist) {
+				await updateMCPServer(found.filePath, name, updatedConfig);
 			}
-			await this.#reloadMCP();
-			const state = await this.#waitForServerConnectionWithAnimation(name);
+			if (options.reload !== false) {
+				await this.#reloadMCP();
+				const state = await this.#waitForServerConnectionWithAnimation(name);
 
-			const lines = [
-				"",
-				theme.fg("success", tSettingsUi('✓ Reauthorized "{name}" ({scope} config)', { name, scope: found.scope })),
-				"",
-				tSettingsUi("  Status: {status}", {
-					status:
-						state === "connected"
-							? theme.fg("success", tSettingsUi("connected"))
-							: state === "connecting"
-								? theme.fg("muted", tSettingsUi("connecting"))
-								: theme.fg("warning", tSettingsUi("not connected")),
-				}),
-				"",
-			];
-			this.#showMessage(lines.join("\n"));
+				const lines = [
+					"",
+					theme.fg(
+						"success",
+						tSettingsUi('✓ Reauthorized "{name}" ({scope} config)', { name, scope: found.scope }),
+					),
+					"",
+					tSettingsUi("  Status: {status}", {
+						status:
+							state === "connected"
+								? theme.fg("success", tSettingsUi("connected"))
+								: state === "connecting"
+									? theme.fg("muted", tSettingsUi("connecting"))
+									: theme.fg("warning", tSettingsUi("not connected")),
+					}),
+					"",
+				];
+				this.#showMessage(lines.join("\n"));
+			}
+			return updatedConfig;
 		} catch (error) {
 			if (error instanceof MCPOAuthCancelledError) {
-				this.ctx.showStatus(tSettingsUi('Reauthorization cancelled for "{name}"', { name }));
+				if (!options.silent) this.ctx.showStatus(tSettingsUi('Reauthorization cancelled for "{name}"', { name }));
 				return;
 			}
-			this.ctx.showError(
-				tSettingsUi("Failed to reauthorize server: {error}", {
-					error: error instanceof Error ? error.message : String(error),
-				}),
-			);
+			if (!options.silent) {
+				this.ctx.showError(
+					tSettingsUi("Failed to reauthorize server: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
+			}
 		}
 	}
 
@@ -2234,7 +2275,14 @@ export class MCPCommandController {
 			if (Date.now() - startedAt >= timeoutMs) {
 				throw new Error("Smithery authorization timed out after 5 minutes.");
 			}
-			const response = await pollSmitheryCliAuthSession(sessionId, signal);
+			let response: SmitheryCliPollResponse;
+			try {
+				response = await pollSmitheryCliAuthSession(sessionId, signal);
+			} catch (error) {
+				// A single hung/slow poll aborts with TimeoutError; retry until the deadline.
+				if (isTimeoutError(error)) continue;
+				throw error;
+			}
 			if (response.status === "success" && response.apiKey) {
 				return response.apiKey;
 			}

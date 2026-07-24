@@ -44,11 +44,8 @@ export const OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH = 2;
 export const OUTPUT_BLOCK_ACCENT_RIGHT_INSET = 1;
 export const OUTPUT_BLOCK_ACCENT_GLYPH = "▌";
 
-/** Tint opacity for block-internal padding rows (leading/trailing breathing
- * rows inside the card). Kept near zero so intra-card padding reads as a
- * plain blank rather than a tinted block — small intra-card padding. The
- * inter-block plain margin is owned by the transcript container. */
-export const ACCENT_PAD_TINT_OPACITY = 0.015;
+/** Opacity shared by accent content and edge padding so the card has one surface tone. */
+export const ACCENT_PAD_TINT_OPACITY = 0.06;
 /** Layout modes whose surface draws no box frame. `accent` uses a half-cell
  * `▌` glyph over a translucent-looking tint derived from the same semantic
  * color; `none` stays bare. */
@@ -292,10 +289,11 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 
 		const title = [header, headerMeta].filter(Boolean).join(theme.sep.dot);
 		const normalizedSections = sections.length > 0 ? sections : [{ lines: [] as string[] }];
-		const hasContent =
-			Boolean(title) || normalizedSections.some(section => section.label !== undefined || section.lines.length > 0);
-		if (accentMode && hasContent) pushLine("");
+		// Drop the leading accent pad so the title hugs the top of the card;
+		// a title-vs-body breathing row replaces the old top pad.
 		if (title) pushLine(title);
+		const hasBody = normalizedSections.some(section => section.label !== undefined || section.lines.length > 0);
+		if (accentMode && hasBody) pushLine("");
 		let lastLabeledSection = -1;
 		for (let i = 0; i < normalizedSections.length; i++) {
 			if (normalizedSections[i]!.label) lastLabeledSection = i;
@@ -327,7 +325,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				pushContent(line, linePrefix, !section.label && sectionHasRootTree);
 			}
 		}
-		if (accentMode && hasContent) pushLine("");
+		if (accentMode && (hasBody || title)) pushLine("");
 		return lines;
 	}
 

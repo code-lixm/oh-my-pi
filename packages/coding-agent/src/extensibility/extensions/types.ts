@@ -26,6 +26,9 @@ import type {
 	ModelSpec,
 	ProviderResponseMetadata,
 	RuntimeUsageProviderRegistration,
+	ServiceTier,
+	ServiceTierByFamily,
+	ServiceTierFamily,
 	SimpleStreamOptions,
 	Static,
 	TextContent,
@@ -1046,6 +1049,13 @@ export interface RegisteredCommand {
 // biome-ignore lint/suspicious/noConfusingVoidType: void allows bare return statements
 export type ExtensionHandler<E, R = undefined> = (event: E, ctx: ExtensionContext) => Promise<R | void> | R | void;
 
+/** Service tiers accepted by each provider family. */
+export type ExtensionServiceTier<Family extends ServiceTierFamily> = Family extends "anthropic"
+	? "priority"
+	: Family extends "google"
+		? "flex" | "priority"
+		: ServiceTier;
+
 /**
  * ExtensionAPI passed to extension factory functions.
  */
@@ -1231,6 +1241,18 @@ export interface ExtensionAPI {
 
 	/** Set thinking level for the current session. */
 	setThinkingLevel(level: ThinkingLevel): void;
+
+	/** Get a snapshot of the current session's per-family service tiers. */
+	getServiceTiers(): Readonly<ServiceTierByFamily>;
+
+	/**
+	 * Set one provider family's service tier for subsequent requests, or clear
+	 * its session override with `undefined`.
+	 */
+	setServiceTier<Family extends ServiceTierFamily>(
+		family: Family,
+		tier: ExtensionServiceTier<Family> | undefined,
+	): void;
 
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
@@ -1420,6 +1442,10 @@ export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
 
+export type GetServiceTiersHandler = () => ServiceTierByFamily;
+
+export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
@@ -1442,6 +1468,8 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getServiceTiers?: GetServiceTiersHandler;
+	setServiceTier?: SetServiceTierHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
@@ -1473,8 +1501,11 @@ export interface ExtensionCommandContextActions {
 	reload: () => Promise<void>;
 }
 
-/** Full runtime = state + actions. */
-export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {}
+/** Full runtime = state + actions, including host-compatible service-tier fallbacks. */
+export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
+	getServiceTiers: GetServiceTiersHandler;
+	setServiceTier: SetServiceTierHandler;
+}
 
 /** Loaded extension with all registered items. */
 export interface Extension {

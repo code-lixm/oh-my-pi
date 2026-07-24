@@ -5,23 +5,25 @@ import {
 	type SgrMouseEvent,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
-import { SETTINGS_SCHEMA } from "../../../config/settings-schema";
 import { tSettingsUi } from "../../../i18n/settings-locale";
-import { getSearchProvider, setPreferredSearchProvider } from "../../../web/search/provider";
-import { isSearchProviderPreference, type SearchProviderId } from "../../../web/search/types";
+import { getSearchProvider, setSearchProviderOrder } from "../../../web/search/provider";
+import {
+	isSearchProviderId,
+	SEARCH_PROVIDER_OPTIONS,
+	SEARCH_PROVIDER_ORDER,
+	type SearchProviderId,
+} from "../../../web/search/types";
 import { getSelectListTheme, theme } from "../../theme/theme";
 import type { SetupSceneHost, SetupTab } from "./types";
 
 const MAX_VISIBLE = 8;
 
-/** Reuse the settings schema as the single source of truth for labels/descriptions. */
-function getWebSearchItems(): readonly SelectItem[] {
-	return SETTINGS_SCHEMA["providers.webSearch"].ui.options.map(option => ({
-		value: option.value,
-		label: tSettingsUi(option.label),
-		description: option.description ? tSettingsUi(option.description) : undefined,
-	}));
-}
+/** Reuse the shared provider options as the single source of truth for labels/descriptions. */
+const WEB_SEARCH_ITEMS: readonly SelectItem[] = SEARCH_PROVIDER_OPTIONS.map(option => ({
+	value: option.value,
+	label: tSettingsUi(option.label),
+	description: option.description ? tSettingsUi(option.description) : undefined,
+}));
 
 type Availability = "checking" | boolean;
 
@@ -46,9 +48,10 @@ export class WebSearchTab implements SetupTab {
 	#listRowStart = 0;
 
 	constructor(private readonly host: SetupSceneHost) {
-		this.#list = new SelectList(getWebSearchItems(), MAX_VISIBLE, getSelectListTheme());
-		const current = host.ctx.settings.get("providers.webSearch");
-		const index = getWebSearchItems().findIndex(item => item.value === current);
+		this.#list = new SelectList(WEB_SEARCH_ITEMS, MAX_VISIBLE, getSelectListTheme());
+		const order = host.ctx.settings.get("providers.webSearchOrder");
+		const current = Array.isArray(order) && typeof order[0] === "string" ? order[0] : "auto";
+		const index = WEB_SEARCH_ITEMS.findIndex(item => item.value === current);
 		if (index >= 0) this.#list.setSelectedIndex(index);
 		this.#list.onSelectionChange = item => this.#onHighlight(item.value);
 		this.#list.onSelect = item => this.#apply(item.value);
@@ -81,9 +84,14 @@ export class WebSearchTab implements SetupTab {
 		this.#disposed = true;
 	}
 
-	render(width: number): readonly string[] {
+	render(width: number, maxLines?: number): readonly string[] {
 		const lines = [theme.fg("muted", tSettingsUi("Choose the provider the web_search tool should prefer.")), ""];
 		this.#listRowStart = lines.length;
+		if (maxLines !== undefined) {
+			// Above: hint + blank. Below: the list's own search-status row plus
+			// blank + readiness line. Shrinking keeps the selection centered.
+			this.#list.setMaxVisible(Math.max(1, Math.min(MAX_VISIBLE, maxLines - 5)));
+		}
 		lines.push(...this.#list.render(width));
 		const selected = this.#list.getSelectedItem();
 		if (selected) {
@@ -119,10 +127,13 @@ export class WebSearchTab implements SetupTab {
 	}
 
 	#apply(value: string): void {
-		if (!isSearchProviderPreference(value)) return;
-		this.host.ctx.settings.set("providers.webSearch", value);
-		setPreferredSearchProvider(value);
-		const label = getWebSearchItems().find(item => item.value === value)?.label ?? value;
+		if (value !== "auto" && !isSearchProviderId(value)) return;
+		// The wizard picks one favorite; persist it as the head of the priority
+		// list with the remaining providers in their built-in order (auto = reset).
+		const order = value === "auto" ? [] : [value, ...SEARCH_PROVIDER_ORDER.filter(id => id !== value)];
+		this.host.ctx.settings.set("providers.webSearchOrder", order);
+		setSearchProviderOrder(order);
+		const label = WEB_SEARCH_ITEMS.find(item => item.value === value)?.label ?? value;
 		this.#status = [
 			theme.fg("success", `${theme.status.success} ${tSettingsUi("Web search set to {label}", { label })}`),
 		];

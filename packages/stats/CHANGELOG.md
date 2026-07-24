@@ -5,6 +5,11 @@
 ### Fixed
 
 - Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.
+## [17.1.0] - 2026-07-24
+
+### Fixed
+
+- Fixed an issue where malformed persisted content blocks could abort stats ingestion for subsequent projects, and ensured pending full-session migrations are properly settled after successful backfills.
 
 ## [17.0.6] - 2026-07-20
 

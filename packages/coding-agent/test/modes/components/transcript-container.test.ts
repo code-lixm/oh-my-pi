@@ -455,24 +455,25 @@ describe("TranscriptContainer spacing", () => {
 		expect(container.render(40)).toEqual(["a", "", "body"]);
 	});
 
-	it("lets background-colored padding rows replace the generic separator", () => {
+	it("adds exactly one plain separator between a plain block and an ANSI-padded block", () => {
 		const bgPad = "\x1b[48;2;0;0;0m   \x1b[0m";
 		const container = new TranscriptContainer();
 		container.addChild(new MutableBlock(["a"]));
-		// The ANSI-bearing padding row is block-owned breathing room, so the
-		// container must not stack its own plain separator above it.
+		// Accent cards retain their tinted internal breathing rows; the container
+		// adds one plain separator at the sibling boundary (not 0, not 2).
 		container.addChild(new MutableBlock([bgPad, "x", bgPad]));
-		expect(container.render(40)).toEqual(["a", bgPad, "x", bgPad]);
+		expect(container.render(40)).toEqual(["a", "", bgPad, "x", bgPad]);
 	});
 
-	it("lets accent-rail blank edge rows replace the generic separator", () => {
+	it("adds exactly one plain separator on each side of an accent-padded block", () => {
 		const accentPad = "\x1b[48;2;0;0;0m▌   \x1b[0m";
 		const container = new TranscriptContainer();
 		container.addChild(new MutableBlock(["a"]));
+		// Accent cards retain their tinted internal breathing rows; the container
+		// adds one plain separator at each sibling boundary (not 0, not 2).
 		container.addChild(new MutableBlock([accentPad, "x", accentPad]));
 		container.addChild(new MutableBlock(["b"]));
-
-		expect(container.render(40)).toEqual(["a", accentPad, "x", accentPad, "b"]);
+		expect(container.render(40)).toEqual(["a", "", accentPad, "x", accentPad, "", "b"]);
 	});
 
 	it("does not double the gap when a block carries its own trailing blank", () => {
@@ -703,7 +704,7 @@ describe("TranscriptContainer renderViewportTail", () => {
 		expect([...container.renderViewportTail(W, 1)]).toEqual(["b3b"]);
 	});
 
-	it("uses padded block edges instead of stacking separators in viewport tails", () => {
+	it("adds exactly one plain separator on each side of a padded block in viewport tails", () => {
 		const cases = [
 			{ name: "background-colored edge", pad: "\x1b[48;2;0;0;0m   \x1b[0m" },
 			{ name: "accent-rail edge", pad: "\x1b[48;2;0;0;0m▌   \x1b[0m" },
@@ -714,11 +715,13 @@ describe("TranscriptContainer renderViewportTail", () => {
 			container.addChild(new MutableBlock([`${name} before`]));
 			container.addChild(new MutableBlock([pad, `${name} body`, pad]));
 			container.addChild(new MutableBlock([`${name} after`]));
-			const expected = [`${name} before`, pad, `${name} body`, pad, `${name} after`];
+			// Accent cards retain their tinted internal breathing rows; the container
+			// adds one plain separator at each sibling boundary (not 0, not 2).
+			const expected = [`${name} before`, "", pad, `${name} body`, pad, "", `${name} after`];
 
 			expect(container.render(W)).toEqual(expected);
 			expect([...container.renderViewportTail(W, expected.length)]).toEqual(expected);
-			expect([...container.renderViewportTail(W, 4)]).toEqual(expected.slice(1));
+			expect([...container.renderViewportTail(W, 4)]).toEqual(expected.slice(-4));
 		}
 	});
 

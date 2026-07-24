@@ -3,6 +3,7 @@
  */
 
 import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
@@ -486,6 +487,8 @@ export interface BuildSystemPromptOptions {
 	skillsSettings?: SkillsSettings;
 	/** Working directory. Default: getProjectDir() */
 	cwd?: string;
+	/** Additional workspace directories beyond cwd (multi-root), absolute. Injected into the project prompt. */
+	additionalWorkspaceRoots?: string[];
 	/** Pre-loaded context files (skips discovery if provided). */
 	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
 	/** Skills provided directly to system prompt construction. */
@@ -555,6 +558,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		skillsSettings,
 		toolNames: providedToolNames,
 		cwd,
+		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
 		rules,
@@ -639,17 +643,42 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const systemPromptCustomizationPromise: Promise<string | null> = callerControlsCustomPrompt
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
-	const contextFilesPromise = providedContextFiles
-		? Promise.resolve(providedContextFiles)
-		: logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
-	const workspaceTreePromise =
-		providedWorkspaceTree !== undefined
-			? Promise.resolve(providedWorkspaceTree)
-			: includeWorkspaceTree
-				? logger.time("buildWorkspaceTree", () =>
-						buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
-					)
-				: Promise.resolve(prepDefaults.workspaceTree);
+	const contextFilesPromise = (async () => {
+		const primary = providedContextFiles
+			? providedContextFiles
+			: await logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
+		// Also discover context files (AGENTS.md, rules, etc.) for each additional workspace root.
+		const additionalRoots = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
+		if (additionalRoots.length === 0) return primary;
+		const extra = await Promise.all(
+			additionalRoots.map(root => loadProjectContextFiles({ cwd: root }).catch(() => [])),
+		);
+		return dedupeExactContextFiles([...primary, ...extra.flat()]);
+	})();
+	const additionalRootsForTree = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
+	const workspaceTreePromise = (async () => {
+		const primary =
+			providedWorkspaceTree !== undefined
+				? await Promise.resolve(providedWorkspaceTree)
+				: includeWorkspaceTree
+					? await logger.time("buildWorkspaceTree", () =>
+							buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
+						)
+					: { rootPath: resolvedCwd, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] };
+		if (additionalRootsForTree.length === 0 || !includeWorkspaceTree) return primary;
+		const extraTrees = await Promise.all(
+			additionalRootsForTree.map(root =>
+				buildWorkspaceTree(root, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }).catch(() => ({
+					rootPath: root,
+					rendered: "",
+					truncated: false,
+					totalLines: 0,
+					agentsMdFiles: [],
+				})),
+			),
+		);
+		return { ...primary, agentsMdFiles: [...primary.agentsMdFiles, ...extraTrees.flatMap(t => t.agentsMdFiles)] };
+	})();
 	const skillsPromise: Promise<readonly Skill[]> =
 		providedSkills !== undefined
 			? Promise.resolve(providedSkills)
@@ -808,6 +837,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		date,
 		dateTime,
 		cwd: promptCwd,
+		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
 		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].value.trim(),

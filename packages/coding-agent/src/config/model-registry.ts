@@ -869,6 +869,28 @@ export class ModelRegistry {
 		this.#backgroundRefresh = refreshPromise;
 	}
 
+	/**
+	 * Wait for any in-flight background model discovery to settle.
+	 *
+	 * Background discovery started by {@link refreshInBackground} is
+	 * fire-and-forget; RPC consumers (e.g. `get_available_models`,
+	 * `set_model`) and deferred `--model` resolution that read the registry
+	 * immediately after session creation can otherwise observe a partial
+	 * catalog before discovery-backed providers have populated `#models`.
+	 * Awaiting the tracked promise ensures the response reflects every
+	 * configured provider once the initial background refresh resolves.
+	 *
+	 * No-op when no refresh is in flight (`#backgroundRefresh` cleared in the
+	 * `finally` of `refreshInBackground` on completion). Resolves immediately
+	 * in that case so already-warm sessions are unaffected. Discovery errors
+	 * remain swallowed by `refreshInBackground`'s existing `.catch`.
+	 */
+	async awaitBackgroundRefresh(): Promise<void> {
+		if (this.#backgroundRefresh) {
+			await this.#backgroundRefresh;
+		}
+	}
+
 	async refreshProvider(providerId: string, strategy: ModelRefreshStrategy = "online"): Promise<void> {
 		this.#reloadStaticModels();
 		for (const selector of this.#suppressedSelectors.keys()) {
@@ -2101,6 +2123,24 @@ export class ModelRegistry {
 			.map(provider => provider.provider);
 	}
 
+	/**
+	 * Whether `providerId` is known to the registry: it has at least one live
+	 * model, or it is configured for dynamic discovery (models.yml `discovery:`
+	 * or a runtime extension provider) and is not disabled. Discovery-only
+	 * providers can hold zero models at startup — cached rows never persist
+	 * live auth headers (#5780), so a provider whose discovered models all
+	 * carry config headers (`authHeader: true`) only materializes models after
+	 * the online refresh completes.
+	 */
+	hasProvider(providerId: string): boolean {
+		if (this.#models.some(model => model.provider === providerId)) return true;
+		if (getDisabledProviderIdsFromSettings().has(providerId)) return false;
+		return (
+			this.#discoverableProviders.some(provider => provider.provider === providerId) ||
+			this.#runtimeModelManagers.has(providerId)
+		);
+	}
+
 	getProviderDiscoveryState(provider: string): ProviderDiscoveryState | undefined {
 		return this.#providerDiscoveryStates.get(provider);
 	}
@@ -2131,13 +2171,21 @@ export class ModelRegistry {
 	/**
 	 * Get API key for a model.
 	 */
-	async getApiKey(model: Model<Api>, sessionId?: string): Promise<string | undefined> {
+	async getApiKey(
+		model: Model<Api>,
+		sessionId?: string,
+		options?: { signal?: AbortSignal },
+	): Promise<string | undefined> {
 		const commandKey = this.#resolveCommandBackedApiKey(model.provider);
 		if (commandKey.configured) return commandKey.value;
 		if (this.#keylessProviders.has(model.provider) && !this.authStorage.hasAuth(model.provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.getApiKey(model.provider, sessionId, { baseUrl: model.baseUrl, modelId: model.id });
+		return this.authStorage.getApiKey(model.provider, sessionId, {
+			baseUrl: model.baseUrl,
+			modelId: model.id,
+			signal: options?.signal,
+		});
 	}
 
 	/**

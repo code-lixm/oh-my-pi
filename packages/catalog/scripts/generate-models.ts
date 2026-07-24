@@ -29,6 +29,7 @@ import {
 } from "../src/provider-models/descriptor-types";
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import {
+	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
 	ANTHROPIC_CURATED_FALLBACK_MODELS,
 	buildFireworksFastSeed,
 	buildXaiOAuthStaticSeed,
@@ -36,6 +37,7 @@ import {
 	clampKimiK27CodeMaxTokens,
 	isFireworksKimiK2ModelId,
 	isKimiK27CodeModelId,
+	META_MUSE_STATIC_MODELS,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
 	projectOpenAIProReasoningAliases,
@@ -76,7 +78,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		no_credentials: "No {label} credentials found (env or agent.db), using fallback models",
 		fetching_models: "Fetching models from {label} model manager...",
 		dynamic_fetch_failed: "{label} dynamic fetch failed (stale cache merge), using fallback models",
-		discovery_no_models: "{label} discovery returned no models, using fallback models",
+		discovery_no_models: "{label} discovery returned no models",
 		fetched_models: "Fetched {count} models from {label} model manager",
 		failed_fetch: "Failed to fetch {label} models:",
 		fetching_models_dev: "Fetching models from models.dev API...",
@@ -106,7 +108,7 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		no_credentials: "未找到 {label} 凭据（env 或 agent.db），将使用回退模型",
 		fetching_models: "正在从 {label} 模型管理器获取模型……",
 		dynamic_fetch_failed: "{label} 动态获取失败（过期缓存合并），将使用回退模型",
-		discovery_no_models: "{label} 动态发现未返回模型，将使用回退模型",
+		discovery_no_models: "{label} 动态发现未返回模型",
 		fetched_models: "已从 {label} 模型管理器获取 {count} 个模型",
 		failed_fetch: "获取 {label} 模型失败：",
 		fetching_models_dev: "正在从 models.dev API 获取模型……",
@@ -185,13 +187,16 @@ async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscove
 
 	return undefined;
 }
+type CatalogProviderFetchResult = { models: ModelSpec[]; succeeded: boolean };
 
-async function fetchProviderModelsFromCatalog(descriptor: CatalogProviderDescriptor): Promise<ModelSpec[]> {
+async function fetchProviderModelsFromCatalog(
+	descriptor: CatalogProviderDescriptor,
+): Promise<CatalogProviderFetchResult> {
 	const apiKey = await resolveProviderApiKey(descriptor.providerId, descriptor.catalogDiscovery);
 
 	if (!apiKey && !allowsUnauthenticatedCatalogDiscovery(descriptor)) {
 		console.log(t("no_credentials", { label: descriptor.catalogDiscovery.label }));
-		return [];
+		return { models: [], succeeded: false };
 	}
 
 	try {
@@ -208,19 +213,19 @@ async function fetchProviderModelsFromCatalog(descriptor: CatalogProviderDescrip
 		// fallback applies instead.
 		if (result.stale) {
 			console.warn(t("dynamic_fetch_failed", { label: descriptor.catalogDiscovery.label }));
-			return [];
+			return { models: [], succeeded: false };
 		}
 		const models = result.models.filter(model => model.provider === descriptor.providerId);
 		if (models.length === 0) {
 			console.warn(t("discovery_no_models", { label: descriptor.catalogDiscovery.label }));
-			return [];
+			return { models: [], succeeded: true };
 		}
 		console.log(t("fetched_models", { count: models.length, label: descriptor.catalogDiscovery.label }));
 		// The manager returns built models; models.json stores specs (sparse compat).
-		return models.map(model => toModelSpec(model));
+		return { models: models.map(model => toModelSpec(model)), succeeded: true };
 	} catch (error) {
 		console.error(t("failed_fetch", { label: descriptor.catalogDiscovery.label }), error);
-		return [];
+		return { models: [], succeeded: false };
 	}
 }
 
@@ -561,12 +566,22 @@ async function generateModels() {
 	const catalogProviderModelBatches = await Promise.all(
 		catalogProviderDescriptors.map(async descriptor => ({
 			descriptor,
-			models: await fetchProviderModelsFromCatalog(descriptor),
+			...(await fetchProviderModelsFromCatalog(descriptor)),
 		})),
 	);
+	// A provider is authoritative once its endpoint snapshot can replace the
+	// models.dev / previous-snapshot rows. Requiring fetched models keeps a
+	// flaky empty-but-200 discovery from silently wiping another provider's
+	// bundled catalog; only alibaba-token-plan treats an empty success as
+	// authoritative, because its `/models` allowlist reflects the subscribed
+	// edition and must not be widened by the curated seed below.
 	const authoritativeCatalogProviders = new Set(
 		catalogProviderModelBatches
-			.filter(batch => batch.descriptor.dynamicModelsAuthoritative === true && batch.models.length > 0)
+			.filter(
+				batch =>
+					batch.descriptor.dynamicModelsAuthoritative === true &&
+					(batch.models.length > 0 || (batch.succeeded && batch.descriptor.providerId === "alibaba-token-plan")),
+			)
 			.map(batch => batch.descriptor.providerId),
 	);
 	const catalogProviderModels = catalogProviderModelBatches.flatMap(batch => batch.models);
@@ -593,11 +608,20 @@ async function generateModels() {
 	// persisted `modelRoles.default = "xai-oauth/<id>"` is honored before the
 	// async refresh fires (interactive boot does not await refresh).
 	allModels.push(...buildXaiOAuthStaticSeed());
+	// Seed QwenCloud's documented Token Plan models when credentialed
+	// discovery is unavailable. A successful `/models` response is authoritative
+	// for the subscribed edition and must not be widened by the fallback.
+	if (!authoritativeCatalogProviders.has("alibaba-token-plan")) {
+		allModels.push(...ALIBABA_TOKEN_PLAN_STATIC_MODELS);
+	}
 	// Seed Anthropic models that are live on the first-party API or in limited
 	// release but that models.dev has not catalogued yet (e.g. Claude Fable 5 /
 	// Mythos 5). Deduped behind upstream entries; metadata is pinned in
 	// applyAnthropicCatalogPolicy.
 	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
+	// Seed Meta's documented Muse model so first-run selection does not depend on
+	// credentials or live discovery.
+	allModels.push(...META_MUSE_STATIC_MODELS);
 	// Seed Sakana's documented Fugu models so the provider is usable when
 	// catalog generation has no live API key. If live `/v1/models` succeeds,
 	// Sakana is authoritative and stale seed IDs must stay out.

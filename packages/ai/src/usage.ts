@@ -20,6 +20,12 @@ export interface UsageWindow {
 	durationMs?: number;
 	/** Absolute reset timestamp in milliseconds since epoch. */
 	resetsAt?: number;
+	/**
+	 * Verb rendered before the {@link resetsAt} countdown (e.g. "tick", "regen").
+	 * Defaults to "resets" — override for rolling windows where the timestamp is
+	 * an incremental regeneration step rather than a full window reset.
+	 */
+	resetLabel?: string;
 }
 
 /** Quantitative usage data. */
@@ -193,6 +199,7 @@ export const usageWindowSchema = type({
 	label: "string",
 	"durationMs?": "number",
 	"resetsAt?": "number",
+	"resetLabel?": "string",
 });
 
 export const usageAmountSchema = type({
@@ -307,6 +314,8 @@ export interface UsageProvider {
 	supports?(params: UsageFetchParams): boolean;
 	/** True when fetchUsage contacts upstream and can authenticate the credential for health checks. */
 	validatesCredentials?: boolean;
+	/** Whether a failed refresh may serve the previous successful report. Defaults to true. */
+	retainLastGoodOnFailure?: boolean;
 }
 
 export type UsageProviderConfig = Omit<UsageProvider, "id">;

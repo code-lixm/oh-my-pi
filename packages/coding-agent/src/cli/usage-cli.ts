@@ -211,6 +211,7 @@ function describeAmount(limit: UsageLimit): string {
 	const amount = limit.amount;
 	const parts: string[] = [];
 	const absoluteUnit = amount.unit !== "percent" && amount.unit !== "unknown";
+	const fraction = resolveUsedFraction(limit);
 	if (absoluteUnit && amount.used !== undefined && amount.limit !== undefined) {
 		parts.push(
 			`${formatUnitValue(amount.used, amount.unit, amount.currency)} / ${formatUnitValue(amount.limit, amount.unit, amount.currency)}${UNIT_SUFFIX[amount.unit]}`,
@@ -219,8 +220,18 @@ function describeAmount(limit: UsageLimit): string {
 		parts.push(
 			`${formatUnitValue(amount.remaining, amount.unit, amount.currency)}${UNIT_SUFFIX[amount.unit]} ${tSettingsUi("left")}`,
 		);
+	} else if (
+		absoluteUnit &&
+		amount.used !== undefined &&
+		Number.isFinite(amount.used) &&
+		amount.limit === undefined &&
+		amount.remaining === undefined &&
+		fraction === undefined
+	) {
+		parts.push(
+			`${formatUnitValue(amount.used, amount.unit, amount.currency)}${UNIT_SUFFIX[amount.unit]} ${tSettingsUi("used")}`,
+		);
 	}
-	const fraction = resolveUsedFraction(limit);
 	if (fraction !== undefined) {
 		parts.push(tSettingsUi("{percent}% used", { percent: (fraction * 100).toFixed(1) }));
 	} else if (amount.remainingFraction !== undefined) {
@@ -424,7 +435,11 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 	const details: string[] = [describeAmount(limit)];
 	const resetsAt = limit.window?.resetsAt;
 	if (resetsAt !== undefined && resetsAt > nowMs) {
-		details.push(tSettingsUi("resets in {duration}", { duration: formatDuration(resetsAt - nowMs) }));
+		details.push(
+			limit.window?.resetLabel
+				? `${tSettingsUi(limit.window.resetLabel)} ${tSettingsUi("in {duration}", { duration: formatDuration(resetsAt - nowMs) })}`
+				: tSettingsUi("resets in {duration}", { duration: formatDuration(resetsAt - nowMs) }),
+		);
 	}
 	const lines = [
 		`      ${STATUS_COLOR[status]("●")} ${padded}  ${renderBar(limit)}  ${chalk.dim(details.join(" · "))}`,

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { getThemeByName, initTheme, type Theme, type ThemeColor } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
+	ACCENT_PAD_TINT_OPACITY,
 	framedBlock,
 	getOutputBlockBorderStyle,
 	type OutputBlockBorderStyle,
@@ -93,9 +94,8 @@ function accentPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
 	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
 }
 function accentPadPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
-	// Block-internal pad rows render with the same rail glyph as content rows
-	// but a near-zero opacity tinted surface, so the bg hex differs.
-	const bg = theme.getSurfaceTintBgAnsi(railColor, 0.015);
+	// Block-internal pad rows share the same surface tone as accent content.
+	const bg = theme.getSurfaceTintBgAnsi(railColor, ACCENT_PAD_TINT_OPACITY);
 	const railFg = railColor === "borderMuted" ? surfaceTintFgAnsi(railColor, theme) : colorFgAnsi(railColor, theme);
 	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
 }
@@ -110,10 +110,12 @@ function expectAccentTintStopsBeforeRightInset(
 	theme: Theme = darkTheme,
 ): void {
 	const expectedTintBg = surfaceTintBgAnsi(railColor, theme);
-	const expectedPadTintBg = theme.getSurfaceTintBgAnsi(railColor, 0.015);
+	const expectedPadTintBg = theme.getSurfaceTintBgAnsi(railColor, ACCENT_PAD_TINT_OPACITY);
+	// Accent content and internal edge padding share the same surface tone.
+	expect(expectedPadTintBg).toBe(expectedTintBg);
 	for (const line of lines) {
 		expect(visibleWidth(line)).toBe(width);
-		expect(line.includes(expectedTintBg) || line.includes(expectedPadTintBg)).toBe(true);
+		expect(line.includes(expectedTintBg)).toBe(true);
 		expect(Bun.stripANSI(line).endsWith(" ")).toBe(true);
 		expect(line.endsWith("\x1b[49m ")).toBe(true);
 	}
@@ -252,15 +254,15 @@ describe("output-block border style", () => {
 		expectUniformWidth(success, width);
 		expectUniformWidth(error, width);
 		expect(plain(success)).toEqual([
-			padLine("▌ ", width),
 			padLine("▌ Tool", width),
+			padLine("▌ ", width),
 			padLine(`▌ ${"A".repeat(expectedContentWidth)}`, width),
 			padLine("▌ AA", width),
 			padLine("▌ ", width),
 		]);
 		expect(plain(error)).toEqual([
-			padLine("▌ ", width),
 			padLine("▌ Tool", width),
+			padLine("▌ ", width),
 			padLine("▌ boom", width),
 			padLine("▌ ", width),
 		]);
@@ -288,7 +290,7 @@ describe("output-block border style", () => {
 		});
 
 		expectUniformWidth(lines, width);
-		expect(plain(lines)).toEqual([padLine("▌ ", width), padLine("▌ Tool", width), padLine("▌ ", width)]);
+		expect(plain(lines)).toEqual([padLine("▌ Tool", width), padLine("▌ ", width)]);
 		expect(lines.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
 		expectAccentTintStopsBeforeRightInset(lines, "success", width);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
@@ -344,8 +346,8 @@ describe("output-block border style", () => {
 
 		expectUniformWidth(lines, width);
 		expect(plain(lines)).toEqual([
-			padLine("▌ ", width),
 			padLine("▌ Tool", width),
+			padLine("▌ ", width),
 			padLine("▌ premidpost", width),
 			padLine("▌ ", width),
 		]);
