@@ -3294,6 +3294,11 @@ export class AgentSession {
 	#reconnectToAgent(): void {
 		if (this.#unsubscribeAgent) return; // Already connected
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
+		// Session transitions disconnect before aborting, so abort's settle-time drain
+		// intentionally returns while no listener owns the queue. Re-arm it only after
+		// reconnecting; otherwise a user steer/follow-up queued during `/resume` can
+		// remain stranded forever even though the resumed session appears idle.
+		this.#drainStrandedQueuedMessages();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {

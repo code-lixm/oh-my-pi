@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- Fixed user prompts queued while switching or resuming sessions remaining stranded after the agent event subscription reconnected, which left the resumed conversation appearing idle but unable to continue.
+- Fixed accent-style fallback tool surfaces missing the internal top and bottom breathing rows used by self-framed cards, making activity and tool card spacing consistent.
 - Fixed exiting a fresh interactive session with no conversation printing an unusable `omp --resume <id>` hint even though the empty session was intentionally never persisted.
 - Fixed actionable Advisor concern and blocker cards becoming too faint; accent layouts now use a stronger semantic full-surface tint, while full-frame layouts restore their warning/error background fill.
 - Fixed accent output cards losing all outer breathing room; they now keep one tinted row above and below their content without stacking an additional plain transcript separator.

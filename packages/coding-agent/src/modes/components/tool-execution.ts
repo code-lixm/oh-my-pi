@@ -48,6 +48,7 @@ import {
 	markFramedBlockComponent,
 	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
 	renderOutputAccentLine,
+	renderOutputAccentPadLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -264,7 +265,11 @@ class ToolOutputSurfaceComponent implements Component {
 		) {
 			return this.#cache.lines;
 		}
-		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
+		const lines = [
+			renderOutputAccentPadLine(width, theme, color),
+			...childLines.map(line => renderOutputAccentLine(line, width, theme, color)),
+			renderOutputAccentPadLine(width, theme, color),
+		];
 		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}
