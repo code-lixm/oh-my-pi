@@ -20,25 +20,10 @@ import { getSettingsUiLocaleEpoch, tSettingsUi } from "../../i18n/settings-local
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
+import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
-import {
-	formatArgsInline,
-	JSON_TREE_MAX_DEPTH_COLLAPSED,
-	JSON_TREE_MAX_DEPTH_EXPANDED,
-	JSON_TREE_MAX_LINES_COLLAPSED,
-	JSON_TREE_MAX_LINES_EXPANDED,
-	JSON_TREE_SCALAR_LEN_COLLAPSED,
-	JSON_TREE_SCALAR_LEN_EXPANDED,
-	renderJsonTreeLines,
-} from "../../tools/json-tree";
-import {
-	formatExpandHint,
-	formatStatusIcon,
-	replaceTabs,
-	resolveImageOptions,
-	truncateToWidth,
-} from "../../tools/render-utils";
+import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import {
@@ -48,7 +33,6 @@ import {
 	markFramedBlockComponent,
 	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
 	renderOutputAccentLine,
-	renderOutputAccentPadLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -265,11 +249,7 @@ class ToolOutputSurfaceComponent implements Component {
 		) {
 			return this.#cache.lines;
 		}
-		const lines = [
-			renderOutputAccentPadLine(width, theme, color),
-			...childLines.map(line => renderOutputAccentLine(line, width, theme, color)),
-			renderOutputAccentPadLine(width, theme, color),
-		];
+		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
 		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}
@@ -475,11 +455,23 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 
 		// Accent cards paint their vertical padding inside the semantic surface;
-		// other styles retain the existing unpainted transcript spacing.
+		// other styles retain the existing unpainted transcript spacing. Background-
+		// tinted generic fallback blocks retain the same breathing room in the
+		// semantic surface, while TranscriptContainer strips plain blank edges.
 		const accentMode = getOutputBlockBorderStyle() === "accent";
 		this.#contentBox = new Box(0, accentMode ? 0 : 1);
 		this.#contentText = new WidthAwareText(
-			contentWidth => this.#formatToolExecution(contentWidth),
+			contentWidth =>
+				formatDefaultToolExecution(
+					{
+						label: this.#toolLabel,
+						args: this.#args,
+						result: this.#result ? { output: this.#getTextOutput(), isError: this.#result.isError } : undefined,
+						options: this.#renderState,
+					},
+					contentWidth,
+					theme,
+				),
 			1,
 			accentMode ? 0 : 1,
 		);
@@ -756,7 +748,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const pendingCallConsumesSpinner =
 			this.#result === undefined &&
 			(renderer === undefined
-				? // Only the generic #formatToolExecution fallback consumes the frame;
+				? // Only the generic default-renderer fallback consumes the frame;
 					// a custom renderCall/renderResult pair routes through the custom
 					// branch whose pending label is a static tool-name Text.
 					!this.#tool?.renderCall && !this.#tool?.renderResult
@@ -1057,6 +1049,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// painting the terminal surface. Explicit renderer-level backgrounds remain
 		// independent of the global border-style selection.
 		const borderlessMode = isBorderlessOutputStyle(getOutputBlockBorderStyle());
+		const accentMode = getOutputBlockBorderStyle() === "accent";
 
 		// Check for custom tool rendering
 		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
@@ -1155,6 +1148,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			// extension renderers keep the shared padding.
 			const customFramed = this.#contentBox.children.some(isFramedBlockComponent);
 			this.#contentBox.setPaddingX(customFramed || borderlessMode ? 0 : 1);
+			this.#contentBox.setPaddingY(customFramed || accentMode ? 0 : 1);
 			this.#contentBox.setBgFn(undefined);
 		} else if (this.#toolName in toolRenderers) {
 			// Built-in tools with renderers
@@ -1295,6 +1289,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
 			this.#contentBox.setPaddingX(builtInFramed || borderlessMode ? 0 : 1);
+			this.#contentBox.setPaddingY(builtInFramed || accentMode ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
@@ -1455,97 +1450,5 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 
 		return output;
-	}
-
-	/**
-	 * Format a generic tool execution (fallback for tools without custom renderers)
-	 */
-	#formatToolExecution(contentWidth: number): string {
-		const lines: string[] = [];
-		const icon = this.#isPartial
-			? this.#spinnerFrame !== undefined
-				? "running"
-				: "pending"
-			: this.#result?.isError
-				? "error"
-				: "done";
-		lines.push(renderStatusLine({ icon, spinnerFrame: this.#spinnerFrame, title: this.#toolLabel }, theme));
-
-		const argsObject = this.#args && typeof this.#args === "object" ? (this.#args as Record<string, unknown>) : null;
-		if (!this.#expanded && argsObject && Object.keys(argsObject).length > 0) {
-			// Budget the inline preview against the render width, leaving room for
-			// the ` └─ ` connector prefix instead of a fixed cap.
-			const inlineBudget = Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2);
-			const preview = formatArgsInline(argsObject, inlineBudget);
-			if (preview) {
-				lines.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
-			}
-		}
-
-		if (this.#expanded && this.#args !== undefined) {
-			lines.push("");
-			lines.push(theme.fg("dim", tSettingsUi("Args")));
-			const tree = renderJsonTreeLines(
-				this.#args,
-				theme,
-				JSON_TREE_MAX_DEPTH_EXPANDED,
-				JSON_TREE_MAX_LINES_EXPANDED,
-				JSON_TREE_SCALAR_LEN_EXPANDED,
-			);
-			lines.push(...tree.lines);
-			if (tree.truncated) {
-				lines.push(theme.fg("dim", "…"));
-			}
-			lines.push("");
-		}
-
-		if (!this.#result) {
-			return lines.join("\n");
-		}
-
-		const textContent = this.#getTextOutput().trimEnd();
-		if (!textContent) {
-			lines.push(theme.fg("dim", "(no output)"));
-			return lines.join("\n");
-		}
-
-		if (textContent.startsWith("{") || textContent.startsWith("[")) {
-			try {
-				const parsed = JSON.parse(textContent);
-				const maxDepth = this.#expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-				const maxLines = this.#expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-				const maxScalarLen = this.#expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-				const tree = renderJsonTreeLines(parsed, theme, maxDepth, maxLines, maxScalarLen);
-
-				if (tree.lines.length > 0) {
-					lines.push(...tree.lines);
-					if (!this.#expanded) {
-						lines.push(formatExpandHint(theme, this.#expanded, true));
-					} else if (tree.truncated) {
-						lines.push(theme.fg("dim", "…"));
-					}
-					return lines.join("\n");
-				}
-			} catch {
-				// Fall through to raw output
-			}
-		}
-
-		const outputLines = textContent.split("\n");
-		const maxOutputLines = this.#expanded ? 12 : 4;
-		const displayLines = outputLines.slice(0, maxOutputLines);
-
-		for (const line of displayLines) {
-			lines.push(theme.fg("toolOutput", truncateToWidth(replaceTabs(line), contentWidth)));
-		}
-
-		if (outputLines.length > maxOutputLines) {
-			const remaining = outputLines.length - maxOutputLines;
-			lines.push(`${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, this.#expanded, true)}`);
-		} else if (!this.#expanded) {
-			lines.push(formatExpandHint(theme, this.#expanded, true));
-		}
-
-		return lines.join("\n");
 	}
 }

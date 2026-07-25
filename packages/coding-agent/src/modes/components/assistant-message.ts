@@ -288,6 +288,11 @@ export class AssistantMessageComponent extends Container {
 	 *  on a fresh block that has no live token throughput of its own. */
 	#thinkingRateLive = false;
 
+	#textColorTransform?: (text: string) => string;
+
+	setTextColorTransform(transform?: (text: string) => string): void {
+		this.#textColorTransform = transform;
+	}
 	constructor(
 		message?: AssistantMessage,
 		private hideThinkingBlock = false,
@@ -884,7 +889,8 @@ export class AssistantMessageComponent extends Container {
 				// paddingX=1 aligns the assistant body's prose with sibling transcript
 				// rows (UserMessage, tool cards) that all carry a 1-cell left gutter.
 				// paddingY=0 still avoids extra spacing before tool executions.
-				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme());
+				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
+				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions);
 				const codeBlockOptions = buildAssistantCodeBlockOptions();
 				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);

@@ -11,7 +11,7 @@ import {
 import { type Component, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 
 const WIDTH = 140;
-const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
+const uiStub = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI;
 
 function plainLines(lines: readonly string[]): string[] {
 	return lines.map(line => Bun.stripANSI(line));
@@ -89,6 +89,12 @@ function inlineArgsFor(name: string): unknown {
 			return { op: "send", to: "Worker", message: "status?" };
 		case "job":
 			return { list: true };
+		case "edit":
+			return {
+				path: "src/greeting.ts",
+				old_text: "export const greeting = 'hi';",
+				new_text: "export const greeting = 'hello';",
+			};
 		case "bash":
 			return { command: "git status --short" };
 		default:
@@ -178,6 +184,15 @@ function inlineResultFor(name: string): ToolResult {
 						{ id: "job_a1", type: "bash", status: "completed", label: "bun test a", durationMs: 5000 },
 						{ id: "job_b2", type: "task", status: "completed", label: "task b", durationMs: 10000 },
 					],
+				},
+			};
+		case "edit":
+			return {
+				content: [{ type: "text", text: "Edited src/greeting.ts" }],
+				details: {
+					path: "src/greeting.ts",
+					diff: "@@ -1 +1 @@\n-export const greeting = 'hi';\n+export const greeting = 'hello';",
+					firstChangedLine: 1,
 				},
 			};
 		case "bash":
@@ -451,6 +466,24 @@ describe("tool execution left-edge alignment", () => {
 		}
 
 		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+	});
+
+	it("renders the final self-framed Edit block flush to its own top and bottom borders", async () => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("full", () => {
+			const { success } = renderToolLifecycle("edit");
+			const first = success[0];
+			const last = success.at(-1);
+
+			expect(first, `unexpected leading row: ${JSON.stringify(success)}`).toContain(uiTheme!.boxRound.topLeft);
+			expect(first).toContain("Edit:");
+			expect(last, `unexpected trailing row: ${JSON.stringify(success)}`).toContain(uiTheme!.boxRound.bottomLeft);
+			expectVisibleSnippets(success, "edit final result", ["src/greeting.ts", "hello"]);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
 	// ─── framed built-in ─────────────────────────────────────────────────────

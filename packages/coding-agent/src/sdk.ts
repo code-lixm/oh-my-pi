@@ -189,6 +189,7 @@ import {
 	isMountableUnderXdev,
 	type LspStartupServerInfo,
 	ReadTool,
+	releaseComputerSessionsForOwner,
 	type Tool,
 	type ToolSession,
 	WebSearchTool,
@@ -2607,9 +2608,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// ExtensionToolWrapper, so the registry holds them unwrapped. The normal
 		// `write xd://<tool>` path runs approval through the wrapped `write` tool's
 		// tier gate, but Cursor invokes advertised devices via `tool.execute()`
-		// directly — so wrap unwrapped devices here to keep the approval/deny/prompt
-		// gate. Dynamic mounts (custom/MCP) already come from the wrapped registry.
-		const resolveCursorDevice = (name: string): AgentTool | undefined => {
+		// directly, and the agent loop's fallback resolver executes mounted
+		// devices the model called by their top-level name — so wrap unwrapped
+		// devices here to keep the approval/deny/prompt gate. Dynamic mounts
+		// (custom/MCP) already come from the wrapped registry.
+		const resolveDeviceTool = (name: string): AgentTool | undefined => {
 			const device = toolSession.xdevRegistry?.get(name);
 			if (!device) return undefined;
 			return device instanceof ExtensionToolWrapper ? device : new ExtensionToolWrapper(device, extensionRunner);
@@ -2617,7 +2620,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const cursorExecHandlers = new CursorExecHandlers({
 			cwd,
 			tools: toolRegistry,
-			getTool: resolveCursorDevice,
+			getTool: resolveDeviceTool,
 			getToolContext: () => toolContextStore.getContext(),
 			emitEvent: event => cursorEventEmitter?.(event),
 		});
@@ -3025,6 +3028,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			cursorExecHandlers,
 			getCursorTools: () => [...(toolSession.xdevRegistry?.list() ?? [])],
 			transformToolCallArguments,
+			resolveFallbackTool: resolveDeviceTool,
 			intentTracing: !!intentField,
 			pruneToolDescriptions: inlineToolDescriptors,
 			dialect: resolveDialect(settings.get("tools.format"), model),
@@ -3140,6 +3144,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						);
 						return tools.filter((tool): tool is AgentTool => tool !== null);
 					},
+			createComputerTool: restrictToolNames
+				? undefined
+				: async () => (await BUILTIN_TOOLS.computer(toolSession)) ?? null,
 			createVibeTools:
 				(options.taskDepth ?? 0) === 0 && !options.parentTaskPrefix
 					? () => createVibeTools(toolSession)
@@ -3369,6 +3376,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
 					streamFn: settingsAwareStreamFn,
 					transformToolCallArguments,
+					resolveFallbackTool: resolveDeviceTool,
 					intentTracing: !!intentField,
 					pruneToolDescriptions: inlineToolDescriptors,
 					dialect: resolveDialect(settings.get("tools.format"), captureModel),
@@ -3483,6 +3491,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}
 					await asyncJobManager.dispose({ timeoutMs: 3_000 });
 				}
+				await releaseComputerSessionsForOwner(evalKernelOwnerId);
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);
 				await disposeRubyKernelSessionsByOwner(evalKernelOwnerId);
 				await disposeJuliaKernelSessionsByOwner(evalKernelOwnerId);

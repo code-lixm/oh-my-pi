@@ -66,7 +66,7 @@ import {
 	tryResolveInternalUrlSync,
 	urlHyperlink,
 } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent, resolveBareOutputBlockBorderStyle } from "../tui/output-block";
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
@@ -3537,6 +3537,7 @@ function renderReadUrlSummaryStatusLine(
 }
 
 export const readToolRenderer = {
+	transcriptSurface: "bare" as const,
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath = readRenderPath(args);
 		if (isReadableUrlPath(rawPath)) {
@@ -3790,6 +3791,7 @@ export const readToolRenderer = {
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
 								expanded,
 								width,
+								borderStyle: resolveBareOutputBlockBorderStyle(),
 							},
 							uiTheme,
 						)
@@ -3804,6 +3806,7 @@ export const readToolRenderer = {
 								codeStartLine: details?.displayContent?.startLine,
 								codeLineNumbers: details?.displayContent?.lineNumbers,
 								width,
+								borderStyle: resolveBareOutputBlockBorderStyle(),
 							},
 							uiTheme,
 						);

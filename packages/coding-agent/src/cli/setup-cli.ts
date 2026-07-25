@@ -12,7 +12,6 @@ import { tSettingsUi } from "../i18n/settings-locale";
 import { theme } from "../modes/theme/theme";
 import { downloadSttModel, isSttModelCached } from "../stt/downloader";
 import { isSttModelKey, STT_MODEL_OPTIONS } from "../stt/models";
-import { detectRecorder, ensureRecorder } from "../stt/recorder";
 import { downloadTtsModel, isTtsLocalModelKey, isTtsModelCached, TTS_LOCAL_MODEL_OPTIONS } from "../tts";
 import { selectSetupModel } from "./setup-model-picker";
 
@@ -117,7 +116,6 @@ async function checkPythonSetup(): Promise<PythonCheckResult> {
  * Run the setup command.
  */
 export async function runSetupCommand(cmd: SetupCommandArgs): Promise<void> {
-	await Settings.loadReadOnly({ cwd: getProjectDir() });
 	switch (cmd.component) {
 		case "python":
 			await handlePythonSetup(cmd.flags);
@@ -174,21 +172,6 @@ interface SpeechComponent {
 
 function buildSpeechComponents(): SpeechComponent[] {
 	return [
-		{
-			name: "Recorder",
-			isReady: async () => detectRecorder() !== null,
-			status: async () => {
-				const recorder = detectRecorder();
-				return recorder ? `${recorder.tool} (${recorder.bin})` : "none — ffmpeg will be downloaded";
-			},
-			displayStatus: async () => {
-				const recorder = detectRecorder();
-				return recorder ? `${recorder.tool} (${recorder.bin})` : tSettingsUi("none — ffmpeg will be downloaded");
-			},
-			ensure: async onProgress => {
-				await ensureRecorder(onProgress);
-			},
-		},
 		{
 			name: "Speech-to-Text model",
 			isReady: () => isSttModelCached(settings.get("stt.modelName")),
@@ -332,7 +315,7 @@ async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Pr
 export function printSetupHelp(): void {
 	const components = [
 		`  python    ${tSettingsUi("Verify a Python 3 interpreter is reachable for code execution")}`,
-		`  speech    ${tSettingsUi("Pick + download the speech-to-text and text-to-speech models and an audio recorder")}`,
+		`  speech    ${tSettingsUi("Pick and download speech-to-text and text-to-speech models")}`,
 	].join("\n");
 	const options = [
 		`  -c, --check   ${tSettingsUi("Check if dependencies are installed without installing")}`,
@@ -341,7 +324,7 @@ export function printSetupHelp(): void {
 	const examples = [
 		`  ${APP_NAME} setup                  ${tSettingsUi("Run the onboarding wizard")}`,
 		`  ${APP_NAME} setup python           ${tSettingsUi("Check Python execution dependencies")}`,
-		`  ${APP_NAME} setup speech           ${tSettingsUi("Set up speech (pick STT + TTS models, install a recorder)")}`,
+		`  ${APP_NAME} setup speech           ${tSettingsUi("Pick and download the STT and TTS models")}`,
 		`  ${APP_NAME} setup speech --check   ${tSettingsUi("Check if speech dependencies are available")}`,
 		`  ${APP_NAME} setup python --check   ${tSettingsUi("Check if Python execution is available")}`,
 	].join("\n");
