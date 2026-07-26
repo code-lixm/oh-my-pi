@@ -618,7 +618,7 @@ export class CollabHost {
 				const kill = async () => {
 					const ref = AgentRegistry.global().get(agentId);
 					if (!ref) return;
-					if (ref.status === "running" && ref.session) {
+					if ((ref.status === "running" || ref.status === "waiting") && ref.session) {
 						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
 					}
 					await AgentLifecycleManager.global().release(agentId, ref);

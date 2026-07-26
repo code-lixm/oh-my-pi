@@ -96,7 +96,7 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Clear screen or cancel"),
 	},
 	"app.exit": {
-		defaultKeys: "ctrl+d",
+		defaultKeys: [],
 		description: tSettingsUi("Exit application"),
 	},
 	"app.suspend": {

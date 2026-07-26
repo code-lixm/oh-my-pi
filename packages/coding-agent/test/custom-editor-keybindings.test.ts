@@ -44,4 +44,25 @@ describe("CustomEditor keybindings", () => {
 		expect(onCopyPrompt).toHaveBeenCalledTimes(1);
 		expect(onRetry).not.toHaveBeenCalled();
 	});
+
+	it("does not exit on ctrl+d with the default keybindings", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onExit = vi.fn();
+
+		editor.onExit = onExit;
+		editor.handleInput("\x04");
+
+		expect(onExit).not.toHaveBeenCalled();
+	});
+
+	it("routes ctrl+d to onExit only when app.exit is explicitly configured", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onExit = vi.fn();
+
+		editor.setActionKeys("app.exit", ["ctrl+d"]);
+		editor.onExit = onExit;
+		editor.handleInput("\x04");
+
+		expect(onExit).toHaveBeenCalledTimes(1);
+	});
 });

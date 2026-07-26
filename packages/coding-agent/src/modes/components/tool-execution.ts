@@ -33,6 +33,7 @@ import {
 	markFramedBlockComponent,
 	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
 	renderOutputAccentLine,
+	renderOutputAccentPadLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -218,6 +219,7 @@ class ToolOutputSurfaceComponent implements Component {
 		width: number;
 		childLines: readonly string[];
 		color: ThemeColor;
+		addEdgePadding: boolean;
 		themeEpoch: number;
 		lines: readonly string[];
 	};
@@ -227,6 +229,7 @@ class ToolOutputSurfaceComponent implements Component {
 		private readonly isSelfFramed: () => boolean,
 		private readonly accentColor: () => ThemeColor,
 		private readonly bareSurface = false,
+		private readonly addAccentEdgePadding?: () => boolean,
 	) {
 		this.wantsKeyRelease = child.wantsKeyRelease;
 	}
@@ -240,17 +243,26 @@ class ToolOutputSurfaceComponent implements Component {
 		const innerWidth = Math.max(1, width - 2 - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 		const childLines = this.child.render(innerWidth);
 		const color = this.accentColor();
+		const addEdgePadding = this.addAccentEdgePadding?.() === true && childLines.length > 0;
 		const themeEpoch = getThemeEpoch();
 		if (
 			this.#cache?.width === width &&
 			this.#cache.childLines === childLines &&
 			this.#cache.color === color &&
+			this.#cache.addEdgePadding === addEdgePadding &&
 			this.#cache.themeEpoch === themeEpoch
 		) {
 			return this.#cache.lines;
 		}
-		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
-		this.#cache = { width, childLines, color, themeEpoch, lines };
+		const contentLines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
+		const lines = addEdgePadding
+			? [
+					renderOutputAccentPadLine(width, theme, color),
+					...contentLines,
+					renderOutputAccentPadLine(width, theme, color),
+				]
+			: contentLines;
+		this.#cache = { width, childLines, color, addEdgePadding, themeEpoch, lines };
 		return lines;
 	}
 
@@ -490,6 +502,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						() => this.#contentBox.children.some(isFramedBlockComponent),
 						accentColor,
 						bareSurface,
+						() =>
+							toolRenderers[toolName]?.accentEdgePadding?.(this.#args, this.#result) === true,
 					)
 				: this.#contentBox;
 			this.addChild(surface);
@@ -1289,7 +1303,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
 			this.#contentBox.setPaddingX(builtInFramed || borderlessMode ? 0 : 1);
-			this.#contentBox.setPaddingY(builtInFramed || accentMode ? 0 : 1);
+			const usesAccentEdgePadding = renderer.accentEdgePadding?.(this.#args, this.#result) === true;
+			this.#contentBox.setPaddingY(builtInFramed || accentMode || usesAccentEdgePadding ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width

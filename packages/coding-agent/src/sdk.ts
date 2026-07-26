@@ -160,6 +160,11 @@ import {
 } from "./system-prompt";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
+import {
+	TaskRequestConcurrency,
+	TaskRunnableConcurrency,
+	wrapStreamFnWithTaskConcurrency,
+} from "./task/request-concurrency";
 import type { StructuredSubagentSchemaMode } from "./task/types";
 import {
 	AUTO_THINKING,
@@ -508,6 +513,10 @@ export interface CreateAgentSessionOptions {
 	parentAgentId?: string;
 	/** Inherited eval executor session id for subagents sharing parent eval state. */
 	parentEvalSessionId?: string;
+	/** Root-session subagent request limiter inherited by nested and revived agents. */
+	taskRequestConcurrency?: TaskRequestConcurrency;
+	/** Root-session runnable-subagent scheduler inherited by nested and revived agents. */
+	taskRunnableConcurrency?: TaskRunnableConcurrency;
 
 	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
@@ -1596,6 +1605,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			: undefined;
 
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+	const taskRequestConcurrency =
+		options.taskRequestConcurrency ?? new TaskRequestConcurrency(() => settings.get("task.maxRequestConcurrency"));
+	const taskRunnableConcurrency =
+		options.taskRunnableConcurrency ?? new TaskRunnableConcurrency(() => settings.get("task.maxConcurrency"));
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -1752,6 +1765,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// this undefined so tools and session job snapshots refuse async work
 			// instead of silently routing into the owning session (issue #1923).
 			asyncJobManager: scopedAsyncJobManager,
+			taskRequestConcurrency,
+			taskRunnableConcurrency,
+			withRunnableAgentSuspended: (run, signal) =>
+				taskRunnableConcurrency.withSuspended(resolvedAgentId, run, {
+					signal,
+					onSuspend: () => {
+						if (registeredAgentRef) agentRegistry.setStatus(resolvedAgentId, "waiting", registeredAgentRef);
+					},
+					onResume: () => {
+						if (registeredAgentRef) agentRegistry.setStatus(resolvedAgentId, "running", registeredAgentRef);
+					},
+				}),
 		};
 
 		// Wire process-wide internal URL singletons owned by their real classes.
@@ -2811,7 +2836,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
-			status: "running" as const,
+			status: agentKind === "sub" ? ("idle" as const) : ("running" as const),
 		};
 		registeredAgentRef =
 			options.expectedAgentRef === undefined
@@ -2952,15 +2977,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		let notifyFirstChatDispatch = options.onFirstChatDispatch;
 		// Shared, settings-aware stream wrapper used by the main agent, advisor,
 		// and side-channel requests (`/btw`, `/omfg`, IRC auto-replies, handoff).
-		// Keeps OpenRouter sticky-routing variants, antigravity endpoint routing,
-		// in-flight caps, and the loop guard consistent across every provider call
-		// the session drives. Wrapped in a per-provider concurrency limiter so
-		// each LLM HTTP request — not the whole subagent lifecycle — holds the
-		// slot, preventing the nested-spawn deadlock from issue #3749.
-		const settingsAwareStreamFn = wrapStreamFnWithProviderConcurrency(
+		// Provider-specific limits and the root task limit both bracket one LLM
+		// request, never an agent lifecycle, so parents cannot hold a slot while
+		// waiting for nested children.
+		const providerLimitedStreamFn = wrapStreamFnWithProviderConcurrency(
 			settings,
 			createSettingsAwareStreamFn(settings),
 		);
+		const settingsAwareStreamFn =
+			agentKind === "sub"
+				? wrapStreamFnWithTaskConcurrency(taskRequestConcurrency, providerLimitedStreamFn)
+				: providerLimitedStreamFn;
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
 			const maxTimeout = settings.get("tools.maxTimeout");
@@ -3123,6 +3150,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// **MUST NOT** tear it down.
 			ownedAsyncJobManager: asyncJobManager,
 			asyncJobManager: scopedAsyncJobManager,
+			taskRequestConcurrency,
+			taskRunnableConcurrency,
+			onRunnableAgentWait: () => {
+				if (registeredAgentRef) agentRegistry.setStatus(resolvedAgentId, "waiting", registeredAgentRef);
+			},
+			onRunnableAgentAcquire: () => {
+				if (registeredAgentRef) agentRegistry.setStatus(resolvedAgentId, "running", registeredAgentRef);
+			},
+			onRunnableAgentRelease: () => {
+				if (registeredAgentRef) agentRegistry.setStatus(resolvedAgentId, "idle", registeredAgentRef);
+			},
 			scopedModels: options.scopedModels,
 			promptTemplates,
 			slashCommands,
@@ -3212,7 +3250,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				sessionManager.getSessionFile() ?? null,
 				registeredAgentRef,
 			) ||
-			!agentRegistry.setStatus(resolvedAgentId, "running", registeredAgentRef)
+			!agentRegistry.setStatus(resolvedAgentId, agentKind === "sub" ? "idle" : "running", registeredAgentRef)
 		) {
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}

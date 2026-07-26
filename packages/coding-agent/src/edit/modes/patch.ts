@@ -20,6 +20,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
+import { notifyFileMutation } from "../../tools/file-mutation-hook";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -1882,10 +1883,13 @@ export async function executePatchSingle(
 
 	if (resolvedRename) {
 		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
+		notifyFileMutation(session, resolvedRename, "rename", { previousPath: resolvedPath });
 	} else if (result.change.type === "delete") {
 		invalidateFsScanAfterDelete(resolvedPath);
+		notifyFileMutation(session, resolvedPath, "delete");
 	} else {
 		invalidateFsScanAfterWrite(resolvedPath);
+		notifyFileMutation(session, resolvedPath, result.change.type === "create" ? "create" : "update");
 	}
 	const effectiveRename = result.change.newPath ? rename : undefined;
 

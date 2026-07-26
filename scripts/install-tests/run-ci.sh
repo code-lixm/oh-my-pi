@@ -21,6 +21,9 @@ smoke_cli() {
    XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --version
    XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" --help >/dev/null
    XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" stats --summary >/dev/null
+   # Exercises CodeGraph command registration, repository identity resolution,
+   # and distribution-safe loading without creating an index.
+   XDG_DATA_HOME="$runtime_dir/xdg" HOME="$runtime_dir/home" "$omp_bin" codegraph status --json >/dev/null
    # Spawns bundled workers and serves the stats dashboard once. Regression
    # probe for #1011/#1027 worker loading and for npm/compiled distributions
    # missing the dashboard assets that `stats --summary` never touches.

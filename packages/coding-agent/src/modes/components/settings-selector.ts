@@ -90,6 +90,7 @@ class TextInputSubmenu extends Container {
 		secret: boolean,
 		private readonly onSubmit: (value: string) => void,
 		private readonly onCancel: () => void,
+		allowUnset = true,
 	) {
 		super();
 
@@ -108,7 +109,7 @@ class TextInputSubmenu extends Container {
 		this.#error = new Text("", 0, 0);
 		this.#input.onSubmit = value => {
 			try {
-				this.onSubmit(value); // empty string clears the setting
+				this.onSubmit(value);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				this.#error.setText(theme.fg("error", truncateToWidth(replaceTabs(message).replace(/[\r\n]+/g, " "), 100)));
@@ -117,9 +118,10 @@ class TextInputSubmenu extends Container {
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
 		this.addChild(this.#error);
-		this.addChild(
-			new Text(theme.fg("dim", `  ${tSettingsUi("Enter to save · Esc to cancel · Clear field to unset")}`), 0, 0),
-		);
+		const hint = allowUnset
+			? tSettingsUi("Enter to save · Esc to cancel · Clear field to unset")
+			: tSettingsUi("Enter to save · Esc to cancel");
+		this.addChild(new Text(theme.fg("dim", `  ${hint}`), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -1030,6 +1032,16 @@ export class SettingsSelectorComponent implements Component {
 					changed,
 				};
 
+			case "number":
+				return {
+					id: def.path,
+					label: def.label,
+					description: def.description,
+					currentValue: String(currentValue ?? ""),
+					submenu: (_cv, done) => this.#createNumberInput(def, done),
+					changed,
+				};
+
 			case "providerLimits":
 				return {
 					id: def.path,
@@ -1245,6 +1257,41 @@ export class SettingsSelectorComponent implements Component {
 				wrappedDone(this.#formatTextInputValue(def, settings.get(def.path)));
 			},
 			() => wrappedDone(),
+		);
+	}
+
+	#createNumberInput(def: SettingDef & { type: "number" }, done: (value?: string) => void): Container {
+		this.#textInputActive = true;
+		const wrappedDone = (value?: string) => {
+			this.#textInputActive = false;
+			done(value);
+		};
+		return new TextInputSubmenu(
+			def.label,
+			def.description,
+			String(settings.get(def.path) ?? ""),
+			false,
+			value => {
+				const trimmed = value.trim();
+				const parsed = Number(trimmed);
+				if (!trimmed || !Number.isFinite(parsed)) {
+					throw new Error(tSettingsUi("Invalid number: {rawValue}", { rawValue: value }));
+				}
+				if (def.integer && !Number.isInteger(parsed)) {
+					throw new Error(tSettingsUi("Value must be an integer."));
+				}
+				if (def.min !== undefined && parsed < def.min) {
+					throw new Error(tSettingsUi("Value must be at least {min}.", { min: def.min }));
+				}
+				if (def.max !== undefined && parsed > def.max) {
+					throw new Error(tSettingsUi("Value must be at most {max}.", { max: def.max }));
+				}
+				settings.set(def.path, parsed as never);
+				this.callbacks.onChange(def.path, parsed);
+				wrappedDone(String(parsed));
+			},
+			() => wrappedDone(),
+			false,
 		);
 	}
 

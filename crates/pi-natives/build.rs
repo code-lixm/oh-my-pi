@@ -8,6 +8,7 @@ use std::{
 fn main() {
 	napi_build::setup();
 	generate_minimizer_builtin_filters();
+	compile_codegraph_grammars();
 }
 
 fn generate_minimizer_builtin_filters() {
@@ -61,4 +62,73 @@ fn generate_minimizer_builtin_filters() {
 
 	fs::write(&output_path, concatenated)
 		.unwrap_or_else(|e| panic!("failed to write {}: {e}", output_path.display()));
+}
+
+fn compile_codegraph_grammars() {
+	compile_codegraph_grammar(
+		"kotlin",
+		"tree_sitter_kotlin",
+		"codegraph_tree_sitter_kotlin",
+		false,
+		&[],
+	);
+	compile_codegraph_grammar("lua", "tree_sitter_lua", "codegraph_tree_sitter_lua", false, &[]);
+	compile_codegraph_grammar(
+		"scala",
+		"tree_sitter_scala",
+		"codegraph_tree_sitter_scala",
+		false,
+		&["-Wno-unused-function"],
+	);
+	compile_codegraph_grammar("dart", "tree_sitter_dart", "codegraph_tree_sitter_dart", true, &[
+		"-Wno-unused-function",
+	]);
+}
+
+fn compile_codegraph_grammar(
+	name: &str,
+	upstream_symbol: &str,
+	renamed_symbol: &str,
+	has_reset: bool,
+	extra_flags: &[&str],
+) {
+	let grammar_dir = Path::new("src")
+		.join("codegraph")
+		.join("grammars")
+		.join(name);
+	let mut build = cc::Build::new();
+	build.include(&grammar_dir);
+	build.file(grammar_dir.join("parser.c"));
+	build.file(grammar_dir.join("scanner.c"));
+	build.define(upstream_symbol, Some(renamed_symbol));
+	rename_codegraph_scanner_symbols(&mut build, upstream_symbol, renamed_symbol, has_reset);
+	build.flag_if_supported("-Wno-unused-parameter");
+	build.flag_if_supported("-Wno-unused-but-set-variable");
+	build.flag_if_supported("-Wno-trigraphs");
+	if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+		build.flag("-utf-8");
+	}
+	for flag in extra_flags {
+		build.flag_if_supported(flag);
+	}
+	build.compile(&format!("codegraph-tree-sitter-{name}"));
+	println!("cargo:rerun-if-changed={}", grammar_dir.display());
+}
+
+fn rename_codegraph_scanner_symbols(
+	build: &mut cc::Build,
+	upstream_symbol: &str,
+	renamed_symbol: &str,
+	has_reset: bool,
+) {
+	for suffix in ["create", "destroy", "scan", "serialize", "deserialize"] {
+		let from = format!("{upstream_symbol}_external_scanner_{suffix}");
+		let to = format!("{renamed_symbol}_external_scanner_{suffix}");
+		build.define(from.as_str(), Some(to.as_str()));
+	}
+	if has_reset {
+		let from = format!("{upstream_symbol}_external_scanner_reset");
+		let to = format!("{renamed_symbol}_external_scanner_reset");
+		build.define(from.as_str(), Some(to.as_str()));
+	}
 }

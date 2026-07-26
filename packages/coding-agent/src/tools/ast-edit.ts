@@ -20,6 +20,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { parseReadUrlTarget } from "./fetch";
+import { notifyFileUpdated } from "./file-mutation-hook";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
@@ -461,6 +462,9 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 						}
 						for (const change of applyResult.changes) {
 							recordAppliedFile(formatPath(change.path));
+						}
+						for (const relativePath of appliedFileList) {
+							notifyFileUpdated(this.session, path.resolve(this.session.cwd, relativePath));
 						}
 						// The preview minted tags from pre-apply content; the rewrite just
 						// invalidated them. Re-record post-apply snapshots (canonical keys)

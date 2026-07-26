@@ -386,6 +386,8 @@ function peerStatusBadge(status: string, theme: Theme): string {
 	switch (status) {
 		case "running":
 			return theme.fg("accent", `${theme.status.running} ${tSettingsUi("running")}`);
+		case "waiting":
+			return theme.fg("warning", `${theme.status.running} ${tSettingsUi("waiting")}`);
 		case "idle":
 			return theme.fg("success", `${theme.status.enabled} ${tSettingsUi("idle")}`);
 		case "parked":

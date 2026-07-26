@@ -5,7 +5,6 @@
  * tool renderers to ensure a unified TUI experience.
  */
 
-import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolCallContext } from "@oh-my-pi/pi-agent-core";
 import type { Ellipsis } from "@oh-my-pi/pi-natives";
@@ -18,10 +17,12 @@ import { getDefault } from "../config/settings-schema";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { Hasher } from "../tui/utils";
+import { shortenPath } from "../utils/path-display";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+export { shortenPath };
 
 // =============================================================================
 // Standardized Display Constants
@@ -674,23 +675,6 @@ export function truncateDiffByHunk(
 	};
 }
 
-// =============================================================================
-// Path Utilities
-// =============================================================================
-
-export function shortenPath(filePath: unknown, homeDir?: string): string {
-	if (typeof filePath !== "string") {
-		return "";
-	}
-	const home = homeDir ?? os.homedir();
-	if (home && filePath.startsWith(home)) {
-		const suffix = filePath.slice(home.length);
-		if (suffix === "" || suffix.startsWith(path.posix.sep) || suffix.startsWith(path.win32.sep)) {
-			return `~${suffix.replaceAll(path.win32.sep, path.posix.sep)}`;
-		}
-	}
-	return filePath;
-}
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {
 	if (!workdir) return undefined;

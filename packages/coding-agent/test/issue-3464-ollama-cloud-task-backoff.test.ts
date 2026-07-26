@@ -30,6 +30,37 @@ function requireModel(provider: GeneratedProvider, id: string): Model {
 	return model;
 }
 
+function aliasProviderModel(baseProvider: GeneratedProvider, id: string, provider: string): Model {
+	return { ...requireModel(baseProvider, id), provider } as Model;
+}
+
+function makeAssistantMessage(model: Model, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+async function waitFor(check: () => boolean, label: string): Promise<void> {
+	for (let i = 0; i < 1000 && !check(); i++) {
+		await Promise.resolve();
+	}
+	if (!check()) throw new Error(`Timed out waiting for: ${label}`);
+}
+
 describe("issue #3464: ollama-cloud task backoff", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
@@ -167,6 +198,156 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 		await Promise.all(calls);
 		expect(inFlight).toBe(0);
 		expect(peakInFlight).toBe(2);
+	});
+
+	it("applies providers.maxInFlightRequests to openai-proxy and keeps provider queues independent", async () => {
+		const openaiProxyModel = aliasProviderModel("openai", "gpt-4o-mini", "openai-proxy");
+		const cloudModel = requireModel("ollama-cloud", "gpt-oss:120b");
+		const settings = Settings.isolated({
+			"providers.maxInFlightRequests": { "openai-proxy": 2 },
+			"providers.ollama-cloud.maxConcurrency": 1,
+		});
+
+		const gates: Array<{ provider: string; gate: Deferred }> = [];
+		const invocations = new Map<string, number>();
+		const inFlight = new Map<string, number>();
+		const peakInFlight = new Map<string, number>();
+		const base: StreamFn = model => {
+			const gate = deferred();
+			gates.push({ provider: model.provider, gate });
+			invocations.set(model.provider, (invocations.get(model.provider) ?? 0) + 1);
+			const currentInFlight = (inFlight.get(model.provider) ?? 0) + 1;
+			inFlight.set(model.provider, currentInFlight);
+			peakInFlight.set(model.provider, Math.max(peakInFlight.get(model.provider) ?? 0, currentInFlight));
+			const stream = new AssistantMessageEventStream();
+			void gate.promise.then(() => {
+				inFlight.set(model.provider, (inFlight.get(model.provider) ?? 1) - 1);
+				stream.push({ type: "done", reason: "stop", message: makeAssistantMessage(model) });
+				stream.end();
+			});
+			return stream;
+		};
+		const wrapped = wrapStreamFnWithProviderConcurrency(settings, base);
+
+		const calls = [
+			wrapped(openaiProxyModel, { messages: [] }, {}),
+			wrapped(openaiProxyModel, { messages: [] }, {}),
+			wrapped(openaiProxyModel, { messages: [] }, {}),
+			wrapped(cloudModel, { messages: [] }, {}),
+		];
+
+		await waitFor(() => (invocations.get("openai-proxy") ?? 0) === 2, "two openai-proxy requests to start");
+		await waitFor(() => (invocations.get("ollama-cloud") ?? 0) === 1, "one ollama-cloud request to start");
+		expect(inFlight.get("openai-proxy")).toBe(2);
+		expect(inFlight.get("ollama-cloud")).toBe(1);
+		expect(peakInFlight.get("openai-proxy")).toBe(2);
+		expect(peakInFlight.get("ollama-cloud")).toBe(1);
+
+		gates.find(call => call.provider === "openai-proxy")!.gate.resolve();
+		await waitFor(() => (invocations.get("openai-proxy") ?? 0) === 3, "queued openai-proxy request to start");
+		expect(inFlight.get("openai-proxy")).toBe(2);
+		expect(invocations.get("ollama-cloud")).toBe(1);
+
+		for (const { gate } of gates) gate.resolve();
+		await Promise.all(calls);
+		expect(inFlight.get("openai-proxy") ?? 0).toBe(0);
+		expect(inFlight.get("ollama-cloud") ?? 0).toBe(0);
+	});
+
+	it("prefers an explicit ollama-cloud providers.maxInFlightRequests entry over the legacy maxConcurrency", async () => {
+		const cloudModel = requireModel("ollama-cloud", "gpt-oss:120b");
+		const settings = Settings.isolated({
+			"providers.maxInFlightRequests": { "ollama-cloud": 1 },
+			"providers.ollama-cloud.maxConcurrency": 3,
+		});
+
+		let invocations = 0;
+		let inFlight = 0;
+		let peakInFlight = 0;
+		const gates: Deferred[] = [];
+		const base: StreamFn = model => {
+			const gate = deferred();
+			gates.push(gate);
+			invocations++;
+			inFlight++;
+			peakInFlight = Math.max(peakInFlight, inFlight);
+			const stream = new AssistantMessageEventStream();
+			void gate.promise.then(() => {
+				inFlight--;
+				stream.push({ type: "done", reason: "stop", message: makeAssistantMessage(model) });
+				stream.end();
+			});
+			return stream;
+		};
+		const wrapped = wrapStreamFnWithProviderConcurrency(settings, base);
+
+		const first = wrapped(cloudModel, { messages: [] }, {});
+		const second = wrapped(cloudModel, { messages: [] }, {});
+		await waitFor(() => invocations === 1, "legacy override should keep second ollama-cloud request queued");
+		expect(inFlight).toBe(1);
+		expect(peakInFlight).toBe(1);
+
+		gates[0]!.resolve();
+		await waitFor(() => invocations === 2, "second ollama-cloud request to start after release");
+		expect(inFlight).toBe(1);
+
+		gates[1]!.resolve();
+		await Promise.all([first, second]);
+		expect(inFlight).toBe(0);
+		expect(peakInFlight).toBe(1);
+	});
+
+	it("releases the provider slot when an openai-proxy stream errors", async () => {
+		const model = aliasProviderModel("openai", "gpt-4o-mini", "openai-proxy");
+		const settings = Settings.isolated({
+			"providers.maxInFlightRequests": { "openai-proxy": 1 },
+		});
+
+		let invocations = 0;
+		const base: StreamFn = () => {
+			invocations++;
+			return new AssistantMessageEventStream();
+		};
+		const wrapped = wrapStreamFnWithProviderConcurrency(settings, base);
+
+		const first = await wrapped(model, { messages: [] }, {});
+		const secondPromise = wrapped(model, { messages: [] }, {});
+		await waitFor(() => invocations === 1, "second openai-proxy request should queue behind the first");
+
+		first.fail(new Error("boom"));
+		await waitFor(() => invocations === 2, "errored first stream should release the queued request");
+		const second = await secondPromise;
+		second.push({ type: "done", reason: "stop", message: makeAssistantMessage(model) });
+		second.end();
+	});
+
+	it("releases the provider slot when an openai-proxy stream aborts", async () => {
+		const model = aliasProviderModel("openai", "gpt-4o-mini", "openai-proxy");
+		const settings = Settings.isolated({
+			"providers.maxInFlightRequests": { "openai-proxy": 1 },
+		});
+
+		let invocations = 0;
+		const base: StreamFn = () => {
+			invocations++;
+			return new AssistantMessageEventStream();
+		};
+		const wrapped = wrapStreamFnWithProviderConcurrency(settings, base);
+
+		const first = await wrapped(model, { messages: [] }, {});
+		const secondPromise = wrapped(model, { messages: [] }, {});
+		await waitFor(() => invocations === 1, "second openai-proxy request should wait for the aborted stream");
+
+		first.push({
+			type: "error",
+			reason: "aborted",
+			error: makeAssistantMessage(model, "aborted"),
+		});
+		first.end();
+		await waitFor(() => invocations === 2, "aborted first stream should release the queued request");
+		const second = await secondPromise;
+		second.push({ type: "done", reason: "stop", message: makeAssistantMessage(model) });
+		second.end();
 	});
 
 	it("frees a queued slot when its acquire waiter is aborted", async () => {

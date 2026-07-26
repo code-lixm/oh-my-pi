@@ -292,6 +292,58 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("mouse cursor placement", () => {
+		it("routes a normal-screen click into the hit multi-line row before inserting", async () => {
+			const terminal = new VirtualTerminal(20, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor(defaultEditorTheme);
+			editor.mouseTracking = true;
+			editor.setBorderVisible(false);
+			editor.setText("alpha\nbravo");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				terminal.sendInput("\x1b[<0;3;2M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("alpha\nbrXavo");
+				expect(editor.getCursor()).toEqual({ line: 1, col: 3 });
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("snaps a click inside a wide grapheme cell to a stable boundary before inserting", async () => {
+			const terminal = new VirtualTerminal(20, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor(defaultEditorTheme);
+			editor.mouseTracking = true;
+			editor.setBorderVisible(false);
+			editor.setText("a界b");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				terminal.sendInput("\x1b[<0;3;1M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("aX界b");
+				expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	describe("autocomplete triggers", () => {
 		it("triggers slash-command autocomplete without losing the hardware cursor anchor", async () => {
 			const editor = new Editor(defaultEditorTheme);

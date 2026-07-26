@@ -93,6 +93,20 @@ function createRealSession(overrides: Partial<Record<SettingPath, unknown>> = {}
 	});
 	return { session, sessionManager };
 }
+function expectIdleIrcPrompt(content: CustomMessage["content"]): void {
+	const text =
+		typeof content === "string"
+			? content
+			: content
+					.filter(block => block.type === "text")
+					.map(block => block.text)
+					.join("\n");
+	expect(text).toContain("Reply only when this message requires an answer, decision, correction, or action.");
+	expect(text).toContain("NEVER send acknowledgement-only or thread-closing replies");
+	expect(text).toContain("remain silent and continue the current task");
+	expect(text).not.toContain("Need to reply?");
+	expect(text).not.toContain("Use `hub send`");
+}
 
 describe("IRC", () => {
 	let registry: AgentRegistry;
@@ -987,6 +1001,7 @@ describe("IRC", () => {
 			const prompted = (promptSpy.mock.calls[0]![0] as unknown as CustomMessage[])[0];
 			expect(prompted).toMatchObject({ role: "custom", customType: "irc:incoming" });
 			expect(prompted.details).toMatchObject({ id: "msg-1", from: "0-Peer", message: "wake up" });
+			expectIdleIrcPrompt(prompted.content);
 
 			const event = await ircEvent;
 			expect(event.type).toBe("irc_message");

@@ -568,17 +568,34 @@ describe("task.batch spawning", () => {
 		]);
 	});
 
-	it("settles the batch async aggregate when a queued spawn is cancelled mid-flight", async () => {
+	it("settles the batch async aggregate when a running spawn is cancelled mid-flight", async () => {
 		mockDiscovery();
 		const started: string[] = [];
-		const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+		const bothStarted = Promise.withResolvers<void>();
+		const firstGate = Promise.withResolvers<void>();
+		const secondObservedAbort = Promise.withResolvers<void>();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const id = options.id ?? "?";
 			started.push(id);
-			const { promise, resolve } = Promise.withResolvers<void>();
-			gates.set(id, { promise, resolve });
-			await promise;
-			return makeResult(id);
+			if (started.length === 2) bothStarted.resolve();
+			if (id === "First") {
+				await firstGate.promise;
+				return makeResult(id);
+			}
+			const signal = options.signal;
+			if (!signal) throw new Error("Expected abort signal");
+			await new Promise<void>(resolve => {
+				const onAbort = () => {
+					secondObservedAbort.resolve();
+					resolve();
+				};
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
+			return makeResult(id, { aborted: true, exitCode: 1, error: "cancelled" });
 		});
 
 		const manager = createManager();
@@ -614,25 +631,23 @@ describe("task.batch spawning", () => {
 
 		const firstJob = manager.getJob("First")!;
 		const secondJob = manager.getJob("Second")!;
-		const deadline = Date.now() + 1_000;
-		while (started.length === 0) {
-			if (Date.now() > deadline) throw new Error("First spawn never reached the executor");
-			await Bun.sleep(5);
-		}
-		expect(started).toEqual(["First"]);
-		expect(secondJob.queued).toBe(true);
+		await bothStarted.promise;
+		expect([...started].sort()).toEqual(["First", "Second"]);
+		expect(firstJob.queued).toBe(false);
+		expect(secondJob.queued).toBe(false);
 
 		expect(manager.cancel(secondJob.id)).toBe(true);
+		await secondObservedAbort.promise;
 		await secondJob.promise;
 
-		gates.get("First")!.resolve();
+		firstGate.resolve();
 		await firstJob.promise;
 
 		expect(secondJob.status).toBe("cancelled");
 		const last = updates.at(-1);
-		// The acquire-time abort path has to flow through the same `onSettled`
-		// the post-acquire abort path uses, otherwise the batch aggregate sticks
-		// at "running" forever after the surviving spawn completes.
+		// Cancellation still has to flow through the shared `onSettled`
+		// accounting, otherwise the batch aggregate sticks at "running" after
+		// the surviving spawn completes.
 		expect(last?.async?.state).toBe("failed");
 		expect(last?.progress?.find(p => p.id === "Second")?.status).toBe("aborted");
 		expect(last?.progress?.find(p => p.id === "First")?.status).toBe("completed");

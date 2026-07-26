@@ -90,6 +90,7 @@
     "puppeteer-core": "catalog:",
     "turndown": "catalog:",
     "turndown-plugin-gfm": "catalog:",
+    "web-tree-sitter": "catalog:",
     "zod": "catalog:"
   },
   "optionalDependencies": {
@@ -107,8 +108,10 @@
     "src",
     "dist/cli.js",
     "dist/*.node",
+    "dist/*.wasm",
     "scripts",
     "examples",
+    "assets",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -117,6 +120,7 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
+    "./assets/*": "./assets/*",
     "./*": {
       "types": "./src/*.ts",
       "import": "./src/*.ts"

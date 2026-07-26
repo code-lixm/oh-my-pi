@@ -50,6 +50,7 @@ import {
 	parseConflictUri,
 	spliceConflict,
 } from "./conflict-detect";
+import { notifyFileMutation } from "./file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import {
@@ -807,6 +808,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 		await writethroughNoop(absolutePath, newContent, signal);
 		invalidateFsScanAfterWrite(absolutePath);
+		notifyFileMutation(this.session, absolutePath, "update");
 		this.session.bumpFileMutationVersion?.(absolutePath);
 		this.session.fileSnapshotStore?.invalidate(absolutePath);
 		const history = this.session.conflictHistory;
@@ -986,6 +988,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			await writethroughNoop(absolutePath, text, signal);
 			invalidateFsScanAfterWrite(absolutePath);
+			notifyFileMutation(this.session, absolutePath, "update");
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			this.session.fileSnapshotStore?.invalidate(absolutePath);
 			for (const entry of resolvedEntries) history.invalidate(entry.id);
@@ -1221,6 +1224,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				await assertEditableFile(absolutePath, path, this.session.settings);
 			}
 
+			const existedBefore = await Bun.file(absolutePath).exists();
 			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
 
@@ -1252,6 +1256,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				dst => this.#deferredDiagnostics?.begin(dst),
 			);
 			invalidateFsScanAfterWrite(absolutePath);
+			notifyFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 			if (!this.#deferredDiagnostics || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}

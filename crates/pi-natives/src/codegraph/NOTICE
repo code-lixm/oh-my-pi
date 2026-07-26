@@ -1,0 +1,13 @@
+Upstream source notice for `crates/pi-natives/src/codegraph/`
+
+This directory vendors and adapts the native extraction kernel from the
+MIT-licensed upstream CodeGraph `codegraph-kernel` module:
+https://github.com/colbymchenry/codegraph/tree/572d22bfbe82602080e457bec655f72e3314f9ef/codegraph-kernel
+
+Preserved license and attribution:
+- `crates/pi-natives/src/codegraph/UPSTREAM-LICENSE` — upstream CodeGraph MIT license
+- `crates/pi-natives/src/codegraph/grammars/lua/LICENSE`
+- `crates/pi-natives/src/codegraph/grammars/scala/LICENSE`
+- `crates/pi-natives/src/codegraph/grammars/dart/LICENSE`
+
+Module provenance is also called out in `crates/pi-natives/src/codegraph/mod.rs`.

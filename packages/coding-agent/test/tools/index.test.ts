@@ -157,6 +157,40 @@ describe("createTools", () => {
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 
+	it("keeps codegraph top-level while ordinary discoverable tools still mount under xd:// by default", async () => {
+		const xdevSession = createTestSession({
+			settings: createSettingsWithOverrides({ "tools.xdev": true }),
+		});
+		const xdevTools = await createTools(xdevSession);
+		const xdevNames = xdevTools.map(tool => tool.name);
+
+		expect(xdevNames).toContain("codegraph");
+		expect(xdevNames).not.toContain("lsp");
+		expect(xdevSession.xdevRegistry).toBeDefined();
+		expect(xdevSession.xdevRegistry?.get("codegraph")).toBeUndefined();
+		expect(xdevSession.xdevRegistry?.get("lsp")).toBeDefined();
+		expect(xdevSession.isToolActive?.("codegraph")).toBe(true);
+
+		const noXdevSession = createTestSession({
+			settings: createSettingsWithOverrides({ "tools.xdev": false }),
+		});
+		const noXdevTools = await createTools(noXdevSession);
+		expect(noXdevTools.map(tool => tool.name)).toContain("codegraph");
+		expect(noXdevSession.xdevRegistry).toBeUndefined();
+	});
+
+	it("keeps codegraph available when explicitly requested under xdev", async () => {
+		const session = createTestSession({
+			settings: createSettingsWithOverrides({ "tools.xdev": true }),
+		});
+		const tools = await createTools(session, ["codegraph"]);
+
+		expect(tools.map(tool => tool.name)).toEqual(["codegraph"]);
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.isToolActive?.("codegraph")).toBe(true);
+	});
+
 	it("lowercases requested tool subset", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["Read", "Write"]);

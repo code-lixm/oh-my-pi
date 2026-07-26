@@ -268,7 +268,8 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				if (toProcess) return this.#launch(params, "send", signal);
 				const messaging = this.#messaging();
 				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "send" });
-				return executeSend(messaging, params, signal);
+				const send = () => executeSend(messaging, params, signal);
+				return params.await ? this.#withRunnableAgentSuspended(send, signal) : send();
 			}
 			case "inbox": {
 				const messaging = this.#messaging();
@@ -276,8 +277,13 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				return executeInbox(messaging.registry, messaging.senderId, params.peek);
 			}
 			case "wait":
-				if (params.name?.trim()) return this.#launch(params, "wait", signal);
-				return this.#executeWait(params, signal, onUpdate);
+				return this.#withRunnableAgentSuspended(
+					() =>
+						params.name?.trim()
+							? this.#launch(params, "wait", signal)
+							: this.#executeWait(params, signal, onUpdate),
+					signal,
+				);
 			case "cancel": {
 				const manager = this.session.asyncJobManager;
 				if (!manager) return this.#asyncDisabled("cancel");
@@ -306,6 +312,10 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 	/** Job visibility scope: everything the calling agent owns (tests/SDK without an agent id see all). */
 	#ownerId(): string | undefined {
 		return this.session.getAgentId?.() ?? undefined;
+	}
+
+	#withRunnableAgentSuspended<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this.session.withRunnableAgentSuspended?.(run, signal) ?? run();
 	}
 
 	#asyncDisabled(op: "cancel" | "jobs"): AgentToolResult<HubDetails> {
@@ -378,7 +388,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				// instead of blocking a full message-timeout window.
 				const hasRunningPeer = messaging.registry
 					.listVisibleTo(messaging.senderId)
-					.some(ref => ref.status === "running");
+					.some(ref => ref.status === "running" || ref.status === "waiting");
 				if (!hasRunningPeer) return nothingToWaitForResult(this.session);
 			}
 			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
@@ -538,6 +548,13 @@ function toLaunchArgs(args: HubRenderArgs | undefined): LaunchRenderArgs {
 export const hubToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
+	accentEdgePadding(_args: unknown, result: { details?: unknown } | undefined): boolean {
+		const details = result?.details;
+		if (typeof details !== "object" || details === null) return false;
+		return (
+			("jobs" in details && Array.isArray(details.jobs)) || ("agents" in details && Array.isArray(details.agents))
+		);
+	},
 	// Only launch pending frames consume the spinner (broker RPC in flight);
 	// messaging/job pending frames are static, exactly as before the merge.
 	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as HubRenderArgs | undefined),

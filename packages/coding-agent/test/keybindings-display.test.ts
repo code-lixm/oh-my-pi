@@ -35,6 +35,22 @@ describe("KeybindingsManager.getDisplayString", () => {
 	});
 });
 
+describe("KeybindingsManager.getKeys", () => {
+	it("does not expose a default app.exit keybinding", () => {
+		const keybindings = KeybindingsManager.inMemory();
+
+		expect(keybindings.getKeys("app.exit")).toEqual([]);
+	});
+
+	it("preserves an explicit Ctrl+D app.exit keybinding", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"app.exit": "ctrl+d",
+		});
+
+		expect(keybindings.getKeys("app.exit")).toEqual(["ctrl+d"]);
+	});
+});
+
 describe("legacy keyText", () => {
 	let previous: TuiKeybindingsManager;
 

@@ -11,6 +11,7 @@ import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
+import { TaskRequestConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
 import {
 	buildStructuredSubagentRecoveryHint,
 	resolveEffectiveSubagentPolicy,
@@ -292,6 +293,24 @@ describe("structured subagent primitive", () => {
 		expect(ids.sort()).toEqual(["Worker", "Worker-2"]);
 		expect(sharedSession.agentOutputManager).toBeDefined();
 		for (const run of settled) await fs.rm(run.artifactsDir, { recursive: true, force: true });
+	});
+
+	it("passes the parent's shared request limiter into live child runs", async () => {
+		mockDiscovery();
+		const sharedLimiter = new TaskRequestConcurrency(() => 1);
+		const sharedSession = session() as ToolSession & { taskRequestConcurrency?: TaskRequestConcurrency };
+		sharedSession.taskRequestConcurrency = sharedLimiter;
+		let captured: executorModule.ExecutorOptions | undefined;
+
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async executorOptions => {
+			captured = executorOptions;
+			return result();
+		});
+
+		const settled = await runStructuredSubagent(request({ session: sharedSession, retainArtifacts: true }));
+
+		expect(captured?.taskRequestConcurrency).toBe(sharedLimiter);
+		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
 	it("suppresses plan capability sources while preserving non-plan propagation", async () => {

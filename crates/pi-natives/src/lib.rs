@@ -27,6 +27,7 @@ pub mod ast;
 pub mod audio;
 pub mod block;
 pub mod clipboard;
+mod codegraph;
 pub mod crash_handler;
 pub mod desktop;
 /// Pure-Rust X11 backend for `desktop`.
@@ -66,6 +67,25 @@ pub mod tokens;
 pub(crate) mod utils;
 pub mod vectors;
 pub mod workspace;
+mod buffers {
+	pub(crate) use crate::codegraph::buffers::*;
+}
+
+mod docstring {
+	pub(crate) use crate::codegraph::docstring::*;
+}
+
+mod ids {
+	pub(crate) use crate::codegraph::ids::*;
+}
+
+mod langs {
+	pub(crate) use crate::codegraph::langs::*;
+}
+
+mod textutil {
+	pub(crate) use crate::codegraph::textutil::*;
+}
 
 #[cfg(target_os = "windows")]
 use std::sync::{

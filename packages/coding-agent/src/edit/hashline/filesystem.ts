@@ -25,6 +25,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
+import { notifyFileMutation } from "../../tools/file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
@@ -166,6 +167,7 @@ export class HashlineFilesystem extends Filesystem {
 			);
 		}
 		invalidateFsScanAfterWrite(absolutePath);
+		notifyFileMutation(this.session, absolutePath, "delete");
 	}
 
 	async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
@@ -190,6 +192,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 		invalidateFsScanAfterWrite(fromAbsolute);
 		invalidateFsScanAfterWrite(toAbsolute);
+		notifyFileMutation(this.session, toAbsolute, "rename", { previousPath: fromAbsolute });
 	}
 
 	async writeText(relativePath: string, content: string): Promise<WriteResult> {
@@ -198,8 +201,10 @@ export class HashlineFilesystem extends Filesystem {
 		const finalContent = await serializeEditFileText(absolutePath, relativePath, content);
 
 		// Route through ACP bridge when available; skips internal artifacts.
+		const existedBefore = await Bun.file(absolutePath).exists();
 		if (await routeWriteThroughBridge(this.session, relativePath, absolutePath, finalContent, this.#signal)) {
 			this.#diagnosticsByPath.set(relativePath, undefined);
+			notifyFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 			return { text: finalContent };
 		}
 
@@ -212,6 +217,7 @@ export class HashlineFilesystem extends Filesystem {
 			dst => (dst === absolutePath ? this.#beginDeferredDiagnosticsForPath(absolutePath) : undefined),
 		);
 		invalidateFsScanAfterWrite(absolutePath);
+		notifyFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 		this.#diagnosticsByPath.set(relativePath, diagnostics);
 		return { text: finalContent };
 	}

@@ -9,6 +9,7 @@ import { BracketedPasteHandler, decodeReencodedPasteControls } from "../brackete
 import { getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey } from "../keys";
 import { KillRing } from "../kill-ring";
+import type { SgrMouseEvent } from "../mouse";
 import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui";
 import {
@@ -417,6 +418,8 @@ export class Editor implements Component, Focusable {
 	 *  to the content width rather than reflowed. Cursor glyphs and inline hints are excluded. */
 	decorateText: ((text: string) => string) | undefined;
 	#promptGutter: string | undefined;
+	/** Enables normal-screen click tracking while this editor has focus. */
+	mouseTracking = false;
 
 	// Store last layout width for cursor navigation
 	#lastLayoutWidth: number = 80;
@@ -1661,6 +1664,44 @@ export class Editor implements Component, Focusable {
 
 	getCursor(): { line: number; col: number } {
 		return { line: this.#state.cursorLine, col: this.#state.cursorCol };
+	}
+
+	/**
+	 * Move the cursor to a normal-screen left click. The TUI provides the current
+	 * cursor's screen coordinate, letting this component map a click into its
+	 * visible wrapped viewport without exposing terminal-frame geometry.
+	 */
+	handleMouse(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean {
+		if (!event.leftClick) return false;
+
+		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
+		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
+		const targetVisualLine = currentVisualLine + event.row - cursorScreen.row;
+		const visibleHeight = this.#getVisibleContentHeight(visualLines.length);
+		if (
+			targetVisualLine < this.#scrollOffset ||
+			targetVisualLine >= this.#scrollOffset + visibleHeight ||
+			targetVisualLine < 0 ||
+			targetVisualLine >= visualLines.length
+		) {
+			return false;
+		}
+
+		const current = visualLines[currentVisualLine];
+		const target = visualLines[targetVisualLine];
+		if (!current || !target) return false;
+		const currentLine = this.#state.lines[current.logicalLine] ?? "";
+		const targetLine = this.#state.lines[target.logicalLine] ?? "";
+		const currentText = currentLine.slice(current.startCol, current.startCol + current.length);
+		const cursorOffset = this.#state.cursorCol - current.startCol;
+		const contentStartCol = cursorScreen.col - visualColAtOffset(currentText, cursorOffset);
+		const targetText = targetLine.slice(target.startCol, target.startCol + target.length);
+		const clickedCol = Math.max(0, event.col - contentStartCol);
+
+		this.#state.cursorLine = target.logicalLine;
+		this.#setCursorCol(Math.min(target.startCol + offsetAtVisualCol(targetText, clickedCol), targetLine.length));
+		this.#resetKillSequence();
+		return true;
 	}
 
 	moveToLineStart(): void {

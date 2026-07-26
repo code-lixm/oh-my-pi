@@ -14,6 +14,8 @@ import {
 	createInterruptedTurnAbortMessage,
 	describePendingToolCalls,
 	SESSION_EXIT_CUSTOM_TYPE,
+	SESSION_RUN_START_CUSTOM_TYPE,
+	SESSION_RUN_STOP_CUSTOM_TYPE,
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
@@ -376,6 +378,94 @@ describe("session exit diagnostics", () => {
 			role: "assistant",
 			stopReason: "aborted",
 		});
+	});
+
+	it("distinguishes a missing exit marker from a recorded catchable exit", () => {
+		const abruptTermination = SessionManager.inMemory();
+		abruptTermination.appendMessage({ role: "user", content: "inspect the file", timestamp: Date.now() });
+		abruptTermination.appendMessage(pendingAssistant);
+		abruptTermination.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:19:00.000Z",
+			pid: 42,
+		});
+
+		const catchableExit = SessionManager.inMemory();
+		catchableExit.appendMessage({ role: "user", content: "inspect the file", timestamp: Date.now() });
+		catchableExit.appendMessage(pendingAssistant);
+		catchableExit.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, {
+			reason: "sigterm",
+			kind: "signal",
+			recordedAt: "2026-07-11T02:20:08.800Z",
+		});
+
+		expect(createInterruptedTurnAbortMessage(abruptTermination.getBranch())).toMatchObject({
+			role: "assistant",
+			stopReason: "aborted",
+			errorMessage: "Previous OMP process ended without recording an exit before completing the turn.",
+		});
+		expect(createInterruptedTurnAbortMessage(catchableExit.getBranch())).toMatchObject({
+			role: "assistant",
+			stopReason: "aborted",
+			errorMessage: "Previous OMP process exited before completing the turn.",
+		});
+	});
+
+	it("does not report an abrupt termination once the latest run start is closed by run_stop", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage({ role: "user", content: "inspect the file", timestamp: Date.now() });
+		sessionManager.appendMessage(pendingAssistant);
+		sessionManager.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:19:00.000Z",
+			pid: 41,
+		});
+		sessionManager.appendCustomEntry(SESSION_RUN_STOP_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:19:30.000Z",
+			pid: 41,
+			reason: "dispose",
+		});
+
+		expect(createInterruptedTurnAbortMessage(sessionManager.getBranch())).toBeUndefined();
+	});
+
+	it("uses the latest run markers in order before reporting an abrupt termination", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:10:00.000Z",
+			pid: 10,
+		});
+		sessionManager.appendCustomEntry(SESSION_RUN_STOP_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:10:30.000Z",
+			pid: 10,
+			reason: "dispose",
+		});
+		sessionManager.appendMessage({ role: "user", content: "inspect the file", timestamp: Date.now() });
+		sessionManager.appendMessage(pendingAssistant);
+		sessionManager.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:19:00.000Z",
+			pid: 99,
+		});
+
+		expect(createInterruptedTurnAbortMessage(sessionManager.getBranch())).toMatchObject({
+			role: "assistant",
+			stopReason: "aborted",
+			errorMessage: "Previous OMP process ended without recording an exit before completing the turn.",
+		});
+	});
+
+	it("does not fabricate an interrupted turn when the tail already ends with assistant text", () => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage({ role: "user", content: "inspect the file", timestamp: Date.now() });
+		sessionManager.appendMessage({
+			...pendingAssistant,
+			content: [{ type: "text", text: "partial answer already captured" }],
+			stopReason: "length",
+		});
+		sessionManager.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, {
+			recordedAt: "2026-07-11T02:19:00.000Z",
+			pid: 42,
+		});
+
+		expect(createInterruptedTurnAbortMessage(sessionManager.getBranch())).toBeUndefined();
 	});
 
 	it("does not reconstruct a failed tool turn already closed by synthetic results", () => {

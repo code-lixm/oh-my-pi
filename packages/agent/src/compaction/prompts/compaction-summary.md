@@ -1,38 +1,35 @@
-You MUST summarize the conversation above into a structured handoff summary for another LLM to resume the task.
+Summarize the conversation above so another LLM can resume the task.
 
-IMPORTANT: If the conversation ends with an unanswered question or a request awaiting user response (e.g., "Please run command and paste output"), you MUST preserve that exact question/request.
+Output exactly the Markdown structure inside `<template>`, keeping every heading and its order. Do not include the `<template>` tags or any prose outside this structure.
 
-You MUST use this format (sections can be omitted if not applicable):
+<template>
+## Objective
+- [One or two brief sentences describing what the user wants.]
 
-## Goal
-[User goals; list multiple if session covers different tasks.]
+## Important Details
+- [Constraints, preferences, decisions with rationale, exact facts needed to continue, or `(none)`]
 
-## Constraints & Preferences
-- [Constraints or requirements mentioned]
+## Work State
+### Completed
+- [Finished work or verified facts; otherwise `(none)`]
 
-## Progress
-
-### Done
-- [x] [Completed tasks/changes]
-
-### In Progress
-- [ ] [Current work]
+### Active
+- [Current work, partial changes, or investigation state; otherwise `(none)`]
 
 ### Blocked
-- [Issues preventing progress]
+- [Blockers, failing commands, or unanswered questions; otherwise `(none)`]
 
-## Key Decisions
-- **[Decision]**: [Brief rationale]
+## Next Move
+1. [Immediate concrete action, or `(none)`]
+2. [Next action if known, or `(none)`]
 
-## Next Steps
-1. [Ordered list of next actions]
+## Relevant Files
+- [Exact file or directory path: why it matters, or `(none)`]
+</template>
 
-## Critical Context
-- [Important data, pending questions, references]
-
-## Additional Notes
-[Anything else important not covered above]
-
-You MUST output only the structured summary; you NEVER include extra text.
-
-Sections MUST be kept concise. You MUST preserve exact file paths, function names, error messages, and relevant tool outputs or command results. You MUST include repository state changes (branch, uncommitted changes) if mentioned.
+Rules:
+- Keep every section, even when empty. Use terse bullets, never prose paragraphs.
+- Preserve exact file paths, symbols, commands, error strings, URLs, identifiers, and relevant tool output when known.
+- If the conversation ends with an unanswered user question or a request awaiting user input, preserve that exact question or request under `### Blocked`.
+- Include mentioned repository state changes: branch, uncommitted changes, merge/rebase state.
+- Do not mention this summary process or that context was compacted.

@@ -416,6 +416,8 @@ function buildExecutorOptions(
 		authStorage: session.authStorage,
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
+		taskRequestConcurrency: session.taskRequestConcurrency,
+		taskRunnableConcurrency: session.taskRunnableConcurrency,
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		enableMCP,
 		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
@@ -538,11 +540,16 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let mergeSummary = "";
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
+	let releaseRunnable: (() => void) | undefined;
 	try {
 		const id = await reserveStructuredSubagentId(request.session, {
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
+		const taskRunnableConcurrency = request.session.taskRunnableConcurrency;
+		if (taskRunnableConcurrency && !taskRunnableConcurrency.hasLease(id)) {
+			releaseRunnable = await taskRunnableConcurrency.acquire(id, request.signal);
+		}
 		const baseOptions = buildExecutorOptions(request, policy, lease, id);
 		baseOptions.planReference = await loadPlanReference(request, policy);
 		let isolationContext: IsolationContext | null = null;
@@ -632,6 +639,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			{ cause: error },
 		);
 	} finally {
+		releaseRunnable?.();
 		const shouldRetainArtifacts =
 			(request.retainArtifacts && completedSuccessfully) ||
 			(policy.isIsolated && (!policy.applyChanges || changesApplied === false || requiresRecoveryArtifacts));

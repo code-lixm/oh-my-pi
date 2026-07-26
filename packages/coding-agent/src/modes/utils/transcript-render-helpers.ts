@@ -205,6 +205,8 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 	return args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 }
 
+const OPENAI_REQUEST_ID_SUFFIX = /\s+Please include the request ID \S+ in your message\.?\s*$/i;
+
 export interface AssistantErrorAggregation<T> {
 	errorMessage: string;
 	leader: T;
@@ -212,9 +214,9 @@ export interface AssistantErrorAggregation<T> {
 }
 
 /**
- * Fold an adjacent run of identical assistant failures into its first rendered
- * component. Callers keep the returned state while replaying or streaming a
- * retry run; a successful/different assistant turn starts a new run.
+ * Fold an adjacent run of equivalent assistant failures into its first rendered
+ * component. OpenAI's standard server-error suffix carries a fresh request id
+ * on every attempt; that diagnostic id does not make the underlying failure distinct.
  */
 export function updateAssistantErrorAggregation<T>(
 	previous: AssistantErrorAggregation<T> | undefined,
@@ -223,7 +225,8 @@ export function updateAssistantErrorAggregation<T>(
 	apply: (target: T, repeatCount: number, suppressed: boolean) => void,
 ): AssistantErrorAggregation<T> | undefined {
 	if (message.stopReason !== "error" || !message.errorMessage) return undefined;
-	if (previous?.errorMessage === message.errorMessage) {
+	const errorKey = message.errorMessage.replace(OPENAI_REQUEST_ID_SUFFIX, "");
+	if (previous?.errorMessage.replace(OPENAI_REQUEST_ID_SUFFIX, "") === errorKey) {
 		const repeatCount = previous.repeatCount + 1;
 		apply(previous.leader, repeatCount, false);
 		apply(component, repeatCount, true);

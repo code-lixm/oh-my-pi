@@ -79,6 +79,13 @@ export interface TextInputSettingDef extends BaseSettingDef {
 	secret: boolean;
 }
 
+export interface NumberInputSettingDef extends BaseSettingDef {
+	type: "number";
+	min?: number;
+	max?: number;
+	integer: boolean;
+}
+
 export interface ProviderLimitsSettingDef extends BaseSettingDef {
 	type: "providerLimits";
 }
@@ -95,6 +102,7 @@ export type SettingDef =
 	| EnumSettingDef
 	| SubmenuSettingDef
 	| TextInputSettingDef
+	| NumberInputSettingDef
 	| ProviderLimitsSettingDef
 	| MultiSelectSettingDef;
 
@@ -197,7 +205,16 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 	}
 
 	if (schemaType === "number") {
-		// Numbers without options are intentionally hidden from the UI.
+		if (ui.input) {
+			return {
+				...base,
+				type: "number",
+				min: ui.min,
+				max: ui.max,
+				integer: ui.integer === true,
+			};
+		}
+		// Numbers without an input or options are intentionally hidden from the UI.
 		if (!options || options === "runtime") return null;
 		return { ...base, type: "submenu", options };
 	}

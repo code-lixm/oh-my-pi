@@ -398,6 +398,7 @@ ${chalk.bold(tSettingsUi("Available Tools (default-enabled unless noted):"))}
   grep          - ${tSettingsUi("Search file contents")}
   glob          - ${tSettingsUi("Find files by glob pattern")}
   lsp           - ${tSettingsUi("Language server protocol (code intelligence)")}
+  codegraph     - ${tSettingsUi("Explore code structure and relationships")}
   python        - ${tSettingsUi(`Execute Python code (requires: ${APP_NAME} setup python)`)}
   notebook      - ${tSettingsUi("Edit Jupyter notebooks")}
   inspect_image - ${tSettingsUi("Analyze images with a vision model")}

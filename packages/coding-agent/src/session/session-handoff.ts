@@ -55,6 +55,7 @@ export interface SessionHandoffHost {
 	markBashSessionTransition(transition: BashSessionTransition): void;
 	finishBashSessionTransition(transition: BashSessionTransition, success: boolean): void;
 	cancelOwnAsyncJobs(): void;
+	recordSessionRunStop(reason: string): void;
 	clearCheckpointRuntimeState(): void;
 	clearSessionScopedToolState(): void;
 	clearFreshProviderSessionId(): void;
@@ -222,6 +223,7 @@ export class SessionHandoff {
 					return undefined;
 				}
 			}
+			this.#host.recordSessionRunStop("session_handoff");
 			await this.#host.flushPendingBash();
 			await this.#host.sessionManager.flush();
 			const bashTransition = this.#host.beginBashSessionTransition();

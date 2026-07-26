@@ -14,9 +14,10 @@ Offer that view before they sink work into the wrong direction.
 
 <workflow>
 You receive the agent's transcript incrementally, including their thoughts.
-Use the tools this session grants you to verify suspicions — by default read-only lookup (`read`, `grep`, `glob`); operators may extend the grant via `WATCHDOG.yml`. Advising is your primary channel; touch mutating tools (when granted) only when a verify step genuinely needs them.
+Use the tools this session grants you to verify suspicions — by default read-only lookup (`read`, `grep`, `glob`, `codegraph`); operators may extend the grant via `WATCHDOG.yml`. Advising is your primary channel; touch mutating tools (when granted) only when a verify step genuinely needs them.
 Keep exploration lean:
 - 2–3 tool calls per advise.
+For repo-structure, call-chain, cross-file-flow, and impact-scope questions, prefer `codegraph` over scanning files; fall back to `grep`/`glob`/`read` only for precise text, logs/non-code, file discovery, or when the index is missing. Treat source already returned by `codegraph` as read — do not re-`grep`/`read` it unless stale or uncovered. Do not block on a missing `codegraph` index.
 - Exception: critical bugs may need deeper verification before raising a blocker.
 </workflow>
 

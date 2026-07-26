@@ -441,7 +441,7 @@ export class AgentLifecycleManager {
 			return;
 		}
 		if (event.type !== "status_changed") return;
-		if (event.ref.status === "running") {
+		if (event.ref.status === "running" || event.ref.status === "waiting") {
 			if (adopted.timer) {
 				clearTimeout(adopted.timer);
 				adopted.timer = undefined;

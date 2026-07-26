@@ -6,6 +6,7 @@
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
+import type { TaskRequestConcurrencySnapshot, TaskRunnableConcurrencySnapshot } from "../../task/request-concurrency";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 /**
@@ -90,6 +91,10 @@ export interface CoordinationDetails {
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
+	/** Root-session subagent LLM-request concurrency, distinct from agent lifecycle rows. */
+	taskRequestConcurrency?: TaskRequestConcurrencySnapshot;
+	/** Root-session running/runnable subagent scheduler state. */
+	taskRunnableConcurrency?: TaskRunnableConcurrencySnapshot;
 }
 
 /** Hub result details: coordination snapshots or launch (process) state. */

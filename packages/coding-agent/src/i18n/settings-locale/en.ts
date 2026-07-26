@@ -1339,6 +1339,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"type to filter": "type to filter",
 	"up/down navigate  enter select  esc cancel": "up/down navigate  enter select  esc cancel",
 	"user:": "user:",
+	waiting: "waiting",
 	"whenToUse:": "whenToUse:",
 	"{count} days ago": "{count} days ago",
 	"{count} defined": "{count} defined",
@@ -1849,6 +1850,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"MCP reload complete": "MCP reload complete",
 	"Marketplace Auto-Update": "Marketplace Auto-Update",
 	"Max Concurrent Tasks": "Max Concurrent Tasks",
+	"Max Concurrent Subagent Requests": "Max Concurrent Subagent Requests",
 	"Max Poll Time": "Max Poll Time",
 	"Max Retry Delay": "Max Retry Delay",
 	"Max Subagent Runtime": "Max Subagent Runtime",
@@ -1858,7 +1860,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Maximum compatibility": "Maximum compatibility",
 	"Maximum lines of tail content kept inline when output spills to artifact":
 		"Maximum lines of tail content kept inline when output spills to artifact",
-	"Maximum number of subagents running concurrently": "Maximum number of subagents running concurrently",
+	"Maximum running or runnable subagents across the current root session tree. Parents temporarily release their slot while waiting for blocking children or Hub replies.":
+		"Maximum running or runnable subagents across the current root session tree. Parents temporarily release their slot while waiting for blocking children or Hub replies.",
+	"Maximum simultaneous subagent LLM requests across the current root session tree. This provider-safety limit is separate from the runnable-agent limit.":
+		"Maximum simultaneous subagent LLM requests across the current root session tree. This provider-safety limit is separate from the runnable-agent limit.",
 	"Maximum number of todo reminders before giving up": "Maximum number of todo reminders before giving up",
 	"Maximum retry attempts on API errors": "Maximum retry attempts on API errors",
 	"Maximum timeout in seconds the agent can set for any tool (0 = no limit)":
@@ -2067,6 +2072,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render images inline in the terminal": "Render images inline in the terminal",
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
+	"Mouse Input": "Mouse Input",
+	"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.":
+		"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.",
 	"Repeated grid with ink cycling six hues at sentence boundaries.":
 		"Repeated grid with ink cycling six hues at sentence boundaries.",
 	"Repetition Penalty": "Repetition Penalty",
@@ -2795,8 +2803,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Local rollout summarisation pipeline (memory_summary.md)",
 	"Local shortcut (this machine only):": "Local shortcut (this machine only):",
 	"Local shortcut (this machine only): {url}": "Local shortcut (this machine only): {url}",
-	"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit":
-		"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit",
+	"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit":
+		"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit",
 	"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).":
 		"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).",
 	"Maximum info with Nerd Font icons": "Maximum info with Nerd Font icons",
@@ -2936,8 +2944,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Commands run in the main session — press ←← to return first",
 	"Commands:": "Commands:",
 	"Delete session?\\n{displayName}": "Delete session?\\n{displayName}",
-	"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)":
-		"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)",
+	"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob/codegraph = default)":
+		"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob/codegraph = default)",
 	"Enter assign · ↑/↓ providers · type to search · Esc cancel":
 		"Enter assign · ↑/↓ providers · type to search · Esc cancel",
 	"Enter create + pick model · Esc cancel": "Enter create + pick model · Esc cancel",
@@ -3691,6 +3699,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Invalid boolean value: {rawValue}. Use true/false, yes/no, on/off, or 1/0":
 		"Invalid boolean value: {rawValue}. Use true/false, yes/no, on/off, or 1/0",
 	"Invalid number: {rawValue}": "Invalid number: {rawValue}",
+	"Value must be an integer.": "Value must be an integer.",
+	"Value must be at least {min}.": "Value must be at least {min}.",
+	"Value must be at most {max}.": "Value must be at most {max}.",
 	"Invalid value: {rawValue}. Valid values: {validValues}": "Invalid value: {rawValue}. Valid values: {validValues}",
 	"Invalid array JSON: {rawValue}": "Invalid array JSON: {rawValue}",
 	"Invalid record JSON: {rawValue}": "Invalid record JSON: {rawValue}",
@@ -3876,6 +3887,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Search file contents": "Search file contents",
 	"Find files by glob pattern": "Find files by glob pattern",
 	"Language server protocol (code intelligence)": "Language server protocol (code intelligence)",
+	"Explore code structure and relationships": "Explore code structure and relationships",
 	"Edit Jupyter notebooks": "Edit Jupyter notebooks",
 	"Analyze images with a vision model": "Analyze images with a vision model",
 	"Browser automation (Puppeteer)": "Browser automation (Puppeteer)",

@@ -121,13 +121,17 @@ export function runningAgentsOutsideJobs(session: ToolSession): AgentActivitySna
 
 /** Model-facing lines for the running-agents section shared by `jobs` and empty-wait results. */
 function describeAgents(agents: AgentActivitySnapshot[]): string[] {
-	const lines = [`## Running Agents (${agents.length}) — not job-backed\n`];
+	const lines = [`## Active Agent Turns (${agents.length}) — not job-backed\n`];
 	for (const agent of agents) {
 		const parent = agent.parentId ? ` (spawned by \`${agent.parentId}\`)` : "";
 		const activity = agent.activity ? ` — ${agent.activity}` : "";
 		lines.push(`- \`${agent.id}\`${parent} — up ${formatDuration(agent.ageMs)}${activity}`);
 	}
-	lines.push("", "These agents have no job entry; message them via `hub` send, transcripts at `history://<id>`.");
+	lines.push(
+		"",
+		"These are live agent turns, not additional task jobs. Their LLM requests share the root task concurrency limit.",
+		"Message them via `hub` send; transcripts at `history://<id>`.",
+	);
 	return lines;
 }
 
@@ -204,6 +208,22 @@ export function buildJobResult(
 	const running = jobResults.filter(j => j.status === "running");
 
 	const lines: string[] = [];
+	const taskRunnableConcurrency = session.taskRunnableConcurrency?.snapshot();
+	if (taskRunnableConcurrency) {
+		const limit = taskRunnableConcurrency.limit ?? "unlimited";
+		lines.push("## Runnable Subagents\n");
+		lines.push(`- Active: ${taskRunnableConcurrency.active}/${limit}`);
+		lines.push(`- Queued: ${taskRunnableConcurrency.queued}`);
+		lines.push("");
+	}
+	const taskRequestConcurrency = session.taskRequestConcurrency?.snapshot();
+	if (taskRequestConcurrency) {
+		const limit = taskRequestConcurrency.limit ?? "unlimited";
+		lines.push("## Subagent LLM Requests\n");
+		lines.push(`- Active: ${taskRequestConcurrency.active}/${limit}`);
+		lines.push(`- Queued: ${taskRequestConcurrency.queued}`);
+		lines.push("");
+	}
 
 	if (cancelOutcomes.length > 0) {
 		lines.push(`## Cancelled (${cancelOutcomes.length})\n`);
@@ -249,6 +269,8 @@ export function buildJobResult(
 		jobs: jobResults,
 		...(cancelOutcomes.length ? { cancelled: cancelOutcomes.map(({ id, status }) => ({ id, status })) } : {}),
 		...(agents.length ? { agents } : {}),
+		...(taskRequestConcurrency ? { taskRequestConcurrency } : {}),
+		...(taskRunnableConcurrency ? { taskRunnableConcurrency } : {}),
 	};
 	return {
 		content: [{ type: "text", text: lines.join("\n").trimEnd() }],

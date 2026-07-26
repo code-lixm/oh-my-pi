@@ -101,6 +101,7 @@ function createLiveFixture() {
 		ui: { requestRender, requestComponentRender, imageBudget: undefined },
 		settings,
 		chatContainer,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools,
 		toolOutputExpanded: false,
 		effectiveHideThinkingBlock: false,

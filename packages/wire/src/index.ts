@@ -240,7 +240,7 @@ export interface AgentSnapshot {
 	displayName: string;
 	kind: "main" | "sub";
 	parentId?: string;
-	status: "running" | "idle" | "parked" | "aborted";
+	status: "running" | "waiting" | "idle" | "parked" | "aborted";
 	/** Whether the host has a transcript file for this agent (gates remote transcript fetch). */
 	hasSessionFile: boolean;
 	createdAt: number;

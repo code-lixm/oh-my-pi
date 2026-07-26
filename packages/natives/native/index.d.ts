@@ -514,6 +514,70 @@ export interface BlockRangeOptions {
   line: number
 }
 
+/**
+ * The cFnPtr extraction-sweep facts for one file — see cfnptr.rs (and the
+ * TS synthesizer's `FileFacts`) for field semantics.
+ */
+export interface CfnptrFacts {
+  fnPtrTypedefs: Array<string>
+  fnTypeTypedefs: Array<string>
+  structs: Array<CfnptrStructOut>
+  inlinePtr: boolean
+  inlineTypes: Array<string>
+  inlineTags: Array<string>
+  initTokens: Array<string>
+  arrayElems: Array<string>
+  aliasNames: Array<string>
+  dPairs: Array<string>
+  dispatchFields: Array<string>
+  arrayDispatchNames: Array<string>
+  includes: Array<string>
+}
+
+export interface CfnptrField {
+  name: string
+  index: number
+  ptr: boolean
+  type: string
+}
+
+export interface CfnptrFileIn {
+  /** RAW file text, exactly as the resolver's readFile returned it. */
+  text: string
+  structs: Array<CfnptrStructIn>
+}
+
+/**
+ * Batched cFnPtr extraction sweep (task #5 step 2): one call scans a batch
+ * of files and returns their collected facts, amortizing the NAPI boundary.
+ * Feature-detected by the TS loader — absent on older binaries, where the
+ * synthesizer keeps its JS sweep.
+ */
+export declare function cfnptrScanFiles(files: Array<CfnptrFileIn>): Array<CfnptrFacts>
+
+/**
+ * Debug/differential hook: the native `stripCommentsForRegex(text, 'c')`.
+ * Exists so the strip differential oracle can pin the Rust stripper against
+ * the TS reference directly.
+ */
+export declare function cfnptrStripC(text: string): string
+
+/**
+ * One struct node's extent for the cFnPtr sweep (mirror of the TS caller's
+ * `{ id, startLine, endLine }`, with `endLine ?? startLine` applied TS-side).
+ */
+export interface CfnptrStructIn {
+  id: string
+  startLine: number
+  endLine: number
+}
+
+export interface CfnptrStructOut {
+  id: string
+  parsed: boolean
+  fields: Array<CfnptrField>
+}
+
 /** Clipboard image payload encoded as PNG bytes. */
 export interface ClipboardImage {
   /** PNG-encoded image bytes. */
@@ -528,6 +592,22 @@ export interface ContextLine {
   lineNumber: number
   /** Raw line content (trimmed line ending). */
   line: string
+}
+
+export declare function contractInfo(): ContractInfo
+
+/**
+ * Wire-contract description — the TS loader verifies this against
+ * src/types.ts before routing anything to the kernel, so an out-of-date
+ * `.node` degrades to the wasm path instead of mis-decoding.
+ */
+export interface ContractInfo {
+  abiVersion: number
+  kernelVersion: string
+  nodeKinds: Array<string>
+  edgeKinds: Array<string>
+  /** Languages this binary can extract (routing is still TS-side policy). */
+  languages: Array<string>
 }
 
 /**
@@ -805,6 +885,20 @@ export declare enum Encoding {
 export declare function executeShell(options: ShellExecuteOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null): Promise<ShellRunResult>
 
 /**
+ * The five flat tables for one file. See buffers.rs for the byte layout;
+ * `src/extraction/kernel/layout.ts` is the TS mirror.
+ */
+export interface ExtractBuffers {
+  meta: Buffer
+  nodes: Buffer
+  edges: Buffer
+  refs: Buffer
+  arena: Buffer
+}
+
+export declare function extractFile(filePath: string, content: string, language: string): ExtractBuffers
+
+/**
  * Extract the before/after slices around an overlay region.
  *
  * Preserves ANSI state so the `after` segment renders correctly after
@@ -955,6 +1049,21 @@ export interface GlobResult {
   matches: Array<GlobMatch>
   /** Number of returned matches (`matches.len()`), clamped to `u32::MAX`. */
   totalMatches: number
+}
+
+export declare function grammarInfo(language: string): GrammarInfo | null
+
+/**
+ * Grammar identity for the grammar-source-parity gate: the wasm grammar and
+ * the native grammar must expose identical node-kind/field tables, or
+ * kernel-vs-fallback routing would be non-deterministic.
+ */
+export interface GrammarInfo {
+  abiVersion: number
+  nodeKindCount: number
+  fieldCount: number
+  nodeKinds: Array<string>
+  fieldNames: Array<string>
 }
 
 /**

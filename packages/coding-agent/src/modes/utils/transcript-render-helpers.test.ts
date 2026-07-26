@@ -3,7 +3,11 @@ import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../i18n/settings-locale";
 import type { FileMentionMessage } from "../../session/messages";
 import { initTheme } from "../theme/theme";
-import { assistantUsageIsBilled, buildFileMentionBlock } from "./transcript-render-helpers";
+import {
+	assistantUsageIsBilled,
+	buildFileMentionBlock,
+	updateAssistantErrorAggregation,
+} from "./transcript-render-helpers";
 
 let previousLocale = getSettingsUiLocale();
 
@@ -30,6 +34,96 @@ function usage(overrides: Partial<Usage> = {}): Usage {
 		...overrides,
 	};
 }
+
+function assistantErrorMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-test",
+		usage: usage(),
+		stopReason: "error",
+		timestamp: 1,
+		errorMessage:
+			"server_error: The server had an error processing your request. Please include the request ID req_default in your message.",
+		...overrides,
+	};
+}
+
+describe("updateAssistantErrorAggregation", () => {
+	it("folds adjacent OpenAI server_error retries whose request IDs differ", () => {
+		const applyCalls: Array<{ target: string; repeatCount: number; suppressed: boolean }> = [];
+		const apply = (target: string, repeatCount: number, suppressed: boolean) => {
+			applyCalls.push({ target, repeatCount, suppressed });
+		};
+
+		const first = assistantErrorMessage({
+			errorMessage:
+				"server_error: The server had an error processing your request. Please include the request ID req_first in your message.",
+		});
+		const second = assistantErrorMessage({
+			errorMessage:
+				"server_error: The server had an error processing your request. Please include the request ID req_second in your message.",
+			timestamp: 2,
+		});
+
+		const firstRun = updateAssistantErrorAggregation(undefined, first, "leader", apply);
+		expect(firstRun).toMatchObject({ leader: "leader", repeatCount: 1 });
+		expect(applyCalls).toEqual([{ target: "leader", repeatCount: 1, suppressed: false }]);
+
+		const secondRun = updateAssistantErrorAggregation(firstRun, second, "retry", apply);
+		expect(secondRun).toMatchObject({ leader: "leader", repeatCount: 2 });
+		expect(applyCalls).toEqual([
+			{ target: "leader", repeatCount: 1, suppressed: false },
+			{ target: "leader", repeatCount: 2, suppressed: false },
+			{ target: "retry", repeatCount: 2, suppressed: true },
+		]);
+	});
+
+	it("starts a new group when the OpenAI error body or code changes", () => {
+		const cases = [
+			{
+				name: "different body",
+				first: "server_error: The server had an error processing your request. Please include the request ID req_first in your message.",
+				second:
+					"server_error: The upstream timed out after 60 seconds. Please include the request ID req_second in your message.",
+			},
+			{
+				name: "different code",
+				first: "server_error: The server had an error processing your request. Please include the request ID req_first in your message.",
+				second:
+					"rate_limit_error: The server had an error processing your request. Please include the request ID req_second in your message.",
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			const applyCalls: Array<{ target: string; repeatCount: number; suppressed: boolean }> = [];
+			const apply = (target: string, repeatCount: number, suppressed: boolean) => {
+				applyCalls.push({ target, repeatCount, suppressed });
+			};
+
+			const previous = updateAssistantErrorAggregation(
+				undefined,
+				assistantErrorMessage({ errorMessage: testCase.first }),
+				"leader",
+				apply,
+			);
+			const next = updateAssistantErrorAggregation(
+				previous,
+				assistantErrorMessage({ errorMessage: testCase.second, timestamp: 2 }),
+				"next",
+				apply,
+			);
+
+			expect(next, testCase.name).toMatchObject({ leader: "next", repeatCount: 1, errorMessage: testCase.second });
+			expect(applyCalls, testCase.name).toEqual([
+				{ target: "leader", repeatCount: 1, suppressed: false },
+				{ target: "next", repeatCount: 1, suppressed: false },
+			]);
+		}
+	});
+});
 
 describe("buildFileMentionBlock", () => {
 	it("keeps transcript read summaries on the literal lowercase tool name in en and zh-CN", () => {

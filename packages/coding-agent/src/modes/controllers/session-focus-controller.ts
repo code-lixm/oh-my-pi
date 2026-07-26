@@ -39,7 +39,7 @@ export class SessionFocusController {
 		if (this.ctx.collabGuest) throw new Error("Viewing agents is unavailable in a collab session.");
 		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const ref = this.registry.get(id);
-		if (!ref?.session || (ref.status !== "running" && ref.status !== "idle")) {
+		if (!ref?.session || (ref.status !== "running" && ref.status !== "waiting" && ref.status !== "idle")) {
 			throw new Error(tSettingsUi("Agent {id} is not live", { id }));
 		}
 		const session = ref.session;
@@ -55,7 +55,12 @@ export class SessionFocusController {
 	async cycleAgent(direction: "next" | "previous"): Promise<void> {
 		const agentIds = this.registry
 			.list()
-			.filter(ref => ref.kind === "sub" && ref.session && (ref.status === "running" || ref.status === "idle"))
+			.filter(
+				ref =>
+					ref.kind === "sub" &&
+					ref.session &&
+					(ref.status === "running" || ref.status === "waiting" || ref.status === "idle"),
+			)
 			.sort((left, right) => left.createdAt - right.createdAt)
 			.map(ref => ref.id);
 		if (agentIds.length === 0) {

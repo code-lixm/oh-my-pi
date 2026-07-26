@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed branch/worktree-isolated indexes under `~/.omp/codegraph/`; it combines optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, graph-first agent guidance, and safe `omp codegraph status|clear|prune` management without writing `.codegraph` into source repositories.
+
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
 - Added `statusLine.segmentOptions.path.basenameOnly` to render only the final project-directory name while preserving path icons, linked-worktree collapsing, and width limits.
@@ -16,6 +18,7 @@
 - Added live top-level session switching: `/new` keeps the previous in-process session running in the background, while `/resume` reattaches live sessions without interrupting them.
 - Added compact battery-style status-line usage rendering with remaining-quota blocks, deterministic latest-window selection, and configurable battery width.
 
+- Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
 ### Changed
 
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
@@ -28,9 +31,17 @@
 - Changed Bash and Eval execution cards to use one rounded legend frame (`shell`, `python`, or `javascript`), with command/code and output in a single body separated only by blank space; streaming output now repaints inside the same frame.
 - Changed Assistant fenced code under the `accent` display style to a copy-safe presentation with no painted background that aligns with surrounding prose, uses the theme code color for plain-text fences, preserves syntax highlighting for supported languages, hides raw Markdown fences and language labels, preserves folding, and wraps over-wide lines without dropping content.
 - Changed focused subagent sessions into fullscreen read-only transcript views with dedicated agent navigation, model/status metadata, compact progress HUDs, and current-request average output TPS; direct user prompts now remain exclusive to the main agent.
+- Changed `retry.maxRetries` in `/settings` from fixed presets to a validated numeric input, allowing any non-negative integer API-error retry limit.
 
 ### Fixed
+- Fixed `task.maxConcurrency` applying independently to every nested agent session: one root-session scheduler now caps complete running/runnable subagent lifecycles across initial batches, nested spawns, Eval agents, Hub/IRC wakeups, follow-ups, and persisted revivals; excess children remain pending, blocking parents release their slots without becoming TTL-parkable, and `task.maxRequestConcurrency` remains the separate provider-request safety cap.
+- Fixed completed subagents repeatedly waking each other through acknowledgement-only Hub messages; incoming IRC and Hub prompts now require silence for acknowledgements, thanks, and thread-closure messages.
+- Fixed sessions silently resuming after an OMP process vanished without recording `session_exit`: persisted process run boundaries now distinguish abrupt termination from normal stop/switch/handoff paths and surface the interrupted turn as an explicit aborted assistant diagnostic.
+- Fixed completed CodeGraph results dropping their search icon and rendering with an accent surface, duplicate call row, and excess vertical spacing instead of the compact bare Read/Grep layout.
+- Fixed accidental Ctrl+D termination by disabling the default exit shortcut; use `/exit` or configure `app.exit` explicitly.
+- Fixed accent-style detailed `read` results missing their rail and Hub job-wait snapshots using inconsistent vertical spacing across border styles.
 
+- Fixed repeated OpenAI provider errors rendering as separate transcript rows when only the per-attempt request ID differed; equivalent adjacent failures now collapse under one repeat count.
 - Fixed the primary agent mechanically following Advisor interruptions and re-entering user-rejected or evidence-disproved approaches; prompts now require regression split-point analysis, reconciliation with current evidence and completed actions, and new evidence before retrying a rejected path.
 - Fixed detailed Grep zero-match results switching to a detached warning line; they now retain the normal status header and render each searched scope as an adjacent localized file-tree row.
 - Fixed user prompts queued while switching or resuming sessions remaining stranded after the agent event subscription reconnected, which left the resumed conversation appearing idle but unable to continue.

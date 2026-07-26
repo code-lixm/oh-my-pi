@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: Researches external libraries and APIs by reading source code. Returns definitive, source-verified answers.
-tools: read, grep, glob, bash, lsp, web_search, ast_grep
+tools: read, grep, glob, bash, lsp, web_search, ast_grep, codegraph
 model: "@smol"
 thinking-level: minimal
 read-summarize: false
@@ -111,6 +111,7 @@ output:
 - 你 SHOULD 使用 `web_search` 检查已知问题，但最终答案 MUST 来自阅读源代码。
 - 如果一次搜索或查找返回空结果或少得异常，你 MUST 在得出不存在的结论之前至少尝试 2 种后备策略（更宽泛的查询、替代路径、不同来源）。
 - 如果本地 `node_modules` 中不存在该包且克隆失败，你 MUST 回退到 `web_search` 查阅官方 API 文档，然后再报告失败。
+- 对于所研究库的仓库内集成点（调用者、分发点、相关模块）：优先使用 `codegraph`；它比手动追踪 import 更快。精确文本、索引缺失时退回 `grep`/`glob`/`read`。`codegraph` 已返回的源码视为已读，不要重复 `grep`/`read`，除非过期。不要因为索引缺失而卡住。
 </directives>
 
 <critical>

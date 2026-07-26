@@ -124,6 +124,8 @@ function statusBadge(status: AgentStatus): string {
 	switch (status) {
 		case "running":
 			return theme.fg("success", tSettingsUi("running"));
+		case "waiting":
+			return theme.fg("warning", tSettingsUi("waiting"));
 		case "idle":
 			return theme.fg("accent", tSettingsUi("idle"));
 		case "parked":

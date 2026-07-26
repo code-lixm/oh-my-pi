@@ -114,6 +114,26 @@ describe("AgentLifecycleManager", () => {
 		expect(stub.disposeCalls()).toBe(1);
 	});
 
+	it("waiting disarms the TTL and does not park until the agent returns to idle", async () => {
+		vi.useFakeTimers();
+		const stub = makeSessionStub();
+		registerIdleSub("2-Waiting", stub.session);
+		lifecycle.adopt("2-Waiting", { idleTtlMs: TTL });
+		registry.setStatus("2-Waiting", "waiting");
+
+		vi.advanceTimersByTime(TTL * 10);
+		await flushAsync();
+		expect(registry.get("2-Waiting")?.status).toBe("waiting");
+		expect(registry.get("2-Waiting")?.session).toBe(stub.session);
+		expect(stub.disposeCalls()).toBe(0);
+
+		registry.setStatus("2-Waiting", "idle");
+		vi.advanceTimersByTime(TTL);
+		await flushAsync();
+		expect(registry.get("2-Waiting")?.status).toBe("parked");
+		expect(stub.disposeCalls()).toBe(1);
+	});
+
 	it("ensureLive revives a parked agent through its reviver and flips it back to idle", async () => {
 		const revived = makeSessionStub();
 		registry.register({

@@ -484,6 +484,67 @@ describe("output-block border style", () => {
 		});
 	});
 
+	it("adds accent-only edge pad rows around partial hub wait job snapshots", () => {
+		const previousStyle = getOutputBlockBorderStyle();
+		const hubResult = {
+			content: [{ type: "text" as const, text: "" }],
+			details: {
+				op: "wait" as const,
+				jobs: [
+					{
+						id: "job-1",
+						type: "task" as const,
+						status: "running" as const,
+						label: "Compile docs",
+						durationMs: 1_000,
+					},
+				],
+			},
+		};
+		const renderHubWaitSnapshot = (borderStyle: OutputBlockBorderStyle): readonly string[] => {
+			setOutputBlockBorderStyle(borderStyle);
+			const component = new ToolExecutionComponent("hub", { op: "wait", ids: ["job-1"] }, {}, undefined, uiStub);
+			try {
+				component.updateResult(hubResult, true);
+				return component.render(RENDERER_WIDTH);
+			} finally {
+				component.stopAnimation();
+			}
+		};
+
+		try {
+			const accent = renderHubWaitSnapshot("accent");
+			const accentPlain = plain(accent);
+			const full = renderHubWaitSnapshot("full");
+			const none = renderHubWaitSnapshot("none");
+			const fullPlain = plain(full);
+			const nonePlain = plain(none);
+
+			expectUniformWidth(accent, RENDERER_WIDTH);
+			expect(accentPlain).toHaveLength(4);
+			expect(accentPlain[0]).toBe(padLine("▌ ", RENDERER_WIDTH));
+			expect(accentPlain[1]).toContain("waiting on 1 job");
+			expect(accentPlain[2]).toContain("job-1");
+			expect(accentPlain[2]).toContain("Compile docs");
+			expect(accentPlain[3]).toBe(padLine("▌ ", RENDERER_WIDTH));
+			expect(accent.every(line => lineStartsWithAccentPrefix(line, "borderMuted"))).toBe(true);
+
+			for (const [rawLines, plainLines] of [
+				[full, fullPlain],
+				[none, nonePlain],
+			] as const) {
+				expect(plainLines.some(line => line.includes("waiting on 1 job"))).toBe(true);
+				expect(plainLines.some(line => line.includes("job-1") && line.includes("Compile docs"))).toBe(true);
+				expect(rawLines.some(line => lineStartsWithAccentPrefix(line, "borderMuted"))).toBe(false);
+				expect(rawLines.join("\n")).not.toContain(surfaceTintBgAnsi("borderMuted"));
+			}
+		} finally {
+			setOutputBlockBorderStyle(previousStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousStyle);
+	});
+
 	// This test lives here because renderToolResult exercises the full ToolExecutionComponent path.
 	it("renders complete agent read results with the accent rail when details are visible", () => {
 		const previousStyle = getOutputBlockBorderStyle();

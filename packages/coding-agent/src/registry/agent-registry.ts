@@ -15,13 +15,15 @@ import { oneLineLabel } from "../task/types";
 export const MAIN_AGENT_ID = "Main";
 
 /**
- * - `running`: a turn is in flight.
+ * - `running`: a turn owns a runnable slot and is in flight.
+ * - `waiting`: a live turn temporarily released its slot while blocking on
+ *   child or peer work; it must never be TTL-parked.
  * - `idle`: live AgentSession in memory, awaiting work. Finished agents are
  *   `idle`, not removed.
  * - `parked`: session disposed; AgentRef + sessionFile retained, revivable.
  * - `aborted`: hard-killed, terminal.
  */
-export type AgentStatus = "running" | "idle" | "parked" | "aborted";
+export type AgentStatus = "running" | "waiting" | "idle" | "parked" | "aborted";
 /**
  * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
  * - `advisor`: a passive review transcript persisted like a subagent for usage
@@ -190,13 +192,16 @@ export class AgentRegistry {
 	}
 
 	/**
-	 * Returns every alive agent (running | idle) except the caller. Advisor refs
-	 * are observability-only transcripts, never peers, so they are excluded.
-	 * Flat namespace: every other agent is visible.
+	 * Returns every live agent (running | waiting | idle) except the caller.
+	 * Advisor refs are observability-only transcripts, never peers, so they are
+	 * excluded. Flat namespace: every other agent is visible.
 	 */
 	listVisibleTo(id: string): AgentRef[] {
 		return this.list().filter(
-			ref => ref.id !== id && ref.kind !== "advisor" && (ref.status === "running" || ref.status === "idle"),
+			ref =>
+				ref.id !== id &&
+				ref.kind !== "advisor" &&
+				(ref.status === "running" || ref.status === "waiting" || ref.status === "idle"),
 		);
 	}
 

@@ -1307,6 +1307,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"type to filter": "输入以筛选",
 	"up/down navigate  enter select  esc cancel": "上/下导航  enter 选择  esc 取消",
 	"user:": "用户：",
+	waiting: "等待中",
 	"whenToUse:": "适用场景：",
 	"{count} days ago": "{count} 天前",
 	"{count} defined": "已定义 {count} 个",
@@ -1790,6 +1791,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"MCP reload complete": "MCP 重新加载完成",
 	"Marketplace Auto-Update": "市场自动更新",
 	"Max Concurrent Tasks": "最大并发任务数",
+	"Max Concurrent Subagent Requests": "子代理请求最大并发数",
 	"Max Poll Time": "轮询最长时长",
 	"Max Retry Delay": "最大重试延迟",
 	"Max Subagent Runtime": "子代理最长运行时长",
@@ -1799,7 +1801,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Maximum compatibility": "最大兼容性",
 	"Maximum lines of tail content kept inline when output spills to artifact":
 		"输出溢出到产物时保留为内联显示的尾部最大行数",
-	"Maximum number of subagents running concurrently": "允许同时运行的子代理最大数量",
+	"Maximum running or runnable subagents across the current root session tree. Parents temporarily release their slot while waiting for blocking children or Hub replies.":
+		"当前根会话树中运行或可运行的子代理数量上限。父代理等待阻塞型子代理或 Hub 回复时会暂时释放槽位。",
+	"Maximum simultaneous subagent LLM requests across the current root session tree. This provider-safety limit is separate from the runnable-agent limit.":
+		"当前根会话树中可同时执行的子代理 LLM 请求上限。此提供方安全限制与可运行代理数量上限相互独立。",
 	"Maximum number of todo reminders before giving up": "放弃前待办提醒的最大次数",
 	"Maximum retry attempts on API errors": "API 错误时的最大重试次数",
 	"Maximum timeout in seconds the agent can set for any tool (0 = no limit)":
@@ -1998,6 +2003,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Render images inline in the terminal": "在终端中内联渲染图片",
 	"Render read tool results inline in the transcript instead of summary rows":
 		"在对话记录中内联渲染 read 工具结果，而不是显示为摘要行",
+	"Mouse Input": "鼠标输入",
+	"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.":
+		"启用鼠标点击来定位主输入框光标。输入框聚焦时会占用终端鼠标输入，原生选择对话记录可能需要使用终端的选择修饰键。",
 	"Repeated grid with ink cycling six hues at sentence boundaries.": "重复网格，在句子边界按六种色相轮换墨色。",
 	"Repetition Penalty": "重复惩罚",
 	"Requires google-antigravity OAuth": "需要 google-antigravity OAuth",
@@ -2701,8 +2709,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Local rollout summarisation pipeline (memory_summary.md)": "本地 rollout 摘要流水线（memory_summary.md）",
 	"Local shortcut (this machine only):": "本机快捷方式（仅当前机器）：",
 	"Local shortcut (this machine only): {url}": "本机快捷链接（仅限此机器）：{url}",
-	"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit":
-		"每个进程中 Ollama Cloud 子代理运行的最大并发数；0 表示禁用该提供方专用限制",
+	"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit":
+		"每个进程中 Ollama Cloud LLM 请求的最大并发数；0 表示禁用该提供方专用限制",
 	"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).":
 		"内联图像在终端中的最大高度（行，默认 20）。设为 0 则仅使用基于视口的限制（终端高度的 60%）。",
 	"Maximum info with Nerd Font icons": "使用 Nerd Font 图标展示最丰富信息",
@@ -2837,8 +2845,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Commands run in the main session — press ←← to return first": "命令在主会话中执行 — 请先按 ←← 返回",
 	"Commands:": "命令：",
 	"Delete session?\\n{displayName}": "删除会话？\n{displayName}",
-	"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)":
-		"Enter / 点击切换 · 选择完成或 Esc 应用（留空 = 不使用工具；read/grep/glob = 默认）",
+	"Enter / 点击切换 · 选择完成或 Esc 应用（留空 = 不使用工具；read/grep/glob/codegraph = 默认）":
+		"Enter / 点击切换 · 选择完成或 Esc 应用（留空 = 不使用工具；read/grep/glob/codegraph = 默认）",
 	"Enter assign · ↑/↓ providers · type to search · Esc cancel": "Enter 分配 · ↑/↓ 提供方 · 输入以搜索 · Esc 取消",
 	"Enter create + pick model · Esc cancel": "Enter 创建并选择模型 · Esc 取消",
 	"Enter loads older when highlighted; printable keys update filter":
@@ -3581,6 +3589,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Invalid boolean value: {rawValue}. Use true/false, yes/no, on/off, or 1/0":
 		"无效的布尔值：{rawValue}。请使用 true/false、yes/no、on/off 或 1/0",
 	"Invalid number: {rawValue}": "无效的数字：{rawValue}",
+	"Value must be an integer.": "值必须是整数。",
+	"Value must be at least {min}.": "值必须大于或等于 {min}。",
+	"Value must be at most {max}.": "值必须小于或等于 {max}。",
 	"Invalid value: {rawValue}. Valid values: {validValues}": "无效的值：{rawValue}。有效值：{validValues}",
 	"Invalid array JSON: {rawValue}": "无效的 JSON 数组：{rawValue}",
 	"Invalid record JSON: {rawValue}": "无效的 JSON 对象：{rawValue}",
@@ -3756,6 +3767,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Search file contents": "搜索文件内容",
 	"Find files by glob pattern": "按 glob 模式查找文件",
 	"Language server protocol (code intelligence)": "语言服务器协议（代码智能）",
+	"Explore code structure and relationships": "探索代码结构与符号关系",
 	"Edit Jupyter notebooks": "编辑 Jupyter Notebook",
 	"Analyze images with a vision model": "用视觉模型分析图像",
 	"Browser automation (Puppeteer)": "浏览器自动化（Puppeteer）",

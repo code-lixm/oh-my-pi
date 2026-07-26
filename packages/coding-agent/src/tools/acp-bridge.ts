@@ -10,6 +10,7 @@
 
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import type { ToolSession } from ".";
+import { notifyFileMutation } from "./file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { isInternalUrlPath } from "./path-utils";
 import { resolvePlanPath, targetsLocalSandbox } from "./plan-mode-guard";
@@ -62,7 +63,8 @@ export async function routeWriteThroughBridge(
 	const bridge = session.getClientBridge?.();
 	if (!bridge?.capabilities.writeTextFile || !bridge.writeTextFile) return false;
 
-	const changeType = (await Bun.file(absolutePath).exists()) ? FileChangeType.Changed : FileChangeType.Created;
+	const existedBefore = await Bun.file(absolutePath).exists();
+	const changeType = existedBefore ? FileChangeType.Changed : FileChangeType.Created;
 	// The ACP protocol has no cancellation for fs writes; the most we can do is
 	// refuse to start one after the tool was aborted. Racing the promise would
 	// report failure while the editor still applies the write.
@@ -76,6 +78,7 @@ export async function routeWriteThroughBridge(
 		await notifyWorkspaceWatchedFiles(session.cwd, [{ filePath: absolutePath, type: changeType }], signal);
 	}
 	invalidateFsScanAfterWrite(absolutePath);
+	notifyFileMutation(session, absolutePath, existedBefore ? "update" : "create");
 	session.bumpFileMutationVersion?.(absolutePath);
 	return true;
 }

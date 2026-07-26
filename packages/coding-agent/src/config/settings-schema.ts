@@ -205,7 +205,12 @@ interface UiEnum<T extends readonly string[]> extends UiBase {
 }
 
 interface UiNumber extends UiBase {
-	/** Submenu options. Without options, a numeric setting has no UI representation (intentional hide). */
+	/** Render this number as a free-form numeric input instead of a fixed-choice submenu. */
+	input?: boolean;
+	min?: number;
+	max?: number;
+	integer?: boolean;
+	/** Fixed choices. Without `input` or options, a numeric setting is intentionally hidden from the UI. */
 	options?: ReadonlyArray<SubmenuOption>;
 }
 
@@ -233,6 +238,10 @@ export type AnyUiMetadata = UiBase & {
 	options?: ReadonlyArray<SubmenuOption> | "runtime";
 	secret?: boolean;
 	ordered?: boolean;
+	input?: boolean;
+	min?: number;
+	max?: number;
+	integer?: boolean;
 };
 
 interface BooleanDef {
@@ -1003,6 +1012,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.mouseInput": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Mouse Input"),
+			description: tSettingsUi(
+				"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.",
+			),
+		},
+	},
+
 	"tui.renderMermaid": {
 		type: "boolean",
 		default: true,
@@ -1653,13 +1675,9 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Retry & Fallback"),
 			label: tSettingsUi("Retry Attempts"),
 			description: tSettingsUi("Maximum retry attempts on API errors"),
-			options: [
-				{ value: "1", label: tSettingsUi("1 retry") },
-				{ value: "2", label: tSettingsUi("2 retries") },
-				{ value: "3", label: tSettingsUi("3 retries") },
-				{ value: "5", label: tSettingsUi("5 retries") },
-				{ value: "10", label: tSettingsUi("10 retries") },
-			],
+			input: true,
+			min: 0,
+			integer: true,
 		},
 	},
 
@@ -4928,7 +4946,32 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
 			label: tSettingsUi("Max Concurrent Tasks"),
-			description: tSettingsUi("Maximum number of subagents running concurrently"),
+			description: tSettingsUi(
+				"Maximum running or runnable subagents across the current root session tree. Parents temporarily release their slot while waiting for blocking children or Hub replies.",
+			),
+			options: [
+				{ value: "0", label: tSettingsUi("Unlimited") },
+				{ value: "1", label: tSettingsUi("1 task") },
+				{ value: "2", label: tSettingsUi("2 tasks") },
+				{ value: "4", label: tSettingsUi("4 tasks") },
+				{ value: "8", label: tSettingsUi("8 tasks") },
+				{ value: "16", label: tSettingsUi("16 tasks") },
+				{ value: "32", label: tSettingsUi("32 tasks") },
+				{ value: "64", label: tSettingsUi("64 tasks") },
+			],
+		},
+	},
+
+	"task.maxRequestConcurrency": {
+		type: "number",
+		default: 32,
+		ui: {
+			tab: "tasks",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Max Concurrent Subagent Requests"),
+			description: tSettingsUi(
+				"Maximum simultaneous subagent LLM requests across the current root session tree. This provider-safety limit is separate from the runnable-agent limit.",
+			),
 			options: [
 				{ value: "0", label: tSettingsUi("Unlimited") },
 				{ value: "1", label: tSettingsUi("1 task") },
@@ -5215,7 +5258,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Services"),
 			label: tSettingsUi("Ollama Cloud Max Concurrency"),
 			description: tSettingsUi(
-				"Maximum concurrent Ollama Cloud subagent runs per process; 0 disables the provider-specific limit",
+				"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit",
 			),
 		},
 	},

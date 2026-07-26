@@ -81,6 +81,8 @@ function activityStatus(status: string): { color: ThemeColor; text: string } {
 	switch (status) {
 		case "running":
 			return { color: "accent", text: tSettingsUi("running") };
+		case "waiting":
+			return { color: "warning", text: tSettingsUi("waiting") };
 		case "idle":
 			return { color: "success", text: tSettingsUi("idle") };
 		case "completed":
@@ -436,7 +438,8 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const lines = visiblePeers.flatMap(peer => {
 			const status = activityStatus(peer.status);
 			const age = messageAge(peer.lastActivity);
-			const head = `  ${theme.fg(status.color, theme.status[peer.status === "running" ? "running" : "enabled"])} ${theme.fg("customMessageLabel", replaceTabs(peer.displayName || peer.id))} ${theme.fg(status.color, status.text)}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+			const glyph = peer.status === "running" || peer.status === "waiting" ? "running" : "enabled";
+			const head = `  ${theme.fg(status.color, theme.status[glyph])} ${theme.fg("customMessageLabel", replaceTabs(peer.displayName || peer.id))} ${theme.fg(status.color, status.text)}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			return activityBodyLines(head, peer.activity ?? "", expanded, "dim");
 		});
 		if (visiblePeers.length < peers.length) {

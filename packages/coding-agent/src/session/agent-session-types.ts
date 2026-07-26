@@ -24,6 +24,7 @@ import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevRegistry } from "../tools/xdev";
 import type { SessionManager } from "./session-manager";
@@ -194,6 +195,14 @@ export interface AgentSessionConfig {
 	ownedAsyncJobManager?: AsyncJobManager;
 	/** Async job manager visible to this session. */
 	asyncJobManager?: AsyncJobManager;
+	/** Root-session subagent request limiter shared across descendants and revivals. */
+	taskRequestConcurrency?: TaskRequestConcurrency;
+	/** Root-session runnable-subagent scheduler shared across descendants and revivals. */
+	taskRunnableConcurrency?: TaskRunnableConcurrency;
+	/** Registry callbacks used while a live follow-up waits for and acquires its runnable slot. */
+	onRunnableAgentWait?: () => void;
+	onRunnableAgentAcquire?: () => void;
+	onRunnableAgentRelease?: () => void;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */

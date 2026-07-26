@@ -22,6 +22,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
+import { parseSgrMouse, type SgrMouseEvent } from "./mouse";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -80,13 +81,13 @@ const CURSOR_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}`;
 const CURSOR_BEGIN_NO_SYNC = HIDE_CURSOR;
 const CURSOR_END = SYNC_OUTPUT_END;
 const CURSOR_END_NO_SYNC = "";
-// Mouse reporting is scoped to fullscreen overlays that opt into pointer
-// interaction. 1000h = button click tracking, 1003h = any-motion tracking for
-// hover targets, and 1006h = SGR extended coordinates past column/row 223.
-// Selection-first overlays leave these modes disabled so the terminal retains
-// native text selection.
+// Fullscreen overlays need pointer motion for hover targets. Normal-screen
+// editors opt in to click-only tracking so the transcript retains native text
+// selection unless the user explicitly enables mouse input.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
+const MOUSE_CLICK_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_CLICK_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 
@@ -155,10 +156,12 @@ export interface Component {
 	 */
 	render(width: number): readonly string[];
 
-	/**
-	 * Optional handler for keyboard input when component has focus
-	 */
+	/** Optional handler for terminal mouse input when this component has focus. */
 	handleInput?(data: string): void;
+	/** Enables normal-screen click tracking while this component has focus. */
+	mouseTracking?: boolean;
+	/** Receives a parsed mouse event and the current cursor's screen position. */
+	handleMouse?(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean;
 
 	/**
 	 * If true, component receives key release events (Kitty protocol).
@@ -1122,6 +1125,7 @@ export class TUI extends Container {
 	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
 	#altActive = false;
 	#altMouseTrackingActive = false;
+	#normalMouseTrackingActive = false;
 	#altPreviousLines: string[] = [];
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
@@ -1896,6 +1900,10 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
+		if (this.#normalMouseTrackingActive) {
+			this.terminal.write(MOUSE_CLICK_TRACKING_OFF);
+			this.#normalMouseTrackingActive = false;
+		}
 		this.#purgeInlineImages();
 		this.#clearSixelProbeState();
 		this.#stopped = true;
@@ -2506,6 +2514,28 @@ export class TUI extends Container {
 			data = current;
 		}
 
+		// Mouse tracking is opt-in on the normal screen: it would otherwise
+		// consume the terminal's native transcript-selection gestures.
+		const mouseTarget = this.#focusedComponent;
+		if (!this.#altActive && mouseTarget?.mouseTracking && data.startsWith("\x1b[<")) {
+			const event = parseSgrMouse(data);
+			const marker = this.#frameCursorMarkers.at(-1);
+			if (event && marker) {
+				const handled = mouseTarget.handleMouse?.(event, {
+					row: marker.row - this.#windowTopRow,
+					col: marker.col,
+				});
+				if (handled) {
+					if (this.#focusedComponent === mouseTarget && this.#scopedInputRenderComponents.has(mouseTarget)) {
+						this.requestComponentRender(mouseTarget);
+					} else {
+						this.requestRender();
+					}
+				}
+				return;
+			}
+		}
+
 		// Consume terminal cell size responses without blocking unrelated input.
 		if (this.#consumeCellSizeResponse(data)) {
 			return;
@@ -2900,12 +2930,17 @@ export class TUI extends Container {
 		const topOverlay = this.#getTopmostVisibleOverlay();
 		const wantAlt = topOverlay?.options?.fullscreen === true;
 		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
+		const wantNormalMouseTracking = !wantAlt && this.#focusedComponent?.mouseTracking === true;
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate
 			// screen, or Esc/modified keys revert to legacy encoding inside
 			// fullscreen overlays (Ghostty/kitty/iTerm2).
-			const mouseEnter = wantMouseTracking ? MOUSE_TRACKING_ON : "";
+			const mouseEnter = wantMouseTracking
+				? MOUSE_TRACKING_ON
+				: this.#normalMouseTrackingActive
+					? MOUSE_CLICK_TRACKING_OFF
+					: "";
 			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
 			setAltScreenActive(true);
 			this.terminal.hideCursor();
@@ -2913,6 +2948,7 @@ export class TUI extends Container {
 			this.#recordHardwareCursorHidden();
 			this.#altActive = true;
 			this.#altMouseTrackingActive = wantMouseTracking;
+			this.#normalMouseTrackingActive = false;
 			this.#altPreviousLines = [];
 			this.#altEnterWidth = width;
 			this.#altEnterHeight = height;
@@ -2932,6 +2968,7 @@ export class TUI extends Container {
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
 			this.#altMouseTrackingActive = false;
+			this.#normalMouseTrackingActive = false;
 			this.#altPreviousLines = [];
 			// A resize while on the alt buffer reflowed the terminal's saved
 			// normal screen; it no longer matches our accounting, so force the
@@ -2953,6 +2990,10 @@ export class TUI extends Container {
 			this.#componentRenderTargets.clear();
 			this.#renderAltFrame(width, height);
 			return;
+		}
+		if (wantNormalMouseTracking !== this.#normalMouseTrackingActive) {
+			this.terminal.write(wantNormalMouseTracking ? MOUSE_CLICK_TRACKING_ON : MOUSE_CLICK_TRACKING_OFF);
+			this.#normalMouseTrackingActive = wantNormalMouseTracking;
 		}
 
 		// Resize viewport fast path. While a non-multiplexer drag is in flight,

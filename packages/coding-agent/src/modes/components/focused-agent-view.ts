@@ -139,7 +139,16 @@ export class FocusedAgentView implements Component {
 		const content = [
 			theme.fg("accent", `${tSettingsUi("Subagent")} ${ordinal}`),
 			theme.bold(displayName),
-			theme.fg(status === "aborted" ? "error" : status === "running" ? "success" : "muted", tSettingsUi(status)),
+			theme.fg(
+				status === "aborted"
+					? "error"
+					: status === "running"
+						? "success"
+						: status === "waiting"
+							? "warning"
+							: "muted",
+				tSettingsUi(status),
+			),
 			modelLabel ? theme.fg("muted", modelLabel) : "",
 		]
 			.filter(Boolean)

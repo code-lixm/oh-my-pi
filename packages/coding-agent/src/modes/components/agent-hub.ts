@@ -53,13 +53,15 @@ function clampHubLine(line: string, width: number): string {
 	return truncateToWidth(line.replace(/[\r\n]+/g, " "), Math.max(1, width - 2), Ellipsis.Omit);
 }
 
-const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, idle: 1, parked: 2, aborted: 3 };
+const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, waiting: 1, idle: 2, parked: 3, aborted: 4 };
 
 /** Status glyph, colored per theme status conventions. The title-line counts spell out the words. */
 function statusGlyph(status: AgentStatus): string {
 	switch (status) {
 		case "running":
 			return theme.fg("accent", theme.status.running);
+		case "waiting":
+			return theme.fg("warning", theme.status.running);
 		case "idle":
 			return theme.fg("success", theme.status.enabled);
 		case "parked":
@@ -460,12 +462,12 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#statusSummary(): string {
-		const counts: Record<AgentStatus, number> = { running: 0, idle: 0, parked: 0, aborted: 0 };
+		const counts: Record<AgentStatus, number> = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
 		for (const ref of this.#rows) {
 			counts[ref.status]++;
 		}
 		const parts: string[] = [];
-		for (const status of ["running", "idle", "parked", "aborted"] as const) {
+		for (const status of ["running", "waiting", "idle", "parked", "aborted"] as const) {
 			const count = counts[status];
 			if (count > 0) parts.push(`${count} ${tSettingsUi(status)}`);
 		}
@@ -639,7 +641,7 @@ export class AgentHubOverlayComponent extends Container {
 		}
 		void (async () => {
 			try {
-				if (ref.status === "running" && ref.session) {
+				if ((ref.status === "running" || ref.status === "waiting") && ref.session) {
 					await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
 				}
 				await this.#lifecycle().release(ref.id, ref);

@@ -5,5 +5,5 @@ Agent `{{from}}` sent a coordination message{{#if replyTo}} (replying to {{reply
 
 {{#if interrupting}}This message stopped the current interruptible wait; resume the original task after handling it.{{/if}}
 
-{{#if autoReplied}}The system sent a short reply on your behalf using the current context. Use `hub send` to correct it only if it was inaccurate.{{else}}Need to reply? Finish the current step, then contact `{{from}}` with `hub send`.{{/if}}
+{{#if autoReplied}}The system sent a short reply on your behalf using the current context. Use `hub send` to correct it only if it was inaccurate.{{else}}Reply only when this message requires an answer, decision, correction, or action. NEVER send acknowledgement-only or thread-closing replies; otherwise remain silent and continue the current task.{{/if}}
 </irc>

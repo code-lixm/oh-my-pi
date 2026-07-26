@@ -9,6 +9,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
+import { TaskRequestConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const tempDirs: TempDir[] = [];
@@ -74,12 +75,13 @@ async function createPersistedSession(cwd: string, restrictToolNames?: boolean):
 	return sessionFile;
 }
 
-function createFactory(cwd: string) {
+function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurrency) {
 	const parentSession = {
 		sessionManager: {
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
 		},
+		taskRequestConcurrency,
 	} as unknown as AgentSession;
 	return createPersistedSubagentReviverFactory({
 		session: parentSession,
@@ -154,5 +156,23 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.enableLsp).toBe(true);
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
 		expect(capturedOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
+	});
+
+	it("reuses the parent's shared request limiter when reviving a parked child", async () => {
+		const cwd = makeTempDir("@pi-revive-shared-limiter-");
+		const sessionFile = await createPersistedSession(cwd);
+		const sharedLimiter = new TaskRequestConcurrency(() => 1);
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]) } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd, sharedLimiter)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.taskRequestConcurrency).toBe(sharedLimiter);
 	});
 });

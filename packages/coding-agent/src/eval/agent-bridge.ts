@@ -142,26 +142,29 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 	try {
 		const execution = await withBridgeTimeoutPause(
 			options.emitStatus,
-			() =>
-				runStructuredSubagent({
-					session: options.session,
-					invocationKind: "eval",
-					assignment: parsed.prompt,
-					...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
-					...(parsed.model !== undefined ? { model: parsed.model } : {}),
-					...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
-					...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
-					...(parsed.label !== undefined ? { identity: { label: parsed.label } } : {}),
-					...(isolation ? { isolation } : {}),
-					...(parsed.handle ? { retainArtifacts: true } : {}),
-					keepAlive: false,
-					maxRuntimeMs: 0,
-					shareEvalSession: false,
-					...(options.signal !== undefined ? { signal: options.signal } : {}),
-					...(options.emitStatus
-						? { onProgress: (progress: AgentProgress) => emitProgressStatus(options.emitStatus, progress) }
-						: {}),
-				}),
+			() => {
+				const run = () =>
+					runStructuredSubagent({
+						session: options.session,
+						invocationKind: "eval",
+						assignment: parsed.prompt,
+						...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
+						...(parsed.model !== undefined ? { model: parsed.model } : {}),
+						...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
+						...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
+						...(parsed.label !== undefined ? { identity: { label: parsed.label } } : {}),
+						...(isolation ? { isolation } : {}),
+						...(parsed.handle ? { retainArtifacts: true } : {}),
+						keepAlive: false,
+						maxRuntimeMs: 0,
+						shareEvalSession: false,
+						...(options.signal !== undefined ? { signal: options.signal } : {}),
+						...(options.emitStatus
+							? { onProgress: (progress: AgentProgress) => emitProgressStatus(options.emitStatus, progress) }
+							: {}),
+					});
+				return options.session.withRunnableAgentSuspended?.(run, options.signal) ?? run();
+			},
 			{ deferExternalAbort: true },
 		);
 		const { result, policy, mergeSummary, changesApplied, artifactsDir } = execution;

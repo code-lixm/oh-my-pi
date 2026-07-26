@@ -92,6 +92,8 @@ export function createPersistedSubagentReviverFactory(
 					ctx.settings,
 					init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
 				),
+				taskRequestConcurrency: ctx.session.taskRequestConcurrency,
+				taskRunnableConcurrency: ctx.session.taskRunnableConcurrency,
 				sessionManager: reopened,
 				agentId: ref.id,
 				agentDisplayName: ref.displayName,

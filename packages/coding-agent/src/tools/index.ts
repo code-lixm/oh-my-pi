@@ -30,6 +30,7 @@ import type { SessionManager } from "../session/session-manager";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
+import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
@@ -41,10 +42,12 @@ import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
+import { CodeGraphTool } from "./codegraph";
 import { ComputerTool } from "./computer";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
+import type { FileMutationEvent, PendingFileMutationCollector } from "./file-mutation-hook";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
@@ -77,6 +80,7 @@ export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
 export * from "./checkpoint";
+export * from "./codegraph";
 export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./debug";
@@ -288,6 +292,12 @@ export interface ToolSession {
 	 * session never borrows the owning session's manager by accident.
 	 */
 	asyncJobManager?: AsyncJobManager;
+	/** Root-session subagent request limiter, shared by nested and revived sessions. */
+	taskRequestConcurrency?: TaskRequestConcurrency;
+	/** Root-session runnable-subagent scheduler shared by nested and revived sessions. */
+	taskRunnableConcurrency?: TaskRunnableConcurrency;
+	/** Release this session's runnable slot while a tool blocks on child or peer work. */
+	withRunnableAgentSuspended?<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T>;
 	/** MCP manager visible to subagents without relying on the process-global singleton. */
 	mcpManager?: MCPManager;
 	/** Local protocol root to propagate to nested subagents and eval-created agents. */
@@ -376,6 +386,25 @@ export interface ToolSession {
 	bumpFileMutationVersion?(path: string): number;
 	/** Read the current session-global mutation counter for `path` (0 if never mutated). */
 	getFileMutationVersion?(path: string): number;
+	/**
+	 * Per-session buffer of post-success file mutation events captured by
+	 * {@link ./file-mutation-hook}. Lazily attached by `notifyFileMutation`;
+	 * `CodeGraphTool` drains it before exploration and scopes incremental sync
+	 * to the changed files. The buffer does NOT reflect mutations made outside
+	 * the wired edit/write/ast_edit persistence paths.
+	 */
+	pendingFileMutations?: PendingFileMutationCollector;
+	/**
+	 * Notified for every real source-file mutation (create/update/delete/rename)
+	 * AFTER the underlying `await fs.writeFile`/`Bun.write`/`fs.rename`/`fs.rm`/
+	 * `fs.unlink` (and the ACP-bridged equivalent) has resolved successfully.
+	 * Failed writes, no-ops, internal archive member rewrites, and SQLite
+	 * member writes MUST NOT emit. See {@link ./file-mutation-hook} for the
+	 * exact wiring points. `bumpFileMutationVersion` is intentionally NOT
+	 * used as a proxy: it runs before the persistence `await` and can race
+	 * downstream aborts.
+	 */
+	onFileMutation?(event: FileMutationEvent): void;
 	/** Get the active OpenTelemetry config so subagent dispatch can forward
 	 *  the parent's tracer/hooks with the subagent's own identity stamped. */
 	getTelemetry?: () => AgentTelemetryConfig | undefined;
@@ -410,6 +439,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
 	hub: s => new HubTool(s),
+	codegraph: s => new CodeGraphTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),

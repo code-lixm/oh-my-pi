@@ -709,7 +709,8 @@ export class InteractiveMode implements InteractiveModeContext {
 						ref =>
 							ref.kind === "sub" &&
 							(ref.id === this.focusedAgentId ||
-								(Boolean(ref.session) && (ref.status === "running" || ref.status === "idle"))),
+								(Boolean(ref.session) &&
+									(ref.status === "running" || ref.status === "waiting" || ref.status === "idle"))),
 					)
 					.sort((left, right) => left.createdAt - right.createdAt)
 					.map(ref => ref.id),
@@ -993,6 +994,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
+		this.editor.mouseTracking = settings.get("tui.mouseInput");
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -4488,6 +4490,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+		nextEditor.mouseTracking = this.settings.get("tui.mouseInput");
 		nextEditor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};

@@ -33,7 +33,7 @@ function planLocalProtocolOptions(session: ToolSession): LocalProtocolOptions {
 
 /** Resolve the absolute path of the session's `local://` artifact sandbox.
  *  Returns `null` when the session has no artifact wiring (e.g. tests). */
-function localSandboxRoot(session: ToolSession): string | null {
+export function localSandboxRoot(session: ToolSession): string | null {
 	try {
 		return path.resolve(resolveLocalRoot(planLocalProtocolOptions(session)));
 	} catch {

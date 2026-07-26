@@ -175,6 +175,7 @@ import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.
 import sideChannelNoToolsReminderZh from "../prompts/system/side-channel-no-tools.zh-CN.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import vibeModeActivePromptZh from "../prompts/system/vibe-mode-active.zh-CN.md" with { type: "text" };
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -182,6 +183,7 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "../secrets/obfuscator";
+import { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -263,7 +265,10 @@ import {
 	collectPendingToolCalls,
 	createInterruptedTurnAbortMessage,
 	SESSION_EXIT_CUSTOM_TYPE,
+	SESSION_RUN_START_CUSTOM_TYPE,
+	SESSION_RUN_STOP_CUSTOM_TYPE,
 	type SessionExitData,
+	type SessionRunMarkerData,
 	summarizeToolArguments,
 	TOOL_EXECUTION_START_CUSTOM_TYPE,
 	type ToolExecutionStartData,
@@ -457,6 +462,11 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	readonly taskRequestConcurrency: TaskRequestConcurrency;
+	readonly taskRunnableConcurrency: TaskRunnableConcurrency;
+	readonly #onRunnableAgentWait: (() => void) | undefined;
+	readonly #onRunnableAgentAcquire: (() => void) | undefined;
+	readonly #onRunnableAgentRelease: (() => void) | undefined;
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -478,6 +488,7 @@ export class AgentSession {
 	#unsubscribeAgent?: () => void;
 	#cancelExitRecorder?: () => void;
 	#exitRecorded = false;
+	#runMarkerSessionFile: string | undefined;
 	#unsubscribeAppendOnly?: () => void;
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
@@ -545,6 +556,7 @@ export class AgentSession {
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
+	#runnableTurnWaitAbortController = new AbortController();
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#inheritedProviderPromptCacheKey: string | undefined;
@@ -768,8 +780,7 @@ export class AgentSession {
 		}
 		this.#resetPromptMaintenanceState();
 		this.#beginInFlight();
-		void this.agent
-			.prompt(records)
+		void this.#runRunnableAgentTurn(() => this.agent.prompt(records))
 			.catch(error => {
 				logger.warn("IRC wake turn failed", { error: String(error) });
 			})
@@ -873,6 +884,20 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.taskRequestConcurrency =
+			config.taskRequestConcurrency ??
+			new TaskRequestConcurrency(() => this.settings.get("task.maxRequestConcurrency"));
+		this.taskRunnableConcurrency =
+			config.taskRunnableConcurrency ?? new TaskRunnableConcurrency(() => this.settings.get("task.maxConcurrency"));
+		this.#onRunnableAgentWait =
+			config.onRunnableAgentWait ??
+			(config.agentId ? () => AgentRegistry.global().setStatus(config.agentId!, "waiting", this) : undefined);
+		this.#onRunnableAgentAcquire =
+			config.onRunnableAgentAcquire ??
+			(config.agentId ? () => AgentRegistry.global().setStatus(config.agentId!, "running", this) : undefined);
+		this.#onRunnableAgentRelease =
+			config.onRunnableAgentRelease ??
+			(config.agentId ? () => AgentRegistry.global().setStatus(config.agentId!, "idle", this) : undefined);
 		this.#modelRegistry = config.modelRegistry;
 		const bashHost: BashRunnerHost = {
 			agent: this.agent,
@@ -1093,7 +1118,7 @@ export class AgentSession {
 			injectIdle: async messages => {
 				const first = messages[0];
 				if (!first) return;
-				await this.agent.prompt(messages.length === 1 ? first : messages);
+				await this.#runRunnableAgentTurn(() => this.agent.prompt(messages.length === 1 ? first : messages));
 			},
 			scheduleIdleFlush: run => {
 				this.#schedulePostPromptTask(
@@ -1169,6 +1194,7 @@ export class AgentSession {
 			schedulePostPromptTask: (task, options) => this.#schedulePostPromptTask(task, options),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			promptGeneration: () => this.#promptGeneration,
+			continueAgent: signal => this.#runRunnableAgentTurn(() => this.agent.continue(), signal),
 		};
 		this.#ttsr = new TtsrCoordinator(ttsrHost, config.ttsrManager);
 		this.#obfuscator = config.obfuscator;
@@ -1200,6 +1226,7 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: task => this.#schedulePostPromptTask(task),
 			discardAssistantTurn: message => this.#recovery.discardAssistantTurn(message),
+			continueAgent: signal => this.#runRunnableAgentTurn(() => this.agent.continue(), signal),
 		};
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
@@ -1420,6 +1447,7 @@ export class AgentSession {
 			markBashSessionTransition: transition => this.#bash.markSessionTransition(transition),
 			finishBashSessionTransition: (transition, success) => this.#bash.finishSessionTransition(transition, success),
 			cancelOwnAsyncJobs: () => this.#cancelOwnAsyncJobs(),
+			recordSessionRunStop: reason => this.#recordSessionRunStop(reason),
 			clearCheckpointRuntimeState: () => this.#clearCheckpointRuntimeState(),
 			clearSessionScopedToolState: () => this.#clearSessionScopedToolState(),
 			clearFreshProviderSessionId: () => {
@@ -1442,6 +1470,7 @@ export class AgentSession {
 		this.#handoff = new SessionHandoff(handoffHost);
 
 		this.#rehydrateCheckpointRewindState();
+		this.#recoverInterruptedPreviousRun();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
@@ -1461,6 +1490,30 @@ export class AgentSession {
 
 	getAgentId(): string | undefined {
 		return this.#agentId;
+	}
+
+	#abortRunnableTurnWait(reason?: unknown): void {
+		this.#runnableTurnWaitAbortController.abort(reason);
+		this.#runnableTurnWaitAbortController = new AbortController();
+	}
+	async #runRunnableAgentTurn<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		this.#recordSessionRunStart();
+		if (this.#agentKind !== "sub" || !this.#agentId) return run();
+		if (this.taskRunnableConcurrency.hasLease(this.#agentId)) return run();
+		const waitSignal = signal
+			? AbortSignal.any([signal, this.#runnableTurnWaitAbortController.signal])
+			: this.#runnableTurnWaitAbortController.signal;
+		const release = await this.taskRunnableConcurrency.acquire(this.#agentId, waitSignal, {
+			onWait: this.#onRunnableAgentWait,
+			onAcquire: this.#onRunnableAgentAcquire,
+		});
+		try {
+			if (waitSignal.aborted) throw waitSignal.reason ?? new Error("Runnable agent turn aborted");
+			return await run();
+		} finally {
+			this.#onRunnableAgentRelease?.();
+			release();
+		}
 	}
 
 	/** Dequeue the next HARD forced tool choice for the upcoming LLM call, dropping
@@ -1810,6 +1863,41 @@ export class AgentSession {
 		if (args) data.args = args;
 		if (event.intent) data.intent = event.intent;
 		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
+	}
+
+	#recoverInterruptedPreviousRun(): void {
+		const model = this.model;
+		if (!model) return;
+		const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+		});
+		if (!interruptedTurnAbort) return;
+		this.sessionManager.appendMessage(interruptedTurnAbort);
+		this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+		logger.warn("Recovered session with an unclosed process run", {
+			sessionFile: this.sessionManager.getSessionFile(),
+			error: interruptedTurnAbort.errorMessage,
+		});
+	}
+
+	#recordSessionRunStart(): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile || this.#runMarkerSessionFile === sessionFile) return;
+		const data: SessionRunMarkerData = { recordedAt: new Date().toISOString(), pid: process.pid };
+		this.sessionManager.appendCustomEntry(SESSION_RUN_START_CUSTOM_TYPE, data);
+		this.sessionManager.flushSync();
+		this.#runMarkerSessionFile = sessionFile;
+	}
+
+	#recordSessionRunStop(reason: string): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile || this.#runMarkerSessionFile !== sessionFile) return;
+		const data: SessionRunMarkerData = { recordedAt: new Date().toISOString(), pid: process.pid, reason };
+		this.sessionManager.appendCustomEntry(SESSION_RUN_STOP_CUSTOM_TYPE, data);
+		this.sessionManager.flushSync();
+		this.#runMarkerSessionFile = undefined;
 	}
 
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
@@ -2868,7 +2956,7 @@ export class AgentSession {
 						this.#skipAgentContinue("post-restore-unavailable", options);
 						return;
 					}
-					await this.agent.continue();
+					await this.#runRunnableAgentTurn(() => this.agent.continue(), signal);
 				} catch (error) {
 					logger.warn("agent.continue failed after scheduling", {
 						error: error instanceof Error ? error.message : String(error),
@@ -3417,6 +3505,7 @@ export class AgentSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#abortRunnableTurnWait(new Error("Session disposed"));
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
 		this.#abortAutolearnCapture();
@@ -5046,7 +5135,9 @@ export class AgentSession {
 				this.#planReferenceSent = true;
 			}
 			try {
-				await this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions);
+				await this.#runRunnableAgentTurn(() =>
+					this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions),
+				);
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
 			}
@@ -5454,7 +5545,7 @@ export class AgentSession {
 				this.#resetPromptMaintenanceState();
 			}
 			this.#recovery.setAcceptTerminalEmptyStop(acceptTerminalEmptyStop);
-			await this.agent.prompt(message);
+			await this.#runRunnableAgentTurn(() => this.agent.prompt(message));
 			await this.#waitForPostPromptRecovery();
 		} finally {
 			this.#recovery.setAcceptTerminalEmptyStop(false);
@@ -5856,6 +5947,7 @@ export class AgentSession {
 			for (const controller of this.#usagePreflightAbortControllers) controller.abort();
 			this.abortRetry();
 			this.#promptGeneration++;
+			this.#abortRunnableTurnWait(options?.reason ?? new Error("Agent turn aborted"));
 			this.#scheduledHiddenNextTurnGeneration = undefined;
 			if (options?.preserveCompaction) {
 				// Manual `/compact` installed its own #compactionAbortController before
@@ -5936,6 +6028,7 @@ export class AgentSession {
 		await this.abort();
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
+		this.#recordSessionRunStop(options?.drop ? "session_drop" : "new_session");
 		await this.#bash.flushPending();
 		const bashTransition = this.#bash.beginSessionTransition({ persistDetached: options?.drop !== true });
 		let sessionTransitioned = false;
@@ -6031,6 +6124,7 @@ export class AgentSession {
 			}
 		}
 
+		this.#recordSessionRunStop("session_fork");
 		await this.#bash.flushPending();
 		// Flush current session to ensure all entries are written
 		await this.sessionManager.flush();
@@ -6929,6 +7023,7 @@ export class AgentSession {
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
 		await this.#sessionBeforeSwitchReconciler?.();
+		if (switchingToDifferentSession) this.#recordSessionRunStop("session_switch");
 
 		await this.#bash.flushPending();
 		// Flush pending writes before switching so restore snapshots reflect committed state.
@@ -7044,18 +7139,9 @@ export class AgentSession {
 				}
 			}
 
-			const model = this.model;
-			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
-					api: model.api,
-					provider: model.provider,
-					model: model.id,
-				});
-				if (interruptedTurnAbort) {
-					this.sessionManager.appendMessage(interruptedTurnAbort);
-					sessionContext = this.buildDisplaySessionContext();
-					this.agent.replaceMessages(sessionContext.messages);
-				}
+			if (switchingToDifferentSession) {
+				this.#recoverInterruptedPreviousRun();
+				sessionContext = this.buildDisplaySessionContext();
 			}
 
 			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
@@ -7195,6 +7281,7 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
+		this.#recordSessionRunStop("session_branch");
 		await this.#bash.flushPending();
 		// Flush pending writes before branching
 		await this.sessionManager.flush();

@@ -35,6 +35,7 @@ export interface TtsrCoordinatorHost {
 	schedulePostPromptTask(task: (signal: AbortSignal) => Promise<void>, options?: { delayMs?: number }): void;
 	scheduleAgentContinue(options: TtsrContinueOptions): void;
 	promptGeneration(): number;
+	continueAgent(signal?: AbortSignal): Promise<void>;
 }
 
 /** Coordinates TTSR stream matching, interruption, injection, and resume gates. */
@@ -412,7 +413,7 @@ export class TtsrCoordinator {
 		const retryToken = ++this.#retryToken;
 		const generation = this.#host.promptGeneration();
 		this.#host.schedulePostPromptTask(
-			async () => {
+			async signal => {
 				if (this.#retryToken !== retryToken) {
 					this.resolveResume();
 					return;
@@ -452,7 +453,7 @@ export class TtsrCoordinator {
 					this.#markInjected(details.rules);
 				}
 				try {
-					await this.#host.agent.continue();
+					await this.#host.continueAgent(signal);
 				} catch {
 					this.resolveResume();
 				}

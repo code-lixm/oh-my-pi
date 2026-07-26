@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Extended collaboration agent snapshots with the `waiting` status for live agents that temporarily release their runnable slot while blocked on child or peer work.
+
 ## [16.3.0] - 2026-07-02
 
 ### Breaking Changes

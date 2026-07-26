@@ -16,6 +16,7 @@ import { astEditToolRenderer } from "./ast-edit";
 import { astGrepToolRenderer } from "./ast-grep";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
+import { codegraphToolRenderer } from "./codegraph-renderer";
 import { computerToolRenderer } from "./computer-renderer";
 import { debugToolRenderer } from "./debug";
 import { evalToolRenderer } from "./eval-render";
@@ -59,6 +60,8 @@ export type ToolRenderer = {
 	inline?: boolean;
 	/** Transcript surface policy. Bare renderers skip the accent rail/tint wrapper. */
 	transcriptSurface?: "default" | "bare";
+	/** Adds one internal accent-surface row above and below matching results. */
+	accentEdgePadding?: (args: unknown, result: { details?: unknown } | undefined) => boolean;
 	/**
 	 * Whether the renderer's pending-call path visibly consumes
 	 * `options.spinnerFrame`. Used to avoid scheduling repaint ticks for live
@@ -85,6 +88,7 @@ export type ToolRenderer = {
 };
 
 export const toolRenderers: Record<string, ToolRenderer> = {
+	codegraph: codegraphToolRenderer as ToolRenderer,
 	ask: askToolRenderer as ToolRenderer,
 	ast_grep: astGrepToolRenderer as ToolRenderer,
 	ast_edit: astEditToolRenderer as ToolRenderer,

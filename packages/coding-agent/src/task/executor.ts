@@ -63,6 +63,7 @@ import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
+import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "./request-concurrency";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
 	type AgentDefinition,
@@ -405,6 +406,10 @@ export interface ExecutorOptions {
 	authStorage?: AuthStorage;
 	modelRegistry?: ModelRegistry;
 	settings?: Settings;
+	/** Root-session subagent request limiter inherited by live and revived children. */
+	taskRequestConcurrency?: TaskRequestConcurrency;
+	/** Root-session runnable-subagent scheduler inherited by live and revived children. */
+	taskRunnableConcurrency?: TaskRunnableConcurrency;
 	/**
 	 * Parent session's live per-family service tiers, the source of truth for a
 	 * subagent whose `tier.subagent` is `"inherit"`. `null` = the parent
@@ -971,7 +976,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		id,
 		agent: agent.name,
 		agentSource: agent.source,
-		status: "running",
+		status: "pending",
 		task,
 		assignment,
 		description: args.description,
@@ -1326,6 +1331,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		let flushProgress = false;
 
 		switch (event.type) {
+			case "agent_start":
+				progress.status = "running";
+				flushProgress = true;
+				break;
+
 			case "message_start":
 				if (event.message?.role === "assistant") {
 					resetRecentOutput();
@@ -1969,7 +1979,13 @@ async function driveSessionToYield(
 						jobs,
 					});
 					try {
-						await awaitAbortable(session.prompt(notice, { attribution: "agent", synthetic: true }));
+						await awaitAbortable(
+							session.followUp(notice, undefined, {
+								attribution: "agent",
+								synthetic: true,
+								expandPromptTemplates: false,
+							}),
+						);
 						await awaitAbortable(session.waitForIdle());
 					} catch (err) {
 						if (abortSignal.aborted || err instanceof ToolAbortError) throw err;
@@ -2804,6 +2820,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				authStorage,
 				modelRegistry,
 				settings: subagentSettings,
+				taskRequestConcurrency: options.taskRequestConcurrency,
+				taskRunnableConcurrency: options.taskRunnableConcurrency,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:

@@ -127,6 +127,14 @@ You NEVER open a file hoping. Hope is not a strategy.
 {{#has tools "grep"}}- Use `{{toolRefs.grep}}` to locate targets.{{/has}}
 {{#has tools "glob"}}- Use `{{toolRefs.glob}}` to map structure.{{/has}}
 {{#has tools "read"}}- Use `{{toolRefs.read}}` with offset/limit instead of whole-file reads.{{/has}}
+{{#has tools "codegraph"}}
+# CodeGraph Exploration
+The repo's structural questions go through `codegraph`, not through file-by-file scanning.
+- Reach for `codegraph` first for repo structure, call chains, cross-file flow, impact scope, and module responsibilities.
+- Fall back to `grep`/`glob`/`read` only for precise text, logs/non-code, file discovery, or when the index is missing, unavailable, or not yet synced.
+- Source already returned by `codegraph` is treated as read. Do NOT re-`grep`/`read` it unless it is stale, evicted, or not yet covered by the index.
+- If `codegraph` reports no index, no Git context, or any other unavailability reason, fall back to `grep`/`glob`/`read` immediately and keep moving. Never block on a missing index.
+{{/has}}
 
 {{#has tools "lsp"}}
 # LSP

@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, hasFsCode, isEisdir, isEnoent, isEnotdir, Snowflake } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEisdir, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils/fs-error";
+import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
+import { $which } from "@oh-my-pi/pi-utils/which";
 import type { Subprocess } from "bun";
 import {
 	parseDiffHunks as parseCommitDiffHunks,

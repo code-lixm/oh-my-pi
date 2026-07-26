@@ -12,7 +12,7 @@
  */
 
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
-import type { Settings } from "../config/settings";
+import { normalizeProviderMaxInFlightRequests, type Settings } from "../config/settings";
 import type { SettingPath } from "../config/settings-schema";
 import { Semaphore } from "./parallel";
 
@@ -28,12 +28,13 @@ interface ProviderSemaphoreEntry {
 const providerSemaphores = new Map<string, ProviderSemaphoreEntry>();
 
 /**
- * Resolve the configured concurrency ceiling for a provider, or `undefined`
- * when the provider has no cap concept at all. A configured value `<= 0` means
- * "unlimited" and maps to `Infinity` — still a tracked ceiling, so every run
- * holds a slot and a later finite resize counts work started while unlimited.
+ * Resolve the configured concurrency ceiling for a provider. The generic
+ * `providers.maxInFlightRequests` record wins; provider-specific settings
+ * remain as backward-compatible defaults. A missing entry means unlimited.
  */
 export function getProviderConcurrencyLimit(settings: Settings, provider: string): number | undefined {
+	const genericLimit = normalizeProviderMaxInFlightRequests(settings.get("providers.maxInFlightRequests"))[provider];
+	if (genericLimit !== undefined) return genericLimit;
 	const settingPath = PROVIDER_MAX_CONCURRENCY_SETTINGS[provider];
 	if (!settingPath) return undefined;
 	const raw = settings.get(settingPath);

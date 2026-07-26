@@ -4,15 +4,15 @@
  * 1. With an AsyncJobManager wired, `execute` returns immediately (agent id +
  *    job id) while the job body is still gated; job completion delivers a
  *    result carrying the irc follow-up / `history://<id>` hint.
- * 2. The session-scoped spawn semaphore (task.maxConcurrency) serializes job
- *    bodies: with concurrency 1 the second body does not start until the
- *    first releases.
+ * 2. Async spawn jobs are independent AsyncJobManager entries: `task.maxConcurrency`
+ *    no longer serializes whole job bodies, so siblings can start together and
+ *    cancellation must settle without stranding other running jobs.
  *
  * Param validation (missing agent / missing task) is covered by
  * test/task/task-schema.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -72,14 +72,6 @@ interface Deferred {
 function deferred(): Deferred {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	return { promise, resolve };
-}
-
-async function pollUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
-	const start = Date.now();
-	while (!predicate()) {
-		if (Date.now() - start > timeoutMs) throw new Error("pollUntil timed out");
-		await Bun.sleep(5);
-	}
 }
 
 describe("task spawn routing", () => {
@@ -148,16 +140,18 @@ describe("task spawn routing", () => {
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini"]);
 	});
 
-	it("bounds concurrent job bodies with the session spawn semaphore", async () => {
+	it("does not serialize async spawn job bodies when task.maxConcurrency is 1", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [taskAgent],
 			projectAgentsDir: null,
 		});
 		const started: string[] = [];
+		const bothStarted = Promise.withResolvers<void>();
 		const gates = new Map<string, Deferred>();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const id = options.id ?? "?";
 			started.push(id);
+			if (started.length === 2) bothStarted.resolve();
 			const gate = deferred();
 			gates.set(id, gate);
 			await gate.promise;
@@ -172,274 +166,70 @@ describe("task spawn routing", () => {
 		const firstJob = manager.getJob(first.details!.async!.jobId)!;
 		const secondJob = manager.getJob(second.details!.async!.jobId)!;
 
-		// First job body reaches the executor; second stays parked at the
-		// semaphore — still flagged queued because markRunning never ran.
-		await pollUntil(() => started.length >= 1);
-		expect(started).toEqual(["First"]);
-		expect(secondJob.queued).toBe(true);
+		await bothStarted.promise;
+		expect([...started].sort()).toEqual(["First", "Second"]);
+		expect(firstJob.queued).toBe(false);
+		expect(secondJob.queued).toBe(false);
 
-		// Releasing the first body lets the second one start.
-		gates.get(started[0]!)!.resolve();
-		await firstJob.promise;
-		await pollUntil(() => started.length === 2);
-		expect(started).toEqual(["First", "Second"]);
-
+		gates.get("First")!.resolve();
 		gates.get("Second")!.resolve();
-		await secondJob.promise;
+		await Promise.all([firstJob.promise, secondJob.promise]);
 		expect(firstJob.status).toBe("completed");
 		expect(secondJob.status).toBe("completed");
 	});
 
-	it("settles a cancelled spawn while it is queued behind the semaphore", async () => {
+	it("settles a cancelled running spawn without blocking a sibling job", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [taskAgent],
 			projectAgentsDir: null,
 		});
 		const started: string[] = [];
-		const gates = new Map<string, Deferred>();
+		const bothStarted = Promise.withResolvers<void>();
+		const firstGate = deferred();
+		const secondObservedAbort = Promise.withResolvers<void>();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const id = options.id ?? "?";
 			started.push(id);
-			const gate = deferred();
-			gates.set(id, gate);
-			await gate.promise;
-			return makeResult(id);
-		});
-
-		const manager = createManager();
-		const tool = await TaskTool.create(createSession({ manager, settings: { "task.maxConcurrency": 1 } }));
-
-		const first = await tool.execute("tc-1", { agent: "task", name: "First", task: "Work A." } as TaskParams);
-		const second = await tool.execute("tc-2", { agent: "task", name: "Second", task: "Work B." } as TaskParams);
-		const firstJob = manager.getJob(first.details!.async!.jobId)!;
-		const secondJob = manager.getJob(second.details!.async!.jobId)!;
-
-		await pollUntil(() => started.length === 1);
-		expect(started).toEqual(["First"]);
-		expect(secondJob.queued).toBe(true);
-
-		expect(manager.cancel(secondJob.id)).toBe(true);
-		const queuedResult = await Promise.race([
-			secondJob.promise.then(() => "settled" as const),
-			Bun.sleep(75).then(() => "timeout" as const),
-		]);
-
-		gates.get("First")!.resolve();
-		await firstJob.promise;
-		await secondJob.promise;
-
-		expect(queuedResult).toBe("settled");
-		expect(started).toEqual(["First"]);
-		expect(secondJob.status).toBe("cancelled");
-	});
-
-	it("keeps the concurrency cap intact when a queued spawn is cancelled (no permit leak)", async () => {
-		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-			agents: [taskAgent],
-			projectAgentsDir: null,
-		});
-		const started: string[] = [];
-		const gates = new Map<string, Deferred>();
-		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			const id = options.id ?? "?";
-			started.push(id);
-			const gate = deferred();
-			gates.set(id, gate);
-			await gate.promise;
-			return makeResult(id);
-		});
-
-		const manager = createManager();
-		const tool = await TaskTool.create(createSession({ manager, settings: { "task.maxConcurrency": 1 } }));
-
-		// A holds the only permit, gated inside the executor.
-		const first = await tool.execute("tc-1", { agent: "task", name: "First", task: "Work A." } as TaskParams);
-		const firstJob = manager.getJob(first.details!.async!.jobId)!;
-		await pollUntil(() => started.length === 1);
-
-		// B parks at the semaphore, then is cancelled while queued. Its
-		// teardown must NOT release a permit it never acquired.
-		const second = await tool.execute("tc-2", { agent: "task", name: "Second", task: "Work B." } as TaskParams);
-		const secondJob = manager.getJob(second.details!.async!.jobId)!;
-		expect(secondJob.queued).toBe(true);
-		expect(manager.cancel(secondJob.id)).toBe(true);
-		await secondJob.promise;
-		expect(secondJob.status).toBe("cancelled");
-
-		// C must stay parked while A still holds the cap. A phantom release
-		// from B's cancellation would admit C here, running 2 bodies at cap 1.
-		const third = await tool.execute("tc-3", { agent: "task", name: "Third", task: "Work C." } as TaskParams);
-		const thirdJob = manager.getJob(third.details!.async!.jobId)!;
-		await Bun.sleep(50);
-		expect(started).toEqual(["First"]);
-		expect(thirdJob.queued).toBe(true);
-
-		// A finishing admits C — the cap still cycles normally.
-		gates.get("First")!.resolve();
-		await firstJob.promise;
-		await pollUntil(() => started.length === 2);
-		expect(started).toEqual(["First", "Third"]);
-
-		// D queued behind running C stays serialized: if B's teardown had
-		// double-released, two permits would be free and D would start now.
-		const fourth = await tool.execute("tc-4", { agent: "task", name: "Fourth", task: "Work D." } as TaskParams);
-		const fourthJob = manager.getJob(fourth.details!.async!.jobId)!;
-		await Bun.sleep(50);
-		expect(started).toEqual(["First", "Third"]);
-		expect(fourthJob.queued).toBe(true);
-
-		gates.get("Third")!.resolve();
-		await thirdJob.promise;
-		await pollUntil(() => started.length === 3);
-		gates.get("Fourth")!.resolve();
-		await fourthJob.promise;
-
-		expect(started).toEqual(["First", "Third", "Fourth"]);
-		expect(firstJob.status).toBe("completed");
-		expect(thirdJob.status).toBe("completed");
-		expect(fourthJob.status).toBe("completed");
-	});
-
-	for (const maxConcurrency of [0, 0.5]) {
-		it(`runs spawn job bodies unbounded when task.maxConcurrency is ${maxConcurrency}`, async () => {
-			vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-				agents: [taskAgent],
-				projectAgentsDir: null,
-			});
-			const started: string[] = [];
-			const gates = new Map<string, Deferred>();
-			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-				const id = options.id ?? "?";
-				started.push(id);
-				const gate = deferred();
-				gates.set(id, gate);
-				await gate.promise;
+			if (started.length === 2) bothStarted.resolve();
+			if (id === "First") {
+				await firstGate.promise;
 				return makeResult(id);
+			}
+			const signal = options.signal;
+			if (!signal) throw new Error("Expected abort signal");
+			await new Promise<void>(resolve => {
+				const onAbort = () => {
+					secondObservedAbort.resolve();
+					resolve();
+				};
+				if (signal.aborted) {
+					onAbort();
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
 			});
-
-			const manager = createManager();
-			const tool = await TaskTool.create(
-				createSession({ manager, settings: { "task.maxConcurrency": maxConcurrency } }),
-			);
-
-			const first = await tool.execute("tc-1", { agent: "task", name: "First", task: "Work A." } as TaskParams);
-			const second = await tool.execute("tc-2", { agent: "task", name: "Second", task: "Work B." } as TaskParams);
-			const third = await tool.execute("tc-3", { agent: "task", name: "Third", task: "Work C." } as TaskParams);
-
-			// All three job bodies clear the spawn semaphore in parallel — none stays queued.
-			await pollUntil(() => started.length === 3);
-			expect(started.sort()).toEqual(["First", "Second", "Third"]);
-
-			for (const id of ["First", "Second", "Third"]) gates.get(id)!.resolve();
-			await Promise.all([
-				manager.getJob(first.details!.async!.jobId)!.promise,
-				manager.getJob(second.details!.async!.jobId)!.promise,
-				manager.getJob(third.details!.async!.jobId)!.promise,
-			]);
-		});
-	}
-
-	it("re-reads task.maxConcurrency on each spawn so a mid-session change applies on the next acquire", async () => {
-		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-			agents: [taskAgent],
-			projectAgentsDir: null,
-		});
-		const started: string[] = [];
-		const gates = new Map<string, Deferred>();
-		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			const id = options.id ?? "?";
-			started.push(id);
-			const gate = deferred();
-			gates.set(id, gate);
-			await gate.promise;
-			return makeResult(id);
+			return makeResult(id, { aborted: true, exitCode: 1, error: "cancelled" });
 		});
 
 		const manager = createManager();
-		const settings = Settings.isolated({ "task.maxConcurrency": 4 });
-		const tool = await TaskTool.create({
-			cwd: "/tmp",
-			hasUI: false,
-			settings,
-			getSessionFile: () => null,
-			getSessionSpawns: () => "*",
-			asyncJobManager: manager,
-		} as unknown as ToolSession);
+		const tool = await TaskTool.create(createSession({ manager, settings: { "task.maxConcurrency": 1 } }));
 
-		// Prime the semaphore at the initial high cap.
 		const first = await tool.execute("tc-1", { agent: "task", name: "First", task: "Work A." } as TaskParams);
-		await pollUntil(() => started.length === 1);
-
-		// Tighten the cap mid-session. The next spawn MUST see the new ceiling.
-		settings.override("task.maxConcurrency", 1);
 		const second = await tool.execute("tc-2", { agent: "task", name: "Second", task: "Work B." } as TaskParams);
+		const firstJob = manager.getJob(first.details!.async!.jobId)!;
 		const secondJob = manager.getJob(second.details!.async!.jobId)!;
 
-		// First is still running (and holding the only slot under the new cap),
-		// so Second is parked at the semaphore — queued, not running.
-		expect(started).toEqual(["First"]);
-		expect(secondJob.queued).toBe(true);
+		await bothStarted.promise;
+		expect([...started].sort()).toEqual(["First", "Second"]);
 
-		// Releasing First admits Second.
-		gates.get("First")!.resolve();
-		await manager.getJob(first.details!.async!.jobId)!.promise;
-		await pollUntil(() => started.length === 2);
-		expect(started).toEqual(["First", "Second"]);
-
-		gates.get("Second")!.resolve();
+		expect(manager.cancel(secondJob.id)).toBe(true);
+		await secondObservedAbort.promise;
 		await secondJob.promise;
-	});
 
-	it("applies a lowered maxConcurrency to work already queued in the semaphore", async () => {
-		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-			agents: [taskAgent],
-			projectAgentsDir: null,
-		});
-		const started: string[] = [];
-		const gates = new Map<string, Deferred>();
-		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			const id = options.id ?? "?";
-			started.push(id);
-			const gate = deferred();
-			gates.set(id, gate);
-			await gate.promise;
-			return makeResult(id);
-		});
+		firstGate.resolve();
+		await firstJob.promise;
 
-		const manager = createManager();
-		const settings = Settings.isolated({ "task.maxConcurrency": 4 });
-		const tool = await TaskTool.create({
-			cwd: "/tmp",
-			hasUI: false,
-			settings,
-			getSessionFile: () => null,
-			getSessionSpawns: () => "*",
-			asyncJobManager: manager,
-		} as unknown as ToolSession);
-
-		const jobs: AsyncJob[] = [];
-		for (const id of ["First", "Second", "Third", "Fourth", "Fifth"]) {
-			const result = await tool.execute(`tc-${id}`, { agent: "task", name: id, task: `Work ${id}.` } as TaskParams);
-			jobs.push(manager.getJob(result.details!.async!.jobId)!);
-		}
-		const fifthJob = jobs[4]!;
-
-		await pollUntil(() => started.length === 4);
-		expect([...started].sort()).toEqual(["First", "Fourth", "Second", "Third"]);
-		expect(fifthJob.queued).toBe(true);
-
-		settings.override("task.maxConcurrency", 1);
-		gates.get("First")!.resolve();
-		await jobs[0]!.promise;
-		await Promise.resolve();
-		expect([...started].sort()).toEqual(["First", "Fourth", "Second", "Third"]);
-		expect(fifthJob.queued).toBe(true);
-
-		for (const id of ["Second", "Third", "Fourth"]) gates.get(id)!.resolve();
-		await pollUntil(() => started.length === 5);
-		expect([...started].sort()).toEqual(["Fifth", "First", "Fourth", "Second", "Third"]);
-
-		gates.get("Fifth")!.resolve();
-		await Promise.all(jobs.map(job => job.promise));
+		expect(secondJob.status).toBe("cancelled");
+		expect(firstJob.status).toBe("completed");
 	});
 });

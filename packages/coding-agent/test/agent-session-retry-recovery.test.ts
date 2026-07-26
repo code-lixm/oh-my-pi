@@ -444,6 +444,7 @@ describe("AgentSession retry recovery", () => {
 			streamingComponent: undefined as AssistantMessageComponent | undefined,
 			streamingMessage: undefined as AssistantMessage | undefined,
 			chatContainer,
+			transcriptMessageComponents: new WeakMap(),
 			pendingTools: new Map<string, unknown>(),
 			statusContainer: { clear: vi.fn(), disposeChildren: vi.fn(), addChild: vi.fn(), children: [] },
 			loadingAnimation: undefined,

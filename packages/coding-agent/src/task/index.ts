@@ -52,7 +52,7 @@ import { AgentRegistry } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
-import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
+import { mapWithConcurrencyLimitAllSettled } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
@@ -585,14 +585,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly mergeCallAndResult = true;
 	readonly #discoveredAgents: AgentDefinition[];
 	readonly #blockedAgent: string | undefined;
-	/**
-	 * One semaphore per TaskTool instance (i.e. per session): bounds concurrent
-	 * subagents across parallel `task` calls within the session. Resized in
-	 * place from `task.maxConcurrency` before every acquire/release so a
-	 * mid-session settings change (UI toggle, `/settings`) applies to both new
-	 * spawns and work already parked in the semaphore queue.
-	 */
-	#spawnSemaphore: Semaphore | undefined;
 
 	get parameters(): TaskToolSchemaInstance {
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
@@ -633,18 +625,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return this.session.settings.get("task.batch");
 	}
 
-	#getSpawnSemaphore(): Semaphore {
-		const max = this.session.settings.get("task.maxConcurrency");
-		if (this.#spawnSemaphore) {
-			this.#spawnSemaphore.resize(max);
-		} else {
-			this.#spawnSemaphore = new Semaphore(max);
-		}
-		return this.#spawnSemaphore;
-	}
-
-	#releaseSpawnSemaphore(): void {
-		this.#getSpawnSemaphore().release();
+	#withRunnableAgentSuspended<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this.session.withRunnableAgentSuspended?.(run, signal) ?? run();
 	}
 
 	/**
@@ -758,13 +740,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						ircEnabled,
 						willRunAsync: false,
 					});
-			const result = await this.#executeSyncFanout(
-				toolCallId,
-				params,
-				spawnItems.map((item, index) => ({ item, index })),
-				defaultAgent,
+			const result = await this.#withRunnableAgentSuspended(
+				() =>
+					this.#executeSyncFanout(
+						toolCallId,
+						params,
+						spawnItems.map((item, index) => ({ item, index })),
+						defaultAgent,
+						signal,
+						onUpdate,
+					),
 				signal,
-				onUpdate,
 			);
 			if (!advisory) return result;
 			let appended = false;
@@ -809,13 +795,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		};
 		if (asyncItems.length === 0) {
 			return withAdvisory(
-				await this.#executeSyncFanout(
-					toolCallId,
-					params,
-					spawnItems.map((item, index) => ({ item, index })),
-					defaultAgent,
+				await this.#withRunnableAgentSuspended(
+					() =>
+						this.#executeSyncFanout(
+							toolCallId,
+							params,
+							spawnItems.map((item, index) => ({ item, index })),
+							defaultAgent,
+							signal,
+							onUpdate,
+						),
 					signal,
-					onUpdate,
 				),
 			);
 		}
@@ -1030,23 +1020,33 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			],
 			details: buildAsyncDetails(),
 		});
-		const payloads = await this.#runSyncSpawns({
-			toolCallId,
-			params,
-			defaultAgent,
+		const payloads = await this.#withRunnableAgentSuspended(
+			() =>
+				this.#runSyncSpawns({
+					toolCallId,
+					params,
+					defaultAgent,
+					signal,
+					spawns: syncSpawns.map(spawn => ({
+						item: spawn.item,
+						index: spawn.index,
+						preAllocatedId: spawn.agentId,
+					})),
+					onItemProgress: onUpdate
+						? (index, progress) => {
+								const spawn = spawns.find(candidate => candidate.index === index);
+								if (spawn) spawn.progress = { ...progress, index };
+								onUpdate({
+									content: [
+										{ type: "text", text: tSettingsUi("Running {syncLabel} inline...", { syncLabel }) },
+									],
+									details: buildAsyncDetails(),
+								});
+							}
+						: undefined,
+				}),
 			signal,
-			spawns: syncSpawns.map(spawn => ({ item: spawn.item, index: spawn.index, preAllocatedId: spawn.agentId })),
-			onItemProgress: onUpdate
-				? (index, progress) => {
-						const spawn = spawns.find(candidate => candidate.index === index);
-						if (spawn) spawn.progress = { ...progress, index };
-						onUpdate({
-							content: [{ type: "text", text: tSettingsUi("Running {syncLabel} inline...", { syncLabel }) }],
-							details: buildAsyncDetails(),
-						});
-					}
-				: undefined,
-		});
+		);
 		const merged = mergeSyncPayloads(
 			syncSpawns.map(spawn => ({ item: spawn.item, index: spawn.index })),
 			payloads,
@@ -1135,38 +1135,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			agentId,
 			async ({ signal: runSignal, reportProgress, markRunning }) => {
 				const startedAt = Date.now();
-				const semaphore = this.#getSpawnSemaphore();
-				let semaphoreHeld = false;
-				// Every release funnels through here: the flag flips before the
-				// release so no path — acquire-time abort, executor failure, or a
-				// future refactor that reorders the branches — can return a permit
-				// twice. Releasing a permit this job never acquired would steal one
-				// from a running job and let a later spawn start past
-				// task.maxConcurrency.
-				const releasePermit = () => {
-					if (!semaphoreHeld) return;
-					semaphoreHeld = false;
-					this.#releaseSpawnSemaphore();
-				};
-				try {
-					await semaphore.acquire(runSignal);
-					semaphoreHeld = true;
-				} catch {
-					// Fall through so an acquire-time abort goes through the same
-					// path as the post-acquire race below: progress + onSettled
-					// have to fire even when the spawn never reached the executor,
-					// otherwise the batch aggregate state stays "running" forever.
-				}
-				const acquiredAt = Date.now();
-				if (!semaphoreHeld || runSignal.aborted) {
-					releasePermit();
+				const acquiredAt = startedAt;
+				if (runSignal.aborted) {
 					progress.status = "aborted";
 					onSettled?.(true);
 					throw new Error(tSettingsUi("Aborted before execution"));
 				}
 				try {
 					markRunning();
-					progress.status = "running";
 					await reportProgress(
 						tSettingsUi("Running background task {agentId}...", { agentId }),
 						buildDetails() as unknown as Record<string, unknown>,
@@ -1174,11 +1150,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const forwardSyncProgress: AgentToolUpdateCallback<TaskToolDetails> = async update => {
 						const nextProgress = update.details?.progress?.[0];
 						if (nextProgress) {
-							// The job body owns status and identity (id/index/agent);
-							// copy only the live metrics the subagent streams so the
-							// polling row reflects the resolved model, reasoning level,
-							// and running counters without reverting the "running"
-							// status back to the subagent's initial "pending" snapshot.
+							// Async job lifecycle is tracked separately by `markRunning()`.
+							// Agent progress stays pending until the child emits `agent_start`.
+							progress.status = nextProgress.status;
 							progress.resolvedModel = nextProgress.resolvedModel;
 							progress.resolvedModelIsFallback = nextProgress.resolvedModelIsFallback;
 							progress.tokens = nextProgress.tokens;
@@ -1254,8 +1228,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const message = error instanceof Error ? error.message : String(error);
 					const hint = AgentRegistry.global().get(agentId) ? await buildFollowUpHint(false) : "";
 					throw new TaskJobError(`${message}${hint}`);
-				} finally {
-					releasePermit();
 				}
 			},
 			{
@@ -1273,8 +1245,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	/**
 	 * Sync fan-out (async unavailable, or every item's agent type is
 	 * `blocking: true`): run every spawn to completion inline and merge the
-	 * per-spawn payloads into a single tool result. The session-scoped
-	 * semaphore still bounds concurrency across parallel task calls.
+	 * per-spawn payloads. The root request limiter applies inside each child
+	 * session's provider stream rather than around the child lifecycle.
 	 */
 	async #executeSyncFanout(
 		toolCallId: string,
@@ -1286,24 +1258,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		if (spawns.length === 1) {
 			const spawn = spawns[0]!;
-			const semaphore = this.#getSpawnSemaphore();
 			const invokedAt = Date.now();
-			await semaphore.acquire(signal);
-			const acquiredAt = Date.now();
-			try {
-				return await this.#executeSync(
-					toolCallId,
-					spawnParamsFor(params, spawn.item, defaultAgent),
-					signal,
-					onUpdate,
-					spawn.preAllocatedId,
-					spawn.index,
-					false,
-					{ invokedAt, acquiredAt },
-				);
-			} finally {
-				this.#releaseSpawnSemaphore();
-			}
+			return this.#executeSync(
+				toolCallId,
+				spawnParamsFor(params, spawn.item, defaultAgent),
+				signal,
+				onUpdate,
+				spawn.preAllocatedId,
+				spawn.index,
+				false,
+				{ invokedAt, acquiredAt: invokedAt },
+			);
 		}
 
 		const startTime = Date.now();
@@ -1350,12 +1315,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	/**
-	 * Run a set of spawns to completion inline, bounded by the session spawn
-	 * semaphore. `preAllocatedId` reuses an id claimed up front (mixed calls);
-	 * `index` is each item's position in the original call so progress rows and
-	 * merged results keep stable ordering. Per-item progress snapshots flow
-	 * through `onItemProgress`. Returns per-spawn payloads in input order;
-	 * `undefined` marks a spawn cancelled before it started.
+	 * Run a set of spawns to completion inline. `preAllocatedId` reuses an id
+	 * claimed up front (mixed calls); `index` is each item's position in the
+	 * original call so progress rows and merged results keep stable ordering.
+	 * Provider requests inside every child share the root request limiter.
 	 */
 	async #runSyncSpawns(args: {
 		toolCallId: string;
@@ -1366,41 +1329,27 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onItemProgress?: (index: number, progress: AgentProgress) => void;
 	}): Promise<(AgentToolResult<TaskToolDetails> | undefined)[]> {
 		const { toolCallId, params, defaultAgent, spawns, signal, onItemProgress } = args;
-		const semaphore = this.#getSpawnSemaphore();
 		const { results } = await mapWithConcurrencyLimitAllSettled(
 			spawns,
 			spawns.length,
 			async (spawn, _position, workerSignal) => {
 				const invokedAt = Date.now();
-				let semaphoreHeld = false;
-				try {
-					await semaphore.acquire(workerSignal);
-					semaphoreHeld = true;
-				} catch (error) {
-					if (workerSignal.aborted) return undefined;
-					throw error;
-				}
-				const acquiredAt = Date.now();
-				try {
-					const itemOnUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined = onItemProgress
-						? update => {
-								const progress = update.details?.progress?.[0];
-								if (progress) onItemProgress(spawn.index, progress);
-							}
-						: undefined;
-					return await this.#executeSync(
-						toolCallId,
-						spawnParamsFor(params, spawn.item, defaultAgent),
-						workerSignal,
-						itemOnUpdate,
-						spawn.preAllocatedId,
-						spawn.index,
-						false,
-						{ invokedAt, acquiredAt },
-					);
-				} finally {
-					if (semaphoreHeld) this.#releaseSpawnSemaphore();
-				}
+				const itemOnUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined = onItemProgress
+					? update => {
+							const progress = update.details?.progress?.[0];
+							if (progress) onItemProgress(spawn.index, progress);
+						}
+					: undefined;
+				return this.#executeSync(
+					toolCallId,
+					spawnParamsFor(params, spawn.item, defaultAgent),
+					workerSignal,
+					itemOnUpdate,
+					spawn.preAllocatedId,
+					spawn.index,
+					false,
+					{ invokedAt, acquiredAt: invokedAt },
+				);
 			},
 			signal,
 		);
@@ -1455,7 +1404,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const assignment = (params.task ?? "").trim();
 		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
 		let latestProgress: AgentProgress | undefined;
+		let releaseRunnable: (() => void) | undefined;
 		try {
+			const taskRunnableConcurrency = this.session.taskRunnableConcurrency;
+			if (preAllocatedId && taskRunnableConcurrency) {
+				releaseRunnable = await taskRunnableConcurrency.acquire(preAllocatedId, signal);
+			}
+			const runnableAcquiredAt = releaseRunnable ? Date.now() : launchTiming?.acquiredAt;
 			const execution = await runStructuredSubagent({
 				session: this.session,
 				invocationKind: "task",
@@ -1470,7 +1425,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentToolCallId: toolCallId,
 				detached,
 				invokedAt: launchTiming?.invokedAt,
-				acquiredAt: launchTiming?.acquiredAt,
+				acquiredAt: runnableAcquiredAt,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
@@ -1507,10 +1462,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					...(latestProgress ? { progress: [latestProgress] } : {}),
 				},
 			};
+		} finally {
+			releaseRunnable?.();
 		}
 	}
 
-	/** Build the tool result (summary text + details) for a settled run. */
 	#buildResultPayload(
 		result: SingleResult,
 		projectAgentsDir: string | null,

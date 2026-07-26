@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the CodeGraph native extraction kernel to the existing `pi_natives` addon, including its ABI/grammar introspection, 20 language walkers, and C function-pointer scan helpers, with upstream MIT attribution and exact vendored grammar assets; also exposed the side-effect-free `@oh-my-pi/pi-natives/loader` entry so optional accelerators can catch addon-load failures and fall back safely.
+
 ## [17.1.3] - 2026-07-24
 
 ### Changed

@@ -30,6 +30,7 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	eval: true,
 	task: true,
 	hub: true,
+	codegraph: true,
 	learn: true,
 	manage_skill: true,
 };

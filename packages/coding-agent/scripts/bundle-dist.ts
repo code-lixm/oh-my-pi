@@ -75,7 +75,10 @@ async function cleanBundleOutputs(): Promise<void> {
 	}
 	await Promise.all(
 		entries
-			.filter(entry => entry === "cli.js" || entry.endsWith(".node") || entry.endsWith(".js.map"))
+			.filter(
+				entry =>
+					entry === "cli.js" || entry.endsWith(".node") || entry.endsWith(".wasm") || entry.endsWith(".js.map"),
+			)
 			.map(entry => fs.rm(path.join(outDir, entry), { force: true })),
 	);
 }

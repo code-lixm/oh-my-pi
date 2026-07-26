@@ -1,7 +1,7 @@
 还在打“keep going”？直接发一个 `.` 就行
 你可以用 /btw 提一个旁支问题
 用 /tan 把当前对话分叉到一个后台代理里
-Ctrl+D 可以退出，而且会保留你的草稿！
+使用 /exit 安全退出 omp，或在 keybindings 中配置退出快捷键
 想知道你最“情绪化折磨”的模型是哪个？运行 `omp stats`
 试试 task isolation 来创建 CoW worktree
 需要一个便宜的嵌套模型调用？用 `completion(x...)`。任务很多？让 clanker 用它！

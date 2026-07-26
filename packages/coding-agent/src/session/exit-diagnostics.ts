@@ -4,6 +4,14 @@ import type { SessionEntry } from "./session-entries";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
 export const SESSION_EXIT_CUSTOM_TYPE = "session_exit";
+export const SESSION_RUN_START_CUSTOM_TYPE = "session_run_start";
+export const SESSION_RUN_STOP_CUSTOM_TYPE = "session_run_stop";
+
+export interface SessionRunMarkerData {
+	recordedAt: string;
+	pid: number;
+	reason?: string;
+}
 
 /**
  * Compact projection of tool-call arguments persisted with the start marker.
@@ -98,6 +106,14 @@ function readSessionExit(entry: SessionEntry): SessionExitData | undefined {
 	};
 }
 
+function readSessionRunMarker(entry: SessionEntry, customType: string): SessionRunMarkerData | undefined {
+	if (entry.type !== "custom" || entry.customType !== customType || !isObject(entry.data)) return undefined;
+	const { recordedAt, pid, reason } = entry.data;
+	if (typeof recordedAt !== "string" || typeof pid !== "number") return undefined;
+	if (reason !== undefined && typeof reason !== "string") return undefined;
+	return { recordedAt, pid, ...(reason !== undefined ? { reason } : {}) };
+}
+
 /**
  * createInterruptedTurnAbortMessage returns a terminal assistant record when
  * the latest persisted process exit follows a non-terminal conversation tail.
@@ -115,7 +131,33 @@ export function createInterruptedTurnAbortMessage(
 		exit = candidate;
 		break;
 	}
-	if (!exit || (exit.kind === "normal" && !exit.pendingToolCalls?.length)) return undefined;
+	let runStartIndex = -1;
+	let runStart: SessionRunMarkerData | undefined;
+	let runStopIndex = -1;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		if (runStopIndex < 0 && readSessionRunMarker(entries[index]!, SESSION_RUN_STOP_CUSTOM_TYPE)) {
+			runStopIndex = index;
+		}
+		if (runStartIndex < 0) {
+			const candidate = readSessionRunMarker(entries[index]!, SESSION_RUN_START_CUSTOM_TYPE);
+			if (candidate) {
+				runStartIndex = index;
+				runStart = candidate;
+			}
+		}
+		if (runStartIndex >= 0 && runStopIndex >= 0) break;
+	}
+	const abruptRunStart = runStart && runStartIndex > Math.max(exitIndex, runStopIndex) ? runStart : undefined;
+	const abruptExit = abruptRunStart !== undefined;
+	if (abruptRunStart) {
+		exitIndex = entries.length;
+		exit = {
+			reason: `missing_exit_marker_after_pid_${abruptRunStart.pid}`,
+			kind: "fatal",
+			recordedAt: new Date().toISOString(),
+		};
+	}
+	if (!exit || (!abruptExit && exit.kind === "normal" && !exit.pendingToolCalls?.length)) return undefined;
 
 	let tailIndex = -1;
 	let tail: AgentMessage | undefined;
@@ -161,7 +203,9 @@ export function createInterruptedTurnAbortMessage(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "aborted",
-		errorMessage: "Previous OMP process exited before completing the turn.",
+		errorMessage: abruptExit
+			? "Previous OMP process ended without recording an exit before completing the turn."
+			: "Previous OMP process exited before completing the turn.",
 		timestamp: Number.isFinite(recordedAt) ? recordedAt : Date.now(),
 	};
 }

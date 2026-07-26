@@ -13,7 +13,10 @@ import { type CoordinationDetails, HubTool } from "@oh-my-pi/pi-coding-agent/too
 
 const SELF_ID = "Main";
 
-function makeSession(manager: AsyncJobManager | undefined): ToolSession {
+function makeSession(
+	manager: AsyncJobManager | undefined,
+	taskRequestConcurrency?: { snapshot: () => { active: number; queued: number; limit: number | undefined } },
+): ToolSession {
 	const stub = {
 		cwd: process.cwd(),
 		settings: {
@@ -25,6 +28,7 @@ function makeSession(manager: AsyncJobManager | undefined): ToolSession {
 		},
 		agentRegistry: AgentRegistry.global(),
 		asyncJobManager: manager,
+		taskRequestConcurrency,
 		getAgentId: () => SELF_ID,
 	};
 	// Structurally-partial test session: HubTool only touches the fields above.
@@ -93,6 +97,36 @@ describe("hub unified wait", () => {
 		expect(details.jobs?.[0]?.resultText).toBe("done output");
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 		expect(text).toContain("## Completed (1)");
+	});
+
+	test("jobs snapshots label root request usage separately from active agent turns", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: SELF_ID, displayName: "main", kind: "main", session: null, status: "running" });
+		registry.register({
+			id: "Worker",
+			displayName: "task",
+			kind: "sub",
+			parentId: SELF_ID,
+			session: null,
+			status: "running",
+		});
+
+		const manager = new AsyncJobManager({ onJobComplete: () => {} });
+		const requestSnapshot = { active: 2, queued: 1, limit: 3 };
+		const tool = new HubTool(makeSession(manager, { snapshot: () => requestSnapshot }));
+
+		const result = await tool.execute("call_jobs", { op: "jobs" });
+		const details = result.details as CoordinationDetails;
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+		expect(details.op).toBe("jobs");
+		expect(details.taskRequestConcurrency).toEqual(requestSnapshot);
+		expect(details.agents?.map(agent => agent.id)).toEqual(["Worker"]);
+		expect(text).toContain("## Subagent LLM Requests");
+		expect(text).toContain("- Active: 2/3");
+		expect(text).toContain("- Queued: 1");
+		expect(text).toContain("## Active Agent Turns (1) — not job-backed");
+		expect(text).toContain("Their LLM requests share the root task concurrency limit.");
 	});
 
 	test("bare wait with no jobs and no running peers returns immediately", async () => {

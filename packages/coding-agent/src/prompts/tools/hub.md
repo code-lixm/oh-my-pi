@@ -7,6 +7,7 @@ Background jobs auto-deliver when they finish. You NEVER need to poll; if `jobs`
 
 - **`send`** (with `to`): fire-and-forget, NEVER blocks. Delivery receipts (`delivered`/`failed`) immediate; `failed` → peer gone, don't retry.
   Sending wakes `idle`/`parked` peers. Answering: lead with answer, NEVER quote, set `replyTo`.
+- NEVER send acknowledgement-only, thanks-only, or thread-closing messages; silence ends coordination.
 - **Format**: plain prose ONLY. No JSON status objects. Share paths via `local://`/`artifact://` URLs, not pasted blobs.
 - **`wait`**: use ONLY when completely blocked with no other work. Returns on the FIRST of: an incoming message, a watched job finishing, the wait window elapsing, or a steering interrupt — NOT when all jobs finish; re-issue to keep waiting.
   - Bare `wait` watches every running job AND incoming messages. NEVER pass an array of every running ID; `ids` narrows to specific jobs, `from` to one peer (or use `await: true` on send).

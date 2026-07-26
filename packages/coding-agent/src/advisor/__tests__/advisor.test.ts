@@ -4464,8 +4464,8 @@ describe("advisor", () => {
 	});
 
 	describe("advisor default tools", () => {
-		it("defaults to read/grep/glob, a subset of the full grantable tool pool", () => {
-			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob"]);
+		it("defaults to read/grep/glob/codegraph, a subset of the full grantable tool pool", () => {
+			expect([...ADVISOR_DEFAULT_TOOL_NAMES]).toEqual(["read", "grep", "glob", "codegraph"]);
 			// The advisor is a full agent now: every built tool is grantable (no hard
 			// read-only restriction), including mutating ones like edit/bash/write.
 			const builtin = new Set<string>(BUILTIN_TOOL_NAMES);
