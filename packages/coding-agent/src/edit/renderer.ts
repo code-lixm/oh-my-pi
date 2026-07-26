@@ -166,6 +166,8 @@ export interface EditRenderContext {
 	editStreamingFallback?: string;
 	/** Function to render diff text with syntax highlighting */
 	renderDiff?: (diffText: string, options?: { filePath?: string }) => string;
+	/** Maximum detail rows below a collapsed tool header. */
+	detailMaxLines?: number;
 }
 
 const EDIT_STREAMING_PREVIEW_LINES = 12;
@@ -654,6 +656,7 @@ function renderDiffSection(
 	expanded: boolean,
 	uiTheme: Theme,
 	renderDiffFn: (t: string, o?: { filePath?: string }) => string,
+	maxCollapsedLines: number,
 	cache?: RenderedStringCache,
 ): string {
 	return cachedRenderedString(cache, uiTheme, expanded, rawPath, diff, () => {
@@ -663,7 +666,7 @@ function renderDiffSection(
 			hiddenLines,
 		} = expanded
 			? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
-			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, PREVIEW_LIMITS.DIFF_COLLAPSED_LINES);
+			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, Math.max(1, maxCollapsedLines - 1));
 
 		let text = `\n${renderDiffFn(truncatedDiff, { filePath: rawPath })}`;
 		if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
@@ -911,7 +914,15 @@ function renderSingleFileResult(
 		if (isError) {
 			if (errorText) body = uiTheme.fg("error", replaceTabs(errorText));
 		} else if (details?.diff) {
-			body = renderDiffSection(details.diff, rawPath, expanded, uiTheme, renderDiffFn, diffSectionCache);
+			body = renderDiffSection(
+				details.diff,
+				rawPath,
+				expanded,
+				uiTheme,
+				renderDiffFn,
+				options.renderContext?.detailMaxLines ?? PREVIEW_LIMITS.DIFF_COLLAPSED_LINES,
+				diffSectionCache,
+			);
 		} else if (details) {
 			// Authoritative result with no textual diff: a delete, a move-only
 			// rename, or a genuine no-op. The header already names the op
@@ -924,7 +935,15 @@ function renderSingleFileResult(
 		} else if (editDiffPreview) {
 			if ("error" in editDiffPreview) body = uiTheme.fg("error", replaceTabs(editDiffPreview.error));
 			else if (editDiffPreview.diff)
-				body = renderDiffSection(editDiffPreview.diff, rawPath, expanded, uiTheme, renderDiffFn, diffSectionCache);
+				body = renderDiffSection(
+					editDiffPreview.diff,
+					rawPath,
+					expanded,
+					uiTheme,
+					renderDiffFn,
+					options.renderContext?.detailMaxLines ?? PREVIEW_LIMITS.DIFF_COLLAPSED_LINES,
+					diffSectionCache,
+				);
 		}
 		if (details?.diagnostics) {
 			body += formatDiagnostics(details.diagnostics, expanded, uiTheme, (fp: string) =>

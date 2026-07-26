@@ -13,7 +13,13 @@ import {
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
 } from "./json-tree";
-import { formatExpandHint, replaceTabs, truncateToWidth } from "./render-utils";
+import {
+	formatExpandHint,
+	replaceTabs,
+	toolDetailMaxLines,
+	truncateMiddleLines,
+	truncateToWidth,
+} from "./render-utils";
 
 /** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
 export interface DefaultToolRenderInput {
@@ -38,6 +44,10 @@ export function formatDefaultToolExecution(
 ): string {
 	const lines: string[] = [];
 	const { options, result } = input;
+	const finalize = (): string =>
+		options.expanded
+			? lines.join("\n")
+			: [lines[0]!, ...truncateMiddleLines(lines.slice(1), toolDetailMaxLines())].join("\n");
 	const icon = options.isPartial
 		? options.spinnerFrame !== undefined
 			? "running"
@@ -74,13 +84,13 @@ export function formatDefaultToolExecution(
 	}
 
 	if (!result) {
-		return lines.join("\n");
+		return finalize();
 	}
 
 	const textContent = result.output.trimEnd();
 	if (!textContent) {
 		lines.push(uiTheme.fg("dim", "(no output)"));
-		return lines.join("\n");
+		return finalize();
 	}
 
 	if (textContent.startsWith("{") || textContent.startsWith("[")) {
@@ -98,7 +108,7 @@ export function formatDefaultToolExecution(
 				} else if (tree.truncated) {
 					lines.push(uiTheme.fg("dim", "…"));
 				}
-				return lines.join("\n");
+				return finalize();
 			}
 		} catch {
 			// Non-JSON output that starts with a bracket is rendered as plain text.
@@ -106,23 +116,14 @@ export function formatDefaultToolExecution(
 	}
 
 	const outputLines = textContent.split("\n");
-	const maxOutputLines = options.expanded ? 12 : 4;
+	const maxOutputLines = outputLines.length;
 	const displayLines = outputLines.slice(0, maxOutputLines);
 
 	for (const line of displayLines) {
 		lines.push(uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(line), contentWidth)));
 	}
 
-	if (outputLines.length > maxOutputLines) {
-		const remaining = outputLines.length - maxOutputLines;
-		lines.push(
-			`${uiTheme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(uiTheme, options.expanded, true)}`,
-		);
-	} else if (!options.expanded) {
-		lines.push(formatExpandHint(uiTheme, options.expanded, true));
-	}
-
-	return lines.join("\n");
+	return finalize();
 }
 
 /** Render the generic fallback as the state-tinted card used by direct custom tools. */

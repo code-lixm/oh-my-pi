@@ -5,7 +5,7 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
-import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
+import { shortenPath, toolDetailMaxLines } from "../../tools/render-utils";
 import {
 	fileHyperlink,
 	getBasicToolDetailsVisible,
@@ -112,9 +112,6 @@ type ReadEntry = {
 	codeStartLine?: number;
 	codeLineNumbers?: Array<number | null>;
 };
-
-/** Number of code lines to show in collapsed preview mode */
-const COLLAPSED_PREVIEW_LINES = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 
 type ReadDisplayTarget = {
 	entry: ReadEntry;
@@ -645,11 +642,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		)}`;
 	}
 
-	/**
-	 * Add a code-cell content preview below the entry summary.
-	 * When collapsed: shows first COLLAPSED_PREVIEW_LINES lines with a "… N more lines ⟨<key>: Expand⟩" hint.
-	 * When expanded: shows full content.
-	 */
+	/** Add a code-cell preview, preserving both ends when the collapsed row budget is exceeded. */
 	#addContentPreview(entry: ReadEntry): void {
 		const split = splitPathAndSel(entry.path);
 		const lang = getLanguageFromPath(split.path);
@@ -676,7 +669,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						title,
 						status: entry.status === "success" ? "complete" : entry.status,
 						expanded,
-						codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,
+						codeMaxLines: expanded ? undefined : toolDetailMaxLines(),
+						codeMiddle: !expanded,
 						codeStartLine: entry.codeStartLine,
 						codeLineNumbers: entry.codeLineNumbers,
 						width,

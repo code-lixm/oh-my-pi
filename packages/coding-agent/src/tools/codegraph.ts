@@ -18,7 +18,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import {
 	type CodeGraphExploreOptions,
@@ -81,7 +81,7 @@ const PREVIEW_ENTRY_LINE_LEN = 80;
 const PREVIEW_ENTRY_LINES = 3;
 const PREVIEW_FILE_LINES = 4;
 
-type FallbackContext = { sourceRoot: string; indexDir?: string; reason: string };
+type FallbackContext = { sourceRoot: string; indexDir?: string; reason: string; isError?: boolean };
 
 type ResolvedLocationState =
 	| { kind: "ready"; location: CodeGraphIndexLocation; runtimeSourceRoot: string; syncPaths: string[] }
@@ -130,6 +130,20 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			call: { query: "Functions exporting a default in the renderer layer", maxFiles: 10 },
 		},
 	];
+
+	static async createIf(session: CodeGraphToolSession): Promise<CodeGraphTool | null> {
+		try {
+			const location = await resolveCodeGraphIndexLocation(path.resolve(session.cwd));
+			if (location.available) return new CodeGraphTool(session);
+			logger.debug("CodeGraph tool unavailable for workspace", { cwd: session.cwd, reason: location.reason });
+		} catch (error) {
+			logger.debug("CodeGraph tool availability check failed", {
+				cwd: session.cwd,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		return null;
+	}
 
 	constructor(private readonly session: CodeGraphToolSession) {
 		this.description = prompt.render(selectPrompt(codegraphDescription, codegraphDescriptionZh));
@@ -203,6 +217,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 					fallback: {
 						sourceRoot: sessionCwd,
 						reason: `Path does not exist on disk: ${rawPath}`,
+						isError: true,
 					},
 				};
 			}
@@ -213,6 +228,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 					fallback: {
 						sourceRoot: sessionCwd,
 						reason: `Path does not exist on disk: ${rawPath}`,
+						isError: true,
 					},
 				};
 			}
@@ -255,6 +271,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 					sourceRoot: runtimeSourceRoot,
 					indexDir: location.indexDir,
 					reason: `Path is outside the active source root: ${rawPath}`,
+					isError: true,
 				},
 			};
 		}
@@ -314,7 +331,8 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			entries: [],
 			fallback: opts.reason,
 		};
-		return toolResult<CodeGraphToolDetails>(details).text(`CodeGraph fallback: ${opts.reason}`).error().done();
+		const result = toolResult<CodeGraphToolDetails>(details).text(`CodeGraph fallback: ${opts.reason}`);
+		return opts.isError ? result.error().done() : result.done();
 	}
 }
 

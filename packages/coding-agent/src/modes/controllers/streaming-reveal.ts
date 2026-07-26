@@ -247,7 +247,7 @@ export class StreamingRevealController {
 		);
 	}
 
-	begin(component: StreamingRevealComponent, message: AssistantMessage): void {
+	begin(component: StreamingRevealComponent, message: AssistantMessage, options: { snapToEnd?: boolean } = {}): void {
 		this.stop();
 		this.#component = component;
 		this.#target = message;
@@ -261,7 +261,7 @@ export class StreamingRevealController {
 			return;
 		}
 		const total = this.#visibleUnits(message);
-		if (message.content.some(block => block.type === "toolCall")) {
+		if (options.snapToEnd || message.content.some(block => block.type === "toolCall")) {
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
 			this.#revealed = total;
@@ -274,7 +274,7 @@ export class StreamingRevealController {
 		this.#syncTimer(total);
 	}
 
-	setTarget(message: AssistantMessage): void {
+	setTarget(message: AssistantMessage, options: { snapToEnd?: boolean } = {}): void {
 		this.#target = message;
 		this.#hideThinkingBlock = this.#getHideThinkingBlock();
 		this.#proseOnlyThinking = this.#getProseOnlyThinking();
@@ -286,9 +286,11 @@ export class StreamingRevealController {
 			return;
 		}
 		const total = this.#visibleUnits(message);
-		if (message.content.some(block => block.type === "toolCall")) {
+		if (options.snapToEnd || message.content.some(block => block.type === "toolCall")) {
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
+			// EventController passes the tool-free `beforeTools` segment, so it
+			// supplies `snapToEnd` explicitly when the original turn has a tool call.
 			this.#revealed = total;
 			this.#stopTimer();
 			this.#component.updateContent(this.#build(message, this.#revealed), {

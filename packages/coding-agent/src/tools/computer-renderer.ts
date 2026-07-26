@@ -5,7 +5,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine } from "../tui";
 import type { ComputerToolDetails } from "./computer";
-import { replaceTabs, truncateToWidth } from "./render-utils";
+import { replaceTabs, toolDetailMaxLines, truncateMiddleLines, truncateToWidth } from "./render-utils";
 
 interface ComputerRenderArgs {
 	actions?: Array<{ type?: unknown }>;
@@ -77,7 +77,7 @@ export const computerToolRenderer = {
 					`backend ${clean(details.backend)}${details.displayServer ? ` · server ${clean(details.displayServer)}` : ""} · capture ${clean(details.capturePermission)} · input ${clean(details.inputPermission)} · ${details.displays.length} display(s)`,
 				),
 			];
-			const displayLimit = options.expanded ? details.displays.length : Math.min(details.displays.length, 3);
+			const displayLimit = details.displays.length;
 			for (const display of details.displays.slice(0, displayLimit)) {
 				body.push(
 					theme.fg(
@@ -89,15 +89,13 @@ export const computerToolRenderer = {
 					),
 				);
 			}
-			if (displayLimit < details.displays.length) {
-				body.push(theme.fg("dim", `… ${details.displays.length - displayLimit} more display(s)`));
-			}
 			if (details.capabilities) {
 				body.push(theme.fg("dim", `capabilities ${clean(details.capabilities, 160)}`));
 			}
+			const detailLines = options.expanded ? body : truncateMiddleLines(body, toolDetailMaxLines());
 			return {
 				header,
-				sections: [{ lines: body }],
+				sections: [{ lines: detailLines }],
 				state: result.isError ? "error" : "success",
 				borderColor: result.isError ? "error" : "borderMuted",
 				applyBg: false,

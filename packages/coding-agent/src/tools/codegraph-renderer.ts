@@ -1,3 +1,4 @@
+import * as path from "node:path";
 /**
  * TUI renderer for the built-in `codegraph` tool.
  *
@@ -10,8 +11,16 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { getLanguageFromPath } from "../modes/theme/theme";
 import type { Theme } from "../modes/theme/theme";
-import { Ellipsis, fileHyperlink, renderStatusLine, truncateToWidth } from "../tui";
+import {
+	Ellipsis,
+	fileHyperlink,
+	getBasicToolDetailsVisible,
+	renderStatusLine,
+	renderTreeList,
+	truncateToWidth,
+} from "../tui";
 import type { CodeGraphToolDetails } from "./codegraph";
 import {
 	createCachedComponent,
@@ -21,9 +30,14 @@ import {
 	replaceTabs,
 	shortenPath,
 } from "./render-utils";
-
 const COLLAPSED_ENTRY_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
 const COLLAPSED_FILE_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
+
+
+function resolveResultPath(filePath: string, sourceRoot: string | undefined): string | undefined {
+	if (path.isAbsolute(filePath)) return filePath;
+	return sourceRoot ? path.resolve(sourceRoot, filePath) : undefined;
+}
 
 export const codegraphToolRenderer = {
 	inline: true,
@@ -59,81 +73,107 @@ export const codegraphToolRenderer = {
 		theme: Theme,
 	): Component {
 		const details = result.details;
-		const metaBase: string[] = [];
+		const meta: string[] = [];
 		if (details) {
-			metaBase.push(
+			meta.push(
 				`${details.fileCount} file${details.fileCount === 1 ? "" : "s"}`,
 				`${details.entryCount} entr${details.entryCount === 1 ? "y" : "ies"}`,
 			);
-			if (details.pathScope) metaBase.push(`sync: ${shortenPath(details.pathScope)}`);
-			if (details.truncated) metaBase.push(theme.fg("warning", "truncated"));
-			if (details.confidence) metaBase.push(`confidence: ${details.confidence}`);
+			if (details.pathScope) meta.push(`sync: ${shortenPath(details.pathScope)}`);
+			if (details.truncated) meta.push(theme.fg("warning", "truncated"));
+			if (details.confidence) meta.push(`confidence: ${details.confidence}`);
 		}
 
-		const fallbackText =
-			result.isError && details?.fallback
-				? (() => {
-						const textBlock = result.content.find(block => block.type === "text");
-						return typeof textBlock?.text === "string" && textBlock.text.length > 0
-							? textBlock.text
-							: details.fallback;
-					})()
-				: undefined;
-
+		const errorText = result.isError
+			? result.content.find(block => block.type === "text")?.text || details?.fallback || "Unknown error"
+			: undefined;
+		const fallbackText = details?.fallback;
+		const empty = !details || (details.fileCount === 0 && details.entryCount === 0);
 		const headerText = renderStatusLine(
 			{
-				...(fallbackText
+				...(errorText || (empty && !fallbackText)
 					? { icon: "warning" as const }
 					: { iconOverride: theme.fg("toolTitle", theme.symbol("icon.search")) }),
 				title: "CodeGraph",
 				titleColor: "toolTitle",
 				description: details?.query ?? "?",
-				meta: metaBase,
+				meta,
 			},
 			theme,
 		);
 
+		if (!getBasicToolDetailsVisible() && !errorText) {
+			return createCachedComponent(
+				() => false,
+				width => [truncateToWidth(headerText, width, Ellipsis.Omit)],
+			);
+		}
+
 		return createCachedComponent(
 			() => options.expanded,
 			width => {
-				const lines: string[] = [truncateToWidth(headerText, width, Ellipsis.Omit)];
+				const lines: string[] = [headerText];
 
-				if (fallbackText) {
-					lines.push(formatErrorMessage(fallbackText, theme));
+				if (errorText) {
+					lines.push(formatErrorMessage(errorText, theme));
 					return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 				}
 
-				if (!details || (details.fileCount === 0 && details.entryCount === 0)) {
+				if (fallbackText) {
+					lines.push(formatEmptyMessage(fallbackText, theme));
+					return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+				}
+
+				if (empty) {
 					lines.push(formatEmptyMessage("No semantic matches found", theme));
 					return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 				}
 
-				const entries = details.entries;
-				if (entries.length > 0) {
-					const entryLimit = options.expanded ? entries.length : Math.min(entries.length, COLLAPSED_ENTRY_LIMIT);
-					for (const entry of entries.slice(0, entryLimit)) {
-						const node = entry.node;
-						const pathLabel = shortenPath(node.filePath);
-						const header = `• ${node.qualifiedName || node.name} [${node.kind}] — ${pathLabel}:${node.startLine}`;
-						lines.push(fileHyperlink(pathLabel, theme.fg("accent", truncateToWidth(replaceTabs(header), width))));
-					}
-					if (!options.expanded && entries.length > entryLimit) {
-						lines.push(theme.fg("dim", `…${entries.length - entryLimit} more entries`));
-					}
-				}
-
-				const files = details.files;
-				if (files.length > 0) {
-					lines.push(theme.fg("dim", "File coverage:"));
-					const fileLimit = options.expanded ? files.length : Math.min(files.length, COLLAPSED_FILE_LIMIT);
-					for (const file of files.slice(0, fileLimit)) {
-						const pathLabel = shortenPath(file.filePath);
-						const label = `• ${pathLabel} (${file.language}, ${file.nodeCount} nodes)`;
-						lines.push(fileHyperlink(pathLabel, theme.fg("muted", truncateToWidth(replaceTabs(label), width))));
-					}
-					if (!options.expanded && files.length > fileLimit) {
-						lines.push(theme.fg("dim", `…${files.length - fileLimit} more files`));
-					}
+				if (details.entries.length > 0) {
+					lines.push(
+						...renderTreeList(
+							{
+								items: details.entries,
+								expanded: options.expanded,
+								maxCollapsed: COLLAPSED_ENTRY_LIMIT,
+								itemType: "entry",
+								renderItem: entry => {
+									const node = entry.node;
+									const pathLabel = shortenPath(node.filePath);
+									const absolutePath = resolveResultPath(node.filePath, details.sourceRoot);
+									const icon = theme.fg("muted", theme.getLangIcon(getLanguageFromPath(node.filePath)));
+									const styledPath = theme.fg("toolOutput", `${icon} ${pathLabel}`);
+									const linkedPath = absolutePath
+										? fileHyperlink(absolutePath, styledPath, { line: node.startLine })
+										: styledPath;
+									return `${linkedPath}${theme.fg(
+										"dim",
+										` :${node.startLine} · ${node.qualifiedName || node.name} [${node.kind}]`,
+									)}`;
+								},
+							},
+							theme,
+						),
+					);
+				} else if (details.files.length > 0) {
+					lines.push(
+						...renderTreeList(
+							{
+								items: details.files,
+								expanded: options.expanded,
+								maxCollapsed: COLLAPSED_FILE_LIMIT,
+								itemType: "file",
+								renderItem: file => {
+									const pathLabel = shortenPath(file.filePath);
+									const absolutePath = resolveResultPath(file.filePath, details.sourceRoot);
+									const label = `${theme.getLangIcon(getLanguageFromPath(file.filePath))} ${pathLabel} (${file.language}, ${file.nodeCount} nodes)`;
+									const styled = theme.fg("toolOutput", replaceTabs(label));
+									return absolutePath ? fileHyperlink(absolutePath, styled) : styled;
+								},
+							},
+							theme,
+						),
+					);
 				}
 
 				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));

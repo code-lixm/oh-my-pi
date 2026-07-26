@@ -4,7 +4,14 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { framedBlock, renderStatusLine, resolveBareOutputBlockBorderStyle } from "../tui";
-import { formatErrorDetail, formatExpandHint, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
+import {
+	formatErrorDetail,
+	replaceTabs,
+	shortenPath,
+	toolDetailMaxLines,
+	truncateMiddleLines,
+	truncateToWidth,
+} from "./render-utils";
 
 interface InspectImageRenderArgs {
 	path?: string;
@@ -24,8 +31,6 @@ interface InspectImageRendererResult {
 }
 
 const INSPECT_QUESTION_PREVIEW_WIDTH = 100;
-const INSPECT_OUTPUT_COLLAPSED_LINES = 4;
-const INSPECT_OUTPUT_EXPANDED_LINES = 16;
 const INSPECT_OUTPUT_LINE_WIDTH = 120;
 
 function questionLine(question: string, uiTheme: Theme): string {
@@ -112,23 +117,15 @@ export const inspectImageToolRenderer = {
 			}
 
 			const outputLines = replaceTabs(outputText).split("\n");
-			const maxLines = options.expanded ? INSPECT_OUTPUT_EXPANDED_LINES : INSPECT_OUTPUT_COLLAPSED_LINES;
-			for (const line of outputLines.slice(0, maxLines)) {
+			for (const line of outputLines) {
 				bodyLines.push(uiTheme.fg("toolOutput", truncateToWidth(line, INSPECT_OUTPUT_LINE_WIDTH)));
 			}
-			if (outputLines.length > maxLines) {
-				const remaining = outputLines.length - maxLines;
-				const hint = formatExpandHint(uiTheme, options.expanded, true);
-				const overflow = tSettingsUi(remaining === 1 ? "… 1 more line" : "… {count} more lines", {
-					count: remaining,
-				});
-				bodyLines.push(`${uiTheme.fg("dim", overflow)}${hint ? ` ${hint}` : ""}`);
-			}
+			const detailLines = options.expanded ? bodyLines : truncateMiddleLines(bodyLines, toolDetailMaxLines());
 
 			return {
 				header,
 				headerMeta: metaLine || undefined,
-				sections: [{ lines: bodyLines }],
+				sections: [{ lines: detailLines }],
 				state: "success",
 				borderColor: "borderMuted",
 				applyBg: false,

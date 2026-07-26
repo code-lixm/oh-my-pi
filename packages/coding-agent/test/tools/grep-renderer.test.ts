@@ -245,16 +245,10 @@ describe("grepToolRenderer", () => {
 
 		expect(collapsedBody).toEqual([
 			`├─ ${icon} src/file-01.ts :1`,
-			`├─ ${icon} src/file-02.ts :11`,
-			`├─ ${icon} src/file-03.ts :21`,
-			`├─ ${icon} src/file-04.ts :31`,
-			`├─ ${icon} src/file-05.ts :41`,
-			`├─ ${icon} src/file-06.ts :51`,
-			`├─ ${icon} src/file-07.ts :61`,
-			`├─ ${icon} src/file-08.ts :71`,
-			"└─ … 2 more files",
+			"├─ … 8 more files",
+			`└─ ${icon} src/file-10.ts :91`,
 		]);
-		expect(collapsedBody.join("\n")).not.toContain("file-09.ts");
+		expect(collapsedBody.join("\n")).not.toContain("file-02.ts");
 		expect(expandedBody).toEqual(
 			locations.map(
 				(location, index) =>

@@ -60,7 +60,7 @@ export async function readTextFileIfExists(filePath: string): Promise<string | n
 
 export async function writeTextFileAtomically(filePath: string, content: string): Promise<void> {
 	const parentDir = await ensureSecureDir(path.dirname(filePath));
-	const tempPath = path.join(parentDir, `${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+	const tempPath = path.join(parentDir, `${path.basename(filePath)}.${process.pid}.${Bun.randomUUIDv7()}.tmp`);
 	let renamed = false;
 	try {
 		await fs.writeFile(tempPath, content, { mode: FILE_MODE });

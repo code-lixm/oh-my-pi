@@ -226,6 +226,7 @@ import type {
 	InteractiveRuntimeFactory,
 	InteractiveSelectorDialogOptions,
 	RenderSessionContextOptions,
+	SubagentFeedback,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -437,42 +438,66 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+const SUBAGENT_FEEDBACK_VISIBLE_MS = 10_000;
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id: description` shape the
- * inline task rows use (muted task preview when no description was given).
- * Layout mirrors the Todos HUD exactly: unindented header, then
- * `renderTreeList` rows (dim connectors) shifted right by one space.
- * Only detached background spawns are listed: a sync task call blocks the
- * parent turn and its inline tool block already renders progress live, and
- * eval `agent()` spawns are rendered by their own eval cell tree.
- * Returns an empty array when nothing is running so the container can clear.
+ * a bounded set of `Id: status` rows. Detached running agents show their task
+ * description; recent agent-to-agent feedback temporarily replaces it with the
+ * actual message text. Feedback-only rows remain visible even when the sender
+ * already completed or was not observed locally, so communication never needs
+ * a separate transcript card. Repeated messages from one agent collapse into
+ * its latest row. Returns an empty array when neither work nor feedback remains.
  */
-export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
-	const running = sessions.filter(
-		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
-	);
-	if (running.length === 0) return [];
+export function renderSubagentHudLines(
+	sessions: ObservableSession[],
+	columns: number,
+	feedback: readonly SubagentFeedback[] = [],
+): string[] {
+	const feedbackById = new Map(feedback.map(item => [item.agentId, item]));
+	const rows = sessions
+		.filter(
+			session =>
+				session.kind === "subagent" &&
+				((session.status === "active" && session.detached === true) || feedbackById.has(session.id)),
+		)
+		.map(session => ({ session, feedback: feedbackById.get(session.id) }));
+	const knownIds = new Set(rows.map(row => row.session.id));
+	for (const item of feedback) {
+		if (knownIds.has(item.agentId)) continue;
+		rows.push({
+			session: {
+				id: item.agentId,
+				kind: "subagent",
+				label: item.agentId,
+				status: "active",
+				detached: true,
+				lastUpdate: item.timestamp ?? Date.now(),
+			},
+			feedback: item,
+		});
+	}
+	if (rows.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");
-	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
-	const hiddenCount = running.length - visible.length;
-	const rows = renderTreeList(
+	const visible = rows.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
+	const hiddenCount = rows.length - visible.length;
+	const renderedRows = renderTreeList(
 		{
 			items: visible,
 			expanded: true,
-			renderItem: session => {
-				const displayId = formatTaskId(session.id);
+			renderItem: row => {
+				const displayId = formatTaskId(row.session.id);
 				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
+				const feedbackText = row.feedback?.text.trim();
+				const description =
+					feedbackText || row.session.description?.trim() || row.session.progress?.description?.trim();
 				if (description) {
 					const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - 10);
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
+					const tone = feedbackText ? "toolOutput" : "accent";
+					line += `${theme.fg("accent", ":")} ${theme.fg(tone, truncateToWidth(replaceTabs(description), budget))}`;
 				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
+					const taskPreview = row.session.progress?.task?.trim();
 					if (taskPreview) {
 						line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
 					}
@@ -483,11 +508,11 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 		theme,
 	);
 	if (hiddenCount > 0) {
-		rows.push(
+		renderedRows.push(
 			theme.fg("dim", tSettingsUi("… {hiddenCount} more running — open Agent Hub for full list", { hiddenCount })),
 		);
 	}
-	return ["", theme.bold(theme.fg("accent", tSettingsUi("Subagents"))), ...rows.map(line => ` ${line}`)];
+	return ["", theme.bold(theme.fg("accent", tSettingsUi("Subagents"))), ...renderedRows.map(line => ` ${line}`)];
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -924,6 +949,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
+	#subagentFeedback = new Map<string, SubagentFeedback>();
+	#subagentFeedbackTimers = new Map<string, NodeJS.Timeout>();
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
 	#mcpStatusOrder: string[] = [];
@@ -1287,18 +1314,18 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#clearWorkingMessageAccentCache();
 				clearRenderCache();
 				clearMermaidCache();
-				this.ui.invalidate();
 				this.updateEditorBorderColor();
-				if (event.ephemeral || isInsideTerminalMultiplexer()) {
-					// Theme previews and multiplexer panes cannot safely replace native
-					// scrollback: previews must stay non-destructive, and multiplexers
-					// suppress ED3 so a forced replay would duplicate transcript history.
+				if (event.ephemeral) {
+					// Theme previews repaint only the active surface so browsing remains
+					// reversible and never destroys native scrollback.
+					this.ui.invalidate();
 					this.ui.requestRender();
 					return;
 				}
-				// Rows already committed to native scrollback are immutable; replay them
-				// after a theme swap so a reader scrolled up sees the same palette.
-				this.ui.requestRender(true, { clearScrollback: true });
+				// A committed theme change must replace the terminal's physical history,
+				// not only the live viewport. resetDisplay invalidates every cached block,
+				// clears native scrollback, and replays the semantic transcript once.
+				this.ui.resetDisplay();
 			}),
 		);
 		this.ui.terminal.onAppearanceChange(mode => {
@@ -1396,33 +1423,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				void this.#reapplyPlanModeModelOnRoleChange();
 			}),
 		);
-		// Set up theme file watcher
-		this.#eventBusUnsubscribers.push(
-			onThemeChange(event => {
-				this.#clearWorkingMessageAccentCache();
-				clearRenderCache();
-				clearMermaidCache();
-				this.ui.invalidate();
-				this.updateEditorBorderColor();
-				if (event.ephemeral || isInsideTerminalMultiplexer()) {
-					// Theme previews and multiplexer panes cannot safely replace native
-					// scrollback: previews must stay non-destructive, and multiplexers
-					// suppress ED3 so a forced replay would duplicate transcript history.
-					this.ui.requestRender();
-					return;
-				}
-				// Rows already committed to native scrollback are immutable; replay them
-				// after a theme swap so a reader scrolled up sees the same palette.
-				this.ui.requestRender(true, { clearScrollback: true });
-			}),
-		);
-
-		// Subscribe to terminal dark/light appearance changes.
-		// The terminal queries background color via OSC 11 at startup and on
-		// Mode 2031 notifications, computing luminance to detect dark/light.
-		this.ui.terminal.onAppearanceChange(mode => {
-			onTerminalAppearanceChange(mode);
-		});
 
 		// A branch change (checkout, worktree switch, `git switch`) invalidates
 		// the status-line git segments; the lazy top-border provider picks up
@@ -2440,17 +2440,40 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
-	/**
-	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
-	 * editor. Driven entirely by observer-registry change events, so rows appear
-	 * on spawn and the whole block clears itself once the last subagent leaves
-	 * the "active" state.
-	 */
+	/** Anchored HUD for detached work and transient subagent feedback. */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
-		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns);
+		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns, [
+			...this.#subagentFeedback.values(),
+		]);
 		if (lines.length === 0) return;
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
+	}
+
+	showSubagentFeedback(feedback: SubagentFeedback): void {
+		const agentId = feedback.agentId.trim();
+		const text = feedback.text.trim();
+		if (!agentId || !text) return;
+		const item = { ...feedback, agentId, text };
+		this.#subagentFeedback.set(agentId, item);
+		clearTimeout(this.#subagentFeedbackTimers.get(agentId));
+		const timer = setTimeout(() => {
+			this.#subagentFeedbackTimers.delete(agentId);
+			if (this.#subagentFeedback.get(agentId) !== item) return;
+			this.#subagentFeedback.delete(agentId);
+			this.#renderSubagentList();
+			this.ui.requestRender();
+		}, SUBAGENT_FEEDBACK_VISIBLE_MS);
+		timer.unref?.();
+		this.#subagentFeedbackTimers.set(agentId, timer);
+		this.#renderSubagentList();
+		this.ui.requestRender();
+	}
+
+	#clearSubagentFeedback(): void {
+		for (const timer of this.#subagentFeedbackTimers.values()) clearTimeout(timer);
+		this.#subagentFeedbackTimers.clear();
+		this.#subagentFeedback.clear();
 	}
 
 	async #loadTodoList(): Promise<void> {
@@ -4363,6 +4386,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
+		this.#clearSubagentFeedback();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();
@@ -5032,6 +5056,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetObserverRegistry(): void {
+		this.#clearSubagentFeedback();
 		this.#observerRegistry.resetSessions();
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 	}

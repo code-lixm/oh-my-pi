@@ -1127,6 +1127,22 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi("Show detailed read, grep, and glob results instead of one-line summaries"),
 		},
 	},
+	"display.toolDetailMaxLines": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Collapsed Tool Detail Rows"),
+			description: tSettingsUi(
+				"Maximum detail rows shown below a collapsed tool header. Longer details keep their beginning and end with the middle omitted.",
+			),
+			input: true,
+			min: 3,
+			max: 100,
+			integer: true,
+		},
+	},
 	"display.shimmer": {
 		type: "enum",
 		values: ["classic", "kitt", "disabled"] as const,
@@ -2121,7 +2137,9 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: tSettingsUi("Notifications"),
 			label: tSettingsUi("Ask Timeout"),
-			description: tSettingsUi("Auto-select the recommended ask option after this many seconds (0 disables)"),
+			description: tSettingsUi(
+				"Auto-select explicit recommended ask options after this many seconds; questions without one keep waiting (0 disables)",
+			),
 			options: [
 				{ value: "0", label: tSettingsUi("Disabled") },
 				{ value: "15", label: tSettingsUi("15 seconds") },
@@ -2353,7 +2371,7 @@ export const SETTINGS_SCHEMA = {
 	"compaction.strategy": {
 		type: "enum",
 		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
-		default: "snapcompact",
+		default: "context-full",
 		ui: {
 			tab: "context",
 			group: tSettingsUi("Compaction"),

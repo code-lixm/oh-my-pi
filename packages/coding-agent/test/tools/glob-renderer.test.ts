@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
@@ -8,9 +9,19 @@ import { getBasicToolDetailsVisible, setBasicToolDetailsVisible } from "../../sr
 const initialSettingsUiLocale = getSettingsUiLocale();
 const initialBasicToolDetailsVisible = getBasicToolDetailsVisible();
 
+beforeAll(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true, cwd: process.cwd() });
+});
+
 afterEach(() => {
+	settings.clearOverride("display.toolDetailMaxLines");
 	setSettingsUiLocale(initialSettingsUiLocale);
 	setBasicToolDetailsVisible(initialBasicToolDetailsVisible);
+});
+
+afterAll(() => {
+	resetSettingsForTest();
 });
 
 describe("globToolRenderer", () => {
@@ -184,6 +195,70 @@ describe("globToolRenderer", () => {
 		for (const file of files) {
 			expect(zhPlain).toContain(file);
 		}
+	});
+
+	it("keeps collapsed glob file details within the default 3-line budget while expanded shows all 10 files", async () => {
+		setSettingsUiLocale("en");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const files = Array.from({ length: 10 }, (_, index) => `src/file-${String(index + 1).padStart(2, "0")}.ts`);
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: { fileCount: files.length, files },
+		};
+		const renderBody = (expanded: boolean) =>
+			sanitizeText(
+				globToolRenderer
+					.renderResult(result as never, { expanded, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
+					.render(240)
+					.join("\n"),
+			)
+				.split("\n")
+				.slice(1)
+				.map(line => line.trimEnd());
+
+		const collapsedBody = renderBody(false);
+		const expandedBody = renderBody(true);
+		const icon = uiTheme.getLangIcon("typescript");
+
+		expect(collapsedBody).toEqual([`├─ ${icon} src/file-01.ts`, "├─ … 8 more files", `└─ ${icon} src/file-10.ts`]);
+		expect(expandedBody).toEqual(
+			files.map((file, index) => `${index === files.length - 1 ? "└─" : "├─"} ${icon} ${file}`),
+		);
+	});
+
+	it("honors a 5-line collapsed glob detail budget while preserving the first and last files", async () => {
+		settings.override("display.toolDetailMaxLines", 5);
+		setSettingsUiLocale("en");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const files = Array.from({ length: 10 }, (_, index) => `src/file-${String(index + 1).padStart(2, "0")}.ts`);
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: { fileCount: files.length, files },
+		};
+
+		const collapsedBody = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
+				.render(240)
+				.join("\n"),
+		)
+			.split("\n")
+			.slice(1)
+			.map(line => line.trimEnd());
+		const icon = uiTheme.getLangIcon("typescript");
+
+		expect(collapsedBody).toEqual([
+			`├─ ${icon} src/file-01.ts`,
+			`├─ ${icon} src/file-02.ts`,
+			"├─ … 6 more files",
+			`├─ ${icon} src/file-09.ts`,
+			`└─ ${icon} src/file-10.ts`,
+		]);
+		expect(collapsedBody).toHaveLength(5);
 	});
 
 	it("summarizes successful file matches to one target/count header when basic details are hidden", async () => {

@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import {
 	BlockUnitCounter,
 	buildDisplayMessage,
@@ -12,6 +14,8 @@ import {
 	visibleUnits,
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { splitAssistantMessageToolTimeline } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { getSegmenter } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
@@ -95,6 +99,48 @@ function makeController(
 	});
 	return { component, controller };
 }
+
+function makeThinkingToolCallMessage(thinking = "planning"): AssistantMessage {
+	return makeMessage([
+		{ type: "thinking", thinking },
+		{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
+	]);
+}
+
+function splitBeforeToolsTimeline(message: AssistantMessage): {
+	beforeTools: AssistantMessage;
+	hasToolCalls: boolean;
+} {
+	const timeline = splitAssistantMessageToolTimeline(
+		message as Parameters<typeof splitAssistantMessageToolTimeline>[0],
+	);
+	return {
+		beforeTools: timeline.beforeTools as AssistantMessage,
+		hasToolCalls: timeline.hasToolCalls,
+	};
+}
+
+function renderPlainLines(component: { render(width: number): readonly string[] }, width = 80): string[] {
+	return Bun.stripANSI(component.render(width).join("\n"))
+		.replace(/\x1b\]133;[AB]\x07/g, "")
+		.split("\n")
+		.map(line => line.trimEnd());
+}
+
+function lineIndexContaining(lines: readonly string[], needle: string): number {
+	const index = lines.findIndex(line => line.includes(needle));
+	if (index < 0) {
+		throw new Error(`Expected a rendered line containing ${JSON.stringify(needle)}`);
+	}
+	return index;
+}
+
+const toolUi = {
+	requestRender() {},
+	requestComponentRender() {},
+	resetDisplay() {},
+	imageBudget: undefined,
+};
 
 describe("streaming reveal", () => {
 	afterEach(() => {
@@ -304,6 +350,63 @@ describe("streaming reveal", () => {
 		expect(textAt(latestMessage(component), 0)).toBe("abcdefghi");
 		expect(component.messages).toHaveLength(updates);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("fully reveals split thinking in begin when the original turn already has a tool call", () => {
+		vi.useFakeTimers();
+		const { controller } = makeController();
+		const component = new AssistantMessageComponent();
+		const timeline = splitBeforeToolsTimeline(makeThinkingToolCallMessage());
+
+		expect(timeline.hasToolCalls).toBe(true);
+
+		controller.begin(component, timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
+
+		expect(renderPlainLines(component).some(line => line.includes("planning"))).toBe(true);
+	});
+
+	it("fully reveals split thinking in setTarget when a tool boundary replaces a partial smooth stream", () => {
+		vi.useFakeTimers();
+		const { controller } = makeController();
+		const component = new AssistantMessageComponent();
+
+		controller.begin(component, makeMessage([{ type: "text", text: "" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghi" }]));
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		expect(renderPlainLines(component).some(line => line.includes("abc"))).toBe(true);
+
+		const timeline = splitBeforeToolsTimeline(makeThinkingToolCallMessage());
+		controller.setTarget(timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
+
+		expect(renderPlainLines(component).some(line => line.includes("planning"))).toBe(true);
+	});
+
+	it("keeps exactly one plain separator between snapped thinking and an accent tool block", () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("accent");
+			const { controller } = makeController();
+			const assistant = new AssistantMessageComponent();
+			const timeline = splitBeforeToolsTimeline(makeThinkingToolCallMessage());
+			controller.begin(assistant, timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
+
+			const tool = new ToolExecutionComponent("custom-tool", { path: "README.md" }, {}, undefined, toolUi);
+			tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+
+			const transcript = new TranscriptContainer();
+			transcript.addChild(assistant);
+			transcript.addChild(tool);
+
+			const lines = renderPlainLines(transcript);
+			const thinkingIndex = lineIndexContaining(lines, "planning");
+			const toolIndex = lineIndexContaining(lines, "custom-tool");
+
+			expect(toolIndex).toBeGreaterThan(thinkingIndex);
+			expect(lines.slice(thinkingIndex + 1, toolIndex)).toEqual([""]);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("passes the bound component to requestRender on each smooth tick", () => {

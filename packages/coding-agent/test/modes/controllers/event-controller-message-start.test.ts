@@ -1,13 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { TextContent, UserMessage } from "@oh-my-pi/pi-ai";
-import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
-import type { Component } from "@oh-my-pi/pi-tui";
 
 beforeAll(() => {
 	initTheme();
@@ -170,161 +167,99 @@ describe("EventController message_start (user role)", () => {
 	});
 });
 
-function createIrcMessage(timestamp: number): CustomMessage<{ from: string; message: string }> {
+function createIrcMessage(
+	customType: "irc:incoming" | "irc:autoreply" | "irc:relay",
+	details: { from: string; message?: string; body?: string; to?: string },
+	timestamp: number,
+): CustomMessage<{ from: string; message?: string; body?: string; to?: string }> {
 	return {
 		role: "custom",
-		customType: "irc:incoming",
-		content: "Ready",
+		customType,
+		content: details.message ?? details.body ?? "",
 		display: true,
-		details: { from: "0-Main", message: `Ready ${timestamp}` },
+		details,
 		timestamp,
 	};
 }
 
-function createHubContext(options: { liveBlockAbove?: boolean } = {}) {
+function createIrcContext() {
 	const chatContainer = new TranscriptContainer();
-	if (options.liveBlockAbove) {
-		// A still-running tool above the group: the IRC events sit in the live region,
-		// where their rows cannot have committed to native scrollback.
-		chatContainer.addChild({
-			render: () => ["running tool"],
-			invalidate: () => {},
-			isTranscriptBlockFinalized: () => false,
-		} as Component);
-	}
-	const requestRender = vi.fn();
-	const pendingTools = new Map<string, HubActivityGroupComponent>();
+	const showSubagentFeedback = vi.fn();
 	const ctx = {
 		isInitialized: true,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender },
+		ui: { requestRender: vi.fn() },
 		chatContainer,
-		pendingTools,
+		pendingTools: new Map(),
 		session: {},
+		showSubagentFeedback,
 	} as unknown as InteractiveModeContext;
-	const helpers = new UiHelpers(ctx);
-	const addMessageToChat: InteractiveModeContext["addMessageToChat"] = vi.fn((message, options) =>
-		helpers.addMessageToChat(message, options),
-	);
-	ctx.addMessageToChat = addMessageToChat;
-	return { ctx, chatContainer, requestRender, addMessageToChat, pendingTools };
+	return { ctx, chatContainer, showSubagentFeedback };
 }
 
-/**
- * Returns the last HubActivityGroupComponent child of the container.
- * Throws a descriptive error when none exists so a failing assertion is easy to
- * distinguish from a missing child.
- */
-function hubGroup(chatContainer: TranscriptContainer): HubActivityGroupComponent {
-	const groups = chatContainer.children.filter(
-		(c): c is HubActivityGroupComponent => c instanceof HubActivityGroupComponent,
-	);
-	if (groups.length === 0) throw new Error("No HubActivityGroupComponent found in chatContainer");
-	return groups[groups.length - 1]!;
-}
-
-describe("EventController IRC events inside HubActivityGroupComponent", () => {
+describe("EventController irc_message feedback routing", () => {
 	afterEach(() => {
-		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	it("renders IRC events immediately inside a HubActivityGroup and evicts live-region entries after the TTL", async () => {
-		vi.useFakeTimers();
-		const message = createIrcMessage(1);
-		const { ctx, chatContainer, requestRender } = createHubContext({ liveBlockAbove: true });
+	it("routes irc:incoming through showSubagentFeedback without creating transcript cards", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
 		const controller = new EventController(ctx);
 
-		await controller.handleEvent({ type: "irc_message", message });
+		await controller.handleEvent({
+			type: "irc_message",
+			message: createIrcMessage("irc:incoming", { from: "0-Main", message: "Ready 1" }, 1),
+		});
 
-		// The event landed inside a HubActivityGroup, not as a top-level card.
-		const group = hubGroup(chatContainer);
-		expect(chatContainer.children.length).toBe(2); // live block + hub group
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 1");
-		expect(requestRender).toHaveBeenCalledTimes(1);
-
-		// Within the TTL: event still visible.
-		vi.advanceTimersByTime(9_999);
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 1");
-
-		// After the TTL: the final entry is evicted and an empty group renders nothing.
-		vi.advanceTimersByTime(1);
-		const expiredLines = group.render(80);
-		const expiredText = Bun.stripANSI(expiredLines.join("\n"));
-		expect(expiredLines).toEqual([]);
-		expect(expiredText).not.toContain("Ready 1");
-		expect(expiredText).not.toContain("pending");
-		expect(requestRender).toHaveBeenCalledTimes(2);
+		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 1", timestamp: 1 });
+		expect(chatContainer.children).toHaveLength(0);
 	});
 
-	it("keeps an IRC event whose rows may already be committed (no live block above)", async () => {
-		vi.useFakeTimers();
-		const message = createIrcMessage(4);
-		const { ctx, chatContainer } = createHubContext();
+	it("dedupes duplicate IRC signatures before surfacing feedback", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
 		const controller = new EventController(ctx);
+		const message = createIrcMessage("irc:incoming", { from: "0-Main", message: "Ready 2" }, 2);
 
 		await controller.handleEvent({ type: "irc_message", message });
-		const group = hubGroup(chatContainer);
+		await controller.handleEvent({ type: "irc_message", message });
 
-		// Simulate rows entering native scrollback.
-		const lines = chatContainer.render(80);
-		chatContainer.setNativeScrollbackCommittedRows(lines.length);
-
-		// The group is above the commit boundary, but its rows are already on the
-		// tape — an interior deletion of committed history is forbidden. It must stay.
-		vi.advanceTimersByTime(10_000);
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 4");
+		expect(showSubagentFeedback).toHaveBeenCalledTimes(1);
+		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 2", timestamp: 2 });
+		expect(chatContainer.children).toHaveLength(0);
 	});
 
-	it("evicts the oldest live-region event beyond the cap of 4", async () => {
-		vi.useFakeTimers();
-		const { ctx, chatContainer } = createHubContext({ liveBlockAbove: true });
+	it("includes relay targets in the HUD feedback text", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
 		const controller = new EventController(ctx);
 
-		for (let i = 0; i < 5; i++) {
-			await controller.handleEvent({ type: "irc_message", message: createIrcMessage(100 + i) });
-		}
+		await controller.handleEvent({
+			type: "irc_message",
+			message: createIrcMessage(
+				"irc:relay",
+				{ from: "Worker", to: "AuthLoader", body: "Need the cookie boundary checked." },
+				7,
+			),
+		});
 
-		// The oldest entry (100) was evicted when the 5th arrived; the 4 newest remain.
-		const group = hubGroup(chatContainer);
-		const rendered = Bun.stripANSI(group.render(80).join("\n"));
-		expect(rendered).not.toContain("Ready 100");
-		expect(rendered).toContain("Ready 104");
+		expect(showSubagentFeedback).toHaveBeenCalledWith({
+			agentId: "Worker",
+			text: "→ AuthLoader: Need the cookie boundary checked.",
+			timestamp: 7,
+		});
+		expect(chatContainer.children).toHaveLength(0);
 	});
 
-	it("does not schedule duplicate expiry for duplicate IRC events", async () => {
-		vi.useFakeTimers();
-		const message = createIrcMessage(2);
-		const { ctx, chatContainer } = createHubContext({ liveBlockAbove: true });
+	it("ignores irc:autoreply for the main HUD", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
 		const controller = new EventController(ctx);
 
-		await controller.handleEvent({ type: "irc_message", message });
-		await controller.handleEvent({ type: "irc_message", message });
+		await controller.handleEvent({
+			type: "irc_message",
+			message: createIrcMessage("irc:autoreply", { from: "Worker", to: "Main", body: "On it." }, 9),
+		});
 
-		const group = hubGroup(chatContainer);
-		const rendered = Bun.stripANSI(group.render(80).join("\n"));
-		expect(rendered.split("Ready 2").length - 1).toBe(1);
-		expect(group.isEmpty).toBe(false);
-
-		// After TTL: group is empty — no second expiry fired.
-		vi.advanceTimersByTime(10_000);
-		expect(group.isEmpty).toBe(true);
-	});
-
-	it("clears pending IRC expiry timers on dispose", async () => {
-		vi.useFakeTimers();
-		const message = createIrcMessage(3);
-		const { ctx, chatContainer, requestRender } = createHubContext();
-		const controller = new EventController(ctx);
-
-		await controller.handleEvent({ type: "irc_message", message });
-		controller.dispose();
-		vi.advanceTimersByTime(10_000);
-
-		// No timer fires after dispose — the group retains its entry.
-		const group = hubGroup(chatContainer);
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Ready 3");
-		expect(requestRender).toHaveBeenCalledTimes(1); // only the initial mount
+		expect(showSubagentFeedback).not.toHaveBeenCalled();
+		expect(chatContainer.children).toHaveLength(0);
 	});
 });

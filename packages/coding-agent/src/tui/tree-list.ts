@@ -4,7 +4,7 @@
 
 import { replaceTabs } from "@oh-my-pi/pi-tui";
 import type { Theme } from "../modes/theme/theme";
-import { formatMoreItems } from "../tools/render-utils";
+import { formatMoreItems, truncateMiddleLines } from "../tools/render-utils";
 import type { TreeContext } from "./types";
 import { getTreeBranch, getTreeContinuePrefix } from "./utils";
 
@@ -17,7 +17,7 @@ export interface TreeListOptions<T> {
 	 */
 	maxCollapsedLines?: number;
 	itemType?: string;
-	truncateFrom?: "start" | "end";
+	truncateFrom?: "start" | "end" | "middle";
 	/** Caller-supplied trailing summary line. When set (and not expanded),
 	 *  `renderTreeList` renders exactly the provided `items` (the caller has
 	 *  already applied its own selection/cap) and appends this text as the
@@ -73,6 +73,26 @@ export function renderTreeList<T>(options: TreeListOptions<T>, theme: Theme): st
 			lines.push(`${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", summary)}`);
 		}
 		return lines;
+	}
+
+	if (!expanded && truncateFrom === "middle") {
+		const allLines: string[] = [];
+		for (let i = 0; i < items.length; i++) {
+			const isLast = i === items.length - 1;
+			const rendered = renderItem(items[i], { index: i, isLast, depth: 0, theme, prefix: "", continuePrefix: "" });
+			const itemLines = Array.isArray(rendered) ? rendered : rendered ? [rendered] : [];
+			if (itemLines.length === 0) continue;
+			const prefix = `${theme.fg("dim", getTreeBranch(isLast, theme))} `;
+			const continuePrefix = `${theme.fg("dim", getTreeContinuePrefix(isLast, theme))}`;
+			allLines.push(`${prefix}${replaceTabs(itemLines[0]!)}`);
+			for (let j = 1; j < itemLines.length; j++) allLines.push(`${continuePrefix}${replaceTabs(itemLines[j]!)}`);
+		}
+		return truncateMiddleLines(
+			allLines,
+			maxCollapsedLines ?? maxCollapsed,
+			hiddenCount =>
+				`${theme.fg("dim", theme.tree.branch)} ${theme.fg("muted", formatMoreItems(hiddenCount, itemType))}`,
+		);
 	}
 
 	const candidateIndices: number[] = [];

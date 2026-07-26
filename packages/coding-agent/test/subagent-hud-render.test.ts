@@ -1,9 +1,10 @@
 /**
  * Contract: the anchored subagent HUD (rendered above the editor, next to the
- * Todos block) lists exactly the running *detached* subagents as
- * `Id: description` rows and yields no output once nothing qualifies, so the
- * block self-clears. Sync task spawns and eval `agent()` spawns are excluded:
- * their progress is already rendered inline (tool block / eval cell).
+ * Todos block) lists detached active subagents plus any recent subagent
+ * feedback, preferring the newest feedback text over the row description and
+ * self-clearing once feedback expires and nothing active remains. Sync task
+ * spawns and eval `agent()` spawns are excluded unless feedback temporarily
+ * surfaces them.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
@@ -16,6 +17,7 @@ import {
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SubagentFeedback } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -88,8 +90,8 @@ function makeProgressPayload(
 	};
 }
 
-function render(sessions: ObservableSession[], columns = 120): string {
-	return Bun.stripANSI(renderSubagentHudLines(sessions, columns).join("\n"));
+function render(sessions: ObservableSession[], columns = 120, feedback: readonly SubagentFeedback[] = []): string {
+	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, feedback).join("\n"));
 }
 
 describe("subagent HUD lines", () => {
@@ -121,6 +123,18 @@ describe("subagent HUD lines", () => {
 		expect(out).not.toContain("Main Session");
 	});
 
+	it("prefers the latest feedback over the active description without duplicating the row", () => {
+		const out = render([makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" })], 120, [
+			{ agentId: "AuthLoader", text: "Old feedback" },
+			{ agentId: "AuthLoader", text: "Latest feedback" },
+		]);
+
+		expect(out).toContain("AuthLoader: Latest feedback");
+		expect(out).not.toContain("Refactoring the auth flow");
+		expect(out).not.toContain("Old feedback");
+		expect(out.match(/AuthLoader:/g)?.length ?? 0).toBe(1);
+	});
+
 	it("falls back to the description and task carried by progress snapshots", () => {
 		const fromProgressDesc = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", description: "From progress" }) }),
@@ -146,6 +160,25 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("BackgroundSpawn: detached work");
 		expect(out).not.toContain("SyncSpawn");
 		expect(out).not.toContain("EvalSpawn");
+	});
+
+	it("temporarily surfaces feedback for finished, inline, and observer-unknown agents", () => {
+		const out = render(
+			[
+				makeSession({ id: "DoneWorker", status: "completed", description: "old work" }),
+				makeSession({ id: "InlineWorker", detached: false, description: "inline task work" }),
+			],
+			120,
+			[
+				{ agentId: "DoneWorker", text: "handoff posted" },
+				{ agentId: "InlineWorker", text: "inline follow-up" },
+				{ agentId: "UnknownWorker", text: "observer catching up" },
+			],
+		);
+
+		expect(out).toContain("DoneWorker: handoff posted");
+		expect(out).toContain("InlineWorker: inline follow-up");
+		expect(out).toContain("UnknownWorker: observer catching up");
 	});
 
 	it("threads the detached flag from lifecycle and progress payloads", () => {
@@ -302,5 +335,29 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).toContain("BurstAgent5: Burst job 5");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("overwrites prior feedback for one agent and clears the HUD after the 10s TTL", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+
+		mode.showSubagentFeedback({ agentId: "AuthLoader", text: "First reply", timestamp: 1 });
+		let hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(hud).toContain("AuthLoader: First reply");
+
+		vi.advanceTimersByTime(9_000);
+		mode.showSubagentFeedback({ agentId: "AuthLoader", text: "Latest reply", timestamp: 2 });
+		hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(hud).toContain("AuthLoader: Latest reply");
+		expect(hud).not.toContain("First reply");
+		expect(hud.match(/AuthLoader:/g)?.length ?? 0).toBe(1);
+
+		vi.advanceTimersByTime(9_999);
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("AuthLoader: Latest reply");
+
+		vi.advanceTimersByTime(1);
+		expect(mode.subagentContainer.render(120)).toEqual([]);
+		expect(requestRender).toHaveBeenCalled();
 	});
 });

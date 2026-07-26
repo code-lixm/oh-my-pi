@@ -372,17 +372,20 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered).toContain("corrected from");
 	});
 
-	it("highlights only the collapsed preview lines", () => {
-		const highlightSpy = vi.spyOn(themeModule, "highlightCode");
+	it("collapses read previews to first, omission, and last lines while expanded renders full content", () => {
+		const highlightSpy = vi
+			.spyOn(themeModule, "highlightCode")
+			.mockImplementation((code: string) => code.split("\n"));
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const examplePath = path.resolve("/tmp/example.ts");
+		const fullContent = "line 1\nline 2\nline 3\nline 4\nline 5";
 		component.updateArgs({ path: examplePath }, "read-2");
 		component.updateResult(
 			{
 				content: [
 					{
 						type: "text",
-						text: "line 1\nline 2\nline 3\nline 4\nline 5",
+						text: fullContent,
 					},
 				],
 			},
@@ -390,13 +393,27 @@ describe("ReadToolGroupComponent", () => {
 			"read-2",
 		);
 
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		const highlightedInput = highlightSpy.mock.calls[0]?.[0];
+		const collapsed = Bun.stripANSI(component.render(120).join("\n"));
 
-		expect(highlightedInput).toBe("line 1\nline 2\nline 3");
-		expect(rendered).toContain("line 1");
-		expect(rendered).not.toContain("line 4");
-		expect(rendered.toLowerCase()).toContain("ctrl+o");
+		expect(highlightSpy.mock.calls[0]?.[0]).toBe("line 1\n… 3 more lines\nline 5");
+		expect(collapsed).toContain("line 1");
+		expect(collapsed).toContain("… 3 more lines");
+		expect(collapsed).toContain("line 5");
+		expect(collapsed).not.toContain("line 2");
+		expect(collapsed).not.toContain("line 4");
+
+		component.setExpanded(true);
+
+		const expanded = Bun.stripANSI(component.render(120).join("\n"));
+
+		expect(highlightSpy.mock.calls[highlightSpy.mock.calls.length - 1]?.[0]).toBe(fullContent);
+		expect(expanded).toContain("line 1");
+		expect(expanded).toContain("line 2");
+		expect(expanded).toContain("line 3");
+		expect(expanded).toContain("line 4");
+		expect(expanded).toContain("line 5");
+		expect(expanded).not.toContain("… 3 more lines");
+		expect(expanded.toLowerCase()).not.toContain("ctrl+o");
 	});
 
 	it("does not render a duplicate summary row when inline previews are enabled", () => {

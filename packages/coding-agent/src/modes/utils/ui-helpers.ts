@@ -21,6 +21,7 @@ import {
 import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
+import { isHubMessageFeedbackArgs } from "../../modes/components/hub-activity-group";
 import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
@@ -51,7 +52,6 @@ import {
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
-	buildIrcMessageCard,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -185,9 +185,7 @@ export class UiHelpers {
 						message.customType === "irc:autoreply" ||
 						message.customType === "irc:relay"
 					) {
-						const card = buildIrcMessageCard(message, () => this.ctx.toolOutputExpanded);
-						this.ctx.chatContainer.addChild(card);
-						return [card];
+						break;
 					}
 					if (message.customType === "advisor") {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
@@ -306,6 +304,7 @@ export class UiHelpers {
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
+		const hiddenHubMessageToolCallIds = new Set<string>();
 		// The per-turn token-usage row (display.showTokenUsage) must land below the
 		// turn's tool blocks. Read tool blocks are only created when their toolResult
 		// message is processed (below), so appending the row in the assistant branch
@@ -417,6 +416,11 @@ export class UiHelpers {
 					}
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
 					if (options.preservedLiveToolCallIds?.has(content.id)) {
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
+					if (content.name === "hub" && isHubMessageFeedbackArgs(content.arguments)) {
+						hiddenHubMessageToolCallIds.add(content.id);
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
@@ -536,6 +540,7 @@ export class UiHelpers {
 				pendingUsageTimestamp = message.timestamp;
 			} else if (message.role === "toolResult") {
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
+				if (hiddenHubMessageToolCallIds.delete(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
 				const isReadGroupResult =
 					message.toolName === "read" &&

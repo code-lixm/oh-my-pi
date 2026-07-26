@@ -531,6 +531,10 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
+			case "display.toolDetailMaxLines":
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
 			case "display.collapseCompacted":
 				// Rebuild swaps between the collapsed tail and the full inline
 				// history; full reset retires blocks already committed to native

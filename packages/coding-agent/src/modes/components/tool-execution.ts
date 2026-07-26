@@ -19,11 +19,15 @@ import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "..
 import { getSettingsUiLocaleEpoch, tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
-import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
-import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
-import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
+import {
+	formatStatusIcon,
+	replaceTabs,
+	resolveImageOptions,
+	toolDetailMaxLines,
+	truncateMiddleLines,
+} from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import {
@@ -146,6 +150,42 @@ function getArgsWithStreamedTextInput(args: unknown): unknown {
 
 type ToolRendererStage = "call" | "result";
 
+const CENTRALLY_LIMITED_TOOL_RENDERERS: Record<string, true> = {
+	apply_patch: true,
+	ask: true,
+	ast_edit: true,
+	ast_grep: true,
+	bash: true,
+	browser: true,
+	codegraph: true,
+	computer: true,
+	debug: true,
+	edit: true,
+	eval: true,
+	github: true,
+	glob: true,
+	goal: true,
+	grep: true,
+	hub: true,
+	inspect_image: true,
+	lsp: true,
+	read: true,
+	recall: true,
+	reflect: true,
+	reject: true,
+	resolve: true,
+	retain: true,
+	task: true,
+	todo: true,
+	vibe_kill: true,
+	vibe_list: true,
+	vibe_send: true,
+	vibe_spawn: true,
+	vibe_wait: true,
+	web_search: true,
+	write: true,
+};
+
 class SafeToolRendererComponent implements Component {
 	#toolName: string;
 	#stage: ToolRendererStage;
@@ -159,6 +199,7 @@ class SafeToolRendererComponent implements Component {
 		stage: ToolRendererStage,
 		component: Component,
 		fallback: () => Component | undefined,
+		private readonly isExpanded: () => boolean,
 	) {
 		this.#toolName = toolName;
 		this.#stage = stage;
@@ -172,7 +213,16 @@ class SafeToolRendererComponent implements Component {
 
 	render(width: number): readonly string[] {
 		try {
-			return this.#component.render(width);
+			const rendered = this.#component.render(width);
+			if (
+				this.#stage !== "result" ||
+				this.isExpanded() ||
+				isFramedBlockComponent(this.#component) ||
+				!(this.#toolName in CENTRALLY_LIMITED_TOOL_RENDERERS)
+			) {
+				return rendered;
+			}
+			return [rendered[0]!, ...truncateMiddleLines(rendered.slice(1), toolDetailMaxLines())];
 		} catch (err) {
 			if (!this.#warned) {
 				this.#warned = true;
@@ -181,7 +231,6 @@ class SafeToolRendererComponent implements Component {
 			return this.#fallback()?.render(width) ?? [];
 		}
 	}
-
 	handleInput(data: string): void {
 		const handleInput = this.#component.handleInput;
 		if (handleInput === undefined) return;
@@ -502,8 +551,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						() => this.#contentBox.children.some(isFramedBlockComponent),
 						accentColor,
 						bareSurface,
-						() =>
-							toolRenderers[toolName]?.accentEdgePadding?.(this.#args, this.#result) === true,
+						() => toolRenderers[toolName]?.accentEdgePadding?.(this.#args, this.#result) === true,
 					)
 				: this.#contentBox;
 			this.addChild(surface);
@@ -1095,6 +1143,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 									"call",
 									callComponent,
 									() => new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0),
+									() => this.#expanded,
 								),
 							);
 						}
@@ -1136,11 +1185,17 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					);
 					if (resultComponent) {
 						this.#contentBox.addChild(
-							new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => {
-								const output = this.#getTextOutput();
-								if (!output) return undefined;
-								return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
-							}),
+							new SafeToolRendererComponent(
+								this.#toolName,
+								"result",
+								resultComponent,
+								() => {
+									const output = this.#getTextOutput();
+									if (!output) return undefined;
+									return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
+								},
+								() => this.#expanded,
+							),
 						);
 					}
 				} catch (err) {
@@ -1202,7 +1257,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						);
 						if (resultComponent) {
 							fileBox.addChild(
-								new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => undefined),
+								new SafeToolRendererComponent(
+									this.#toolName,
+									"result",
+									resultComponent,
+									() => undefined,
+									() => this.#expanded,
+								),
 							);
 						}
 					} catch (err) {
@@ -1258,6 +1319,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 									"call",
 									callComponent,
 									() => new Text(theme.fg("toolTitle", theme.bold(this.#toolLabel)), 0, 0),
+									() => this.#expanded,
 								),
 							);
 						}
@@ -1284,11 +1346,17 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						);
 						if (resultComponent) {
 							this.#contentBox.addChild(
-								new SafeToolRendererComponent(this.#toolName, "result", resultComponent, () => {
-									const output = this.#getTextOutput();
-									if (!output) return undefined;
-									return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
-								}),
+								new SafeToolRendererComponent(
+									this.#toolName,
+									"result",
+									resultComponent,
+									() => {
+										const output = this.#getTextOutput();
+										if (!output) return undefined;
+										return new Text(theme.fg("toolOutput", replaceTabs(output)), 0, 0);
+									},
+									() => this.#expanded,
+								),
 							);
 						}
 					} catch (err) {
@@ -1379,6 +1447,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	 */
 	#buildRenderContext(): Record<string, unknown> {
 		const context: Record<string, unknown> = {};
+		context.detailMaxLines = toolDetailMaxLines();
 		const normalizeTimeoutSeconds = (value: unknown, maxSeconds: number): number | undefined => {
 			if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
 			return Math.max(1, Math.min(maxSeconds, value));
@@ -1393,13 +1462,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				context.output = output;
 			}
 			context.expanded = this.#expanded;
-			context.previewLines = BASH_DEFAULT_PREVIEW_LINES;
+			context.previewLines = Math.max(1, toolDetailMaxLines() - 1);
 			context.timeout = normalizeTimeoutSeconds(this.#args?.timeout, 3600);
 		} else if (this.#toolName === "eval" && this.#result) {
 			const output = this.#getTextOutput().trimEnd();
 			context.output = output;
 			context.expanded = this.#expanded;
-			context.previewLines = EVAL_DEFAULT_PREVIEW_LINES;
+			context.previewLines = Math.max(1, toolDetailMaxLines() - 1);
 		} else if (this.#toolName === "task") {
 			// Once a result snapshot exists the task renderer's `renderResult`
 			// draws every dispatched agent as a progress/result line, so tell

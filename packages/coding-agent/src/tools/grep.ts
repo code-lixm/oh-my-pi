@@ -65,7 +65,7 @@ import {
 	formatCodeFrameLine,
 	formatEmptyMessage,
 	formatErrorMessage,
-	PREVIEW_LIMITS,
+	toolDetailMaxLines,
 } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -1577,8 +1577,6 @@ interface GrepRenderArgs {
 	skip?: number;
 }
 
-const COLLAPSED_TEXT_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
-
 interface GrepFileLocation {
 	path: string;
 	lineNumbers: readonly number[];
@@ -1760,16 +1758,14 @@ export const grepToolRenderer = {
 						{
 							items: lines,
 							expanded: options.expanded,
-							maxCollapsed: COLLAPSED_TEXT_LIMIT,
-							maxCollapsedLines: COLLAPSED_TEXT_LIMIT,
+							maxCollapsedLines: toolDetailMaxLines(),
+							truncateFrom: "middle",
 							itemType: "item",
 							renderItem: line => uiTheme.fg("toolOutput", line),
 						},
 						uiTheme,
 					);
-					return [header, ...(listLines.length > 0 ? ["", ...listLines] : [])].map(l =>
-						truncateToWidth(l, width, Ellipsis.Omit),
-					);
+					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
 				},
 			);
 		}
@@ -1808,7 +1804,8 @@ export const grepToolRenderer = {
 						{
 							files: searchedPaths.map(path => ({ path, meta: emptyLabel })),
 							expanded: options.expanded,
-							maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
+							maxCollapsedLines: toolDetailMaxLines(),
+							truncateFrom: "middle",
 						},
 						uiTheme,
 					);
@@ -1848,7 +1845,8 @@ export const grepToolRenderer = {
 					{
 						files: grepFileLocations(details!).map(location => grepFileEntry(location, details!)),
 						expanded: options.expanded,
-						maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
+						maxCollapsedLines: toolDetailMaxLines(),
+						truncateFrom: "middle",
 						hyperlinkFn: fileHyperlink,
 					},
 					uiTheme,

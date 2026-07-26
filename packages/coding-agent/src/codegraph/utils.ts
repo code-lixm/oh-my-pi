@@ -40,16 +40,27 @@ export function clamp(value: number, min: number, max: number): number {
  * may release the lock. Stale PIDs (process gone) are reaped on
  * acquisition.
  */
+const inProcessLockTails = new Map<string, Promise<void>>();
+
 export class CodeGraphFileLock {
 	readonly #lockPath: string;
 	#acquired = false;
+	#inProcessTail?: Promise<void>;
+	#releaseInProcess?: () => void;
 
 	constructor(lockPath: string) {
 		this.#lockPath = lockPath;
 	}
 
-	acquire(): void {
+	async acquire(): Promise<void> {
 		if (this.#acquired) return;
+		const previous = inProcessLockTails.get(this.#lockPath);
+		const gate = Promise.withResolvers<void>();
+		this.#inProcessTail = gate.promise;
+		this.#releaseInProcess = gate.resolve;
+		inProcessLockTails.set(this.#lockPath, gate.promise);
+		if (previous) await previous;
+
 		try {
 			const existing = readIfPresent(this.#lockPath);
 			if (existing !== null) {
@@ -59,7 +70,10 @@ export class CodeGraphFileLock {
 				}
 			}
 		} catch (err) {
-			if (err instanceof FileLockUnavailableError) throw err;
+			if (err instanceof FileLockUnavailableError) {
+				this.#releaseProcessGate();
+				throw err;
+			}
 			// Treat unreadable lock files as absent — best-effort.
 		}
 		try {
@@ -69,22 +83,34 @@ export class CodeGraphFileLock {
 			fs.renameSync(tmp, this.#lockPath);
 			this.#acquired = true;
 		} catch (err) {
+			this.#releaseProcessGate();
 			throw new FileLockUnavailableError(`failed to acquire lock ${this.#lockPath}: ${(err as Error).message}`);
 		}
 	}
 
 	release(): void {
-		if (!this.#acquired) return;
-		try {
-			fs.unlinkSync(this.#lockPath);
-		} catch {
-			// Best-effort; lock files are reaped on the next acquire.
+		if (this.#acquired) {
+			try {
+				fs.unlinkSync(this.#lockPath);
+			} catch {
+				// Best-effort; lock files are reaped on the next acquire.
+			}
+			this.#acquired = false;
 		}
-		this.#acquired = false;
+		this.#releaseProcessGate();
 	}
 
 	get isHeld(): boolean {
 		return this.#acquired;
+	}
+
+	#releaseProcessGate(): void {
+		this.#releaseInProcess?.();
+		this.#releaseInProcess = undefined;
+		if (this.#inProcessTail && inProcessLockTails.get(this.#lockPath) === this.#inProcessTail) {
+			inProcessLockTails.delete(this.#lockPath);
+		}
+		this.#inProcessTail = undefined;
 	}
 }
 

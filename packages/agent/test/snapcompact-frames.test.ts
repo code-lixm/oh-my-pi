@@ -23,6 +23,35 @@ describe("compaction summary message with snapcompact frames", () => {
 		expect(estimateTokens(withFrames) - estimateTokens(bare)).toBe(2 * snapcompact.FRAME_TOKEN_ESTIMATE);
 	});
 
+	it("defaultConvertToLlm forwards the raw markdown summary without any wrapper text", () => {
+		const summary = `## Objective
+	- Preserve the generated summary exactly.
+
+## Important Details
+	- Wrapper text must stay out of the provider request.
+
+## Work State
+### Completed
+	- Added the focused conversion assertion.
+
+### Active
+	- (none)
+
+### Blocked
+	- (none)
+
+## Next Move
+	1. Run the compaction message tests.
+	2. Report the results.
+
+## Relevant Files
+	- packages/agent/test/snapcompact-frames.test.ts: pins compaction-summary conversion`;
+		const message = createCompactionSummaryMessage(summary, 1000, new Date().toISOString());
+		const [converted] = defaultConvertToLlm([message]);
+		expect(converted).toMatchObject({ role: "user" });
+		expect(converted.content).toEqual([{ type: "text", text: summary }]);
+	});
+
 	it("defaultConvertToLlm appends frames as image blocks after the summary text", () => {
 		const message = createCompactionSummaryMessage(
 			"the snapcompact archive",

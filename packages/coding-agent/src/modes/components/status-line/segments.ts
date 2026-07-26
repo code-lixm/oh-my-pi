@@ -766,7 +766,17 @@ const usageSegment: StatusLineSegment = {
 				? selected.flatMap(item => {
 						const batteryWidth = Math.max(3, Math.min(10, Math.floor(options.batteryWidth ?? 5)));
 						const battery = formatUsageBattery(item, batteryWidth, options);
-						if (!battery) return [];
+						if (!battery) {
+							const value = formatUsageValue(item);
+							if (value === "?") return [];
+							const coloredValue = theme.fg(pickUsageColor(item), value);
+							if (options.showLabel === false) return [coloredValue];
+							const label = truncateToWidth(
+								sanitizeStatusText(item.modelId ?? item.provider),
+								TRUNCATE_LENGTHS.SHORT,
+							);
+							return [`${label} ${coloredValue}`];
+						}
 						if (options.showLabel === false) return [battery];
 						const activeModelId =
 							activeModel?.provider.toLowerCase() === item.provider ? activeModel.id : undefined;

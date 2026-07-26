@@ -30,7 +30,7 @@ import { selectPrompt } from "../../prompts/prompt-locale";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import idleRecapPromptZh from "../../prompts/system/recap-user.zh-CN.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { type CustomMessage, isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
@@ -45,7 +45,6 @@ import {
 	type AssistantErrorAggregation,
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
-	buildIrcActivityEvent,
 	splitAssistantMessageToolTimeline,
 	updateAssistantErrorAggregation,
 } from "../utils/transcript-render-helpers";
@@ -55,8 +54,6 @@ import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-arg
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
-const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
-const MAX_LIVE_IRC_MESSAGES = 4;
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
@@ -116,8 +113,6 @@ export class EventController {
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
 	// activity (new turn, compaction, editor draft) supersedes the idle recap.
 	#idleRecapAbort?: AbortController;
-	#ircExpiryTimers = new Map<string, NodeJS.Timeout>();
-	#liveIrcEvents = new Map<string, { group: HubActivityGroupComponent; eventId: string }>();
 	// Most recent `hub` tool block whose result still had every watched job
 	// running. Kept un-finalized (live) so the next `hub` call displaces it —
 	// one persistent poll instead of a stack of "waiting on N jobs" frames —
@@ -219,9 +214,6 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
-		for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcEvents.clear();
 		this.#hubActivityGroup?.seal();
 		this.#hubActivityGroup = undefined;
 	}
@@ -241,38 +233,7 @@ export class EventController {
 	}
 
 	inheritHubActivityGroup(component: HubActivityGroupComponent | null | undefined): void {
-		const inherited = component?.canAppend ? component : undefined;
-		this.#hubActivityGroup = inherited;
-		if (!inherited) {
-			for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
-			this.#ircExpiryTimers.clear();
-			this.#liveIrcEvents.clear();
-			return;
-		}
-
-		const refs = new Map(inherited.getIrcEventRefs().map(ref => [ref.sourceId, ref]));
-		for (const [signature, tracked] of this.#liveIrcEvents) {
-			const ref = refs.get(signature);
-			if (ref) {
-				inherited.markIrcEventLive(ref.eventId);
-				tracked.group = inherited;
-				tracked.eventId = ref.eventId;
-				refs.delete(signature);
-				continue;
-			}
-			clearTimeout(this.#ircExpiryTimers.get(signature));
-			this.#ircExpiryTimers.delete(signature);
-			this.#liveIrcEvents.delete(signature);
-		}
-
-		for (const [signature, ref] of refs) {
-			if (ref.timestamp === undefined) continue;
-			const remainingMs = IRC_MESSAGE_VISIBLE_TTL_MS - Math.max(0, Date.now() - ref.timestamp);
-			if (remainingMs <= 0) continue;
-			inherited.markIrcEventLive(ref.eventId);
-			this.#scheduleIrcExpiry(signature, inherited, ref.eventId, remainingMs);
-			this.#enforceIrcEventCap(signature);
-		}
+		this.#hubActivityGroup = component?.canAppend ? component : undefined;
 	}
 
 	#resetReadGroup(): void {
@@ -384,9 +345,6 @@ export class EventController {
 		this.#resetReadGroup();
 		this.#hubActivityGroup?.seal();
 		this.#hubActivityGroup = undefined;
-		for (const timer of this.#ircExpiryTimers.values()) clearTimeout(timer);
-		this.#ircExpiryTimers.clear();
-		this.#liveIrcEvents.clear();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
 		this.#lastIntent = undefined;
@@ -508,17 +466,11 @@ export class EventController {
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
 			if (
-				event.message.display &&
-				(event.message.customType === "irc:incoming" ||
-					event.message.customType === "irc:autoreply" ||
-					event.message.customType === "irc:relay")
+				event.message.customType === "irc:incoming" ||
+				event.message.customType === "irc:autoreply" ||
+				event.message.customType === "irc:relay"
 			) {
-				const group = this.#getHubActivityGroup();
-				const eventId = group.appendIrcEvent(buildIrcActivityEvent(event.message), false);
-				if (eventId) {
-					this.#scheduleIrcExpiry(signature, group, eventId);
-					this.#enforceIrcEventCap(signature);
-				}
+				this.#surfaceIrcMessage(event.message as CustomMessage);
 			} else {
 				if (event.message.display) this.#finalizeHubActivityGroup();
 				this.ctx.addMessageToChat(event.message);
@@ -590,10 +542,10 @@ export class EventController {
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
-			this.#streamingReveal.begin(
-				this.ctx.streamingComponent,
-				splitAssistantMessageToolTimeline(this.ctx.streamingMessage).beforeTools,
-			);
+			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			this.#streamingReveal.begin(this.ctx.streamingComponent, timeline.beforeTools, {
+				snapToEnd: timeline.hasToolCalls,
+			});
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -602,55 +554,35 @@ export class EventController {
 		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 		if (this.#renderedCustomMessages.has(signature)) return;
 		this.#renderedCustomMessages.add(signature);
-		this.#resetReadGroup();
-		const group = this.#getHubActivityGroup();
-		const eventId = group.appendIrcEvent(buildIrcActivityEvent(event.message), false);
-		if (eventId) {
-			this.#scheduleIrcExpiry(signature, group, eventId);
-			this.#enforceIrcEventCap(signature);
-		}
-		this.ctx.ui.requestRender();
-	}
-	#scheduleIrcExpiry(
-		signature: string,
-		group: HubActivityGroupComponent,
-		eventId: string,
-		delayMs = IRC_MESSAGE_VISIBLE_TTL_MS,
-	): void {
-		if (this.#ircExpiryTimers.has(signature)) return;
-		const timer = setTimeout(() => {
-			this.#ircExpiryTimers.delete(signature);
-			this.#retireIrcEvent(signature);
-		}, delayMs);
-		timer.unref?.();
-		this.#ircExpiryTimers.set(signature, timer);
-		this.#liveIrcEvents.set(signature, { group, eventId });
+		this.#surfaceIrcMessage(event.message);
 	}
 
-	#retireIrcEvent(signature: string): void {
-		const tracked = this.#liveIrcEvents.get(signature);
-		this.#liveIrcEvents.delete(signature);
-		if (!tracked) return;
-		if (!this.ctx.chatContainer.isBlockUncommitted(tracked.group)) {
-			tracked.group.settleIrcEvent(tracked.eventId);
-			this.ctx.ui.requestRender();
-			return;
-		}
-		if (!tracked.group.removeIrcEvent(tracked.eventId)) return;
-		if (tracked.group.isEmpty) {
-			this.ctx.chatContainer.removeChild(tracked.group);
-			if (this.#hubActivityGroup === tracked.group) this.#hubActivityGroup = undefined;
-		}
-		this.ctx.ui.requestRender();
+	#surfaceIrcMessage(message: CustomMessage): void {
+		const details = message.details as
+			| { from?: string; to?: string; message?: string; body?: string; ts?: number }
+			| undefined;
+		if (message.customType === "irc:autoreply") return;
+		const agentId = details?.from?.trim();
+		const body = (message.customType === "irc:incoming" ? details?.message : details?.body)?.trim();
+		if (!agentId || !body) return;
+		const text = message.customType === "irc:relay" && details?.to ? `→ ${details.to}: ${body}` : body;
+		this.ctx.showSubagentFeedback?.({ agentId, text, timestamp: message.timestamp ?? details?.ts });
 	}
 
-	#enforceIrcEventCap(latestSignature: string): void {
-		while (this.#liveIrcEvents.size > MAX_LIVE_IRC_MESSAGES) {
-			const oldest = this.#liveIrcEvents.keys().next().value;
-			if (oldest === undefined || oldest === latestSignature) return;
-			clearTimeout(this.#ircExpiryTimers.get(oldest));
-			this.#ircExpiryTimers.delete(oldest);
-			this.#retireIrcEvent(oldest);
+	#surfaceHubResultFeedback(details: unknown): void {
+		const result = details as
+			| {
+					waited?: { from: string; body: string; ts?: number } | null;
+					inbox?: Array<{ from: string; body: string; ts?: number }>;
+			  }
+			| undefined;
+		const messages = [...(result?.inbox ?? []), ...(result?.waited ? [result.waited] : [])];
+		const seen = new Set<string>();
+		for (const message of messages) {
+			const key = `${message.from}\0${message.ts ?? ""}\0${message.body}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			this.ctx.showSubagentFeedback?.({ agentId: message.from, text: message.body, timestamp: message.ts });
 		}
 	}
 
@@ -787,7 +719,7 @@ export class EventController {
 			}
 			this.ctx.streamingMessage = event.message;
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
-			this.#streamingReveal.setTarget(timeline.beforeTools);
+			this.#streamingReveal.setTarget(timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
 				content =>
@@ -1224,6 +1156,7 @@ export class EventController {
 		) {
 			setTerminalTitleState("working");
 		}
+		if (event.toolName === "hub") this.#surfaceHubResultFeedback(event.result.details);
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
 				const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -1258,7 +1191,7 @@ export class EventController {
 					event.toolName === "hub" &&
 					component instanceof HubActivityGroupComponent &&
 					this.ctx.chatContainer.isBlockUncommitted(component) &&
-					component.discardEmptyMessageWait(renderResult, event.toolCallId)
+					component.discardHiddenMessageActivity(renderResult, event.toolCallId)
 				) {
 					this.ctx.pendingTools.delete(event.toolCallId);
 					this.#backgroundTaskCallIds.delete(event.toolCallId);
@@ -1447,7 +1380,7 @@ export class EventController {
 	 * label carries no dangling whitespace.
 	 */
 	#maintenanceEscHint(): string {
-		return this.ctx.focusedAgentId ? "" : tSettingsUi(" (esc to cancel)");
+		return this.ctx.focusedAgentId ? "" : tSettingsUi(" (esc twice to cancel)");
 	}
 
 	async #handleAutoCompactionStart(

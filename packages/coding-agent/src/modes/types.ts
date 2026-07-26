@@ -112,6 +112,12 @@ export interface RenderSessionContextOptions {
 	preservedLiveToolCallIds?: ReadonlySet<string>;
 }
 
+export interface SubagentFeedback {
+	agentId: string;
+	text: string;
+	timestamp?: number;
+}
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -293,6 +299,7 @@ export interface InteractiveModeContext {
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
+	showSubagentFeedback?(feedback: SubagentFeedback): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;

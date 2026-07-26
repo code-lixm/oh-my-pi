@@ -279,6 +279,28 @@ function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
 	// so state mutations are explicit.
 	return ctx.session as MutableSessionState;
 }
+const ESCAPE_CANCEL_PROMPT = "Press Esc again within 2s to cancel the active task.";
+
+function installClock(start = 1_000) {
+	let now = start;
+	vi.spyOn(Date, "now").mockImplementation(() => now);
+	return {
+		advance(ms: number) {
+			now += ms;
+		},
+	};
+}
+
+function expectEscapeCancelPrompt(showStatus: Spy, times: number): void {
+	expect(showStatus).toHaveBeenCalledTimes(times);
+	expect(showStatus).toHaveBeenLastCalledWith(ESCAPE_CANCEL_PROMPT);
+}
+
+function emitSessionEvent(sessionListeners: Array<(event: { type: string }) => void>, type: string): void {
+	for (const listener of sessionListeners) {
+		listener({ type });
+	}
+}
 beforeEach(async () => {
 	await Settings.init({ inMemory: true });
 });
@@ -289,7 +311,8 @@ afterEach(() => {
 });
 
 describe("InputController escape behavior", () => {
-	it("prefers canceling a pending optimistic submission before aborting the session", async () => {
+	it("requires a second Esc to cancel a pending optimistic submission before aborting the session", async () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "hello" });
 		spies.startPendingSubmission.mockReturnValue(submission);
@@ -310,9 +333,17 @@ describe("InputController escape behavior", () => {
 		expect(spies.onInputCallback).toHaveBeenCalledWith(submission);
 
 		editor.onEscape?.();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
 	it("empty-submit with a queued message aborts the active stream and refreshes pending display", async () => {
@@ -351,7 +382,8 @@ describe("InputController escape behavior", () => {
 		expect(editor.getText()).toBe("");
 	});
 
-	it("falls back to aborting the active session when no pending optimistic submission exists", () => {
+	it("requires a second Esc to fall back to aborting the active session when no pending optimistic submission exists", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
 		const controller = new InputController(ctx);
@@ -359,28 +391,49 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
+		expect(spies.clearQueue).toHaveBeenCalledWith({ forInterrupt: true });
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		// The Esc interrupt threads a user-facing reason so the aborted turn and its
 		// synthetic tool results read as a deliberate interrupt, not "Request was aborted".
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("aborts active handoff generation before default Esc handling", () => {
+	it("requires a second Esc to abort active handoff generation before default Esc handling", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
-		(ctx.viewSession as { isGeneratingHandoff: boolean }).isGeneratingHandoff = true;
+		abortViewSession(ctx).isGeneratingHandoff = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abortHandoff).not.toHaveBeenCalled();
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(spies.abortHandoff).toHaveBeenCalledTimes(1);
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("prefers aborting bash before aborting an overlapping stream", () => {
+	it("requires a second Esc to abort bash before aborting an overlapping stream", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean; isBashRunning: boolean }).isStreaming = true;
 		(ctx.session as { isStreaming: boolean; isBashRunning: boolean }).isBashRunning = true;
@@ -389,11 +442,20 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(spies.abortBash).toHaveBeenCalledTimes(1);
 		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("prefers aborting python before aborting an overlapping stream", () => {
+	it("requires a second Esc to abort python before aborting an overlapping stream", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean; isEvalRunning: boolean }).isStreaming = true;
 		(ctx.session as { isStreaming: boolean; isEvalRunning: boolean }).isEvalRunning = true;
@@ -402,8 +464,40 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abortEval).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(spies.abortEval).toHaveBeenCalledTimes(1);
 		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+	it("requires a second Esc to pause loop mode and abort its active stream", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		const pauseLoop = vi.fn();
+		ctx.loopModeEnabled = true;
+		ctx.pauseLoop = pauseLoop;
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(pauseLoop).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(pauseLoop).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
 	it("dismisses an active /btw panel before aborting the main stream", () => {
@@ -477,7 +571,8 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("aborts an active streaming turn on the first Esc without asking for confirmation", () => {
+	it("requires a second Esc to abort an active streaming turn", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		mutableSessionState(ctx).isStreaming = true;
 		const controller = new InputController(ctx);
@@ -485,29 +580,44 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
-		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("aborts the submitted turn on the first Esc once the main session starts streaming", async () => {
+	it("carries the same main-task confirmation from optimistic loading into streaming", async () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "fix issue #4921" });
 		spies.startPendingSubmission.mockReturnValue(submission);
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		controller.setupEditorSubmitHandler();
 		await editor.onSubmit?.("fix issue #4921");
+
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
 		mutableSessionState(ctx).isStreaming = true;
 		ctx.loadingAnimation = undefined;
-
+		clock.advance(500);
 		editor.onEscape?.();
 
 		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
-		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
 	it("returns focused subagent view to main on Esc instead of aborting", () => {
@@ -542,28 +652,144 @@ describe("InputController escape behavior", () => {
 		expect(ctx.viewSession.abortRetry as unknown as Spy).not.toHaveBeenCalled();
 	});
 
-	it("aborts main-view maintenance on Esc normally", () => {
+	it("requires a second Esc to abort main-view maintenance", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		// Not focused:
 		expect(ctx.focusedAgentId).toBeUndefined();
-		(ctx.viewSession as { isCompacting: boolean }).isCompacting = true;
-		(ctx.viewSession as { isGeneratingHandoff: boolean }).isGeneratingHandoff = true;
-		(ctx.viewSession as { isRetrying: boolean }).isRetrying = true;
-		(ctx.viewSession as unknown as { abortCompaction: Spy }).abortCompaction = vi.fn();
-		(ctx.viewSession as unknown as { abortHandoff: Spy }).abortHandoff = spies.abortHandoff;
-		(ctx.viewSession as unknown as { abortRetry: Spy }).abortRetry = vi.fn();
+		const viewSession = abortViewSession(ctx);
+		viewSession.isCompacting = true;
+		viewSession.isGeneratingHandoff = true;
+		viewSession.isRetrying = true;
+		viewSession.abortCompaction = vi.fn();
+		viewSession.abortHandoff = spies.abortHandoff;
+		viewSession.abortRetry = vi.fn();
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 		expect(ctx.unfocusSession).not.toHaveBeenCalled();
-		expect(ctx.viewSession.abortCompaction as unknown as Spy).toHaveBeenCalledTimes(1);
+		expect(viewSession.abortCompaction).not.toHaveBeenCalled();
+		expect(spies.abortHandoff).not.toHaveBeenCalled();
+		expect(viewSession.abortRetry).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(ctx.unfocusSession).not.toHaveBeenCalled();
+		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);
 		expect(spies.abortHandoff).toHaveBeenCalledTimes(1);
-		expect(ctx.viewSession.abortRetry as unknown as Spy).toHaveBeenCalledTimes(1);
+		expect(viewSession.abortRetry).toHaveBeenCalledTimes(1);
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+	it("re-prompts instead of canceling when the second Esc arrives after the 2s confirmation window", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(2_001);
+		editor.onEscape?.();
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 2);
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expectEscapeCancelPrompt(spies.showStatus, 2);
 	});
 
-	it("logs abort failures while treating maintenance Esc as handled", () => {
+	it("clears an armed main-task confirmation on agent_end so the next streaming turn needs its own first Esc", () => {
+		const clock = installClock();
+		const { ctx, editor, spies, sessionListeners } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		mutableSessionState(ctx).isStreaming = false;
+		emitSessionEvent(sessionListeners, "agent_end");
+		clock.advance(100);
+		mutableSessionState(ctx).isStreaming = true;
+		editor.onEscape?.();
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 2);
+	});
+
+	it("does not let a settled active-task confirmation jump straight into /tree on the next Esc", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		mutableSessionState(ctx).isStreaming = false;
+		clock.advance(100);
+		editor.onEscape?.();
+
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(spies.resetDisplay).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(100);
+		editor.onEscape?.();
+
+		expect(ctx.showTreeSelector).toHaveBeenCalledTimes(1);
+		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not let different cancellation targets share confirmation", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		(ctx.session as { isBashRunning: boolean }).isBashRunning = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abortEval).not.toHaveBeenCalled();
+
+		(ctx.session as { isBashRunning: boolean }).isBashRunning = false;
+		(ctx.session as { isEvalRunning: boolean }).isEvalRunning = true;
+		clock.advance(100);
+		editor.onEscape?.();
+
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abortEval).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 2);
+
+		clock.advance(100);
+		editor.onEscape?.();
+
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abortEval).toHaveBeenCalledTimes(1);
+		expectEscapeCancelPrompt(spies.showStatus, 2);
+	});
+
+	it("logs abort failures while treating maintenance Esc as handled after confirmation", () => {
+		const clock = installClock();
 		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
 		const { ctx, editor, spies } = createContext();
 		const viewSession = abortViewSession(ctx);
@@ -582,6 +808,15 @@ describe("InputController escape behavior", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(viewSession.abortCompaction).not.toHaveBeenCalled();
+		expect(viewSession.abortHandoff).not.toHaveBeenCalled();
+		expect(viewSession.abortRetry).not.toHaveBeenCalled();
+		expect(debugSpy).not.toHaveBeenCalled();
+
+		clock.advance(500);
 		editor.onEscape?.();
 
 		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);

@@ -1,45 +1,34 @@
-You MUST incorporate the new messages above into the existing handoff summary in <previous-summary> tags, used by another LLM to resume the task.
-RULES:
-- MUST preserve all information from the previous summary
-- MUST add new progress, decisions, and context from new messages
-- MUST update Progress: move items from "In Progress" to "Done" when completed
-- MUST update "Next Steps" based on what was accomplished
-- MUST preserve exact file paths, function names, and error messages
-- You MAY remove anything no longer relevant
+Update the anchored summary in `<previous-summary>` using the conversation history above.
+Preserve still-true details, remove stale details, and merge in the new facts.
 
-IMPORTANT: If the new messages end with an unanswered question or request to the user, you MUST add it to Critical Context (replacing any previous pending question if answered).
+Output exactly the Markdown structure shown inside `<template>` and keep the section order unchanged. Do not include the `<template>` tags in your response.
+<template>
+## Objective
+- [one or two brief sentences describing what the user is trying to accomplish]
 
-You MUST use this format (omit sections if not applicable):
+## Important Details
+- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or `(none)`]
 
-## Goal
-[Preserve existing goals; add new ones if task expanded]
+## Work State
+### Completed
+- [finished work, verified facts, or changes made; otherwise `(none)`]
 
-## Constraints & Preferences
-- [Preserve existing; add new ones discovered]
-
-## Progress
-
-### Done
-- [x] [Include previously done and newly completed items]
-
-### In Progress
-- [ ] [Current work—update based on progress]
+### Active
+- [current work, partial changes, or investigation state; otherwise `(none)`]
 
 ### Blocked
-- [Current blockers—remove if resolved]
+- [blockers, failing commands, or unknowns; otherwise `(none)`]
 
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+## Next Move
+1. [immediate concrete action, or `(none)`]
+2. [next action if known, or `(none)`]
 
-## Next Steps
-1. [Update based on current state]
+## Relevant Files
+- [file or directory path: why it matters, or `(none)`]
+</template>
 
-## Critical Context
-- [Preserve important context; add new if needed]
-
-## Additional Notes
-[Other important info not fitting above]
-
-You MUST output only the structured summary; you NEVER include extra text.
-
-Sections MUST be kept concise. You MUST preserve relevant tool outputs/command results. You MUST include repository state changes (branch, uncommitted changes) if mentioned.
+Rules:
+- Keep every section, even when empty.
+- Use terse bullets, not prose paragraphs.
+- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Do not mention the summary process or that context was compacted.

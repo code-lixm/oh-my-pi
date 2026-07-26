@@ -3031,18 +3031,17 @@ export class TUI extends Container {
 			return;
 		}
 
-		// A history-replacing full paint must receive the complete component frame.
-		// Give virtualized roots one compose to rehydrate rows they dropped after
-		// commit. Geometry-driven rebuilds only need that replay on terminals where
-		// resize actually rewrites scrollback; multiplexer / in-place resize paths
-		// keep their existing history and repaint only the visible window.
-		const replayFullHistory =
-			this.#hasEverRendered &&
+		// A history-replacing full paint must receive the complete component frame,
+		// including inside a multiplexer: an explicit clear/replay intentionally
+		// replaces pane history, so virtualized roots must rehydrate before ED3.
+		// Geometry-only rebuilds retain the mux-safe in-place behavior.
+		const geometryNeedsHistoryReplay =
 			!this.#resizeRepaintsInPlace() &&
-			(this.#clearScrollbackOnNextRender ||
-				this.#resizeEventPending ||
+			(this.#resizeEventPending ||
 				(this.#previousWidth > 0 && this.#previousWidth !== width) ||
 				(this.#previousHeight > 0 && this.#previousHeight !== height));
+		const replayFullHistory =
+			this.#hasEverRendered && (this.#clearScrollbackOnNextRender || geometryNeedsHistoryReplay);
 		if (replayFullHistory) {
 			for (const child of this.children) prepareNativeScrollbackReplay(child);
 		}
@@ -3297,7 +3296,8 @@ export class TUI extends Container {
 					clearScrollback:
 						divergenceRebuild ||
 						deferredAltExit.length > 0 ||
-						(!isMultiplexerSession() && (replaceRequested || geometryRebuild)),
+						replaceRequested ||
+						(!isMultiplexerSession() && geometryRebuild),
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);

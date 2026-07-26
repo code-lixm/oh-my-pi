@@ -81,117 +81,127 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 	const nativeAvailable = nativeContractVersion !== null;
 
 	try {
-		fileLock.acquire();
+		await fileLock.acquire();
 	} catch (err) {
 		throw new Error(`openCodeGraphRuntime: cannot acquire lock — ${(err as Error).message}`);
 	}
-	let rebuildRequired = await metadataIsStale(options.location, nativeContractVersion);
-	if (rebuildRequired) await removeDatabaseFiles(options.location.dbPath);
-	const metadata = rebuildRequired
-		? await writeMetadata(options.location, {
-				nativeContractVersion,
-				lastSyncedAt: 0,
-			})
-		: ((await readMetadata(options.location)) ??
-			(await writeMetadata(options.location, { nativeContractVersion, lastSyncedAt: 0 })));
-	lastSyncedAt = metadataTimeMs(metadata.lastSyncedAt);
-	lastUsedAt = metadataTimeMs(metadata.lastUsedAt);
-	const effectiveSourceRoot = options.location.identity.sourceRoot || options.sourceRoot;
-	connection = DatabaseConnection.forLocation(options.location);
-	queryBuilder = new QueryBuilder(connection.getDb());
-	orchestrator = new SyncOrchestrator({
-		sourceRoot: effectiveSourceRoot,
-		connection,
-		queryBuilder,
-	});
-	const status = async (): Promise<CodeGraphStatus> => {
-		const counts = queryBuilder ? queryBuilder.getNodeAndEdgeCount() : { nodes: 0, edges: 0 };
-		const fileCount = queryBuilder ? queryBuilder.getAllFiles().length : 0;
-		let dbSizeBytes = 0;
-		try {
-			const st = await fs.stat(options.location.dbPath);
-			dbSizeBytes = st.size;
-		} catch {
-			dbSizeBytes = 0;
-		}
-		const statusOut: CodeGraphStatus = {
-			initialized,
+	try {
+		let rebuildRequired = await metadataIsStale(options.location, nativeContractVersion);
+		if (rebuildRequired) await removeDatabaseFiles(options.location.dbPath);
+		const metadata = rebuildRequired
+			? await writeMetadata(options.location, {
+					nativeContractVersion,
+					lastSyncedAt: 0,
+				})
+			: ((await readMetadata(options.location)) ??
+				(await writeMetadata(options.location, { nativeContractVersion, lastSyncedAt: 0 })));
+		lastSyncedAt = metadataTimeMs(metadata.lastSyncedAt);
+		lastUsedAt = metadataTimeMs(metadata.lastUsedAt);
+		const effectiveSourceRoot = options.location.identity.sourceRoot || options.sourceRoot;
+		connection = DatabaseConnection.forLocation(options.location);
+		queryBuilder = new QueryBuilder(connection.getDb());
+		orchestrator = new SyncOrchestrator({
 			sourceRoot: effectiveSourceRoot,
-			indexDir: options.location.indexDir,
-			dbPath: options.location.dbPath,
-			dbSizeBytes,
-			nodeCount: counts.nodes,
-			edgeCount: counts.edges,
-			fileCount,
-			lastSyncedAt,
-			lastUsedAt,
-			nativeAvailable,
-			reason: rebuildRequired ? "metadata mismatch — rebuild required" : undefined,
-		};
-		return statusOut;
-	};
-
-	const runtime: CodeGraphRuntime = {
-		async initialize() {
-			if (closed) throw new Error("runtime is closed");
-			if (!orchestrator) throw new Error("runtime is not wired");
-			await orchestrator.initialize();
-			initialized = true;
-			rebuildRequired = false;
-			lastSyncedAt = Date.now();
-			lastUsedAt = lastSyncedAt;
-			await writeMetadata(options.location, {
-				nativeContractVersion,
-				lastSyncedAt,
-				lastUsedAt,
-			});
-		},
-		async sync(syncOpts: CodeGraphSyncOptions = {}) {
-			if (closed) throw new Error("runtime is closed");
-			if (!orchestrator) throw new Error("runtime is not wired");
-			const result = await orchestrator.sync({ paths: syncOpts.paths });
-			lastSyncedAt = Date.now();
-			lastUsedAt = lastSyncedAt;
-			await writeMetadata(options.location, {
-				nativeContractVersion,
-				lastSyncedAt,
-				lastUsedAt,
-			});
-			return result;
-		},
-		async explore(query: string, exploreOpts: CodeGraphExploreOptions = {}): Promise<CodeGraphExploreResult> {
-			if (closed) throw new Error("runtime is closed");
-			if (!connection || !queryBuilder) throw new Error("runtime is not wired");
-			const maxFiles = exploreOpts.maxFiles ?? 25;
-			const result = await runExplore(
-				{
-					sourceRoot: effectiveSourceRoot,
-					connection,
-					queryBuilder,
-					maxFiles,
-				},
-				query,
-			);
-			lastUsedAt = Date.now();
-			await writeMetadata(options.location, { nativeContractVersion, lastSyncedAt, lastUsedAt });
-			return result;
-		},
-		async status() {
-			return status();
-		},
-		close() {
-			if (closed) return;
-			closed = true;
+			connection,
+			queryBuilder,
+		});
+		const status = async (): Promise<CodeGraphStatus> => {
+			const counts = queryBuilder ? queryBuilder.getNodeAndEdgeCount() : { nodes: 0, edges: 0 };
+			const fileCount = queryBuilder ? queryBuilder.getAllFiles().length : 0;
+			let dbSizeBytes = 0;
 			try {
-				connection?.close();
+				const st = await fs.stat(options.location.dbPath);
+				dbSizeBytes = st.size;
 			} catch {
-				/* connection already gone */
+				dbSizeBytes = 0;
 			}
-			fileLock.release();
-		},
-	};
+			const statusOut: CodeGraphStatus = {
+				initialized,
+				sourceRoot: effectiveSourceRoot,
+				indexDir: options.location.indexDir,
+				dbPath: options.location.dbPath,
+				dbSizeBytes,
+				nodeCount: counts.nodes,
+				edgeCount: counts.edges,
+				fileCount,
+				lastSyncedAt,
+				lastUsedAt,
+				nativeAvailable,
+				reason: rebuildRequired ? "metadata mismatch — rebuild required" : undefined,
+			};
+			return statusOut;
+		};
 
-	return runtime;
+		const runtime: CodeGraphRuntime = {
+			async initialize() {
+				if (closed) throw new Error("runtime is closed");
+				if (!orchestrator) throw new Error("runtime is not wired");
+				await orchestrator.initialize();
+				initialized = true;
+				rebuildRequired = false;
+				lastSyncedAt = Date.now();
+				lastUsedAt = lastSyncedAt;
+				await writeMetadata(options.location, {
+					nativeContractVersion,
+					lastSyncedAt,
+					lastUsedAt,
+				});
+			},
+			async sync(syncOpts: CodeGraphSyncOptions = {}) {
+				if (closed) throw new Error("runtime is closed");
+				if (!orchestrator) throw new Error("runtime is not wired");
+				const result = await orchestrator.sync({ paths: syncOpts.paths });
+				lastSyncedAt = Date.now();
+				lastUsedAt = lastSyncedAt;
+				await writeMetadata(options.location, {
+					nativeContractVersion,
+					lastSyncedAt,
+					lastUsedAt,
+				});
+				return result;
+			},
+			async explore(query: string, exploreOpts: CodeGraphExploreOptions = {}): Promise<CodeGraphExploreResult> {
+				if (closed) throw new Error("runtime is closed");
+				if (!connection || !queryBuilder) throw new Error("runtime is not wired");
+				const maxFiles = exploreOpts.maxFiles ?? 25;
+				const result = await runExplore(
+					{
+						sourceRoot: effectiveSourceRoot,
+						connection,
+						queryBuilder,
+						maxFiles,
+					},
+					query,
+				);
+				lastUsedAt = Date.now();
+				await writeMetadata(options.location, { nativeContractVersion, lastSyncedAt, lastUsedAt });
+				return result;
+			},
+			async status() {
+				return status();
+			},
+			close() {
+				if (closed) return;
+				closed = true;
+				try {
+					connection?.close();
+				} catch {
+					/* connection already gone */
+				}
+				fileLock.release();
+			},
+		};
+
+		return runtime;
+	} catch (error) {
+		try {
+			connection?.close();
+		} catch {
+			/* connection already gone */
+		}
+		fileLock.release();
+		throw error;
+	}
 }
 
 /**

@@ -350,24 +350,61 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
-	it("rebuilds a continuous hub send + wait(from) + irc run into one HubActivityGroupComponent", async () => {
+	it("does not rebuild historical IRC or successful message-wait output into transcript cards", async () => {
 		await Settings.init({ inMemory: true });
 		const hubTurn: AssistantMessage = {
-			...assistantToolCall("hub-send", "hub", { op: "send", to: "Worker", message: "ping" }),
+			...assistantToolCall("hub-send", "hub", { op: "send", to: "Worker", message: "ping", await: true }),
 			content: [
-				{ type: "toolCall", id: "hub-send", name: "hub", arguments: { op: "send", to: "Worker", message: "ping" } },
+				{
+					type: "toolCall",
+					id: "hub-send",
+					name: "hub",
+					arguments: { op: "send", to: "Worker", message: "ping", await: true },
+				},
 				{ type: "toolCall", id: "hub-wait", name: "hub", arguments: { op: "wait", from: "AuthLoader" } },
 			],
 		};
 		const transcript = transcriptWith([
 			hubTurn,
 			{
+				role: "toolResult",
+				toolCallId: "hub-send",
+				toolName: "hub",
+				content: [{ type: "text", text: "" }],
+				details: {
+					op: "send",
+					to: "Worker",
+					receipts: [{ to: "Worker", outcome: "woken" }],
+					waited: null,
+				},
+				isError: false,
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "hub-wait",
+				toolName: "hub",
+				content: [{ type: "text", text: "Reply received" }],
+				details: {
+					op: "wait",
+					waited: {
+						id: "irc-wait-1",
+						from: "AuthLoader",
+						to: "Main",
+						body: "ready now",
+						ts: 3,
+					},
+				},
+				isError: false,
+				timestamp: 3,
+			},
+			{
 				role: "custom",
 				customType: "irc:incoming",
 				content: "peer ready",
 				display: true,
 				details: { from: "Worker", message: "peer ready" },
-				timestamp: 2,
+				timestamp: 4,
 			},
 		]);
 		const { ctx, chatContainer } = makeRenderCtx(transcript);
@@ -377,11 +414,11 @@ describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
 		const groups = chatContainer.children.filter(
 			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
 		);
-		expect(groups).toHaveLength(1);
-		const rendered = Bun.stripANSI(groups[0]!.render(120).join("\n"));
-		expect(rendered).toContain("Worker");
-		expect(rendered).toContain("AuthLoader");
-		expect(rendered).toContain("peer ready");
+		expect(groups).toHaveLength(0);
+		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(transcriptText).not.toContain("ready now");
+		expect(transcriptText).not.toContain("peer ready");
+		expect(transcriptText).not.toContain("pending");
 	});
 });
 

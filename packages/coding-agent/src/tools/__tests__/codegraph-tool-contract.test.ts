@@ -1,14 +1,15 @@
 /**
- * Focused contract tests for the `CodeGraphTool` fallback surface.
+ * Focused contract tests for `CodeGraphTool` availability gating, fallback shaping,
+ * and same-index concurrency.
  *
  * Covers:
- *   1. non-Git workspace -> clear fallback result
- *   2. path outside source root -> clear fallback result
- *   3. runtime open/setup failure -> clear fallback result
- *   4. no project-local `.codegraph` directory is created on those paths
- *   5. empty query rejects early
- *   6. happy path: tool succeeds from repo root, no fallback, symbol found
- *   7. happy path: nested cwd + scoped path + same-index reuse succeeds, no fallback
+ *   1. createIf() gating: non-Git workspaces return null, Git repos with HEAD return a tool
+ *   2. non-Git execute() degrades to a normal fallback result
+ *   3. invalid path inputs (missing path / outside source root) remain hard errors
+ *   4. runtime setup failure degrades to a normal fallback result
+ *   5. fallback/error paths never create a project-local `.codegraph` directory
+ *   6. empty query rejects early
+ *   7. happy paths succeed from repo root, nested cwd, and concurrent same-index calls
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -66,6 +67,21 @@ async function initGitRepo(root: string): Promise<string> {
 	return root;
 }
 
+// Real-time watchdog is intentional here: this integration test must fail fast
+// if same-index lock serialization regresses and a concurrent tool call hangs.
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeoutPromise = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+		timer.unref?.();
+	});
+	try {
+		return await Promise.race([promise, timeoutPromise]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 describe("CodeGraphTool contract", () => {
 	let tmp: string;
 	let originalConfigDir: string | undefined;
@@ -95,18 +111,28 @@ describe("CodeGraphTool contract", () => {
 		expect(tool.approval).toBe("read");
 	});
 
+	test("createIf() returns null outside a Git workspace", async () => {
+		expect(await CodeGraphTool.createIf(makeSession(tmp))).toBeNull();
+	});
+
+	test("createIf() returns a tool for a Git repo with HEAD", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-create-if"));
+
+		expect(await CodeGraphTool.createIf(makeSession(repoRoot))).toBeInstanceOf(CodeGraphTool);
+	});
+
 	test("non-git workspace returns fallback and does not create project .codegraph", async () => {
 		const tool = new CodeGraphTool(makeSession(tmp));
 		const result = await tool.execute("call-non-git", { query: "anything" });
 
-		expect(result.isError).toBe(true);
+		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string };
 		expect(details.fallback).toContain("CodeGraph unavailable");
 		expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
 		expect(await pathExists(path.join(tmp, ".codegraph"))).toBe(false);
 	});
 
-	test("path outside source root returns fallback and does not create project .codegraph", async () => {
+	test("path outside source root stays an error and does not create project .codegraph", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-scope"));
 
 		// outsidePath only needs to exist; active repo is always resolved from session.cwd.
@@ -122,6 +148,19 @@ describe("CodeGraphTool contract", () => {
 		expect(await pathExists(path.join(repoRoot, ".codegraph"))).toBe(false);
 	});
 
+	test("nonexistent path stays an error and does not create project .codegraph", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-missing-path"));
+		const tool = new CodeGraphTool(makeSession(repoRoot));
+		const missingPath = path.join(repoRoot, "lib", "missing.ts");
+
+		const result = await tool.execute("call-missing-path", { query: "x", path: missingPath });
+
+		expect(result.isError).toBe(true);
+		const details = result.details as { fallback?: string };
+		expect(details.fallback).toContain("Path does not exist on disk");
+		expect(await pathExists(path.join(repoRoot, ".codegraph"))).toBe(false);
+	});
+
 	test("runtime setup failure returns fallback instead of throwing and still avoids project .codegraph", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-runtime-error"));
 		const tool = new CodeGraphTool(makeSession(repoRoot));
@@ -132,7 +171,7 @@ describe("CodeGraphTool contract", () => {
 
 		const result = await tool.execute("call-runtime-error", { query: "x" });
 
-		expect(result.isError).toBe(true);
+		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string };
 		expect(details.fallback).toContain("CodeGraph runtime error");
 		expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
@@ -198,5 +237,48 @@ describe("CodeGraphTool contract", () => {
 		expect(details2.entries!.some(e => e.node.name === "helper")).toBe(true);
 		expect(details2.indexDir).toBe(details1.indexDir);
 		expect(details2.sourceRoot).toBe(details1.sourceRoot);
+	});
+
+	test("concurrent same-index execute() calls both finish without fallback", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-concurrent-tool"));
+		const libDir = path.join(repoRoot, "lib");
+		const helperPath = path.join(libDir, "helper.ts");
+		await fs.mkdir(libDir, { recursive: true });
+		await fs.writeFile(helperPath, `export function helper(): number { return 42; }\n`, "utf8");
+
+		const rootTool = new CodeGraphTool(makeSession(repoRoot));
+		const nestedTool = new CodeGraphTool(makeSession(libDir));
+
+		const [rootResult, nestedResult] = await withTimeout(
+			Promise.all([
+				rootTool.execute("call-concurrent-root", { query: "greet" }),
+				nestedTool.execute("call-concurrent-nested", { query: "helper", path: helperPath }),
+			]),
+			15000,
+			"concurrent CodeGraphTool execute()",
+		);
+
+		expect(rootResult.isError).not.toBe(true);
+		const rootDetails = rootResult.details as {
+			fallback?: string;
+			entries?: Array<{ node: { name: string } }>;
+			indexDir?: string;
+			sourceRoot?: string;
+		};
+		expect(rootDetails.fallback).toBeUndefined();
+		expect(rootDetails.entries?.some(e => e.node.name === "greet")).toBe(true);
+		expect(rootDetails.indexDir).toBeDefined();
+
+		expect(nestedResult.isError).not.toBe(true);
+		const nestedDetails = nestedResult.details as {
+			fallback?: string;
+			entries?: Array<{ node: { name: string } }>;
+			indexDir?: string;
+			sourceRoot?: string;
+		};
+		expect(nestedDetails.fallback).toBeUndefined();
+		expect(nestedDetails.entries?.some(e => e.node.name === "helper")).toBe(true);
+		expect(nestedDetails.indexDir).toBe(rootDetails.indexDir);
+		expect(nestedDetails.sourceRoot).toBe(rootDetails.sourceRoot);
 	});
 });

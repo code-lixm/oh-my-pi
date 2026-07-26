@@ -473,6 +473,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Chat about this": "Chat about this",
 	"Clipboard is empty": "Clipboard is empty",
 	"Collapse the text to an inline paste marker": "Collapse the text to an inline paste marker",
+	"Collapsed Tool Detail Rows": "Collapsed Tool Detail Rows",
 	"Continuing with {role}: {model}": "Continuing with {role}: {model}",
 	"Copied code block {index} to clipboard": "Copied code block {index} to clipboard",
 	"Copied handoff context to clipboard": "Copied handoff context to clipboard",
@@ -766,10 +767,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"1 retry": "1 retry",
 	"1 reminder": "1 reminder",
 	"1 minute": "1 minute",
-	"A Python execution is already running. Press Esc to cancel it first.":
-		"A Python execution is already running. Press Esc to cancel it first.",
-	"A bash command is already running. Press Esc to cancel it first.":
-		"A bash command is already running. Press Esc to cancel it first.",
+	"A Python execution is already running. Press Esc twice to cancel it first.":
+		"A Python execution is already running. Press Esc twice to cancel it first.",
+	"A bash command is already running. Press Esc twice to cancel it first.":
+		"A bash command is already running. Press Esc twice to cancel it first.",
 	"API Key Required": "API Key Required",
 	"Add MCP Server": "Add MCP Server",
 	"Add a marketplace first: /marketplace add <source>": "Add a marketplace first: /marketplace add <source>",
@@ -1087,6 +1088,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Press Backspace to clear the search": "Press Backspace to clear the search",
 	"Press Enter again to spend 1 reset for {label}, Esc to cancel":
 		"Press Enter again to spend 1 reset for {label}, Esc to cancel",
+	"Press Esc again within 2s to cancel the active task.": "Press Esc again within 2s to cancel the active task.",
 	Preview: "Preview",
 	"Preview effective:": "Preview effective:",
 	"Preview:": "Preview:",
@@ -1120,7 +1122,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Rule was not saved.": "Rule was not saved.",
 	Rules: "Rules",
 	"Running connection health check...": "Running connection health check...",
-	"Running… (esc to cancel)": "Running… (esc to cancel)",
+	"Running… (esc twice to cancel)": "Running… (esc twice to cancel)",
 	"Save & apply": "Save & apply",
 	"Save this configuration?": "Save this configuration?",
 	"Saved {scope} WATCHDOG.yml. Run /advisor on to activate the configured advisors.":
@@ -1458,8 +1460,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Auto-approve read-only tools; require confirmation for write and exec tools.":
 		"Auto-approve read-only tools; require confirmation for write and exec tools.",
 	"Auto-run capture at stop": "Auto-run capture at stop",
-	"Auto-select the recommended ask option after this many seconds (0 disables)":
-		"Auto-select the recommended ask option after this many seconds (0 disables)",
+	"Auto-select explicit recommended ask options after this many seconds; questions without one keep waiting (0 disables)":
+		"Auto-select explicit recommended ask options after this many seconds; questions without one keep waiting (0 disables)",
 	"Autocomplete Items": "Autocomplete Items",
 	"Automatically background long-running bash commands and deliver the result later":
 		"Automatically background long-running bash commands and deliver the result later",
@@ -2805,6 +2807,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Local shortcut (this machine only): {url}": "Local shortcut (this machine only): {url}",
 	"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit":
 		"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit",
+	"Maximum detail rows shown below a collapsed tool header. Longer details keep their beginning and end with the middle omitted.":
+		"Maximum detail rows shown below a collapsed tool header. Longer details keep their beginning and end with the middle omitted.",
 	"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).":
 		"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).",
 	"Maximum info with Nerd Font icons": "Maximum info with Nerd Font icons",
@@ -3172,6 +3176,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"No log entry selected": "No log entry selected",
 	"No matches before timeout (scan incomplete)": "No matches before timeout (scan incomplete)",
 	"No matches found": "No matches found",
+	"No semantic matches found": "No semantic matches found",
 	"No matching history": "No matching history",
 	"No matching items": "No matching items",
 	"No message arrived.": "No message arrived.",
@@ -3388,6 +3393,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"… {count} more items": "… {count} more items",
 	"… {count} more line": "… {count} more line",
 	"… {count} more lines": "… {count} more lines",
+	"… {count} lines omitted": "… {count} lines omitted",
 	"… {count} more lines (ctrl+o to expand)": "… {count} more lines (ctrl+o to expand)",
 	"… {count} more lines ({key} to expand)": "… {count} more lines ({key} to expand)",
 	"… {count} more log lines": "… {count} more log lines",
@@ -3396,6 +3402,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"… {count} more yields": "… {count} more yields",
 	"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close":
 		"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close",
+	"{count} entry": "{count} entry",
+	"{count} entries": "{count} entries",
 	"{count} file": "{count} file",
 	"{count} files": "{count} files",
 	"{count} message": "{count} message",
@@ -4099,7 +4107,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"The task tool uses `outputSchema`; rename the stale `schema` field. In `task.batch`, each task entry uses `outputSchema`; flat task calls use top-level `outputSchema`. Otherwise rely on the selected agent definition's `output` schema or the inherited session schema; workflows needing ad-hoc structured output use eval `agent(prompt, schema)`.",
 	" (agent default)": " (agent default)",
 	" (auto)": " (auto)",
-	" (esc to cancel)": " (esc to cancel)",
+	" (esc twice to cancel)": " (esc twice to cancel)",
 	" (override)": " (override)",
 	" (paused)": " (paused)",
 	" {remaining}.": " {remaining}.",
@@ -4609,4 +4617,299 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"{enabled}/{total} features": "{enabled}/{total} features",
 	"Note: newer primary turns arrived after this reviewed window — verify this still applies.":
 		"Note: newer primary turns arrived after this reviewed window — verify this still applies.",
+	'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.':
+		'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.',
+	"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.":
+		"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.",
+	"Switch the task tool to its batch shape: one call carries { context, tasks[] } — one subagent per item, with an optional per-item agent (defaulting to the session spawn-policy agent), per-item isolation, and a required shared context prepended to every assignment. With async.enabled=true, each spawn runs as an independent background agent with the normal idle/parked lifecycle; otherwise the call blocks for merged results. Disable to restore the flat single-spawn schema.":
+		"Switch the task tool to its batch shape: one call carries { context, tasks[] } — one subagent per item, with an optional per-item agent (defaulting to the session spawn-policy agent), per-item isolation, and a required shared context prepended to every assignment. With async.enabled=true, each spawn runs as an independent background agent with the normal idle/parked lifecycle; otherwise the call blocks for merged results. Disable to restore the flat single-spawn schema.",
+	"Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers":
+		"Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers",
+	Network: "Network",
+	"Proxy URL": "Proxy URL",
+	"Route outbound provider and service requests through this HTTP(S) proxy. Leave empty to use inherited proxy environment variables.":
+		"Route outbound provider and service requests through this HTTP(S) proxy. Leave empty to use inherited proxy environment variables.",
+	"Web Search Provider Order": "Web Search Provider Order",
+	"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward":
+		"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward",
+	"Image Provider Order": "Image Provider Order",
+	"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order":
+		"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order",
+	"API format for Kimi Code provider (auto follows live model metadata)":
+		"API format for Kimi Code provider (auto follows live model metadata)",
+	"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly":
+		"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
+	"Terminal Title Run State": "Terminal Title Run State",
+	"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you":
+		"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you",
+	"Additional Workspace Dirs": "Additional Workspace Dirs",
+	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
+		"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.",
+	"Usage-Aware Fallback": "Usage-Aware Fallback",
+	"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.":
+		"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.",
+	"Reserve Margin": "Reserve Margin",
+	"Treat a coding-plan model as near its limit below this remaining percentage. Unknown or unmapped usage keeps the primary model.":
+		"Treat a coding-plan model as near its limit below this remaining percentage. Unknown or unmapped usage keeps the primary model.",
+	"5%": "5%",
+	"Act only when nearly exhausted": "Act only when nearly exhausted",
+	"Balanced safety margin": "Balanced safety margin",
+	"15%": "15%",
+	Conservative: "Conservative",
+	"Early protection": "Early protection",
+	"25%": "25%",
+	"Very conservative": "Very conservative",
+	"Reserve Policy": "Reserve Policy",
+	"What to do when every same-provider coding-plan account is inside the reserve margin.":
+		"What to do when every same-provider coding-plan account is inside the reserve margin.",
+	"Confirm interactively": "Confirm interactively",
+	"Keep interactive sessions on the primary until confirmed; background agents auto-fallback":
+		"Keep interactive sessions on the primary until confirmed; background agents auto-fallback",
+	"Auto-fallback": "Auto-fallback",
+	"Always select the next eligible configured fallback": "Always select the next eligible configured fallback",
+	"Fail closed": "Fail closed",
+	"Do not spend reserve quota or select a fallback": "Do not spend reserve quota or select a fallback",
+	"Error Notification": "Error Notification",
+	"Notify when the agent stops with an error": "Notify when the agent stops with an error",
+	"Hindsight API Token": "Hindsight API Token",
+	"Bearer token for authenticated Hindsight servers": "Bearer token for authenticated Hindsight servers",
+	"Markdown Previews": "Markdown Previews",
+	"Render Markdown read results as formatted terminal Markdown previews instead of raw source":
+		"Render Markdown read results as formatted terminal Markdown previews instead of raw source",
+	"Bash Approval Patterns": "Bash Approval Patterns",
+	"Ordered bash command approval rules. Each item has match and approval fields; only '*' wildcards are supported.":
+		"Ordered bash command approval rules. Each item has match and approval fields; only '*' wildcards are supported.",
+	"direnv Auto-Load": "direnv Auto-Load",
+	"Auto-load a repo's direnv/devenv `.envrc` into the bash session so devenv tools and env vars are present without manual `direnv exec`. Honors direnv's allow list: an `.envrc` you haven't `direnv allow`ed is never executed":
+		"Auto-load a repo's direnv/devenv `.envrc` into the bash session so devenv tools and env vars are present without manual `direnv exec`. Honors direnv's allow list: an `.envrc` you haven't `direnv allow`ed is never executed",
+	"direnv Load Timeout (ms)": "direnv Load Timeout (ms)",
+	"Max wait for the first `direnv export` (a cold devenv shell can be slow); on timeout the session runs without the direnv env":
+		"Max wait for the first `direnv export` (a cold devenv shell can be slow); on timeout the session runs without the direnv env",
+	Computer: "Computer",
+	"Enable native host-desktop screenshots and input for OpenAI computer use":
+		"Enable native host-desktop screenshots and input for OpenAI computer use",
+	"Computer Backend": "Computer Backend",
+	"Select automatic or explicit platform-native desktop capture and input":
+		"Select automatic or explicit platform-native desktop capture and input",
+	"Computer Display": "Computer Display",
+	"Composite all displays or select a native display id": "Composite all displays or select a native display id",
+	"Computer Screenshot Width": "Computer Screenshot Width",
+	"Maximum composite screenshot width in pixels": "Maximum composite screenshot width in pixels",
+	"Computer Screenshot Height": "Computer Screenshot Height",
+	"Maximum composite screenshot height in pixels": "Maximum composite screenshot height in pixels",
+	"xd:// Prompt Docs": "xd:// Prompt Docs",
+	"Choose which mounted-device docs and schemas are inlined in the system prompt. Built-ins keeps core tools inline while MCP and extension tools stay on-demand.":
+		"Choose which mounted-device docs and schemas are inlined in the system prompt. Built-ins keeps core tools inline while MCP and extension tools stay on-demand.",
+	"All Devices": "All Devices",
+	"Inline docs and schemas for every mounted device.": "Inline docs and schemas for every mounted device.",
+	"Built-ins Only": "Built-ins Only",
+	"Inline built-in docs; fetch MCP and extension docs on demand.":
+		"Inline built-in docs; fetch MCP and extension docs on demand.",
+	"Catalog Only": "Catalog Only",
+	"List every device; fetch all docs on demand.": "List every device; fetch all docs on demand.",
+	"xd:// Inline Devices": "xd:// Inline Devices",
+	"When xd:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.":
+		"When xd:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.",
+	"MCP Markdown Results": "MCP Markdown Results",
+	"Render non-JSON MCP text results as Markdown in the transcript":
+		"Render non-JSON MCP text results as Markdown in the transcript",
+	"Apply Isolated Changes": "Apply Isolated Changes",
+	"Automatically apply successful isolated task changes to the parent checkout; disable to retain patch or branch artifacts":
+		"Automatically apply successful isolated task changes to the parent checkout; disable to retain patch or branch artifacts",
+	"Auto-detect per prompt (low–xhigh)": "Auto-detect per prompt (low–xhigh)",
+	min: "min",
+	"Very brief reasoning (~1k tokens)": "Very brief reasoning (~1k tokens)",
+	"Light reasoning (~2k tokens)": "Light reasoning (~2k tokens)",
+	"Moderate reasoning (~8k tokens)": "Moderate reasoning (~8k tokens)",
+	"Deep reasoning (~16k tokens)": "Deep reasoning (~16k tokens)",
+	"Extended reasoning (~32k tokens)": "Extended reasoning (~32k tokens)",
+	"Maximum reasoning the model supports": "Maximum reasoning the model supports",
+	"Online (TINY role, else @smol)": "Online (TINY role, else @smol)",
+	"Classify prompt difficulty online with the TINY role model (set one in /models) or @smol; no local download or on-device inference.":
+		"Classify prompt difficulty online with the TINY role model (set one in /models) or @smol; no local download or on-device inference.",
+	"Qwen3 1.7B": "Qwen3 1.7B",
+	"Disabled for local inference: onnxruntime-node cannot run this ONNX export's RotaryEmbedding cache updates.":
+		"Disabled for local inference: onnxruntime-node cannot run this ONNX export's RotaryEmbedding cache updates.",
+	"Llama 3.2 3B": "Llama 3.2 3B",
+	"Larger Llama 3.2 option for local memory/classifier tasks; higher quality potential at higher disk/RAM/latency cost.":
+		"Larger Llama 3.2 option for local memory/classifier tasks; higher quality potential at higher disk/RAM/latency cost.",
+	"Gemma 3 1B": "Gemma 3 1B",
+	"Best consolidation/dedup; lighter footprint, but leaks small talk during extraction.":
+		"Best consolidation/dedup; lighter footprint, but leaks small talk during extraction.",
+	"Qwen2.5 1.5B": "Qwen2.5 1.5B",
+	"Best extraction granularity (atomic facts); weaker consolidation.":
+		"Best extraction granularity (atomic facts); weaker consolidation.",
+	"LFM2 1.2B": "LFM2 1.2B",
+	"Fastest load; solid all-rounder, slightly noisier extraction labels.":
+		"Fastest load; solid all-rounder, slightly noisier extraction labels.",
+	"Omit service_tier (standard processing)": "Omit service_tier (standard processing)",
+	"Provider default tier selection": "Provider default tier selection",
+	"Standard priority processing": "Standard priority processing",
+	Flex: "Flex",
+	"Lower cost, higher latency when available": "Lower cost, higher latency when available",
+	Scale: "Scale",
+	"Scale Tier credits when available": "Scale Tier credits when available",
+	"Faster, higher cost (premium request)": "Faster, higher cost (premium request)",
+	"Standard processing": "Standard processing",
+	'Fast mode (`speed: "fast"`) on supported direct Claude models; ignored on Bedrock/Vertex':
+		'Fast mode (`speed: "fast"`) on supported direct Claude models; ignored on Bedrock/Vertex',
+	"Lower cost, higher latency (Gemini API + Vertex)": "Lower cost, higher latency (Gemini API + Vertex)",
+	"Faster, higher reliability (Gemini API + Vertex)": "Faster, higher reliability (Gemini API + Vertex)",
+	Inherit: "Inherit",
+	"Match the main agent's live per-family tiers": "Match the main agent's live per-family tiers",
+	"Provider default tier selection (OpenAI family)": "Provider default tier selection (OpenAI family)",
+	"Standard priority processing (OpenAI family)": "Standard priority processing (OpenAI family)",
+	"Flexible capacity tier (OpenAI/Google families)": "Flexible capacity tier (OpenAI/Google families)",
+	"Scale Tier credits (OpenAI family)": "Scale Tier credits (OpenAI family)",
+	"Priority on every supported family of the spawned model": "Priority on every supported family of the spawned model",
+	"Fast (Whisper base)": "Fast (Whisper base)",
+	"Whisper base, multilingual. Smallest + fastest; lowest accuracy. Best for low-resource machines.":
+		"Whisper base, multilingual. Smallest + fastest; lowest accuracy. Best for low-resource machines.",
+	"Balanced (Whisper small)": "Balanced (Whisper small)",
+	"Whisper small, multilingual. More accurate than Fast, still light on CPU/RAM.":
+		"Whisper small, multilingual. More accurate than Fast, still light on CPU/RAM.",
+	"Turbo (Whisper large-v3)": "Turbo (Whisper large-v3)",
+	"Whisper large-v3-turbo, 99 languages. Widest language coverage; large download, slower.":
+		"Whisper large-v3-turbo, 99 languages. Widest language coverage; large download, slower.",
+	"Parakeet TDT v3 (SoTA)": "Parakeet TDT v3 (SoTA)",
+	"NVIDIA Parakeet TDT 0.6B v3, 25 languages. Open ASR Leaderboard leader — best accuracy and far fastest decoding. Default.":
+		"NVIDIA Parakeet TDT 0.6B v3, 25 languages. Open ASR Leaderboard leader — best accuracy and far fastest decoding. Default.",
+	"Never automatically submit; insert dictation and remain in editor.":
+		"Never automatically submit; insert dictation and remain in editor.",
+	Release: "Release",
+	"Submit on release if the utterance has 2+ words to avoid accidental sends.":
+		"Submit on release if the utterance has 2+ words to avoid accidental sends.",
+	"Release with complete sentence": "Release with complete sentence",
+	"Submit on release if the utterance ends with sentence-terminal punctuation (. ? ! etc.).":
+		"Submit on release if the utterance ends with sentence-terminal punctuation (. ? ! etc.).",
+	"When I Say Submit": "When I Say Submit",
+	"Submit if the utterance ends with a word containing 'submit' (strips that word before submitting).":
+		"Submit if the utterance ends with a word containing 'submit' (strips that word before submitting).",
+	"Use the online model: the TINY role from /models when set, otherwise @smol. No local model download or on-device inference.":
+		"Use the online model: the TINY role from /models when set, otherwise @smol. No local model download or on-device inference.",
+	Perplexity: "Perplexity",
+	"Uses auth when configured; explicit selection falls back to anonymous search":
+		"Uses auth when configured; explicit selection falls back to anonymous search",
+	"Google Search grounding via Gemini (uses google-gemini-cli or google-antigravity OAuth)":
+		"Google Search grounding via Gemini (uses google-gemini-cli or google-antigravity OAuth)",
+	"Claude's native web_search tool (uses Anthropic OAuth or ANTHROPIC_API_KEY)":
+		"Claude's native web_search tool (uses Anthropic OAuth or ANTHROPIC_API_KEY)",
+	"OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)":
+		"OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)",
+	xAI: "xAI",
+	"Grok web search via xAI Responses API (requires XAI_API_KEY)":
+		"Grok web search via xAI Responses API (requires XAI_API_KEY)",
+	"Z.AI": "Z.AI",
+	"Calls Z.AI webSearchPrime MCP": "Calls Z.AI webSearchPrime MCP",
+	"Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP":
+		"Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP",
+	TinyFish: "TinyFish",
+	"Requires TINYFISH_API_KEY": "Requires TINYFISH_API_KEY",
+	"Requires JINA_API_KEY": "Requires JINA_API_KEY",
+	Kagi: "Kagi",
+	"Requires KAGI_API_KEY and Kagi Search API beta access": "Requires KAGI_API_KEY and Kagi Search API beta access",
+	Tavily: "Tavily",
+	"Requires TAVILY_API_KEY": "Requires TAVILY_API_KEY",
+	Firecrawl: "Firecrawl",
+	"Uses Firecrawl API when FIRECRAWL_API_KEY is set; falls back to keyless mode":
+		"Uses Firecrawl API when FIRECRAWL_API_KEY is set; falls back to keyless mode",
+	Brave: "Brave",
+	"Requires BRAVE_API_KEY": "Requires BRAVE_API_KEY",
+	"Kimi Code search (requires a Kimi Code Console key via KIMI_SEARCH_API_KEY/MOONSHOT_SEARCH_API_KEY or /login kimi-code; not MOONSHOT_API_KEY)":
+		"Kimi Code search (requires a Kimi Code Console key via KIMI_SEARCH_API_KEY/MOONSHOT_SEARCH_API_KEY or /login kimi-code; not MOONSHOT_API_KEY)",
+	Synthetic: "Synthetic",
+	"Requires SYNTHETIC_API_KEY": "Requires SYNTHETIC_API_KEY",
+	SearXNG: "SearXNG",
+	"Requires SEARXNG_ENDPOINT or searxng.endpoint": "Requires SEARXNG_ENDPOINT or searxng.endpoint",
+	Startpage: "Startpage",
+	"Credential-free scrape of Startpage (Google-backed) results; may be bot-challenged":
+		"Credential-free scrape of Startpage (Google-backed) results; may be bot-challenged",
+	DuckDuckGo: "DuckDuckGo",
+	"Credential-free best-effort fallback; may be bot-challenged on datacenter/shared-egress IPs":
+		"Credential-free best-effort fallback; may be bot-challenged on datacenter/shared-egress IPs",
+	Ecosia: "Ecosia",
+	"Credential-free browser-backed scrape of Ecosia (Google-backed) results":
+		"Credential-free browser-backed scrape of Ecosia (Google-backed) results",
+	Google: "Google",
+	"Credential-free browser-backed fallback; slower and may be bot-challenged":
+		"Credential-free browser-backed fallback; slower and may be bot-challenged",
+	Mojeek: "Mojeek",
+	"Credential-free browser-backed scrape of Mojeek's independent index":
+		"Credential-free browser-backed scrape of Mojeek's independent index",
+	"Public Web": "Public Web",
+	"Queries every credential-free engine in parallel and consolidates deduplicated results":
+		"Queries every credential-free engine in parallel and consolidates deduplicated results",
+	"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription":
+		"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription",
+	"OpenAI Codex (ChatGPT)": "OpenAI Codex (ChatGPT)",
+	"Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed":
+		"Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed",
+	"Kokoro-82M": "Kokoro-82M",
+	"Kokoro-82M neural TTS — SoTA on-device quality, multi-voice, fully local":
+		"Kokoro-82M neural TTS — SoTA on-device quality, multi-voice, fully local",
+	"Heart (American female)": "Heart (American female)",
+	"Bella (American female)": "Bella (American female)",
+	"Nicole (American female)": "Nicole (American female)",
+	"Aoede (American female)": "Aoede (American female)",
+	"Kore (American female)": "Kore (American female)",
+	"Sarah (American female)": "Sarah (American female)",
+	"Michael (American male)": "Michael (American male)",
+	"Fenrir (American male)": "Fenrir (American male)",
+	"Puck (American male)": "Puck (American male)",
+	"Emma (British female)": "Emma (British female)",
+	"George (British male)": "George (British male)",
+	"Fable (British male)": "Fable (British male)",
+	"Online title generation: the TINY model role (set one in /models) when assigned, otherwise the online fallback (commit role, then @smol). No local download or on-device inference.":
+		"Online title generation: the TINY model role (set one in /models) when assigned, otherwise the online fallback (commit role, then @smol). No local download or on-device inference.",
+	"LFM2 350M": "LFM2 350M",
+	"Recommended local model; best speed/quality balance, about 212 MB cached.":
+		"Recommended local model; best speed/quality balance, about 212 MB cached.",
+	"Qwen3 0.6B": "Qwen3 0.6B",
+	"Most robust local option; slower first load, about 500 MB cached.":
+		"Most robust local option; slower first load, about 500 MB cached.",
+	"Gemma 270M": "Gemma 270M",
+	"Smallest viable local option; lower quality, lowest cache footprint.":
+		"Smallest viable local option; lower quality, lowest cache footprint.",
+	"Qwen2.5 0.5B": "Qwen2.5 0.5B",
+	"Balanced local fallback; moderate quality and cache footprint.":
+		"Balanced local fallback; moderate quality and cache footprint.",
+	"LFM2 700M": "LFM2 700M",
+	"Highest-quality local option; larger and slower than LFM2 350M.":
+		"Highest-quality local option; larger and slower than LFM2 350M.",
+	"CPU-only inference": "CPU-only inference",
+	GPU: "GPU",
+	"Accelerated provider (WebGPU/Metal, CUDA, or DirectML)": "Accelerated provider (WebGPU/Metal, CUDA, or DirectML)",
+	Metal: "Metal",
+	"WebGPU alias for Apple GPUs": "WebGPU alias for Apple GPUs",
+	WebGPU: "WebGPU",
+	"WebGPU/Metal backend": "WebGPU/Metal backend",
+	"NVIDIA CUDA (Linux x64)": "NVIDIA CUDA (Linux x64)",
+	DirectML: "DirectML",
+	"DirectML backend (Windows)": "DirectML backend (Windows)",
+	"Apple CoreML (opt-in; can fail to load)": "Apple CoreML (opt-in; can fail to load)",
+	"Let ONNX Runtime choose a provider": "Let ONNX Runtime choose a provider",
+	WASM: "WASM",
+	"WebAssembly backend": "WebAssembly backend",
+	WebNN: "WebNN",
+	"WebNN backend": "WebNN backend",
+	"WebNN GPU": "WebNN GPU",
+	"WebNN GPU device": "WebNN GPU device",
+	"WebNN CPU": "WebNN CPU",
+	"WebNN CPU device": "WebNN CPU device",
+	"WebNN NPU": "WebNN NPU",
+	"WebNN NPU device": "WebNN NPU device",
+	"Each model's shipped dtype (currently q4)": "Each model's shipped dtype (currently q4)",
+	"4-bit weights; smallest and fastest": "4-bit weights; smallest and fastest",
+	"4-bit weights with fp16 activations": "4-bit weights with fp16 activations",
+	"8-bit quantization": "8-bit quantization",
+	"16-bit float; higher fidelity, larger": "16-bit float; higher fidelity, larger",
+	"Full precision; largest and slowest": "Full precision; largest and slowest",
+	"Signed 8-bit integer": "Signed 8-bit integer",
+	"Unsigned 8-bit integer": "Unsigned 8-bit integer",
+	"bitsandbytes 4-bit": "bitsandbytes 4-bit",
+	"2-bit weights": "2-bit weights",
+	"2-bit weights with fp16 activations": "2-bit weights with fp16 activations",
+	"1-bit weights": "1-bit weights",
+	"1-bit weights with fp16 activations": "1-bit weights with fp16 activations",
+	"Let transformers.js choose per device": "Let transformers.js choose per device",
 };

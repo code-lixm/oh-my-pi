@@ -229,47 +229,71 @@ describe("AskTool cancellation", () => {
 		expect(select.mock.calls[0]?.[2]?.timeout).toBeGreaterThan(0);
 	}, 30_000);
 
-	it("auto-selects the first option when timeout elapses without a selected option", async () => {
-		const tool = new AskTool(
-			createSession({
-				settings: Settings.isolated({ "ask.timeout": 0.001 }),
-			}),
-		);
-		const abort = vi.fn();
-		const context = createContext({
-			select: async (_prompt, _options, dialogOptions) => {
-				const timeout = dialogOptions?.timeout ?? 1;
-				await Bun.sleep(timeout + 5);
-				dialogOptions?.onTimeout?.();
-				return undefined;
-			},
-			abort,
-		});
+	it("falls back to the first option on ask timeout when there is no valid recommended option", async () => {
+		vi.useFakeTimers();
+		try {
+			const cases = [{ label: "missing recommended" }, { label: "out-of-range recommended", recommended: 9 }] as const;
 
-		const result = await tool.execute(
-			"call-timeout-none",
-			{
-				questions: [
+			for (const testCase of cases) {
+				const tool = new AskTool(
+					createSession({
+						settings: Settings.isolated({ "ask.timeout": 0.001 }),
+					}),
+				);
+				const abort = vi.fn();
+				const select = vi.fn(
+					async (
+						_prompt: string,
+						_options: ExtensionUISelectItem[],
+						_dialogOptions?: { initialIndex?: number; timeout?: number; onTimeout?: () => void },
+					) => Promise.withResolvers<string | undefined>().promise,
+				);
+				const context = createContext({
+					select,
+					abort,
+				});
+
+				const question = {
+					id: "confirm",
+					question: "Proceed?",
+					options: [{ label: "yes" }, { label: "no" }],
+					...("recommended" in testCase ? { recommended: testCase.recommended } : {}),
+				};
+
+				const execution = tool.execute(
+					`call-timeout-none-${testCase.label}`,
 					{
-						id: "confirm",
-						question: "Proceed?",
-						options: [{ label: "yes" }, { label: "no" }],
+						questions: [question],
 					},
-				],
-			},
-			undefined,
-			undefined,
-			context,
-		);
+					undefined,
+					undefined,
+					context,
+				);
 
-		expect(result.content[0]?.type).toBe("text");
-		if (result.content[0]?.type !== "text") {
-			throw new Error("Expected text result");
+				await Promise.resolve();
+				await Promise.resolve();
+				vi.advanceTimersByTime(10);
+				await Promise.resolve();
+				await Promise.resolve();
+
+				const result = await execution;
+
+				expect(result.content[0]?.type).toBe("text");
+				if (result.content[0]?.type !== "text") {
+					throw new Error("Expected text result");
+				}
+				expect(result.content[0].text).toContain("User selected: yes");
+				expect(result.content[0].text).toContain("auto-selected after timeout");
+				expect(result.details?.selectedOptions).toEqual(["yes"]);
+				expect(result.details?.timedOut).toBe(true);
+				expect(abort).not.toHaveBeenCalled();
+				expect(select).toHaveBeenCalledTimes(1);
+				expect(select.mock.calls[0]?.[2]?.timeout).toBeGreaterThan(0);
+			}
+		} finally {
+			vi.useRealTimers();
 		}
-		expect(result.content[0].text).toContain("User selected: yes");
-		expect(result.details?.selectedOptions).toEqual(["yes"]);
-		expect(abort).not.toHaveBeenCalled();
-	}, 30_000);
+	});
 
 	it("routes custom input through editor with promptStyle after choosing Other", async () => {
 		const tool = new AskTool(

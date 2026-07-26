@@ -743,6 +743,28 @@ describe("status-line usage", () => {
 		}
 	});
 
+	it("shows formatted currency remaining in battery mode when no remaining fraction is available", () => {
+		const rendered = renderSegment(
+			"usage",
+			makeUsageContext(
+				[
+					makeUsageItem({
+						provider: "cursor",
+						label: "Wallet",
+						amount: { remaining: 15.04, unit: "currency", currency: "USD" },
+					}),
+				],
+				BLOCK_BATTERY_OPTIONS,
+			),
+		);
+		const content = stripVTControlCharacters(rendered.content);
+
+		expect(rendered.visible).toBe(true);
+		expect(content).toBe("$15.04");
+		expect(content).not.toContain("%");
+		expect(content).not.toContain("█");
+	});
+
 	it("hides the inline block battery when remaining quota is unknown", () => {
 		const rendered = renderBattery("blocks");
 

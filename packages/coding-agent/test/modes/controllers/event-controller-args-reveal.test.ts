@@ -360,6 +360,9 @@ describe("HubActivityGroup partial-args pending route", () => {
 		expect(addChildSpy.mock.calls.some(([component]) => component instanceof HubActivityGroupComponent)).toBe(true);
 		const group = groups[0]!;
 		expect(pendingTools.get("tc-hub-2")).toBe(group);
-		expect(Bun.stripANSI(group.render(80).join("\n"))).toContain("Worker");
+		expect(group.render(80)).toEqual([]);
+		const rendered = Bun.stripANSI(group.render(80).join("\n"));
+		expect(rendered).not.toContain("Worker");
+		expect(rendered).not.toContain("pending");
 	});
 });

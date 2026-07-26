@@ -31,6 +31,8 @@ export interface CodeCellOptions {
 	 * follow code as it is written while staying bounded. Ignored when `expanded`.
 	 */
 	codeTail?: boolean;
+	/** Keep the beginning and end inside `codeMaxLines`, using one middle omission row. */
+	codeMiddle?: boolean;
 	expanded?: boolean;
 	/**
 	 * Prefix the header with the cell's language icon (resolved through the
@@ -129,19 +131,33 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const normalizedCode = replaceTabs(code ?? "");
 	const rawCodeLines = sanitizeTerminalLines(normalizedCode);
-	const maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
-	const hiddenCodeLines = rawCodeLines.length - maxCodeLines;
+	const middle = options.codeMiddle === true && !expanded && rawCodeLines.length > codeMaxLines;
+	const visibleSourceLines = middle ? Math.max(2, codeMaxLines - 1) : Math.min(rawCodeLines.length, codeMaxLines);
+	const hiddenCodeLines = rawCodeLines.length - visibleSourceLines;
 	const tail = options.codeTail === true && !expanded && hiddenCodeLines > 0;
-	const startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
-	const visibleCode = rawCodeLines.slice(startIndex, startIndex + maxCodeLines).join("\n");
-	const codeLines = highlightCode(visibleCode, language);
+	const startIndex = tail ? rawCodeLines.length - visibleSourceLines : 0;
+	const middleHeadCount = middle ? Math.ceil(visibleSourceLines / 2) : 0;
+	const middleTailCount = middle ? Math.floor(visibleSourceLines / 2) : 0;
+	const selectedCodeLines = middle
+		? [
+				...rawCodeLines.slice(0, middleHeadCount),
+				formatMoreItems(hiddenCodeLines, "line"),
+				...rawCodeLines.slice(-middleTailCount),
+			]
+		: rawCodeLines.slice(startIndex, startIndex + visibleSourceLines);
+	const codeLines = highlightCode(selectedCodeLines.join("\n"), language);
 
 	let visibleLineNumbers: Array<number | null> | undefined;
 	let lineNumberWidth = 0;
-	if (codeLineNumbers) {
-		visibleLineNumbers = codeLineNumbers.slice(startIndex, startIndex + maxCodeLines);
-	} else if (codeStartLine !== undefined) {
-		visibleLineNumbers = Array.from({ length: maxCodeLines }, (_, i) => codeStartLine + startIndex + i);
+	const allLineNumbers =
+		codeLineNumbers ??
+		(codeStartLine !== undefined
+			? Array.from({ length: rawCodeLines.length }, (_, i) => codeStartLine + i)
+			: undefined);
+	if (allLineNumbers) {
+		visibleLineNumbers = middle
+			? [...allLineNumbers.slice(0, middleHeadCount), null, ...allLineNumbers.slice(-middleTailCount)]
+			: allLineNumbers.slice(startIndex, startIndex + visibleSourceLines);
 	}
 
 	if (visibleLineNumbers) {
@@ -163,7 +179,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	if (hiddenCodeLines > 0) {
+	if (hiddenCodeLines > 0 && !middle) {
 		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 		if (tail) {

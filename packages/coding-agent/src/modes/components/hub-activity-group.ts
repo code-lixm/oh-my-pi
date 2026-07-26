@@ -1,7 +1,7 @@
 import { type Component, Container, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
-import { bodyLines, ircGlyph, isUselessEmptyWait, messageAge } from "../../tools/hub/messaging";
+import type { IrcDeliveryReceipt } from "../../irc/bus";
+import { bodyLines, ircGlyph, messageAge } from "../../tools/hub/messaging";
 import type { CoordinationDetails, HubRenderArgs } from "../../tools/hub/types";
 import { replaceTabs } from "../../tools/render-utils";
 import {
@@ -28,7 +28,6 @@ type HubToolActivityEntry = {
 	args: HubRenderArgs;
 	result?: HubActivityResult;
 	partial: boolean;
-	messageAges?: string[];
 };
 
 export type HubIrcActivityEvent = {
@@ -56,12 +55,6 @@ function isWaitingPollEntry(entry: HubToolActivityEntry): boolean {
 	if (entry.args.op !== "wait" || !Array.isArray(entry.args.ids) || entry.partial || !entry.result) return false;
 	const details = entry.result.details as Partial<CoordinationDetails> | undefined;
 	return Boolean(details?.jobs?.length && details.jobs.every(job => job.status === "running"));
-}
-
-function isEmptyMessageWaitResult(entry: HubToolActivityEntry, result: HubActivityResult): boolean {
-	if (!result) return false;
-	const details = (result.details ?? {}) as Partial<CoordinationDetails>;
-	return isUselessEmptyWait(result, details, entry.args);
 }
 
 function receiptStatus(receipts: readonly IrcDeliveryReceipt[], isError: boolean): { color: ThemeColor; text: string } {
@@ -118,11 +111,13 @@ export function isHubGroupedActivityArgs(value: unknown): value is HubRenderArgs
 	if (!isRecord(value)) return false;
 	if (value.op === "inbox" || value.op === "list") return true;
 	if (value.op === "send") return typeof value.name !== "string";
-	return (
-		value.op === "wait" &&
-		typeof value.name !== "string" &&
-		(typeof value.from === "string" || Array.isArray(value.ids))
-	);
+	return value.op === "wait" && typeof value.name !== "string";
+}
+
+/** Message-only Hub calls whose payload is surfaced by the anchored subagent HUD. */
+export function isHubMessageFeedbackArgs(value: unknown): value is HubRenderArgs {
+	if (!isRecord(value) || typeof value.name === "string") return false;
+	return value.op === "inbox" || (value.op === "wait" && !Array.isArray(value.ids));
 }
 
 /** True while streamed Hub args do not yet carry enough discriminators to choose a renderer. */
@@ -250,16 +245,19 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		if (!entry) return;
 		entry.result = result;
 		entry.partial = isPartial;
-		const details = result.details as Partial<CoordinationDetails> | undefined;
-		const messages = details?.inbox ?? (details?.waited ? [details.waited] : []);
-		entry.messageAges = messages.map(message => messageAge(message.ts));
 		this.#invalidate();
 	}
 
-	discardEmptyMessageWait(result: HubActivityResult, toolCallId?: string): boolean {
+	discardHiddenMessageActivity(result: HubActivityResult, toolCallId?: string): boolean {
 		if (!toolCallId) return false;
 		const entry = this.#toolEntries.get(toolCallId);
-		if (!entry || !isEmptyMessageWaitResult(entry, result)) return false;
+		if (!entry) return false;
+		const details = (result.details ?? {}) as Partial<CoordinationDetails>;
+		const hidden =
+			!result.isError &&
+			(entry.args.op === "inbox" ||
+				(entry.args.op === "wait" && !entry.args.ids?.length && !(details.jobs?.length ?? 0)));
+		if (!hidden) return false;
 		const index = this.#entries.indexOf(entry);
 		if (index >= 0) this.#entries.splice(index, 1);
 		this.#toolEntries.delete(toolCallId);
@@ -371,40 +369,24 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const head = `  ${theme.fg("accent", theme.nav.selected)} ${theme.fg("customMessageLabel", replaceTabs(peer))} ${theme.fg(status.color, status.text)}`;
 		const body = entry.args.message?.trim() || (entry.result?.isError ? resultText(entry.result) : "");
 		const lines = activityBodyLines(head, body, expanded, "dim");
-		const waited = details.waited;
-		if (waited) lines.push(...this.#receivedMessageLines(waited, expanded, entry.messageAges?.[0]));
-		else if (waited === null && entry.result?.isError)
+		if (details.waited === null && entry.result?.isError) {
 			lines.push(`  ${theme.fg("warning", tSettingsUi("no reply"))}`);
+		}
 		return lines;
 	}
 
 	#waitLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
-		if (entry.args.ids && entry.args.ids.length > 0) return this.#jobWaitLines(entry, expanded);
 		const details = (entry.result?.details ?? {}) as Partial<CoordinationDetails>;
-		if (!entry.result) {
-			const peer = entry.args.from?.trim() || tSettingsUi("anyone");
-			return [
-				`  ${theme.fg("accent", theme.nav.back)} ${theme.fg("customMessageLabel", peer)} ${theme.fg("dim", tSettingsUi("pending"))}`,
-			];
+		if ((entry.args.ids && entry.args.ids.length > 0) || (details.jobs?.length ?? 0) > 0) {
+			return this.#jobWaitLines(entry, expanded);
 		}
-		if (details.waited) return this.#receivedMessageLines(details.waited, expanded, entry.messageAges?.[0]);
-		// Standalone-card suppression: a useless empty wait drops the entire
-		// entry on next rebuild. Otherwise any successful non-error timeout
-		// carries no actionable "no reply" signal (matches #sendLines).
-		if (isUselessEmptyWait(entry.result, details, entry.args)) return [];
-		if (!entry.result.isError) return [];
+		if (!entry.result?.isError) return [];
 		return [`  ${theme.fg("error", tSettingsUi("failed"))}`];
 	}
 
-	#inboxLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
-		const details = (entry.result?.details ?? {}) as Partial<CoordinationDetails>;
-		if (!entry.result) return [`  ${theme.fg("dim", tSettingsUi("pending"))}`];
-		if (entry.result.isError) return [`  ${theme.fg("error", resultText(entry.result) || tSettingsUi("failed"))}`];
-		const messages = details.inbox ?? [];
-		if (messages.length === 0) return [`  ${theme.fg("dim", tSettingsUi("empty"))}`];
-		return messages.flatMap((message, index) =>
-			this.#receivedMessageLines(message, expanded, entry.messageAges?.[index]),
-		);
+	#inboxLines(entry: HubToolActivityEntry, _expanded: boolean): string[] {
+		if (!entry.result?.isError) return [];
+		return [`  ${theme.fg("error", resultText(entry.result) || tSettingsUi("failed"))}`];
 	}
 
 	#jobWaitLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
@@ -448,12 +430,6 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			);
 		}
 		return lines;
-	}
-
-	#receivedMessageLines(message: IrcMessage, expanded: boolean, age = ""): string[] {
-		const reply = message.replyTo ? ` ${theme.fg("dim", tSettingsUi("reply"))}` : "";
-		const head = `  ${theme.fg("accent", theme.nav.back)} ${theme.fg("customMessageLabel", replaceTabs(message.from))}${age ? ` ${theme.fg("dim", age)}` : ""}${reply}`;
-		return activityBodyLines(head, message.body, expanded);
 	}
 
 	#ircLines(entry: HubIrcActivityEntry, expanded: boolean): string[] {

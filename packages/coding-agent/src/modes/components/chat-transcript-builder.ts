@@ -33,7 +33,6 @@ import {
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
-	buildIrcActivityEvent,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -482,7 +481,7 @@ export class ChatTranscriptBuilder {
 		if (
 			message.toolName === "hub" &&
 			pending instanceof HubActivityGroupComponent &&
-			pending.discardEmptyMessageWait(message, message.toolCallId)
+			pending.discardHiddenMessageActivity(message, message.toolCallId)
 		) {
 			this.#pendingTools.delete(message.toolCallId);
 			if (pending.isEmpty) {
@@ -515,7 +514,6 @@ export class ChatTranscriptBuilder {
 			message.customType === "irc:autoreply" ||
 			message.customType === "irc:relay"
 		) {
-			this.#ensureHubActivityGroup().appendIrcEvent(buildIrcActivityEvent(message));
 			return;
 		}
 		this.#finalizeHubActivityGroup();

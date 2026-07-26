@@ -444,8 +444,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	0: "0",
 	"0 KB": "0 KB",
 	"1 time": "1 次",
-	"A Python execution is already running. Press Esc to cancel it first.": "已有 Python 执行在运行。先按 Esc 取消。",
-	"A bash command is already running. Press Esc to cancel it first.": "已有 bash 命令在运行。先按 Esc 取消。",
+	"A Python execution is already running. Press Esc twice to cancel it first.":
+		"已有 Python 执行在运行。先连按两次 Esc 取消。",
+	"A bash command is already running. Press Esc twice to cancel it first.":
+		"已有 bash 命令在运行。先连按两次 Esc 取消。",
 	"All {count} blocks": "全部 {count} 个块",
 	"All {count} quotes": "全部 {count} 处引用",
 	"Already at this point": "已位于此点",
@@ -465,6 +467,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Chat about this": "就此聊聊",
 	"Clipboard is empty": "剪贴板为空",
 	"Collapse the text to an inline paste marker": "将文本折叠为内联粘贴标记",
+	"Collapsed Tool Detail Rows": "折叠工具详情行数",
 	"Context usage is unavailable: no model is selected for this session.": "本会话未选择模型，暂无法显示上下文用量。",
 	"Continuing with {role}: {model}": "继续使用 {role}：{model}",
 	"Copied code block {index} to clipboard": "代码块 {index} 已复制到剪贴板",
@@ -1065,6 +1068,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Press Alt+A to show all, Alt+D for default": "按 Alt+A 显示全部，Alt+D 显示默认",
 	"Press Backspace to clear the search": "按 Backspace 清除搜索",
 	"Press Enter again to spend 1 reset for {label}, Esc to cancel": "再按一次 Enter 为 {label} 消耗 1 次重置，Esc 取消",
+	"Press Esc again within 2s to cancel the active task.": "请在 2 秒内再次按 Esc 取消当前任务。",
 	Preview: "预览",
 	"Preview effective:": "预览生效结果：",
 	"Preview:": "预览：",
@@ -1094,7 +1098,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Rule was not saved.": "规则未保存。",
 	Rules: "规则",
 	"Running connection health check...": "正在运行连接健康检查...",
-	"Running… (esc to cancel)": "运行中…（esc 取消）",
+	"Running… (esc twice to cancel)": "运行中…（连按两次 Esc 取消）",
 	"Save & apply": "保存并应用",
 	"Save the text to a local://attachment file": "将文本保存到 local://attachment 文件",
 	"Save this configuration?": "保存此配置？",
@@ -1417,8 +1421,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Auto-approve read-only tools; require confirmation for write and exec tools.":
 		"自动批准只读工具；写入和执行类工具需要确认。",
 	"Auto-run capture at stop": "停止时自动运行捕获",
-	"Auto-select the recommended ask option after this many seconds (0 disables)":
-		"经过这么多秒后自动选择推荐的 ask 选项（0 为禁用）",
+	"Auto-select explicit recommended ask options after this many seconds; questions without one keep waiting (0 disables)":
+		"经过指定秒数后自动选择显式推荐的 ask 选项；没有推荐项的问题会继续等待（0 为禁用）",
 	"Autocomplete Items": "自动补全条目",
 	"Automatically background long-running bash commands and deliver the result later":
 		"自动将长时间运行的 bash 命令放到后台，并稍后返回结果",
@@ -2711,6 +2715,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Local shortcut (this machine only): {url}": "本机快捷链接（仅限此机器）：{url}",
 	"Maximum concurrent Ollama Cloud LLM requests per process; 0 disables the provider-specific limit":
 		"每个进程中 Ollama Cloud LLM 请求的最大并发数；0 表示禁用该提供方专用限制",
+	"Maximum detail rows shown below a collapsed tool header. Longer details keep their beginning and end with the middle omitted.":
+		"折叠工具调用时，标题下方最多显示的详情行数。超出后保留开头和结尾，并省略中间内容。",
 	"Maximum height in terminal rows for inline images (default 20). Set to 0 to use only the viewport-based limit (60% of terminal height).":
 		"内联图像在终端中的最大高度（行，默认 20）。设为 0 则仅使用基于视口的限制（终端高度的 60%）。",
 	"Maximum info with Nerd Font icons": "使用 Nerd Font 图标展示最丰富信息",
@@ -3225,6 +3231,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Missing value for --user.": "--user 缺少值。",
 	"No files found matching pattern": "未找到匹配该模式的文件",
 	"No matches found": "未找到匹配项",
+	"No semantic matches found": "未找到语义匹配项",
 	"No reply yet — they may answer later; check inbox or wait again.":
 		"还没有回复——他们稍后可能会答复；请检查收件箱或再次等待。",
 	"No resources available on connected servers.": "已连接服务器上没有可用 resources。",
@@ -3279,11 +3286,14 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"… {count} more agent": "… 还有 {count} 个代理",
 	"… {count} more findings": "… 还有 {count} 条发现",
 	"… {count} more lines": "… 还有 {count} 行",
+	"… {count} lines omitted": "… 已省略中间 {count} 行",
 	"… {count} more lines (ctrl+o to expand)": "… 还有 {count} 行（ctrl+o 展开）",
 	"… {count} more yield": "… 还有 {count} 个 yield",
 	"  log tail unavailable": "日志末尾不可用",
 	"↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close":
 		"↑/↓：导航  Space：切换  Enter：模型覆盖  P：预规划  N：新建代理  ←/→：来源  Ctrl+R：重新加载  Esc：关闭",
+	"{count} entry": "{count} 个条目",
+	"{count} entries": "{count} 个条目",
 	"{count} file": "{count} 个文件",
 	"{count} files": "{count} 个文件",
 	"{count} message": "{count} 条消息",
@@ -3974,7 +3984,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"task 工具使用 `outputSchema`；请将过时的 `schema` 字段重命名为 `outputSchema`。在 `task.batch` 中，每个任务条目都使用 `outputSchema`；扁平 task 调用则在顶层传 `outputSchema`。否则请依赖所选代理定义的 `output` schema 或继承的 session schema；需要临时结构化输出的工作流请使用 eval `agent(prompt, schema)`。",
 	" (agent default)": " （代理默认值）",
 	" (auto)": " （自动）",
-	" (esc to cancel)": " （按 esc 取消）",
+	" (esc twice to cancel)": " （连按两次 Esc 取消）",
 	" (override)": " （覆盖）",
 	" (paused)": " （已暂停）",
 	" {remaining}.": " {remaining}。",
@@ -4467,4 +4477,292 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"[<title>]": "[<title>]",
 	"Note: newer primary turns arrived after this reviewed window — verify this still applies.":
 		"注意：此审阅窗口之后又出现了更新的主流程轮次，请确认此建议仍然适用。",
+	'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix.':
+		'将模型角色、模型选择器（"provider/model-id"）或提供方通配符（"provider/*"）映射到有序回退选择器的 JSON 对象，例如 {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}。面向模型的键会在该模型或提供方处于活动状态时生效，不受角色影响；"provider/*" 条目会保留失败模型的 id，仅切换提供方。带 id 前缀的通配符（"openrouter/google/*"）会为失败模型的裸 id 重新添加前缀（google-antigravity/gemini-x -> openrouter/google/gemini-x），用作键时仅匹配该提供方此前缀下的 id。',
+	"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.":
+		"开启后，在停止时自动运行一次私有捕获轮次（会消耗额外 token）。关闭后，仅保留常驻的自动学习指引。",
+	"Switch the task tool to its batch shape: one call carries { context, tasks[] } — one subagent per item, with an optional per-item agent (defaulting to the session spawn-policy agent), per-item isolation, and a required shared context prepended to every assignment. With async.enabled=true, each spawn runs as an independent background agent with the normal idle/parked lifecycle; otherwise the call blocks for merged results. Disable to restore the flat single-spawn schema.":
+		"将 task 工具切换为批量形态：一次调用携带 { context, tasks[] }，每项任务对应一个子代理，并可为每项指定 agent（默认使用会话的 spawn-policy agent）和隔离方式；共享 context 会添加到每个任务之前。async.enabled=true 时，每个任务作为独立后台代理运行，并遵循正常的 idle/parked 生命周期；否则调用会阻塞并合并结果。关闭后恢复扁平的单代理调用 schema。",
+	"Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers":
+		"向 AI 提供方发送前混淆已配置的密钥，并遮盖疑似凭据的 token",
+	Network: "网络",
+	"Proxy URL": "代理 URL",
+	"Route outbound provider and service requests through this HTTP(S) proxy. Leave empty to use inherited proxy environment variables.":
+		"通过此 HTTP(S) 代理转发提供方和服务的出站请求。留空时使用继承的代理环境变量。",
+	"Web Search Provider Order": "Web Search 提供方顺序",
+	"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward":
+		"web_search 工具的提供方优先顺序；未列出的提供方随后保持默认顺序",
+	"Image Provider Order": "图像提供方顺序",
+	"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order":
+		"图像生成的提供方优先顺序；未列出的提供方按当前会话提供方和内置顺序排列",
+	"API format for Kimi Code provider (auto follows live model metadata)":
+		"Kimi Code 提供方的 API 格式（自动模式跟随实时模型元数据）",
+	"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly":
+		"自动上报工具问题（xd://report_issue）。默认开启；首次上报会请求同意，拒绝后将禁用上报，直至明确重新启用",
+	"Terminal Title Run State": "终端标题运行状态",
+	"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you":
+		"在终端标题的分隔符中显示代理运行状态：工作时显示动画 spinner，轮到你操作时显示“>”，等待你响应时显示“!”",
+	"Additional Workspace Dirs": "附加工作区目录",
+	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
+		"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/glob。",
+	"Usage-Aware Fallback": "感知用量的回退",
+	"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.":
+		"在触及硬性用量限制前，根据可靠的 coding-plan 配额报告优先选择同一提供方的账户，再选择已配置的回退模型。普通配置的 API key 不参与此逻辑。",
+	"Reserve Margin": "保留余量",
+	"Treat a coding-plan model as near its limit below this remaining percentage. Unknown or unmapped usage keeps the primary model.":
+		"当 coding-plan 模型的剩余比例低于此值时，视为接近用量限制。用量未知或无法映射时继续使用主模型。",
+	"5%": "5%",
+	"Act only when nearly exhausted": "仅在接近耗尽时操作",
+	"Balanced safety margin": "均衡的安全余量",
+	"15%": "15%",
+	Conservative: "保守",
+	"Early protection": "提前保护",
+	"25%": "25%",
+	"Very conservative": "非常保守",
+	"Reserve Policy": "保留策略",
+	"What to do when every same-provider coding-plan account is inside the reserve margin.":
+		"同一提供方的所有 coding-plan 账户都进入保留余量时采取的操作。",
+	"Confirm interactively": "交互确认",
+	"Keep interactive sessions on the primary until confirmed; background agents auto-fallback":
+		"交互式会话在确认前继续使用主模型；后台代理自动回退",
+	"Auto-fallback": "自动回退",
+	"Always select the next eligible configured fallback": "始终选择下一个符合条件的已配置回退模型",
+	"Fail closed": "失败时关闭",
+	"Do not spend reserve quota or select a fallback": "不消耗保留配额，也不选择回退模型",
+	"Error Notification": "错误通知",
+	"Notify when the agent stops with an error": "代理因错误停止时发送通知",
+	"Hindsight API Token": "Hindsight API Token",
+	"Bearer token for authenticated Hindsight servers": "认证 Hindsight 服务器所需的 Bearer token",
+	"Markdown Previews": "Markdown 预览",
+	"Render Markdown read results as formatted terminal Markdown previews instead of raw source":
+		"将 Markdown read 结果渲染为格式化的终端 Markdown 预览，而不是原始源码",
+	"Bash Approval Patterns": "Bash 批准规则",
+	"Ordered bash command approval rules. Each item has match and approval fields; only '*' wildcards are supported.":
+		"有序的 Bash 命令批准规则。每项包含 match 和 approval 字段；仅支持“*”通配符。",
+	"direnv Auto-Load": "direnv 自动加载",
+	"Auto-load a repo's direnv/devenv `.envrc` into the bash session so devenv tools and env vars are present without manual `direnv exec`. Honors direnv's allow list: an `.envrc` you haven't `direnv allow`ed is never executed":
+		"自动将仓库的 direnv/devenv `.envrc` 加载到 Bash 会话，使 devenv 工具和环境变量无需手动执行 `direnv exec` 即可使用。遵循 direnv 的允许列表：未经 `direnv allow` 的 `.envrc` 永远不会执行",
+	"direnv Load Timeout (ms)": "direnv 加载超时（毫秒）",
+	"Max wait for the first `direnv export` (a cold devenv shell can be slow); on timeout the session runs without the direnv env":
+		"首次执行 `direnv export` 的最长等待时间（冷启动 devenv shell 可能较慢）；超时后，会话将在没有 direnv 环境的情况下运行",
+	Computer: "计算机",
+	"Enable native host-desktop screenshots and input for OpenAI computer use":
+		"启用原生主机桌面截图和输入，以支持 OpenAI computer use",
+	"Computer Backend": "计算机后端",
+	"Select automatic or explicit platform-native desktop capture and input": "选择自动或明确的平台原生桌面捕获与输入",
+	"Computer Display": "计算机显示器",
+	"Composite all displays or select a native display id": "合成所有显示器或选择原生显示器 id",
+	"Computer Screenshot Width": "计算机截图宽度",
+	"Maximum composite screenshot width in pixels": "合成截图的最大宽度（像素）",
+	"Computer Screenshot Height": "计算机截图高度",
+	"Maximum composite screenshot height in pixels": "合成截图的最大高度（像素）",
+	"xd:// Prompt Docs": "xd:// 提示词文档",
+	"Choose which mounted-device docs and schemas are inlined in the system prompt. Built-ins keeps core tools inline while MCP and extension tools stay on-demand.":
+		"选择要内联到系统提示词中的已挂载设备文档和 schema。Built-ins 会内联核心工具，而 MCP 与扩展工具保持按需加载。",
+	"All Devices": "所有设备",
+	"Inline docs and schemas for every mounted device.": "内联每个已挂载设备的文档和 schema。",
+	"Built-ins Only": "仅内置设备",
+	"Inline built-in docs; fetch MCP and extension docs on demand.": "内联内置文档；按需获取 MCP 和扩展文档。",
+	"Catalog Only": "仅目录",
+	"List every device; fetch all docs on demand.": "列出所有设备；按需获取全部文档。",
+	"xd:// Inline Devices": "xd:// 内联设备",
+	"When xd:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.":
+		"当 xd:// 提示词文档设为“仅内置设备”时，内联名称匹配这些 glob 模式的动态设备（例如 mcp__context_mode_*）。“仅目录”会忽略此设置。",
+	"MCP Markdown Results": "MCP Markdown 结果",
+	"Render non-JSON MCP text results as Markdown in the transcript":
+		"在对话记录中将非 JSON 的 MCP 文本结果渲染为 Markdown",
+	"Apply Isolated Changes": "应用隔离改动",
+	"Automatically apply successful isolated task changes to the parent checkout; disable to retain patch or branch artifacts":
+		"自动将成功的隔离任务改动应用到父 checkout；关闭后保留 patch 或 branch 产物",
+	"Auto-detect per prompt (low–xhigh)": "按提示词自动检测（low–xhigh）",
+	min: "最低",
+	"Very brief reasoning (~1k tokens)": "极简推理（约 1k tokens）",
+	"Light reasoning (~2k tokens)": "轻度推理（约 2k tokens）",
+	"Moderate reasoning (~8k tokens)": "中度推理（约 8k tokens）",
+	"Deep reasoning (~16k tokens)": "深度推理（约 16k tokens）",
+	"Extended reasoning (~32k tokens)": "扩展推理（约 32k tokens）",
+	"Maximum reasoning the model supports": "模型支持的最大推理量",
+	"Online (TINY role, else @smol)": "在线（TINY 角色，否则使用 @smol）",
+	"Classify prompt difficulty online with the TINY role model (set one in /models) or @smol; no local download or on-device inference.":
+		"使用 TINY 角色模型（在 /models 中设置）或 @smol 在线判断提示词难度；无需本地下载或设备端推理。",
+	"Qwen3 1.7B": "Qwen3 1.7B",
+	"Disabled for local inference: onnxruntime-node cannot run this ONNX export's RotaryEmbedding cache updates.":
+		"已禁用本地推理：onnxruntime-node 无法运行此 ONNX 导出的 RotaryEmbedding 缓存更新。",
+	"Llama 3.2 3B": "Llama 3.2 3B",
+	"Larger Llama 3.2 option for local memory/classifier tasks; higher quality potential at higher disk/RAM/latency cost.":
+		"适用于本地记忆和分类任务的较大版 Llama 3.2；质量潜力更高，但会占用更多磁盘和 RAM，延迟也更高。",
+	"Gemma 3 1B": "Gemma 3 1B",
+	"Best consolidation/dedup; lighter footprint, but leaks small talk during extraction.":
+		"整合和去重效果最佳；占用资源较少，但提取时会混入闲聊内容。",
+	"Qwen2.5 1.5B": "Qwen2.5 1.5B",
+	"Best extraction granularity (atomic facts); weaker consolidation.": "提取粒度最佳（原子事实）；整合能力较弱。",
+	"LFM2 1.2B": "LFM2 1.2B",
+	"Fastest load; solid all-rounder, slightly noisier extraction labels.":
+		"加载最快；综合表现稳健，但提取标签的噪声略多。",
+	"Omit service_tier (standard processing)": "省略 service_tier（标准处理）",
+	"Provider default tier selection": "由提供方选择默认层级",
+	"Standard priority processing": "标准优先级处理",
+	Flex: "Flex",
+	"Lower cost, higher latency when available": "可用时成本更低，但延迟更高",
+	Scale: "Scale",
+	"Scale Tier credits when available": "可用时使用 Scale Tier 额度",
+	"Faster, higher cost (premium request)": "速度更快、成本更高（高级请求）",
+	"Standard processing": "标准处理",
+	'Fast mode (`speed: "fast"`) on supported direct Claude models; ignored on Bedrock/Vertex':
+		'在支持的 Claude 直连模型上启用快速模式（`speed: "fast"`）；在 Bedrock/Vertex 上会被忽略',
+	"Lower cost, higher latency (Gemini API + Vertex)": "成本更低、延迟更高（Gemini API + Vertex）",
+	"Faster, higher reliability (Gemini API + Vertex)": "速度更快、可靠性更高（Gemini API + Vertex）",
+	Inherit: "继承",
+	"Match the main agent's live per-family tiers": "与主代理当前各模型系列的层级保持一致",
+	"Provider default tier selection (OpenAI family)": "由提供方选择默认层级（OpenAI 系列）",
+	"Standard priority processing (OpenAI family)": "标准优先级处理（OpenAI 系列）",
+	"Flexible capacity tier (OpenAI/Google families)": "弹性容量层级（OpenAI/Google 系列）",
+	"Scale Tier credits (OpenAI family)": "Scale Tier 额度（OpenAI 系列）",
+	"Priority on every supported family of the spawned model": "对生成模型所属的所有受支持系列启用优先处理",
+	"Fast (Whisper base)": "快速（Whisper base）",
+	"Whisper base, multilingual. Smallest + fastest; lowest accuracy. Best for low-resource machines.":
+		"Whisper base，多语言。体积最小、速度最快；准确率最低。最适合低配置设备。",
+	"Balanced (Whisper small)": "均衡（Whisper small）",
+	"Whisper small, multilingual. More accurate than Fast, still light on CPU/RAM.":
+		"Whisper small，多语言。比“快速”更准确，同时仍节省 CPU/内存资源。",
+	"Turbo (Whisper large-v3)": "极速（Whisper large-v3）",
+	"Whisper large-v3-turbo, 99 languages. Widest language coverage; large download, slower.":
+		"Whisper large-v3-turbo，支持 99 种语言。语言覆盖最广；下载体积大，速度较慢。",
+	"Parakeet TDT v3 (SoTA)": "Parakeet TDT v3（SoTA）",
+	"NVIDIA Parakeet TDT 0.6B v3, 25 languages. Open ASR Leaderboard leader — best accuracy and far fastest decoding. Default.":
+		"NVIDIA Parakeet TDT 0.6B v3，支持 25 种语言。位居 Open ASR Leaderboard 榜首——准确率最高，解码速度遥遥领先。默认选项。",
+	"Never automatically submit; insert dictation and remain in editor.": "从不自动提交；插入听写内容并停留在编辑器中。",
+	Release: "松开时",
+	"Submit on release if the utterance has 2+ words to avoid accidental sends.":
+		"松开时，若语句包含至少 2 个单词则提交，以避免误发送。",
+	"Release with complete sentence": "完整句子松开时",
+	"Submit on release if the utterance ends with sentence-terminal punctuation (. ? ! etc.).":
+		"松开时，若语句以句末标点（. ? ! 等）结尾则提交。",
+	"When I Say Submit": "当我说 Submit 时",
+	"Submit if the utterance ends with a word containing 'submit' (strips that word before submitting).":
+		"若语句末尾单词包含“submit”，则移除该单词后提交。",
+	"Use the online model: the TINY role from /models when set, otherwise @smol. No local model download or on-device inference.":
+		"使用在线模型：若已设置，则使用 /models 中的 TINY 角色，否则使用 @smol。无需下载本地模型，也不在设备上推理。",
+	Perplexity: "Perplexity",
+	"Uses auth when configured; explicit selection falls back to anonymous search":
+		"配置后使用身份验证；明确选择此项时，若验证不可用则回退到匿名搜索。",
+	"Google Search grounding via Gemini (uses google-gemini-cli or google-antigravity OAuth)":
+		"通过 Gemini 使用 Google Search 进行信息溯源（使用 google-gemini-cli 或 google-antigravity OAuth）",
+	"Claude's native web_search tool (uses Anthropic OAuth or ANTHROPIC_API_KEY)":
+		"Claude 原生 web_search 工具（使用 Anthropic OAuth 或 ANTHROPIC_API_KEY）",
+	"OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)":
+		"OpenAI 原生 web_search（通过 /login openai-codex 使用 ChatGPT OAuth）",
+	xAI: "xAI",
+	"Grok web search via xAI Responses API (requires XAI_API_KEY)":
+		"通过 xAI Responses API 使用 Grok 网页搜索（需要 XAI_API_KEY）",
+	"Z.AI": "Z.AI",
+	"Calls Z.AI webSearchPrime MCP": "调用 Z.AI webSearchPrime MCP",
+	"Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP":
+		"设置 EXA_API_KEY 时使用 Exa API；否则回退到 Exa MCP。",
+	TinyFish: "TinyFish",
+	"Requires TINYFISH_API_KEY": "需要 TINYFISH_API_KEY",
+	"Requires JINA_API_KEY": "需要 JINA_API_KEY",
+	Kagi: "Kagi",
+	"Requires KAGI_API_KEY and Kagi Search API beta access": "需要 KAGI_API_KEY 和 Kagi Search API Beta 版访问权限",
+	Tavily: "Tavily",
+	"Requires TAVILY_API_KEY": "需要 TAVILY_API_KEY",
+	Firecrawl: "Firecrawl",
+	"Uses Firecrawl API when FIRECRAWL_API_KEY is set; falls back to keyless mode":
+		"设置 FIRECRAWL_API_KEY 时使用 Firecrawl API；否则回退到无密钥模式。",
+	Brave: "Brave",
+	"Requires BRAVE_API_KEY": "需要 BRAVE_API_KEY",
+	"Kimi Code search (requires a Kimi Code Console key via KIMI_SEARCH_API_KEY/MOONSHOT_SEARCH_API_KEY or /login kimi-code; not MOONSHOT_API_KEY)":
+		"Kimi Code 搜索（需要通过 KIMI_SEARCH_API_KEY/MOONSHOT_SEARCH_API_KEY 或 /login kimi-code 配置 Kimi Code Console 密钥；不能使用 MOONSHOT_API_KEY）",
+	Synthetic: "Synthetic",
+	"Requires SYNTHETIC_API_KEY": "需要 SYNTHETIC_API_KEY",
+	SearXNG: "SearXNG",
+	"Requires SEARXNG_ENDPOINT or searxng.endpoint": "需要 SEARXNG_ENDPOINT 或 searxng.endpoint",
+	Startpage: "Startpage",
+	"Credential-free scrape of Startpage (Google-backed) results; may be bot-challenged":
+		"无需凭据抓取 Startpage（由 Google 支持）的结果；可能遇到机器人验证",
+	DuckDuckGo: "DuckDuckGo",
+	"Credential-free best-effort fallback; may be bot-challenged on datacenter/shared-egress IPs":
+		"无需凭据的尽力回退方案；在数据中心或共享出口 IP 上可能遇到机器人验证",
+	Ecosia: "Ecosia",
+	"Credential-free browser-backed scrape of Ecosia (Google-backed) results":
+		"无需凭据，通过浏览器抓取 Ecosia（由 Google 支持）的结果",
+	Google: "Google",
+	"Credential-free browser-backed fallback; slower and may be bot-challenged":
+		"无需凭据、基于浏览器的回退方案；速度较慢，且可能遇到机器人验证",
+	Mojeek: "Mojeek",
+	"Credential-free browser-backed scrape of Mojeek's independent index": "无需凭据，通过浏览器抓取 Mojeek 的独立索引",
+	"Public Web": "公共 Web",
+	"Queries every credential-free engine in parallel and consolidates deduplicated results":
+		"并行查询所有无需凭据的搜索引擎，并汇总去重后的结果",
+	"OPENAI_API_KEY (gpt-image-2) or active GPT model; falls back to a connected Codex subscription":
+		"需要 OPENAI_API_KEY（gpt-image-2）或已启用的 GPT 模型；否则回退到已连接的 Codex 订阅",
+	"OpenAI Codex (ChatGPT)": "OpenAI Codex (ChatGPT)",
+	"Uses a connected Codex / ChatGPT subscription — no OPENAI_API_KEY needed":
+		"使用已连接的 Codex / ChatGPT 订阅——无需 OPENAI_API_KEY",
+	"Kokoro-82M": "Kokoro-82M",
+	"Kokoro-82M neural TTS — SoTA on-device quality, multi-voice, fully local":
+		"Kokoro-82M 神经网络 TTS——端侧质量达到 SoTA，支持多种声音，完全本地运行",
+	"Heart (American female)": "Heart（美国女声）",
+	"Bella (American female)": "Bella（美国女声）",
+	"Nicole (American female)": "Nicole（美国女声）",
+	"Aoede (American female)": "Aoede（美国女声）",
+	"Kore (American female)": "Kore（美国女声）",
+	"Sarah (American female)": "Sarah（美国女声）",
+	"Michael (American male)": "Michael（美国男声）",
+	"Fenrir (American male)": "Fenrir（美国男声）",
+	"Puck (American male)": "Puck（美国男声）",
+	"Emma (British female)": "Emma（英国女声）",
+	"George (British male)": "George（英国男声）",
+	"Fable (British male)": "Fable（英国男声）",
+	"Online title generation: the TINY model role (set one in /models) when assigned, otherwise the online fallback (commit role, then @smol). No local download or on-device inference.":
+		"在线标题生成：若已分配 TINY 模型角色（在 /models 中设置），则使用该角色；否则使用在线回退方案（先用 commit 角色，再用 @smol）。无需本地下载或端侧推理。",
+	"LFM2 350M": "LFM2 350M",
+	"Recommended local model; best speed/quality balance, about 212 MB cached.":
+		"推荐的本地模型；速度与质量的平衡最佳，缓存约占 212 MB。",
+	"Qwen3 0.6B": "Qwen3 0.6B",
+	"Most robust local option; slower first load, about 500 MB cached.":
+		"最稳健的本地选项；首次加载较慢，缓存约占 500 MB。",
+	"Gemma 270M": "Gemma 270M",
+	"Smallest viable local option; lower quality, lowest cache footprint.":
+		"可用的最小本地选项；质量较低，缓存占用最小。",
+	"Qwen2.5 0.5B": "Qwen2.5 0.5B",
+	"Balanced local fallback; moderate quality and cache footprint.": "均衡的本地回退方案；质量和缓存占用适中。",
+	"LFM2 700M": "LFM2 700M",
+	"Highest-quality local option; larger and slower than LFM2 350M.": "质量最高的本地选项；比 LFM2 350M 更大、更慢。",
+	"CPU-only inference": "仅使用 CPU 推理",
+	GPU: "GPU",
+	"Accelerated provider (WebGPU/Metal, CUDA, or DirectML)": "加速后端（WebGPU/Metal、CUDA 或 DirectML）",
+	Metal: "Metal",
+	"WebGPU alias for Apple GPUs": "Apple GPU 的 WebGPU 别名",
+	WebGPU: "WebGPU",
+	"WebGPU/Metal backend": "WebGPU/Metal 后端",
+	"NVIDIA CUDA (Linux x64)": "NVIDIA CUDA（Linux x64）",
+	DirectML: "DirectML",
+	"DirectML backend (Windows)": "DirectML 后端（Windows）",
+	"Apple CoreML (opt-in; can fail to load)": "Apple CoreML（需主动启用；可能加载失败）",
+	"Let ONNX Runtime choose a provider": "让 ONNX Runtime 选择后端",
+	WASM: "WASM",
+	"WebAssembly backend": "WebAssembly 后端",
+	WebNN: "WebNN",
+	"WebNN backend": "WebNN 后端",
+	"WebNN GPU": "WebNN GPU",
+	"WebNN GPU device": "WebNN GPU 设备",
+	"WebNN CPU": "WebNN CPU",
+	"WebNN CPU device": "WebNN CPU 设备",
+	"WebNN NPU": "WebNN NPU",
+	"WebNN NPU device": "WebNN NPU 设备",
+	"Each model's shipped dtype (currently q4)": "各模型随附的 dtype（目前为 q4）",
+	"4-bit weights; smallest and fastest": "4 位权重；体积最小、速度最快",
+	"4-bit weights with fp16 activations": "4 位权重，使用 fp16 激活值",
+	"8-bit quantization": "8 位量化",
+	"16-bit float; higher fidelity, larger": "16 位浮点；保真度更高、体积更大",
+	"Full precision; largest and slowest": "全精度；体积最大、速度最慢",
+	"Signed 8-bit integer": "有符号 8 位整数",
+	"Unsigned 8-bit integer": "无符号 8 位整数",
+	"bitsandbytes 4-bit": "bitsandbytes 4 位",
+	"2-bit weights": "2 位权重",
+	"2-bit weights with fp16 activations": "2 位权重，使用 fp16 激活值",
+	"1-bit weights": "1 位权重",
+	"1-bit weights with fp16 activations": "1 位权重，使用 fp16 激活值",
+	"Let transformers.js choose per device": "让 transformers.js 根据设备选择",
 };

@@ -68,7 +68,6 @@ import {
 	Ellipsis,
 	formatDiagnostics,
 	formatErrorDetail,
-	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	getLspBatchRequest,
@@ -76,6 +75,7 @@ import {
 	replaceTabs,
 	shortenPath,
 	TRUNCATE_LENGTHS,
+	toolDetailMaxLines,
 	truncateToWidth,
 } from "./render-utils";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
@@ -1303,9 +1303,6 @@ interface WriteRenderArgs {
 	content?: unknown;
 }
 
-const WRITE_PREVIEW_LINES = 6;
-const WRITE_STREAMING_PREVIEW_LINES = 12;
-
 function countLines(text: string): number {
 	if (!text) return 0;
 	return text.split("\n").length;
@@ -1374,7 +1371,9 @@ function formatStreamingContent(
 		// stays short enough not to strand its scrolled-off head above the viewport
 		// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
 		// deliberate full view — matching the eval streaming preview.
-		const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
+		const maxDetailLines = toolDetailMaxLines();
+		const visibleLineCount = expanded ? totalLines : Math.max(1, maxDetailLines - 1);
+		const startIndex = expanded ? 0 : Math.max(0, totalLines - visibleLineCount);
 		const visibleLines = lines.slice(startIndex);
 		const hidden = startIndex;
 		const highlighted = highlightCode(visibleLines.join("\n"), language);
@@ -1411,23 +1410,31 @@ function renderContentPreview(
 	return cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
 		const rawLines = normalizeDisplayText(content).split("\n");
 		const totalLines = rawLines.length;
-		const maxLines = expanded ? totalLines : Math.min(totalLines, WRITE_PREVIEW_LINES);
-		const visibleLines = rawLines.slice(0, maxLines);
-		const highlighted = highlightCode(visibleLines.join("\n"), language);
+		const maxLines = toolDetailMaxLines();
+		const collapsed = !expanded && totalLines > maxLines;
+		const visibleSourceLines = collapsed ? maxLines - 1 : totalLines;
+		const headCount = collapsed ? Math.ceil(visibleSourceLines / 2) : totalLines;
+		const tailCount = collapsed ? Math.floor(visibleSourceLines / 2) : 0;
+		const hidden = collapsed ? totalLines - visibleSourceLines : 0;
+		const highlighted = highlightCode(rawLines.join("\n"), language);
 		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
-		const hidden = totalLines - maxLines;
+		const indices = collapsed
+			? [
+					...Array.from({ length: headCount }, (_, index) => index),
+					-1,
+					...Array.from({ length: tailCount }, (_, index) => totalLines - tailCount + index),
+				]
+			: Array.from({ length: totalLines }, (_, index) => index);
 
 		let text = "\n\n";
-		for (let i = 0; i < highlighted.length; i++) {
-			const lineNum = i + 1;
-			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-			const body = replaceTabs(highlighted[i] ?? "");
+		for (const index of indices) {
+			if (index === -1) {
+				text += `${uiTheme.fg("dim", `${" ".repeat(lineNumberWidth + 1)}${formatMoreItems(hidden, "line")}`)}\n`;
+				continue;
+			}
+			const gutter = uiTheme.fg("dim", `${String(index + 1).padStart(lineNumberWidth, " ")} `);
+			const body = replaceTabs(highlighted[index] ?? "");
 			text += `${gutter}${body}\n`;
-		}
-		if (!expanded && hidden > 0) {
-			const hint = formatExpandHint(uiTheme, expanded, hidden > 0);
-			const moreLine = `${formatMoreItems(hidden, "line")}${hint ? ` ${hint}` : ""}`;
-			text += uiTheme.fg("dim", moreLine);
 		}
 		return text.trimEnd();
 	});
@@ -1603,5 +1610,5 @@ export const writeToolRenderer = {
 	// as stale content above the new frame without a full replay. Expanded and
 	// short previews stay top-anchored and skip the (scrollback-wiping) reset.
 	forceFirstResultViewportRepaint: (args: unknown, options: RenderResultOptions) =>
-		!options.expanded && exceedsLineCount(writeContentOf(args), WRITE_STREAMING_PREVIEW_LINES),
+		!options.expanded && exceedsLineCount(writeContentOf(args), Math.max(1, toolDetailMaxLines() - 1)),
 };

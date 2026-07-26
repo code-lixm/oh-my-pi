@@ -91,45 +91,99 @@ afterEach(() => {
 });
 
 describe("AssistantMessageComponent code-block framing", () => {
-	it("opts assistant markdown into framed code blocks instead of raw fences", () => {
-		const component = new AssistantMessageComponent(message([{ type: "text", text: fence(["const answer = 42;"]) }]));
-		const lines = renderPlain(component, 36);
-		const joined = lines.join("\n");
-
-		expect(joined).not.toContain("```");
-		expect(lines[0]).toContain("ts");
-		expect(lines[0]).toContain("╭");
-		expect(lines[1]).toContain("│");
-		expect(lines[1]).toContain("const answer = 42;");
-		expect(lines[lines.length - 1]).toContain("╰");
-	});
-
-	it("renders fenced code blocks without a rounded frame when border style is none", async () => {
+	it("renders full-border code blocks as rounded frames without raw fences", () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 
 		try {
-			setOutputBlockBorderStyle("none");
-			const uiTheme = await getThemeByName("dark");
-			if (!uiTheme) throw new Error("theme unavailable");
-
+			setOutputBlockBorderStyle("full");
 			const component = new AssistantMessageComponent(
-				message([{ type: "text", text: fence(["const answer = 42;", "console.log(answer);"]) }]),
+				message([{ type: "text", text: fence(["const answer = 42;"]) }]),
 			);
 			const lines = renderPlain(component, 36);
 			const joined = lines.join("\n");
 
+			expect(joined).not.toContain("```");
 			expect(joined).toContain("const answer = 42;");
-			expect(joined).toContain("console.log(answer);");
-			// With borderStyle:none the code text renders — the contract is no rounded
-			// corner glyphs; raw fences remain when the framed path is bypassed.
-			for (const corner of [
-				uiTheme.symbol("boxRound.topLeft"),
-				uiTheme.symbol("boxRound.topRight"),
-				uiTheme.symbol("boxRound.bottomLeft"),
-				uiTheme.symbol("boxRound.bottomRight"),
-			]) {
-				expect(joined).not.toContain(corner);
-			}
+			expect(lines[0]).toContain("╭");
+			expect(lines.some(line => line.includes("│") && line.includes("const answer = 42;"))).toBe(true);
+			expect(lines[lines.length - 1]).toContain("╰");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
+
+	it("renders none-style fenced code as plain content without raw fences, labels, frames, or backgrounds", () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+			const width = 36;
+			const source = [
+				"before",
+				"",
+				fence(["const answer = 42;", "console.log(answer);"]),
+				"",
+				fence(["plain color", "verbatim marker"], "text"),
+				"",
+				"after",
+			].join("\n");
+			const component = new AssistantMessageComponent(message([{ type: "text", text: source }]));
+			const raw = component.render(width);
+			const plain = raw.map(line => Bun.stripANSI(line).trimEnd());
+			const joinedPlain = plain.join("\n");
+			const codeRows = raw.filter(line => {
+				const stripped = Bun.stripANSI(line);
+				return (
+					stripped.includes("const answer = 42;") ||
+					stripped.includes("console.log(answer);") ||
+					stripped.includes("plain color") ||
+					stripped.includes("verbatim marker")
+				);
+			});
+
+			expect(joinedPlain).toContain("before");
+			expect(joinedPlain).toContain("const answer = 42;");
+			expect(joinedPlain).toContain("console.log(answer);");
+			expect(joinedPlain).toContain("plain color");
+			expect(joinedPlain).toContain("verbatim marker");
+			expect(joinedPlain).toContain("after");
+			expect(joinedPlain).not.toContain("```");
+			expect(joinedPlain).not.toContain("text");
+			expectNoRoundedFrameGlyphs(joinedPlain);
+			expect(codeRows).toHaveLength(4);
+			expect(codeRows.every(line => visibleWidth(line) === width)).toBe(true);
+			expect(codeRows.every(line => !BACKGROUND_SGR.test(line))).toBe(true);
+			const foregrounds = new Set(codeRows.flatMap(line => line.match(FOREGROUND_SGR) ?? []));
+			expect(foregrounds.size).toBeGreaterThan(0);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
+
+	it("keeps none-style long text fences collapsible without reintroducing raw fences", () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+			const component = new AssistantMessageComponent(
+				message([{ type: "text", text: fence(numberedRows(30), "text") }]),
+			);
+
+			const collapsed = renderPlain(component).join("\n");
+			expect(collapsed).toContain("row-01");
+			expect(collapsed).toContain("row-30");
+			expect(collapsed).not.toContain("row-15");
+			expect(collapsed).not.toContain("```");
+			expect(collapsed).not.toContain("text");
+			expectNoRoundedFrameGlyphs(collapsed);
+
+			(component as ExpandableAssistantMessageComponent).setExpanded(true);
+			const expanded = renderPlain(component).join("\n");
+			expect(expanded).toContain("row-15");
+			expect(expanded).toContain("row-30");
+			expect(expanded).not.toContain("more lines");
+			expect(expanded).not.toContain("```");
+			expect(expanded).not.toContain("text");
 		} finally {
 			setOutputBlockBorderStyle(previousBorderStyle);
 		}

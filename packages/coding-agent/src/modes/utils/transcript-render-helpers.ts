@@ -5,7 +5,7 @@
  * here keeps the two byte-for-byte identical.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import {
@@ -14,10 +14,8 @@ import {
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
-import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
-import type { HubIrcActivityEvent } from "../components/hub-activity-group";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
 
@@ -66,36 +64,6 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptB
 		block.addChild(new Text(line, 1, 0));
 	}
 	return block;
-}
-
-export function buildIrcActivityEvent(message: CustomOrHookMessage): HubIrcActivityEvent {
-	const details = (
-		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>
-	).details;
-	const kind =
-		message.customType === "irc:incoming"
-			? ("incoming" as const)
-			: message.customType === "irc:autoreply"
-				? ("autoreply" as const)
-				: ("relay" as const);
-	return {
-		kind,
-		from: details?.from,
-		to: details?.to,
-		body: kind === "incoming" ? details?.message : details?.body,
-		replyTo: details?.replyTo,
-		timestamp: message.timestamp,
-		sourceId: `${message.role}:${message.customType}:${message.timestamp}`,
-	};
-}
-
-/**
- * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
- * `irc:relay`) as a transcript card. `getExpanded` supplies the live
- * expanded-state getter for the cached card.
- */
-export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
-	return createIrcMessageCard(buildIrcActivityEvent(message), getExpanded, theme);
 }
 
 /**

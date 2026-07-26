@@ -43,22 +43,23 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		return uiTheme;
 	}
 
-	it("collapses a streaming write to a bounded tail and lifts the cap on expand", async () => {
-		// 40 lines > WRITE_STREAMING_PREVIEW_LINES (12): the head must be hidden
-		// while collapsed and the streaming edge (tail) kept visible.
+	it("collapses a streaming write to an omission-plus-tail detail budget and lifts the cap on expand", async () => {
+		// With the default detail budget at 3 body rows, collapsed streaming writes
+		// keep exactly 1 omission row plus the latest 2 source lines.
 		const comp = await makePendingWrite(40);
 
 		const collapsed = comp.render(80);
-		// Tail-anchored: the streaming edge (last lines) is visible...
+		const collapsedText = stripAnsi(collapsed.join("\n"));
+		expect(collapsedText).toContain("… (38 earlier lines)");
+		expect(hasLine(collapsed, 38)).toBe(false);
+		expect(hasLine(collapsed, 39)).toBe(true);
 		expect(hasLine(collapsed, 40)).toBe(true);
-		// ...but the head is capped away with an "earlier lines" marker.
 		expect(hasLine(collapsed, 1)).toBe(false);
-		expect(stripAnsi(collapsed.join("\n"))).toContain("earlier line");
 
 		comp.setExpanded(true);
 		const expanded = comp.render(80);
 		// Ctrl+O lifts the cap: the full file (head through tail) is shown,
-		// and the "earlier lines" marker is gone.
+		// and the earlier-lines marker is gone.
 		expect(hasLine(expanded, 1)).toBe(true);
 		expect(hasLine(expanded, 40)).toBe(true);
 		expect(stripAnsi(expanded.join("\n"))).not.toContain("earlier line");
@@ -66,11 +67,11 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		expect(expanded.length).toBeGreaterThan(collapsed.length);
 	});
 
-	it("does not cap a short streaming write that already fits the window", async () => {
-		const comp = await makePendingWrite(4);
+	it("does not cap a short streaming write that already fits the 2-line source window", async () => {
+		const comp = await makePendingWrite(2);
 		const collapsed = comp.render(80);
 		expect(hasLine(collapsed, 1)).toBe(true);
-		expect(hasLine(collapsed, 4)).toBe(true);
+		expect(hasLine(collapsed, 2)).toBe(true);
 		expect(stripAnsi(collapsed.join("\n"))).not.toContain("earlier line");
 	});
 	it("reuses the highlighted streaming body across frame renders", async () => {

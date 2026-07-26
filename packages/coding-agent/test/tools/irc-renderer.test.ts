@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { getThemeByName, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { type CoordinationDetails, createIrcMessageCard, hubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
@@ -38,13 +39,17 @@ const quoteColumns = (line: string, body: string, quoteBorder: string) => {
 };
 
 let previousLocale = getSettingsUiLocale();
+let previousBorderStyle = getOutputBlockBorderStyle();
 
 beforeEach(() => {
 	previousLocale = getSettingsUiLocale();
 	setSettingsUiLocale("en");
+	previousBorderStyle = getOutputBlockBorderStyle();
+	setOutputBlockBorderStyle("full");
 });
 
 afterEach(() => {
+	setOutputBlockBorderStyle(previousBorderStyle);
 	setSettingsUiLocale(previousLocale);
 });
 

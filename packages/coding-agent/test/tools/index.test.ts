@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
+
+const tempRoots: string[] = [];
 
 function createTestSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -23,6 +29,15 @@ function createSettingsWithOverrides(overrides: Partial<Record<SettingPath, unkn
 	});
 }
 
+async function createGitWorkspaceWithHead(): Promise<string> {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-codegraph-tools-"));
+	tempRoots.push(root);
+	await fs.mkdir(path.join(root, ".git", "refs", "heads"), { recursive: true });
+	await Bun.write(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+	await Bun.write(path.join(root, ".git", "refs", "heads", "main"), "0123456789abcdef0123456789abcdef01234567\n");
+	return root;
+}
+
 function createActiveGoalState() {
 	return {
 		enabled: true,
@@ -41,8 +56,9 @@ function createActiveGoalState() {
 }
 
 describe("createTools", () => {
-	afterEach(() => {
+	afterEach(async () => {
 		vi.restoreAllMocks();
+		await Promise.all(tempRoots.splice(0).map(dir => removeWithRetries(dir)));
 	});
 
 	it("creates all builtin tools by default", async () => {
@@ -157,30 +173,53 @@ describe("createTools", () => {
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 
-	it("keeps codegraph top-level while ordinary discoverable tools still mount under xd:// by default", async () => {
-		const xdevSession = createTestSession({
+	it("does not register codegraph for a non-git session by default", async () => {
+		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "tools.xdev": true }),
 		});
-		const xdevTools = await createTools(xdevSession);
-		const xdevNames = xdevTools.map(tool => tool.name);
+		const tools = await createTools(session);
+		const names = tools.map(tool => tool.name);
 
-		expect(xdevNames).toContain("codegraph");
-		expect(xdevNames).not.toContain("lsp");
-		expect(xdevSession.xdevRegistry).toBeDefined();
-		expect(xdevSession.xdevRegistry?.get("codegraph")).toBeUndefined();
-		expect(xdevSession.xdevRegistry?.get("lsp")).toBeDefined();
-		expect(xdevSession.isToolActive?.("codegraph")).toBe(true);
-
-		const noXdevSession = createTestSession({
-			settings: createSettingsWithOverrides({ "tools.xdev": false }),
-		});
-		const noXdevTools = await createTools(noXdevSession);
-		expect(noXdevTools.map(tool => tool.name)).toContain("codegraph");
-		expect(noXdevSession.xdevRegistry).toBeUndefined();
+		expect(names).not.toContain("codegraph");
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.get("codegraph")).toBeUndefined();
+		expect(session.xdevRegistry?.get("lsp")).toBeDefined();
+		expect(session.isToolActive?.("codegraph")).toBe(false);
 	});
 
-	it("keeps codegraph available when explicitly requested under xdev", async () => {
+	it("does not register codegraph when a non-git session explicitly requests it", async () => {
 		const session = createTestSession({
+			settings: createSettingsWithOverrides({ "tools.xdev": true }),
+		});
+		const tools = await createTools(session, ["codegraph"]);
+
+		expect(tools).toEqual([]);
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.isToolActive?.("codegraph")).toBe(false);
+	});
+
+	it("keeps codegraph top-level and out of xd:// for git sessions with a resolvable HEAD", async () => {
+		const cwd = await createGitWorkspaceWithHead();
+		const session = createTestSession({
+			cwd,
+			settings: createSettingsWithOverrides({ "tools.xdev": true }),
+		});
+		const tools = await createTools(session);
+		const names = tools.map(tool => tool.name);
+
+		expect(names).toContain("codegraph");
+		expect(names).not.toContain("lsp");
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.get("codegraph")).toBeUndefined();
+		expect(session.xdevRegistry?.get("lsp")).toBeDefined();
+		expect(session.isToolActive?.("codegraph")).toBe(true);
+	});
+
+	it("keeps codegraph available when a git session explicitly requests it under xdev", async () => {
+		const cwd = await createGitWorkspaceWithHead();
+		const session = createTestSession({
+			cwd,
 			settings: createSettingsWithOverrides({ "tools.xdev": true }),
 		});
 		const tools = await createTools(session, ["codegraph"]);

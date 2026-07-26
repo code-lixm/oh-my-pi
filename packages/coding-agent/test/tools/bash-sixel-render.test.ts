@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
@@ -22,8 +22,15 @@ const terminal = TERMINAL as unknown as MutableTerminalInfo;
 
 describe("bashToolRenderer", () => {
 	const originalProtocol = TERMINAL.imageProtocol;
+	let previousBorderStyle = getOutputBlockBorderStyle();
+
+	beforeEach(() => {
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setOutputBlockBorderStyle("full");
+	});
 
 	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
 		vi.restoreAllMocks();
 		terminal.imageProtocol = originalProtocol;
 	});

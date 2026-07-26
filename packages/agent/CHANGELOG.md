@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema and replay the generated summary directly as continuation context without an additional resume wrapper.
+
 ## [17.1.2] - 2026-07-24
 
 ### Added

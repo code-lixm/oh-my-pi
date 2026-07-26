@@ -157,6 +157,9 @@ const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
 // deliberate human double-tap is always tens of milliseconds apart.
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
+const ESCAPE_CANCEL_CONFIRM_WINDOW_MS = 2_000;
+
+type EscapeCancellationTarget = `maintenance:${0 | 1}${0 | 1}${0 | 1}` | "loop" | "collab" | "main" | "bash" | "eval";
 
 export class InputController {
 	constructor(
@@ -182,6 +185,9 @@ export class InputController {
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
 	#leftTapCount = 0;
+	#escapeCancellationTarget: EscapeCancellationTarget | undefined;
+	#escapeCancellationArmedAt = 0;
+	#escapeCancellationSessionSubscribed = false;
 	// Sequential index for `local://paste-N.md` references created by the large-paste
 	// flow. Seeded from 0 and bumped past existing paste files.
 	#pasteCounter = 0;
@@ -231,12 +237,43 @@ export class InputController {
 		const unsubscribe = tinyTitleClient.onProgress(update);
 	}
 
+	#clearEscapeCancellation(): void {
+		this.#escapeCancellationTarget = undefined;
+		this.#escapeCancellationArmedAt = 0;
+	}
+
+	#confirmEscapeCancellation(target: EscapeCancellationTarget): boolean {
+		const now = Date.now();
+		if (
+			this.#escapeCancellationTarget === target &&
+			now - this.#escapeCancellationArmedAt <= ESCAPE_CANCEL_CONFIRM_WINDOW_MS
+		) {
+			this.#clearEscapeCancellation();
+			return true;
+		}
+
+		this.#escapeCancellationTarget = target;
+		this.#escapeCancellationArmedAt = now;
+		this.ctx.lastEscapeTime = 0;
+		this.ctx.showStatus(tSettingsUi("Press Esc again within 2s to cancel the active task."));
+		return false;
+	}
+
 	#abortStreamingTurn(): void {
 		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
 	setupKeyHandlers(): void {
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
+		if (!this.#escapeCancellationSessionSubscribed) {
+			this.#escapeCancellationSessionSubscribed = true;
+			this.ctx.session.subscribe(event => {
+				// `agent_start` may arrive after the first Esc for the same submitted
+				// turn. Reset only when a turn ends so an armed confirmation cannot
+				// carry into a later main-session task.
+				if (event.type === "agent_end") this.#clearEscapeCancellation();
+			});
+		}
 		if (!this.#focusedLeftTapListenerInstalled) {
 			this.#focusedLeftTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
@@ -284,7 +321,7 @@ export class InputController {
 			// touching loop mode, maintenance, or the underlying main turn.
 			// Active context maintenance owns Esc: auto/manual compaction,
 			// handoff generation, and auto-retry backoff all advertise
-			// "(esc to cancel)". Dispatch on live session state instead of
+			// "(esc twice to cancel)". Dispatch on live session state instead of
 			// swapping onEscape handlers — interleaved start/end events used
 			// to clobber the single saved-handler slot (auto-compaction start
 			// → /compact → auto end → manual finally), leaving Esc wired to a
@@ -298,39 +335,44 @@ export class InputController {
 			// stays cancellable from the main view (focused submit gates /compact
 			// and handoff, so manual maintenance is main-only anyway).
 			if (this.ctx.hasActiveBtw() && this.ctx.handleBtwEscape()) {
+				this.#clearEscapeCancellation();
 				return;
 			}
 			if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
+				this.#clearEscapeCancellation();
 				return;
 			}
 
 			if (!this.ctx.focusedAgentId) {
 				const viewSession = this.ctx.viewSession;
-				let aborted = false;
-				if (viewSession.isCompacting) {
-					safeAbort("compaction", () => viewSession.abortCompaction());
-					aborted = true;
+				if (viewSession.isCompacting || viewSession.isGeneratingHandoff || viewSession.isRetrying) {
+					const target =
+						`maintenance:${viewSession.isCompacting ? 1 : 0}${viewSession.isGeneratingHandoff ? 1 : 0}${viewSession.isRetrying ? 1 : 0}` as const;
+					if (!this.#confirmEscapeCancellation(target)) return;
+					if (viewSession.isCompacting) {
+						safeAbort("compaction", () => viewSession.abortCompaction());
+					}
+					if (viewSession.isGeneratingHandoff) {
+						safeAbort("handoff", () => viewSession.abortHandoff());
+					}
+					if (viewSession.isRetrying) {
+						safeAbort("retry", () => viewSession.abortRetry());
+					}
+					return;
 				}
-				if (viewSession.isGeneratingHandoff) {
-					safeAbort("handoff", () => viewSession.abortHandoff());
-					aborted = true;
-				}
-				if (viewSession.isRetrying) {
-					safeAbort("retry", () => viewSession.abortRetry());
-					aborted = true;
-				}
-				if (aborted) return;
 			}
 
 			if (vocalizer.isSpeaking()) {
 				// Playback from the completed response can overlap the next agent
 				// turn. Silence it before interrupting any ongoing main-turn work.
 				vocalizer.clear();
+				this.#clearEscapeCancellation();
 				this.ctx.lastEscapeTime = 0;
 				return;
 			}
 
 			if (this.ctx.loopModeEnabled) {
+				if (!this.#confirmEscapeCancellation("loop")) return;
 				this.ctx.pauseLoop();
 				if (this.ctx.session.isStreaming) {
 					this.#abortStreamingTurn();
@@ -343,6 +385,7 @@ export class InputController {
 				// Esc never interrupts the focused agent's turn: clear typed text,
 				// else return the view to the main session. Interrupt via empty
 				// steer-flush submit if needed.
+				this.#clearEscapeCancellation();
 				if (this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText("");
 					this.ctx.ui.requestRender();
@@ -356,33 +399,43 @@ export class InputController {
 				// session is never streaming, so the native abort path below would
 				// no-op.
 				if (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation) {
-					this.ctx.collabGuest.sendAbort();
+					if (this.#confirmEscapeCancellation("collab")) this.ctx.collabGuest.sendAbort();
+				} else {
+					this.#clearEscapeCancellation();
 				}
 				return;
 			}
 			if (this.ctx.loadingAnimation) {
+				if (!this.#confirmEscapeCancellation("main")) return;
 				if (this.ctx.cancelPendingSubmission()) {
 					return;
 				}
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.ctx.session.isBashRunning) {
+				if (!this.#confirmEscapeCancellation("bash")) return;
 				this.ctx.session.abortBash();
 			} else if (this.ctx.isBashMode) {
+				this.#clearEscapeCancellation();
 				this.ctx.editor.setText("");
 				this.ctx.isBashMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isEvalRunning) {
+				if (!this.#confirmEscapeCancellation("eval")) return;
 				this.ctx.session.abortEval();
 			} else if (this.ctx.isPythonMode) {
+				this.#clearEscapeCancellation();
 				this.ctx.editor.setText("");
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isStreaming) {
+				if (!this.#confirmEscapeCancellation("main")) return;
 				this.#abortStreamingTurn();
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc must not destroy an in-progress draft.
 				this.ctx.lastEscapeTime = 0;
+				this.#clearEscapeCancellation();
 			} else {
+				this.#clearEscapeCancellation();
 				// Double-interrupt with empty editor triggers /tree, /branch, or nothing based on setting
 				const action = settings.get("doubleEscapeAction");
 				if (action !== "none") {
@@ -757,7 +810,9 @@ export class InputController {
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.ctx.session.isBashRunning) {
-						this.ctx.showWarning(tSettingsUi("A bash command is already running. Press Esc to cancel it first."));
+						this.ctx.showWarning(
+							tSettingsUi("A bash command is already running. Press Esc twice to cancel it first."),
+						);
 						this.ctx.editor.setText(text);
 						return;
 					}
@@ -777,7 +832,7 @@ export class InputController {
 				if (code) {
 					if (this.ctx.session.isEvalRunning) {
 						this.ctx.showWarning(
-							tSettingsUi("A Python execution is already running. Press Esc to cancel it first."),
+							tSettingsUi("A Python execution is already running. Press Esc twice to cancel it first."),
 						);
 						this.ctx.editor.setText(text);
 						return;

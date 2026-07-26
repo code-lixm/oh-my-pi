@@ -40,14 +40,13 @@ function buildAssistantCodeBlockOptions(): CodeBlockDisplayOptions | undefined {
 		expandKeyLabel,
 		omitHintTemplate,
 	};
-	if (borderStyle === "accent") {
+	if (isBorderlessOutputStyle(borderStyle)) {
 		return {
 			...common,
 			frame: false,
 			plainPaddingX: 0,
 		};
 	}
-	if (isBorderlessOutputStyle(borderStyle)) return undefined;
 	return { ...common, frame: true };
 }
 

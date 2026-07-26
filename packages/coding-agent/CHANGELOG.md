@@ -21,6 +21,8 @@
 - Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
 ### Changed
 
+- Changed automatic compaction to default to `context-full`, producing an anchored model-generated continuation summary like OpenCode; `snapcompact` remains available as an explicit strategy.
+
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
 - Changed completed Grep details to show one compact `path:line-ranges` row per file, omit repeated source snippets, and remove redundant scope metadata while preserving full model-facing search output.
 - Changed the `/last` fullscreen shortcut guide from a standalone footer to the top-right header, returning the freed row to the transcript viewport.
@@ -33,13 +35,22 @@
 - Changed focused subagent sessions into fullscreen read-only transcript views with dedicated agent navigation, model/status metadata, compact progress HUDs, and current-request average output TPS; direct user prompts now remain exclusive to the main agent.
 - Changed `retry.maxRetries` in `/settings` from fixed presets to a validated numeric input, allowing any non-negative integer API-error retry limit.
 
+- Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
+
 ### Fixed
+- Fixed battery-style status-line usage disappearing for providers that report a concrete currency balance without a percentage; it now falls back to the formatted balance while still hiding reports with no quantitative value.
+- Fixed `ask.timeout` inventing answers from the first or currently highlighted option; it now auto-selects only an explicit valid `recommended` option, preserves existing multi-select answers, and keeps waiting when any unanswered question has no recommendation.
+- Fixed accidental task termination from a single Esc press by requiring a second Esc within two seconds before cancelling pending submissions, active model turns, local commands, loop runs, maintenance, or collaborative host work.
 - Fixed `task.maxConcurrency` applying independently to every nested agent session: one root-session scheduler now caps complete running/runnable subagent lifecycles across initial batches, nested spawns, Eval agents, Hub/IRC wakeups, follow-ups, and persisted revivals; excess children remain pending, blocking parents release their slots without becoming TTL-parkable, and `task.maxRequestConcurrency` remains the separate provider-request safety cap.
 - Fixed completed subagents repeatedly waking each other through acknowledgement-only Hub messages; incoming IRC and Hub prompts now require silence for acknowledgements, thanks, and thread-closure messages.
+- Fixed bursts of subagent Hub/IRC feedback creating stacks of transient `Agent communication / pending` transcript cards; message-only waits are now visually silent, incoming feedback is deduplicated per agent into the anchored Subagents HUD, and useful sends, job waits, and communication errors remain in the transcript.
 - Fixed sessions silently resuming after an OMP process vanished without recording `session_exit`: persisted process run boundaries now distinguish abrupt termination from normal stop/switch/handoff paths and surface the interrupted turn as an explicit aborted assistant diagnostic.
-- Fixed completed CodeGraph results dropping their search icon and rendering with an accent surface, duplicate call row, and excess vertical spacing instead of the compact bare Read/Grep layout.
+- Fixed completed CodeGraph results dropping their search icon and rendering with an accent surface, duplicate call row, excess vertical spacing, and separate bullet-style entry/file coverage sections; they now use the compact bare Read/Grep layout with localized counts and adjacent icon tree rows carrying linked paths, line numbers, and symbol metadata.
+- Fixed CodeGraph being exposed when the workspace cannot resolve a usable index location and reporting runtime fallbacks as tool errors; availability is now gated before prompt construction, transient downgrades remain non-error results, and same-process index operations serialize without colliding on metadata temp files.
 - Fixed accidental Ctrl+D termination by disabling the default exit shortcut; use `/exit` or configure `app.exit` explicitly.
 - Fixed accent-style detailed `read` results missing their rail and Hub job-wait snapshots using inconsistent vertical spacing across border styles.
+- Fixed smooth-streamed thinking occasionally touching the following accent tool card when a tool call arrived before the reveal caught up; tool-call timeline boundaries now finish the leading assistant segment before mounting the separate tool block, preserving the transcript-owned gap.
+- Fixed committed transcript history retaining the previous palette after a finalized theme change; non-preview changes now invalidate and replay the complete semantic transcript instead of repainting only the live viewport, including terminal multiplexer sessions.
 
 - Fixed repeated OpenAI provider errors rendering as separate transcript rows when only the per-attempt request ID differed; equivalent adjacent failures now collapse under one repeat count.
 - Fixed the primary agent mechanically following Advisor interruptions and re-entering user-rejected or evidence-disproved approaches; prompts now require regression split-point analysis, reconciliation with current evidence and completed actions, and new evidence before retrying a rejected path.
@@ -58,9 +69,10 @@
 - Fixed successful Hub message-wait timeouts leaving a standalone `IRC / no reply` card in live and rebuilt transcripts; empty waits now disappear while send timeouts, errors, replies, and job waits remain visible.
 - Fixed completed eval cells rendering structured `display()` JSON twice—once in the cell output and again as a detached tree beneath the card; cells now keep the single in-cell output while legacy no-cell results retain the tree fallback.
 - Fixed collapsed completed subagent cards repeating the completed JSON envelope; collapsed cards now hide the envelope status while expanded details still show the raw JSON.
-- Fixed `display.borderStyle: "none"` leaving framed Assistant Markdown code blocks and inconsistent Bash output chrome; borderless Bash cards now render as identity, command, blank line, and output without an `Output` subsection, while full and horizontal styles remain unchanged.
+- Fixed `display.borderStyle: "none"` showing raw Assistant Markdown code fences and inconsistent Bash output chrome; Assistant code now uses a copy-safe plain surface without fence or language-label chrome, while borderless Bash cards render as identity, command, blank line, and output without an `Output` subsection.
 - Fixed code and Markdown execution cells retaining an `Output` separator bar between source content and output; the sections now share one frame with a single blank row between them.
 - Fixed settings UI chrome (`TAB_METADATA` tab labels, `Model Role Storage` / `Enforce Seen-Line Guard` / `Generic Task Prewalk` groups, labels and descriptions, and the `options` arrays for Symbol Preset, Status Line preset/separator, output limits, sampling knobs, in-band tool dialects, model/image/memory/completion strategies, fallback chains, etc.) bypassing the configured `displayLanguage`; wrapped the remaining bare strings in `tSettingsUi(...)` and added matching translations.
+- Fixed recently added `/settings` labels, descriptions, and imported option catalogs (thinking levels, service tiers, speech models, search/image providers, and tiny-model runtime choices) falling back to English under `displayLanguage: "zh-CN"`; added contract coverage for locale keys, placeholders, and provider option-value stability.
 - Fixed setup wizard chrome (common header/footer, splash skip hint, theme/glyph/provider scene titles + subtitles + curated items, `Sign in` tab OAuth flow strings, `Web search` provider list/selection state, `outro` transition copy, `Plan Review` overlay title, extension dashboard `ALL` tab + kind display names) bypassing the configured `displayLanguage`; wrapped bare strings in `tSettingsUi(...)` and used getters / factory functions so the wizard refreshes its localized chrome after `displayLanguage` is changed.
 - Fixed the Plan Review execution-model slider rendering raw role identifiers under localized UIs; built-in roles now use the same localized display labels as the model selector while selection remains role/index-driven.
 - Fixed short single-phase todo cards collapsing to only the final open task during progress updates despite their header reporting the full task count.

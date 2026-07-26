@@ -17,8 +17,8 @@ import { getDefault } from "../config/settings-schema";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { Hasher } from "../tui/utils";
-import { shortenPath } from "../utils/path-display";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
+import { shortenPath } from "../utils/path-display";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
@@ -68,6 +68,29 @@ export const PREVIEW_LIMITS = {
 	/** Max diff lines shown when collapsed (edit tool) */
 	DIFF_COLLAPSED_LINES: 40,
 } as const;
+
+/** Resolve the strict body-row budget shown below a collapsed tool header. */
+export function toolDetailMaxLines(): number {
+	const activeSettings = isSettingsInitialized() ? settings : undefined;
+	const configured = activeSettings?.get("display.toolDetailMaxLines") ?? getDefault("display.toolDetailMaxLines");
+	return Math.max(3, Math.floor(configured));
+}
+
+/** Keep both ends of detail rows while counting the omission marker in the budget. */
+export function truncateMiddleLines(
+	lines: readonly string[],
+	maxLines: number,
+	formatOmission: (hiddenCount: number) => string = hiddenCount =>
+		tSettingsUi("… {count} lines omitted", { count: hiddenCount }),
+): string[] {
+	const limit = Math.max(3, Math.floor(maxLines));
+	if (lines.length <= limit) return [...lines];
+	const visibleCount = limit - 1;
+	const headCount = Math.ceil(visibleCount / 2);
+	const tailCount = Math.floor(visibleCount / 2);
+	const hiddenCount = lines.length - headCount - tailCount;
+	return [...lines.slice(0, headCount), formatOmission(hiddenCount), ...lines.slice(-tailCount)];
+}
 
 /** Default number of terminal output rows shown before expansion. */
 export const DEFAULT_TERMINAL_PREVIEW_LINES = 10;
@@ -674,7 +697,6 @@ export function truncateDiffByHunk(
 		hiddenLines: Math.max(0, lines.length - kept.length),
 	};
 }
-
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {
 	if (!workdir) return undefined;

@@ -169,6 +169,13 @@ describe("Settings", () => {
 			expect(getDefault("tui.markdownHeadingStyle")).toBe("compact");
 			expect(getEnumValues("tui.markdownHeadingStyle")).toEqual(["compact", "hierarchical"]);
 		});
+
+		it("defaults compaction strategy to context-full", () => {
+			const settings = Settings.isolated();
+
+			expect(settings.get("compaction.strategy")).toBe("context-full");
+			expect(getDefault("compaction.strategy")).toBe("context-full");
+		});
 	});
 
 	describe("get()", () => {

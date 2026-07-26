@@ -121,6 +121,13 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(value, max));
 }
 
+function getValidRecommendedIndex(question: ExtensionAskDialogQuestion): number | undefined {
+	const { recommended } = question;
+	if (typeof recommended !== "number" || !Number.isInteger(recommended)) return undefined;
+	if (recommended < 0 || recommended >= question.options.length) return undefined;
+	return recommended;
+}
+
 function stripRecommendedSuffix(label: string): string {
 	const suffix = " (Recommended)";
 	return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
@@ -348,20 +355,24 @@ export class AskDialogComponent implements Component {
 		private readonly options: AskDialogOptions = {},
 	) {
 		this.#states = questions.map(question => {
-			const recommended = Number.isInteger(question.recommended) ? question.recommended : 0;
+			const recommended = getValidRecommendedIndex(question) ?? 0;
 			const maxIndex = Math.max(0, question.options.length - 1);
 			return {
 				selectedOptions: new Set<string>(),
 				customInput: undefined,
 				note: undefined,
 				noteRowKey: undefined,
-				cursorIndex: clamp(recommended ?? 0, 0, maxIndex),
+				cursorIndex: clamp(recommended, 0, maxIndex),
 				scrollOffset: 0,
 				manualScroll: false,
 				timedOut: false,
 			};
 		});
-		if (options.timeout && options.timeout > 0) {
+		if (
+			options.timeout &&
+			options.timeout > 0 &&
+			questions.some(question => getValidRecommendedIndex(question) !== undefined)
+		) {
 			this.#countdown = new CountdownTimer(
 				options.timeout,
 				options.tui,
@@ -899,17 +910,21 @@ export class AskDialogComponent implements Component {
 			const question = this.questions[index];
 			const state = this.#states[index];
 			if (!question || !state) continue;
-			if (state.selectedOptions.size === 0 && state.customInput === undefined) {
-				const noteMatch = /^option:(\d+)$/.exec(state.noteRowKey ?? "");
-				const notedIndex = noteMatch ? Number.parseInt(noteMatch[1], 10) : Number.NaN;
-				const fallbackIndex =
-					Number.isInteger(notedIndex) && question.options[notedIndex]
-						? notedIndex
-						: clamp(question.recommended ?? 0, 0, Math.max(0, question.options.length - 1));
-				const fallback = question.options[fallbackIndex];
-				if (fallback) state.selectedOptions.add(fallback.label);
-				state.timedOut = true;
-			}
+			if (state.selectedOptions.size > 0 || state.customInput !== undefined) continue;
+			const recommended = getValidRecommendedIndex(question);
+			if (recommended === undefined) continue;
+			const fallback = question.options[recommended];
+			if (!fallback) continue;
+			state.selectedOptions.add(fallback.label);
+			state.timedOut = true;
+		}
+		if (this.#unansweredCount() > 0) {
+			// The timeout is a one-shot default, not permission to invent an
+			// answer. Questions without a valid recommendation remain paused.
+			this.#remainingSeconds = undefined;
+			this.#countdown = undefined;
+			this.#requestRender();
+			return;
 		}
 		this.#finishSubmit();
 	}

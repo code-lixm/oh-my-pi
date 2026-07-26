@@ -22,6 +22,8 @@ export interface FileListOptions {
 	files: FileEntry[];
 	expanded?: boolean;
 	maxCollapsed?: number;
+	maxCollapsedLines?: number;
+	truncateFrom?: "start" | "end" | "middle";
 	showIcons?: boolean;
 	/** When provided, called with the entry's absolute path, ANSI-styled display string, and optional
 	 * target line to wrap filesystem paths in an OSC 8 hyperlink. Only invoked when {@link FileEntry.absPath} is set. */
@@ -29,13 +31,23 @@ export interface FileListOptions {
 }
 
 export function renderFileList(options: FileListOptions, theme: Theme): string[] {
-	const { files, expanded = false, maxCollapsed = 8, showIcons = true, hyperlinkFn } = options;
+	const {
+		files,
+		expanded = false,
+		maxCollapsed = 8,
+		maxCollapsedLines,
+		truncateFrom,
+		showIcons = true,
+		hyperlinkFn,
+	} = options;
 
 	return renderTreeList(
 		{
 			items: files,
 			expanded,
 			maxCollapsed,
+			maxCollapsedLines,
+			truncateFrom,
 			itemType: "file",
 			renderItem: entry => {
 				const isDirectory = entry.isDirectory ?? entry.path.endsWith("/");

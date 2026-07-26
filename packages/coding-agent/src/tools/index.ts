@@ -439,7 +439,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
 	hub: s => new HubTool(s),
-	codegraph: s => new CodeGraphTool(s),
+	codegraph: CodeGraphTool.createIf,
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
@@ -647,6 +647,12 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		}),
 	);
 	let tools = baseResults.filter((r): r is Tool => r !== null);
+	const builtActiveToolNames = new Set(tools.map(tool => tool.name));
+	if (session.setActiveToolNames) {
+		session.setActiveToolNames(builtActiveToolNames);
+	} else {
+		session.isToolActive = name => builtActiveToolNames.has(name);
+	}
 
 	// Ordinary sessions use xd:// for discoverable built-ins, custom tools, and
 	// MCP tools. Structured children must expose only their host-provided names,
