@@ -102,7 +102,7 @@ export interface AgentSessionConfig {
 	settings: Settings;
 	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
 	autoApprove?: boolean;
-	/** Models to cycle through with Ctrl+P (from --models flag). */
+	/** Models to cycle through with Tab/Shift+Tab (from --models flag). */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;

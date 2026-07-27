@@ -164,7 +164,7 @@ describe("ModelPicker", () => {
 		expect(onPick.mock.calls[0]?.[0]?.id).toBe("bb-model");
 	});
 
-	test("shows and applies ctrl+p quick roles when search starts with @", () => {
+	test("shows and applies quick-role cycle suggestions when search starts with @", () => {
 		const smol = makeModel("test", "smol-model");
 		const slow = makeModel("test", "slow-model");
 		const quickRoles: ResolvedRoleModel[] = [

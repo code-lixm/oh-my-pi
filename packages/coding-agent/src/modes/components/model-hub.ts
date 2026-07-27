@@ -95,7 +95,7 @@ export interface ModelHubCallbacks {
 	onFallbackChainChange?: (role: string, chain: string[]) => void;
 	/** Locked provider activation: forward to the /login flow. */
 	onLoginRequest?: (providerId: string) => void;
-	/** Persist a new quick-switch cycle order (the ctrl+p role cycle). */
+	/** Persist a new quick-switch model cycle order. */
 	onCycleOrderChange?: (order: string[]) => void;
 	onCancel: () => void;
 }
@@ -1090,7 +1090,7 @@ export class ModelHubComponent implements Component {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════
-	// Quick-switch cycle (ctrl+p) editing
+	// Quick-switch model cycle editing
 	// ═══════════════════════════════════════════════════════════════════════
 
 	#cycleOrder(): string[] {
@@ -1802,7 +1802,7 @@ export class ModelHubComponent implements Component {
 				value = theme.fg("dim", tSettingsUi("—"));
 			}
 
-			// Quick-cycle membership badge (`⟳2` = second stop of the ctrl+p cycle).
+			// Quick-cycle membership badge (`⟳2` = second stop of the model cycle).
 			const cycleIndex = cycleOrder.indexOf(role);
 			const cycleStyled = cycleIndex >= 0 ? theme.fg("accent", `${theme.icon.loop}${cycleIndex + 1}`) : "";
 
@@ -1818,10 +1818,10 @@ export class ModelHubComponent implements Component {
 		}
 
 		// Live preview of the quick-switch cycle, rendered with the exact
-		// segment track the ctrl+p status uses; the selected role's chip fills.
+		// segment track the model-cycle status uses; the selected role's chip fills.
 		while (lines.length < rows - 1) lines.push("");
 		if (rows >= 2) {
-			const cycleKey = getKeybindings().getKeys("app.model.cycleForward")[0] ?? "ctrl+p";
+			const cycleKey = getKeybindings().getKeys("app.model.cycleForward")[0] ?? "tab";
 			if (cycleOrder.length > 0) {
 				const selectedRow = this.#rolesRows[this.#roleIndex];
 				const selectedRole =

@@ -10,7 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-// Switching the active model (Ctrl+P role cycling, /models selection) must be a
+// Switching the active model (model/quick-role cycle, /models selection) must be a
 // cheap, synchronous operation. It used to call the async `getApiKey`, which can
 // block the event loop on a command-backed key program (`execSync`) or stall on
 // a network OAuth refresh. The real key is resolved lazily per request via the

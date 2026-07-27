@@ -1501,7 +1501,7 @@ export async function resolveModelScope(
 			continue;
 		}
 
-		// Scoped models (Ctrl+P cycling) carry concrete per-model overrides;
+		// Scoped models carry concrete per-model cycle overrides;
 		// `auto` lives on the session, so drop the sentinel here.
 		if (thinkingLevel === AUTO_THINKING) {
 			addScopedModel(model, undefined, false);

@@ -21,6 +21,8 @@
 - Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
 ### Changed
 
+- Changed interactive model-role cycling to use `Tab` for the next model and `Shift+Tab` for the previous model, with autocomplete retaining priority and thinking-level cycling moving to `Ctrl+P`.
+
 - Changed automatic compaction to default to `context-full`, producing an anchored model-generated continuation summary like OpenCode; `snapcompact` remains available as an explicit strategy.
 
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
@@ -38,6 +40,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed collapsed CodeGraph results to use the same single middle tree-omission row as Grep, preserving the first and last entries without an additional generic `lines omitted` row.
 - Fixed collapsed tree-shaped tool results losing the `├─` connector on the central middle-omission row, preserving visual continuity between the first and final sibling rows.
 - Fixed the central collapsed-detail wrapper truncating Hub and Todo results that own their visibility; both now bypass the outer budget while normal tool results remain capped.
 - Fixed battery-style status-line usage disappearing for providers that report a concrete currency balance without a percentage; it now falls back to the formatted balance while still hiding reports with no quantitative value.
@@ -87,6 +90,36 @@
 - Fixed ordinary user messages losing their configured `userMessageBg` after the initial turn, and accent tool cards painting their tint through the rightmost terminal column.
 - Fixed the working-loader shimmer band jumping several cells in a single render after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): the per-loader capped clock now caps the per-render wall delta to one normal render cycle (default 80 ms), discards the surplus, and tracks animation time separately from the wall clock so subsequent renders do not pay back the stall.
 - Fixed the advisor staleness caveat appended to notes when newer primary turns arrived after the reviewed transcript window being hard-coded in English: the markdown wrapper now goes through `tSettingsUi(...)` with a `zh-CN` translation, so the advisory and transcript reflect the active `displayLanguage` like the rest of the advisor chrome.
+## [17.1.5] - 2026-07-27
+
+### Added
+
+- Added a configurable per-request timeout for the `inspect_image` tool (`inspect_image.timeoutMs`, default 5 minutes; set to 0 to disable) so a stalled vision-model provider fails fast with a clear error instead of blocking until manual abort ([#4165](https://github.com/can1357/oh-my-pi/issues/4165)).
+
+### Changed
+
+- Reduced default startup resident memory by constructing the default-off ComputerTool ArkType schema only on first parameter access, then reusing it across tool instances without changing validation or tool behavior ([#6742](https://github.com/can1357/oh-my-pi/pull/6742) by [@usr-bin-roygbiv](https://github.com/usr-bin-roygbiv)).
+- Reduced startup CPU and memory by loading the bundled changelog only when needed, while preserving source, npm bundle, standalone binary, and native absolute-path fallback resolution.
+- Moved PTY log replay into the shared project launch broker, so normal CLI and Hub startup no longer load the xterm runtime while launch logs return validated rendered terminal rows.
+
+### Fixed
+
+- Fixed DeepSeek V4 Flash and Step 3.7 Flash models using hashline edit mode by default despite repeatedly misreading its range grammar; both now use the simpler replace-mode fallback unless explicitly overridden ([#6671](https://github.com/can1357/oh-my-pi/issues/6671)).
+- Fixed an Ask form appearing while the main prompt contains a draft hiding that text and consuming the next in-flight keystroke. The draft now remains visible and keeps receiving input until it is submitted or cleared; only then do form controls activate ([#6737](https://github.com/can1357/oh-my-pi/issues/6737)).
+- Fixed `glob` rejecting safe `memory://root/<directory>/**` patterns. Memory globs now resolve their directory prefix inside the project memory root while rejecting traversal and percent-encoded path separators across the complete glob path.
+- Fixed `omp --resume <id>` prompting to fork sessions from another existing directory instead of switching the process and cwd-scoped settings into the resumed session's recorded directory ([#6752](https://github.com/can1357/oh-my-pi/issues/6752)).
+- Fixed deferred CLI model roles resolving ambiguous bare model IDs to a preferred but unauthenticated provider instead of the authenticated provider selected by the eager path ([#6727](https://github.com/can1357/oh-my-pi/issues/6727)).
+- Fixed Windows sessions crashing with an unhandled `EPIPE: broken pipe, write` when an LSP server closed its stdin between filesystem mutations; LSP writes now observe asynchronous `FileSink.write()` failures and route them through the existing request/notification failure path.
+- Fixed the bash tool's `stat` builtin failing on native Windows with `stat: unsupported on this platform` (exit 1) for every invocation. The vendored `uu-stat` now ships a Windows-native backend that maps the GNU format directives onto `std::fs::Metadata`, the `windows_by_handle` metadata extensions (inode, hard-link count, and device via `GetFileInformationByHandle`), and the Win32 volume APIs for `--file-system` mode; Unix behavior is unchanged ([#6723](https://github.com/can1357/oh-my-pi/issues/6723)).
+- Fixed auto-retry wedging the session after an assistant-tail removal miss: when a context rebuild recreated the failed turn's message object, the identity-keyed cleanup logged `assistant removal missed` but the retry still scheduled `continue()`, which rejected the terminal assistant error message locally (`Cannot continue from message role: assistant`) before any provider request — `auto_retry_end` never fired, the TUI kept showing retry progress, and the in-flight `prompt()` hung until a manual follow-up. The retry path now strips a still-failed assistant tail positionally after the backoff, and a continuation that still fails locally closes the retry saga with a failed `auto_retry_end` ([#5382](https://github.com/can1357/oh-my-pi/issues/5382)).
+- Fixed native Anthropic web-search history being recursively truncated during session persistence or retained under a different user turn, preserving opaque replay bytes across reload and stripping them on reparent ([#6703](https://github.com/can1357/oh-my-pi/issues/6703)).
+- Fixed malformed or temporarily unreadable `config.yml` files being treated as empty settings and then overwritten by the next setting change, which could permanently erase broker tokens, model roles, and provider configuration. Invalid YAML is now moved to a timestamped `.broken-*` backup, read failures abort without touching the source, pending changes remain retryable with the last successfully loaded settings, atomic writes preserve symlink targets and handle Windows `EPERM` replacement, concurrent startup failures are fully observed and quarantine races fail closed, and `omp config set/reset` waits for persistence before reporting success.
+- Fixed mounted MCP tools being hard to invoke when server or plugin guidance names their original calls: sessions now include one bounded, exact original-name-to-`xd://` route map for every live mounted MCP tool—including servers without initialize instructions—and refresh it as catalogs change without disabling schema virtualization.
+- Fixed `inspect_image` blocking indefinitely when the vision-model API stalls by combining the caller's abort signal with an `AbortSignal.timeout()` and surfacing a distinct timeout `ToolError` (separate from user-triggered abort) ([#4165](https://github.com/can1357/oh-my-pi/issues/4165)).
+- Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
+- Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
+- Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
+
 ## [17.1.4] - 2026-07-26
 
 ### Added
@@ -100,7 +133,6 @@
 
 ### Fixed
 
-- Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
 - Fixed dragging an image whose path contains unescaped spaces (e.g. macOS screenshot names like `Screenshot 2026-07-24 at 1.55.12 PM.png`) into the terminal — the bracketed-paste image extraction route now has the same whole-text-as-path fallback as the clipboard keybind route, so both routes share identical detection and attach the image instead of inserting the raw path as literal text ([#6578](https://github.com/can1357/oh-my-pi/issues/6578)). The shared fallback only claims payloads that hold a single path: one carrying a second absolute-path anchor after unescaped whitespace (`/tmp/a.png /tmp/b shot.png` — dragging two files at once when either name has spaces) now pastes as text on both routes instead of being fused into one unresolvable path, which on the clipboard route previously attached nothing and swallowed the text behind an "Image not found" status.
 - Fixed transient reasonless request aborts that arrived after a tool call finished streaming ending the turn instead of entering recovery, which left edit calls and task subagents dead until the user manually resumed. The session now continues from the synthetic unexecuted tool result under the normal retry policy without replaying completed side effects ([#6668](https://github.com/can1357/oh-my-pi/issues/6668)).
 - Fixed prewalk silently dropping a same-model hand-off that only lowers the thinking level: the arm/switch guard compared model identity alone and discarded the resolved `thinkingLevel`, so a legal effort-downgrade target (e.g. `prewalk: "@task"` resolving to the same model at a cheaper effort) never applied and the session paid the plan/continue nudges for nothing. Prewalk now compares `(provider, id, effective thinking level)`, applies effort-only hand-offs, and emits a notice on a genuine no-op instead of returning silently ([#6659](https://github.com/can1357/oh-my-pi/issues/6659)).

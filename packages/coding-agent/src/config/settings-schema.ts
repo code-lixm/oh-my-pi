@@ -3,6 +3,7 @@ import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { tSettingsUi } from "../i18n/settings-locale";
+import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS, LIVE_VOICE_VALUES } from "../live/voices";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
@@ -4340,6 +4341,26 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"inspect_image.timeoutMs": {
+		type: "number",
+		default: 300_000,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Execution"),
+			label: tSettingsUi("Inspect Image Timeout"),
+			description: tSettingsUi(
+				"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
+			),
+			options: [
+				{ value: "0", label: tSettingsUi("Disabled") },
+				{ value: "60000", label: tSettingsUi("1 minute") },
+				{ value: "120000", label: tSettingsUi("2 minutes") },
+				{ value: "180000", label: tSettingsUi("3 minutes") },
+				{ value: "300000", label: tSettingsUi("5 minutes") },
+			],
+		},
+	},
+
 	"checkpoint.enabled": {
 		type: "boolean",
 		default: false,
@@ -5396,6 +5417,18 @@ export const SETTINGS_SCHEMA = {
 					description: tSettingsUi("Priority serving path: higher reliability, premium per-token pricing"),
 				},
 			],
+		},
+	},
+	"live.voice": {
+		type: "enum",
+		values: LIVE_VOICE_VALUES,
+		default: DEFAULT_LIVE_VOICE,
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Live Voice"),
+			description: tSettingsUi("Voice used by Codex-backed realtime voice sessions"),
+			options: LIVE_VOICE_OPTIONS,
 		},
 	},
 	"providers.tts": {

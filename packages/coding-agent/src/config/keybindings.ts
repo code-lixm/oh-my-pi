@@ -108,7 +108,7 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Reset terminal display"),
 	},
 	"app.thinking.cycle": {
-		defaultKeys: "shift+tab",
+		defaultKeys: "ctrl+p",
 		description: tSettingsUi("Cycle thinking level"),
 	},
 	"app.thinking.toggle": {
@@ -116,11 +116,11 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Toggle thinking mode"),
 	},
 	"app.model.cycleForward": {
-		defaultKeys: "ctrl+p",
+		defaultKeys: "tab",
 		description: tSettingsUi("Cycle to next model"),
 	},
 	"app.model.cycleBackward": {
-		defaultKeys: "shift+ctrl+p",
+		defaultKeys: "shift+tab",
 		description: tSettingsUi("Cycle to previous model"),
 	},
 	"app.model.select": {
@@ -529,8 +529,27 @@ function migrateKeybindingsConfigFile(agentDir: string): void {
 	loadKeybindingsConfig(readPath, writeBackPath);
 }
 
-const FOLLOW_UP_KEYBINDING: AppKeybinding = "app.message.followUp";
-const WINDOWS_FOLLOW_UP_FALLBACK_KEY: KeyId = "ctrl+q";
+const USER_CLAIMABLE_DEFAULT_KEYBINDINGS = [
+	"app.message.followUp",
+	"app.thinking.cycle",
+	"app.model.cycleForward",
+	"app.model.cycleBackward",
+] as const satisfies readonly Keybinding[];
+
+function userClaimableDefaultKey(keybinding: Keybinding): KeyId | undefined {
+	switch (keybinding) {
+		case "app.message.followUp":
+			return "ctrl+q";
+		case "app.thinking.cycle":
+			return "ctrl+p";
+		case "app.model.cycleForward":
+			return "tab";
+		case "app.model.cycleBackward":
+			return "shift+tab";
+		default:
+			return undefined;
+	}
+}
 function keyListIncludes(keys: KeyId | KeyId[] | undefined, target: KeyId): boolean {
 	if (keys === undefined) return false;
 	const keyList = Array.isArray(keys) ? keys : [keys];
@@ -615,19 +634,22 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 
 	getKeys(keybinding: Keybinding): KeyId[] {
 		const keys = super.getKeys(keybinding);
-		if (keybinding === FOLLOW_UP_KEYBINDING) {
-			if (this.#userBindings[FOLLOW_UP_KEYBINDING] !== undefined) return keys;
-			if (!userBindingClaimsKey(this.#userBindings, WINDOWS_FOLLOW_UP_FALLBACK_KEY, FOLLOW_UP_KEYBINDING)) {
-				return keys;
-			}
-			return removeKey(keys, WINDOWS_FOLLOW_UP_FALLBACK_KEY);
+		const claimableDefaultKey = userClaimableDefaultKey(keybinding);
+		if (
+			claimableDefaultKey === undefined ||
+			this.#userBindings[keybinding] !== undefined ||
+			!userBindingClaimsKey(this.#userBindings, claimableDefaultKey, keybinding)
+		) {
+			return keys;
 		}
-		return keys;
+		return removeKey(keys, claimableDefaultKey);
 	}
 
 	getResolvedBindings(): KeybindingsConfig {
 		const resolved = super.getResolvedBindings();
-		resolved[FOLLOW_UP_KEYBINDING] = keyConfigValue(this.getKeys(FOLLOW_UP_KEYBINDING));
+		for (const keybinding of USER_CLAIMABLE_DEFAULT_KEYBINDINGS) {
+			resolved[keybinding] = keyConfigValue(this.getKeys(keybinding));
+		}
 		return resolved;
 	}
 

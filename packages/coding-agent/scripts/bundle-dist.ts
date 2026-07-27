@@ -64,8 +64,8 @@ function formatBytes(bytes: number): string {
 }
 
 async function cleanBundleOutputs(): Promise<void> {
-	// dist/ is shared with the dev binary (dist/omp); only remove this
-	// script's own outputs (entry bundle + copied native assets).
+	// dist/ is shared with the dev binary (dist/omp); only remove assets
+	// emitted by this script.
 	let entries: string[];
 	try {
 		entries = await fs.readdir(outDir);
@@ -77,7 +77,10 @@ async function cleanBundleOutputs(): Promise<void> {
 		entries
 			.filter(
 				entry =>
-					entry === "cli.js" || entry.endsWith(".node") || entry.endsWith(".wasm") || entry.endsWith(".js.map"),
+					entry === "cli.js" ||
+					entry.endsWith(".node") ||
+					entry.endsWith(".js.map") ||
+					(entry.startsWith("CHANGELOG-") && entry.endsWith(".md")),
 			)
 			.map(entry => fs.rm(path.join(outDir, entry), { force: true })),
 	);

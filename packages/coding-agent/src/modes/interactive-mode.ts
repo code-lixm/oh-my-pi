@@ -432,8 +432,8 @@ class AnchoredLiveContainer extends Container implements NativeScrollbackLiveReg
 	}
 }
 
-/** How long the ctrl+p model-role cycle chip track lingers above the editor
- *  before it auto-clears, mirroring the todo HUD's auto-clear timer. */
+/** How long the Tab/Shift+Tab model-role cycle chip track lingers above the
+ *  editor before it auto-clears, mirroring the todo HUD's auto-clear timer. */
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
@@ -2276,7 +2276,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Render the ctrl+p model-role cycle chip track into its own anchored
+	 * Render the Tab/Shift+Tab model-role cycle chip track into its own anchored
 	 * container (just above the editor), mirroring the todo HUD: the container is
 	 * cleared and rebuilt in place on every cycle, so rapid presses or concurrent
 	 * chat activity can never stack duplicate tracks into the scrollback.

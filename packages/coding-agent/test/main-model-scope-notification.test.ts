@@ -30,7 +30,7 @@ describe("buildModelScopeNotification", () => {
 	it("emits the startup model scope banner when startup.quiet is disabled", () => {
 		expect(buildModelScopeNotification([scopedModel("claude-sonnet-4-5")], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5 (Ctrl+P to cycle)",
+			message: "Model scope: claude-sonnet-4-5 (Tab/Shift+Tab to cycle)",
 		});
 	});
 	it("includes thinking suffix only when explicitly scoped", () => {
@@ -41,13 +41,12 @@ describe("buildModelScopeNotification", () => {
 		};
 		expect(buildModelScopeNotification([withExplicit], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5:high (Ctrl+P to cycle)",
+			message: "Model scope: claude-sonnet-4-5:high (Tab/Shift+Tab to cycle)",
 		});
 	});
-
 	it("hides the suffix when the level was filled from the global default", () => {
 		// `applyRootSessionOptions` fills `sessionOptions.scopedModels[*].thinkingLevel`
-		// with the global default for Ctrl+P cycling — the banner must not surface that
+		// with the global default for model cycling — the banner must not surface that
 		// default as if the user had scoped `:high`.
 		const withDefault = {
 			...scopedModel("claude-sonnet-4-5"),
@@ -56,7 +55,7 @@ describe("buildModelScopeNotification", () => {
 		};
 		expect(buildModelScopeNotification([withDefault], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5 (Ctrl+P to cycle)",
+			message: "Model scope: claude-sonnet-4-5 (Tab/Shift+Tab to cycle)",
 		});
 	});
 });

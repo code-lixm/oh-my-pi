@@ -399,7 +399,7 @@ type ScheduledAgentContinueOptions = {
 	generation?: number;
 	shouldContinue?: () => boolean;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
-	onError?: () => void;
+	onError?: (error: unknown) => void;
 };
 
 type SessionTitleSource = "auto" | "user";
@@ -2921,7 +2921,7 @@ export class AgentSession {
 						error: error instanceof Error ? error.message : String(error),
 						stack: error instanceof Error ? error.stack : undefined,
 					});
-					options?.onError?.();
+					options?.onError?.(error);
 				} finally {
 					this.#endInFlight();
 				}

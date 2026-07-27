@@ -49,6 +49,63 @@ describe("KeybindingsManager.getKeys", () => {
 
 		expect(keybindings.getKeys("app.exit")).toEqual(["ctrl+d"]);
 	});
+
+	it("returns the new default thinking and model cycle bindings", () => {
+		const keybindings = KeybindingsManager.inMemory();
+		const resolved = keybindings.getResolvedBindings();
+
+		expect(keybindings.getKeys("app.thinking.cycle")).toEqual(["ctrl+p"]);
+		expect(keybindings.getKeys("app.model.cycleForward")).toEqual(["tab"]);
+		expect(keybindings.getKeys("app.model.cycleBackward")).toEqual(["shift+tab"]);
+		expect(resolved["app.thinking.cycle"]).toBe("ctrl+p");
+		expect(resolved["app.model.cycleForward"]).toBe("tab");
+		expect(resolved["app.model.cycleBackward"]).toBe("shift+tab");
+	});
+
+	it("lets an explicit Ctrl+P binding claim the implicit thinking-cycle default until thinking-cycle is explicitly configured", () => {
+		const claimed = KeybindingsManager.inMemory({ "app.retry": "ctrl+p" });
+
+		expect(claimed.getKeys("app.thinking.cycle")).toEqual([]);
+		expect(claimed.getResolvedBindings()["app.thinking.cycle"]).toEqual([]);
+
+		const preserved = KeybindingsManager.inMemory({
+			"app.retry": "ctrl+p",
+			"app.thinking.cycle": "ctrl+p",
+		});
+
+		expect(preserved.getKeys("app.thinking.cycle")).toEqual(["ctrl+p"]);
+		expect(preserved.getResolvedBindings()["app.thinking.cycle"]).toBe("ctrl+p");
+	});
+
+	it("lets an explicit Tab binding claim the implicit model-forward default until model-forward is explicitly configured", () => {
+		const claimed = KeybindingsManager.inMemory({ "app.tools.expand": "tab" });
+
+		expect(claimed.getKeys("app.model.cycleForward")).toEqual([]);
+		expect(claimed.getResolvedBindings()["app.model.cycleForward"]).toEqual([]);
+
+		const preserved = KeybindingsManager.inMemory({
+			"app.tools.expand": "tab",
+			"app.model.cycleForward": "tab",
+		});
+
+		expect(preserved.getKeys("app.model.cycleForward")).toEqual(["tab"]);
+		expect(preserved.getResolvedBindings()["app.model.cycleForward"]).toBe("tab");
+	});
+
+	it("lets an explicit Shift+Tab binding claim the implicit model-backward default until model-backward is explicitly configured", () => {
+		const claimed = KeybindingsManager.inMemory({ "app.tools.expand": "shift+tab" });
+
+		expect(claimed.getKeys("app.model.cycleBackward")).toEqual([]);
+		expect(claimed.getResolvedBindings()["app.model.cycleBackward"]).toEqual([]);
+
+		const preserved = KeybindingsManager.inMemory({
+			"app.tools.expand": "shift+tab",
+			"app.model.cycleBackward": "shift+tab",
+		});
+
+		expect(preserved.getKeys("app.model.cycleBackward")).toEqual(["shift+tab"]);
+		expect(preserved.getResolvedBindings()["app.model.cycleBackward"]).toBe("shift+tab");
+	});
 });
 
 describe("legacy keyText", () => {

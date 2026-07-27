@@ -12,7 +12,7 @@
 在消息里说 `workflowz`，可以在 eval 里用并行子代理驱动任务，还会看到高亮
 同一 provider 可以登录多个账号，再执行一次 `/login`，omp 会自动做负载均衡
 运行一次 `omp auth-broker serve`，其他机器就能通过网络拉实时 token，刷新密钥不会离开主机；`omp auth-gateway` 还能把它包装成任何 OpenAI 兼容客户端都能访问的代理
-按 alt+p（或 /switch）切 provider，按 ctrl+p 循环切换 role model：smol -> slow -> 等等
+按 alt+p（或 /switch）切换 provider，按 Tab 切到下一个 role model，按 Shift+Tab 切到上一个
 按 ctrl+r 搜索你的提示词历史，复用以前发过的消息
 `/force read` 可以把下一轮钉死在某个工具上，当模型老是选错工具时很好用
 `/copy code` 会把最后一个代码块复制到剪贴板，`/copy cmd` 会复制最后一个 shell/python 命令

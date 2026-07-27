@@ -100,7 +100,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Prioritize cheapest available provider": "优先选择最便宜的 provider",
 	"Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…":
 		"正在从管道 stdin 读取提示词（等待 EOF；按 ctrl+c 中止）…",
-	"Model scope: {modelList} (Ctrl+P to cycle)": "模型范围：{modelList}（按 Ctrl+P 循环切换）",
+	"Model scope: {modelList} (Tab/Shift+Tab to cycle)": "模型范围：{modelList}（按 Tab/Shift+Tab 循环切换）",
 	"Model, path, git, context, tokens, cost": "模型、路径、Git、上下文、Token、费用",
 	"Model, git, cost, context": "模型、Git、费用、上下文",
 	Settings: "设置",
@@ -586,7 +586,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"No messages to branch from": "没有可分叉的消息",
 	"No messages to dump yet.": "还没有可导出的消息。",
 	"No queued messages to restore": "没有可恢复的排队消息",
-	"No quick roles in the Ctrl+P cycle": "Ctrl+P 轮换中没有快捷角色",
+	"No quick roles in the model cycle": "模型轮换中没有快捷角色",
 	"No raw SSE frames captured yet.": "尚未捕获到原始 SSE 帧。",
 	"No raw SSE frames to copy": "没有可复制的原始 SSE 帧",
 	"No saved rate-limit resets available to spend right now.": "当前没有可用的已保存限速重置。",
@@ -4133,7 +4133,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Repeating it after each turn.": "每轮结束后都会重复它。",
 	"Response incomplete, ": "回复不完整，",
 	Resume: "恢复",
-	"Resume cancelled: session is in another project.": "恢复已取消：会话位于另一个项目中。",
+	"Resume cancelled: session was not moved.": "恢复已取消：会话目录未移动。",
 	"Resume the current goal first, or drop it before setting a new objective.":
 		"请先恢复当前目标，或在设置新目标前先放弃它。",
 	"Resume the goal before adjusting the budget.": "调整预算前请先恢复该目标。",
@@ -4145,11 +4145,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	'Session "{forkSource}" not found.': "未找到会话“{forkSource}”。",
 	'Session "{sessionArg}" belongs to a directory that no longer exists ({sourceCwd}); run interactively to move it into the current project.':
 		"会话“{sessionArg}”所属的目录已不存在（{sourceCwd}）；请以交互方式运行，将其移入当前项目。",
-	'Session "{sessionArg}" is in another project ({cwd}); run interactively to fork it into the current project.':
-		"会话“{sessionArg}”位于另一个项目中（{cwd}）；请以交互方式运行，将其 fork 到当前项目。",
 	'Session "{sessionArg}" not found.': "未找到会话“{sessionArg}”。",
-	"Session found in different project: {cwd}. Fork into current directory? [y/N] ":
-		"在其他项目中找到了会话：{cwd}。要 fork 到当前目录吗？[y/N] ",
 	"Session's directory no longer exists ({cwd}). Move (re-root) it into the current directory? [Y/n] ":
 		"该会话的目录已不存在（{cwd}）。要将它移动（重新设根）到当前目录吗？[Y/n] ",
 	"Set an API key environment variable:": "请设置 API key 环境变量：",
@@ -4765,4 +4761,21 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"1-bit weights": "1 位权重",
 	"1-bit weights with fp16 activations": "1 位权重，使用 fp16 激活值",
 	"Let transformers.js choose per device": "让 transformers.js 根据设备选择",
+	"3 minutes": "3 分钟",
+	"Finish or clear the current prompt to answer": "请先完成或清空当前提示词，再回答此问题",
+	"Inspect Image Timeout": "图片检查超时",
+	"Live Voice": "实时语音",
+	"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.":
+		"inspect_image 视觉模型调用的单次请求超时（毫秒）。提供方无响应时会快速返回超时错误，而不是一直阻塞到手动中止。设为 0 可禁用超时。",
+	"Voice used by Codex-backed realtime voice sessions": "Codex 实时语音会话使用的声音",
+	Arbor: "Arbor",
+	Breeze: "Breeze",
+	Cove: "Cove",
+	Ember: "Ember",
+	Juniper: "Juniper",
+	Maple: "Maple",
+	Sol: "Sol",
+	Spruce: "Spruce",
+	Vale: "Vale",
+	"{key} cancel": "{key} 取消",
 };

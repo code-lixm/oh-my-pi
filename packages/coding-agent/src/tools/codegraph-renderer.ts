@@ -26,13 +26,10 @@ import {
 	createCachedComponent,
 	formatEmptyMessage,
 	formatErrorMessage,
-	PREVIEW_LIMITS,
 	replaceTabs,
 	shortenPath,
+	toolDetailMaxLines,
 } from "./render-utils";
-
-const COLLAPSED_ENTRY_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
-const COLLAPSED_FILE_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
 
 function resolveResultPath(filePath: string, sourceRoot: string | undefined): string | undefined {
 	if (path.isAbsolute(filePath)) return filePath;
@@ -135,7 +132,8 @@ export const codegraphToolRenderer = {
 							{
 								items: details.entries,
 								expanded: options.expanded,
-								maxCollapsed: COLLAPSED_ENTRY_LIMIT,
+								maxCollapsedLines: toolDetailMaxLines(),
+								truncateFrom: "middle",
 								itemType: "entry",
 								renderItem: entry => {
 									const node = entry.node;
@@ -161,7 +159,8 @@ export const codegraphToolRenderer = {
 							{
 								items: details.files,
 								expanded: options.expanded,
-								maxCollapsed: COLLAPSED_FILE_LIMIT,
+								maxCollapsedLines: toolDetailMaxLines(),
+								truncateFrom: "middle",
 								itemType: "file",
 								renderItem: file => {
 									const pathLabel = shortenPath(file.filePath);

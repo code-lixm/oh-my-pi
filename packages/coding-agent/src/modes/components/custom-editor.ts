@@ -47,9 +47,9 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.exit": [],
 	"app.suspend": ["ctrl+z"],
 	"app.display.reset": ["ctrl+l"],
-	"app.thinking.cycle": ["shift+tab"],
-	"app.model.cycleForward": ["ctrl+p"],
-	"app.model.cycleBackward": ["shift+ctrl+p"],
+	"app.thinking.cycle": ["ctrl+p"],
+	"app.model.cycleForward": ["tab"],
+	"app.model.cycleBackward": ["shift+tab"],
 	"app.model.select": ["alt+m"],
 	"app.model.selectTemporary": ["alt+p"],
 	"app.tools.expand": ["ctrl+o"],
@@ -754,6 +754,7 @@ export class CustomEditor extends Editor {
 	}
 
 	handleInput(data: string): void {
+		this.invalidateTabInputFallback();
 		// Serialize behind any in-flight async paste so a trailing Enter / follow-up key can't
 		// submit before the clipboard image reaches `pendingImages` (Codex PR #3602 review).
 		if (this.#pasteInFlight > 0) {
@@ -824,6 +825,14 @@ export class CustomEditor extends Editor {
 		if (this.#handleSpaceHold(data, canonical)) return;
 
 		if (canonical !== undefined) {
+			// Autocomplete owns both Tab directions before any built-in or extension
+			// action. Forward Tab accepts the selected completion; Shift+Tab is
+			// intentionally consumed so it cannot leak into a remapped shortcut.
+			if (this.isShowingAutocomplete() && (canonical === "tab" || canonical === "shift+tab")) {
+				super.handleInput(data);
+				return;
+			}
+
 			// Intercept configured image paste (async - fires and handles result)
 			if (this.#matchesAction(canonical, "app.clipboard.pasteImage") && this.onPasteImage) {
 				void this.onPasteImage();
@@ -883,15 +892,19 @@ export class CustomEditor extends Editor {
 				this.onExpandTools();
 				return;
 			}
-
-			// Intercept configured backward model cycling (check before forward cycling)
+			// Outside autocomplete, backward cycling is immediate. Forward Tab first
+			// queries Editor completion and cycles only through its no-candidate fallback.
 			if (this.#matchesAction(canonical, "app.model.cycleBackward") && this.onCycleModelBackward) {
 				this.onCycleModelBackward();
 				return;
 			}
 
-			// Intercept configured forward model cycling
 			if (this.#matchesAction(canonical, "app.model.cycleForward") && this.onCycleModelForward) {
+				if (canonical === "tab") {
+					if (this.isShowingAutocomplete()) super.handleInput(data);
+					else this.handleTabInput(() => this.onCycleModelForward?.());
+					return;
+				}
 				this.onCycleModelForward();
 				return;
 			}
@@ -973,5 +986,32 @@ export class CustomEditor extends Editor {
 		) {
 			this.insertText("\n");
 		}
+	}
+
+	/**
+	 * Route a keystroke through the base text-editor pipeline only, skipping the
+	 * app-level shortcut interception in {@link handleInput} (Agent Hub, model
+	 * selector, history search, external editor, …). Used when the editor is
+	 * mounted for draft editing beneath another focused surface — e.g. an Ask
+	 * dialog opened over a non-empty prompt — so finishing or submitting the
+	 * draft can never fire an editor-slot shortcut that clears `editorContainer`
+	 * and orphans the overlay. Only text editing, cursor movement, submission,
+	 * and the clear action reach the buffer.
+	 */
+	handleDraftEdit(data: string): void {
+		// The base editor reserves Ctrl+C for parent handling and returns without
+		// touching the buffer, so the configured clear action must be dispatched
+		// explicitly here — otherwise the guard's "finish or clear the prompt"
+		// instruction has no working clear key. onClear (Ctrl+C → handleCtrlC)
+		// clears the draft on first press without swapping the editor slot; a
+		// standalone editor with no callback clears its own text.
+		const parsed = parseKey(data);
+		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
+		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
+			if (this.onClear) this.onClear();
+			else this.setText("");
+			return;
+		}
+		super.handleInput(data);
 	}
 }

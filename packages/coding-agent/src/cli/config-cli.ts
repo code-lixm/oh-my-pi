@@ -397,6 +397,7 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 
 	try {
 		parseAndSetValue(def.path, value);
+		await settings.flush();
 	} catch (err) {
 		console.error(chalk.red(err instanceof Error ? err.message : String(err)));
 		process.exit(1);
@@ -435,7 +436,13 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 
 	const path = def.path as SettingPath;
 	const defaultValue = getDefault(path);
-	settings.set(path, defaultValue as SettingValue<typeof path>);
+	try {
+		settings.set(path, defaultValue as SettingValue<typeof path>);
+		await settings.flush();
+	} catch (err) {
+		console.error(chalk.red(String(err)));
+		process.exit(1);
+	}
 
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: defaultValue }));

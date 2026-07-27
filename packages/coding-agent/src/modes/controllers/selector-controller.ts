@@ -704,7 +704,7 @@ export class SelectorController {
 	/**
 	 * Compact session-only model picker (alt+p / `/switch`): a floating
 	 * bottom-anchored overlay over the transcript. The current model is
-	 * highlighted and preselected; a leading `@` searches ctrl+p quick roles.
+	 * highlighted and preselected; a leading `@` searches quick-cycle roles.
 	 */
 	#showModelPicker(): void {
 		const currentContextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;

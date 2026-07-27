@@ -2,7 +2,7 @@
  * Compact session-model picker (alt+p / `/switch`): a bottom-anchored
  * floating overlay hosting just a {@link ModelBrowser} — no provider sidebar.
  * Model entries switch the current session only; a search beginning with `@`
- * exposes the configured ctrl+p quick roles.
+ * exposes the configured quick-cycle roles.
  */
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
@@ -25,7 +25,7 @@ import { resolveSegmentPalette } from "./segment-track";
 export interface ModelPickerCallbacks {
 	/** A model was chosen for a session-only switch. `selector` is `provider/id`. */
 	onPick: (model: Model, selector: string) => void;
-	/** A configured ctrl+p quick role was chosen. */
+	/** A configured quick-cycle role was chosen. */
 	onPickRole?: (entry: ResolvedRoleModel) => void;
 	/** The picker was dismissed. */
 	onCancel: () => void;
@@ -36,9 +36,9 @@ export interface ModelPickerOptions {
 	currentContextTokens?: number;
 	/** `provider/id` of the session's active model; highlighted and preselected. */
 	currentSelector?: string;
-	/** Resolved role models in the same order used by the ctrl+p quick-role cycle. */
+	/** Resolved role models in the same order used by the quick-role cycle. */
 	quickRoles?: ReadonlyArray<ResolvedRoleModel>;
-	/** Complete ctrl+p order, including unavailable roles, to preserve segment colors. */
+	/** Complete cycle order, including unavailable roles, to preserve segment colors. */
 	quickRoleOrder?: ReadonlyArray<string>;
 	/** Active quick role, highlighted when the search begins with `@`. */
 	currentQuickRole?: string;
@@ -99,7 +99,7 @@ export class ModelPickerComponent implements Component {
 		this.#browser = new ModelBrowser(settings, {
 			currentContextTokens: options.currentContextTokens,
 			disableOverContext: true,
-			emptyText: () => (this.#roleMode ? `  ${tSettingsUi("No quick roles in the Ctrl+P cycle")}` : undefined),
+			emptyText: () => (this.#roleMode ? `  ${tSettingsUi("No quick roles in the model cycle")}` : undefined),
 		});
 		this.#browser.onActivate = item => {
 			const quickRole = this.#quickRoles.get(item.selector);
@@ -165,7 +165,7 @@ export class ModelPickerComponent implements Component {
 		this.#syncItemsForQuery(this.#browser.query, true);
 	}
 
-	/** Build virtual `@role` rows, colored by their ctrl+p segment position. */
+	/** Build virtual `@role` rows, colored by their model-cycle segment position. */
 	#buildQuickRoleItems(
 		quickRoles: ReadonlyArray<ResolvedRoleModel>,
 		quickRoleOrder: ReadonlyArray<string>,

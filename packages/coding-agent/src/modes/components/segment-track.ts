@@ -6,7 +6,7 @@
  * rest are plain colored labels joined by a thin separator.
  *
  * Used by the plan-mode model-tier slider ({@link HookSelectorComponent}) and
- * the ctrl+p role-cycle status so both surfaces read identically.
+ * the model-role cycle status so both surfaces read identically.
  */
 import { type ThemeColor, theme } from "../theme/theme";
 

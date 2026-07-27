@@ -106,7 +106,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Prioritize cheapest available provider": "Prioritize cheapest available provider",
 	"Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…":
 		"Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…",
-	"Model scope: {modelList} (Ctrl+P to cycle)": "Model scope: {modelList} (Ctrl+P to cycle)",
+	"Model scope: {modelList} (Tab/Shift+Tab to cycle)": "Model scope: {modelList} (Tab/Shift+Tab to cycle)",
 	"Model, path, git, context, tokens, cost": "Model, path, git, context, tokens, cost",
 	"Model, git, cost, context": "Model, git, cost, context",
 	Settings: "Settings",
@@ -585,7 +585,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"No messages to branch from": "No messages to branch from",
 	"No messages to dump yet.": "No messages to dump yet.",
 	"No queued messages to restore": "No queued messages to restore",
-	"No quick roles in the Ctrl+P cycle": "No quick roles in the Ctrl+P cycle",
+	"No quick roles in the model cycle": "No quick roles in the model cycle",
 	"No raw SSE frames captured yet.": "No raw SSE frames captured yet.",
 	"No raw SSE frames to copy": "No raw SSE frames to copy",
 	"No session file to delete (in-memory session)": "No session file to delete (in-memory session)",
@@ -4261,7 +4261,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Repeating it after each turn.": "Repeating it after each turn.",
 	"Response incomplete, ": "Response incomplete, ",
 	Resume: "Resume",
-	"Resume cancelled: session is in another project.": "Resume cancelled: session is in another project.",
+	"Resume cancelled: session was not moved.": "Resume cancelled: session was not moved.",
 	"Resume the current goal first, or drop it before setting a new objective.":
 		"Resume the current goal first, or drop it before setting a new objective.",
 	"Resume the goal before adjusting the budget.": "Resume the goal before adjusting the budget.",
@@ -4273,11 +4273,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	'Session "{forkSource}" not found.': 'Session "{forkSource}" not found.',
 	'Session "{sessionArg}" belongs to a directory that no longer exists ({sourceCwd}); run interactively to move it into the current project.':
 		'Session "{sessionArg}" belongs to a directory that no longer exists ({sourceCwd}); run interactively to move it into the current project.',
-	'Session "{sessionArg}" is in another project ({cwd}); run interactively to fork it into the current project.':
-		'Session "{sessionArg}" is in another project ({cwd}); run interactively to fork it into the current project.',
 	'Session "{sessionArg}" not found.': 'Session "{sessionArg}" not found.',
-	"Session found in different project: {cwd}. Fork into current directory? [y/N] ":
-		"Session found in different project: {cwd}. Fork into current directory? [y/N] ",
 	"Session's directory no longer exists ({cwd}). Move (re-root) it into the current directory? [Y/n] ":
 		"Session's directory no longer exists ({cwd}). Move (re-root) it into the current directory? [Y/n] ",
 	"Set an API key environment variable:": "Set an API key environment variable:",
@@ -4912,4 +4908,21 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"1-bit weights": "1-bit weights",
 	"1-bit weights with fp16 activations": "1-bit weights with fp16 activations",
 	"Let transformers.js choose per device": "Let transformers.js choose per device",
+	"3 minutes": "3 minutes",
+	"Finish or clear the current prompt to answer": "Finish or clear the current prompt to answer",
+	"Inspect Image Timeout": "Inspect Image Timeout",
+	"Live Voice": "Live Voice",
+	"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.":
+		"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
+	"Voice used by Codex-backed realtime voice sessions": "Voice used by Codex-backed realtime voice sessions",
+	Arbor: "Arbor",
+	Breeze: "Breeze",
+	Cove: "Cove",
+	Ember: "Ember",
+	Juniper: "Juniper",
+	Maple: "Maple",
+	Sol: "Sol",
+	Spruce: "Spruce",
+	Vale: "Vale",
+	"{key} cancel": "{key} cancel",
 };
