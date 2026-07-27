@@ -11,8 +11,8 @@ import * as path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import { getLanguageFromPath } from "../modes/theme/theme";
 import type { Theme } from "../modes/theme/theme";
+import { getLanguageFromPath } from "../modes/theme/theme";
 import {
 	Ellipsis,
 	fileHyperlink,
@@ -30,9 +30,9 @@ import {
 	replaceTabs,
 	shortenPath,
 } from "./render-utils";
+
 const COLLAPSED_ENTRY_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
 const COLLAPSED_FILE_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;
-
 
 function resolveResultPath(filePath: string, sourceRoot: string | undefined): string | undefined {
 	if (path.isAbsolute(filePath)) return filePath;

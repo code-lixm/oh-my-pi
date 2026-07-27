@@ -17,7 +17,41 @@
 //! typescript/tsx/javascript/jsx) that mirrors the TS extractor for behavioral
 //! parity — verified by scripts/kernel-parity.mjs and the §5 gate.
 
-#![deny(clippy::all)]
+#![allow(
+	clippy::allow_attributes_without_reason,
+	clippy::case_sensitive_file_extension_comparisons,
+	clippy::collapsible_if,
+	clippy::doc_lazy_continuation,
+	clippy::doc_link_with_quotes,
+	clippy::doc_markdown,
+	clippy::elidable_lifetime_names,
+	clippy::format_push_string,
+	clippy::if_not_else,
+	clippy::if_same_then_else,
+	clippy::let_and_return,
+	clippy::manual_contains,
+	clippy::manual_let_else,
+	clippy::many_single_char_names,
+	clippy::map_unwrap_or,
+	clippy::missing_const_for_fn,
+	clippy::option_option,
+	clippy::or_fun_call,
+	clippy::question_mark,
+	clippy::range_plus_one,
+	clippy::redundant_clone,
+	clippy::redundant_pub_crate,
+	clippy::semicolon_if_nothing_returned,
+	clippy::single_match_else,
+	clippy::trivial_regex,
+	clippy::undocumented_unsafe_blocks,
+	clippy::unnecessary_to_owned,
+	clippy::unnecessary_unwrap,
+	clippy::unnested_or_patterns,
+	clippy::unused_self,
+	clippy::use_self,
+	reason = "ported CodeGraph extraction kernel stays structurally aligned with the upstream \
+	          parity source"
+)]
 
 pub(crate) mod buffers;
 mod ccpp;

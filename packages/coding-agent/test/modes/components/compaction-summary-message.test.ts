@@ -59,7 +59,6 @@ function makeCompactionComponent(expanded: boolean): CompactionSummaryMessageCom
 	return component;
 }
 
-
 describe("handoff summary divider", () => {
 	it("renders handoff custom messages with the compact divider instead of a framed block", () => {
 		const component = createHandoffSummaryMessageComponent(
@@ -112,9 +111,7 @@ describe("compaction summary divider", () => {
 		expect(collapsed).toContain("ctrl+o");
 		expect(collapsed).not.toContain("Objective");
 		expect(collapsed).not.toContain("Keep summary expansion readable");
-		expect(collapsed).not.toContain(
-			"packages/coding-agent/test/modes/components/compaction-summary-message.test.ts",
-		);
+		expect(collapsed).not.toContain("packages/coding-agent/test/modes/components/compaction-summary-message.test.ts");
 	});
 
 	it("expands the fixed Markdown summary structure with headings, bullets, and paths", () => {
@@ -129,13 +126,13 @@ describe("compaction summary divider", () => {
 		expect(expanded).not.toContain("# Objective");
 		expect(expanded).not.toContain("## Relevant Files");
 		expect(expanded).not.toContain("\n- Keep summary expansion readable.");
-		expect(expanded).not.toContain("\n- packages/coding-agent/test/modes/components/compaction-summary-message.test.ts");
+		expect(expanded).not.toContain(
+			"\n- packages/coding-agent/test/modes/components/compaction-summary-message.test.ts",
+		);
 		expect(expanded).toContain("Keep summary expansion readable");
 		expect(expanded).toContain("Markdown headings must stay visible");
 		expect(expanded).toContain("Short bullets must render clearly");
 		expect(expanded).toContain("Run the focused component test");
-		expect(expanded).toContain(
-			"packages/coding-agent/test/modes/components/compaction-summary-message.test.ts",
-		);
+		expect(expanded).toContain("packages/coding-agent/test/modes/components/compaction-summary-message.test.ts");
 	});
 });

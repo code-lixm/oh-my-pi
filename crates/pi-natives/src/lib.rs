@@ -68,23 +68,23 @@ pub(crate) mod utils;
 pub mod vectors;
 pub mod workspace;
 mod buffers {
-	pub(crate) use crate::codegraph::buffers::*;
+	pub use crate::codegraph::buffers::*;
 }
 
 mod docstring {
-	pub(crate) use crate::codegraph::docstring::*;
+	pub use crate::codegraph::docstring::*;
 }
 
 mod ids {
-	pub(crate) use crate::codegraph::ids::*;
+	pub use crate::codegraph::ids::*;
 }
 
 mod langs {
-	pub(crate) use crate::codegraph::langs::*;
+	pub use crate::codegraph::langs::*;
 }
 
 mod textutil {
-	pub(crate) use crate::codegraph::textutil::*;
+	pub use crate::codegraph::textutil::*;
 }
 
 #[cfg(target_os = "windows")]
@@ -280,7 +280,7 @@ fn create_windows_napi_tokio_runtime() -> Option<tokio::runtime::Runtime> {
 /// MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
 /// `packages/natives/native/index.js` (which derives the name from
 /// `package.json#version`).
-#[napi(js_name = "__piNativesV17_1_3")]
+#[napi(js_name = "__piNativesV17_1_4")]
 pub const fn pi_natives_version_sentinel() {}
 
 /// Native module entry point: install crash diagnostics before any tool can

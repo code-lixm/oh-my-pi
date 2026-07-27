@@ -372,6 +372,7 @@ export class ChatTranscriptBuilder {
 				proseOnlyThinking,
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
+			this.#trackExpandable(component);
 			this.container.addChild(component);
 		};
 

@@ -1,17 +1,20 @@
 import type { Agent, AgentMessage, AgentToolResult, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
 import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
 import type { PlanModeState } from "../plan-mode/state";
+import { selectPrompt } from "../prompts/prompt-locale";
 import planYoloHandoffPrompt from "../prompts/system/plan-yolo-handoff.md" with { type: "text" };
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
+import prewalkChecklistPromptZh from "../prompts/system/prewalk-checklist.zh-CN.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
+import prewalkContinuePromptZh from "../prompts/system/prewalk-continue.zh-CN.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
-import type { ConfiguredThinkingLevel } from "../thinking";
+import prewalkPlanPromptZh from "../prompts/system/prewalk-plan.zh-CN.md" with { type: "text" };
+import { type ConfiguredThinkingLevel, prewalkWouldBeNoop } from "../thinking";
 import type { PlanProposalHandler } from "../tools/resolve";
 import { ToolError } from "../tools/tool-errors";
 import type { PlanYolo, Prewalk } from "./agent-session-types";
@@ -31,6 +34,7 @@ export interface PrewalkCoordinatorHost {
 	agent: Agent;
 	sessionManager: SessionManager;
 	model(): Model | undefined;
+	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	setModelTemporary(
 		model: Model,
@@ -91,7 +95,7 @@ export class PrewalkCoordinator {
 			this.#host.agent.steer({
 				role: "custom",
 				customType: PREWALK_CONTINUE_MESSAGE_TYPE,
-				content: prewalkContinuePrompt,
+				content: selectPrompt(prewalkContinuePrompt, prewalkContinuePromptZh),
 				attribution: "agent",
 				display: false,
 				timestamp: Date.now(),
@@ -109,7 +113,7 @@ export class PrewalkCoordinator {
 				this.#host.agent.steer({
 					role: "custom",
 					customType: PREWALK_PLAN_MESSAGE_TYPE,
-					content: prewalkPlanPrompt,
+					content: selectPrompt(prewalkPlanPrompt, prewalkPlanPromptZh),
 					display: false,
 					attribution: "agent",
 					timestamp: Date.now(),
@@ -126,8 +130,13 @@ export class PrewalkCoordinator {
 		this.#scrubPlanNudge(liveMessages);
 		const target = prewalk.target;
 		const currentModel = this.#host.model();
-		if (currentModel && modelsAreEqual(currentModel, target)) {
+		if (prewalkWouldBeNoop(currentModel, this.#host.configuredThinkingLevel(), target, prewalk.thinkingLevel)) {
 			this.#prewalk = undefined;
+			this.#host.emitNotice(
+				"info",
+				`Prewalk: target ${target.provider}/${target.id} already matches the active model and thinking level; nothing to switch.`,
+				"prewalk",
+			);
 			return;
 		}
 		await this.#host.setModelTemporary(target, prewalk.thinkingLevel, { ephemeral: true });
@@ -140,7 +149,7 @@ export class PrewalkCoordinator {
 		this.#host.agent.steer({
 			role: "custom",
 			customType: PREWALK_CHECKLIST_MESSAGE_TYPE,
-			content: prewalkChecklistPrompt,
+			content: selectPrompt(prewalkChecklistPrompt, prewalkChecklistPromptZh),
 			attribution: "agent",
 			display: false,
 			timestamp: Date.now(),
@@ -163,7 +172,7 @@ export class PrewalkCoordinator {
 		this.#host.agent.steer({
 			role: "custom",
 			customType: PREWALK_PLAN_MESSAGE_TYPE,
-			content: prewalkPlanPrompt,
+			content: selectPrompt(prewalkPlanPrompt, prewalkPlanPromptZh),
 			display: false,
 			attribution: "agent",
 			timestamp: Date.now(),

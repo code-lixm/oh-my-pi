@@ -1008,46 +1008,6 @@ export class InputController {
 			});
 	}
 
-	/** Submit editor text to the focused subagent session (chat-only focus policy). */
-	async #submitToFocusedSession(text: string, streamingBehavior: "steer" | "followUp"): Promise<void> {
-		const target = this.ctx.viewSession;
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-		const imageLinks =
-			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
-		if (!text && !images) {
-			if (target.isStreaming && target.queuedMessageCount > 0) {
-				const aborting = target.abort({ reason: USER_INTERRUPT_LABEL });
-				await aborting;
-				this.ctx.updatePendingMessagesDisplay();
-				this.ctx.ui.requestRender();
-			}
-			return;
-		}
-		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
-			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
-			return; // editor text not cleared: Editor does not auto-clear on submit
-		}
-		this.ctx.editor.clearDraft(text);
-		try {
-			// prompt() handles idle (new turn) and streaming (queues per streamingBehavior).
-			await this.ctx.withLocalSubmission(text, () => target.prompt(text, { streamingBehavior, images }), {
-				imageCount: images?.length ?? 0,
-			});
-		} catch (error) {
-			// Hand the message back, mirroring the main submit error path: restore
-			// pasted images so the user can retry an image-only or text+image draft.
-			this.ctx.editor.setText(text);
-			if (images && images.length > 0) {
-				this.ctx.editor.pendingImages = [...images];
-				this.ctx.editor.pendingImageLinks = imageLinks ? [...imageLinks] : images.map(() => undefined);
-				this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			}
-			this.ctx.showError(error instanceof Error ? error.message : String(error));
-		}
-		this.ctx.updatePendingMessagesDisplay();
-		this.ctx.ui.requestRender();
-	}
-
 	handleCtrlC(): void {
 		// Sync-flush the session JSONL so in-flight writes survive a hard exit.
 		// The TUI consumes Ctrl+C as a key event in raw mode, so postmortem's

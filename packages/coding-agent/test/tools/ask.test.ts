@@ -232,7 +232,10 @@ describe("AskTool cancellation", () => {
 	it("falls back to the first option on ask timeout when there is no valid recommended option", async () => {
 		vi.useFakeTimers();
 		try {
-			const cases = [{ label: "missing recommended" }, { label: "out-of-range recommended", recommended: 9 }] as const;
+			const cases = [
+				{ label: "missing recommended" },
+				{ label: "out-of-range recommended", recommended: 9 },
+			] as const;
 
 			for (const testCase of cases) {
 				const tool = new AskTool(
