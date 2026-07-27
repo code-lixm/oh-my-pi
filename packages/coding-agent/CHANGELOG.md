@@ -38,6 +38,8 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed collapsed tree-shaped tool results losing the `├─` connector on the central middle-omission row, preserving visual continuity between the first and final sibling rows.
+- Fixed the central collapsed-detail wrapper truncating Hub and Todo results that own their visibility; both now bypass the outer budget while normal tool results remain capped.
 - Fixed battery-style status-line usage disappearing for providers that report a concrete currency balance without a percentage; it now falls back to the formatted balance while still hiding reports with no quantitative value.
 - Fixed `ask.timeout` inventing answers from the first or currently highlighted option; it now auto-selects only an explicit valid `recommended` option, preserves existing multi-select answers, and keeps waiting when any unanswered question has no recommendation.
 - Fixed accidental task termination from a single Esc press by requiring a second Esc within two seconds before cancelling pending submissions, active model turns, local commands, loop runs, maintenance, or collaborative host work.

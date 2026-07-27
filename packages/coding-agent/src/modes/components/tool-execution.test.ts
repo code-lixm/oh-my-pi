@@ -160,3 +160,77 @@ describe("MCP result Markdown rendering", () => {
 		expect(rendered).toContain("**ok**");
 	});
 });
+
+/**
+ * Contract: Hub and Todo results are NOT subject to the central `display.toolDetailMaxLines`
+ * truncation budget, so long custom-rendered results remain fully visible when collapsed.
+ * This test guards against these tools being re-added to `CENTRALLY_LIMITED_TOOL_RENDERERS`.
+ */
+describe("Hub and Todo bypass central toolDetailMaxLines truncation", () => {
+	const manyLines = Array.from({ length: 20 }, (_, i) => `output line ${i + 1}`);
+
+	function renderCollapsedResult(toolName: string, content: string[]): readonly string[] {
+		const fakeTool: AgentTool = {
+			name: toolName,
+			label: toolName,
+			description: "fake",
+			parameters: { type: "object", additionalProperties: true },
+			renderResult() {
+				return new Text(content.join("\n"), 0, 0);
+			},
+			async execute() {
+				return { content: [{ type: "text", text: content.join("\n") }] };
+			},
+		};
+		const component = new ToolExecutionComponent(toolName, {}, { showImages: false }, fakeTool, {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		});
+		component.updateResult({ content: [{ type: "text", text: content.join("\n") }] }, false);
+		return component.render(80);
+	}
+
+	it("hub result is fully visible when collapsed, not capped by toolDetailMaxLines", () => {
+		const lines = renderCollapsedResult("hub", manyLines);
+		const plainLines = lines.map(line => Bun.stripANSI(line));
+
+		// All 20 content lines must be present (header + 20 lines = 21 total)
+		expect(plainLines).toHaveLength(21);
+		// No omission marker should appear (would indicate truncation)
+		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(false);
+		// Verify all content lines are present (use some() to handle renderer prefixes)
+		manyLines.forEach(expected => {
+			expect(plainLines.some(line => line.includes(expected))).toBe(true);
+		});
+	});
+
+	it("todo result is fully visible when collapsed, not capped by toolDetailMaxLines", () => {
+		const lines = renderCollapsedResult("todo", manyLines);
+		const plainLines = lines.map(line => Bun.stripANSI(line));
+
+		// All 20 content lines must be present (header + 20 lines = 21 total)
+		expect(plainLines).toHaveLength(21);
+		// No omission marker should appear (would indicate truncation)
+		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(false);
+		// Verify all content lines are present (use some() to handle renderer prefixes)
+		manyLines.forEach(expected => {
+			expect(plainLines.some(line => line.includes(expected))).toBe(true);
+		});
+	});
+
+	it("contrast: a centrally-limited tool result is truncated when collapsed", () => {
+		// "bash" IS in CENTRALLY_LIMITED_TOOL_RENDERERS, so its result should be truncated
+		const lines = renderCollapsedResult("bash", manyLines);
+		const plainLines = lines.map(line => Bun.stripANSI(line));
+		const joined = plainLines.join("\n");
+
+		// Collapsed bash results are capped (header + up to 3 budget rows + layout)
+		expect(plainLines.length).toBeLessThanOrEqual(5);
+		// Omission marker MUST appear for centrally-limited tools
+		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(true);
+		// First and last output lines are preserved
+		expect(joined).toContain("output line 1");
+		expect(joined).toContain("output line 20");
+	});
+});

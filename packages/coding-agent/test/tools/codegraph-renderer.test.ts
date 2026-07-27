@@ -168,22 +168,36 @@ describe("codegraphToolRenderer", () => {
 		expect(hyperlink.searchParams.get("line")).toBe("12");
 	});
 
-	it("collapses ten semantic matches to eight rows plus a summary and expands to all ten rows", () => {
+	it("collapses ten semantic matches to header plus three budget rows and expands to all ten rows", () => {
+		// Inner renderTreeList: maxCollapsed=8 (default) with 10 entries → 2 hidden.
+		//   8 items rendered + "… 2 more entries" summary = 9 body lines.
+		// truncateCollapsedToolResult: truncateMiddleLines(9, 3) detects tree-prefix
+		//   lines and formats the omission row with ├─ so it visually continues the
+		//   tree rather than breaking the branch pattern.
+		//   visibleCount=2, headCount=1, tailCount=1, hiddenCount=7.
+		//   header(1) + entry[0] + ├─ … 7 lines omitted + inner-summary = 4 total.
 		const component = makeComponent(makeResult(Array.from({ length: 10 }, (_, index) => makeEntry(index + 1))));
 
 		const collapsed = component.render(160).map(line => stripVTControlCharacters(line).trimEnd());
-		expect(collapsed).toHaveLength(10);
+		expect(collapsed).toHaveLength(4);
+		// head entry (first tree row under the header)
 		expect(collapsed[1]?.startsWith("├─ ")).toBe(true);
-		expect(collapsed[8]?.startsWith("├─ ")).toBe(true);
-		expect(collapsed[9]).toBe("└─ … 2 more entries");
-		expect(collapsed.join("\n")).not.toContain("routes.symbol10");
+		expect(collapsed[1]).toContain("routes.symbol1");
+		// outer omission row — tree-prefixed by truncateCollapsedToolResult
+		expect(collapsed[2]?.startsWith("├─ ")).toBe(true);
+		expect(collapsed[2]).toContain("7 lines omitted");
+		// tail: inner tree's summary line preserved as the last visible body row
+		expect(collapsed[3]?.startsWith("└─ ")).toBe(true);
+		expect(collapsed[3]).toContain("2 more entries");
+		// head entry still present after outer truncation
+		expect(collapsed.join("\n")).toContain("routes.symbol1");
 
 		component.setExpanded(true);
 		const expanded = component.render(160).map(line => stripVTControlCharacters(line).trimEnd());
 		expect(expanded).toHaveLength(11);
 		expect(expanded[10]?.startsWith("└─ ")).toBe(true);
 		expect(expanded.join("\n")).toContain("routes.symbol10");
-		expect(expanded.join("\n")).not.toContain("… 2 more entries");
+		expect(expanded.join("\n")).not.toContain("lines omitted");
 	});
 
 	it("renders expanded fallback details as search-style output instead of empty-state or generic status icons", async () => {

@@ -166,7 +166,6 @@ const CENTRALLY_LIMITED_TOOL_RENDERERS: Record<string, true> = {
 	glob: true,
 	goal: true,
 	grep: true,
-	hub: true,
 	inspect_image: true,
 	lsp: true,
 	read: true,
@@ -176,7 +175,6 @@ const CENTRALLY_LIMITED_TOOL_RENDERERS: Record<string, true> = {
 	resolve: true,
 	retain: true,
 	task: true,
-	todo: true,
 	vibe_kill: true,
 	vibe_list: true,
 	vibe_send: true,
@@ -185,6 +183,19 @@ const CENTRALLY_LIMITED_TOOL_RENDERERS: Record<string, true> = {
 	web_search: true,
 	write: true,
 };
+
+function truncateCollapsedToolResult(lines: readonly string[]): string[] {
+	const treeBranchPrefix = `${theme.tree.branch} `;
+	const omissionPrefix = lines.some(line => Bun.stripANSI(line).startsWith(treeBranchPrefix))
+		? `${theme.fg("dim", theme.tree.branch)} `
+		: "";
+	return truncateMiddleLines(
+		lines,
+		toolDetailMaxLines(),
+		hiddenCount =>
+			`${omissionPrefix}${theme.fg("muted", tSettingsUi("… {count} lines omitted", { count: hiddenCount }))}`,
+	);
+}
 
 class SafeToolRendererComponent implements Component {
 	#toolName: string;
@@ -222,7 +233,7 @@ class SafeToolRendererComponent implements Component {
 			) {
 				return rendered;
 			}
-			return [rendered[0]!, ...truncateMiddleLines(rendered.slice(1), toolDetailMaxLines())];
+			return [rendered[0]!, ...truncateCollapsedToolResult(rendered.slice(1))];
 		} catch (err) {
 			if (!this.#warned) {
 				this.#warned = true;
