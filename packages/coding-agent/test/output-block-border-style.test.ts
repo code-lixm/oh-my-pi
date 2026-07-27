@@ -154,6 +154,12 @@ function renderToolResult(
 	return component.render(RENDERER_WIDTH);
 }
 
+function renderGenericFallbackResult(toolName: string, resultText: string, width: number): readonly string[] {
+	const component = new ToolExecutionComponent(toolName, {}, {}, undefined, uiStub);
+	component.updateResult({ content: [{ type: "text", text: resultText }] }, false);
+	return component.render(width);
+}
+
 function expectBorderMutedTopFrame(lines: readonly string[]): void {
 	const frameLine = lines.find(line => {
 		const visible = Bun.stripANSI(line).trimStart();
@@ -573,6 +579,30 @@ describe("output-block border style", () => {
 			setOutputBlockBorderStyle(previousStyle);
 			setBasicToolDetailsVisible(previousDetailsVisible);
 		}
+	});
+
+	it("keeps accent generic fallback lines to one rail gap at the full content budget", () => {
+		const previousStyle = getOutputBlockBorderStyle();
+		const width = 18;
+		const body = "ABCDEFGHIJKLMNO";
+		try {
+			setOutputBlockBorderStyle("accent");
+			const lines = renderGenericFallbackResult("mystery", body, width);
+			const plainLines = plain(lines);
+			const bodyLine = plainLines.find(line => line.includes(body));
+
+			expect(bodyLine).toBeDefined();
+			expect(bodyLine).toBe(padLine(`▌ ${body}`, width));
+			expect(bodyLine!.startsWith("▌  ")).toBe(false);
+			expectUniformWidth(lines, width);
+			for (const line of plainLines) {
+				expect(visibleWidth(line)).toBe(width);
+			}
+		} finally {
+			setOutputBlockBorderStyle(previousStyle);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousStyle);
 	});
 
 	it.each([

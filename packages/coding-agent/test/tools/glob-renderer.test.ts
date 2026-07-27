@@ -99,7 +99,7 @@ describe("globToolRenderer", () => {
 		expect(plain).not.toContain("incomplete");
 	});
 
-	it("localizes zh-CN truncation messaging for the 100-result cap", async () => {
+	it("localizes zh-CN truncation status in the header without a duplicate detached reason line", async () => {
 		setSettingsUiLocale("zh-CN");
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
@@ -110,17 +110,68 @@ describe("globToolRenderer", () => {
 				fileCount: 100,
 				files: Array.from({ length: 100 }, (_, i) => `src/file-${i + 1}.ts`),
 				resultLimitReached: 100,
+				meta: {
+					limits: {
+						resultLimit: { reached: 100, suggestion: 100 },
+					},
+				},
 			},
 		};
 
-		const renderedLines = globToolRenderer
-			.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
-			.render(240);
-		const plain = sanitizeText(renderedLines.join("\n"));
+		const plainLines = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: false, isPartial: false }, uiTheme, { paths: "src/**/*.ts" })
+				.render(240)
+				.join("\n"),
+		).split("\n");
+		const plain = plainLines.join("\n");
 
-		expect(plain).toContain("已截断");
-		expect(plain).toContain("达到 100 条结果上限");
+		expect(plainLines[0]).toContain("100 个文件");
+		expect(plainLines[0]).toContain("已截断");
+		expect(plainLines.some(line => /^\s*(truncated|已截断)：?/u.test(line))).toBe(false);
+		expect(plain.match(/已截断/gu)?.length ?? 0).toBe(1);
 		expect(plain).not.toContain("truncated: limit 100 results");
+	});
+
+	it("renders truncated detailed results without a detached duplicate truncation reason line while preserving missing-path warnings", async () => {
+		setSettingsUiLocale("en");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "" }],
+			details: {
+				fileCount: 3,
+				files: ["README.md", "src/glob.ts", "src/tools/render.ts"],
+				truncated: true,
+				resultLimitReached: 3,
+				meta: {
+					limits: {
+						resultLimit: { reached: 3, suggestion: 3 },
+					},
+				},
+				missingPaths: ["missing/path", "gone/file.ts"],
+			},
+		};
+
+		const plainLines = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, {
+					path: "src/**/*.ts",
+					limit: 3,
+				})
+				.render(80)
+				.join("\n"),
+		).split("\n");
+		const plain = plainLines.join("\n");
+
+		expect(plainLines[0]).toContain("Glob: src/**/*.ts");
+		expect(plainLines[0]).toContain("3 files");
+		expect(plainLines[0]).toContain("truncated");
+		expect(plainLines.slice(1, 4)).toEqual(["├─ 📝 README.md", "├─ 🟦 src/glob.ts", "└─ 🟦 src/tools/render.ts"]);
+		expect(plain).toContain("skipped missing: missing/path, gone/file.ts");
+		expect(plainLines.some(line => /^\s*(truncated|已截断)：?/u.test(line))).toBe(false);
+		expect(plain.match(/\btruncated\b/gu)?.length ?? 0).toBe(1);
 	});
 	it("localizes file count to '1 个文件' in zh-CN and '1 file' in en, preserving the original file path", async () => {
 		const theme = await getThemeByName("dark");

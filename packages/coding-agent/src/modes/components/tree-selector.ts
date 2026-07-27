@@ -21,6 +21,7 @@ import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { DynamicBorder } from "./dynamic-border";
+import { rawKeyHint } from "./keybinding-hints";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
 /** Gutter info: position (displayIndent where connector was) and whether to show │ */
@@ -46,6 +47,8 @@ interface FlatNode {
 
 /** Filter mode for tree display */
 type FilterMode = TreeFilterMode;
+// Rows outside the tree viewport: three borders, three spacers, title, two hint rows, and search.
+const TREE_CHROME_ROWS = 10;
 
 /**
  * Tree list component with selection and ASCII art visualization
@@ -426,7 +429,7 @@ class TreeList implements Component {
 		}
 	}
 
-	#getFilterLabel(): string {
+	getFilterLabel(): string {
 		switch (this.#filterMode) {
 			case "no-tools":
 				return " [no-tools]";
@@ -454,7 +457,7 @@ class TreeList implements Component {
 			//    read as "broken /tree" — see #1909.
 			if (this.#flatNodes.length === 0) {
 				lines.push(truncateToWidth(theme.fg("muted", `  ${tSettingsUi("No entries found")}`), width));
-				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.#getFilterLabel()}`), width));
+				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
 				lines.push(
 					truncateToWidth(
@@ -469,10 +472,10 @@ class TreeList implements Component {
 					truncateToWidth(theme.fg("muted", `  ${tSettingsUi("Press Backspace to clear the search")}`), width),
 				);
 				lines.push(
-					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
 				);
 			} else {
-				const filterLabel = this.#getFilterLabel().trim() || "[default]";
+				const filterLabel = this.getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
 						theme.fg(
@@ -489,7 +492,7 @@ class TreeList implements Component {
 					),
 				);
 				lines.push(
-					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
 				);
 			}
 			return lines;
@@ -607,11 +610,6 @@ class TreeList implements Component {
 				scrollOffset: startIndex,
 			}),
 		);
-
-		const filterLabel = this.#getFilterLabel();
-		if (filterLabel) {
-			lines.push(truncateToWidth(theme.fg("muted", `  ${filterLabel.trim()}`), width));
-		}
 
 		return lines;
 	}
@@ -887,10 +885,12 @@ class SearchLine implements Component {
 
 	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
-		if (query) {
-			return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))} ${theme.fg("accent", query)}`, width)];
-		}
-		return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))}`, width)];
+		const filterLabel = this.treeList.getFilterLabel();
+		const search = query
+			? `${theme.fg("muted", tSettingsUi("Search:"))} ${theme.fg("accent", query)}`
+			: theme.fg("muted", tSettingsUi("Search:"));
+		const filter = filterLabel ? theme.fg("muted", ` · ${filterLabel.trim()}`) : "";
+		return [truncateToWidth(`  ${search}${filter}`, width)];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -955,7 +955,21 @@ export class TreeSelectorComponent extends Container {
 		initialFilterMode: FilterMode = "default",
 	) {
 		super();
-		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
+		const maxVisibleLines = Math.max(1, terminalHeight - TREE_CHROME_ROWS);
+		const hintSeparator = theme.fg("dim", " · ");
+		const primaryHints = [
+			rawKeyHint("Enter", tSettingsUi("switch")),
+			rawKeyHint("Shift+Enter", tSettingsUi("summarize and switch")),
+			rawKeyHint("↑↓", tSettingsUi("move")),
+			rawKeyHint("←→", tSettingsUi("page")),
+			rawKeyHint("Shift+L", tSettingsUi("label")),
+		].join(hintSeparator);
+		const secondaryHints = [
+			rawKeyHint("Ctrl+O", tSettingsUi("filter")),
+			rawKeyHint("Shift+Ctrl+O", tSettingsUi("reverse")),
+			rawKeyHint("Alt+D/T/U/L/A", tSettingsUi("direct")),
+			theme.fg("muted", tSettingsUi("type to search")),
+		].join(hintSeparator);
 
 		this.#treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialFilterMode);
 		this.#treeList.onSelect = onSelect;
@@ -969,19 +983,9 @@ export class TreeSelectorComponent extends Container {
 
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(`  ${tSettingsUi("Session Tree")}`), 1, 0));
-		this.addChild(
-			new TruncatedText(
-				theme.fg(
-					"muted",
-					tSettingsUi(
-						"Enter: switch. Shift+Enter: summarize & switch. Up/Down: move. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
-					),
-				),
-				0,
-				0,
-			),
-		);
+		this.addChild(new Text(theme.bold(`  ${tSettingsUi("Session Tree")}`), 0, 0));
+		this.addChild(new TruncatedText(`  ${primaryHints}`, 0, 0));
+		this.addChild(new TruncatedText(`  ${secondaryHints}`, 0, 0));
 		this.addChild(new SearchLine(this.#treeList));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));

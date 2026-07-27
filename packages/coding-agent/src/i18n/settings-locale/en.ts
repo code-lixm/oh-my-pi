@@ -897,8 +897,13 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Enter: save  Esc: cancel": "Enter: save  Esc: cancel",
 	"Enter: save  Tab: toggle scope  R: regenerate  Esc: cancel":
 		"Enter: save  Tab: toggle scope  R: regenerate  Esc: cancel",
-	"Enter: switch. Shift+Enter: summarize & switch. Up/Down: move. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search":
-		"Enter: switch. Shift+Enter: summarize & switch. Up/Down: move. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+	direct: "direct",
+	label: "label",
+	move: "move",
+	page: "page",
+	reverse: "reverse",
+	"summarize and switch": "summarize and switch",
+	switch: "switch",
 	"Env vars:": "Env vars:",
 	"Environment variable": "Environment variable",
 	"Error: {message}": "Error: {message}",

@@ -544,7 +544,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					contentWidth,
 					theme,
 				),
-			1,
+			accentMode ? 0 : 1,
 			accentMode ? 0 : 1,
 		);
 

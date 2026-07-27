@@ -27,7 +27,7 @@ import {
 } from "../tui";
 import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
-import { formatFullOutputReference, type OutputMeta } from "./output-meta";
+import type { OutputMeta } from "./output-meta";
 import {
 	expandDelimitedPathEntries,
 	formatPathRelativeToCwd,
@@ -686,25 +686,7 @@ export const globToolRenderer = {
 			uiTheme,
 		);
 
-		const truncationReasons: string[] = [];
-		if (details?.resultLimitReached) {
-			truncationReasons.push(tSettingsUi("limit {count} results", { count: details.resultLimitReached }));
-		}
-		if (limits?.resultLimit) {
-			truncationReasons.push(tSettingsUi("limit {count} results", { count: limits.resultLimit.reached }));
-		}
-		if (truncation) {
-			truncationReasons.push(tSettingsUi(truncation.truncatedBy === "lines" ? "line limit" : "size limit"));
-		}
-		const artifactId = truncation && "artifactId" in truncation ? truncation.artifactId : undefined;
-		if (artifactId) truncationReasons.push(formatFullOutputReference(artifactId));
-
 		const extraLines: string[] = [];
-		if (truncationReasons.length > 0) {
-			extraLines.push(
-				uiTheme.fg("warning", tSettingsUi("truncated: {reasons}", { reasons: truncationReasons.join(", ") })),
-			);
-		}
 		if (missingNote) extraLines.push(missingNote);
 
 		return createCachedComponent(

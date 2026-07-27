@@ -40,6 +40,10 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed `/tree` reserving half the terminal instead of using the fullscreen viewport; the session tree now fills all rows outside its chrome, groups shortcuts into two compact aligned lines, and keeps active filter status beside search instead of consuming a list row.
+- Fixed the Agent Hub, agent dashboard, and `/tree` selector opening inside or over the prompt area; they now use independent fullscreen overlays that leave the conversation untouched and return to the active editor surface on Escape.
+- Fixed accent-style generic fallback tool results adding their own horizontal padding on top of the shared rail gap, restoring a single-cell gap and the full content-width budget.
+- Fixed truncated Glob results rendering a detached, duplicated warning beneath the file tree; truncation now stays in the compact status header, matching Grep.
 - Fixed collapsed CodeGraph results to use the same single middle tree-omission row as Grep, preserving the first and last entries without an additional generic `lines omitted` row.
 - Fixed collapsed tree-shaped tool results losing the `├─` connector on the central middle-omission row, preserving visual continuity between the first and final sibling rows.
 - Fixed the central collapsed-detail wrapper truncating Hub and Todo results that own their visibility; both now bypass the outer budget while normal tool results remain capped.

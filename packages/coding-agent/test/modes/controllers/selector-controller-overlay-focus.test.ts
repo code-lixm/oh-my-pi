@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { AgentDashboard } from "@oh-my-pi/pi-coding-agent/modes/components/agent-dashboard";
 import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -88,6 +89,58 @@ describe("SelectorController.focusActiveEditorArea", () => {
 
 		expect(setFocus).toHaveBeenCalledTimes(1);
 		expect(setFocus).toHaveBeenCalledWith(editor);
+	});
+});
+
+describe("SelectorController agents dashboard overlay", () => {
+	it("opens /agents as a fullscreen overlay and restores the visible editor-slot owner on close", async () => {
+		const approvalPrompt = { id: "approval-prompt" };
+		const editor = { id: "editor" };
+		const editorContainer = createEditorSlot(approvalPrompt);
+		const dashboard = {} as AgentDashboard & { onClose?: () => void; onRequestRender?: () => void };
+		const overlayHide = vi.fn();
+		const focusTargets: unknown[] = [];
+		const requestRender = vi.fn();
+		const showOverlay = vi.fn((component: unknown) => {
+			if (component !== dashboard) throw new Error("Expected AgentDashboard overlay");
+			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
+		});
+		vi.spyOn(AgentDashboard, "create").mockResolvedValue(dashboard);
+		const controller = new SelectorController({
+			editor,
+			editorContainer,
+			settings: { getModelRole: () => undefined },
+			session: { model: undefined, modelRegistry: {} },
+			ui: {
+				showOverlay,
+				setFocus: (target: unknown) => {
+					focusTargets.push(target);
+				},
+				requestRender,
+				terminal: { rows: 24 },
+			},
+		} as unknown as InteractiveModeContext);
+
+		await controller.showAgentsDashboard();
+
+		expect(showOverlay).toHaveBeenCalledWith(
+			dashboard,
+			expect.objectContaining({
+				anchor: "top-left",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+				fullscreen: true,
+			}),
+		);
+		expect(editorContainer.children).toEqual([approvalPrompt]);
+
+		dashboard.onClose?.();
+
+		expect(overlayHide).toHaveBeenCalledTimes(1);
+		expect(focusTargets.at(-1)).toBe(approvalPrompt);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(editorContainer.children).toEqual([approvalPrompt]);
 	});
 });
 

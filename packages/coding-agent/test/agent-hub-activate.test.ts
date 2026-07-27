@@ -21,6 +21,18 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 const AGENT_ID = "Worker";
 const TEST_CWD = path.resolve("agent-hub-cwd");
 
+function registerWorker(agents: AgentRegistry) {
+	agents.register({
+		id: AGENT_ID,
+		displayName: AGENT_ID,
+		kind: "sub",
+		parentId: "Main",
+		session: { subscribe: () => () => {} } as unknown as AgentSession,
+		sessionFile: null,
+		status: "running",
+	});
+}
+
 function makeHub(focusAgent: (id: string) => Promise<void>) {
 	const agents = new AgentRegistry();
 	agents.register({
@@ -177,42 +189,38 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("selector controller restores focus to the editor after Enter focuses an agent", async () => {
+	it("selector controller opens Agent Hub as a fullscreen overlay and restores the visible owner after Enter focuses an agent", async () => {
 		const agents = new AgentRegistry();
-		agents.register({
-			id: AGENT_ID,
-			displayName: AGENT_ID,
-			kind: "sub",
-			parentId: "Main",
-			session: { subscribe: () => () => {} } as unknown as AgentSession,
-			sessionFile: null,
-			status: "running",
-		});
+		registerWorker(agents);
 
-		const editor = {};
+		const approvalPrompt = { id: "approval-prompt" };
 		let capturedHub: AgentHubOverlayComponent | undefined;
-		let editorRestoredCount = 0;
+		const overlayHide = vi.fn();
 		const focusedIds: string[] = [];
 		const focusResolved = Promise.withResolvers<void>();
-		const editorFocused = Promise.withResolvers<void>();
+		const ownerFocused = Promise.withResolvers<void>();
 		const focusTargets: unknown[] = [];
+		const requestRender = vi.fn();
+		const showOverlay = vi.fn((component: unknown) => {
+			capturedHub = component as AgentHubOverlayComponent;
+			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
+		});
 		const editorContainer = {
-			clear: () => {},
-			addChild: (child: unknown) => {
-				if (child === editor) editorRestoredCount++;
-				else capturedHub = child as AgentHubOverlayComponent;
-			},
+			children: [approvalPrompt],
+			clear: vi.fn(),
+			addChild: vi.fn(),
 		};
 		const ctx = {
 			keybindings: { getKeys: () => [] },
 			ui: {
+				showOverlay,
 				setFocus: (target: unknown) => {
 					focusTargets.push(target);
-					if (target === editor) editorFocused.resolve();
+					if (target === approvalPrompt) ownerFocused.resolve();
 				},
-				requestRender: () => {},
+				requestRender,
 			},
-			editor,
+			editor: { id: "editor" },
 			editorContainer,
 			collabGuest: { agentRegistry: agents, hubRemote: undefined },
 			focusAgentSession: async (id: string) => {
@@ -228,16 +236,76 @@ describe("Agent hub Enter activation", () => {
 		controller.showAgentHub(new SessionObserverRegistry());
 
 		expect(capturedHub).toBeDefined();
+		expect(showOverlay).toHaveBeenCalledWith(
+			capturedHub,
+			expect.objectContaining({
+				anchor: "top-left",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+				fullscreen: true,
+			}),
+		);
+		expect(editorContainer.clear).not.toHaveBeenCalled();
+		expect(editorContainer.addChild).not.toHaveBeenCalled();
 		expect(focusTargets[0]).toBe(capturedHub);
 
 		capturedHub!.handleInput("\r");
 		await focusResolved.promise;
-		await editorFocused.promise;
+		await ownerFocused.promise;
 
 		expect(focusedIds).toEqual([AGENT_ID]);
-		expect(editorRestoredCount).toBe(1);
-		expect(focusTargets.at(-1)).toBe(editor);
-		capturedHub!.dispose();
+		expect(overlayHide).toHaveBeenCalledTimes(1);
+		expect(focusTargets.at(-1)).toBe(approvalPrompt);
+		expect(requestRender).toHaveBeenCalled();
+	});
+
+	it("selector controller hides the fullscreen hub and restores the visible owner on Escape", () => {
+		const agents = new AgentRegistry();
+		registerWorker(agents);
+		const approvalPrompt = { id: "approval-prompt" };
+		let capturedHub: AgentHubOverlayComponent | undefined;
+		const overlayHide = vi.fn();
+		const focusTargets: unknown[] = [];
+		const requestRender = vi.fn();
+		const editorContainer = {
+			children: [approvalPrompt],
+			clear: vi.fn(),
+			addChild: vi.fn(),
+		};
+		const ctx = {
+			keybindings: { getKeys: () => [] },
+			ui: {
+				showOverlay: vi.fn((component: unknown) => {
+					capturedHub = component as AgentHubOverlayComponent;
+					return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
+				}),
+				setFocus: (target: unknown) => {
+					focusTargets.push(target);
+				},
+				requestRender,
+			},
+			editor: { id: "editor" },
+			editorContainer,
+			collabGuest: { agentRegistry: agents, hubRemote: undefined },
+			focusAgentSession: async () => {},
+			session: { getToolByName: () => undefined, extensionRunner: undefined },
+			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null },
+			hideThinkingBlock: false,
+		};
+		const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+
+		controller.showAgentHub(new SessionObserverRegistry());
+		if (!capturedHub) throw new Error("Expected Agent Hub overlay");
+		const rendersBeforeClose = requestRender.mock.calls.length;
+
+		capturedHub.handleInput("\x1b");
+
+		expect(overlayHide).toHaveBeenCalledTimes(1);
+		expect(focusTargets.at(-1)).toBe(approvalPrompt);
+		expect(requestRender.mock.calls.length).toBeGreaterThan(rendersBeforeClose);
+		expect(editorContainer.clear).not.toHaveBeenCalled();
+		expect(editorContainer.addChild).not.toHaveBeenCalled();
 	});
 });
 
@@ -255,9 +323,16 @@ describe("Agent hub double-← gating", () => {
 		const shownReady = Promise.withResolvers<AgentHubOverlayComponent>();
 		const editor = {};
 		const focusTargets: unknown[] = [];
+		const overlayHide = vi.fn();
+		const showOverlay = vi.fn((component: unknown) => {
+			shown = component as AgentHubOverlayComponent;
+			shownReady.resolve(shown);
+			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
+		});
 		const ctx = {
 			keybindings: { getKeys: () => [] },
 			ui: {
+				showOverlay,
 				setFocus: (target: unknown) => {
 					focusTargets.push(target);
 				},
@@ -265,13 +340,9 @@ describe("Agent hub double-← gating", () => {
 			},
 			editor,
 			editorContainer: {
-				clear: () => {},
-				addChild: (child: unknown) => {
-					if (child !== editor) {
-						shown = child as AgentHubOverlayComponent;
-						shownReady.resolve(shown);
-					}
-				},
+				children: [editor],
+				clear: vi.fn(),
+				addChild: vi.fn(),
 			},
 			collabGuest: { agentRegistry: agents, hubRemote: undefined },
 			focusAgentSession: async () => {},
@@ -286,19 +357,9 @@ describe("Agent hub double-← gating", () => {
 			shown: () => shown,
 			shownReady: shownReady.promise,
 			focusTargets,
+			showOverlay,
+			overlayHide,
 		};
-	}
-
-	function registerWorker(agents: AgentRegistry) {
-		agents.register({
-			id: AGENT_ID,
-			displayName: AGENT_ID,
-			kind: "sub",
-			parentId: "Main",
-			session: { subscribe: () => () => {} } as unknown as AgentSession,
-			sessionFile: null,
-			status: "running",
-		});
 	}
 
 	it("requireContent keeps the hub closed when only Main is registered", () => {
