@@ -541,7 +541,7 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-			this.container.addChild(createAdvisorMessageCard(details, theme));
+			this.container.addChild(createAdvisorMessageCard(details, () => this.#expanded, theme));
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

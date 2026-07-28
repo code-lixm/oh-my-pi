@@ -1765,19 +1765,23 @@ impl SpawnRegistry {
 /// #4605) and orphaning any leftover child from the next cancellation wave.
 fn prune_exited(spawned: &mut Vec<SpawnedProcess>) {
 	spawned.retain(|entry| {
-		if let Some(process) = &entry.process {
-			if process.status() == ProcessStatus::Running {
-				return true;
-			}
-			// Windows-only: root exited but the pinned handle still keeps its
-			// pid reserved, so `live_descendants` walks the *original* subtree
-			// via Toolhelp. If any child is still running we must keep the
-			// entry — closing the handle would both release the pid (racing
-			// pid reuse) and strand the surviving child.
-			#[cfg(target_os = "windows")]
-			if !process.live_descendants().is_empty() {
-				return true;
-			}
+		if entry
+			.process
+			.as_ref()
+			.is_some_and(|process| process.status() == ProcessStatus::Running)
+		{
+			return true;
+		}
+		// Windows-only: root exited but the pinned handle still keeps its
+		// pid reserved, so `live_descendants` walks the *original* subtree
+		// via Toolhelp. If any child is still running we must keep the
+		// entry — closing the handle would both release the pid (racing
+		// pid reuse) and strand the surviving child.
+		#[cfg(target_os = "windows")]
+		if let Some(process) = &entry.process
+			&& !process.live_descendants().is_empty()
+		{
+			return true;
 		}
 		entry
 			.pgid

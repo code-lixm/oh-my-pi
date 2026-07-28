@@ -1769,6 +1769,50 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Inline descriptors for Gemini models; keep them in tool schemas otherwise":
 		"Inline descriptors for Gemini models; keep them in tool schemas otherwise",
 	"Inspect Image": "Inspect Image",
+	"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.":
+		"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
+	"Auto (only for models without vision)": "Auto (only for models without vision)",
+	"Per-Task Effort": "Per-Task Effort",
+	"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level":
+		"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level",
+	"Maximum Per-Spawn Effort": "Maximum Per-Spawn Effort",
+	"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.":
+		"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.",
+	"Control the inspect_image vision-delegation tool for this session":
+		"Control the inspect_image vision-delegation tool for this session",
+	"Always expose inspect_image this session": "Always expose inspect_image this session",
+	"Never expose inspect_image this session": "Never expose inspect_image this session",
+	"Follow inspect_image.mode (auto hides it for vision-capable models)":
+		"Follow inspect_image.mode (auto hides it for vision-capable models)",
+	"Show inspect_image status": "Show inspect_image status",
+	"Vision: {mode}": "Vision: {mode}",
+	"native image input": "native image input",
+	"no native image input": "no native image input",
+	"no active model": "no active model",
+	inactive: "inactive",
+	"inspect_image: {status}": "inspect_image: {status}",
+	"mode: {mode}": "mode: {mode}",
+	"mode: {mode} (session override)": "mode: {mode} (session override)",
+	"configured: {mode}": "configured: {mode}",
+	"model: {model} ({capability})": "model: {model} ({capability})",
+	"inspect_image is unavailable in this session.": "inspect_image is unavailable in this session.",
+	"Vision mode: {mode}. {status}": "Vision mode: {mode}. {status}",
+	"Usage: /vision [on|off|auto|status]": "Usage: /vision [on|off|auto|status]",
+	"… +{count} more note": "… +{count} more note",
+	"… +{count} more notes": "… +{count} more notes",
+	"Workspace checkpoints": "Workspace checkpoints",
+	"Enable workspace checkpoints": "Enable workspace checkpoints",
+	"Captures the working tree before each new user turn, before user-initiated bash, and before isolated-task merge, so any change can be rolled back via `undoWorkspace` or `applyWorkspaceRestore`.":
+		"Captures the working tree before each new user turn, before user-initiated bash, and before isolated-task merge, so any change can be rolled back via `undoWorkspace` or `applyWorkspaceRestore`.",
+	"Auto-checkpoint mode": "Auto-checkpoint mode",
+	"`off` disables automatic boundaries; `turn` captures a checkpoint before every top-level user turn.":
+		"`off` disables automatic boundaries; `turn` captures a checkpoint before every top-level user turn.",
+	turn: "turn",
+	"Failure policy": "Failure policy",
+	"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.":
+		"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.",
+	warn: "warn",
+	ignore: "ignore",
 	"Intent Tracing": "Intent Tracing",
 	"Interrupt Mode": "Interrupt Mode",
 	"Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)":
@@ -4645,8 +4689,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly":
 		"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
 	"Terminal Title Run State": "Terminal Title Run State",
-	"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you":
-		"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you",
+	"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you":
+		"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you",
 	"Additional Workspace Dirs": "Additional Workspace Dirs",
 	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
 		"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.",

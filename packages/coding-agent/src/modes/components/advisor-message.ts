@@ -5,6 +5,8 @@ import { replaceTabs } from "../../tools/render-utils";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import { theme as activeTheme, getMarkdownTheme, type Theme, type ThemeColor } from "../theme/theme";
 
+const COLLAPSED_NOTES = 3;
+
 function severityColor(severity: AdvisorSeverity | undefined): ThemeColor {
 	switch (severity ?? "nit") {
 		case "blocker":
@@ -38,11 +40,19 @@ function hasMixedSeverities(notes: AdvisorMessageDetails["notes"]): boolean {
  * each note body uses the standard Markdown renderer so paragraph and list
  * continuation indentation stays consistent without a custom quote rail.
  */
-export function createAdvisorMessageCard(details: AdvisorMessageDetails | undefined, uiTheme: Theme): Component {
-	return buildAdvisorCard(details, uiTheme);
+export function createAdvisorMessageCard(
+	details: AdvisorMessageDetails | undefined,
+	getExpanded: () => boolean,
+	uiTheme: Theme,
+): Component {
+	return buildAdvisorCard(details, getExpanded, uiTheme);
 }
 
-function buildAdvisorCard(details: AdvisorMessageDetails | undefined, uiTheme: Theme): Component {
+function buildAdvisorCard(
+	details: AdvisorMessageDetails | undefined,
+	getExpanded: () => boolean,
+	uiTheme: Theme,
+): Component {
 	const notes = details?.notes ?? [];
 	const blockers = notes.filter(note => note.severity === "blocker").length;
 	const concerns = notes.filter(note => note.severity === "concern").length;
@@ -87,7 +97,8 @@ function buildAdvisorCard(details: AdvisorMessageDetails | undefined, uiTheme: T
 			},
 			theme,
 		);
-		const sections = notes.map(entry => {
+		const shown = getExpanded() ? notes : notes.slice(0, COLLAPSED_NOTES);
+		const sections = shown.map(entry => {
 			const labelParts: string[] = [];
 			if (entry.advisor && entry.advisor !== "default") {
 				labelParts.push(theme.fg("dim", `[${replaceTabs(entry.advisor)}]`));
@@ -99,6 +110,19 @@ function buildAdvisorCard(details: AdvisorMessageDetails | undefined, uiTheme: T
 				lines: [...(labelParts.length > 0 ? [labelParts.join(" ")] : []), ...markdown.render(contentWidth)],
 			};
 		});
+		const hidden = notes.length - shown.length;
+		if (hidden > 0) {
+			sections.push({
+				lines: [
+					theme.fg(
+						"dim",
+						tSettingsUi(hidden === 1 ? "… +{count} more note" : "… +{count} more notes", {
+							count: hidden,
+						}),
+					),
+				],
+			});
+		}
 
 		return {
 			header,

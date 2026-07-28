@@ -47,6 +47,7 @@ import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import {
 	formatStyledTruncationWarning,
 	type OutputMeta,
+	resolveInlineByteCapBudget,
 	stripOutputNotice,
 	stripRawOutputArtifactNotice,
 } from "./output-meta";
@@ -665,6 +666,18 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			details.exitCode = exitCode;
 		}
 
+		// Final-defense inline cap config, shared by the timeout and normal
+		// completion paths. The sink already bounds inline bodies to the spill
+		// threshold, so with the notice slack this only fires on paths that
+		// bypass the sink (client-bridge terminals, minimizer misses). When the
+		// sink spilled, its artifact already holds the full raw stream — reuse
+		// that id instead of saving a second (already-truncated) copy, so the
+		// `[raw output: artifact://N]` footer and the truncation notice agree.
+		const inlineCap = {
+			maxBytes: resolveInlineByteCapBudget(this.session.settings),
+			saveArtifact: (full: string) => result.artifactId ?? saveBashOriginalArtifact(this.session, full),
+		};
+
 		if (isTimeout) {
 			details.timedOut = true;
 			const message =
@@ -674,9 +687,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (!normalizeResultOutput(result).startsWith(`[${message}]\n`)) {
 				outputLines.push("", `[${message}]`);
 			}
-			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), {
-				saveArtifact: full => saveBashOriginalArtifact(this.session, full),
-			});
+			const timeoutOutputText = await enforceInlineByteCap(outputLines.join("\n"), inlineCap);
 			return toolResult(details)
 				.text(timeoutOutputText)
 				.truncationFromSummary(result, { direction: "tail" })
@@ -687,12 +698,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// Non-timeout cancellations and missing exit status still propagate as thrown errors.
 		this.#throwIfUnfinished(result, timeoutSec, outputText);
 
-		// Final defense at the tool-result boundary: no bash path (client bridge,
-		// head-retention spill, minimizer miss) may emit more than
-		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
-		const cappedOutputText = await enforceInlineByteCap(outputText, {
-			saveArtifact: full => saveBashOriginalArtifact(this.session, full),
-		});
+		// No-op for already-bounded output; see `inlineCap` above.
+		const cappedOutputText = await enforceInlineByteCap(outputText, inlineCap);
 
 		const resultBuilder = toolResult(details)
 			.text(cappedOutputText)

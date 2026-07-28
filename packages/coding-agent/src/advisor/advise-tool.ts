@@ -50,8 +50,7 @@ export interface AdvisorMessageDetails {
  * stays a clean `<advisory>` block. The primary agent's system prompt never
  * mentions advisories, so this is its only cue for how to treat them.
  */
-const ADVISOR_GUIDANCE =
-	"advice, not authority; reconcile with user corrections, current evidence, and completed actions; never retry a rejected path without new evidence";
+const ADVISOR_GUIDANCE = "weigh, don't blindly obey";
 
 /**
  * Render a batch of advisor notes as the agent-facing message body: one
@@ -79,19 +78,6 @@ export function isInterruptingSeverity(severity: AdvisorSeverity | undefined): b
 	return severity === "concern" || severity === "blocker";
 }
 
-/**
- * Append a staleness caveat to an advisor note when newer primary turns arrived
- * after the reviewed transcript window (i.e. `hasFreshBacklog` is true on the
- * advisor runtime at delivery time). Pure function — no session coupling — so it
- * can be unit-tested in isolation and called from `AgentSession#routeAdvice`.
- */
-export function annotateForStaleness(note: string, hasFreshBacklog: boolean): string {
-	if (!hasFreshBacklog) return note;
-	return `${note}\n\n_(${tSettingsUi(
-		"Note: newer primary turns arrived after this reviewed window — verify this still applies.",
-	)})_`;
-}
-
 /** How an advisor note is routed to the primary. */
 export type AdvisorDeliveryChannel = "aside" | "steer" | "preserve";
 /** Half-open turn-count fence for the post-interrupt cooldown. */
@@ -109,6 +95,16 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  *
  * - A `preserveOnly` caller records every note that arrives while the primary
  *   is idle as a visible card and never starts a new primary turn.
+ * - A non-interrupting `nit` always rides the non-interrupting aside queue.
+ * - An interrupting `concern`/`blocker` is normally steered into the agent: into
+ *   the live turn while one is streaming, or (when idle) a triggered turn so the
+ *   advice is acted on immediately.
+ * - If the primary tail is already a terminal text answer and there is no queued
+ *   work, a late `concern` is preserved as a visible card instead of waking the
+ *   primary to restate completion. A `blocker` is the exception: it means the
+ *   agent handed off broken or unexercised work, so it still steers a triggered
+ *   turn to force the primary to acknowledge and continue before the turn is
+ *   considered done (#5628) — deferring it to the next user turn is the bug.
  * - After a deliberate user interrupt (`autoResumeSuppressed`) the advisor must
  *   not auto-resume the stopped run. While the agent is idle — or still tearing
  *   the interrupted turn down (`aborting`) — the note is preserved as a visible
@@ -117,14 +113,6 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  *   auto-resume anything, so it is delivered live. Parking it during an active
  *   run instead strands it (it never reaches the running agent) and the withheld
  *   notes dump as one burst at the next user prompt — the bug this guards.
- * - If the primary tail is already a terminal text answer and there is no queued
- *   work, every late note starts a new primary turn so the agent acts on the
- *   review instead of leaving it for the user. This terminal wake takes precedence
- *   over the normal non-interrupting `nit` path and interrupt-immunity cooldown.
- * - Outside that terminal case, a non-interrupting `nit` rides the aside queue.
- * - An interrupting `concern`/`blocker` is normally steered into the agent: into
- *   the live turn while one is streaming, or (when idle) a triggered turn so the
- *   advice is acted on immediately.
  * - During the post-interrupt immune-turn window, further `concern`/`blocker`
  *   notes are downgraded to asides; preservation still wins.
  */
@@ -138,9 +126,10 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	preserveOnly?: boolean;
 }): AdvisorDeliveryChannel {
 	if (opts.preserveOnly && !opts.streaming) return "preserve";
-	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
-	if (opts.terminalAnswerNoQueuedWork && !opts.streaming && !opts.aborting) return "steer";
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
+	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
+	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)
+		return "preserve";
 	if (opts.interruptImmuneTurnActive) return "aside";
 	return "steer";
 }
@@ -169,7 +158,7 @@ export function deriveAdvisorTelemetry(
  * read-only investigative set. The full available pool is every built tool the
  * session has (the advisor is a full agent); a config's `tools` selects from it.
  */
-export const ADVISOR_DEFAULT_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "grep", "glob", "codegraph"]);
+export const ADVISOR_DEFAULT_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "grep", "glob"]);
 
 function advisorNoteDedupeKey(note: string): string {
 	return note.trim().replace(/\s+/g, " ");

@@ -7,6 +7,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Markdown, Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, type Theme } from "../../modes/theme/theme";
 import {
 	formatAge,
@@ -20,7 +21,12 @@ import {
 	truncateToWidth,
 } from "../../tools/render-utils";
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
-import { CachedOutputBlock, markFramedBlockComponent, resolveBareOutputBlockBorderStyle } from "../../tui/output-block";
+import {
+	CachedOutputBlock,
+	markFramedBlockComponent,
+	outputBlockContentWidth,
+	resolveBareOutputBlockBorderStyle,
+} from "../../tui/output-block";
 import { getSearchProviderLabel } from "./provider";
 import type { SearchResponse } from "./types";
 
@@ -61,7 +67,10 @@ export interface SearchRenderDetails {
 
 /** Render a web search failure as a framed error panel, matching the success layout. */
 function renderSearchErrorPanel(message: string, providerLabel: string | undefined, theme: Theme): Component {
-	const header = renderStatusLine({ icon: "error", title: "Web Search", description: providerLabel }, theme);
+	const header = renderStatusLine(
+		{ icon: "error", title: tSettingsUi("Web Search"), description: providerLabel },
+		theme,
+	);
 	const body = theme.fg("error", `Error: ${replaceTabs(message)}`);
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
@@ -131,13 +140,13 @@ export function renderSearchResult(
 		success
 			? {
 					iconOverride: theme.styledSymbol("tool.webSearch", "accent"),
-					title: "Web Search",
+					title: tSettingsUi("Web Search"),
 					description: providerLabel,
 					meta: [formatCount("source", sourceCount)],
 				}
 			: {
 					icon: "warning",
-					title: "Web Search",
+					title: tSettingsUi("Web Search"),
 					description: providerLabel,
 					meta: [formatCount("source", sourceCount)],
 				},
@@ -166,9 +175,10 @@ export function renderSearchResult(
 		render(width: number): readonly string[] {
 			// Read mutable state at render time
 			const { expanded } = options;
+			const borderStyle = resolveBareOutputBlockBorderStyle();
 
 			// Answer lines: full markdown when expanded, capped markdown preview when collapsed.
-			const answerWidth = Math.max(20, width - 3);
+			const answerWidth = outputBlockContentWidth(width, undefined, borderStyle);
 			const renderedAnswer = answerMarkdown ? answerMarkdown.render(answerWidth) : [];
 			let answerLines: readonly string[];
 			if (renderedAnswer.length === 0) {
@@ -243,7 +253,7 @@ export function renderSearchResult(
 						{ label: theme.fg("toolTitle", "Metadata"), lines: metaLines },
 					],
 					width,
-					borderStyle: resolveBareOutputBlockBorderStyle(),
+					borderStyle,
 				},
 				theme,
 			);
@@ -261,7 +271,7 @@ export function renderSearchCall(
 	theme: Theme,
 ): Component {
 	const query = truncateToWidth(args.query ?? "", 80);
-	const text = renderStatusLine({ icon: "pending", title: "Web Search", description: query }, theme);
+	const text = renderStatusLine({ icon: "pending", title: tSettingsUi("Web Search"), description: query }, theme);
 	return new Text(text, 0, 0);
 }
 

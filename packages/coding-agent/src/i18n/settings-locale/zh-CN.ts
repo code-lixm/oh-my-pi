@@ -1718,6 +1718,49 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Inline descriptors for Gemini models; keep them in tool schemas otherwise":
 		"对 Gemini 模型使用内联描述；其他情况则保留在工具 schema 中",
 	"Inspect Image": "图像检查",
+	"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.":
+		"控制 inspect_image 工具，将图像理解委托给支持视觉的模型。'auto' 仅在当前模型不支持原生图像输入时显示；'on' 始终显示；'off' 始终隐藏。",
+	"Auto (only for models without vision)": "自动（仅限不支持视觉的模型）",
+	"Per-Task Effort": "单任务思考强度",
+	"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level":
+		"在启动 task 时开放可选的 effort 参数，允许调用方覆盖每个子代理的思考强度",
+	"Maximum Per-Spawn Effort": "单次启动的最高思考强度",
+	"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.":
+		"task 工具单次启动的 effort 提示所允许的最高推理强度。较低值可防止调用方将子代理提升到此上限以上；默认值保留模型的完整范围。",
+	"Control the inspect_image vision-delegation tool for this session": "控制当前会话的 inspect_image 视觉委托工具",
+	"Always expose inspect_image this session": "当前会话始终显示 inspect_image",
+	"Never expose inspect_image this session": "当前会话始终隐藏 inspect_image",
+	"Follow inspect_image.mode (auto hides it for vision-capable models)":
+		"跟随 inspect_image.mode（自动模式会对支持视觉的模型隐藏该工具）",
+	"Show inspect_image status": "显示 inspect_image 状态",
+	"Vision: {mode}": "视觉：{mode}",
+	"native image input": "原生图像输入",
+	"no native image input": "无原生图像输入",
+	"no active model": "无当前模型",
+	inactive: "未启用",
+	"inspect_image: {status}": "inspect_image：{status}",
+	"mode: {mode}": "模式：{mode}",
+	"mode: {mode} (session override)": "模式：{mode}（会话覆盖）",
+	"configured: {mode}": "配置值：{mode}",
+	"model: {model} ({capability})": "模型：{model}（{capability}）",
+	"inspect_image is unavailable in this session.": "当前会话无法使用 inspect_image。",
+	"Vision mode: {mode}. {status}": "视觉模式：{mode}。{status}",
+	"Usage: /vision [on|off|auto|status]": "用法：/vision [on|off|auto|status]",
+	"… +{count} more note": "……另有 {count} 条建议",
+	"… +{count} more notes": "……另有 {count} 条建议",
+	"Workspace checkpoints": "工作区检查点",
+	"Enable workspace checkpoints": "启用工作区检查点",
+	"Captures the working tree before each new user turn, before user-initiated bash, and before isolated-task merge, so any change can be rolled back via `undoWorkspace` or `applyWorkspaceRestore`.":
+		"在每个新用户回合、用户发起的 bash 和隔离任务合并前捕获工作树，以便通过 `undoWorkspace` 或 `applyWorkspaceRestore` 回滚任何改动。",
+	"Auto-checkpoint mode": "自动检查点模式",
+	"`off` disables automatic boundaries; `turn` captures a checkpoint before every top-level user turn.":
+		"`off` 禁用自动边界；`turn` 在每个顶层用户回合前捕获检查点。",
+	turn: "每回合",
+	"Failure policy": "失败策略",
+	"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.":
+		"自动工作区检查点失败时的会话处理方式：阻止会修改工作区的回合、显示警告后继续，或静默继续。",
+	warn: "警告后继续",
+	ignore: "忽略",
 	"Intent Tracing": "意图追踪",
 	"Interrupt Mode": "中断模式",
 	"Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)":
@@ -4505,8 +4548,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly":
 		"自动上报工具问题（xd://report_issue）。默认开启；首次上报会请求同意，拒绝后将禁用上报，直至明确重新启用",
 	"Terminal Title Run State": "终端标题运行状态",
-	"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you":
-		"在终端标题的分隔符中显示代理运行状态：工作时显示动画 spinner，轮到你操作时显示“>”，等待你响应时显示“!”",
+	"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you":
+		"在终端标题的分隔符中显示代理运行状态：工作时显示动画 spinner（Windows 上显示静态“:”），轮到你操作时显示“>”，等待你响应时显示“!”",
 	"Additional Workspace Dirs": "附加工作区目录",
 	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
 		"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/glob。",

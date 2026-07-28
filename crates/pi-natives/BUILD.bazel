@@ -1,0 +1,135 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+_SCANNER_SUFFIXES = ["create", "destroy", "scan", "serialize", "deserialize"]
+
+cc_library(
+    name = "codegraph_grammar_kotlin",
+    srcs = [
+        "src/codegraph/grammars/kotlin/parser.c",
+        "src/codegraph/grammars/kotlin/scanner.c",
+    ],
+    hdrs = glob(["src/codegraph/grammars/kotlin/tree_sitter/*.h"]),
+    defines = ["tree_sitter_kotlin=codegraph_tree_sitter_kotlin"] + [
+        "tree_sitter_kotlin_external_scanner_{0}=codegraph_tree_sitter_kotlin_external_scanner_{0}".format(suffix)
+        for suffix in _SCANNER_SUFFIXES
+    ],
+    includes = ["src/codegraph/grammars/kotlin"],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "codegraph_grammar_lua",
+    srcs = [
+        "src/codegraph/grammars/lua/parser.c",
+        "src/codegraph/grammars/lua/scanner.c",
+    ],
+    hdrs = glob(["src/codegraph/grammars/lua/tree_sitter/*.h"]),
+    defines = ["tree_sitter_lua=codegraph_tree_sitter_lua"] + [
+        "tree_sitter_lua_external_scanner_{0}=codegraph_tree_sitter_lua_external_scanner_{0}".format(suffix)
+        for suffix in _SCANNER_SUFFIXES
+    ],
+    includes = ["src/codegraph/grammars/lua"],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "codegraph_grammar_scala",
+    srcs = [
+        "src/codegraph/grammars/scala/parser.c",
+        "src/codegraph/grammars/scala/scanner.c",
+    ],
+    hdrs = glob(["src/codegraph/grammars/scala/tree_sitter/*.h"]),
+    defines = ["tree_sitter_scala=codegraph_tree_sitter_scala"] + [
+        "tree_sitter_scala_external_scanner_{0}=codegraph_tree_sitter_scala_external_scanner_{0}".format(suffix)
+        for suffix in _SCANNER_SUFFIXES
+    ],
+    includes = ["src/codegraph/grammars/scala"],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "codegraph_grammar_dart",
+    srcs = [
+        "src/codegraph/grammars/dart/parser.c",
+        "src/codegraph/grammars/dart/scanner.c",
+    ],
+    hdrs = glob(["src/codegraph/grammars/dart/tree_sitter/*.h"]),
+    defines = ["tree_sitter_dart=codegraph_tree_sitter_dart"] + [
+        "tree_sitter_dart_external_scanner_{0}=codegraph_tree_sitter_dart_external_scanner_{0}".format(suffix)
+        for suffix in _SCANNER_SUFFIXES + ["reset"]
+    ],
+    includes = ["src/codegraph/grammars/dart"],
+    alwayslink = True,
+)
+
+# The NAPI cdylib. build.rs is intentionally not wired in: napi_build::setup()
+# link args are hardcoded below, while the CodeGraph C grammars are explicit
+# cc_library dependencies so Bazel and Cargo export the same native symbols.
+# TypeScript typedef regeneration stays a cargo-side dev flow
+# (`bun --cwd packages/natives run build:bindings`); index.js/index.d.ts are
+# committed, so artifact builds never need the napi CLI.
+rust_shared_library(
+    name = "pi_natives",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    compile_data = glob([
+        "src/syntaxes/*.sublime-syntax",
+        "src/fonts/*",
+    ]),
+    crate_features = [],
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_flags = select({
+        "//bazel/variants:baseline": ["-Ctarget-cpu=x86-64-v2"],
+        "//bazel/variants:modern": ["-Ctarget-cpu=x86-64-v3"],
+        "//conditions:default": [],
+    }) + select({
+        # napi_build::setup() equivalents (build.rs is not wired into Bazel):
+        # napi addons resolve Node symbols at load time on macOS; DF_1_NODELETE
+        # keeps the addon resident across Worker teardown on linux-gnu (napi
+        # emits it for gnu; harmless under musl's loader). windows-msvc needs
+        # nothing — napi-sys v3 imports node.exe via raw-dylib.
+        "@platforms//os:macos": ["-Clink-arg=-Wl,-undefined,dynamic_lookup"],
+        "@platforms//os:linux": ["-Clink-arg=-Wl,-z,nodelete"],
+        "//conditions:default": [],
+    }) + select({
+        # musl defaults to +crt-static, under which rustc silently emits no
+        # cdylib at all; napi musl addons have always linked the dynamic CRT.
+        "//bazel/triples:x86_64-unknown-linux-musl": ["-Ctarget-feature=-crt-static"],
+        "//bazel/triples:aarch64-unknown-linux-musl": ["-Ctarget-feature=-crt-static"],
+        "//conditions:default": [],
+    }),
+    link_deps = [
+        ":codegraph_grammar_dart",
+        ":codegraph_grammar_kotlin",
+        ":codegraph_grammar_lua",
+        ":codegraph_grammar_scala",
+    ],
+    version = "17.1.5",
+    deps = all_crate_deps(normal = True) + [
+        "//crates/pi-ast",
+        "//crates/pi-iso",
+        "//crates/pi-shell",
+        "//crates/pi-uutils-ctx",
+        "//crates/pi-walker",
+    ],
+)
+
+rust_test(
+    name = "pi_natives_test",
+    crate = ":pi_natives",
+    edition = "2024",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + [
+        # dev-dependency on every platform (desktop_x11's pure keysym helpers
+        # compile under cfg(test) everywhere), but cargo-bazel folds it into
+        # the linux-only normal dep entry; restore it for the test build.
+        "@crates//:xkeysym",
+    ],
+)

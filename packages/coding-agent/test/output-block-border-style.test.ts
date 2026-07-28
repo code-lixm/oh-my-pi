@@ -183,7 +183,7 @@ describe("output-block border style", () => {
 		lightCatppuccinTheme = lightCatppuccin;
 	});
 
-	it("keeps the full frame with rounded corners and side borders", () => {
+	it("keeps the full frame's symmetric inner gutters and wrapping", () => {
 		const contentWidth = outputBlockContentWidth(WIDTH, undefined, "full");
 		const payload = "X".repeat(contentWidth + 2);
 		const lines = plain(
@@ -196,20 +196,20 @@ describe("output-block border style", () => {
 		const h = darkTheme.boxRound.horizontal;
 		const v = darkTheme.boxRound.vertical;
 
-		expect(contentWidth).toBe(WIDTH - 4);
+		expect(contentWidth).toBe(WIDTH - 5);
 		expect(lines).toHaveLength(4);
-		expect(lines.every(line => line.length === WIDTH)).toBe(true);
+		expectUniformWidth(lines, WIDTH);
 		expect(lines[0]!).toBe(
 			` ${darkTheme.boxRound.topLeft}${h} Tool ${h.repeat(WIDTH - 10)}${darkTheme.boxRound.topRight}`,
 		);
-		expect(lines[1]!).toBe(` ${v} ${"X".repeat(contentWidth)}${v}`);
-		expect(lines[2]!).toBe(` ${v} XX${" ".repeat(contentWidth - 2)}${v}`);
+		expect(lines[1]!).toBe(` ${v} ${"X".repeat(contentWidth)} ${v}`);
+		expect(lines[2]!).toBe(` ${v} XX${" ".repeat(contentWidth - 1)}${v}`);
 		expect(lines[3]!).toBe(
 			` ${darkTheme.boxRound.bottomLeft}${h.repeat(WIDTH - 3)}${darkTheme.boxRound.bottomRight}`,
 		);
 	});
 
-	it("renders borderless blocks with a flush header, a two-space body gutter, and no frame glyphs", () => {
+	it("renders borderless blocks with symmetric body gutters and no frame glyphs", () => {
 		const contentWidth = outputBlockContentWidth(WIDTH, undefined, "none");
 		const payload = "Z".repeat(contentWidth + 2);
 		const lines = plain(
@@ -220,11 +220,11 @@ describe("output-block border style", () => {
 			}),
 		);
 
-		expect(contentWidth).toBe(WIDTH - 2);
+		expect(contentWidth).toBe(WIDTH - 4);
 		expect(lines).toHaveLength(3);
 		expectUniformWidth(lines, WIDTH);
 		expect(lines[0]).toBe(padLine("Tool", WIDTH));
-		expect(lines[1]).toBe(`  ${"Z".repeat(contentWidth)}`);
+		expect(lines[1]).toBe(`  ${"Z".repeat(contentWidth)}${" ".repeat(2)}`);
 		expect(lines[2]).toBe(padLine("  ZZ", WIDTH));
 		expectNoFrameGlyphs(lines.join("\n"));
 	});
@@ -407,10 +407,10 @@ describe("output-block border style", () => {
 		expectUniformWidth(lines, width);
 		expect(lines).toEqual([
 			padLine("Todos", width),
-			padLine(`${branchPrefix}甲乙丙丁戊己`, width),
-			padLine(`${branchContinuationPrefix}庚辛壬癸`, width),
-			padLine(`${lastPrefix}子丑寅卯辰巳`, width),
-			padLine(`${lastContinuationPrefix}午未申酉`, width),
+			padLine(`${branchPrefix}甲乙丙丁戊`, width),
+			padLine(`${branchContinuationPrefix}己庚辛壬癸`, width),
+			padLine(`${lastPrefix}子丑寅卯辰`, width),
+			padLine(`${lastContinuationPrefix}巳午未申酉`, width),
 		]);
 	});
 
@@ -436,12 +436,12 @@ describe("output-block border style", () => {
 		expect(lines).toEqual([
 			padLine("Result", width),
 			padLine(`${sectionBranchPrefix}Stdout`, width),
-			padLine(`${sectionContinuePrefix}ABCDEFGHIJKLM`, width),
-			padLine(`${sectionContinuePrefix}NO`, width),
+			padLine(`${sectionContinuePrefix}ABCDEFGHIJK`, width),
+			padLine(`${sectionContinuePrefix}LMNO`, width),
 			padLine(`${sectionContinuePrefix}${darkTheme.tree.last} child`, width),
 			padLine(`${sectionLastPrefix}Stderr`, width),
-			padLine(`${sectionLastContinuePrefix}PQRSTUVWXYZAB`, width),
-			padLine(`${sectionLastContinuePrefix}CD`, width),
+			padLine(`${sectionLastContinuePrefix}PQRSTUVWXYZ`, width),
+			padLine(`${sectionLastContinuePrefix}ABCD`, width),
 		]);
 	});
 

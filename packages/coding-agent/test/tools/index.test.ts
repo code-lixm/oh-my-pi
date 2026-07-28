@@ -164,12 +164,12 @@ describe("createTools", () => {
 		expect(names).toEqual(["read", "write"]);
 	});
 
-	it("creates an xd:// registry without remounting explicitly requested built-ins", async () => {
+	it("creates xd:// presentation state without remounting explicitly requested built-ins", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["read", "lsp"]);
 
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.xdev).toBeDefined();
+		expect(session.xdev?.mountedNames.size).toBe(0);
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 
@@ -181,9 +181,12 @@ describe("createTools", () => {
 		const names = tools.map(tool => tool.name);
 
 		expect(names).not.toContain("codegraph");
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.get("codegraph")).toBeUndefined();
-		expect(session.xdevRegistry?.get("lsp")).toBeDefined();
+		expect(session.xdev).toBeDefined();
+		const xdev = session.xdev!;
+		expect(xdev.tools.has("codegraph")).toBe(false);
+		expect(xdev.tools.has("lsp")).toBe(true);
+		expect(xdev.mountedNames.has("lsp")).toBe(true);
+		expect(xdev.builtInNames.has("lsp")).toBe(true);
 		expect(session.isToolActive?.("codegraph")).toBe(false);
 	});
 
@@ -194,8 +197,11 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["codegraph"]);
 
 		expect(tools).toEqual([]);
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.xdev).toBeDefined();
+		const xdev = session.xdev!;
+		expect(xdev.tools.size).toBe(0);
+		expect(xdev.mountedNames.has("codegraph")).toBe(false);
+		expect(xdev.builtInNames.has("codegraph")).toBe(false);
 		expect(session.isToolActive?.("codegraph")).toBe(false);
 	});
 
@@ -210,9 +216,13 @@ describe("createTools", () => {
 
 		expect(names).toContain("codegraph");
 		expect(names).not.toContain("lsp");
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.get("codegraph")).toBeUndefined();
-		expect(session.xdevRegistry?.get("lsp")).toBeDefined();
+		expect(session.xdev).toBeDefined();
+		const xdev = session.xdev!;
+		expect(xdev.tools.has("codegraph")).toBe(true);
+		expect(xdev.mountedNames.has("codegraph")).toBe(false);
+		expect(xdev.builtInNames.has("codegraph")).toBe(true);
+		expect(xdev.tools.has("lsp")).toBe(true);
+		expect(xdev.mountedNames.has("lsp")).toBe(true);
 		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 
@@ -225,8 +235,11 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["codegraph"]);
 
 		expect(tools.map(tool => tool.name)).toEqual(["codegraph"]);
-		expect(session.xdevRegistry).toBeDefined();
-		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(session.xdev).toBeDefined();
+		const xdev = session.xdev!;
+		expect([...xdev.tools.keys()]).toEqual(["codegraph"]);
+		expect(xdev.mountedNames.has("codegraph")).toBe(false);
+		expect(xdev.builtInNames.has("codegraph")).toBe(true);
 		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 

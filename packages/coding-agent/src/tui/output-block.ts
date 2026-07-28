@@ -27,6 +27,7 @@ export interface OutputBlockOptions {
 	/** Accent-mode surface tint strength. Omit for the standard subtle tool-card tint. */
 	accentTintOpacity?: number;
 	contentPaddingLeft?: number;
+	contentPaddingRight?: number;
 	/** Override the state-derived border color. Used for muted "legacy" tool
 	 * frames that should not visually compete with framed-output tools. */
 	borderColor?: ThemeColor;
@@ -108,20 +109,35 @@ function normalizeContentPaddingLeft(value: number | undefined, borderStyle: Out
 /**
  * Content width used by {@link renderOutputBlock}. Full borders reserve one
  * outer-left gutter cell plus one cell on each side of the inner frame;
- * `none` uses a two-cell content indent; `accent` reserves its painted-space
- * rail and gap independently from optional content padding. Renderers that
- * size a tail window MUST use this helper so their visual-row budget matches
- * the active layout.
+ * `none` and `accent` reserve their painted-space rails independently from
+ * symmetric left and right content padding. Renderers that size a tail window
+ * MUST use this helper so their visual-row budget matches the active layout.
  */
 export function outputBlockContentWidth(
 	width: number,
 	contentPaddingLeft?: number,
+	borderStyle?: OutputBlockBorderStyle,
+): number;
+export function outputBlockContentWidth(
+	width: number,
+	contentPaddingLeft?: number,
+	contentPaddingRight?: number,
+	borderStyle?: OutputBlockBorderStyle,
+): number;
+export function outputBlockContentWidth(
+	width: number,
+	contentPaddingLeft?: number,
+	contentPaddingRightOrBorderStyle?: number | OutputBlockBorderStyle,
 	borderStyle: OutputBlockBorderStyle = outputBlockBorderStyle,
 ): number {
-	const outerLeftGutter = borderStyle === "full" && width > 0 ? 1 : 0;
-	const borderWidth = borderStyle === "full" ? 2 : 0;
-	const accentGutterWidth = borderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH : 0;
-	const accentRightInset = borderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_RIGHT_INSET : 0;
+	const resolvedBorderStyle =
+		typeof contentPaddingRightOrBorderStyle === "string" ? contentPaddingRightOrBorderStyle : borderStyle;
+	const contentPaddingRight =
+		typeof contentPaddingRightOrBorderStyle === "number" ? contentPaddingRightOrBorderStyle : contentPaddingLeft;
+	const outerLeftGutter = resolvedBorderStyle === "full" && width > 0 ? 1 : 0;
+	const borderWidth = resolvedBorderStyle === "full" ? 2 : 0;
+	const accentGutterWidth = resolvedBorderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH : 0;
+	const accentRightInset = resolvedBorderStyle === "accent" ? OUTPUT_BLOCK_ACCENT_RIGHT_INSET : 0;
 	return Math.max(
 		1,
 		width -
@@ -129,7 +145,8 @@ export function outputBlockContentWidth(
 			borderWidth -
 			accentGutterWidth -
 			accentRightInset -
-			normalizeContentPaddingLeft(contentPaddingLeft, borderStyle),
+			normalizeContentPaddingLeft(contentPaddingLeft, resolvedBorderStyle) -
+			normalizeContentPaddingLeft(contentPaddingRight, resolvedBorderStyle),
 	);
 }
 
@@ -211,19 +228,25 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const outerLeftGutter = borderStyle === "full" && lineWidth > 0 ? 1 : 0;
 	const frameLineWidth = Math.max(0, lineWidth - outerLeftGutter);
 	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft, borderStyle);
+	const contentPaddingRight = normalizeContentPaddingLeft(
+		options.contentPaddingRight ?? options.contentPaddingLeft,
+		borderStyle,
+	);
 	const borderWidth = borderStyle === "full" ? visibleWidth(v) * 2 : 0;
 	const accentGutterWidth = accentMode ? OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH : 0;
 	const accentRightInset = accentMode ? OUTPUT_BLOCK_ACCENT_RIGHT_INSET : 0;
 	const contentWidth = Math.max(
 		0,
-		frameLineWidth - borderWidth - accentGutterWidth - accentRightInset - contentPaddingLeft,
+		frameLineWidth - borderWidth - accentGutterWidth - accentRightInset - contentPaddingLeft - contentPaddingRight,
 	);
 	const contentLeftPadding = contentPaddingLeft > 0 ? padding(contentPaddingLeft) : "";
+	const contentRightPadding = contentPaddingRight > 0 ? padding(contentPaddingRight) : "";
 	const outerLeftPadding = outerLeftGutter > 0 ? padding(outerLeftGutter) : "";
 
 	if (borderless) {
 		const lines: string[] = [];
 		const borderlessLineWidth = Math.max(0, lineWidth - accentGutterWidth - accentRightInset);
+		const borderlessContentWidth = Math.max(0, borderlessLineWidth - contentPaddingRight);
 		// Block-internal padding rows render with the same tinted surface as the
 		// body, but the rail glyph uses the low-emphasis surface tint foreground
 		// instead of the full semantic color — visually lighter so the leading
@@ -254,7 +277,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 					plain.startsWith(getTreeContinuePrefix(false, theme)) ||
 					plain.startsWith(getTreeContinuePrefix(true, theme)));
 			const effectivePrefix = rootAligned ? "" : prefix;
-			const availableWidth = Math.max(1, borderlessLineWidth - visibleWidth(effectivePrefix));
+			const availableWidth = Math.max(1, borderlessContentWidth - visibleWidth(effectivePrefix));
 			if (tree) {
 				const branchWidth = visibleWidth(`${tree.glyph} `);
 				const afterBranch = plain.slice(`${tree.glyph} `.length);
@@ -411,7 +434,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	};
 
 	const renderContent = (inner: string): string =>
-		anchorRightBorder(`${border(v)}${contentLeftPadding}${inner}`, border(v), frameLineWidth);
+		anchorRightBorder(`${border(v)}${contentLeftPadding}${inner}${contentRightPadding}`, border(v), frameLineWidth);
 
 	const lines: string[] = [];
 	for (let r = 0; r < H; r++) {
@@ -461,6 +484,7 @@ export class CachedOutputBlock {
 		h.u32(getThemeEpoch());
 		h.u32(options.width);
 		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft, effectiveStyle));
+		h.u32(normalizeContentPaddingLeft(options.contentPaddingRight ?? options.contentPaddingLeft, effectiveStyle));
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.state);

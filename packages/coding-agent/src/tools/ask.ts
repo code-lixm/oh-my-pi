@@ -39,7 +39,7 @@ import { selectPrompt } from "../prompts/prompt-locale";
 import askDescriptionEn from "../prompts/tools/ask.md" with { type: "text" };
 import askDescriptionZh from "../prompts/tools/ask.zh-CN.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
-import { framedBlock, renderStatusLine } from "../tui";
+import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
 import { formatErrorMessage, formatMeta, formatTitle } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
@@ -1291,7 +1291,7 @@ export const askToolRenderer = {
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>
-			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, width - 3 + 1));
+			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, outputBlockContentWidth(width) + 1));
 
 		// Multi-part questions: one divider-labelled section per question.
 		// Call args are untrusted (partially streamed or model-mangled) and a
@@ -1359,7 +1359,7 @@ export const askToolRenderer = {
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>
-			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, width - 3 + 1));
+			new Markdown(text, 1, 0, mdTheme, accentStyle).render(Math.max(1, outputBlockContentWidth(width) + 1));
 
 		if (!details) {
 			const txt = result.content[0];

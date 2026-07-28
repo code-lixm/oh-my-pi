@@ -33,6 +33,7 @@ import type { AgentOutputManager } from "../task/output-manager";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
+import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
@@ -65,7 +66,7 @@ import type { PlanProposalHandler } from "./resolve";
 import { SiyuanTool } from "./siyuan";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
-import { isMountableUnderXdev, XdevRegistry } from "./xdev";
+import { isMountableUnderXdev, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
 export * from "../edit";
@@ -249,8 +250,10 @@ export interface ToolSession {
 	isToolActive?: (name: string) => boolean;
 	/** Update the active built-in tool predicate when a session changes tools mid-run. */
 	setActiveToolNames?: (names: Iterable<string>) => void;
-	/** Tools mounted under `xd://` (set by createTools when `tools.xdev` is active); read/write consult it at execute time. */
-	xdevRegistry?: XdevRegistry;
+	/** Canonical map containing every registered tool exactly once. */
+	toolRegistry?: Map<string, Tool>;
+	/** `xd://` presentation state backed by {@link toolRegistry}. */
+	xdev?: XdevState;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Idle→parked→revive lifecycle owner; lets the hub kill a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
@@ -269,6 +272,8 @@ export interface ToolSession {
 	getActiveModelString?: () => string | undefined;
 	/** Get the current session model object (provider/api capabilities), regardless of how it was chosen. */
 	getActiveModel?: () => Model | undefined;
+	/** Session-scoped inspect_image mode override set by `/vision`; wins over the persisted setting. */
+	getInspectImageModeOverride?: () => InspectImageMode | undefined;
 	/** Get the session's live per-family service tiers (undefined = none). Source of truth for subagent `tier.subagent: inherit`. */
 	getServiceTierByFamily?: () => ServiceTierByFamily | undefined;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
@@ -594,7 +599,16 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
-		if (name === "goal") return goalEnabled && goalModeActive;
+		// Never in the default set. Explicitly activatable while goal.enabled and
+		// no goal record exists yet — /guided-goal enables it so the agent can
+		// finish the interview with `goal create`, which turns goal mode on. Once
+		// a goal record exists, only an enabled goal keeps the tool: a completed
+		// (exiting) or paused goal must stop advertising it on the next rebuild.
+		if (name === "goal") {
+			if (!goalEnabled || restrictToolNames) return false;
+			const goalState = session.getGoalModeState?.();
+			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
+		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
@@ -607,7 +621,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "siyuan") return session.settings.get("siyuan.enabled");
 		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
 		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
-		if (name === "inspect_image") return session.settings.get("inspect_image.enabled");
+		if (name === "inspect_image") return isInspectImageToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "ask") return session.settings.get("ask.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
@@ -671,6 +685,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	} else {
 		session.isToolActive = name => builtActiveToolNames.has(name);
 	}
+	const toolRegistry = session.toolRegistry ?? new Map<string, Tool>();
+	session.toolRegistry = toolRegistry;
+	const builtInNames = new Set(tools.map(tool => tool.name));
+	for (const tool of tools) toolRegistry.set(tool.name, tool);
 
 	// Ordinary sessions use xd:// for discoverable built-ins, custom tools, and
 	// MCP tools. Structured children must expose only their host-provided names,
@@ -679,26 +697,26 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const xdevEnabled = !restrictToolNames && session.settings.get("tools.xdev");
 	const mountBuiltinTools = requestedTools === undefined;
 	if (xdevEnabled) {
-		const mounted: Tool[] = [];
+		const mountedNames = new Set<string>();
 		const kept: Tool[] = [];
 		for (const tool of tools) {
 			const mountable = mountBuiltinTools && isMountableUnderXdev(tool) && tool.name in BUILTIN_TOOLS;
-			(mountable ? mounted : kept).push(tool);
+			if (mountable) mountedNames.add(tool.name);
+			else kept.push(tool);
 		}
-		session.xdevRegistry = new XdevRegistry(mounted);
+		session.xdev = {
+			tools: toolRegistry,
+			mountedNames,
+			builtInNames,
+			isActive: name => session.isToolActive?.(name) === true,
+		};
 		tools = kept;
-		const finalActiveNames = new Set(tools.map(tool => tool.name));
-		if (session.setActiveToolNames) {
-			session.setActiveToolNames(finalActiveNames);
-		} else {
-			session.isToolActive = name => finalActiveNames.has(name);
-		}
 	}
 	// The xd:// transport rides read/write: `read xd://` lists+documents devices,
 	// `write xd://<tool>` executes them. Staged previews from deferrable tools
 	// (e.g. ast_edit) also resolve through a `write` to xd://resolve/reject. Retain
 	// both whenever any device is mounted or a deferrable tool can stage one.
-	const xdevMounted = (session.xdevRegistry?.size ?? 0) > 0;
+	const xdevMounted = (session.xdev?.mountedNames.size ?? 0) > 0;
 	if (
 		!restrictToolNames &&
 		(tools.some(tool => tool.deferrable === true) || xdevMounted) &&
@@ -706,14 +724,25 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	) {
 		const writeTool = await logger.time("createTools:write", BUILTIN_TOOLS.write, session);
 		if (writeTool) {
-			tools.push(wrapToolWithMetaNotice(writeTool));
+			const wrapped = wrapToolWithMetaNotice(writeTool);
+			tools.push(wrapped);
+			toolRegistry.set(wrapped.name, wrapped);
+			builtInNames.add(wrapped.name);
 		}
 	}
 	if (!restrictToolNames && xdevMounted && !tools.some(tool => tool.name === "read")) {
 		const readTool = await logger.time("createTools:read", BUILTIN_TOOLS.read, session);
 		if (readTool) {
-			tools.push(wrapToolWithMetaNotice(readTool));
+			const wrapped = wrapToolWithMetaNotice(readTool);
+			tools.push(wrapped);
+			toolRegistry.set(wrapped.name, wrapped);
+			builtInNames.add(wrapped.name);
 		}
+	}
+	if (xdevEnabled) {
+		const finalActiveNames = new Set(tools.map(tool => tool.name));
+		if (session.setActiveToolNames) session.setActiveToolNames(finalActiveNames);
+		else session.isToolActive = name => finalActiveNames.has(name);
 	}
 
 	return tools;

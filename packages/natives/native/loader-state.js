@@ -75,8 +75,7 @@ const LOADER_MESSAGES = {
 			`If missing, delete ${versionedDir} and re-run, or download manually:`,
 		npm_hint: "If installed via npm/bun, try reinstalling: bun install @oh-my-pi/pi-natives",
 		dev_hint: "If developing locally, build with: bun --cwd=packages/natives run build",
-		variant_hint:
-			"Optional x64 variants: TARGET_VARIANT=baseline|modern bun --cwd=packages/natives run build",
+		explicit_targets: "Explicit targets: bun scripts/bazel-natives.ts <target> --dest packages/natives/native",
 		open_issue: "If you need support for this platform, please open an issue.",
 	},
 	"zh-CN": {
@@ -88,7 +87,7 @@ const LOADER_MESSAGES = {
 		compiled_missing: versionedDir => `若缺失，可删除 ${versionedDir} 后重试，或手动下载：`,
 		npm_hint: "若通过 npm/bun 安装，请尝试重新安装：bun install @oh-my-pi/pi-natives",
 		dev_hint: "若本地开发，请执行：bun --cwd=packages/natives run build",
-		variant_hint: "可选 x64 变体：TARGET_VARIANT=baseline|modern bun --cwd=packages/natives run build",
+		explicit_targets: "指定构建目标：bun scripts/bazel-natives.ts <target> --dest packages/natives/native",
 		open_issue: "如需新增平台支持，请提交 issue。",
 	},
 };
@@ -760,7 +759,7 @@ function buildHelpMessage(ctx, locale = "en") {
 			.join("\n");
 		return `${msgs.compiled_extract}\n${expectedPaths}\n\n${msgs.compiled_missing(ctx.versionedDir)}\n${downloadHints}`;
 	}
-	return `${msgs.npm_hint}\n${msgs.dev_hint}\n${msgs.variant_hint}`;
+	return `${msgs.npm_hint}\n${msgs.dev_hint}\n${msgs.explicit_targets}`;
 }
 
 /**

@@ -1,6 +1,31 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getSettingsUiLocale, type SettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 import { buildAvailableSlashCommands } from "../src/slash-commands/available-commands";
+import { buildTuiBuiltinSlashCommands, executeBuiltinSlashCommand } from "../src/slash-commands/builtin-registry";
+
+function createVisionTuiHarness() {
+	const statusMessages: string[] = [];
+	const runtime = {
+		ctx: {
+			collabGuest: undefined,
+			showStatus: (message: string) => statusMessages.push(message),
+			editor: { setText: () => {} },
+			session: {
+				inspectImageState: () => ({ mode: "on" as const, active: true, model: "vision-model" }),
+				getInspectImageModeOverride: () => "on" as const,
+				model: { input: ["text", "image"] },
+				settings: {
+					get: (key: string) => {
+						if (key !== "inspect_image.mode") throw new Error(`unexpected setting: ${key}`);
+						return "auto";
+					},
+				},
+			},
+		},
+	};
+
+	return { runtime, statusMessages };
+}
 
 describe("buildAvailableSlashCommands zh-CN", () => {
 	let previousLocale: SettingsUiLocale;
@@ -72,5 +97,20 @@ describe("buildAvailableSlashCommands zh-CN", () => {
 		expect(byName.advisor?.subcommands?.find(sub => sub.name === "configure")?.description).toContain(
 			"打开审阅助手配置编辑器",
 		);
+	});
+	test("renders /vision autocomplete, status, and usage in Chinese while retaining protocol arguments", async () => {
+		setSettingsUiLocale("zh-CN");
+		const harness = createVisionTuiHarness();
+		const vision = buildTuiBuiltinSlashCommands(harness.runtime as never).find(command => command.name === "vision");
+
+		expect(vision?.getAutocompleteDescription?.()).toBe("视觉：on");
+
+		await executeBuiltinSlashCommand("/vision status", harness.runtime as never);
+		await executeBuiltinSlashCommand("/vision unexpected", harness.runtime as never);
+
+		expect(harness.statusMessages).toEqual([
+			"inspect_image：活跃 · 模式：on（会话覆盖） · 配置值：auto · 模型：vision-model（原生图像输入）",
+			"用法：/vision [on|off|auto|status]",
+		]);
 	});
 });

@@ -18,6 +18,7 @@ export const commands: CommandEntry[] = [
 	{ name: "auth-gateway", load: () => import("./commands/auth-gateway").then(m => m.default) },
 	{ name: "agents", load: () => import("./commands/agents").then(m => m.default) },
 	{ name: "bench", load: () => import("./commands/bench").then(m => m.default) },
+	{ name: "cleanse", load: () => import("./commands/cleanse").then(m => m.default) },
 	{ name: "commit", load: () => import("./commands/commit").then(m => m.default) },
 	{ name: "codegraph", load: () => import("./commands/codegraph").then(m => m.default), aliases: ["cg"] },
 	{ name: "completions", load: () => import("./commands/completions").then(m => m.default) },

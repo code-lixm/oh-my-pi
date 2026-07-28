@@ -618,6 +618,11 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply memory backend: ${err}`);
 				});
 				break;
+			case "inspect_image.mode":
+				void this.ctx.session.applyInspectImageModeChange().catch(err => {
+					this.ctx.showError(tSettingsUi("Failed to apply vision mode: {error}", { error: String(err) }));
+				});
+				break;
 
 			case "autocompleteMaxVisible":
 				this.ctx.editor.setAutocompleteMaxVisible(typeof value === "number" ? value : Number(value));
@@ -1305,7 +1310,7 @@ export class SelectorController {
 					}
 
 					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-					this.ctx.editor.setText(result.selectedText);
+					this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 					done();
 					this.ctx.showStatus(tSettingsUi("Branched to new session"));
 				},
@@ -1461,7 +1466,7 @@ export class SelectorController {
 					if (result.reopenAsk) {
 						const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
 						if (!reanswer) {
-							this.ctx.showStatus("Re-answer cancelled");
+							this.ctx.showStatus(tSettingsUi("Re-answer cancelled"));
 							return;
 						}
 						result = await this.ctx.session.navigateTree(entryId, {
@@ -1488,7 +1493,7 @@ export class SelectorController {
 					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 					await this.ctx.reloadTodos();
 					if (result.editorText && !this.ctx.editor.getText().trim()) {
-						this.ctx.editor.setText(result.editorText);
+						this.ctx.editor.setDraft(result.editorText, result.editorImages);
 					}
 					this.ctx.showStatus(tSettingsUi("Navigated to selected point"));
 

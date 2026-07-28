@@ -445,11 +445,12 @@ const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
 		const { cost, premiumRequests } = ctx.usageStats;
+		const advisorCost = ctx.session.getAdvisorCost?.() ?? 0;
 		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
 
-		if (!cost && !usingSubscription && !normalizedPremiumRequests) {
+		if (!cost && !advisorCost && !usingSubscription && !normalizedPremiumRequests) {
 			return { content: "", visible: false };
 		}
 
@@ -457,6 +458,8 @@ const costSegment: StatusLineSegment = {
 		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
 		if (usingSubscription) billingParts.push(tSettingsUi("(sub)"));
+		if (advisorCost)
+			billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} (${tSettingsUi("Advisor")})`);
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},

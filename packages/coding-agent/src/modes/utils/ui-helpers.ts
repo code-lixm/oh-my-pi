@@ -189,7 +189,9 @@ export class UiHelpers {
 					}
 					if (message.customType === "advisor") {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
-						this.ctx.chatContainer.addChild(createAdvisorMessageCard(details, theme));
+						this.ctx.chatContainer.addChild(
+							createAdvisorMessageCard(details, () => this.ctx.toolOutputExpanded, theme),
+						);
 						break;
 					}
 					if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

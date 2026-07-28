@@ -137,7 +137,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	],
 	context: ["General", "Compaction", "Rules (TTSR)", "Experimental"],
 	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight"],
-	files: ["Editing", "Reading", "Read Summaries", "LSP"],
+	files: ["Editing", "Reading", "Read Summaries", "LSP", "Workspace checkpoints"],
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
@@ -149,6 +149,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Execution",
 		"Discovery & MCP",
 		"Developer",
+		"Workspace checkpoints",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
 	providers: ["Services", "Network", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
@@ -1054,10 +1055,11 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			group: "Display",
-			label: "Terminal Title Run State",
-			description:
-				"Show the agent run state in the terminal title's separator — an animated spinner while working, '>' when it's your turn, '!' when the agent is waiting on you",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Terminal Title Run State"),
+			description: tSettingsUi(
+				"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you",
+			),
 		},
 	},
 
@@ -4268,16 +4270,29 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Legacy boolean kept only for back-compat migration to `inspect_image.mode`
+	// (see config/settings.ts). Hidden from UI.
 	"inspect_image.enabled": {
 		type: "boolean",
 		default: false,
+	},
+
+	"inspect_image.mode": {
+		type: "enum",
+		values: ["auto", "on", "off"] as const,
+		default: "auto",
 		ui: {
 			tab: "tools",
 			group: tSettingsUi("Available Tools"),
 			label: tSettingsUi("Inspect Image"),
 			description: tSettingsUi(
-				"Enable the inspect_image tool, delegating image understanding to a vision-capable model",
+				"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
 			),
+			options: [
+				{ value: "auto", label: tSettingsUi("Auto (only for models without vision)") },
+				{ value: "on", label: tSettingsUi("On") },
+				{ value: "off", label: tSettingsUi("Off") },
+			],
 		},
 	},
 
@@ -4992,6 +5007,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.enableEffort": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Per-Task Effort"),
+			description: tSettingsUi(
+				"Expose the optional effort parameter on task spawns, allowing callers to override each subagent's thinking level",
+			),
+		},
+	},
+
 	"task.maxConcurrency": {
 		type: "number",
 		default: 32,
@@ -5131,6 +5159,21 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi(
 				"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.",
 			),
+		},
+	},
+
+	"task.maxEffort": {
+		type: "enum",
+		values: THINKING_EFFORTS,
+		default: "max",
+		ui: {
+			tab: "tasks",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Maximum Per-Spawn Effort"),
+			description: tSettingsUi(
+				"Maximum reasoning effort allowed for the task tool's per-spawn effort hint. Lower values prevent callers from escalating subagents above this ceiling; the default preserves the model's full range.",
+			),
+			options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 		},
 	},
 

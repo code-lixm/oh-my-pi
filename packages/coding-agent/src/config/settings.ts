@@ -42,6 +42,7 @@ import { setPromptLocale } from "../prompts/prompt-locale";
 import { AgentStorage } from "../session/agent-storage";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
+import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { withFileLock } from "./file-lock";
 import { applyNetworkProxy } from "./network-proxy";
@@ -1397,6 +1398,40 @@ export class Settings {
 		}
 		if (raw["display.borderStyle"] === "horizontal" || raw["display.borderStyle"] === "background") {
 			raw["display.borderStyle"] = "accent";
+		}
+
+		// inspect_image.enabled (boolean) -> inspect_image.mode (enum). Explicit
+		// user choices are preserved: true -> "on", false -> "off". Configs with
+		// no legacy key get the new "auto" default, which hides the tool for
+		// models with native image input. Handles nested and quoted-dotted
+		// ("inspect_image.enabled") sources; the target is always the nested
+		// form, which is the only shape the resolver reads.
+		const inspectImageObj = isRecord(raw.inspect_image) ? (raw.inspect_image as Record<string, unknown>) : undefined;
+		const legacyEnabled =
+			typeof inspectImageObj?.enabled === "boolean"
+				? inspectImageObj.enabled
+				: typeof raw["inspect_image.enabled"] === "boolean"
+					? (raw["inspect_image.enabled"] as boolean)
+					: undefined;
+		if (legacyEnabled !== undefined) {
+			if (!inspectImageObj) {
+				raw.inspect_image = {};
+			}
+			const target = raw.inspect_image as Record<string, unknown>;
+			const flatMode = raw["inspect_image.mode"];
+			if (target.mode === undefined) {
+				// A quoted-dotted explicit mode wins over the legacy boolean but
+				// must be normalized into the nested form the resolver reads.
+				target.mode =
+					typeof flatMode === "string" && (INSPECT_IMAGE_MODES as readonly string[]).includes(flatMode)
+						? flatMode
+						: legacyEnabled
+							? "on"
+							: "off";
+			}
+			delete target.enabled;
+			delete raw["inspect_image.enabled"];
+			delete raw["inspect_image.mode"];
 		}
 
 		// task.isolation.enabled (boolean) -> task.isolation.mode (enum)
