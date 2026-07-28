@@ -111,7 +111,7 @@ describe("CodeGraph location contract", () => {
 		expect(branchLocation.identity.worktreeRoot).toBe(detachedLocation.identity.worktreeRoot);
 		expect(branchLocation.identity.commonDir).toBe(detachedLocation.identity.commonDir);
 		expect(branchLocation.identity.ref).toMatch(/^refs\/heads\//);
-		expect(detachedLocation.identity.ref).toBe(`detached:${headCommit}`);
+		expect(detachedLocation.identity.ref).toBe("detached");
 		expect(branchLocation.identity.key).not.toBe(detachedLocation.identity.key);
 		expect(branchLocation.indexDir).not.toBe(detachedLocation.indexDir);
 	});

@@ -1413,6 +1413,89 @@ export async function runRpcMode(
 				}
 			}
 
+			// Workspace checkpoints — route through AgentSession so the
+			// session-bound store, mutator guard, and conversation adapter
+			// stay consistent with the CLI/slash path. Each method returns
+			// an access wrapper — when the coordinator reports unavailable
+			// (no service, disabled by settings, or scope/session mismatch)
+			// we surface the reason as an RPC error so hosts don't have to
+			// special-case `null`/throwing semantics.
+			case "workspace_checkpoint_create": {
+				try {
+					const access = await session.createWorkspaceCheckpoint(command.request.label ?? null, {
+						rootPath: command.request.rootPath,
+						parentId: command.request.parentId,
+						pinned: command.request.pinned,
+					});
+					if (!access.available) {
+						return error(id, "workspace_checkpoint_create", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_checkpoint_create", { record: access.value as never });
+				} catch (err: unknown) {
+					return error(id, "workspace_checkpoint_create", err instanceof Error ? err.message : String(err));
+				}
+			}
+			case "workspace_checkpoint_list": {
+				try {
+					const access = await session.listWorkspaceCheckpoints({
+						rootPath: command.rootPath,
+						limit: command.limit,
+					});
+					if (!access.available) {
+						return error(id, "workspace_checkpoint_list", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_checkpoint_list", { records: access.value as never[] });
+				} catch (err: unknown) {
+					return error(id, "workspace_checkpoint_list", err instanceof Error ? err.message : String(err));
+				}
+			}
+			case "workspace_restore_preview": {
+				try {
+					const access = await session.previewWorkspaceRestore(command.request);
+					if (!access.available) {
+						return error(id, "workspace_restore_preview", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_restore_preview", { plan: access.value as never });
+				} catch (err: unknown) {
+					return error(id, "workspace_restore_preview", err instanceof Error ? err.message : String(err));
+				}
+			}
+			case "workspace_restore_apply": {
+				try {
+					const access = await session.applyWorkspaceRestore(
+						command.request.planId,
+						command.request.allowConflicts,
+					);
+					if (!access.available) {
+						return error(id, "workspace_restore_apply", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_restore_apply", { result: access.value as never });
+				} catch (err: unknown) {
+					return error(id, "workspace_restore_apply", err instanceof Error ? err.message : String(err));
+				}
+			}
+			case "workspace_undo": {
+				try {
+					const access = await session.undoWorkspace(command.scope);
+					if (!access.available) {
+						return error(id, "workspace_undo", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_undo", { result: access.value as never });
+				} catch (err: unknown) {
+					return error(id, "workspace_undo", err instanceof Error ? err.message : String(err));
+				}
+			}
+			case "workspace_redo": {
+				try {
+					const access = await session.redoWorkspace();
+					if (!access.available) {
+						return error(id, "workspace_redo", access.reason ?? "workspace checkpoint unavailable");
+					}
+					return success(id, "workspace_redo", { result: access.value as never });
+				} catch (err: unknown) {
+					return error(id, "workspace_redo", err instanceof Error ? err.message : String(err));
+				}
+			}
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);

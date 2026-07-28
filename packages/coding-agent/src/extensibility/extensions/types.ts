@@ -101,6 +101,15 @@ import type {
 	TtsrTriggeredEvent,
 	TurnEndEvent,
 	TurnStartEvent,
+	WorkspaceCheckpointBeforeEvent,
+	WorkspaceCheckpointBeforeResult,
+	WorkspaceCheckpointCompletedEvent,
+	WorkspaceCheckpointCreatedEvent,
+	WorkspaceCheckpointFailedEvent,
+	WorkspaceRestoreBeforeEvent,
+	WorkspaceRestoreBeforeResult,
+	WorkspaceRestoreCompletedEvent,
+	WorkspaceRestoreFailedEvent,
 } from "../shared-events";
 import type { SlashCommandInfo } from "../slash-commands";
 import type * as TypeBox from "../typebox";
@@ -439,6 +448,8 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/** `true` while a workspace restore/undo/redo transaction lock is held. */
+	workspaceRestoreLockHeld(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/** Get the current effective system prompt. */
@@ -912,11 +923,13 @@ export function isToolCallEventType<TName extends string, TInput extends Record<
 	toolName: TName,
 	event: ToolCallEvent,
 ): event is ToolCallEvent & { toolName: TName; input: TInput };
-export function isToolCallEventType(toolName: string, event: ToolCallEvent): boolean {
+export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
+	toolName: TName,
+	event: ToolCallEvent,
+): event is ToolCallEvent & { toolName: TName; input: TInput } {
 	return event.toolName === toolName;
 }
 
-/** Union of all event types */
 export type ExtensionEvent =
 	| ResourcesDiscoverEvent
 	| SessionEvent
@@ -949,7 +962,14 @@ export type ExtensionEvent =
 	| ToolCallEvent
 	| ToolResultEvent
 	| ToolApprovalRequestedEvent
-	| ToolApprovalResolvedEvent;
+	| ToolApprovalResolvedEvent
+	| WorkspaceCheckpointBeforeEvent
+	| WorkspaceCheckpointCreatedEvent
+	| WorkspaceCheckpointCompletedEvent
+	| WorkspaceCheckpointFailedEvent
+	| WorkspaceRestoreBeforeEvent
+	| WorkspaceRestoreCompletedEvent
+	| WorkspaceRestoreFailedEvent;
 
 // ============================================================================
 // Event Results
@@ -961,7 +981,18 @@ export interface ContextEventResult {
 
 export type BeforeProviderRequestEventResult = unknown;
 
-export type { ToolCallEventResult } from "../shared-events";
+export type {
+	ToolCallEventResult,
+	WorkspaceCheckpointBeforeEvent,
+	WorkspaceCheckpointBeforeResult,
+	WorkspaceCheckpointCompletedEvent,
+	WorkspaceCheckpointCreatedEvent,
+	WorkspaceCheckpointFailedEvent,
+	WorkspaceRestoreBeforeEvent,
+	WorkspaceRestoreBeforeResult,
+	WorkspaceRestoreCompletedEvent,
+	WorkspaceRestoreFailedEvent,
+} from "../shared-events";
 
 /** Result from input event handler */
 export interface InputEventResult {
@@ -1103,6 +1134,19 @@ export interface ExtensionAPI {
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	on(
+		event: "workspace_checkpoint_before",
+		handler: ExtensionHandler<WorkspaceCheckpointBeforeEvent, WorkspaceCheckpointBeforeResult>,
+	): void;
+	on(event: "workspace_checkpoint_created", handler: ExtensionHandler<WorkspaceCheckpointCreatedEvent>): void;
+	on(
+		event: "workspace_restore_before",
+		handler: ExtensionHandler<WorkspaceRestoreBeforeEvent, WorkspaceRestoreBeforeResult>,
+	): void;
+	on(event: "workspace_restore_completed", handler: ExtensionHandler<WorkspaceRestoreCompletedEvent>): void;
+	on(event: "workspace_restore_failed", handler: ExtensionHandler<WorkspaceRestoreFailedEvent>): void;
+	on(event: "workspace_checkpoint_failed", handler: ExtensionHandler<WorkspaceCheckpointFailedEvent>): void;
+	on(event: "workspace_checkpoint_completed", handler: ExtensionHandler<WorkspaceCheckpointCompletedEvent>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(
 		event: "before_provider_request",

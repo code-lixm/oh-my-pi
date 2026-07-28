@@ -4,7 +4,8 @@
 
 ### Added
 
-- Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed branch/worktree-isolated indexes under `~/.omp/codegraph/`; it combines optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, graph-first agent guidance, and safe `omp codegraph status|clear|prune` management without writing `.codegraph` into source repositories.
+- Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed project-path-and-branch indexes under `~/.omp/codegraph/`; it combines non-blocking background initialization with persistent progress, optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, automatic TTL/orphan/per-project/global storage governance, graph-first agent guidance, and safe `omp codegraph status|list|clear|clear-all|prune` management without writing `.codegraph` into source repositories.
+- Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -22,6 +23,8 @@
 ### Changed
 
 - Changed interactive model-role cycling to use `Tab` for the next model and `Shift+Tab` for the previous model, with autocomplete retaining priority and thinking-level cycling moving to `Ctrl+P`.
+- Changed the `/rewind` checkpoint picker to show the associated user-prompt preview instead of opaque checkpoint IDs when session history is available, include previews in filtering, and localize checkpoint completeness and relative-age labels.
+- Changed workspace checkpoints in Git worktrees to capture tracked and non-ignored untracked files by default, while lazily preserving the pre-mutation state of ignored files touched by structured edit/write tools so rewind remains correct without snapshotting large build outputs every turn.
 
 - Changed automatic compaction to default to `context-full`, producing an anchored model-generated continuation summary like OpenCode; `snapcompact` remains available as an explicit strategy.
 
@@ -40,6 +43,9 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed workspace checkpoint restore history so direct applies, undo, and redo persist the correct pre-restore guards across restarts, enforce session isolation under the workspace lock, invalidate stale redo state on new checkpoints, and keep internal guards out of permanent retention roots.
+- Fixed workspace checkpoints losing Git-ignored updates, creates, deletes, and renames by capturing path-tight pre-mutation baselines, persisting ignored tombstones across manifest upgrades, and preserving physical-path aliases without changing workspace identity.
+- Fixed workspace checkpoints leaking file, Git capsule, crash-staging, and read-only preview blobs in the content-addressed store; retention now performs fail-closed reachability sweeps under the workspace lock, hashes live comparisons without materializing CAS objects, and throttles automatic full-store traversals while still applying metadata limits on every checkpoint.
 - Fixed `/tree` reserving half the terminal instead of using the fullscreen viewport; the session tree now fills all rows outside its chrome, groups shortcuts into two compact aligned lines, and keeps active filter status beside search instead of consuming a list row.
 - Fixed the Agent Hub, agent dashboard, and `/tree` selector opening inside or over the prompt area; they now use independent fullscreen overlays that leave the conversation untouched and return to the active editor surface on Escape.
 - Fixed accent-style generic fallback tool results adding their own horizontal padding on top of the shared rail gap, restoring a single-cell gap and the full content-width budget.
@@ -50,6 +56,7 @@
 - Fixed battery-style status-line usage disappearing for providers that report a concrete currency balance without a percentage; it now falls back to the formatted balance while still hiding reports with no quantitative value.
 - Fixed `ask.timeout` inventing answers from the first or currently highlighted option; it now auto-selects only an explicit valid `recommended` option, preserves existing multi-select answers, and keeps waiting when any unanswered question has no recommendation.
 - Fixed accidental task termination from a single Esc press by requiring a second Esc within two seconds before cancelling pending submissions, active model turns, local commands, loop runs, maintenance, or collaborative host work.
+- Fixed double-Escape opening the session tree immediately after interrupting a task; idle double-Escape navigation is now opt-in through `doubleEscapeAction`.
 - Fixed `task.maxConcurrency` applying independently to every nested agent session: one root-session scheduler now caps complete running/runnable subagent lifecycles across initial batches, nested spawns, Eval agents, Hub/IRC wakeups, follow-ups, and persisted revivals; excess children remain pending, blocking parents release their slots without becoming TTL-parkable, and `task.maxRequestConcurrency` remains the separate provider-request safety cap.
 - Fixed completed subagents repeatedly waking each other through acknowledgement-only Hub messages; incoming IRC and Hub prompts now require silence for acknowledgements, thanks, and thread-closure messages.
 - Fixed bursts of subagent Hub/IRC feedback creating stacks of transient `Agent communication / pending` transcript cards; message-only waits are now visually silent, incoming feedback is deduplicated per agent into the anchored Subagents HUD, and useful sends, job waits, and communication errors remain in the transcript.

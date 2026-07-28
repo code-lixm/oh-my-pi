@@ -43,6 +43,24 @@ describe("canonicalSnapshotKey", () => {
 		expect(key).toBe(path.join(canonicalSnapshotKey(realDir), "does-not-exist.txt"));
 	});
 
+	it("realpaths the nearest existing ancestor and preserves every missing segment beneath a symlink root", async () => {
+		const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "snap-key-missing-chain-"));
+		try {
+			const realRoot = path.join(fixtureRoot, "real-root");
+			const symlinkRoot = path.join(fixtureRoot, "symlink-root");
+			const existingAncestor = path.join(realRoot, "existing");
+			const missingSegments = ["missing-parent", "missing-child", "target.txt"];
+			await fs.mkdir(existingAncestor, { recursive: true });
+			await fs.symlink(realRoot, symlinkRoot);
+
+			const target = path.join(symlinkRoot, "existing", ...missingSegments);
+			const expected = path.join(await fs.realpath(existingAncestor), ...missingSegments);
+			expect(canonicalSnapshotKey(target)).toBe(expected);
+		} finally {
+			await fs.rm(fixtureRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("returns the input unchanged when nothing in the chain exists", () => {
 		const key = canonicalSnapshotKey("/__definitely-not-a-real-path__/x/y/z.txt");
 		expect(key).toBe("/__definitely-not-a-real-path__/x/y/z.txt");

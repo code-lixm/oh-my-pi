@@ -598,6 +598,10 @@
       "types": "./src/web/search/providers/*.ts",
       "import": "./src/web/search/providers/*.ts"
     },
+    "./workspace-checkpoints": {
+      "types": "./src/workspace-checkpoints/index.ts",
+      "import": "./src/workspace-checkpoints/index.ts"
+    },
     "./*.js": "./src/*.ts"
   }
 }

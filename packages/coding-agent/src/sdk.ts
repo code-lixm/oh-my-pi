@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import {
 	Agent,
 	type AgentEvent,
@@ -217,6 +219,8 @@ import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { VibeSessionRegistry } from "./vibe/runtime";
+import { createWorkspaceCheckpointService } from "./workspace-checkpoints/service";
+import type { WorkspaceCheckpointConversationAdapter } from "./workspace-checkpoints/types";
 import { buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
 type McpNotificationEntry = {
@@ -614,6 +618,7 @@ export type { Skill } from "./extensibility/skills";
 export type { FileSlashCommand } from "./extensibility/slash-commands";
 export type { MCPManager, MCPServerConfig, MCPServerConnection, MCPToolsLoadResult } from "./mcp";
 export type { Tool } from "./tools";
+export * from "./workspace-checkpoints";
 export { buildDirectoryTree, buildWorkspaceTree, type DirectoryTree, type WorkspaceTree } from "./workspace-tree";
 
 export {
@@ -1725,6 +1730,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
+			beforeFileMutation: async event => {
+				await session?.captureIgnoredMutationBaseline(event.path, event.previousPath);
+			},
 			bumpFileMutationVersion: path => {
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
 				fileMutationVersions.set(path, next);
@@ -1768,6 +1776,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			authStorage,
 			modelRegistry,
 			getTelemetry: () => agent?.telemetry,
+			beforeIsolatedMerge: async taskId => {
+				if (!session) return;
+				await session.beginTaskMutator(taskId);
+			},
+			afterIsolatedMerge: () => {
+				session?.endTaskMutator();
+			},
+			isTaskMutatorActive: () => session?.isTaskMutatorActive() ?? false,
 			// Subagents inherit the singleton (the parent's manager) so their bash/task
 			// completions still flow into the spawning conversation's yieldQueue.
 			// Secondary in-process top-level sessions (no parentTaskPrefix, no
@@ -3165,6 +3181,28 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
 		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
+		// Workspace checkpoint service — instantiated only for enabled top-level
+		// sessions. The adapter closes over the session reference assigned below;
+		// restore calls cannot occur until construction has completed.
+		const workspaceCheckpointConversationAdapter: WorkspaceCheckpointConversationAdapter = {
+			restoreConversationEntry: request => {
+				if (!hasSession) throw new Error("Workspace conversation restore requested before session initialization");
+				return session.restoreWorkspaceConversationEntry(request);
+			},
+		};
+		const workspaceCheckpointService =
+			agentKind === "main" && settings.get("workspaceCheckpoint.enabled") !== false
+				? await createWorkspaceCheckpointService({
+						rootPath: cwd,
+						agentDir,
+						storeDir: path.join(agentDir, "checkpoints", "v1"),
+						conversationAdapter: workspaceCheckpointConversationAdapter,
+						retention: {
+							maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
+							maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+						},
+					})
+				: undefined;
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
@@ -3242,6 +3280,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
 			setActiveToolNames,
 			ensureWriteRegistered,
+			parentEvalSessionId: options.parentEvalSessionId,
+			advisorTools,
+			titleSystemPrompt: options.titleSystemPrompt,
+			workspaceCheckpointService,
+			workspaceCheckpointConversationAdapter,
+			workspaceCheckpointRootPath: cwd,
 			getMcpServerInstructions: mcpManager
 				? () => {
 						const raw = mcpManager.getServerInstructions();
@@ -3263,9 +3307,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
-			parentEvalSessionId: options.parentEvalSessionId,
-			advisorTools,
-			titleSystemPrompt: options.titleSystemPrompt,
 		});
 		hasSession = true;
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {

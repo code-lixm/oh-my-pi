@@ -214,6 +214,14 @@ import { normalizeModelContextImages } from "../utils/image-loading";
 import { generateSessionTitle } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
+import type {
+	WorkspaceCheckpointMutatorGuard,
+	WorkspaceCheckpointRecord,
+	WorkspaceCheckpointService,
+	WorkspaceRestorePlan,
+	WorkspaceRestoreResult,
+} from "../workspace-checkpoints/types";
+import { WORKSPACE_CONVERSATION_ROOT_ENTRY_ID } from "../workspace-checkpoints/types";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import type {
 	AgentSessionConfig,
@@ -328,6 +336,13 @@ import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
+import {
+	createWorkspaceCheckpointCoordinator,
+	type WorkspaceCheckpointAccessResult,
+	type WorkspaceCheckpointBoundaryResult,
+	type WorkspaceCheckpointCoordinator,
+	type WorkspaceCheckpointCursor,
+} from "./workspace-checkpoint-coordinator";
 import { YieldQueue } from "./yield-queue";
 
 export * from "./agent-session-events";
@@ -438,6 +453,8 @@ export class AgentSession {
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
+	#unsubscribeBeforeModelCall?: () => void;
+	#lastWorkspaceBoundaryMessage: AgentMessage | undefined;
 	#cancelExitRecorder?: () => void;
 	#exitRecorded = false;
 	#runMarkerSessionFile: string | undefined;
@@ -488,6 +505,7 @@ export class AgentSession {
 	readonly #bash: BashRunner;
 
 	readonly #eval: EvalRunner;
+	readonly #irc: IrcBridge;
 	/**
 	 * AsyncJobManager owned by this session (top-level only). Subagents leave
 	 * this undefined and **MUST NOT** dispose the global instance on teardown.
@@ -504,7 +522,17 @@ export class AgentSession {
 	/** Clears this session's owner delivery sink registration; set when a manager + agent id exist. */
 	#unregisterAsyncDeliverySink: (() => void) | undefined;
 
-	readonly #irc: IrcBridge;
+	readonly #workspaceCheckpoint: WorkspaceCheckpointCoordinator;
+	#workspaceCheckpointService: WorkspaceCheckpointService | undefined;
+	#workspaceCheckpointConversationAdapter: AgentSessionConfig["workspaceCheckpointConversationAdapter"] | undefined;
+	#workspaceCheckpointMutatorGuard: AgentSessionConfig["workspaceCheckpointMutatorGuard"] | undefined;
+	#workspaceCheckpointWorkspaceId: string | undefined;
+	#workspaceCheckpointRootPath: string | undefined;
+	#workspaceCheckpointCursor: WorkspaceCheckpointCursor | undefined;
+	/** Active isolated-task mutator count (subagents spawned by the parent). */
+	#taskMutatorCount = 0;
+	/** Combined mutator guard handed to the workspace checkpoint coordinator. */
+	readonly #workspaceCheckpointCompositeGuard: WorkspaceCheckpointMutatorGuard;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
@@ -602,6 +630,55 @@ export class AgentSession {
 	#resetPromptMaintenanceState(): void {
 		this.#recovery.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+	}
+
+	/**
+	 * Drain owner-scoped async work before taking a workspace checkpoint so a
+	 * background job wake-up does not slip a write past the boundary the
+	 * checkpoint is supposed to fence. Mirrors {@link settleAsyncWork}, with
+	 * a bounded retry so a stuck job cannot stall prompt flow.
+	 */
+	async #settleAsyncWorkForCheckpoint(timeoutMs = 10_000): Promise<void> {
+		const manager = this.#asyncJobManager;
+		if (!manager || !this.#agentId) return;
+		try {
+			await manager.waitForOwnerJobs(this.#agentId, {
+				excludeSuppressed: true,
+				timeoutMs,
+			});
+		} catch (error) {
+			logger.warn("workspace checkpoint: async-work settle timed out", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	async #takeAutomaticWorkspaceTurnBoundary(message: AgentMessage): Promise<void> {
+		if (this.#lastWorkspaceBoundaryMessage === message) return;
+		this.#lastWorkspaceBoundaryMessage = message;
+		await this.#settleAsyncWorkForCheckpoint();
+		const boundary = await this.#workspaceCheckpoint.takeTurnBoundary(null);
+		if (boundary.status !== "failed") return;
+		const configuredPolicy = this.settings.get("workspaceCheckpoint.failurePolicy");
+		const policy = configuredPolicy === "warn" || configuredPolicy === "ignore" ? configuredPolicy : "block";
+		if (policy === "block") {
+			this.#lastWorkspaceBoundaryMessage = undefined;
+			throw new Error(
+				`Workspace checkpoint failed before user turn (${boundary.reason}): ${
+					boundary.error instanceof Error ? boundary.error.message : String(boundary.error)
+				}`,
+			);
+		}
+		logger.warn("workspace checkpoint failed before user turn", { reason: boundary.reason, mode: policy });
+	}
+
+	async #checkpointQueuedUserTurn(messages: readonly AgentMessage[]): Promise<void> {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (!message || !isUserQueuedMessage(message)) continue;
+			await this.#takeAutomaticWorkspaceTurnBoundary(message);
+			return;
+		}
 	}
 
 	#acquirePowerAssertion(): void {
@@ -857,9 +934,25 @@ export class AgentSession {
 			settings: this.settings,
 			extensionRunner: () => this.#extensionRunner,
 			isStreaming: () => this.isStreaming,
+			beforeUserBash: async (command, options) => {
+				const boundary = await this.#workspaceCheckpoint.takeUserBashBoundary(command);
+				if (boundary.status === "failed") {
+					const configuredPolicy = this.settings.get("workspaceCheckpoint.failurePolicy");
+					const policy = configuredPolicy === "warn" || configuredPolicy === "ignore" ? configuredPolicy : "block";
+					if (policy === "block") {
+						throw new Error(
+							`Workspace checkpoint failed before user Bash (${boundary.reason}): ${
+								boundary.error instanceof Error ? boundary.error.message : String(boundary.error)
+							}`,
+						);
+					}
+					logger.warn("workspace checkpoint failed before user Bash", { reason: boundary.reason, mode: policy });
+				}
+				void options;
+			},
+			isBashMutatorActive: () => this.#bash.isRunning,
 		};
 		this.#bash = new BashRunner(bashHost);
-		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
 		const evalHost: EvalRunnerHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1422,15 +1515,70 @@ export class AgentSession {
 		};
 		this.#handoff = new SessionHandoff(handoffHost);
 
-		this.#rehydrateCheckpointRewindState();
-		this.#recoverInterruptedPreviousRun();
+		this.#workspaceCheckpointService = config.workspaceCheckpointService;
+		this.#workspaceCheckpointConversationAdapter = config.workspaceCheckpointConversationAdapter;
+		this.#workspaceCheckpointMutatorGuard = config.workspaceCheckpointMutatorGuard;
+		this.#workspaceCheckpointWorkspaceId = config.workspaceCheckpointWorkspaceId;
+		this.#workspaceCheckpointRootPath = config.workspaceCheckpointRootPath;
+		const compositeGuard: WorkspaceCheckpointMutatorGuard = {
+			isMutatorActive: () => this.#bash.isRunning || this.#taskMutatorCount > 0,
+			waitForIdle: async (timeoutMs?: number) => {
+				if (!this.#bash.isRunning && this.#taskMutatorCount === 0) return;
+				const deadline = typeof timeoutMs === "number" ? Date.now() + timeoutMs : undefined;
+				const { promise, resolve, reject } = Promise.withResolvers<void>();
+				const tick = setInterval(() => {
+					if (!this.#bash.isRunning && this.#taskMutatorCount === 0) {
+						clearInterval(tick);
+						resolve();
+						return;
+					}
+					if (deadline !== undefined && Date.now() > deadline) {
+						clearInterval(tick);
+						reject(new Error(`Workspace mutator did not settle within ${timeoutMs}ms`));
+					}
+				}, 25);
+				return promise;
+			},
+		};
+		this.#workspaceCheckpointCompositeGuard = this.#workspaceCheckpointMutatorGuard ?? compositeGuard;
+		this.#workspaceCheckpoint = createWorkspaceCheckpointCoordinator({
+			getCwd: () => this.sessionManager.getCwd(),
+			getSessionId: () => this.sessionId,
+			getSessionLeafId: () => this.sessionManager.getLeafId(),
+			getService: () => this.#workspaceCheckpointService,
+			getConversationAdapter: () => this.#workspaceCheckpointConversationAdapter,
+			getMutatorGuard: () => this.#workspaceCheckpointCompositeGuard,
+			resolveAutoMode: () => (this.settings.get("workspaceCheckpoint.auto") === "turn" ? "turn" : "off"),
+			resolveEnabled: () => this.settings.get("workspaceCheckpoint.enabled") !== false,
+			resolveFailurePolicy: () => {
+				const value = this.settings.get("workspaceCheckpoint.failurePolicy");
+				return value === "warn" || value === "ignore" ? value : "block";
+			},
+			getExtensionRunner: () => this.#extensionRunner,
+			logInfo: (message, fields) => logger.info(message, fields),
+			logWarn: (message, fields) => logger.warn(message, fields),
+			logError: (message, fields) => logger.error(message, fields),
+			appendCheckpointEntry: record => this.sessionManager.appendWorkspaceCheckpoint(record),
+			appendRestoreEntry: record => this.sessionManager.appendWorkspaceRestore(record),
+			withWorkspaceRestoreLock: body =>
+				this.#extensionRunner ? this.#extensionRunner.withWorkspaceRestoreLock(body) : body(),
+			getServiceOptions: () => ({
+				rootPath: this.#workspaceCheckpointRootPath,
+				sessionId: this.#workspaceCheckpointWorkspaceId,
+			}),
+		});
 
 		// Always subscribe to agent events for internal handling
+		this.#unsubscribeBeforeModelCall = this.agent.onBeforeModelCall(context =>
+			this.#checkpointQueuedUserTurn(context.messages),
+		);
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 		this.#unsubscribeModelRoles = onModelRolesChanged(() => this.#advisors.onModelRolesChanged());
+		this.#rehydrateCheckpointRewindState();
+		this.#recoverInterruptedPreviousRun();
 	}
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
@@ -3630,11 +3778,15 @@ export class AgentSession {
 		this.#closeAllProviderSessions("dispose");
 		this.setHindsightSessionState(undefined);
 		hindsightState?.dispose();
+		this.#unsubscribeBeforeModelCall?.();
+		this.#unsubscribeBeforeModelCall = undefined;
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();
 			this.#unsubscribeAppendOnly = undefined;
 		}
+		this.#workspaceCheckpointService?.dispose();
+		this.#workspaceCheckpointService = undefined;
 		if (this.#unsubscribeModelRoles) {
 			this.#unsubscribeModelRoles();
 			this.#unsubscribeModelRoles = undefined;
@@ -4892,7 +5044,7 @@ export class AgentSession {
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
-		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
+		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck" | "synthetic" | "userInitiated"> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
@@ -4945,6 +5097,18 @@ export class AgentSession {
 
 			await this.#prewalk.armPlanYoloIfNeeded();
 
+			// Auto workspace-checkpoint boundary for top-level user turns.
+			// Runs at the tail of the pre-prompt chain so model/apiKey validation
+			// and any pre-prompt compaction abort paths skip cleanly: a preflight
+			// failure must NOT capture a workspace snapshot. Synthetic /
+			// non-userInitiated turns (retry, compaction continuations, agent
+			// subturns) explicitly skip — the checkpoint lives on the user turn
+			// that started the work, never on its continuations. Local command
+			// consumption (extension/file slash commands) returns above with no
+			// prompt, so it never reaches here.
+			if (message.role === "user" && options?.synthetic !== true && options?.userInitiated !== false) {
+				await this.#takeAutomaticWorkspaceTurnBoundary(message);
+			}
 			// Build messages array (session context, eager todo prelude, then active prompt message)
 			const messages: AgentMessage[] = [];
 			const planReferenceMessage = await this.#buildPlanReferenceMessage?.();
@@ -5151,6 +5315,7 @@ export class AgentSession {
 		return {
 			ui: noOpUIContext,
 			hasUI: false,
+			workspaceRestoreLockHeld: () => false,
 			cwd: this.sessionManager.getCwd(),
 			sessionManager: this.sessionManager,
 			modelRegistry: this.#modelRegistry,
@@ -6054,6 +6219,8 @@ export class AgentSession {
 			});
 		}
 
+		this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
+
 		return true;
 	}
 
@@ -6075,7 +6242,6 @@ export class AgentSession {
 		this.#assertVibeSessionTransitionAllowed("fork the session");
 		const previousSessionFile = this.sessionFile;
 
-		// Emit session_before_switch event with reason "fork" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
 			const result = (await this.#extensionRunner.emit({
 				type: "session_before_switch",
@@ -6142,6 +6308,8 @@ export class AgentSession {
 				previousSessionFile,
 			});
 		}
+
+		this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 
 		return true;
 	}
@@ -7163,6 +7331,9 @@ export class AgentSession {
 				});
 			}
 			this.#bash.finishSessionTransition(bashTransition, true);
+			// Workspace-checkpoint undo/redo cursor may have a different
+			// undoHeadCheckpointId/redoHeadCheckpointId on the target session.
+			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -7290,6 +7461,7 @@ export class AgentSession {
 			this.#advisors.resetSessionState();
 			this.#closeCodexProviderSessionsForHistoryRewrite();
 		}
+		this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 
 		return { selectedText, cancelled: false };
 	}
@@ -7390,6 +7562,7 @@ export class AgentSession {
 		this.agent.replaceMessages(sessionContext.messages);
 		this.#advisors.resetSessionState();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
+		this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 
 		return { cancelled: false, sessionFile: this.sessionFile };
 	}
@@ -7721,6 +7894,7 @@ export class AgentSession {
 				askReanswerCommitted: isAskReanswerCompletion,
 			};
 		}
+		this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 		return {
 			editorText,
 			cancelled: false,
@@ -8343,6 +8517,184 @@ export class AgentSession {
 	}
 
 	// =========================================================================
+	// Workspace checkpoints
+	// =========================================================================
+
+	// =========================================================================
+
+	/** Whether a workspace checkpoint service has been wired into this session. */
+	hasWorkspaceCheckpoint(): boolean {
+		return this.#workspaceCheckpoint.isAvailable();
+	}
+
+	/** Manual checkpoint capture. Returns the typed record, or an unavailable result. */
+	createWorkspaceCheckpoint(
+		label?: string | null,
+		options?: { rootPath?: string; parentId?: string; pinned?: boolean },
+	): Promise<WorkspaceCheckpointAccessResult<WorkspaceCheckpointRecord>> {
+		return this.#workspaceCheckpoint.createWorkspaceCheckpoint(label ?? null, options);
+	}
+
+	/** List checkpoints for the active workspace (or `options.rootPath`). */
+	listWorkspaceCheckpoints(options?: {
+		rootPath?: string;
+		limit?: number;
+	}): Promise<WorkspaceCheckpointAccessResult<WorkspaceCheckpointRecord[]>> {
+		return this.#workspaceCheckpoint.listWorkspaceCheckpoints(options);
+	}
+
+	/** Capture ignored paths immediately before a structured tool mutates them. */
+	async captureIgnoredMutationBaseline(path: string, previousPath?: string): Promise<void> {
+		const paths = previousPath && previousPath !== path ? [previousPath, path] : [path];
+		for (const candidate of paths) {
+			try {
+				await this.#workspaceCheckpoint.captureIgnoredPathBaseline(candidate);
+			} catch (error) {
+				const configuredPolicy = this.settings.get("workspaceCheckpoint.failurePolicy");
+				const policy = configuredPolicy === "warn" || configuredPolicy === "ignore" ? configuredPolicy : "block";
+				if (policy === "block") throw error;
+				if (policy === "warn") {
+					logger.warn("workspace checkpoint: ignored-path baseline capture failed", {
+						path: candidate,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
+	}
+
+	/** Build a restore plan that callers can pass to {@link applyWorkspaceRestore}. */
+	previewWorkspaceRestore(request: {
+		checkpointId: string;
+		scope: "code" | "conversation" | "all";
+		strategy: "preserve" | "exact";
+		paths?: string[];
+		rootPath?: string;
+	}): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestorePlan>> {
+		return this.#workspaceCheckpoint.previewWorkspaceRestore(request);
+	}
+
+	/**
+	 * Apply a previously previewed restore plan. The coordinator takes a guard
+	 * snapshot, blocks concurrent mutators, and appends a workspace_restore
+	 * entry on success. With `allowConflicts=true`, conflicts from
+	 * `previewWorkspaceRestore` are forced through.
+	 */
+	applyWorkspaceRestore(
+		planId: string,
+		allowConflicts?: boolean,
+	): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
+		return this.#workspaceCheckpoint.applyWorkspaceRestore(planId, allowConflicts);
+	}
+
+	/** Undo the last restore (scope defaults to `"all"`). */
+	undoWorkspace(
+		scope?: "code" | "conversation" | "all",
+	): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
+		return this.#workspaceCheckpoint.undoWorkspace(scope);
+	}
+
+	/** Redo the restore that was just undone. */
+	redoWorkspace(): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
+		return this.#workspaceCheckpoint.redoWorkspace();
+	}
+
+	/**
+	 * Drop the cached undo/redo cursor and rebuild it from the store. Called
+	 * automatically on session switch/branch/resume/newSession. Returned for
+	 * observability; callers normally just read {@link workspaceCheckpointCursor}.
+	 */
+	async refreshWorkspaceCheckpointCursor(): Promise<WorkspaceCheckpointCursor | undefined> {
+		this.#workspaceCheckpointCursor = undefined;
+		const cursor = await this.#workspaceCheckpoint.refreshCursor();
+		this.#workspaceCheckpointCursor = cursor;
+		return cursor;
+	}
+
+	get workspaceCheckpointCursor(): WorkspaceCheckpointCursor | undefined {
+		return this.#workspaceCheckpointCursor;
+	}
+
+	/** True while the parent-side isolated-task merge window is active. */
+	isTaskMutatorActive(): boolean {
+		return this.#taskMutatorCount > 0;
+	}
+
+	async restoreWorkspaceConversationEntry(request: {
+		entryId: string;
+		scope: "code" | "conversation" | "all";
+		rootPath: string;
+	}): Promise<string | null> {
+		if (path.resolve(request.rootPath) !== path.resolve(this.sessionManager.getCwd())) {
+			throw new Error(`Conversation restore root does not match the active session: ${request.rootPath}`);
+		}
+		if (request.entryId === WORKSPACE_CONVERSATION_ROOT_ENTRY_ID) {
+			this.sessionManager.resetLeaf();
+			this.agent.replaceMessages([]);
+			this.#advisors.resetSessionState();
+			this.#todo.syncFromBranch();
+			return request.entryId;
+		}
+		const entry = this.sessionManager.getEntry(request.entryId);
+		if (!entry) return null;
+		this.sessionManager.branch(request.entryId);
+		const sessionContext = this.buildDisplaySessionContext();
+		this.agent.replaceMessages(sessionContext.messages);
+		this.#advisors.resetSessionState();
+		this.#todo.syncFromBranch();
+		return request.entryId;
+	}
+
+	/**
+	 * Mark the parent-side merge phase of an isolated subagent as active: take
+	 * a `task_merge` workspace checkpoint, increment the task mutator count
+	 * so the workspace checkpoint mutator guard reports busy, then run the
+	 * caller-supplied merge. The complementary {@link endTaskMutator} MUST be
+	 * invoked in a `finally` block to release the guard — the boundary
+	 * itself does NOT decrement the counter.
+	 */
+	async beginTaskMutator(taskId: string): Promise<WorkspaceCheckpointBoundaryResult> {
+		const boundary = await this.#workspaceCheckpoint.takeTaskMergeBoundary(taskId);
+		if (boundary.status === "failed") {
+			const configuredPolicy = this.settings.get("workspaceCheckpoint.failurePolicy");
+			const policy = configuredPolicy === "warn" || configuredPolicy === "ignore" ? configuredPolicy : "block";
+			if (policy === "block") {
+				throw new Error(
+					`Workspace checkpoint failed before isolated task merge (${boundary.reason}): ${
+						boundary.error instanceof Error ? boundary.error.message : String(boundary.error)
+					}`,
+				);
+			}
+			logger.warn("workspace checkpoint failed before isolated task merge", {
+				reason: boundary.reason,
+				mode: policy,
+			});
+		}
+		this.#taskMutatorCount++;
+		return boundary;
+	}
+	endTaskMutator(): void {
+		if (this.#taskMutatorCount > 0) this.#taskMutatorCount--;
+	}
+
+	/**
+	 * Awaitable counterpart of `beginTaskMutator`: invokes `merge` inside the
+	 * task-mutator window, decrements the counter in `finally`, and never
+	 * leaves the guard stuck even when `merge` throws. `afterIsolatedMerge`
+	 * (when provided) is invoked after the guard is released so callers can
+	 * observe a clean post-merge state.
+	 */
+	async runWithTaskMutator<T>(taskId: string, merge: () => Promise<T>, afterIsolatedMerge?: () => void): Promise<T> {
+		await this.beginTaskMutator(taskId);
+		try {
+			return await merge();
+		} finally {
+			this.endTaskMutator();
+			afterIsolatedMerge?.();
+		}
+	}
+
+	// =========================================================================
 	// Extension System
 	// =========================================================================
 
@@ -8353,9 +8705,7 @@ export class AgentSession {
 		return this.#extensionRunner?.hasHandlers(eventType) ?? false;
 	}
 
-	/**
-	 * Get the extension runner (for setting UI context and error handlers).
-	 */
+	/** Get the extension runner for UI and extension lifecycle integrations. */
 	get extensionRunner(): ExtensionRunner | undefined {
 		return this.#extensionRunner;
 	}

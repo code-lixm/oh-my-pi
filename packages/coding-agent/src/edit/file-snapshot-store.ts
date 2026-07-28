@@ -53,14 +53,17 @@ export function getFileSnapshotStore(session: FileSnapshotStoreOwner): InMemoryS
  * the same canonical key.
  */
 export function canonicalSnapshotKey(absolutePath: string): string {
-	try {
-		return fs.realpathSync.native(absolutePath);
-	} catch {
+	let candidate = absolutePath;
+	const missingSegments: string[] = [];
+	for (;;) {
 		try {
-			const parent = fs.realpathSync.native(path.dirname(absolutePath));
-			return path.join(parent, path.basename(absolutePath));
+			const canonical = fs.realpathSync.native(candidate);
+			return missingSegments.length > 0 ? path.join(canonical, ...missingSegments.reverse()) : canonical;
 		} catch {
-			return absolutePath;
+			const parent = path.dirname(candidate);
+			if (parent === candidate) return absolutePath;
+			missingSegments.push(path.basename(candidate));
+			candidate = parent;
 		}
 	}
 }

@@ -29,6 +29,8 @@ import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from
 import type { LocalizableCliConstructor } from "./cli/help-locale";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
+import { smokeTestCodeGraphWorker } from "./codegraph/supervisor";
+import { CODEGRAPH_WORKER_ARG, startCodeGraphWorker } from "./codegraph/worker-entry";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
@@ -115,6 +117,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestSttWorker();
 	await smokeTestJsEvalWorker();
 	await smokeTestComputerWorker();
+	await smokeTestCodeGraphWorker();
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
@@ -208,6 +211,14 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		// Worker selectors must dispatch before the normal command graph loads.
 		const { startDaemonBrokerFromEnvironment } = await import("./launch/broker");
 		await startDaemonBrokerFromEnvironment();
+		return true;
+	}
+	if (arg === CODEGRAPH_WORKER_ARG) {
+		// Worker-thread re-entry: install a parentPort inbox synchronously
+		// so the parent's `index` request survives the pre-flush, then
+		// hand off to the worker's typed transport.
+		if (parentPort) installWorkerInbox(parentPort);
+		startCodeGraphWorker();
 		return true;
 	}
 	return false;

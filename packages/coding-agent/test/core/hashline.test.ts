@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -83,6 +84,21 @@ function hashlineExecuteOptions(
 			finalize: () => {},
 		}),
 	};
+}
+
+function makeHashlineFilesystem(session: ToolSession): HashlineFilesystem {
+	return new HashlineFilesystem({
+		session,
+		writethrough: async (targetPath, content) => {
+			await Bun.write(targetPath, content);
+			return undefined;
+		},
+		beginDeferredDiagnosticsForPath: () => ({
+			onDeferredDiagnostics: () => {},
+			signal: new AbortController().signal,
+			finalize: () => {},
+		}),
+	});
 }
 
 describe("hashline executor", () => {
@@ -286,6 +302,139 @@ describe("hashline executor", () => {
 					"",
 				].join("\n"),
 			);
+		});
+	});
+});
+
+describe("HashlineFilesystem pre-mutation hooks", () => {
+	it("runs delete before unlink and emits one post only after the file is gone", async () => {
+		await withTempDir(async tempDir => {
+			const relativePath = "obsolete.ts";
+			const filePath = path.join(tempDir, relativePath);
+			const before: Array<{ kind: string; path: string }> = [];
+			const post: Array<{ kind: string; path: string }> = [];
+			const phases: string[] = [];
+			let beforeObservedContent: string | undefined;
+			let postObservedAbsent: boolean | undefined;
+			await Bun.write(filePath, "delete me\n");
+			const session = makeHashlineSession(tempDir);
+			session.enableLsp = false;
+			session.beforeFileMutation = async event => {
+				before.push(event);
+				phases.push("before");
+				beforeObservedContent = fsSync.existsSync(filePath) ? fsSync.readFileSync(filePath, "utf8") : undefined;
+			};
+			session.onFileMutation = event => {
+				post.push(event);
+				phases.push("post");
+				postObservedAbsent = !fsSync.existsSync(filePath);
+			};
+
+			await makeHashlineFilesystem(session).delete(relativePath);
+
+			expect(beforeObservedContent).toBe("delete me\n");
+			expect(postObservedAbsent).toBe(true);
+			expect(phases).toEqual(["before", "post"]);
+			expect(before).toEqual([{ kind: "delete", path: canonicalSnapshotKey(filePath) }]);
+			expect(post).toEqual([{ kind: "delete", path: canonicalSnapshotKey(filePath) }]);
+			expect(fsSync.existsSync(filePath)).toBe(false);
+		});
+	});
+
+	it("keeps the file and emits no post when delete is rejected", async () => {
+		await withTempDir(async tempDir => {
+			const relativePath = "protected.ts";
+			const filePath = path.join(tempDir, relativePath);
+			const beforeKinds: string[] = [];
+			const postKinds: string[] = [];
+			await Bun.write(filePath, "keep me\n");
+			const session = makeHashlineSession(tempDir);
+			session.enableLsp = false;
+			session.beforeFileMutation = async event => {
+				beforeKinds.push(event.kind);
+				throw new Error("delete denied by policy");
+			};
+			session.onFileMutation = event => postKinds.push(event.kind);
+
+			await expect(makeHashlineFilesystem(session).delete(relativePath)).rejects.toThrow("delete denied by policy");
+
+			expect(beforeKinds).toEqual(["delete"]);
+			expect(postKinds).toEqual([]);
+			expect(fsSync.readFileSync(filePath, "utf8")).toBe("keep me\n");
+		});
+	});
+
+	it("includes canonical previousPath before moving and emits one post after the move", async () => {
+		await withTempDir(async tempDir => {
+			const fromRelative = "original.ts";
+			const toRelative = "renamed.ts";
+			const fromPath = path.join(tempDir, fromRelative);
+			const toPath = path.join(tempDir, toRelative);
+			const before: Array<{ kind: string; path: string; previousPath?: string }> = [];
+			const post: Array<{ kind: string; path: string; previousPath?: string }> = [];
+			const phases: string[] = [];
+			let beforeSourceExists: boolean | undefined;
+			let beforeTargetExists: boolean | undefined;
+			let postSourceExists: boolean | undefined;
+			let postTargetContent: string | undefined;
+			await Bun.write(fromPath, "move me\n");
+			const session = makeHashlineSession(tempDir);
+			session.enableLsp = false;
+			session.beforeFileMutation = async event => {
+				before.push(event);
+				phases.push("before");
+				beforeSourceExists = fsSync.existsSync(fromPath);
+				beforeTargetExists = fsSync.existsSync(toPath);
+			};
+			session.onFileMutation = event => {
+				post.push(event);
+				phases.push("post");
+				postSourceExists = fsSync.existsSync(fromPath);
+				postTargetContent = fsSync.existsSync(toPath) ? fsSync.readFileSync(toPath, "utf8") : undefined;
+			};
+
+			await makeHashlineFilesystem(session).move(fromRelative, toRelative);
+
+			const renameEvent = {
+				kind: "rename",
+				path: canonicalSnapshotKey(toPath),
+				previousPath: canonicalSnapshotKey(fromPath),
+			};
+			expect(beforeSourceExists).toBe(true);
+			expect(beforeTargetExists).toBe(false);
+			expect(postSourceExists).toBe(false);
+			expect(postTargetContent).toBe("move me\n");
+			expect(phases).toEqual(["before", "post"]);
+			expect(before).toEqual([renameEvent]);
+			expect(post).toEqual([renameEvent]);
+		});
+	});
+
+	it("keeps the source in place and emits no post when rename is rejected", async () => {
+		await withTempDir(async tempDir => {
+			const fromRelative = "protected.ts";
+			const toRelative = "blocked.ts";
+			const fromPath = path.join(tempDir, fromRelative);
+			const toPath = path.join(tempDir, toRelative);
+			const beforeKinds: string[] = [];
+			const postKinds: string[] = [];
+			await Bun.write(fromPath, "keep source\n");
+			const session = makeHashlineSession(tempDir);
+			session.enableLsp = false;
+			session.beforeFileMutation = async event => {
+				beforeKinds.push(event.kind);
+				throw new Error("rename denied by policy");
+			};
+			session.onFileMutation = event => postKinds.push(event.kind);
+
+			await expect(makeHashlineFilesystem(session).move(fromRelative, toRelative)).rejects.toThrow(
+				"rename denied by policy",
+			);
+
+			expect(beforeKinds).toEqual(["rename"]);
+			expect(postKinds).toEqual([]);
+			expect(fsSync.readFileSync(fromPath, "utf8")).toBe("keep source\n");
+			expect(fsSync.existsSync(toPath)).toBe(false);
 		});
 	});
 });

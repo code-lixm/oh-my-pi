@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -191,9 +192,20 @@ describe("ast_edit tool schema", () => {
 			await Bun.write(path.join(sourceDir, "ignore.js"), "legacyWrap(ignoreValue, ignoreArg)\n");
 			await Bun.write(path.join(tempDir, "outside.ts"), "legacyWrap(outsideValue, outsideArg)\n");
 			const queue = new ToolChoiceQueue();
+			const beforeObservedContents: string[] = [];
+			const postObservedContents: string[] = [];
+			const phases: string[] = [];
 
 			const tools = await createTools(
 				createTestSession(tempDir, {
+					beforeFileMutation: async event => {
+						phases.push("before");
+						beforeObservedContents.push(await Bun.file(event.path).text());
+					},
+					onFileMutation: event => {
+						phases.push("post");
+						postObservedContents.push(fsSync.readFileSync(event.path, "utf8"));
+					},
 					getToolChoiceQueue: () => queue,
 					buildToolChoice: () => ({ type: "tool" as const, name: "resolve" }),
 					steer: () => {},
@@ -229,6 +241,12 @@ describe("ast_edit tool schema", () => {
 			const invoker = queue.peekPendingInvoker()!;
 			await invoker({ action: "apply", reason: "apply previewed AST edit with combined globs" });
 
+			expect(beforeObservedContents).toHaveLength(2);
+			expect(postObservedContents).toHaveLength(2);
+			expect(phases).toEqual(["before", "before", "post", "post"]);
+			expect(beforeObservedContents.every(content => content.includes("legacyWrap"))).toBe(true);
+			expect(postObservedContents.every(content => content.includes("modernWrap"))).toBe(true);
+
 			expect(await Bun.file(path.join(sourceDir, "root.ts")).text()).toContain("modernWrap(rootValue, rootArg)");
 			expect(await Bun.file(path.join(nestedDir, "child.ts")).text()).toContain("modernWrap(childValue, childArg)");
 			expect(await Bun.file(path.join(sourceDir, "ignore.js")).text()).toContain(
@@ -237,6 +255,61 @@ describe("ast_edit tool schema", () => {
 			expect(await Bun.file(path.join(tempDir, "outside.ts")).text()).toContain(
 				"legacyWrap(outsideValue, outsideArg)",
 			);
+		} finally {
+			await removeWithRetries(tempDir);
+		}
+	});
+
+	it("preflights every AST target before a rejected second hook can write either file", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ast-edit-preflight-"));
+		try {
+			const firstPath = path.join(tempDir, "first.ts");
+			const secondPath = path.join(tempDir, "second.ts");
+			const firstSource = "legacyWrap(firstValue, firstArg)\n";
+			const secondSource = "legacyWrap(secondValue, secondArg)\n";
+			const sourceState = `${firstSource}|${secondSource}`;
+			const beforePaths: string[] = [];
+			const preflightStates: string[] = [];
+			const postPaths: string[] = [];
+			await Bun.write(firstPath, firstSource);
+			await Bun.write(secondPath, secondSource);
+			const queue = new ToolChoiceQueue();
+			const tools = await createTools(
+				createTestSession(tempDir, {
+					getToolChoiceQueue: () => queue,
+					buildToolChoice: () => ({ type: "tool" as const, name: "resolve" }),
+					steer: () => {},
+					beforeFileMutation: async event => {
+						const basename = path.basename(event.path);
+						beforePaths.push(basename);
+						preflightStates.push(
+							`${fsSync.readFileSync(firstPath, "utf8")}|${fsSync.readFileSync(secondPath, "utf8")}`,
+						);
+						if (basename === "second.ts") throw new Error("AST mutation denied for second.ts");
+					},
+					onFileMutation: event => postPaths.push(path.basename(event.path)),
+				}),
+			);
+			const tool = tools.find(entry => entry.name === "ast_edit");
+			expect(tool).toBeDefined();
+
+			const previewResult = await tool!.execute("ast-edit-preflight", {
+				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
+				paths: [firstPath, secondPath],
+			});
+			expect((previewResult.details as { totalReplacements?: number } | undefined)?.totalReplacements).toBe(2);
+			expect(queue.hasPendingInvoker).toBe(true);
+
+			const invoker = queue.peekPendingInvoker()!;
+			await expect(invoker({ action: "apply", reason: "reject second preflight target" })).rejects.toThrow(
+				"Apply failed: AST mutation denied for second.ts",
+			);
+
+			expect(beforePaths).toEqual(["first.ts", "second.ts"]);
+			expect(preflightStates).toEqual([sourceState, sourceState]);
+			expect(postPaths).toEqual([]);
+			expect(await Bun.file(firstPath).text()).toBe(firstSource);
+			expect(await Bun.file(secondPath).text()).toBe(secondSource);
 		} finally {
 			await removeWithRetries(tempDir);
 		}

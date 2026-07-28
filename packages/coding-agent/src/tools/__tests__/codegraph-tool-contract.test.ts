@@ -19,7 +19,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { getCodeGraphStorageRoot } from "../../codegraph/location-fs";
+import { resolveCodeGraphIndexLocation } from "../../codegraph/location";
+import { disposeAllWorkersForTests, probeSlot } from "../../codegraph/supervisor";
 import { CodeGraphTool } from "../codegraph";
 
 function makeSession(cwd: string) {
@@ -81,6 +82,30 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
 		clearTimeout(timer);
 	}
 }
+async function waitForSlotReady(repoRoot: string, label: string) {
+	const location = await resolveCodeGraphIndexLocation(repoRoot);
+	expect(location.available).toBe(true);
+	const deadline = Date.now() + 30_000;
+	while (Date.now() < deadline) {
+		const supervisor = await probeSlot(location);
+		if (!supervisor.active && supervisor.progress.state === "ready") {
+			return location;
+		}
+		if (!supervisor.active && supervisor.progress.state === "failed") {
+			throw new Error(`${label} failed: ${supervisor.progress.phase}`);
+		}
+		// Worker progress is produced by a real background thread writing progress.json;
+		// fake timers cannot advance that external lifecycle, so this poll uses a short real wait.
+		await Bun.sleep(100);
+	}
+	throw new Error(`${label} timed out before the slot became ready`);
+}
+
+function expectIndexingFallback(details: { fallback?: string }) {
+	expect(details.fallback).toContain("CodeGraph is ");
+	expect(details.fallback).toContain("the worker is still preparing the index");
+	expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+}
 
 describe("CodeGraphTool contract", () => {
 	let tmp: string;
@@ -97,6 +122,7 @@ describe("CodeGraphTool contract", () => {
 	});
 
 	afterEach(async () => {
+		disposeAllWorkersForTests();
 		if (originalConfigDir === undefined) {
 			delete process.env.PI_CONFIG_DIR;
 		} else {
@@ -164,12 +190,16 @@ describe("CodeGraphTool contract", () => {
 	test("runtime setup failure returns fallback instead of throwing and still avoids project .codegraph", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-runtime-error"));
 		const tool = new CodeGraphTool(makeSession(repoRoot));
-		const storageRoot = getCodeGraphStorageRoot();
 
-		await fs.mkdir(path.dirname(storageRoot), { recursive: true });
-		await fs.writeFile(storageRoot, "block directory creation", "utf8");
+		const coldResult = await tool.execute("call-runtime-error-cold", { query: "x" });
+		expect(coldResult.isError).not.toBe(true);
+		expectIndexingFallback(coldResult.details as { fallback?: string });
 
-		const result = await tool.execute("call-runtime-error", { query: "x" });
+		const location = await waitForSlotReady(repoRoot, "runtime-error warmup");
+		await fs.rm(location.dbPath, { recursive: true, force: true });
+		await fs.mkdir(location.dbPath, { recursive: true });
+
+		const result = await tool.execute("call-runtime-error-warm", { query: "x" });
 
 		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string };
@@ -186,11 +216,21 @@ describe("CodeGraphTool contract", () => {
 		expect(await pathExists(path.join(repoRoot, ".codegraph"))).toBe(false);
 	});
 
-	test("happy path: tool succeeds from Git repo root, no fallback, symbol found", async () => {
+	test("happy path: first call falls back while indexing, second call returns the symbol", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-happy"));
 		const tool = new CodeGraphTool(makeSession(repoRoot));
 
-		const result = await tool.execute("call-happy", { query: "greet" });
+		const coldResult = await withTimeout(
+			tool.execute("call-happy-cold", { query: "greet" }),
+			5000,
+			"cold happy execute",
+		);
+		expect(coldResult.isError).not.toBe(true);
+		expectIndexingFallback(coldResult.details as { fallback?: string });
+
+		await waitForSlotReady(repoRoot, "happy path warmup");
+
+		const result = await withTimeout(tool.execute("call-happy-warm", { query: "greet" }), 5000, "warm happy execute");
 
 		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string; entries?: Array<{ node: { name: string } }> };
@@ -199,47 +239,57 @@ describe("CodeGraphTool contract", () => {
 		expect(details.entries!.some(e => e.node.name === "greet")).toBe(true);
 	});
 
-	test("nested cwd + scoped path + same-index reuse: tool succeeds, no fallback, symbol found", async () => {
+	test("nested cwd + scoped path + same-index reuse: each first call falls back, warm retries reuse the same Git-root index", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-nested-tool"));
+		const rootTool = new CodeGraphTool(makeSession(repoRoot));
 
-		// Session 1: tool from repo root — establishes the index.
-		const tool1 = new CodeGraphTool(makeSession(repoRoot));
-		const result1 = await tool1.execute("call-root", { query: "greet" });
-		expect(result1.isError).not.toBe(true);
-		const details1 = result1.details as { fallback?: string; indexDir?: string; sourceRoot?: string };
-		expect(details1.fallback).toBeUndefined();
-		expect(details1.indexDir).toBeDefined();
-		expect(details1.sourceRoot).toBeDefined();
+		const coldRootResult = await rootTool.execute("call-root-cold", { query: "greet" });
+		expect(coldRootResult.isError).not.toBe(true);
+		expectIndexingFallback(coldRootResult.details as { fallback?: string });
 
-		// Session 2: nested cwd with scoped path parameter.
-		// Use "lib/" instead of "src/" — src is in DEFAULT_IGNORE_DIRS.
+		await waitForSlotReady(repoRoot, "root tool warmup");
+
+		const rootResult = await rootTool.execute("call-root-warm", { query: "greet" });
+		expect(rootResult.isError).not.toBe(true);
+		const rootDetails = rootResult.details as { fallback?: string; indexDir?: string; sourceRoot?: string };
+		expect(rootDetails.fallback).toBeUndefined();
+		expect(rootDetails.indexDir).toBeDefined();
+		expect(rootDetails.sourceRoot).toBeDefined();
+
 		const libDir = path.join(repoRoot, "lib");
+		const helperPath = path.join(libDir, "helper.ts");
 		await fs.mkdir(libDir, { recursive: true });
-		await fs.writeFile(path.join(libDir, "helper.ts"), `export function helper(): number { return 42; }\n`, "utf8");
+		await fs.writeFile(helperPath, `export function helper(): number { return 42; }\n`, "utf8");
 
-		// cwd is the nested lib/ dir; path scopes to the helper file.
-		const tool2 = new CodeGraphTool(makeSession(libDir));
-		const result2 = await tool2.execute("call-nested", {
+		const nestedTool = new CodeGraphTool(makeSession(libDir));
+		const coldNestedResult = await nestedTool.execute("call-nested-cold", {
 			query: "helper",
-			path: path.join(libDir, "helper.ts"),
+			path: helperPath,
 		});
+		expect(coldNestedResult.isError).not.toBe(true);
+		expectIndexingFallback(coldNestedResult.details as { fallback?: string });
 
-		// Must succeed — no fallback, symbol found, and reuse the same Git-root index.
-		expect(result2.isError).not.toBe(true);
-		const details2 = result2.details as {
+		await waitForSlotReady(repoRoot, "nested tool warmup");
+
+		const nestedResult = await nestedTool.execute("call-nested-warm", {
+			query: "helper",
+			path: helperPath,
+		});
+		expect(nestedResult.isError).not.toBe(true);
+		const nestedDetails = nestedResult.details as {
 			fallback?: string;
 			entries?: Array<{ node: { name: string } }>;
 			indexDir?: string;
 			sourceRoot?: string;
 		};
-		expect(details2.fallback).toBeUndefined();
-		expect(details2.entries).toBeDefined();
-		expect(details2.entries!.some(e => e.node.name === "helper")).toBe(true);
-		expect(details2.indexDir).toBe(details1.indexDir);
-		expect(details2.sourceRoot).toBe(details1.sourceRoot);
+		expect(nestedDetails.fallback).toBeUndefined();
+		expect(nestedDetails.entries).toBeDefined();
+		expect(nestedDetails.entries!.some(e => e.node.name === "helper")).toBe(true);
+		expect(nestedDetails.indexDir).toBe(rootDetails.indexDir);
+		expect(nestedDetails.sourceRoot).toBe(rootDetails.sourceRoot);
 	});
 
-	test("concurrent same-index execute() calls both finish without fallback", async () => {
+	test("concurrent same-index execute() calls fall back cold, then both return real results after the slot is ready", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-concurrent-tool"));
 		const libDir = path.join(repoRoot, "lib");
 		const helperPath = path.join(libDir, "helper.ts");
@@ -249,13 +299,28 @@ describe("CodeGraphTool contract", () => {
 		const rootTool = new CodeGraphTool(makeSession(repoRoot));
 		const nestedTool = new CodeGraphTool(makeSession(libDir));
 
-		const [rootResult, nestedResult] = await withTimeout(
+		const [coldRootResult, coldNestedResult] = await withTimeout(
 			Promise.all([
-				rootTool.execute("call-concurrent-root", { query: "greet" }),
-				nestedTool.execute("call-concurrent-nested", { query: "helper", path: helperPath }),
+				rootTool.execute("call-concurrent-root-cold", { query: "greet" }),
+				nestedTool.execute("call-concurrent-nested-cold", { query: "helper", path: helperPath }),
 			]),
 			15000,
-			"concurrent CodeGraphTool execute()",
+			"cold concurrent CodeGraphTool execute()",
+		);
+		expect(coldRootResult.isError).not.toBe(true);
+		expectIndexingFallback(coldRootResult.details as { fallback?: string });
+		expect(coldNestedResult.isError).not.toBe(true);
+		expectIndexingFallback(coldNestedResult.details as { fallback?: string });
+
+		await waitForSlotReady(repoRoot, "concurrent warmup");
+
+		const [rootResult, nestedResult] = await withTimeout(
+			Promise.all([
+				rootTool.execute("call-concurrent-root-warm", { query: "greet" }),
+				nestedTool.execute("call-concurrent-nested-warm", { query: "helper", path: helperPath }),
+			]),
+			15000,
+			"warm concurrent CodeGraphTool execute()",
 		);
 
 		expect(rootResult.isError).not.toBe(true);

@@ -173,7 +173,6 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 					nestedPatches: commitResult?.nestedPatches,
 				};
 			} catch (mergeErr) {
-				// Agent succeeded but branch commit failed — clean up stale branch
 				const branchName = `omp/task/${opts.agentId}`;
 				await git.branch.tryDelete(opts.context.repoRoot, branchName);
 				const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);

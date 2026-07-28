@@ -29,6 +29,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { QueryBuilder } from "./db";
+import { isTestFile } from "./search";
 import type {
 	CodeGraphEdge,
 	CodeGraphNode,
@@ -938,20 +939,4 @@ export function testCandidatesFor(
 		}
 	}
 	return candidates;
-}
-
-export function isTestFile(filePath: string): boolean {
-	const lower = filePath.toLowerCase();
-	return (
-		lower.includes("/tests/") ||
-		lower.includes("/test/") ||
-		lower.includes("/__tests__/") ||
-		lower.includes("/spec/") ||
-		lower.endsWith(".test.ts") ||
-		lower.endsWith(".spec.ts") ||
-		lower.endsWith("_test.go") ||
-		lower.endsWith("_spec.rb") ||
-		lower.startsWith("test/") ||
-		lower.startsWith("tests/")
-	);
 }

@@ -20,7 +20,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { parseReadUrlTarget } from "./fetch";
-import { notifyFileUpdated } from "./file-mutation-hook";
+import { notifyFileUpdated, prepareFileMutation } from "./file-mutation-hook";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
@@ -145,6 +145,23 @@ function runAstEditOnce(
 		failOnParseError: options.failOnParseError,
 		signal: options.signal,
 	});
+}
+
+async function prepareAstEditMutations(
+	session: ToolSession,
+	result: AstEditAggregatedResult,
+	formatPath: (filePath: string) => string,
+): Promise<void> {
+	const paths = new Set<string>();
+	for (const fileChange of result.fileChanges) {
+		paths.add(formatPath(fileChange.path));
+	}
+	for (const change of result.changes) {
+		paths.add(formatPath(change.path));
+	}
+	for (const filePath of paths) {
+		await prepareFileMutation(session, path.resolve(session.cwd, filePath), "update");
+	}
 }
 
 export interface AstEditToolDetails {
@@ -441,6 +458,17 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					label: `AST Edit: ${result.totalReplacements} replacement${previewReplacementPlural} in ${result.filesTouched} file${previewFilePlural}`,
 					sourceToolName: this.name,
 					apply: async (_reason: string) => {
+						if (this.session.beforeFileMutation) {
+							// Native ast-edit owns its write loop, so build a current dry-run
+							// plan before handing control back for the real persistence pass.
+							const preflightResult = await runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
+								rewrites: normalizedRewrites,
+								dryRun: true,
+								maxFiles,
+								failOnParseError: false,
+							});
+							await prepareAstEditMutations(this.session, preflightResult, formatPath);
+						}
 						const applyResult = await runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
 							rewrites: normalizedRewrites,
 							dryRun: false,

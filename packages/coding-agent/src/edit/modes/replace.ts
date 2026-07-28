@@ -9,7 +9,7 @@ import { type } from "arktype";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
-import { notifyFileMutation } from "../../tools/file-mutation-hook";
+import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
@@ -1107,8 +1107,8 @@ export async function executeReplaceSingle(
 	let diagnostics: FileDiagnosticsResult | undefined;
 	if (await routeWriteThroughBridge(session, path, absolutePath, finalContent, signal)) {
 		// bridge handled the write; diagnostics not available via writethrough
-		notifyFileMutation(session, absolutePath, existedBefore ? "update" : "create");
 	} else {
+		await prepareFileMutation(session, absolutePath, existedBefore ? "update" : "create");
 		diagnostics = await writethrough(absolutePath, finalContent, signal, Bun.file(absolutePath), batchRequest, dst =>
 			dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined,
 		);

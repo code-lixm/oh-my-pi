@@ -275,8 +275,22 @@ export interface ToolSession {
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
 	modelRegistry?: import("../config/model-registry").ModelRegistry;
-	/** Agent output manager for unique agent:// IDs across task invocations */
 	agentOutputManager?: AgentOutputManager;
+	/**
+	 * Optional hook fired right before an isolated subagent's patches/branch
+	 * are merged back into the parent repo. Wired from the parent session so
+	 * the workspace-checkpoint coordinator can capture a `task_merge`
+	 * boundary before the worktree applies. Callers MUST NOT throw.
+	 */
+	beforeIsolatedMerge?: (taskId: string) => Promise<void>;
+	/**
+	 * Optional hook reporting whether an isolated subagent is currently mutating
+	 * the parent's repo via its worktree. Used by the workspace-checkpoint
+	 * coordinator's mutator guard to fence restore operations.
+	 */
+	isTaskMutatorActive?: () => boolean;
+	/** Optional hook fired after an isolated merge window has fully released. */
+	afterIsolatedMerge?: () => void;
 	/**
 	 * Async job manager scoped to this session.
 	 *
@@ -296,13 +310,11 @@ export interface ToolSession {
 	taskRequestConcurrency?: TaskRequestConcurrency;
 	/** Root-session runnable-subagent scheduler shared by nested and revived sessions. */
 	taskRunnableConcurrency?: TaskRunnableConcurrency;
-	/** Release this session's runnable slot while a tool blocks on child or peer work. */
 	withRunnableAgentSuspended?<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T>;
 	/** MCP manager visible to subagents without relying on the process-global singleton. */
 	mcpManager?: MCPManager;
 	/** Local protocol root to propagate to nested subagents and eval-created agents. */
 	localProtocolOptions?: LocalProtocolOptions;
-	/** Settings instance for passing to subagents */
 	settings: Settings;
 	/** Plan mode state (if active) */
 	getPlanModeState?: () => PlanModeState | undefined;
@@ -394,6 +406,12 @@ export interface ToolSession {
 	 * the wired edit/write/ast_edit persistence paths.
 	 */
 	pendingFileMutations?: PendingFileMutationCollector;
+	/**
+	 * Invoked for every real source-file mutation (create/update/delete/rename)
+	 * immediately BEFORE the underlying persistence starts. A rejected promise
+	 * aborts that mutation; source and sandbox gating match `onFileMutation`.
+	 */
+	beforeFileMutation?(event: FileMutationEvent): Promise<void>;
 	/**
 	 * Notified for every real source-file mutation (create/update/delete/rename)
 	 * AFTER the underlying `await fs.writeFile`/`Bun.write`/`fs.rename`/`fs.rm`/

@@ -162,8 +162,105 @@ export type SessionEvent =
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent
-	| GoalUpdatedEvent;
+	| GoalUpdatedEvent
+	| WorkspaceCheckpointBeforeEvent
+	| WorkspaceCheckpointCreatedEvent
+	| WorkspaceCheckpointFailedEvent
+	| WorkspaceCheckpointCompletedEvent
+	| WorkspaceRestoreBeforeEvent
+	| WorkspaceRestoreCompletedEvent
+	| WorkspaceRestoreFailedEvent;
 
+/** Fired before a workspace checkpoint is taken (turn / user_bash / task_merge / restore_guard / manual). Cancellable. */
+export interface WorkspaceCheckpointBeforeEvent {
+	type: "workspace_checkpoint_before";
+	rootPath?: string;
+	reason: "turn" | "manual" | "user_bash" | "task_merge" | "restore_guard";
+	checkpointId?: string;
+	label?: string | null;
+}
+
+/** Fired after a workspace checkpoint record is successfully persisted. */
+export interface WorkspaceCheckpointCreatedEvent {
+	type: "workspace_checkpoint_created";
+	rootPath?: string;
+	checkpointId: string;
+	workspaceId: string;
+	reason: "turn" | "manual" | "user_bash" | "task_merge" | "restore_guard";
+	label?: string | null;
+	manifestObjectId: string;
+	fileCount: number;
+	totalBytes: number;
+	guardCheckpointId?: string | null;
+	sessionEntryId?: string | null;
+}
+
+/** Fired when a workspace checkpoint attempt fails (capture, scan, IO, git, mutator, etc). */
+export interface WorkspaceCheckpointFailedEvent {
+	type: "workspace_checkpoint_failed";
+	rootPath?: string;
+	reason: "turn" | "manual" | "user_bash" | "task_merge" | "restore_guard";
+	failureReason: "service_unavailable" | "mutator_active" | "lock_unavailable" | "io" | "scan" | "git" | "internal";
+	error?: string;
+}
+
+/** Fired after a workspace restore plan is applied or undone/redone. */
+export interface WorkspaceCheckpointCompletedEvent {
+	type: "workspace_checkpoint_completed";
+	rootPath?: string;
+	operation: "restore" | "undo" | "redo";
+	planId: string;
+	redoAvailable: boolean;
+	checkpointId?: string;
+	transactionId?: string;
+	restoredPaths?: readonly string[];
+	skippedPaths?: readonly string[];
+}
+
+/** Fired before a restore/undo/redo mutates disk. Cancellable. */
+export interface WorkspaceRestoreBeforeEvent {
+	type: "workspace_restore_before";
+	rootPath: string;
+	planId: string;
+	checkpointId: string;
+	scope: "code" | "conversation" | "all";
+	strategy: "preserve" | "exact";
+	operation: "restore" | "undo" | "redo";
+}
+
+/** Fired after a restore/undo/redo has committed. */
+export interface WorkspaceRestoreCompletedEvent {
+	type: "workspace_restore_completed";
+	rootPath: string;
+	transactionId: string;
+	checkpointId: string;
+	planId: string;
+	restoredPaths: readonly string[];
+	skippedPaths: readonly string[];
+	redoAvailable: boolean;
+	operation: "restore" | "undo" | "redo";
+}
+
+/** Fired when a restore/undo/redo fails. */
+export interface WorkspaceRestoreFailedEvent {
+	type: "workspace_restore_failed";
+	rootPath: string;
+	transactionId: string | null;
+	checkpointId: string;
+	planId: string;
+	error: string;
+	operation: "restore" | "undo" | "redo";
+}
+
+/** Return type for `workspace_checkpoint_before` handlers — cancel blocks the capture. */
+export interface WorkspaceCheckpointBeforeResult {
+	cancel?: boolean;
+}
+
+/** Return type for `workspace_restore_before` handlers — cancel blocks the restore. */
+export interface WorkspaceRestoreBeforeResult {
+	cancel?: boolean;
+}
 // ============================================================================
 // Agent / Turn Events
 // ============================================================================

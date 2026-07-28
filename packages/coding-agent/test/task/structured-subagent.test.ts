@@ -22,6 +22,9 @@ import {
 import type { AgentDefinition, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
+type MergeHookSession = ToolSession & {
+	afterIsolatedMerge?: () => void;
+};
 const AGENT: AgentDefinition = {
 	name: "worker",
 	description: "Test worker",
@@ -424,6 +427,113 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
+	it("fires parent merge hooks around a successful auto-apply in order", async () => {
+		mockDiscovery();
+		const order: string[] = [];
+		const isolatedSession = session({ isolationMode: "worktree" }) as MergeHookSession;
+		isolatedSession.beforeIsolatedMerge = async taskId => {
+			order.push(`before:${taskId}`);
+		};
+		isolatedSession.afterIsolatedMerge = () => {
+			order.push("after");
+		};
+		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
+		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockResolvedValue(result());
+		const merge = vi.spyOn(isolationRunner, "mergeIsolatedChanges").mockImplementation(async () => {
+			order.push("merge");
+			return {
+				summary: "",
+				changesApplied: true,
+				hadAnyChanges: true,
+				mergedBranchForNestedPatches: true,
+			};
+		});
+
+		const settled = await runStructuredSubagent(
+			request({ session: isolatedSession, isolation: { requested: true } }),
+		);
+
+		expect(merge).toHaveBeenCalledTimes(1);
+		expect(order[0]).toMatch(/^before:/);
+		expect(order.slice(1)).toEqual(["merge", "after"]);
+		expect(settled.changesApplied).toBe(true);
+	});
+
+	it("fires afterIsolatedMerge even when parent auto-apply throws", async () => {
+		mockDiscovery();
+		const order: string[] = [];
+		const isolatedSession = session({ isolationMode: "worktree" }) as MergeHookSession;
+		isolatedSession.beforeIsolatedMerge = async taskId => {
+			order.push(`before:${taskId}`);
+		};
+		isolatedSession.afterIsolatedMerge = () => {
+			order.push("after");
+		};
+		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
+		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockResolvedValue(result());
+		const merge = vi.spyOn(isolationRunner, "mergeIsolatedChanges").mockImplementation(async () => {
+			order.push("merge");
+			throw new Error("merge boom");
+		});
+
+		await expect(
+			runStructuredSubagent(request({ session: isolatedSession, isolation: { requested: true } })),
+		).rejects.toThrow("Subagent execution failed: merge boom");
+
+		expect(merge).toHaveBeenCalledTimes(1);
+		expect(order[0]).toMatch(/^before:/);
+		expect(order.slice(1)).toEqual(["merge", "after"]);
+	});
+
+	it("does not fire parent merge hooks when the isolated child run failed", async () => {
+		mockDiscovery();
+		const before = vi.fn(async () => undefined);
+		const after = vi.fn();
+		const isolatedSession = session({ isolationMode: "worktree" }) as MergeHookSession;
+		isolatedSession.beforeIsolatedMerge = before;
+		isolatedSession.afterIsolatedMerge = after;
+		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
+		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockResolvedValue({
+			...result(),
+			exitCode: 1,
+			error: "child failed",
+		});
+		const merge = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
+
+		const settled = await runStructuredSubagent(
+			request({ session: isolatedSession, isolation: { requested: true } }),
+		);
+
+		expect(before).not.toHaveBeenCalled();
+		expect(merge).not.toHaveBeenCalled();
+		expect(after).not.toHaveBeenCalled();
+		expect(settled.result.exitCode).toBe(1);
+	});
+
+	it("blocks parent auto-apply when the pre-merge checkpoint hook rejects", async () => {
+		mockDiscovery();
+		const before = vi.fn(async () => {
+			throw new Error("workspace checkpoint blocked merge");
+		});
+		const after = vi.fn();
+		const isolatedSession = session({ isolationMode: "worktree" }) as MergeHookSession;
+		isolatedSession.beforeIsolatedMerge = before;
+		isolatedSession.afterIsolatedMerge = after;
+		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
+		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockResolvedValue(result());
+		const merge = vi.spyOn(isolationRunner, "mergeIsolatedChanges");
+
+		await expect(
+			runStructuredSubagent(request({ session: isolatedSession, isolation: { requested: true } })),
+		).rejects.toThrow("Subagent execution failed: workspace checkpoint blocked merge");
+
+		expect(before).toHaveBeenCalledTimes(1);
+		const [firstTaskId] = (before.mock.calls[0] ?? []) as [unknown?];
+		expect(typeof firstTaskId).toBe("string");
+		expect(merge).not.toHaveBeenCalled();
+		expect(after).not.toHaveBeenCalled();
+	});
+
 	it("defaults task isolation to auto-apply and lets config retain artifacts", async () => {
 		mockDiscovery();
 		const defaultPolicy = await resolveEffectiveSubagentPolicy(
@@ -451,6 +561,11 @@ describe("structured subagent primitive", () => {
 
 	it("retains successful isolated task artifacts when auto-apply is disabled", async () => {
 		mockDiscovery();
+		const before = vi.fn(async () => undefined);
+		const after = vi.fn();
+		const isolatedSession = session({ isolationMode: "worktree", isolationApply: false }) as MergeHookSession;
+		isolatedSession.beforeIsolatedMerge = before;
+		isolatedSession.afterIsolatedMerge = after;
 		let artifactsDir: string | undefined;
 		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: "/tmp" } as never);
 		vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockImplementation(async ({ baseOptions }) => {
@@ -461,12 +576,14 @@ describe("structured subagent primitive", () => {
 
 		const settled = await runStructuredSubagent(
 			request({
-				session: session({ isolationMode: "worktree", isolationApply: false }),
+				session: isolatedSession,
 				isolation: { requested: true },
 			}),
 		);
 
+		expect(before).not.toHaveBeenCalled();
 		expect(merge).not.toHaveBeenCalled();
+		expect(after).not.toHaveBeenCalled();
 		expect(settled.changesApplied).toBeNull();
 		expect(settled.mergeSummary).toContain("/recovery/Worker.patch");
 		expect(artifactsDirsFromRegistry()).toContain(settled.artifactsDir);

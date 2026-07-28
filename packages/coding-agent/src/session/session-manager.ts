@@ -55,6 +55,8 @@ import {
 	type TitleChangeEntry,
 	type TtsrInjectionEntry,
 	type UsageStatistics,
+	type WorkspaceCheckpointEntry,
+	type WorkspaceRestoreEntry,
 } from "./session-entries";
 import { listAllSessions, listSessions, type SessionInfo } from "./session-listing";
 import { loadEntriesFromFile, readTitleSlotFromFile, resolveBlobRefsInEntries } from "./session-loader";
@@ -2000,6 +2002,22 @@ export class SessionManager {
 
 	appendCustomEntry(customType: string, data?: unknown): string {
 		const entry: CustomEntry = { type: "custom", customType, data, ...this.#freshEntryFields() };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a workspace checkpoint entry recording a captured snapshot. */
+	appendWorkspaceCheckpoint(record: Omit<WorkspaceCheckpointEntry, "id" | "parentId" | "timestamp">): string {
+		this.#forceFileCreation = true;
+		const entry: WorkspaceCheckpointEntry = { ...record, ...this.#freshEntryFields() };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a workspace restore entry recording an applied restore. */
+	appendWorkspaceRestore(record: Omit<WorkspaceRestoreEntry, "id" | "parentId" | "timestamp">): string {
+		this.#forceFileCreation = true;
+		const entry: WorkspaceRestoreEntry = { ...record, ...this.#freshEntryFields() };
 		this.#recordEntry(entry);
 		return entry.id;
 	}

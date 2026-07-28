@@ -32,6 +32,14 @@ import type {
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolResultEventResult,
+	WorkspaceCheckpointBeforeEvent,
+	WorkspaceCheckpointBeforeResult,
+	WorkspaceCheckpointCreatedEvent,
+	WorkspaceCheckpointFailedEvent,
+	WorkspaceRestoreBeforeEvent,
+	WorkspaceRestoreBeforeResult,
+	WorkspaceRestoreCompletedEvent,
+	WorkspaceRestoreFailedEvent,
 } from "./types";
 
 /**
@@ -57,6 +65,8 @@ export class HookRunner {
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	#branchHandler: BranchHandler = async () => ({ cancelled: false });
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
+	/** Re-entrant counter: depth tracks nested restore transactions. */
+	#workspaceRestoreLockDepth = 0;
 
 	constructor(
 		private readonly hooks: LoadedHook[],
@@ -232,6 +242,7 @@ export class HookRunner {
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasQueuedMessages: () => this.#hasQueuedMessagesFn(),
+			workspaceRestoreLockHeld: () => this.#workspaceRestoreLockDepth > 0,
 		};
 	}
 
@@ -250,27 +261,42 @@ export class HookRunner {
 	}
 
 	/**
-	 * Check if event type is a session "before_*" event that can be cancelled.
+	 * Check if an event type can return `{ cancel?: boolean }`.
 	 */
-	#isSessionBeforeEvent(
+	#isCancelableEvent(
 		type: string,
-	): type is "session_before_switch" | "session_before_branch" | "session_before_compact" | "session_before_tree" {
+	): type is
+		| "session_before_switch"
+		| "session_before_branch"
+		| "session_before_compact"
+		| "session_before_tree"
+		| "workspace_checkpoint_before"
+		| "workspace_restore_before" {
 		return (
 			type === "session_before_switch" ||
 			type === "session_before_branch" ||
 			type === "session_before_compact" ||
-			type === "session_before_tree"
+			type === "session_before_tree" ||
+			type === "workspace_checkpoint_before" ||
+			type === "workspace_restore_before"
 		);
 	}
 
 	/**
 	 * Emit an event to all hooks.
-	 * Returns the result from session before_* / tool_result events (if any handler returns one).
+	 * Returns the result from cancelable before-events, `session.compacting`, or
+	 * `tool_result` handlers (if any handler returns one).
 	 */
 	async emit(
 		event: HookEvent,
 	): Promise<
-		SessionBeforeCompactResult | SessionBeforeTreeResult | SessionCompactingResult | ToolResultEventResult | undefined
+		| SessionBeforeCompactResult
+		| SessionBeforeTreeResult
+		| SessionCompactingResult
+		| ToolResultEventResult
+		| WorkspaceCheckpointBeforeResult
+		| WorkspaceRestoreBeforeResult
+		| undefined
 	> {
 		const ctx = this.#createContext();
 		let result:
@@ -278,6 +304,8 @@ export class HookRunner {
 			| SessionBeforeTreeResult
 			| SessionCompactingResult
 			| ToolResultEventResult
+			| WorkspaceCheckpointBeforeResult
+			| WorkspaceRestoreBeforeResult
 			| undefined;
 
 		for (const hook of this.hooks) {
@@ -288,10 +316,13 @@ export class HookRunner {
 				try {
 					const handlerResult = await handler(event, ctx);
 
-					// For session before_* events, capture the result (for cancellation)
-					if (this.#isSessionBeforeEvent(event.type) && handlerResult) {
-						result = handlerResult as SessionBeforeCompactResult | SessionBeforeTreeResult;
-						// If cancelled, stop processing further hooks
+					// For cancelable before-events, capture the result and stop on cancel.
+					if (this.#isCancelableEvent(event.type) && handlerResult) {
+						result = handlerResult as
+							| SessionBeforeCompactResult
+							| SessionBeforeTreeResult
+							| WorkspaceCheckpointBeforeResult
+							| WorkspaceRestoreBeforeResult;
 						if (result.cancel) {
 							return result;
 						}
@@ -405,7 +436,6 @@ export class HookRunner {
 					const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt, images };
 					const handlerResult = await handler(event, ctx);
 
-					// Take the first message returned
 					if (handlerResult && (handlerResult as BeforeAgentStartEventResult).message && !result) {
 						result = handlerResult as BeforeAgentStartEventResult;
 					}
@@ -421,5 +451,64 @@ export class HookRunner {
 		}
 
 		return result;
+	}
+
+	async emitWorkspaceCheckpointBefore(
+		event: WorkspaceCheckpointBeforeEvent,
+	): Promise<WorkspaceCheckpointBeforeResult | undefined> {
+		const result = await this.emit(event);
+		return result as WorkspaceCheckpointBeforeResult | undefined;
+	}
+
+	async emitWorkspaceCheckpointCreated(event: WorkspaceCheckpointCreatedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceCheckpointFailed(event: WorkspaceCheckpointFailedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceRestoreBefore(
+		event: WorkspaceRestoreBeforeEvent,
+	): Promise<WorkspaceRestoreBeforeResult | undefined> {
+		const result = await this.emit(event);
+		return result as WorkspaceRestoreBeforeResult | undefined;
+	}
+
+	async emitWorkspaceRestoreCompleted(event: WorkspaceRestoreCompletedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceRestoreFailed(event: WorkspaceRestoreFailedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	/**
+	 * Acquire the workspace restore lock for the duration of `body`. While the
+	 * lock is held, `HookContext.workspaceRestoreLockHeld()` returns `true` for
+	 * any hook event dispatched on this runner so handlers can refuse to mutate
+	 * the on-disk tree. Re-entrant; nested calls increment a depth counter.
+	 *
+	 * Modes (interactive, RPC) invoke this from the workspace checkpoint service
+	 * wrapper around the `restore` / `undo` / `redo` apply path. Hooks that fire
+	 * during the transaction (`workspace_restore_before` / `workspace_restore_*`)
+	 * are dispatched through the same `emit()` path and observe `true`.
+	 */
+	async withWorkspaceRestoreLock<T>(body: () => Promise<T>): Promise<T> {
+		this.#workspaceRestoreLockDepth++;
+		try {
+			return await body();
+		} finally {
+			this.#workspaceRestoreLockDepth--;
+		}
+	}
+
+	/**
+	 * Snapshot whether the workspace restore lock is currently held. Exposed for
+	 * mode implementations that need to gate external work without taking the
+	 * lock themselves.
+	 */
+	isWorkspaceRestoreLockHeld(): boolean {
+		return this.#workspaceRestoreLockDepth > 0;
 	}
 }

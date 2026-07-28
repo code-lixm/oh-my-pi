@@ -733,7 +733,7 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 2);
 	});
 
-	it("does not let a settled active-task confirmation jump straight into /tree on the next Esc", () => {
+	it("does not let a settled active-task confirmation trigger a selector action on later Esc presses by default", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		mutableSessionState(ctx).isStreaming = true;
@@ -748,14 +748,17 @@ describe("InputController escape behavior", () => {
 		editor.onEscape?.();
 
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 		expect(spies.resetDisplay).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
 
 		clock.advance(100);
 		editor.onEscape?.();
 
-		expect(ctx.showTreeSelector).toHaveBeenCalledTimes(1);
-		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
+		expect(spies.resetDisplay).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
 	it("does not let different cancellation targets share confirmation", () => {
@@ -847,7 +850,21 @@ describe("InputController escape behavior", () => {
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(ctx.focusParentSession).not.toHaveBeenCalled();
 	});
-	it("opens the tree selector and clears the display on default double-Esc", () => {
+	it("does not open tree or branch or clear the display on default double-Esc", () => {
+		const { ctx, editor, spies } = createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+		editor.onEscape?.();
+
+		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
+		expect(spies.resetDisplay).not.toHaveBeenCalled();
+	});
+
+	it("opens the tree selector and clears the display when double-Esc is configured for tree", () => {
+		Settings.instance.override("doubleEscapeAction", "tree");
 		const { ctx, editor, spies } = createContext();
 		const controller = new InputController(ctx);
 

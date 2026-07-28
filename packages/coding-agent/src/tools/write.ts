@@ -50,7 +50,7 @@ import {
 	parseConflictUri,
 	spliceConflict,
 } from "./conflict-detect";
-import { notifyFileMutation } from "./file-mutation-hook";
+import { notifyFileMutation, prepareFileMutation } from "./file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import {
@@ -806,6 +806,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const splice = spliceConflict(originalText, entry, expanded);
 		const newContent = splice.text;
 
+		await prepareFileMutation(this.session, absolutePath, "update");
 		await writethroughNoop(absolutePath, newContent, signal);
 		invalidateFsScanAfterWrite(absolutePath);
 		notifyFileMutation(this.session, absolutePath, "update");
@@ -986,6 +987,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				continue;
 			}
 
+			await prepareFileMutation(this.session, absolutePath, "update");
 			await writethroughNoop(absolutePath, text, signal);
 			invalidateFsScanAfterWrite(absolutePath);
 			notifyFileMutation(this.session, absolutePath, "update");
@@ -1247,6 +1249,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				};
 			}
 
+			await prepareFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 			const diagnostics = await this.#writethrough(
 				absolutePath,
 				cleanContent,

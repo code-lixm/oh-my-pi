@@ -157,4 +157,63 @@ describe("codegraph CLI subprocess contract", () => {
 		expect(statusAfterClearJson.exists).toBe(false);
 		expect(statusAfterClearJson.verified).toBe(false);
 	});
+
+	it("prune JSON dry-run preserves byte-size policy parsing across suffix variants", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-codegraph-byte-policy"));
+		const location = await resolveCodeGraphIndexLocation(repoRoot);
+		expect(location.available).toBe(true);
+		const runtime = await openCodeGraphRuntime({ location, sourceRoot: repoRoot });
+		try {
+			await runtime.initialize();
+		} finally {
+			runtime.close();
+		}
+
+		const cases = [
+			{
+				name: "single-letter gib suffix for per-project cap",
+				args: ["--max-project-bytes", "2g"],
+				key: "maxProjectBytes",
+				expected: 2_147_483_648,
+			},
+			{
+				name: "explicit GiB suffix for total cap",
+				args: ["--max-total-bytes", "8GiB"],
+				key: "maxTotalBytes",
+				expected: 8_589_934_592,
+			},
+			{
+				name: "raw integer bytes remain supported",
+				args: ["--max-project-bytes", "4096"],
+				key: "maxProjectBytes",
+				expected: 4096,
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			const prune = await runCliProcess(repoRoot, ["codegraph", "prune", "--dry-run", "--json", ...testCase.args], {
+				PI_CONFIG_DIR: isolatedConfigDir,
+			});
+			expect(prune.exitCode, `${testCase.name}: ${prune.error}`).toBe(0);
+			const pruneJson = JSON.parse(prune.output) as {
+				policy: { maxProjectBytes?: number; maxTotalBytes?: number };
+			};
+			expect(pruneJson.policy[testCase.key], testCase.name).toBe(testCase.expected);
+		}
+	});
+
+	it("prune rejects invalid byte-size suffixes with a CLI error contract", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-codegraph-byte-policy-invalid"));
+		const invalid = await runCliProcess(
+			repoRoot,
+			["codegraph", "prune", "--dry-run", "--json", "--max-project-bytes", "2xb"],
+			{
+				PI_CONFIG_DIR: isolatedConfigDir,
+			},
+		);
+
+		expect(invalid.exitCode).not.toBe(0);
+		expect(invalid.output).toBe("");
+		expect(invalid.error).toContain("--max-project-bytes must be bytes or a size such as 512m, 2g, or 8GiB.");
+	});
 });

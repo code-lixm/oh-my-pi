@@ -10,11 +10,24 @@
 
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import type { ToolSession } from ".";
-import { notifyFileMutation } from "./file-mutation-hook";
+import { type FileMutationKind, notifyFileMutation, prepareFileMutation } from "./file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { isInternalUrlPath } from "./path-utils";
 import { resolvePlanPath, targetsLocalSandbox } from "./plan-mode-guard";
 import { ToolError } from "./tool-errors";
+
+export interface BridgeFileMutation {
+	kind: FileMutationKind;
+	previousPath?: string;
+}
+
+export type BridgePostMutationOwner = "bridge" | "caller";
+
+export interface BridgeWriteOptions {
+	mutation?: BridgeFileMutation;
+	/** Own post-success LSP/cache/session mutation effects at the bridge or caller. */
+	postMutationOwner?: BridgePostMutationOwner;
+}
 
 /**
  * Return `true` when an ACP client bridge write is appropriate for this path.
@@ -44,8 +57,9 @@ export function shouldRouteWriteThroughBridge(
 /**
  * Try to route a file write through the ACP client bridge.
  *
- * Performs the full guard check, bridge call (wrapped in {@link ToolError}),
- * FS-scan cache invalidation, and session mutation-version bump.
+ * Performs the full guard check and bridge call (wrapped in {@link ToolError}).
+ * By default the bridge owns post-success LSP/cache/session mutation effects;
+ * caller ownership defers all of them until its larger mutation succeeds.
  *
  * Returns `true` when the bridge was used and the caller must skip the
  * writethrough path. Returns `false` when the bridge is unavailable or the
@@ -57,6 +71,7 @@ export async function routeWriteThroughBridge(
 	absolutePath: string,
 	content: string,
 	signal?: AbortSignal,
+	options: BridgeWriteOptions = {},
 ): Promise<boolean> {
 	if (!shouldRouteWriteThroughBridge(session, requestedPath, absolutePath)) return false;
 
@@ -64,21 +79,26 @@ export async function routeWriteThroughBridge(
 	if (!bridge?.capabilities.writeTextFile || !bridge.writeTextFile) return false;
 
 	const existedBefore = await Bun.file(absolutePath).exists();
+	const mutation = options.mutation;
+	const mutationKind = mutation?.kind ?? (existedBefore ? "update" : "create");
 	const changeType = existedBefore ? FileChangeType.Changed : FileChangeType.Created;
 	// The ACP protocol has no cancellation for fs writes; the most we can do is
 	// refuse to start one after the tool was aborted. Racing the promise would
 	// report failure while the editor still applies the write.
 	signal?.throwIfAborted();
+	await prepareFileMutation(session, absolutePath, mutationKind, mutation);
 	try {
 		await bridge.writeTextFile({ path: absolutePath, content });
 	} catch (error) {
 		throw new ToolError(error instanceof Error ? error.message : String(error));
 	}
-	if (session.enableLsp ?? true) {
-		await notifyWorkspaceWatchedFiles(session.cwd, [{ filePath: absolutePath, type: changeType }], signal);
+	if (options.postMutationOwner !== "caller") {
+		if (session.enableLsp ?? true) {
+			await notifyWorkspaceWatchedFiles(session.cwd, [{ filePath: absolutePath, type: changeType }], signal);
+		}
+		invalidateFsScanAfterWrite(absolutePath);
+		notifyFileMutation(session, absolutePath, mutationKind, mutation);
+		session.bumpFileMutationVersion?.(absolutePath);
 	}
-	invalidateFsScanAfterWrite(absolutePath);
-	notifyFileMutation(session, absolutePath, existedBefore ? "update" : "create");
-	session.bumpFileMutationVersion?.(absolutePath);
 	return true;
 }

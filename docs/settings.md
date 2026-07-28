@@ -464,6 +464,28 @@ retry:
 
 When the active model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default`. It skips models whose selectors are still cooling down and switches for the rest of the turn. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
 
+### Workspace checkpoints
+
+```yaml
+workspaceCheckpoint:
+  enabled: true
+  auto: turn
+  failurePolicy: block
+  retention:
+    maxPerSession: 100
+    maxAgeDays: 30
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `workspaceCheckpoint.enabled` | boolean | `true` | Enables durable workspace checkpoints, restore, undo, and redo. This is independent of the model-facing context `checkpoint`/`rewind` tools. |
+| `workspaceCheckpoint.auto` | enum | `turn` | `turn` captures immediately before each top-level user turn is sent to the model; `off` keeps manual commands available. Retries, compaction continuations, and tool subturns do not create duplicate checkpoints. |
+| `workspaceCheckpoint.failurePolicy` | enum | `block` | `block` refuses to start the turn when capture fails; `warn` logs and continues; `ignore` continues silently except for diagnostic logging. |
+| `workspaceCheckpoint.retention.maxPerSession` | number | `100` | Maximum unpinned checkpoints retained per session lineage. |
+| `workspaceCheckpoint.retention.maxAgeDays` | number | `30` | Maximum age for unpinned checkpoints; restore guards and named/pinned roots remain protected. |
+
+Checkpoint metadata and content-addressed objects live under `~/.omp/agent/checkpoints/v1/`, never inside the workspace. Use `/checkpoint`, `/rewind`, `/undo`, and `/redo` interactively, or `omp checkpoint`, `omp rewind`, `omp undo`, and `omp redo` from the CLI. `code` restores files and Git state; `conversation` moves only the session cursor; `all` applies both as one compensated operation and therefore requires an attached `--session`.
+
 ### Tools and approvals
 
 ```yaml

@@ -46,6 +46,7 @@ import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-stora
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
+import type { WorkspaceCheckpointAccessResult } from "../../session/workspace-checkpoint-coordinator";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
@@ -172,6 +173,20 @@ export class CommandController {
 				}),
 			);
 		}
+	}
+	/**
+	 * Create a new manual workspace checkpoint. The mutator guard prevents
+	 * pinning a partially-applied edit; the label is normalized to `null`
+	 * when empty so the picker can fall back to the entry id. The return type
+	 * mirrors `AgentSession.createWorkspaceCheckpoint` so callers can inspect
+	 * `available` / `reason` when the service is not wired into this session.
+	 */
+	async handleCheckpointCommand(label: string | undefined): Promise<WorkspaceCheckpointAccessResult<unknown>> {
+		if (this.ctx.session.isBashRunning || this.ctx.session.isEvalRunning) {
+			throw new Error(tSettingsUi("Cannot checkpoint while a tool is actively modifying the workspace."));
+		}
+		const trimmed = label?.trim() ?? "";
+		return this.ctx.session.createWorkspaceCheckpoint(trimmed.length > 0 ? trimmed : null);
 	}
 
 	async handleShareCommand(): Promise<void> {

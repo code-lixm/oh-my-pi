@@ -25,7 +25,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
-import { notifyFileMutation } from "../../tools/file-mutation-hook";
+import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
@@ -154,6 +154,7 @@ export class HashlineFilesystem extends Filesystem {
 		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
+			await prepareFileMutation(this.session, absolutePath, "delete");
 			await fs.rm(absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
@@ -174,6 +175,7 @@ export class HashlineFilesystem extends Filesystem {
 		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
 		const fromAbsolute = this.resolveAbsolute(fromRelative);
 		const toAbsolute = this.resolveAbsolute(toRelative);
+		await prepareFileMutation(this.session, toAbsolute, "rename", { previousPath: fromAbsolute });
 		if (content !== undefined) {
 			await Bun.write(toAbsolute, content);
 			await fs.rm(fromAbsolute);
@@ -204,10 +206,10 @@ export class HashlineFilesystem extends Filesystem {
 		const existedBefore = await Bun.file(absolutePath).exists();
 		if (await routeWriteThroughBridge(this.session, relativePath, absolutePath, finalContent, this.#signal)) {
 			this.#diagnosticsByPath.set(relativePath, undefined);
-			notifyFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 			return { text: finalContent };
 		}
 
+		await prepareFileMutation(this.session, absolutePath, existedBefore ? "update" : "create");
 		const diagnostics = await this.#writethrough(
 			absolutePath,
 			finalContent,

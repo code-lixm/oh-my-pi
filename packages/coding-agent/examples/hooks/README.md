@@ -17,7 +17,6 @@ cp permission-gate.ts ~/.omp/agent/hooks/
 | Hook                     | Description                                                                    |
 | ------------------------ | ------------------------------------------------------------------------------ |
 | `permission-gate.ts`     | Prompts for confirmation before dangerous bash commands (rm -rf, sudo, etc.)   |
-| `git-checkpoint.ts`      | Creates git stash checkpoints at each turn for code restoration on branch      |
 | `protected-paths.ts`     | Blocks writes to protected paths (.env, .git/, node_modules/)                  |
 | `file-trigger.ts`        | Watches a trigger file and injects contents into conversation                  |
 | `confirm-destructive.ts` | Confirms before destructive session actions (clear, switch, branch)            |

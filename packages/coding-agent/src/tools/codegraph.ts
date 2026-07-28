@@ -4,16 +4,16 @@
  * Read-only semantic exploration over the CodeGraph runtime facade
  * (`../codegraph`). The tool:
  *   - resolves an index location from the session cwd or the optional target path,
- *   - opens the runtime (if available), initializes, and incrementally syncs
- *     the whole source root or the optional scoped path,
- *   - runs `explore(query)` against the runtime and renders the upstream-shaped result.
- *
- * When the location is unavailable (non-Git workspace, missing HEAD, …)
- * or the runtime reports a failure, the tool returns a clear downgrade
- * note instead of a raw stack trace — the caller MUST fall back to
- * `grep`/`glob`/`read` per the static prompt.
+ *   - schedules the cold work on a Bun Worker (the supervisor in
+ *     `../codegraph/supervisor`); cold callers receive an indexing
+ *     fallback pointing at the persistent progress state — they never
+ *     block on warm initialization,
+ *   - on warm slots, performs a scoped sync (explicit `path` argument +
+ *     pending file mutations) instead of the unconditional full-project
+ *     sync the previous version did,
+ *   - returns index state / progress in the tool details so callers can
+ *     observe the worker lifecycle.
  */
-
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
@@ -28,6 +28,10 @@ import {
 	openCodeGraphRuntime,
 } from "../codegraph";
 import { resolveCodeGraphIndexLocation } from "../codegraph/location";
+import { readProgress } from "../codegraph/progress";
+import type { CodeGraphProgress } from "../codegraph/runtime-types";
+import type { SupervisorProgressView } from "../codegraph/supervisor";
+import { probeSlot, scheduleIndex } from "../codegraph/supervisor";
 import { selectPrompt } from "../prompts/prompt-locale";
 import codegraphDescription from "../prompts/tools/codegraph.md" with { type: "text" };
 import codegraphDescriptionZh from "../prompts/tools/codegraph.zh-CN.md" with { type: "text" };
@@ -37,6 +41,7 @@ import { resolveToCwd } from "./path-utils";
 import { PREVIEW_LIMITS, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
+
 /**
  * Structural subset of `ToolSession` consumed by this tool. The full type
  * lives in `./index.ts`; importing it directly would close a circular
@@ -73,6 +78,8 @@ export interface CodeGraphToolDetails {
 	entries: CodeGraphExploreResult["entries"];
 	fallback?: string;
 	meta?: OutputMeta;
+	indexState?: CodeGraphProgress["state"];
+	progress?: CodeGraphProgress;
 }
 
 const DEFAULT_MAX_FILES = 25;
@@ -81,7 +88,14 @@ const PREVIEW_ENTRY_LINE_LEN = 80;
 const PREVIEW_ENTRY_LINES = 3;
 const PREVIEW_FILE_LINES = 4;
 
-type FallbackContext = { sourceRoot: string; indexDir?: string; reason: string; isError?: boolean };
+type FallbackContext = {
+	sourceRoot: string;
+	indexDir?: string;
+	reason: string;
+	isError?: boolean;
+	indexState?: CodeGraphProgress["state"];
+	progress?: CodeGraphProgress;
+};
 
 type ResolvedLocationState =
 	| { kind: "ready"; location: CodeGraphIndexLocation; runtimeSourceRoot: string; syncPaths: string[] }
@@ -131,10 +145,15 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 		},
 	];
 
+	/**
+	 * Cold probe — only awaits the cheap location/Git detection. We do NOT
+	 * open the runtime or trigger a sync here. The supervisor takes over as
+	 * soon as the tool runs `execute`.
+	 */
 	static async createIf(session: CodeGraphToolSession): Promise<CodeGraphTool | null> {
 		try {
 			const location = await resolveCodeGraphIndexLocation(path.resolve(session.cwd));
-			if (location.available) return new CodeGraphTool(session);
+			if (location.available) return new CodeGraphTool(session, location);
 			logger.debug("CodeGraph tool unavailable for workspace", { cwd: session.cwd, reason: location.reason });
 		} catch (error) {
 			logger.debug("CodeGraph tool availability check failed", {
@@ -145,8 +164,29 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 		return null;
 	}
 
-	constructor(private readonly session: CodeGraphToolSession) {
+	readonly #scheduledKeys = new Set<string>();
+
+	constructor(
+		private readonly session: CodeGraphToolSession,
+		initialLocation?: CodeGraphIndexLocation,
+	) {
 		this.description = prompt.render(selectPrompt(codegraphDescription, codegraphDescriptionZh));
+		if (initialLocation) this.#scheduleIndex(initialLocation);
+	}
+
+	#scheduleIndex(location: CodeGraphIndexLocation, forceRebuild = false): void {
+		const key = location.identity.key;
+		if (this.#scheduledKeys.has(key) && !forceRebuild) return;
+		this.#scheduledKeys.add(key);
+		try {
+			scheduleIndex(location, forceRebuild ? { forceRebuild: true } : {});
+		} catch (error) {
+			this.#scheduledKeys.delete(key);
+			logger.debug("CodeGraph worker schedule failed", {
+				key,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	async execute(
@@ -170,7 +210,10 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			}
 
 			const { location, runtimeSourceRoot, syncPaths } = resolved;
-			const effectiveSyncPaths = new Set(syncPaths);
+
+			// Build the explicit + mutation-derived scoped path list up
+			// front so the indexing-fallback path can echo it back.
+			const effectiveSyncPaths = new Set<string>(syncPaths);
 			for (const event of drainPendingFileMutations(this.session)) {
 				for (const absolutePath of [event.previousPath, event.path]) {
 					if (!absolutePath) continue;
@@ -180,14 +223,45 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 				}
 			}
 			const paths = [...effectiveSyncPaths];
+
+			// Cold path: ensure the supervisor has at least spawned the
+			// worker, then check `progress.json`. If the slot is not
+			// `ready` we return the indexing fallback immediately rather
+			// than blocking on warm initialization.
+			this.#scheduleIndex(location);
+			let supervisor = await probeSlot(location);
+			if (!supervisor.active && supervisor.progress.state === "failed") {
+				this.#scheduledKeys.delete(location.identity.key);
+				this.#scheduleIndex(location, true);
+				supervisor = await probeSlot(location);
+			}
+			if (supervisor.active || supervisor.progress.state !== "ready") {
+				const persisted = await this.#readProgressFor(location);
+				const progress = supervisor.active && persisted?.state === "ready" ? undefined : persisted;
+				return this.#indexingFallback(params, maxFiles, location, supervisor.progress, progress);
+			}
+
 			let runtime: CodeGraphRuntime | null = null;
 			try {
 				runtime = await openCodeGraphRuntime({ sourceRoot: runtimeSourceRoot, location });
-				await runtime.initialize();
-				await runtime.sync(paths.length > 0 ? { paths } : {});
+				// Worker already performed the warm full sync. Only honour
+				// explicit scoped paths (the user-supplied `path` argument
+				// + drainPendingFileMutations). No scoped paths → just
+				// explore against the worker's warm state.
+				if (paths.length > 0) {
+					await runtime.sync({ paths });
+				}
 				const exploreOpts: CodeGraphExploreOptions = { maxFiles };
 				const exploreResult = await runtime.explore(query, exploreOpts);
-				return this.#shapeResult(params, maxFiles, runtimeSourceRoot, location, paths, exploreResult);
+				return this.#shapeResult(params, maxFiles, runtimeSourceRoot, location, paths, exploreResult, {
+					state: "ready",
+					phase: "ready",
+					current: 0,
+					total: 0,
+					updatedAt: new Date().toISOString(),
+					workerId: supervisor.progress.workerId,
+					attempt: supervisor.progress.attempt,
+				});
 			} catch (err) {
 				const message = (err as Error).message || String(err);
 				return this.#fallbackResult(params, maxFiles, {
@@ -203,6 +277,14 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 				}
 			}
 		});
+	}
+
+	async #readProgressFor(location: CodeGraphIndexLocation): Promise<CodeGraphProgress | undefined> {
+		try {
+			return (await readProgress(location)) ?? undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	async #resolveLocationAndScope(sessionCwd: string, rawPath: string | undefined): Promise<ResolvedLocationState> {
@@ -291,6 +373,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 		location: CodeGraphIndexLocation,
 		syncPaths: string[],
 		explore: CodeGraphExploreResult,
+		progress: CodeGraphProgress,
 	): AgentToolResult<CodeGraphToolDetails> {
 		const truncated = explore.files.length + explore.entries.length > PREVIEW_LIMITS.COLLAPSED_ITEMS;
 		const details: CodeGraphToolDetails = {
@@ -306,10 +389,52 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			truncated,
 			files: explore.files,
 			entries: explore.entries,
+			indexState: progress.state,
+			progress,
 		};
 		return toolResult<CodeGraphToolDetails>(details)
 			.text(formatCodeGraphText(explore, params, syncPaths))
 			.done();
+	}
+
+	#indexingFallback(
+		params: typeof codegraphSchema.infer,
+		maxFiles: number,
+		location: CodeGraphIndexLocation,
+		view: SupervisorProgressView,
+		persisted: CodeGraphProgress | undefined,
+	): AgentToolResult<CodeGraphToolDetails> {
+		const progress = persisted ?? {
+			state: view.state === "ready" ? "ready" : view.state === "failed" ? "failed" : "indexing",
+			phase: view.phase,
+			current: view.current,
+			total: view.total,
+			updatedAt: new Date().toISOString(),
+			workerId: view.workerId,
+			attempt: view.attempt,
+		};
+		const stateLabel = progress.state;
+		const reason =
+			progress.state === "failed"
+				? `CodeGraph indexing failed: ${progress.error ?? progress.phase}. Fallback: use \`grep\`/\`glob\`/\`read\`.`
+				: `CodeGraph is ${stateLabel} (${progress.phase}, ${progress.current}/${progress.total}); the worker is still preparing the index. Fallback: use \`grep\`/\`glob\`/\`read\`.`;
+		const details: CodeGraphToolDetails = {
+			query: params.query,
+			sourceRoot: location.identity.sourceRoot || location.identity.worktreeRoot,
+			indexDir: location.indexDir,
+			maxFiles,
+			pathScope: params.path,
+			scopeApplied: false,
+			fileCount: 0,
+			entryCount: 0,
+			truncated: false,
+			files: [],
+			entries: [],
+			fallback: reason,
+			indexState: progress.state,
+			progress,
+		};
+		return toolResult<CodeGraphToolDetails>(details).text(`CodeGraph fallback: ${reason}`).done();
 	}
 
 	#fallbackResult(
@@ -330,6 +455,8 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			files: [],
 			entries: [],
 			fallback: opts.reason,
+			...(opts.indexState ? { indexState: opts.indexState } : {}),
+			...(opts.progress ? { progress: opts.progress } : {}),
 		};
 		const result = toolResult<CodeGraphToolDetails>(details).text(`CodeGraph fallback: ${opts.reason}`);
 		return opts.isError ? result.error().done() : result.done();

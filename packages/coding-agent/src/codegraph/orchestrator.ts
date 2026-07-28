@@ -3,14 +3,20 @@
  * `src/extraction/index.ts::ExtractionOrchestrator.sync` (MIT, Colby Mchenry).
  *
  * The OMP port wires only the parts the `runtime.ts` facade exposes:
- *   - `initialize` runs a single bootstrap extraction pass and
- *     captures `metadata.lastSyncedAt`.
- *   - `sync` diffs the scan against the persisted `files` table and
- *     applies add/modify/remove deltas. Source content is read from
- *     `sourceRoot` (never DB-cached).
- *   - The optional native extractor (see `./native.ts`) is invoked
- *     when present; otherwise a file-level fallback record is stored
- *     so `status()` can still report.
+ *   - `initialize` runs a single bootstrap extraction pass and captures
+ *     `metadata.lastSyncedAt`. It returns `{bootstrapped, ...syncCounts}` so
+ *     the worker / runtime can detect a warm slot and skip the redundant
+ *     full-project `sync` that the worker's warm full sync already performs
+ *     in the background.
+ *   - `sync` diffs the scan against the persisted `files` table and applies
+ *     add/modify/remove deltas. Source content is read from `sourceRoot`
+ *     (never DB-cached).
+ *   - An optional `progressCallback` invoked with the cumulative
+ *     `{phase, current, total}` during `initialize` so the worker can
+ *     surface progress through `<indexDir>/progress.json`.
+ *   - The optional native extractor (see `./native.ts`) is invoked when
+ *     present; otherwise a file-level fallback record is stored so
+ *     `status()` can still report.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -18,20 +24,24 @@ import * as path from "node:path";
 import type { DatabaseConnection, QueryBuilder } from "./db";
 import { logWarn } from "./errors";
 import { type ExtractResult, extractFile } from "./extraction";
-import type { CodeGraphSyncResult } from "./runtime-types";
+import type {
+	CodeGraphInitializeOptions,
+	CodeGraphInitializeResult,
+	CodeGraphProgress,
+	CodeGraphSyncResult,
+} from "./runtime-types";
 import { scanProject } from "./scanner";
 
 export interface SyncOrchestratorOptions {
 	sourceRoot: string;
 	connection: DatabaseConnection;
 	queryBuilder: QueryBuilder;
+	progressCallback?: (progress: CodeGraphProgress) => void;
 }
 
-export interface SyncOrchestratorDeps {
-	sourceRoot: string;
-	connection: DatabaseConnection;
-	queryBuilder: QueryBuilder;
-}
+export interface SyncOrchestratorDeps extends SyncOrchestratorOptions {}
+
+const PROGRESS_TICK = 16;
 
 export class SyncOrchestrator {
 	readonly #sourceRoot: string;
@@ -44,13 +54,38 @@ export class SyncOrchestrator {
 		this.#queryBuilder = deps.queryBuilder;
 	}
 
-	async initialize(): Promise<CodeGraphSyncResult> {
+	#emitProgress(
+		callback: CodeGraphInitializeOptions["progressCallback"],
+		phase: string,
+		current: number,
+		total: number,
+	): void {
+		if (!callback) return;
+		try {
+			callback({
+				state: "indexing",
+				phase,
+				current,
+				total,
+				updatedAt: new Date().toISOString(),
+				workerId: "orchestrator",
+				attempt: 1,
+			});
+		} catch {
+			// Progress callbacks are observability-only.
+		}
+	}
+
+	async initialize(options: CodeGraphInitializeOptions = {}): Promise<CodeGraphInitializeResult> {
 		const start = Date.now();
-		await this.#connection.ensureSchema();
+		this.#connection.ensureSchema();
 		const previousSourceRoot = this.#queryBuilder.getMetadata("sourceRoot");
 		const tracked = this.#queryBuilder.getAllFiles();
-		if (tracked.length > 0 && previousSourceRoot === this.#sourceRoot) {
+		const forceRebuild = options.forceRebuild === true;
+		if (!forceRebuild && tracked.length > 0 && previousSourceRoot === this.#sourceRoot) {
+			this.#emitProgress(options.progressCallback, "initialize", 0, 0);
 			return {
+				bootstrapped: false,
 				filesChecked: 0,
 				filesIndexed: 0,
 				filesUpdated: 0,
@@ -61,12 +96,19 @@ export class SyncOrchestrator {
 		for (const file of tracked) this.#queryBuilder.deleteFile(file.path);
 		this.#queryBuilder.setMetadata("sourceRoot", this.#sourceRoot);
 		const scanned = await scanProject(this.#sourceRoot);
+		const total = scanned.length;
+		this.#emitProgress(options.progressCallback, "scanning", 0, total);
 		const results: ExtractResult[] = [];
-		for (const scannedFile of scanned) {
+		for (let i = 0; i < scanned.length; i++) {
+			const scannedFile = scanned[i];
 			try {
 				results.push(await extractFile(this.#sourceRoot, scannedFile.filePath));
 			} catch (err) {
 				logWarn(`initialize: failed to extract ${scannedFile.filePath}: ${(err as Error).message}`);
+			}
+			const next = i + 1;
+			if (next % PROGRESS_TICK === 0 || next === total) {
+				this.#emitProgress(options.progressCallback, "extracting", next, total);
 			}
 		}
 		this.#bulkPersist(results);
@@ -75,8 +117,10 @@ export class SyncOrchestrator {
 		} catch (err) {
 			logWarn("FTS rebuild after initialize failed", { error: String(err) });
 		}
+		this.#emitProgress(options.progressCallback, "indexed", total, total);
 		return {
-			filesChecked: scanned.length,
+			bootstrapped: true,
+			filesChecked: total,
 			filesIndexed: results.length,
 			filesUpdated: 0,
 			filesRemoved: 0,

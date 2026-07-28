@@ -44,6 +44,7 @@ import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import type { WorkspaceCheckpointAccessResult } from "../session/workspace-checkpoint-coordinator";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { expandTilde, resolveToCwd } from "../tools/path-utils";
@@ -55,6 +56,7 @@ import {
 	renderChangelogEntries,
 } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
+import type { WorkspaceCheckpointRecord, WorkspaceRestoreResult } from "../workspace-checkpoints";
 import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -92,6 +94,33 @@ export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
 function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.ui.requestRender();
+}
+
+function isWorkspaceCheckpointRecord(value: unknown): value is WorkspaceCheckpointRecord {
+	if (!value || typeof value !== "object") return false;
+	if (!("id" in value) || typeof value.id !== "string") return false;
+	if (!("createdAt" in value) || typeof value.createdAt !== "string") return false;
+	if (!("fileCount" in value) || typeof value.fileCount !== "number") return false;
+	return true;
+}
+
+function isWorkspaceRestoreResult(value: unknown): value is WorkspaceRestoreResult {
+	if (!value || typeof value !== "object") return false;
+	if (!("transactionId" in value) || typeof value.transactionId !== "string") return false;
+	if (!("checkpointId" in value) || typeof value.checkpointId !== "string") return false;
+	if (!("restoredPaths" in value) || !Array.isArray(value.restoredPaths)) return false;
+	if (!("skippedPaths" in value) || !Array.isArray(value.skippedPaths)) return false;
+	if (!("redoAvailable" in value) || typeof value.redoAvailable !== "boolean") return false;
+	return true;
+}
+
+function narrowCheckpointAccess<T>(
+	access: WorkspaceCheckpointAccessResult<unknown>,
+	guard: (value: unknown) => value is T,
+): WorkspaceCheckpointAccessResult<T> {
+	return access.available && guard(access.value)
+		? { available: true, value: access.value }
+		: { available: access.available, reason: access.reason, error: access.error };
 }
 
 /** `/fast status` label for the active model: "on" when its family is priority, else "off". */
@@ -1486,19 +1515,179 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "fork",
-		description: "Create a new fork from a previous message",
-		handleTui: async (_command, runtime) => {
+		name: "checkpoint",
+		description: "Snapshot the workspace (optional label) — restores via /rewind, /undo, /redo",
+		acpDescription: "Snapshot the workspace",
+		inlineHint: "[label]",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const cursor = runtime.ctx.session.workspaceCheckpointCursor;
+			if (cursor?.redoHeadCheckpointId) return tSettingsUi("Checkpoint: redo available");
+			if (cursor?.undoHeadCheckpointId) return tSettingsUi("Checkpoint: undo available");
+			return tSettingsUi("Checkpoint: ready");
+		},
+		handle: async (command, runtime) => {
+			if (runtime.session.isBashRunning || runtime.session.isEvalRunning || runtime.session.isCompacting) {
+				return usage(tSettingsUi("Cannot checkpoint while a tool is actively modifying the workspace."), runtime);
+			}
+			const label = command.args.trim();
+			const envelope = narrowCheckpointAccess(
+				await runtime.session.createWorkspaceCheckpoint(label.length > 0 ? label : null),
+				(v): v is WorkspaceCheckpointRecord => isWorkspaceCheckpointRecord(v),
+			);
+			if (!envelope.available || !envelope.value) {
+				return usage(
+					tSettingsUi("Checkpoint unavailable: {reason}", {
+						reason:
+							envelope.error instanceof Error
+								? envelope.error.message
+								: (envelope.reason ?? tSettingsUi("service not wired")),
+					}),
+					runtime,
+				);
+			}
+			await runtime.output(tSettingsUi("Checkpoint {id} created.", { id: envelope.value.id }));
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleForkCommand();
+			try {
+				const envelope = await runtime.ctx.handleCheckpointCommand(command.args.trim() || undefined);
+				const record = narrowCheckpointAccess(envelope, isWorkspaceCheckpointRecord);
+				if (!record.available || !record.value) {
+					runtime.ctx.showError(
+						tSettingsUi("Checkpoint unavailable: {reason}", {
+							reason:
+								record.error instanceof Error
+									? record.error.message
+									: (record.reason ?? tSettingsUi("service not wired")),
+						}),
+					);
+					return;
+				}
+				runtime.ctx.showStatus(tSettingsUi("Checkpoint {id} created.", { id: record.value.id }));
+			} catch (error) {
+				runtime.ctx.showError(
+					tSettingsUi("Failed to create checkpoint: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
+			}
 		},
 	},
 	{
-		name: "tree",
-		description: "Navigate session tree (switch branches)",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showTreeSelector();
+		name: "rewind",
+		description: "Restore a workspace checkpoint — pick from a selector, then choose code / conversation / both",
+		acpDescription: "Restore a workspace checkpoint",
+		inlineHint: "[id]",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const cursor = runtime.ctx.session.workspaceCheckpointCursor;
+			if (cursor?.undoHeadCheckpointId) return tSettingsUi("Rewind: undo available");
+			if (cursor?.redoHeadCheckpointId) return tSettingsUi("Rewind: redo available");
+			return tSettingsUi("Rewind: ready");
+		},
+		handle: async (command, runtime) => {
+			const arg = command.args.trim();
+			if (!arg) {
+				await runtime.output(
+					tSettingsUi("Usage: /rewind <id> (interactive TUI) or use RPC/CLI for explicit scope + preview."),
+				);
+				return commandConsumed();
+			}
+			await runtime.output(
+				tSettingsUi(
+					"/rewind {id} requires the interactive TUI so you can choose code/conversation/all, inspect the preview, and confirm before apply. Use the TUI picker or RPC/CLI for explicit scope.",
+					{ id: arg },
+				),
+			);
+			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
+			await runtime.ctx.showCheckpointSelector(
+				command.args.trim() ? { checkpointId: command.args.trim() } : undefined,
+			);
+		},
+	},
+	{
+		name: "undo",
+		description: "Reverse the most recent workspace checkpoint restore (one step)",
+		acpDescription: "Undo the most recent workspace restore",
+		handle: async (_command, runtime) => {
+			const envelope = narrowCheckpointAccess(await runtime.session.undoWorkspace(), isWorkspaceRestoreResult);
+			if (!envelope.available || !envelope.value) {
+				return usage(
+					tSettingsUi("Nothing to undo: {reason}", {
+						reason: envelope.reason ?? tSettingsUi("no undo available"),
+					}),
+					runtime,
+				);
+			}
+			await runtime.output(
+				tSettingsUi("Undo completed — {count} path(s) restored, {skipped} skipped.", {
+					count: envelope.value.restoredPaths.length,
+					skipped: envelope.value.skippedPaths.length,
+				}),
+			);
+			return commandConsumed();
+		},
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const envelope = narrowCheckpointAccess(await runtime.ctx.session.undoWorkspace(), isWorkspaceRestoreResult);
+			if (!envelope.available || !envelope.value) {
+				runtime.ctx.showError(
+					tSettingsUi("Undo unavailable: {reason}", {
+						reason: envelope.reason ?? tSettingsUi("no undo available"),
+					}),
+				);
+				return;
+			}
+			runtime.ctx.showStatus(
+				`${theme.status.success} ${tSettingsUi("Undo completed — {count} restored", {
+					count: envelope.value.restoredPaths.length,
+				})}`,
+			);
+		},
+	},
+	{
+		name: "redo",
+		description: "Reapply the most recently undone workspace checkpoint restore",
+		acpDescription: "Redo the most recently undone restore",
+		handle: async (_command, runtime) => {
+			const envelope = narrowCheckpointAccess(await runtime.session.redoWorkspace(), isWorkspaceRestoreResult);
+			if (!envelope.available || !envelope.value) {
+				return usage(
+					tSettingsUi("Nothing to redo: {reason}", {
+						reason: envelope.reason ?? tSettingsUi("no redo available"),
+					}),
+					runtime,
+				);
+			}
+			await runtime.output(
+				tSettingsUi("Redo completed — {count} path(s) restored, {skipped} skipped.", {
+					count: envelope.value.restoredPaths.length,
+					skipped: envelope.value.skippedPaths.length,
+				}),
+			);
+			return commandConsumed();
+		},
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const envelope = narrowCheckpointAccess(await runtime.ctx.session.redoWorkspace(), isWorkspaceRestoreResult);
+			if (!envelope.available || !envelope.value) {
+				runtime.ctx.showError(
+					tSettingsUi("Redo unavailable: {reason}", {
+						reason: envelope.reason ?? tSettingsUi("no redo available"),
+					}),
+				);
+				return;
+			}
+			runtime.ctx.showStatus(
+				`${theme.status.success} ${tSettingsUi("Redo completed — {count} restored", {
+					count: envelope.value.restoredPaths.length,
+				})}`,
+			);
 		},
 	},
 	{

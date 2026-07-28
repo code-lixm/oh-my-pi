@@ -12,6 +12,7 @@ Covers:
 - Context reconstruction (`buildSessionContext`)
 - Persistence guarantees, failure behavior, truncation/blob externalization
 - Storage abstractions (`FileSessionStorage`, `MemorySessionStorage`) and related utilities
+- Workspace checkpoint references and restore lineage
 
 Does not cover `/tree` UI rendering behavior beyond semantics that affect session data.
 
@@ -29,6 +30,7 @@ Does not cover `/tree` UI rendering behavior beyond semantics that affect sessio
 - [`src/session/messages.ts`](../packages/coding-agent/src/session/messages.ts) — custom-message transformers
 - [`src/session/blob-store.ts`](../packages/coding-agent/src/session/blob-store.ts) — content-addressed blob store
 - [`src/session/history-storage.ts`](../packages/coding-agent/src/session/history-storage.ts) — prompt history (separate subsystem)
+- [`src/workspace-checkpoints/`](../packages/coding-agent/src/workspace-checkpoints/) — durable workspace CAS, manifests, Git capsules, metadata, locks, transactions, restore planning, and retention
 
 ## On-Disk Layout
 
@@ -59,6 +61,17 @@ Terminal breadcrumb files are written under:
 ```
 
 Breadcrumb content is two lines: original cwd, then session file path. `continueRecent()` prefers this terminal-scoped pointer before scanning most-recent mtime.
+
+Workspace checkpoint storage is separate from session JSONL and from the workspace:
+
+```text
+~/.omp/agent/checkpoints/v1/metadata.db
+~/.omp/agent/checkpoints/v1/workspaces/<workspaceId>/checkpoints/v1/objects/<shard>/<digest>
+```
+
+OMP captures a checkpoint after local slash-command consumption and model/API preflight, but before `before_agent_start` and the real provider prompt. Each queued top-level user steer/follow-up gets its own boundary when consumed; retries, compaction, and tool subturns reuse the originating boundary. User Bash and isolated-task parent merges also establish explicit boundaries after active mutators quiesce.
+
+Interactive commands are `/checkpoint [label]`, `/rewind [checkpointId]`, `/undo`, and `/redo`. CLI equivalents are `omp checkpoint`, `omp rewind list|preview|apply`, `omp undo`, and `omp redo`; RPC and SDK call the same `WorkspaceCheckpointService`. Restore scopes are `code`, `conversation`, and `all`. A restore preview is mandatory before apply; stale lineage or live-state drift is rejected unless the caller explicitly accepts the reported conflicts. `all` restores files and conversation together and rolls the file transaction back if conversation restoration fails.
 
 ## File Format
 
@@ -119,6 +132,8 @@ All non-header entries include:
 - `ttsr_injection`
 - `session_init`
 - `mode_change`
+- `workspace_checkpoint`
+- `workspace_restore`
 
 ### `message`
 
@@ -318,6 +333,12 @@ Extension-provided message that does participate in LLM context. `content` can b
   "data": { "planFile": "/tmp/plan.md" }
 }
 ```
+
+### `workspace_checkpoint` and `workspace_restore`
+
+`workspace_checkpoint` links the session branch to a durable manifest stored outside the JSONL. It records the checkpoint/workspace IDs, root, reason, label, manifest object ID, file/byte counts, guard lineage, and creation time. `workspace_restore` records the applied plan, target checkpoint, guard checkpoint, restored/skipped paths, conversation entry, scope, strategy, redo availability, and creation time.
+
+Both entries are append-only tree nodes. They force an otherwise metadata-only session onto disk so reopening the JSONL can rebuild the session-scoped undo/redo cursor. The manifest, file blobs, raw Git index/HEAD capsule, quarantine, and transaction journal remain in the external checkpoint store rather than being embedded in conversation history.
 
 ## Versioning and Migration
 

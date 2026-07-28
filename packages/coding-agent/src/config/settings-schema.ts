@@ -1915,7 +1915,7 @@ export const SETTINGS_SCHEMA = {
 	doubleEscapeAction: {
 		type: "enum",
 		values: ["branch", "tree", "none"] as const,
-		default: "tree",
+		default: "none",
 		ui: {
 			tab: "interaction",
 			group: tSettingsUi("Input"),
@@ -6081,6 +6081,72 @@ export const SETTINGS_SCHEMA = {
 	"thinkingBudgets.xhigh": { type: "number", default: 32768 },
 
 	"thinkingBudgets.max": { type: "number", default: 32768 },
+	"workspaceCheckpoint.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Enable workspace checkpoints"),
+			description: tSettingsUi(
+				"Captures the working tree before each new user turn, before user-initiated bash, and before isolated-task merge, so any change can be rolled back via `undoWorkspace` or `applyWorkspaceRestore`.",
+			),
+		},
+	},
+
+	"workspaceCheckpoint.auto": {
+		type: "enum",
+		values: ["off", "turn"] as const,
+		default: "turn",
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Auto-checkpoint mode"),
+			description: tSettingsUi(
+				"`off` disables automatic boundaries; `turn` captures a checkpoint before every top-level user turn.",
+			),
+		},
+	},
+
+	"workspaceCheckpoint.failurePolicy": {
+		type: "enum",
+		values: ["block", "warn", "ignore"] as const,
+		default: "block",
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Failure policy"),
+			description: tSettingsUi(
+				"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.",
+			),
+		},
+	},
+
+	"workspaceCheckpoint.retention.maxPerSession": {
+		type: "number",
+		default: 100,
+		ui: {
+			tab: "files",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Max checkpoints per session"),
+			description: tSettingsUi(
+				"Maximum workspace checkpoints retained per session before garbage collection prunes the oldest.",
+			),
+		},
+	},
+
+	"workspaceCheckpoint.retention.maxAgeDays": {
+		type: "number",
+		default: 30,
+		ui: {
+			tab: "files",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Max checkpoint age (days)"),
+			description: tSettingsUi(
+				"Drop workspace checkpoints older than this many days during garbage collection; set to 0 to skip age-based pruning.",
+			),
+		},
+	},
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6332,6 +6398,14 @@ export interface BashInterceptorRule {
 	allowSubcommands?: string[];
 }
 
+export interface WorkspaceCheckpointSettings {
+	enabled: boolean;
+	auto: "off" | "turn";
+	failurePolicy: "block" | "warn" | "ignore";
+	"retention.maxPerSession": number;
+	"retention.maxAgeDays": number;
+}
+
 export interface ShellMinimizerSettings {
 	enabled: boolean;
 	settingsPath: string | undefined;
@@ -6380,6 +6454,7 @@ export interface GroupTypeMap {
 	shellMinimizer: ShellMinimizerSettings;
 	codexResets: CodexResetsSettings;
 	gc: GcSettings;
+	workspaceCheckpoint: WorkspaceCheckpointSettings;
 }
 
 export type GroupPrefix = keyof GroupTypeMap;

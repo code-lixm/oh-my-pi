@@ -27,6 +27,11 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { XdevRegistry } from "../tools/xdev";
+import type {
+	WorkspaceCheckpointConversationAdapter,
+	WorkspaceCheckpointMutatorGuard,
+	WorkspaceCheckpointService,
+} from "../workspace-checkpoints/types";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -227,6 +232,16 @@ export interface AgentSessionConfig {
 	disconnectOwnedMcpManager?: () => Promise<void>;
 	/** System prompt used by automatic session-title generation. */
 	titleSystemPrompt?: string;
+	/** Workspace checkpoint service used by `createWorkspaceCheckpoint`/etc. */
+	workspaceCheckpointService?: WorkspaceCheckpointService;
+	/** Conversation adapter invoked when checkpoints/restore references need to be persisted to the transcript. */
+	workspaceCheckpointConversationAdapter?: WorkspaceCheckpointConversationAdapter;
+	/** Mutator guard that blocks restores while a bash/task mutator is active. */
+	workspaceCheckpointMutatorGuard?: WorkspaceCheckpointMutatorGuard;
+	/** Stable workspace id override; defaults to a derivation from the cwd. */
+	workspaceCheckpointWorkspaceId?: string;
+	/** Root path override for the checkpoint store; defaults to the session cwd. */
+	workspaceCheckpointRootPath?: string;
 }
 
 /** Options for AgentSession.prompt(). */

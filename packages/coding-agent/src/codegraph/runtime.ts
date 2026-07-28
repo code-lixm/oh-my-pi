@@ -14,6 +14,10 @@
  *     lazily; if missing or ABI-mismatched, the runtime falls back to
  *     a TS/WASM path.
  *   - WAL/lock/metadata files all live under `indexDir`.
+ *   - `initialize()` returns `{bootstrapped, ...syncCounts}` so the
+ *     worker can detect a warm slot and avoid a redundant full sync.
+ *   - `initialize()` accepts an optional `progressCallback` so the
+ *     orchestrator's progress reaches `<indexDir>/progress.json`.
  */
 import * as fs from "node:fs/promises";
 import { DatabaseConnection, ensureIndexDirs, QueryBuilder, removeDatabaseFiles } from "./db";
@@ -21,9 +25,11 @@ import { runExplore } from "./explorer";
 import { metadataIsStale, readMetadata, writeMetadata } from "./metadata";
 import { describeNative, nativeContractMatches, tryLoadNative } from "./native";
 import { SyncOrchestrator } from "./orchestrator";
+import { readProgress } from "./progress";
 import type {
 	CodeGraphExploreOptions,
 	CodeGraphExploreResult,
+	CodeGraphInitializeOptions,
 	CodeGraphRuntime,
 	CodeGraphRuntimeOptions,
 	CodeGraphStatus,
@@ -32,21 +38,12 @@ import type {
 import { CodeGraphFileLock } from "./utils";
 
 export type { CodeGraphIndexLocation } from "./location";
-export type {
-	CodeGraphExploreOptions,
-	CodeGraphExploreResult,
-	CodeGraphRuntime,
-	CodeGraphRuntimeOptions,
-	CodeGraphStatus,
-	CodeGraphSyncOptions,
-	CodeGraphSyncResult,
-} from "./runtime-types";
-export { CodeGraphInternalError } from "./runtime-types";
+export * from "./runtime-types";
 
 function metadataTimeMs(value: string | null): number {
 	if (!value) return 0;
-	const timestamp = Date.parse(value);
-	return Number.isFinite(timestamp) ? timestamp : 0;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /**
@@ -115,6 +112,7 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 			} catch {
 				dbSizeBytes = 0;
 			}
+			const progress = await readProgress(options.location).catch(() => null);
 			const statusOut: CodeGraphStatus = {
 				initialized,
 				sourceRoot: effectiveSourceRoot,
@@ -127,16 +125,17 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 				lastSyncedAt,
 				lastUsedAt,
 				nativeAvailable,
+				...(progress ? { progress } : {}),
 				reason: rebuildRequired ? "metadata mismatch — rebuild required" : undefined,
 			};
 			return statusOut;
 		};
 
 		const runtime: CodeGraphRuntime = {
-			async initialize() {
+			async initialize(initOpts: CodeGraphInitializeOptions = {}) {
 				if (closed) throw new Error("runtime is closed");
 				if (!orchestrator) throw new Error("runtime is not wired");
-				await orchestrator.initialize();
+				const result = await orchestrator.initialize(initOpts);
 				initialized = true;
 				rebuildRequired = false;
 				lastSyncedAt = Date.now();
@@ -146,6 +145,7 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 					lastSyncedAt,
 					lastUsedAt,
 				});
+				return result;
 			},
 			async sync(syncOpts: CodeGraphSyncOptions = {}) {
 				if (closed) throw new Error("runtime is closed");

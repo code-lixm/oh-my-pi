@@ -48,7 +48,6 @@ cp permission-gate.ts ~/.omp/agent/extensions/
 
 | Extension                | Description                                                               |
 | ------------------------ | ------------------------------------------------------------------------- |
-| `git-checkpoint.ts`      | Creates git stash checkpoints at each turn for code restoration on branch |
 | `auto-commit-on-exit.ts` | Auto-commits on exit using last assistant message for commit message      |
 
 ### System Prompt & Compaction

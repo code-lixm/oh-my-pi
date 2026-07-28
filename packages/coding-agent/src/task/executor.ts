@@ -438,20 +438,23 @@ export interface ExecutorOptions {
 	 * transition explicitly.
 	 */
 	parentTelemetry?: AgentTelemetryConfig;
-	/** Skills to autoload via sendCustomMessage before the first prompt */
+	/** Skills to autoload via sendCustomMessage before the first prompt. */
 	autoloadSkills?: Skill[];
-	/**
-	 * Registry id of the spawning agent, recorded as this subagent's parent.
-	 * Forwarded verbatim to the SDK; the executor never derives it (the spawner
-	 * passes its own `getAgentId()`).
-	 */
+	/** Registry id of the spawning agent, forwarded to the child session. */
 	parentAgentId?: string;
-	/**
-	 * Keep the finished subagent addressable in the registry for IRC/revival.
-	 * Defaults to true. Eval bridge agents are programmatic one-shot helpers and
-	 * set this false so disposal unregisters them instead of leaving idle peers.
-	 */
+	/** Keep the finished subagent addressable for IRC/revival. */
 	keepAlive?: boolean;
+	/**
+	 * Optional hooks fired by the isolated-subagent lifecycle to capture
+	 * workspace checkpoints before merge and to fence restore while the
+	 * subprocess is mutating. When omitted, no checkpoints are taken and
+	 * restores run without blocking on this subprocess.
+	 */
+	beforeIsolatedMerge?: (taskId: string) => Promise<void>;
+	isTaskMutatorActive?: () => boolean;
+	afterIsolatedMerge?: () => void;
+	/** Live AgentSession that owns the parent-side mutator guard. */
+	session?: AgentSession;
 }
 
 function parseStringifiedJson(value: unknown): unknown {

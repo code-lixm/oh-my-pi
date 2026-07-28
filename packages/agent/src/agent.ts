@@ -363,6 +363,7 @@ export class Agent {
 	};
 
 	#listeners = new Set<(e: AgentEvent) => void>();
+	#beforeModelCallListeners = new Set<(context: AgentContext) => void | Promise<void>>();
 	#abortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -776,6 +777,11 @@ export class Agent {
 	subscribe(fn: (e: AgentEvent) => void): () => void {
 		this.#listeners.add(fn);
 		return () => this.#listeners.delete(fn);
+	}
+
+	onBeforeModelCall(fn: (context: AgentContext) => void | Promise<void>): () => void {
+		this.#beforeModelCallListeners.add(fn);
+		return () => this.#beforeModelCallListeners.delete(fn);
 	}
 
 	setProviderResponseInterceptor(fn: SimpleStreamOptions["onResponse"] | undefined): void {
@@ -1265,6 +1271,7 @@ export class Agent {
 				if (this.#listeners.size > 0) {
 					await Bun.sleep(0);
 				}
+				for (const listener of this.#beforeModelCallListeners) await listener(context);
 				context.systemPrompt = this.#state.systemPrompt;
 				context.tools = this.#toolsForModel(this.#state.model ?? model);
 			},

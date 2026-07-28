@@ -19,6 +19,14 @@ import type {
 	SubagentProgressPayload,
 } from "../../task";
 import type { TodoPhase } from "../../tools/todo";
+import type {
+	ApplyWorkspaceRestoreRequest,
+	PreviewWorkspaceRestoreRequest,
+	WorkspaceCheckpointRecord,
+	WorkspaceRestorePlan,
+	WorkspaceRestoreResult,
+	WorkspaceRestoreScope,
+} from "../../workspace-checkpoints/types";
 import type { RpcMessagesPage } from "./rpc-messages";
 
 // ============================================================================
@@ -72,6 +80,22 @@ export type RpcCommand =
 	// Bash
 	| { id?: string; type: "bash"; command: string }
 	| { id?: string; type: "abort_bash" }
+
+	// Workspace checkpoints
+	| {
+			id?: string;
+			type: "workspace_checkpoint_create";
+			request: { label?: string | null; rootPath?: string; parentId?: string; pinned?: boolean };
+	  }
+	| { id?: string; type: "workspace_checkpoint_list"; rootPath?: string; limit?: number }
+	| {
+			id?: string;
+			type: "workspace_restore_preview";
+			request: PreviewWorkspaceRestoreRequest & { rootPath?: string };
+	  }
+	| { id?: string; type: "workspace_restore_apply"; request: ApplyWorkspaceRestoreRequest }
+	| { id?: string; type: "workspace_undo"; scope?: WorkspaceRestoreScope }
+	| { id?: string; type: "workspace_redo" }
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
@@ -326,6 +350,50 @@ export type RpcResponse =
 			data: { providers: Array<{ id: string; name: string; available: boolean; authenticated: boolean }> };
 	  }
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
+
+	// Workspace checkpoints
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_checkpoint_create";
+			success: true;
+			data: { record: WorkspaceCheckpointRecord };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_checkpoint_list";
+			success: true;
+			data: { records: WorkspaceCheckpointRecord[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_restore_preview";
+			success: true;
+			data: { plan: WorkspaceRestorePlan };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_restore_apply";
+			success: true;
+			data: { result: WorkspaceRestoreResult };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_undo";
+			success: true;
+			data: { result: WorkspaceRestoreResult };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "workspace_redo";
+			success: true;
+			data: { result: WorkspaceRestoreResult };
+	  }
 
 	// Error response (any command can fail); `code` is an optional machine-readable reason.
 	| { id?: string; type: "response"; command: string; success: false; error: string; code?: string };

@@ -18,9 +18,9 @@ import {
 } from "../../lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
-import { routeWriteThroughBridge } from "../../tools/acp-bridge";
+import { type BridgeFileMutation, routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
-import { notifyFileMutation } from "../../tools/file-mutation-hook";
+import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -1697,12 +1697,14 @@ export interface ExecutePatchSingleOptions {
 
 class LspFileSystem implements FileSystem {
 	#lastDiagnostics: FileDiagnosticsResult | undefined;
+	#usedBridge = false;
 	#fileCache: Record<string, Bun.BunFile> = {};
 
 	constructor(
 		private readonly session: ToolSession,
 		private readonly requestedPath: string,
 		private readonly writethrough: WritethroughCallback,
+		private readonly mutation: BridgeFileMutation,
 		private readonly signal?: AbortSignal,
 		private readonly batchRequest?: LspBatchRequest,
 		private readonly deferredForPath?: (path: string) => WritethroughDeferredHandle,
@@ -1734,10 +1736,17 @@ class LspFileSystem implements FileSystem {
 		const finalContent = await serializeEditFileText(path, path, content);
 
 		// Route through ACP bridge when available; skips internal artifacts and local:// paths.
-		if (await routeWriteThroughBridge(this.session, this.requestedPath, path, finalContent, this.signal)) {
+		if (
+			await routeWriteThroughBridge(this.session, this.requestedPath, path, finalContent, this.signal, {
+				mutation: this.mutation,
+				postMutationOwner: "caller",
+			})
+		) {
+			this.#usedBridge = true;
 			return;
 		}
 
+		await prepareFileMutation(this.session, path, this.mutation.kind, this.mutation);
 		const file = this.#getFile(path);
 		const deferredForPath = this.deferredForPath;
 		const result = await this.writethrough(
@@ -1754,8 +1763,11 @@ class LspFileSystem implements FileSystem {
 	}
 
 	async delete(path: string): Promise<void> {
+		if (this.mutation.kind !== "rename") {
+			await prepareFileMutation(this.session, path, this.mutation.kind, this.mutation);
+		}
 		await this.#getFile(path).unlink();
-		if (this.session.enableLsp ?? true) {
+		if ((this.session.enableLsp ?? true) && !this.#usedBridge) {
 			await notifyWorkspaceWatchedFiles(
 				this.session.cwd,
 				[{ filePath: path, type: FileChangeType.Deleted }],
@@ -1771,6 +1783,37 @@ class LspFileSystem implements FileSystem {
 	getDiagnostics(): FileDiagnosticsResult | undefined {
 		return this.#lastDiagnostics;
 	}
+
+	didUseBridge(): boolean {
+		return this.#usedBridge;
+	}
+}
+
+async function notifyBridgePatchWorkspaceMutation(
+	session: ToolSession,
+	result: ApplyPatchResult,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	if (!(session.enableLsp ?? true)) return;
+	const { change } = result;
+	if (change.newPath) {
+		await notifyWorkspaceWatchedFiles(
+			session.cwd,
+			[
+				{ filePath: change.path, type: FileChangeType.Deleted },
+				{ filePath: change.newPath, type: FileChangeType.Created },
+			],
+			signal,
+		);
+		return;
+	}
+	const type =
+		change.type === "create"
+			? FileChangeType.Created
+			: change.type === "delete"
+				? FileChangeType.Deleted
+				: FileChangeType.Changed;
+	await notifyWorkspaceWatchedFiles(session.cwd, [{ filePath: change.path, type }], signal);
 }
 
 function mergeDiagnosticsWithWarnings(
@@ -1838,10 +1881,13 @@ export async function executePatchSingle(
 	}
 
 	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
+	const fileMutation: BridgeFileMutation =
+		op === "update" && resolvedRename ? { kind: "rename", previousPath: resolvedPath } : { kind: op };
 	const patchFileSystem = new LspFileSystem(
 		session,
 		path, // original user-provided path for bridge guard (may be local://, vault://, etc.)
 		writethrough,
+		fileMutation,
 		signal,
 		batchRequest,
 		beginDeferredDiagnosticsForPath,
@@ -1881,6 +1927,10 @@ export async function executePatchSingle(
 		}
 	}
 
+	const bridgePostDeferred = patchFileSystem.didUseBridge();
+	if (bridgePostDeferred) {
+		await notifyBridgePatchWorkspaceMutation(session, result, signal);
+	}
 	if (resolvedRename) {
 		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
 		notifyFileMutation(session, resolvedRename, "rename", { previousPath: resolvedPath });
@@ -1890,6 +1940,9 @@ export async function executePatchSingle(
 	} else {
 		invalidateFsScanAfterWrite(resolvedPath);
 		notifyFileMutation(session, resolvedPath, result.change.type === "create" ? "create" : "update");
+	}
+	if (bridgePostDeferred) {
+		session.bumpFileMutationVersion?.(result.change.newPath ?? result.change.path);
 	}
 	const effectiveRename = result.change.newPath ? rename : undefined;
 

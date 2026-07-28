@@ -8,7 +8,11 @@
  * it exists after the operation*, plus the operation kind and (for renames)
  * the previous path.
  *
- * The hook fires ONLY after the underlying `await` for `fs.writeFile`,
+ * Before persistence, callers await `prepareFileMutation`; it runs the optional
+ * `beforeFileMutation` observer against the same event and propagates failure
+ * so no underlying file mutation starts.
+ *
+ * The post-success hook fires ONLY after the underlying `await` for `fs.writeFile`,
  * `Bun.write`, `fs.rename`, `fs.rm`, or `fs.unlink` (and the ACP-bridged
  * equivalent) has resolved without throwing — failed or aborted writes never
  * emit. `DeferredDiagnostics.begin` and `bumpFileMutationVersion` are NOT
@@ -30,9 +34,10 @@
  *
  * ## Sandboxing / archive / SQLite gating
  *
- * Callers only need to say "fire after the persistence `await`". The helper
- * owns three gates that all persistence sites would otherwise have to
- * remember independently:
+ * Each persistence site awaits `prepareFileMutation` immediately before its
+ * underlying write / rm / rename, then invokes `notifyFileMutation` after a
+ * successful await. The helpers own three gates that all persistence sites would
+ * otherwise have to remember independently:
  *   1. Source-file filter (rejects `.zip`, `.tar`, `.sqlite`, …).
  *   2. Session-local sandbox (plan-mode writes `local://PLAN.md` etc.; those
  *      are session-owned, not source files, and CodeGraph does not index
@@ -52,6 +57,10 @@ export interface FileMutationEvent {
 	path: string;
 	kind: FileMutationKind;
 	/** Required when `kind === "rename"`; absolute path the file was at before. */
+	previousPath?: string;
+}
+
+export interface FileMutationOptions {
 	previousPath?: string;
 }
 
@@ -210,7 +219,7 @@ export function buildFileMutationEvent(
 	session: ToolSession,
 	absolutePath: string,
 	kind: FileMutationKind,
-	options: { previousPath?: string } = {},
+	options: FileMutationOptions = {},
 ): FileMutationEvent | undefined {
 	const isSandbox = pathInsideSandbox(session, absolutePath);
 	if (!isSandbox && !isSourceFilePath(absolutePath)) return undefined;
@@ -223,6 +232,23 @@ export function buildFileMutationEvent(
 		};
 	}
 	return { path: canonicalSnapshotKey(absolutePath), kind };
+}
+
+/**
+ * Run the optional pre-mutation observer for a path that is about to be
+ * persisted. It shares {@link buildFileMutationEvent}'s source-file and
+ * sandbox gates, and deliberately lets observer failures propagate so the
+ * caller never starts the underlying mutation.
+ */
+export async function prepareFileMutation(
+	session: ToolSession,
+	absolutePath: string,
+	kind: FileMutationKind,
+	options: FileMutationOptions = {},
+): Promise<void> {
+	const event = buildFileMutationEvent(session, absolutePath, kind, options);
+	if (!event || !session.beforeFileMutation) return;
+	await session.beforeFileMutation(event);
 }
 
 /**
@@ -243,7 +269,7 @@ export function notifyFileMutation(
 	session: ToolSession,
 	absolutePath: string,
 	kind: FileMutationKind,
-	options: { previousPath?: string } = {},
+	options: FileMutationOptions = {},
 ): boolean {
 	const event = buildFileMutationEvent(session, absolutePath, kind, options);
 	if (!event) return false;

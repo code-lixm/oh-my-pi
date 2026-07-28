@@ -115,6 +115,7 @@ import type { SessionMessageEntry } from "../session/session-entries";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import type { WorkspaceCheckpointAccessResult } from "../session/workspace-checkpoint-coordinator";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
@@ -4929,6 +4930,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleContextCommand();
 	}
 
+	handleCheckpointCommand(label: string | undefined): Promise<WorkspaceCheckpointAccessResult<unknown>> {
+		return this.#commandController.handleCheckpointCommand(label);
+	}
 	#vibeSessionTransitionBlocked(): boolean {
 		if (!this.vibeModeEnabled) return false;
 		this.showWarning("Exit vibe mode first.");
@@ -5144,6 +5148,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showHistorySearch(): void {
 		this.#selectorController.showHistorySearch();
+	}
+
+	showCheckpointSelector(options?: { checkpointId?: string }): Promise<void> {
+		return this.#selectorController.showCheckpointSelector(options);
 	}
 
 	showExtensionsDashboard(): void {

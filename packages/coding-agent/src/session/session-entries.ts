@@ -154,6 +154,8 @@ export interface TitleChangeEntry extends SessionEntryBase {
 declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
+		workspaceCheckpoint: WorkspaceCheckpointEntry;
+		workspaceRestore: WorkspaceRestoreEntry;
 	}
 }
 
@@ -194,6 +196,36 @@ export interface ModeChangeEntry extends SessionEntryBase {
 	data?: Record<string, unknown>;
 }
 
+/** Workspace checkpoint snapshot - records an auto boundary that captured the workspace tree before a turn/mutator ran. */
+export interface WorkspaceCheckpointEntry extends SessionEntryBase {
+	type: "workspace_checkpoint";
+	checkpointId: string;
+	workspaceId: string;
+	rootPath: string;
+	reason: "turn" | "manual" | "user_bash" | "task_merge" | "restore_guard";
+	label: string | null;
+	manifestObjectId: string;
+	fileCount: number;
+	totalBytes: number;
+	guardCheckpointId: string | null;
+	createdAt: string;
+}
+
+/** Workspace restore plan - companion entry for `applyWorkspaceRestore`, used to drive undo/redo on switch/resume. */
+export interface WorkspaceRestoreEntry extends SessionEntryBase {
+	type: "workspace_restore";
+	planId: string;
+	checkpointId: string;
+	guardCheckpointId: string | null;
+	restoredPaths: string[];
+	skippedPaths: string[];
+	conversationEntryId: string | null;
+	redoAvailable: boolean;
+	scope: "code" | "conversation" | "all";
+	strategy: "preserve" | "exact";
+	createdAt: string;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -230,8 +262,9 @@ export type SessionEntry =
 	| TitleChangeEntry
 	| TtsrInjectionEntry
 	| SessionInitEntry
-	| ModeChangeEntry;
-
+	| ModeChangeEntry
+	| WorkspaceCheckpointEntry
+	| WorkspaceRestoreEntry;
 /** Raw logical file entry after loaders strip any fixed-width title slot. */
 export type FileEntry = SessionHeader | SessionEntry;
 

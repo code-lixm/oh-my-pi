@@ -47,8 +47,20 @@ export interface BashRunnerHost {
 	settings: Settings;
 	extensionRunner(): ExtensionRunner | undefined;
 	isStreaming(): boolean;
+	/**
+	 * Optional hook fired right before a user-initiated bash command runs.
+	 * Used to capture a workspace checkpoint so the command can be undone.
+	 * Must NOT throw — failures are logged and the command proceeds without
+	 * the checkpoint.
+	 */
+	beforeUserBash?(command: string, options: { excludeFromContext: boolean }): Promise<void>;
+	/**
+	 * Optional guard used by workspace-restore to block until in-flight bash
+	 * settles. `isMutatorActive()` returning true must reflect running shell
+	 * executions only, not pending shell messages.
+	 */
+	isBashMutatorActive?(): boolean;
 }
-
 /** Owns bash execution and preserves result ownership across transcript transitions. */
 export class BashRunner {
 	readonly #host: BashRunnerHost;
@@ -75,6 +87,16 @@ export class BashRunner {
 		let targetTransferred = false;
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
+		const host = this.#host;
+		if (host.beforeUserBash) {
+			try {
+				await host.beforeUserBash(command, { excludeFromContext });
+			} catch (error) {
+				logger.warn("user_bash boundary hook failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 		try {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_bash")) {

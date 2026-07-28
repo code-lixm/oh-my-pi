@@ -30,6 +30,7 @@ import {
 	notifyFileRenamed,
 	notifyFileUpdated,
 	peekPendingFileMutations,
+	prepareFileMutation,
 } from "../file-mutation-hook";
 
 function canonical(p: string): string {
@@ -167,6 +168,26 @@ describe("ToolSession.onFileMutation hook helper", () => {
 			kind: "rename",
 			previousPath: canonical("/tmp/old.ts"),
 		});
+	});
+
+	test("pre hook skips non-source storage and propagates a source policy rejection", async () => {
+		const session = makeSession();
+		const observed: Array<{ kind: string; path: string }> = [];
+		session.beforeFileMutation = async event => {
+			observed.push({ kind: event.kind, path: event.path });
+			if (event.path.endsWith("blocked.ts")) throw new Error("mutation denied by policy");
+		};
+
+		await expect(prepareFileMutation(session, path.join(tmp, "bundle.zip"), "update")).resolves.toBeUndefined();
+		await expect(prepareFileMutation(session, path.join(tmp, "main.ts"), "create")).resolves.toBeUndefined();
+		await expect(prepareFileMutation(session, path.join(tmp, "blocked.ts"), "update")).rejects.toThrow(
+			"mutation denied by policy",
+		);
+
+		expect(observed).toEqual([
+			{ kind: "create", path: canonical(path.join(tmp, "main.ts")) },
+			{ kind: "update", path: canonical(path.join(tmp, "blocked.ts")) },
+		]);
 	});
 
 	test("buffer can be cleared explicitly", () => {

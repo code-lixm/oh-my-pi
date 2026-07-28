@@ -33,7 +33,7 @@ export async function readMetadata(location: CodeGraphIndexLocation): Promise<Co
 
 export function defaultMetadata(location: CodeGraphIndexLocation): CodeGraphMetadata {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		identity: location.identity,
 		extractionVersion: EXTRACTION_VERSION,
 		indexSchemaVersion: RUNTIME_SCHEMA_VERSION,

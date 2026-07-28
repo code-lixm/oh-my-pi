@@ -59,6 +59,15 @@ import type {
 	UserBashEventResult,
 	UserPythonEvent,
 	UserPythonEventResult,
+	WorkspaceCheckpointBeforeEvent,
+	WorkspaceCheckpointBeforeResult,
+	WorkspaceCheckpointCompletedEvent,
+	WorkspaceCheckpointCreatedEvent,
+	WorkspaceCheckpointFailedEvent,
+	WorkspaceRestoreBeforeEvent,
+	WorkspaceRestoreBeforeResult,
+	WorkspaceRestoreCompletedEvent,
+	WorkspaceRestoreFailedEvent,
 } from "./types";
 
 /** Combined result from all before_agent_start handlers */
@@ -158,14 +167,24 @@ type RunnerEmitEvent = Exclude<
 
 type SessionBeforeEvent = Extract<
 	RunnerEmitEvent,
-	{ type: "session_before_switch" | "session_before_branch" | "session_before_compact" | "session_before_tree" }
+	{
+		type:
+			| "session_before_switch"
+			| "session_before_branch"
+			| "session_before_compact"
+			| "session_before_tree"
+			| "workspace_checkpoint_before"
+			| "workspace_restore_before";
+	}
 >;
 
 type SessionBeforeEventResult =
 	| SessionBeforeSwitchResult
 	| SessionBeforeBranchResult
 	| SessionBeforeCompactResult
-	| SessionBeforeTreeResult;
+	| SessionBeforeTreeResult
+	| WorkspaceCheckpointBeforeResult
+	| WorkspaceRestoreBeforeResult;
 
 type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "session_before_switch" }
 	? SessionBeforeSwitchResult | undefined
@@ -175,11 +194,15 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 			? SessionBeforeCompactResult | undefined
 			: TEvent extends { type: "session_before_tree" }
 				? SessionBeforeTreeResult | undefined
-				: TEvent extends { type: "session.compacting" }
-					? SessionCompactingResult | undefined
-					: TEvent extends { type: "session_stop" }
-						? SessionStopEventResult | undefined
-						: undefined;
+				: TEvent extends { type: "workspace_checkpoint_before" }
+					? WorkspaceCheckpointBeforeResult | undefined
+					: TEvent extends { type: "workspace_restore_before" }
+						? WorkspaceRestoreBeforeResult | undefined
+						: TEvent extends { type: "session.compacting" }
+							? SessionCompactingResult | undefined
+							: TEvent extends { type: "session_stop" }
+								? SessionStopEventResult | undefined
+								: undefined;
 
 // Session-lifecycle handler types live once in session-handler-types (imported
 // above for local use); re-exported here to keep this module's public API stable.
@@ -257,6 +280,8 @@ export class ExtensionRunner {
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#initialized = false;
+	/** Re-entrant workspace-restore lock depth for extension contexts. */
+	#workspaceRestoreLockDepth = 0;
 	/**
 	 * Buffer for `credential_disabled` events received via {@link emitCredentialDisabled}
 	 * before {@link initialize} has run. Drained through {@link emit} once initialize sets
@@ -572,6 +597,7 @@ export class ExtensionRunner {
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
+			workspaceRestoreLockHeld: () => this.#workspaceRestoreLockDepth > 0,
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
@@ -613,12 +639,27 @@ export class ExtensionRunner {
 		};
 	}
 
+	async withWorkspaceRestoreLock<T>(body: () => Promise<T>): Promise<T> {
+		this.#workspaceRestoreLockDepth++;
+		try {
+			return await body();
+		} finally {
+			this.#workspaceRestoreLockDepth--;
+		}
+	}
+
+	isWorkspaceRestoreLockHeld(): boolean {
+		return this.#workspaceRestoreLockDepth > 0;
+	}
+
 	#isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
 		return (
 			event.type === "session_before_switch" ||
 			event.type === "session_before_branch" ||
 			event.type === "session_before_compact" ||
-			event.type === "session_before_tree"
+			event.type === "session_before_tree" ||
+			event.type === "workspace_checkpoint_before" ||
+			event.type === "workspace_restore_before"
 		);
 	}
 	#isSessionShutdownEvent(event: RunnerEmitEvent): event is Extract<RunnerEmitEvent, { type: "session_shutdown" }> {
@@ -1093,5 +1134,39 @@ export class ExtensionRunner {
 		}
 
 		return undefined;
+	}
+
+	async emitWorkspaceCheckpointBefore(
+		event: WorkspaceCheckpointBeforeEvent,
+	): Promise<WorkspaceCheckpointBeforeResult | undefined> {
+		const result = await this.emit(event);
+		return result as WorkspaceCheckpointBeforeResult | undefined;
+	}
+
+	async emitWorkspaceCheckpointCreated(event: WorkspaceCheckpointCreatedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceCheckpointFailed(event: WorkspaceCheckpointFailedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceCheckpointCompleted(event: WorkspaceCheckpointCompletedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceRestoreBefore(
+		event: WorkspaceRestoreBeforeEvent,
+	): Promise<WorkspaceRestoreBeforeResult | undefined> {
+		const result = await this.emit(event);
+		return result as WorkspaceRestoreBeforeResult | undefined;
+	}
+
+	async emitWorkspaceRestoreCompleted(event: WorkspaceRestoreCompletedEvent): Promise<void> {
+		await this.emit(event);
+	}
+
+	async emitWorkspaceRestoreFailed(event: WorkspaceRestoreFailedEvent): Promise<void> {
+		await this.emit(event);
 	}
 }

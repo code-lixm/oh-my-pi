@@ -79,6 +79,15 @@ export async function writeTextFileAtomically(filePath: string, content: string)
 	}
 }
 
+export async function listDirectoryEntries(dirPath: string): Promise<Dirent[]> {
+	try {
+		return await fs.readdir(dirPath, { withFileTypes: true });
+	} catch (error) {
+		if (codeOf(error) === "ENOENT") return [];
+		throw error;
+	}
+}
+
 export async function pathExists(targetPath: string): Promise<boolean> {
 	try {
 		await fs.lstat(targetPath);
@@ -97,11 +106,40 @@ export async function removeDirectoryIfExists(dirPath: string, options: { dryRun
 	return true;
 }
 
-export async function listDirectoryEntries(dirPath: string): Promise<Dirent[]> {
-	try {
-		return await fs.readdir(dirPath, { withFileTypes: true });
-	} catch (error) {
-		if (codeOf(error) === "ENOENT") return [];
-		throw error;
+/**
+ * Recursively sum the byte size of every regular file under `dirPath`.
+ * Does not follow symlinks, does not cross outside `dirPath`, and treats a
+ * missing directory as `0`. Walk errors contribute what was counted so far.
+ */
+export async function getCodeGraphDirectoryByteSize(dirPath: string): Promise<number> {
+	if (!(await pathExists(dirPath))) return 0;
+	let total = 0;
+	const root = path.resolve(dirPath);
+	const stack: string[] = [root];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (current === undefined) break;
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const child = path.join(current, entry.name);
+			if (!child.startsWith(root)) continue;
+			if (entry.isDirectory()) {
+				stack.push(child);
+				continue;
+			}
+			try {
+				const stat = await fs.lstat(child);
+				if (stat.isSymbolicLink() || stat.isDirectory()) continue;
+				total += stat.size;
+			} catch {
+				// best-effort only
+			}
+		}
 	}
+	return total;
 }

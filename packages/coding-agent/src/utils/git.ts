@@ -39,6 +39,16 @@ export interface GitStatusSummary {
 	untracked: number;
 }
 
+/** Options for {@link ls.files}. */
+export interface GitLsFilesOptions {
+	readonly excludeStandard?: boolean;
+	/** Include paths matching the active exclude rules. Defaults to cached paths. */
+	readonly ignored?: boolean;
+	readonly others?: boolean;
+	readonly signal?: AbortSignal;
+	readonly paths?: readonly string[];
+}
+
 export type HunkSelection = {
 	path: string;
 	hunks: { type: "all" } | { type: "indices"; indices: number[] } | { type: "lines"; start: number; end: number };
@@ -1839,6 +1849,183 @@ export const ref = {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+// API: index
+// ════════════════════════════════════════════════════════════════════════════
+
+/** A `sharedindex.<sha>` companion file that a split index references. */
+export interface SharedIndexFile {
+	/** Bare file name inside the git dir (e.g. `sharedindex.abc123`). */
+	name: string;
+	bytes: Uint8Array;
+}
+
+/** Result of {@link index.capture}. */
+export interface IndexCapture {
+	/** Absolute path to the index file inside the git dir. */
+	path: string;
+	/** Raw index bytes, or `null` if the repository has no on-disk index yet. */
+	bytes: Uint8Array | null;
+	/** Split-index companion files (`sharedindex.*`) referenced by the index. */
+	sharedIndexFiles: SharedIndexFile[];
+}
+
+export const index = {
+	/**
+	 * Capture the raw index plus any split-index companion files. The raw bytes
+	 * carry skip-worktree, assume-unchanged, and exact stage entries that a
+	 * `read-tree` rebuild would silently drop, so checkpoint/restore flows
+	 * MUST round-trip the bytes verbatim. Companion files are required for
+	 * split-index repos to remain valid: an index that references a missing
+	 * `sharedindex.<sha>` makes every subsequent `git` read fail.
+	 */
+	async capture(cwd: string, options: { signal?: AbortSignal } = {}): Promise<IndexCapture> {
+		const indexPath = (
+			await runText(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"], {
+				readOnly: true,
+				signal: options.signal,
+			})
+		).trim();
+		const bytes = await readOptionalBytes(indexPath);
+		const sharedIndexFiles: SharedIndexFile[] = [];
+		if (bytes) {
+			const indexDir = path.dirname(indexPath);
+			let entries: string[] = [];
+			try {
+				entries = await fs.promises.readdir(indexDir);
+			} catch {
+				// Empty git dir or a transient race: capture only the primary index.
+			}
+			for (const name of entries) {
+				if (!name.startsWith("sharedindex.")) continue;
+				const sharedBytes = await readOptionalBytes(path.join(indexDir, name));
+				if (sharedBytes) sharedIndexFiles.push({ bytes: sharedBytes, name });
+			}
+		}
+		return { bytes, path: indexPath, sharedIndexFiles };
+	},
+
+	/**
+	 * Write `bytes` to the repository's index atomically, plus any
+	 * `sharedindex.*` companions. The primary index lands via temp+rename
+	 * inside the git dir so a partial write can never be observed by another
+	 * `git` invocation. `gitDir` defaults to the index's containing dir when
+	 * omitted (i.e. caller passed a path already inside the git dir).
+	 */
+	async writeAtomic(
+		repoRoot: string,
+		bytes: Uint8Array,
+		sharedIndexFiles: readonly SharedIndexFile[] = [],
+		options: { signal?: AbortSignal } = {},
+	): Promise<void> {
+		const indexPath = (
+			await runText(repoRoot, ["rev-parse", "--path-format=absolute", "--git-path", "index"], {
+				readOnly: true,
+				signal: options.signal,
+			})
+		).trim();
+		const indexDir = path.dirname(indexPath);
+		await fs.promises.mkdir(indexDir, { recursive: true });
+		// Stage companion files first so the primary index never references a
+		// shared file that doesn't exist yet.
+		for (const shared of sharedIndexFiles) {
+			const target = path.join(indexDir, shared.name);
+			const tempPath = `${target}.tmp.${Snowflake.next()}`;
+			await Bun.write(tempPath, shared.bytes);
+			await fs.promises.rename(tempPath, target);
+		}
+		const tempIndex = `${indexPath}.tmp.${Snowflake.next()}`;
+		await Bun.write(tempIndex, bytes);
+		await fs.promises.rename(tempIndex, indexPath);
+	},
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// API: ref — extended (CAS / stdin batch)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Apply a compare-and-swap to a single ref. Aborts the in-process caller (no
+ * ref change) when the current SHA does not match `expectedOld`. Pass
+ * `expectedOld = null` to require the ref is absent (matches `update-ref
+ --d <ref> <new>` semantics inverted: here we create when absent).
+ *
+ * The plumbing runs through `update-ref --stdin` so the whole transaction
+ * takes git's packed-refs lock exactly once.
+ */
+export async function refCompareAndSwap(
+	repoRoot: string,
+	refName: string,
+	expectedOld: string | null,
+	newSha: string,
+	options: { signal?: AbortSignal } = {},
+): Promise<void> {
+	const expected = expectedOld ?? "0".repeat(40);
+	// `update <ref> <new> <old>` aborts with non-zero exit if `<old>` does not
+	// match the current value. We propagate that as a thrown GitCommandError.
+	const script = `update ${refName} ${newSha} ${expected}\n`;
+	await runEffect(repoRoot, ["update-ref", "--stdin"], { signal: options.signal, stdin: script });
+}
+
+/** Apply a batch `update-ref --stdin` script verbatim. */
+export async function refUpdateFromStdin(
+	repoRoot: string,
+	script: string,
+	options: { signal?: AbortSignal } = {},
+): Promise<void> {
+	await runEffect(repoRoot, ["update-ref", "--stdin"], { signal: options.signal, stdin: script });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// API: head — raw capture helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Read the raw `HEAD` file content. This is distinct from {@link head.resolve}
+ * in that it preserves unborn HEADs (e.g. `ref: refs/heads/feature\n` with no
+ * target commit) and does not parse. The returned string is trimmed.
+ */
+export async function readHeadRaw(repoRoot: string, _options: { signal?: AbortSignal } = {}): Promise<string | null> {
+	const repository = await resolveRepository(repoRoot);
+	if (!repository) return null;
+	const content = await readOptionalText(repository.headPath);
+	return content?.trim() ?? null;
+}
+
+/**
+ * Resolve `HEAD`'s symbolic target (e.g. `refs/heads/main`) via
+ * `git symbolic-ref -q HEAD`. Returns `null` when HEAD is detached.
+ */
+export async function headSymbolicRef(
+	repoRoot: string,
+	options: { signal?: AbortSignal } = {},
+): Promise<string | null> {
+	const result = await git(repoRoot, ["symbolic-ref", "-q", "HEAD"], { readOnly: true, signal: options.signal });
+	if (result.exitCode !== 0) return null;
+	return result.stdout.trim() || null;
+}
+
+/** `git rev-parse --verify HEAD`. Returns `null` on unborn HEAD. */
+export async function headCommitSha(repoRoot: string, options: { signal?: AbortSignal } = {}): Promise<string | null> {
+	const result = await git(repoRoot, ["rev-parse", "--verify", "HEAD"], { readOnly: true, signal: options.signal });
+	if (result.exitCode !== 0) return null;
+	return result.stdout.trim() || null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// API: availability
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Non-throwing `git` binary probe. Resolves synchronously by reusing
+ * {@link $which}, so callers may use it in hot paths without paying for a
+ * subprocess. Prefer this over wrapping {@link runEffect} (which throws
+ * "git is not installed") when the caller wants to gracefully degrade.
+ */
+export function isGitAvailable(): boolean {
+	return Boolean($which("git"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // API: config
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -2169,15 +2356,17 @@ export async function clean(
 // ════════════════════════════════════════════════════════════════════════════
 
 export const ls = {
-	/** List files tracked or untracked by git. */
-	async files(
-		cwd: string,
-		options: { others?: boolean; excludeStandard?: boolean; signal?: AbortSignal } = {},
-	): Promise<string[]> {
-		const args = ["ls-files"];
+	/** List Git paths with NUL-delimited output so filenames may contain newlines. */
+	async files(cwd: string, options: GitLsFilesOptions = {}): Promise<string[]> {
+		const args = ["ls-files", "-z"];
+		if (options.ignored && !options.others) args.push("--cached");
 		if (options.others) args.push("--others");
+		if (options.ignored) args.push("--ignored");
 		if (options.excludeStandard) args.push("--exclude-standard");
-		return splitLines(await runText(cwd, args, { readOnly: true, signal: options.signal }));
+		if (options.paths?.length) args.push("--", ...options.paths);
+		return (await runText(cwd, args, { readOnly: true, signal: options.signal }))
+			.split("\0")
+			.filter(entry => entry.length > 0);
 	},
 
 	/** List untracked files (excludes ignored). */
@@ -2200,6 +2389,16 @@ export const ls = {
 			signal,
 		});
 		return splitLines(output.stdout);
+	},
+};
+
+/** Read Git's effective ignore decision without reimplementing ignore parsing. */
+export const ignore = {
+	async isIgnored(cwd: string, candidate: string, signal?: AbortSignal): Promise<boolean> {
+		const result = await git(cwd, ["check-ignore", "-q", "--", candidate], { readOnly: true, signal });
+		if (result.exitCode === 0) return true;
+		if (result.exitCode === 1) return false;
+		throw new Error(result.stderr.trim() || `git check-ignore failed for ${candidate}`);
 	},
 };
 
@@ -2261,6 +2460,12 @@ export const repo = {
 		const result = await git(cwd, ["rev-parse", "--show-toplevel"], { readOnly: true, signal });
 		if (result.exitCode !== 0) return null;
 		return result.stdout.trim() || null;
+	},
+
+	/** Return whether `cwd` is inside a valid non-bare Git worktree. */
+	async isWorktree(cwd: string, signal?: AbortSignal): Promise<boolean> {
+		const result = await git(cwd, ["rev-parse", "--is-inside-work-tree"], { readOnly: true, signal });
+		return result.exitCode === 0 && result.stdout.trim() === "true";
 	},
 
 	/** Resolve the primary checkout root, or the shared common dir for bare-repo worktrees. */

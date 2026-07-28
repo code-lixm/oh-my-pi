@@ -5,6 +5,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { resolveCodeGraphIndexLocation } from "../../codegraph/location";
+import { disposeAllWorkersForTests, probeSlot } from "../../codegraph/supervisor";
 import { Settings } from "../../config/settings";
 import { CodeGraphTool, type CodeGraphToolSession } from "../codegraph";
 import {
@@ -52,6 +54,25 @@ function makeSession(cwd: string): MutationToolSession {
 	};
 }
 
+async function waitForSlotReady(repoRoot: string, label: string) {
+	const location = await resolveCodeGraphIndexLocation(repoRoot);
+	expect(location.available).toBe(true);
+	const deadline = Date.now() + 30_000;
+	while (Date.now() < deadline) {
+		const supervisor = await probeSlot(location);
+		if (!supervisor.active && supervisor.progress.state === "ready") {
+			return location;
+		}
+		if (!supervisor.active && supervisor.progress.state === "failed") {
+			throw new Error(`${label} failed: ${supervisor.progress.phase}`);
+		}
+		// Worker progress is written by a real background thread; fake timers cannot advance it,
+		// so this bounded poll waits on the persisted ready signal instead of guessing a fixed settle delay.
+		await Bun.sleep(100);
+	}
+	throw new Error(`${label} timed out before the slot became ready`);
+}
+
 describe("CodeGraphTool pending mutation contract", () => {
 	let tmp: string;
 	let originalConfigDir: string | undefined;
@@ -67,6 +88,7 @@ describe("CodeGraphTool pending mutation contract", () => {
 	});
 
 	afterEach(async () => {
+		disposeAllWorkersForTests();
 		if (originalConfigDir === undefined) delete process.env.PI_CONFIG_DIR;
 		else process.env.PI_CONFIG_DIR = originalConfigDir;
 		await fs.rm(tmp, { recursive: true, force: true });
@@ -95,11 +117,18 @@ describe("CodeGraphTool pending mutation contract", () => {
 
 		const initial = await tool.execute("call-initial", { query: oldSymbol });
 		expect(initial.isError).not.toBe(true);
-		expect(
-			(initial.details as { entries?: Array<{ node: { name: string } }> }).entries?.some(
-				e => e.node.name === oldSymbol,
-			),
-		).toBe(true);
+		const initialDetails = initial.details as { fallback?: string; indexState?: string };
+		expect(initialDetails.indexState).toBeDefined();
+		expect(initialDetails.fallback).toContain("CodeGraph is ");
+		expect(initialDetails.fallback).toContain("the worker is still preparing the index");
+		expect(initialDetails.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+
+		await waitForSlotReady(repoRoot, "pending mutation warmup");
+
+		const warm = await tool.execute("call-warm", { query: oldSymbol });
+		expect(warm.isError).not.toBe(true);
+		const warmDetails = warm.details as { entries?: Array<{ node: { name: string } }> };
+		expect(warmDetails.entries?.some(e => e.node.name === oldSymbol)).toBe(true);
 
 		await fs.writeFile(
 			updatePath,
@@ -128,16 +157,15 @@ describe("CodeGraphTool pending mutation contract", () => {
 		expect(peekPendingFileMutations(session)).toHaveLength(0);
 
 		const oldResult = await tool.execute("call-old", { query: oldSymbol });
-		expect((oldResult.details as { entries?: unknown[] }).entries).toHaveLength(0);
+		const oldDetails = oldResult.details as { entries?: unknown[] };
+		expect(oldDetails.entries).toHaveLength(0);
 
 		const deletedResult = await tool.execute("call-deleted", { query: deletedSymbol });
-		expect((deletedResult.details as { entries?: unknown[] }).entries).toHaveLength(0);
+		const deletedDetails = deletedResult.details as { entries?: unknown[] };
+		expect(deletedDetails.entries).toHaveLength(0);
 
 		const renamedResult = await tool.execute("call-renamed", { query: renameSymbol });
-		expect(
-			(renamedResult.details as { entries?: Array<{ node: { filePath: string } }> }).entries?.some(
-				e => e.node.filePath === "lib/rename-after.ts",
-			),
-		).toBe(true);
+		const renamedDetails = renamedResult.details as { entries?: Array<{ node: { filePath: string } }> };
+		expect(renamedDetails.entries?.some(e => e.node.filePath === "lib/rename-after.ts")).toBe(true);
 	});
 });

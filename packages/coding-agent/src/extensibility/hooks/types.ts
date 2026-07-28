@@ -194,6 +194,15 @@ export interface HookContext {
 	abort(): void;
 	/** Whether there are queued messages waiting to be processed */
 	hasQueuedMessages(): boolean;
+	/**
+	 * `true` while a workspace restore transaction holds the workspace lock.
+	 * Hooks that mutate the workspace tree (tool_call, sendMessage,
+	 * appendEntry) MUST skip or reject work in this state — the on-disk
+	 * tree is mid-roll-forward/rollback and any write would corrupt the
+	 * transaction. Always `false` for hooks that don't run on the
+	 * session-thread (subagents, hooks loaded outside the agent loop).
+	 */
+	workspaceRestoreLockHeld(): boolean;
 }
 
 /**
@@ -402,7 +411,13 @@ export type HookEvent =
 	| TtsrTriggeredEvent
 	| TodoReminderEvent
 	| ToolCallEvent
-	| ToolResultEvent;
+	| ToolResultEvent
+	| WorkspaceCheckpointBeforeEvent
+	| WorkspaceCheckpointCreatedEvent
+	| WorkspaceCheckpointFailedEvent
+	| WorkspaceRestoreBeforeEvent
+	| WorkspaceRestoreCompletedEvent
+	| WorkspaceRestoreFailedEvent;
 
 // ============================================================================
 // Event Results
@@ -424,8 +439,97 @@ export type { ToolCallEventResult, ToolResultEventResult } from "../shared-event
  * Allows hooks to inject context before the agent runs.
  */
 export interface BeforeAgentStartEventResult {
-	/** Message to inject into context (persisted to session, visible in TUI) */
 	message?: CustomMessagePayload;
+}
+// ============================================================================
+// Workspace Checkpoint Events
+// ============================================================================
+//
+// Hooks observe the persistent workspace-checkpoint lifecycle. The matching
+// restore events fire under a "restore lock": while the lock is held, any
+// hook handler that would mutate the workspace tree (tool_call, sendMessage,
+// appendEntry that triggers shell) MUST be skipped or rejected. The runner
+// exposes the lock state on `HookContext` and `HookCommandContext` so handlers
+// can branch off early without observing half-restored disk state.
+
+export type WorkspaceCheckpointHookReason = "turn" | "manual" | "user_bash" | "task_merge" | "restore_guard";
+
+/** Fired before a workspace checkpoint is captured. Handlers may cancel. */
+export interface WorkspaceCheckpointBeforeEvent {
+	type: "workspace_checkpoint_before";
+	rootPath: string;
+	checkpointId?: string;
+	reason: WorkspaceCheckpointHookReason;
+	label: string | null;
+}
+
+export interface WorkspaceCheckpointBeforeResult {
+	/** Cancel the checkpoint capture. Subsequent create/failed events are skipped. */
+	cancel?: boolean;
+}
+
+/** Fired after a workspace checkpoint has been persisted to the store. */
+export interface WorkspaceCheckpointCreatedEvent {
+	type: "workspace_checkpoint_created";
+	rootPath: string;
+	workspaceId: string;
+	checkpointId: string;
+	reason: WorkspaceCheckpointHookReason;
+	label: string | null;
+	manifestObjectId: string;
+	fileCount: number;
+	totalBytes: number;
+	guardCheckpointId?: string | null;
+	sessionEntryId?: string | null;
+}
+
+/** Fired when an attempted workspace checkpoint fails to capture. */
+export interface WorkspaceCheckpointFailedEvent {
+	type: "workspace_checkpoint_failed";
+	rootPath: string;
+	reason: WorkspaceCheckpointHookReason;
+	failureReason: string;
+	error?: string;
+}
+
+/** Fired before a workspace restore (apply/undo/redo) executes. Handlers may cancel. */
+export interface WorkspaceRestoreBeforeEvent {
+	type: "workspace_restore_before";
+	rootPath: string;
+	planId: string;
+	checkpointId: string;
+	scope: "code" | "conversation" | "all";
+	strategy: "preserve" | "exact";
+	operation: "restore" | "undo" | "redo";
+}
+
+export interface WorkspaceRestoreBeforeResult {
+	/** Cancel the restore before any disk mutation. */
+	cancel?: boolean;
+}
+
+/** Fired after a workspace restore commits. */
+export interface WorkspaceRestoreCompletedEvent {
+	type: "workspace_restore_completed";
+	rootPath: string;
+	transactionId: string;
+	checkpointId: string;
+	planId: string;
+	restoredPaths: string[];
+	skippedPaths: string[];
+	redoAvailable: boolean;
+	operation: "restore" | "undo" | "redo";
+}
+
+/** Fired when a workspace restore fails (and is rolled back). */
+export interface WorkspaceRestoreFailedEvent {
+	type: "workspace_restore_failed";
+	rootPath: string;
+	transactionId: string | null;
+	checkpointId: string;
+	planId: string;
+	error: string;
+	operation: "restore" | "undo" | "redo";
 }
 
 export type {
@@ -511,6 +615,20 @@ export interface HookAPI {
 	on(event: "todo_reminder", handler: HookHandler<TodoReminderEvent>): void;
 	on(event: "tool_call", handler: HookHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: HookHandler<ToolResultEvent, ToolResultEventResult>): void;
+
+	// Workspace checkpoints
+	on(
+		event: "workspace_checkpoint_before",
+		handler: HookHandler<WorkspaceCheckpointBeforeEvent, WorkspaceCheckpointBeforeResult>,
+	): void;
+	on(event: "workspace_checkpoint_created", handler: HookHandler<WorkspaceCheckpointCreatedEvent>): void;
+	on(event: "workspace_checkpoint_failed", handler: HookHandler<WorkspaceCheckpointFailedEvent>): void;
+	on(
+		event: "workspace_restore_before",
+		handler: HookHandler<WorkspaceRestoreBeforeEvent, WorkspaceRestoreBeforeResult>,
+	): void;
+	on(event: "workspace_restore_completed", handler: HookHandler<WorkspaceRestoreCompletedEvent>): void;
+	on(event: "workspace_restore_failed", handler: HookHandler<WorkspaceRestoreFailedEvent>): void;
 
 	/**
 	 * Send a custom message to the session. Creates a CustomMessageEntry that

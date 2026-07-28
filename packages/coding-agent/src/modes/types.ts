@@ -24,6 +24,7 @@ import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import type { WorkspaceCheckpointAccessResult } from "../session/workspace-checkpoint-coordinator";
 import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
@@ -372,6 +373,7 @@ export interface InteractiveModeContext {
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
 	handleContextCommand(): void;
+	handleCheckpointCommand(label: string | undefined): Promise<WorkspaceCheckpointAccessResult<unknown>>;
 	handleDumpCommand(): Promise<void>;
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
@@ -407,6 +409,7 @@ export interface InteractiveModeContext {
 	showSettingsSelector(): void;
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
+	showCheckpointSelector(options?: { checkpointId?: string }): Promise<void>;
 	showExtensionsDashboard(): void;
 	showAgentsDashboard(): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;

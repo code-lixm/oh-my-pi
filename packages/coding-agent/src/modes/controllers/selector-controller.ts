@@ -46,6 +46,7 @@ import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../s
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
+import type { WorkspaceCheckpointAccessResult } from "../../session/workspace-checkpoint-coordinator";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import {
 	describeRedeemOutcome,
@@ -78,10 +79,16 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { repo } from "../../utils/git";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import type {
+	WorkspaceCheckpointRecord,
+	WorkspaceRestorePlan,
+	WorkspaceRestoreResult,
+} from "../../workspace-checkpoints";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../components/advisor-config";
 import { AgentDashboard } from "../components/agent-dashboard";
 import { AgentHubOverlayComponent } from "../components/agent-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
+import { CheckpointSelectorComponent } from "../components/checkpoint-selector";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { HistorySearchComponent } from "../components/history-search";
@@ -104,6 +111,41 @@ import { UserMessageSelectorComponent } from "../components/user-message-selecto
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
 
+function isWorkspaceCheckpointRecord(value: unknown): value is WorkspaceCheckpointRecord {
+	if (!value || typeof value !== "object") return false;
+	if (!("id" in value) || typeof value.id !== "string") return false;
+	if (!("createdAt" in value) || typeof value.createdAt !== "string") return false;
+	if (!("fileCount" in value) || typeof value.fileCount !== "number") return false;
+	return true;
+}
+
+function isWorkspaceRestorePlan(value: unknown): value is WorkspaceRestorePlan {
+	if (!value || typeof value !== "object") return false;
+	if (!("id" in value) || typeof value.id !== "string") return false;
+	if (!("checkpointId" in value) || typeof value.checkpointId !== "string") return false;
+	if (!("operations" in value) || !Array.isArray(value.operations)) return false;
+	if (!("conflicts" in value) || !Array.isArray(value.conflicts)) return false;
+	return true;
+}
+
+function isWorkspaceRestoreResult(value: unknown): value is WorkspaceRestoreResult {
+	if (!value || typeof value !== "object") return false;
+	if (!("transactionId" in value) || typeof value.transactionId !== "string") return false;
+	if (!("checkpointId" in value) || typeof value.checkpointId !== "string") return false;
+	if (!("restoredPaths" in value) || !Array.isArray(value.restoredPaths)) return false;
+	if (!("skippedPaths" in value) || !Array.isArray(value.skippedPaths)) return false;
+	if (!("redoAvailable" in value) || typeof value.redoAvailable !== "boolean") return false;
+	return true;
+}
+
+function narrowAccessResult<T>(
+	access: WorkspaceCheckpointAccessResult<unknown>,
+	guard: (value: unknown) => value is T,
+): WorkspaceCheckpointAccessResult<T> {
+	return access.available && guard(access.value)
+		? { available: true, value: access.value }
+		: { available: access.available, reason: access.reason, error: access.error };
+}
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -358,6 +400,109 @@ export class SelectorController {
 			);
 			return { component, focus: component };
 		});
+	}
+
+	/**
+	 * Show the workspace checkpoint selector. The picker lists every persisted
+	 * checkpoint newest-first; selecting one opens the scope dialog, builds a
+	 * preview plan, and (after confirmation) commits the restore through
+	 * `AgentSession`. All I/O is delegated to typed AgentSession methods —
+	 * this method only handles UI plumbing.
+	 */
+	async showCheckpointSelector(options?: { checkpointId?: string }): Promise<void> {
+		const session = this.ctx.session;
+		let listed: WorkspaceCheckpointAccessResult<unknown>;
+		try {
+			listed = await session.listWorkspaceCheckpoints();
+		} catch (error) {
+			this.ctx.showError(
+				tSettingsUi("Failed to list workspace checkpoints: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
+			return;
+		}
+		const checkpointsEnvelope = narrowAccessResult(
+			listed,
+			(value): value is WorkspaceCheckpointRecord[] =>
+				Array.isArray(value) && value.every(isWorkspaceCheckpointRecord),
+		);
+		if (!checkpointsEnvelope.available || !checkpointsEnvelope.value) {
+			this.ctx.showError(
+				tSettingsUi("Workspace checkpoints unavailable: {reason}", {
+					reason: checkpointsEnvelope.reason ?? tSettingsUi("service not wired"),
+				}),
+			);
+			return;
+		}
+
+		let overlayHandle: OverlayHandle | undefined;
+		let closed = false;
+		const done = (): void => {
+			if (closed) return;
+			closed = true;
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+
+		const userMessageTextByEntryId = new Map(
+			session.getUserMessagesForBranching().map(message => [message.entryId, message.text] as const),
+		);
+		const checkpointIdByEntryId = new Map<string, string>();
+		const promptPreviews = new Map<string, string>();
+		for (const entry of this.ctx.sessionManager.getEntries()) {
+			const checkpointId =
+				entry.type === "workspace_checkpoint"
+					? entry.checkpointId
+					: entry.parentId
+						? checkpointIdByEntryId.get(entry.parentId)
+						: undefined;
+			if (!checkpointId) continue;
+			checkpointIdByEntryId.set(entry.id, checkpointId);
+			const promptPreview = userMessageTextByEntryId.get(entry.id)?.trim();
+			if (promptPreview && !promptPreviews.has(checkpointId)) promptPreviews.set(checkpointId, promptPreview);
+		}
+
+		const selector = new CheckpointSelectorComponent({
+			checkpoints: checkpointsEnvelope.value,
+			promptPreviews,
+			initialCheckpointId: options?.checkpointId,
+			onPick: async ({ plan, result }) => {
+				done();
+				const summary = [
+					tSettingsUi("{count} restored", { count: result.restoredPaths.length }),
+					tSettingsUi("{count} skipped", { count: result.skippedPaths.length }),
+					tSettingsUi("{count} conflicted", { count: plan.conflicts.length }),
+					result.redoAvailable ? tSettingsUi("redo available via /redo") : tSettingsUi("redo unavailable"),
+				].join(theme.sep.dot);
+				this.ctx.showStatus(
+					`${theme.status.success} ${tSettingsUi("Restored checkpoint")}${theme.sep.dot}${summary}`,
+				);
+			},
+			onCancel: done,
+			preview: async (checkpointId, scope) =>
+				narrowAccessResult(
+					await session.previewWorkspaceRestore({ checkpointId, scope, strategy: "preserve" }),
+					isWorkspaceRestorePlan,
+				),
+			apply: async (planId, applyOptions) =>
+				narrowAccessResult(
+					await session.applyWorkspaceRestore(planId, applyOptions?.allowConflicts),
+					isWorkspaceRestoreResult,
+				),
+			isMutatorActive: () => session.isBashRunning || session.isEvalRunning || session.isCompacting,
+		});
+
+		overlayHandle = this.ctx.ui.showOverlay(selector, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		this.ctx.ui.setFocus(selector);
+		this.ctx.ui.requestRender();
 	}
 
 	/**

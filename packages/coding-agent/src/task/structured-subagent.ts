@@ -436,6 +436,9 @@ function buildExecutorOptions(
 		parentEvalSessionId: request.shareEvalSession === false ? undefined : (session.getEvalSessionId?.() ?? undefined),
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
 		parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
+		beforeIsolatedMerge: session.beforeIsolatedMerge,
+		afterIsolatedMerge: session.afterIsolatedMerge,
+		isTaskMutatorActive: session.isTaskMutatorActive,
 	};
 }
 
@@ -592,25 +595,30 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			!result.error &&
 			!result.aborted
 		) {
-			const outcome = await mergeIsolatedChanges({
-				result,
-				repoRoot: isolationContext.repoRoot,
-				mergeMode: policy.mergeMode,
-			});
-			mergeSummary = outcome.summary;
-			changesApplied = outcome.changesApplied;
-			if (outcome.changesApplied !== false) {
-				const nestedPatchSummary = await applyEligibleNestedPatches({
+			await baseOptions.beforeIsolatedMerge?.(id);
+			try {
+				const outcome = await mergeIsolatedChanges({
 					result,
 					repoRoot: isolationContext.repoRoot,
 					mergeMode: policy.mergeMode,
-					changesApplied: outcome.changesApplied,
-					mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
-					commitMessage: makeIsolationCommitMessage(request.session)(),
 				});
-				mergeSummary += nestedPatchSummary;
-				requiresRecoveryArtifacts ||=
-					nestedPatchSummary.includes("<system-notification>") && (result.nestedPatches?.length ?? 0) > 0;
+				mergeSummary = outcome.summary;
+				changesApplied = outcome.changesApplied;
+				if (outcome.changesApplied !== false) {
+					const nestedPatchSummary = await applyEligibleNestedPatches({
+						result,
+						repoRoot: isolationContext.repoRoot,
+						mergeMode: policy.mergeMode,
+						changesApplied: outcome.changesApplied,
+						mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
+						commitMessage: makeIsolationCommitMessage(request.session)(),
+					});
+					mergeSummary += nestedPatchSummary;
+					requiresRecoveryArtifacts ||=
+						nestedPatchSummary.includes("<system-notification>") && (result.nestedPatches?.length ?? 0) > 0;
+				}
+			} finally {
+				baseOptions.afterIsolatedMerge?.();
 			}
 		} else if (policy.isIsolated && isolationContext && !policy.applyChanges) {
 			if (result.branchName)
@@ -650,7 +658,6 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		}
 	}
 }
-
 /** Build the recovery suffix used by adapters after an isolated failure. */
 export async function buildStructuredSubagentRecoveryHint(result: SingleResult, artifactsDir: string): Promise<string> {
 	return isolationRecoveryHint(result, artifactsDir);
