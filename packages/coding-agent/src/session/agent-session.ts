@@ -2428,17 +2428,10 @@ export class AgentSession {
 		if (event.type === "agent_start") {
 			this.#prunedTerminalRefusal = undefined;
 		}
-		// Step the mid-run todo counter synchronously, BEFORE any await in this
-		// handler. The agent loop's next-turn `getAsideMessages` poll can run
-		// before queued microtasks drain, so `#takeMidRunTodoNudge` MUST see the
-		// freshest counter — otherwise a turn that just invoked `todo` could
-		// trip a spurious nudge against stale state, and a turn that just hit
-		// the threshold could fail to nudge until a later turn (issue #3651).
-		// Pure in-memory math — no ordering requirement vs persistence or
-		// session-event fan-out. Keyed on toolResult (not the assistant toolCall
-		// turn) so planned-but-aborted or permission-denied calls never count,
-		// and only successful mutating tools tick — read-only exploration is
-		// not progress an agent could mark done.
+		// Step the mid-run Todo counter synchronously before any await. The agent
+		// loop's next-turn aside poll can run before queued microtasks drain, so it
+		// must see the latest count. Successful mutations and delegated results can
+		// cross a phase boundary; read-only research and failed calls do not.
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			this.#todo.onToolResult(event.message.toolName, event.message.isError);
 		}

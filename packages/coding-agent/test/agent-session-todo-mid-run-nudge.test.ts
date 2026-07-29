@@ -18,14 +18,14 @@ import { TempDir } from "@oh-my-pi/pi-utils";
  * gentle MODEL-ONLY hint — deliberately separate from the user-visible
  * stop-time reminder ladder. The contract this defends:
  *
- *   1. Only SUCCESSFUL MUTATING tool results (bash/eval/edit/write/ast_edit)
- *      tick the counter. Read-only exploration (grep/read/glob/lsp) and
- *      errored results never do.
- *   2. At {@link MID_RUN_TODO_NUDGE_MUTATION_THRESHOLD} mutations without a
+ *   1. Only successful mutating/delegation results (`bash`, `eval`, `edit`,
+ *      `write`, `ast_edit`, `task`) tick the counter. Read-only exploration
+ *      and errored results never do.
+ *   2. At {@link MID_RUN_NUDGE_MUTATION_THRESHOLD} mutations without a
  *      `todo` call, the aside provider injects a hidden custom message
  *      (`display: false`) — NO `todo_reminder` event, nothing renders.
  *   3. A `todo` tool result resets the counter.
- *   4. At most {@link MID_RUN_TODO_NUDGE_MAX_PER_CYCLE} nudges fire per
+ *   4. At most {@link MID_RUN_NUDGE_MAX_PER_CYCLE} nudges fire per
  *      prompt cycle.
  *   5. The counter update lands synchronously with the message_end emit.
  *
@@ -43,9 +43,9 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: (() => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
 
-	const THRESHOLD = 12; // mirrors MID_RUN_TODO_NUDGE_MUTATION_THRESHOLD
-	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_TODO_NUDGE_MAX_PER_CYCLE
-	const NUDGE_TYPE = "mid-run-todo-nudge"; // mirrors MID_RUN_TODO_NUDGE_MESSAGE_TYPE
+	const THRESHOLD = 4; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
+	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_NUDGE_MAX_PER_CYCLE
+	const NUDGE_TYPE = "mid-run-todo-nudge"; // mirrors MID_RUN_NUDGE_MESSAGE_TYPE
 
 	function toolUseAssistant(toolName: string): AssistantMessage {
 		const id = `call_${toolName}_${Date.now()}_${Math.random()}`;
@@ -235,8 +235,8 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("injects a hidden custom nudge at the threshold — no event, no render", async () => {
-		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+	it("injects a hidden custom nudge after four successful mutations/delegations — no event, no render", async () => {
+		for (const toolName of ["edit", "task", "write", "bash"]) emitToolResult(toolName);
 
 		await settle();
 		const nudges = await drainNudges();
@@ -261,11 +261,12 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(await drainNudges()).toEqual([]);
 	});
 
-	it("errored mutating results do not tick the counter", async () => {
-		for (let i = 0; i < THRESHOLD; i++) emitToolResult("bash", { isError: true });
+	it("errored Bash results do not tick the counter", async () => {
+		for (let i = 0; i < THRESHOLD * 3; i++) emitToolResult("bash", { isError: true });
 
 		await settle();
 		expect(await drainNudges()).toEqual([]);
+		expect(reminderEvents).toEqual([]);
 	});
 
 	it("does not nudge when a `todo` call has reset the counter mid-window", async () => {
@@ -317,6 +318,24 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(session.getActiveToolNames()).not.toContain("todo");
 
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		await settle();
+		expect(await drainNudges()).toEqual([]);
+		expect(reminderEvents).toEqual([]);
+	});
+
+	it("stays silent when Todo reminders are disabled", async () => {
+		session.settings.override("todo.reminders", false);
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+
+		await settle();
+		expect(await drainNudges()).toEqual([]);
+		expect(reminderEvents).toEqual([]);
+	});
+
+	it("stays silent in plan mode", async () => {
+		session.setPlanModeState({ enabled: true, planFilePath: "plan.md" });
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+
 		await settle();
 		expect(await drainNudges()).toEqual([]);
 		expect(reminderEvents).toEqual([]);

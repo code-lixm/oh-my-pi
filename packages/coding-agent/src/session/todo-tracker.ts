@@ -10,7 +10,7 @@ import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { SessionManager } from "./session-manager";
 
-const MID_RUN_NUDGE_MUTATION_THRESHOLD = 12;
+const MID_RUN_NUDGE_MUTATION_THRESHOLD = 4;
 const MID_RUN_NUDGE_MAX_PER_CYCLE = 2;
 const MUTATING_TOOLS: Record<string, true> = {
 	bash: true,
@@ -18,6 +18,7 @@ const MUTATING_TOOLS: Record<string, true> = {
 	edit: true,
 	write: true,
 	ast_edit: true,
+	task: true,
 };
 const MID_RUN_NUDGE_MESSAGE_TYPE = "mid-run-todo-nudge";
 const MARKDOWN_PROMPT_PREFIX_RE = /^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*/;
@@ -91,7 +92,7 @@ export class TodoTracker {
 		this.#midRunNudgeCount = 0;
 	}
 
-	/** Records a completed tool result before asynchronous event processing begins. */
+	/** Records successful mutation/delegation results without treating read-only research as phase progress. */
 	onToolResult(toolName: string, isError: boolean): void {
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;

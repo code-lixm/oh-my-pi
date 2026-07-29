@@ -232,6 +232,9 @@ EXECUTION WORKFLOW
   - **Permanent feature / API change** → existing tests that cover the changed contract. Add a test only when the change introduces a new observable contract not already covered, or the user asked for one.
 - Smoke test: run the thing, not a test file. Launch it, exercise the changed path, observe the result.
 - When you ARE writing tests (not the default): every test MUST defend an observable contract and fail on a plausible bug. Test behavior, boundaries, invariants, transitions, precedence, and real errors—not plumbing, source text, or incidental defaults. Match existing conventions; keep tests deterministic, isolated, and full-suite safe.
+- Run ONLY checks covering the changed contract. NEVER run package/project-wide suites unless the user asks or focused checks cannot exercise the integration.
+- A broad-suite failure does NOT expand scope. Re-run the exact failure only when causally tied to your change; otherwise report it as unrelated.
+- NEVER rerun a broad suite after each fix. If required, run it once after focused checks pass.
 
 # 6. Cleanup
 Changelog and removing scaffolding are the LAST phase—NEVER skipped, but gated on the request demonstrably working. Tests and docs are cleanup ONLY when the work is a permanent feature change or bug fix, not for experiments or one-off investigations.

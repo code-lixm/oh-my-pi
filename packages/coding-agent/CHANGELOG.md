@@ -23,6 +23,7 @@
 ### Changed
 
 - Changed interactive model-role cycling to use `Tab` for the next model and `Shift+Tab` for the previous model, with autocomplete retaining priority and thinking-level cycling moving to `Ctrl+P`.
+- Changed agent execution guidance to continue independent parent work after asynchronous delegation, treat no-progress waits and terminal peer states as non-blocking, and prevent broad-suite failures from expanding scope or triggering repeated full-suite reruns.
 - Changed the `/rewind` checkpoint picker to show the associated user-prompt preview instead of opaque checkpoint IDs when session history is available, include previews in filtering, and localize checkpoint completeness and relative-age labels.
 - Changed workspace checkpoints in Git worktrees to capture tracked and non-ignored untracked files by default, while lazily preserving the pre-mutation state of ignored files touched by structured edit/write tools so rewind remains correct without snapshotting large build outputs every turn.
 
@@ -43,6 +44,8 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+
+- Fixed Todo mid-run reconciliation waiting for twelve successful mutations before nudging the agent; successful delegation now counts as phase progress and the threshold is four, while read-only research and failed calls remain excluded.
 - Fixed workspace checkpoint restore history so direct applies, undo, and redo persist the correct pre-restore guards across restarts, enforce session isolation under the workspace lock, invalidate stale redo state on new checkpoints, and keep internal guards out of permanent retention roots.
 - Fixed workspace checkpoints losing Git-ignored updates, creates, deletes, and renames by capturing path-tight pre-mutation baselines, persisting ignored tombstones across manifest upgrades, and preserving physical-path aliases without changing workspace identity.
 - Fixed workspace checkpoints leaking file, Git capsule, crash-staging, and read-only preview blobs in the content-addressed store; retention now performs fail-closed reachability sweeps under the workspace lock, hashes live comparisons without materializing CAS objects, and throttles automatic full-store traversals while still applying metadata limits on every checkpoint.
