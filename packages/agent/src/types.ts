@@ -658,6 +658,12 @@ export interface AgentState {
 	messages: AgentMessage[]; // Can include attachments + custom message types
 	isStreaming: boolean;
 	streamMessage: AgentMessage | null;
+	/** Time the latest provider request was initiated. */
+	requestStartedAt?: number;
+	/** Time the latest provider request first yielded a stream event. */
+	firstByteAt?: number;
+	/** Time the latest provider request most recently yielded a content delta. */
+	lastDeltaAt?: number;
 	pendingToolCalls: Set<string>;
 	error?: string;
 }

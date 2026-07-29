@@ -10,11 +10,15 @@ describe("CountdownTimer", () => {
 		vi.useRealTimers();
 	});
 
-	it("expires using precise sub-second timeout instead of second rounding", () => {
+	it("waits to start until first presentation and then expires at its precise deadline", () => {
 		const onTick = vi.fn();
 		const onExpire = vi.fn();
-		new CountdownTimer(250, undefined, onTick, onExpire);
+		const timer = new CountdownTimer(250, undefined, onTick, onExpire, { start: false });
 
+		vi.advanceTimersByTime(1_000);
+		expect(onExpire).not.toHaveBeenCalled();
+
+		timer.start();
 		expect(onTick).toHaveBeenCalledWith(1);
 		vi.advanceTimersByTime(249);
 		expect(onExpire).not.toHaveBeenCalled();
@@ -23,15 +27,18 @@ describe("CountdownTimer", () => {
 		expect(onExpire).toHaveBeenCalledTimes(1);
 	});
 
-	it("reset restarts precise timeout window", () => {
+	it("honors an inherited absolute deadline instead of opening a fresh timeout window", () => {
+		const onTick = vi.fn();
 		const onExpire = vi.fn();
-		const timer = new CountdownTimer(300, undefined, () => {}, onExpire);
+		const timer = new CountdownTimer(10_000, undefined, onTick, onExpire, { start: false });
+		const deadline = Date.now() + 1_000;
 
-		vi.advanceTimersByTime(200);
-		timer.reset();
-		vi.advanceTimersByTime(299);
+		vi.advanceTimersByTime(400);
+		timer.start(deadline);
+		expect(onTick).toHaveBeenCalledWith(1);
+
+		vi.advanceTimersByTime(599);
 		expect(onExpire).not.toHaveBeenCalled();
-
 		vi.advanceTimersByTime(1);
 		expect(onExpire).toHaveBeenCalledTimes(1);
 	});

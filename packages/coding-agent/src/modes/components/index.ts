@@ -1,6 +1,7 @@
 // UI Components barrel export
 
 export * from "./advisor-config";
+export * from "./agent-activity";
 export * from "./assistant-message";
 export * from "./bash-execution";
 export * from "./bordered-loader";

@@ -1,3 +1,3 @@
 <system-reminder>
-Gentle reminder: {{incompleteCount}} todo item{{#if plural}}s are{{else}} is{{/if}} still open. If you finished a task since the last `{{toolRefs.todo}}` update, mark it done now so progress stays visible; otherwise just keep working.
+{{incompleteCount}} todo item{{#if plural}}s remain{{else}} remains{{/if}} open. A subagent result or task-progress boundary requires you to reconcile the ledger now: mark only individually completed tasks done before the next action. NEVER bulk-close a phase. Implementation completion does not close verification; keep verification open until its command succeeds. Otherwise continue working.
 </system-reminder>

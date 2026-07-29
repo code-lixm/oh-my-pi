@@ -17,7 +17,7 @@
 
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
 
 export interface IrcMessage {
@@ -30,6 +30,8 @@ export interface IrcMessage {
 	ts: number;
 	/** Message id being answered. */
 	replyTo?: string;
+	/** Sender requested a reply; IrcBus tracks the outstanding lifecycle separately. */
+	expectsReply?: boolean;
 }
 
 export interface IrcDeliveryReceipt {
@@ -37,6 +39,21 @@ export interface IrcDeliveryReceipt {
 	outcome: "injected" | "woken" | "revived" | "failed";
 	error?: string;
 }
+
+/** Immutable HUD-facing view of outstanding reply obligations. */
+export interface IrcPendingReplySnapshot {
+	messages: readonly IrcMessage[];
+}
+
+type IrcPendingReplyChange =
+	| { type: "opened"; message: IrcMessage }
+	| { type: "resolved"; message: IrcMessage; reply: IrcMessage }
+	| { type: "dismissed"; message: IrcMessage };
+
+/** State transition for a reply obligation; the snapshot is post-transition. */
+export type IrcPendingReplyEvent = IrcPendingReplyChange & { snapshot: IrcPendingReplySnapshot };
+
+export type IrcPendingReplyListener = (event: IrcPendingReplyEvent) => void;
 
 interface IrcWaiter {
 	from?: string;
@@ -66,12 +83,48 @@ export class IrcBus {
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
+	readonly #pendingReplies = new Map<string, IrcMessage>();
+	readonly #pendingReplyListeners = new Set<IrcPendingReplyListener>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+		this.#registry.onChange(event => {
+			if (event.type === "removed" || (event.type === "status_changed" && event.ref.status === "aborted")) {
+				this.dismissPendingRepliesFor(event.ref.id);
+			}
+		});
+	}
+
+	/** Snapshot reply obligations addressed to one agent, or every agent when omitted. */
+	getPendingReplySnapshot(agentId?: string): IrcPendingReplySnapshot {
+		return this.#pendingReplySnapshot(agentId);
+	}
+
+	/** Subscribe to reply-obligation transitions for HUDs and other observers. */
+	onPendingReplyChange(listener: IrcPendingReplyListener): () => void {
+		this.#pendingReplyListeners.add(listener);
+		return () => this.#pendingReplyListeners.delete(listener);
+	}
+
+	/** Dismiss one outstanding obligation when its recipient ends or the UI dismisses it. */
+	dismissPendingReply(messageId: string): boolean {
+		const message = this.#pendingReplies.get(messageId);
+		if (!message) return false;
+		this.#pendingReplies.delete(messageId);
+		this.#emitPendingReplyChange({ type: "dismissed", message });
+		return true;
+	}
+
+	/** Dismiss every obligation touching an ended agent. */
+	dismissPendingRepliesFor(agentId: string): number {
+		const messageIds = [...this.#pendingReplies.values()]
+			.filter(message => message.from === agentId || message.to === agentId)
+			.map(message => message.id);
+		for (const messageId of messageIds) this.dismissPendingReply(messageId);
+		return messageIds.length;
 	}
 
 	/**
@@ -93,16 +146,23 @@ export class IrcBus {
 	 * sender's own batch) can generate an ephemeral side-channel auto-reply
 	 * instead of stranding the sender until timeout.
 	 *
-	 * `opts.suppressRelay` skips the display-only main-UI relay for this leg.
-	 * Set by broadcast fan-out when the same broadcast also targets the main
-	 * agent directly: the main agent then already sees the body as its own
-	 * incoming card, so relaying the sibling legs would duplicate it.
+	 * `opts.suppressRelay` skips the display-only owning-root relay for this leg.
+	 * Set by broadcast fan-out when the same broadcast also targets that root
+	 * directly: the root agent then already sees the body as its own incoming card,
+	 * so relaying the sibling legs would duplicate it.
 	 */
 	async send(
 		msg: Omit<IrcMessage, "id" | "ts">,
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<IrcDeliveryReceipt> {
-		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		const { expectsReply: requestedReply, ...input } = msg;
+		const expectsReply = opts?.expectsReply ?? requestedReply;
+		const message: IrcMessage = {
+			...input,
+			id: Snowflake.next(),
+			ts: Date.now(),
+			...(expectsReply ? { expectsReply: true } : {}),
+		};
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
 			return {
@@ -165,8 +225,10 @@ export class IrcBus {
 		// the session injection path.
 		const waiter = this.#takeMatchingWaiter(message.to, message.from);
 		if (waiter) {
+			if (message.expectsReply) this.#beginPendingReply(message);
 			waiter.resolve(message);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message);
+			this.#resolvePendingReply(message);
+			if (!opts?.suppressRelay) this.#relayToRootUi(message);
 			return { to: message.to, outcome: revived ? "revived" : "injected" };
 		}
 
@@ -175,16 +237,19 @@ export class IrcBus {
 			return { to: message.to, outcome: "failed", error: `Agent "${message.to}" has no live session.` };
 		}
 
+		if (message.expectsReply) this.#beginPendingReply(message);
 		try {
-			const delivery = await session.deliverIrcMessage(message, opts);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message);
+			const delivery = await session.deliverIrcMessage(message, { expectsReply: message.expectsReply });
+			this.#resolvePendingReply(message);
+			if (!opts?.suppressRelay) this.#relayToRootUi(message);
 			return { to: message.to, outcome: revived ? "revived" : delivery };
 		} catch (error) {
 			// Live hand-off failed (e.g. recipient disposed mid-shutdown): buffer
 			// the message so a later `wait`/`inbox` from the recipient can still
 			// pick it up. The receipt stays "failed" — the recipient has not
-			// seen it.
+			// seen it, but a queued reply request remains outstanding.
 			this.#enqueue(message);
+			this.#resolvePendingReply(message);
 			return {
 				to: message.to,
 				outcome: "failed",
@@ -306,6 +371,40 @@ export class IrcBus {
 		return this.#mailboxes.get(agentId)?.length ?? 0;
 	}
 
+	#pendingReplySnapshot(agentId?: string): IrcPendingReplySnapshot {
+		return {
+			messages: [...this.#pendingReplies.values()]
+				.filter(message => agentId === undefined || message.to === agentId)
+				.map(message => ({ ...message })),
+		};
+	}
+
+	#beginPendingReply(message: IrcMessage): void {
+		this.#pendingReplies.set(message.id, message);
+		this.#emitPendingReplyChange({ type: "opened", message });
+	}
+
+	#resolvePendingReply(reply: IrcMessage): void {
+		if (!reply.replyTo) return;
+		const message = this.#pendingReplies.get(reply.replyTo);
+		if (!message || message.to !== reply.from || message.from !== reply.to) return;
+		this.#pendingReplies.delete(message.id);
+		this.#emitPendingReplyChange({ type: "resolved", message, reply });
+	}
+
+	#emitPendingReplyChange(event: IrcPendingReplyChange): void {
+		if (this.#pendingReplyListeners.size === 0) return;
+		const snapshot = this.#pendingReplySnapshot();
+		const change: IrcPendingReplyEvent = { ...event, snapshot } as IrcPendingReplyEvent;
+		for (const listener of this.#pendingReplyListeners) {
+			try {
+				listener(change);
+			} catch (error) {
+				logger.debug("IrcBus: pending reply listener failed", { error: String(error) });
+			}
+		}
+	}
+
 	#enqueue(message: IrcMessage): void {
 		let mailbox = this.#mailboxes.get(message.to);
 		if (!mailbox) {
@@ -353,16 +452,18 @@ export class IrcBus {
 	}
 
 	/**
-	 * Surface agent↔agent traffic as a display-only card on the main session
-	 * UI. Skipped when the main agent is either endpoint: as recipient its
-	 * own `deliverIrcMessage` (or `wait` tool result) already shows the
-	 * message, and as sender the irc send tool call already rendered the
-	 * outbound body — relaying it again would duplicate it in the transcript.
+	 * Surface sibling traffic as a display-only card on its owning top-level
+	 * session UI. A root endpoint already renders its own incoming or outgoing
+	 * message, so only non-root endpoints need a relay. Cross-root and malformed
+	 * parent chains have no unambiguous owner and are intentionally not relayed.
 	 */
-	#relayToMainUi(message: IrcMessage): void {
-		if (message.to === MAIN_AGENT_ID || message.from === MAIN_AGENT_ID) return;
-		const mainSession = this.#registry.get(MAIN_AGENT_ID)?.session;
-		if (!mainSession) return;
+	#relayToRootUi(message: IrcMessage): void {
+		const senderRoot = resolveTopLevelAgent(this.#registry, message.from);
+		const recipientRoot = resolveTopLevelAgent(this.#registry, message.to);
+		if (!senderRoot || !recipientRoot || senderRoot.id !== recipientRoot.id) return;
+		if (message.to === senderRoot.id || message.from === senderRoot.id) return;
+		const rootSession = senderRoot.session;
+		if (!rootSession) return;
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:relay",
@@ -373,10 +474,10 @@ export class IrcBus {
 			timestamp: message.ts,
 		};
 		try {
-			mainSession.emitIrcRelayObservation(record);
+			rootSession.emitIrcRelayObservation(record);
 		} catch (error) {
 			// Display-only forwarding must never affect delivery semantics.
-			logger.debug("IrcBus: main UI relay failed", { to: message.to, error: String(error) });
+			logger.debug("IrcBus: root UI relay failed", { to: message.to, error: String(error) });
 		}
 	}
 }

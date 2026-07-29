@@ -579,16 +579,23 @@ export class CollabGuestLink {
 			}
 		}
 		for (const snap of agents) {
+			const metadata = {
+				displayName: snap.displayName,
+				...("sessionTitle" in snap ? { sessionTitle: snap.sessionTitle } : {}),
+				...("sessionId" in snap ? { sessionId: snap.sessionId } : {}),
+				...("activityState" in snap ? { activityState: snap.activityState } : {}),
+			};
 			if (this.agentRegistry.get(snap.id)) {
 				this.agentRegistry.setStatus(snap.id, snap.status);
+				this.agentRegistry.updateMetadata(snap.id, metadata);
 			} else {
 				this.agentRegistry.register({
 					id: snap.id,
-					displayName: snap.displayName,
 					kind: snap.kind,
 					parentId: snap.parentId,
 					session: null,
 					status: snap.status,
+					...metadata,
 				});
 			}
 			// Refs are returned by reference: patch host timestamps directly so
@@ -597,7 +604,6 @@ export class CollabGuestLink {
 			if (ref) {
 				ref.createdAt = snap.createdAt;
 				ref.lastActivity = snap.lastActivity;
-				ref.displayName = snap.displayName;
 			}
 			this.#agentHasTranscript.set(snap.id, snap.hasSessionFile);
 		}
@@ -630,28 +636,48 @@ export class CollabGuestLink {
 		if (this.#readOnly || this.#pendingUiRequests.has(request.reqId)) return;
 		const abort = new AbortController();
 		this.#pendingUiRequests.set(request.reqId, abort);
+		const deadlineMs = request.deadlineMs;
+		const hasDeadline = typeof deadlineMs === "number" && Number.isFinite(deadlineMs);
+		const remainingMs = hasDeadline ? Math.max(0, deadlineMs - Date.now()) : undefined;
+		// A custom-answer editor is the remote counterpart of Ask's nested prompt:
+		// its deadline is deferred until it settles so typed text is never discarded.
+		const deadlineAbort = hasDeadline && request.kind === "select" ? new AbortController() : undefined;
+		let deadlineExpired = false;
+		const deadlineTimer = deadlineAbort
+			? setTimeout(() => {
+					deadlineExpired = true;
+					deadlineAbort.abort();
+				}, remainingMs)
+			: undefined;
+		const clearDeadline = (): void => clearTimeout(deadlineTimer);
+		const signal = deadlineAbort ? AbortSignal.any([abort.signal, deadlineAbort.signal]) : abort.signal;
 		const dialog =
 			request.kind === "select"
 				? this.#ctx.showHookSelector(request.title, request.options, {
-						signal: abort.signal,
+						signal,
+						timeout: deadlineAbort ? remainingMs : undefined,
 						initialIndex: request.initialIndex,
 						selectionMarker: request.selectionMarker,
 						checkedIndices: request.checkedIndices,
 						markableCount: request.markableCount,
 						helpText: request.helpText,
 					})
-				: this.#ctx.showHookEditor(request.title, request.prefill, { signal: abort.signal });
+				: this.#ctx.showHookEditor(request.title, request.prefill, { signal });
 		dialog
 			.then(value => {
+				clearDeadline();
 				// Identity check: only the presentation that still owns the reqId
 				// may respond. An abort from #endUiRequest / #clearUiRequests
 				// removes (or replaces, on resync replay) the entry before this
-				// microtask runs, so a dismissed dialog stays silent.
+				// microtask runs, so a dismissed dialog stays silent. A local hard
+				// deadline likewise leaves settlement to the host's canonical Ask race.
 				if (this.#pendingUiRequests.get(request.reqId) !== abort) return;
 				this.#pendingUiRequests.delete(request.reqId);
+				if (deadlineExpired) return;
 				this.#socket?.send({ t: "ui-response", reqId: request.reqId, value });
 			})
 			.catch(err => {
+				clearDeadline();
 				if (this.#pendingUiRequests.get(request.reqId) === abort) {
 					this.#pendingUiRequests.delete(request.reqId);
 				}

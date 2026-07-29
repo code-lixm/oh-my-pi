@@ -380,6 +380,49 @@ describe("AgentSession model persistence", () => {
 		expect(result.session.model?.id).toBe(defaultModel.id);
 	});
 
+	it("resumes the next user turn on the configured primary instead of a historical fallback assistant", async () => {
+		const primaryModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const fallbackModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const targetSessionFile = path.join(tempDir.path(), `assistant-only-fallback-${Bun.nanoseconds()}.jsonl`);
+		const timestamp = "2026-06-01T00:00:00.000Z";
+		await Bun.write(
+			targetSessionFile,
+			`${[
+				{ type: "session", version: 3, id: "assistant-only-fallback", timestamp, cwd: tempDir.path() },
+				{
+					type: "message",
+					id: "fallback-assistant",
+					parentId: null,
+					timestamp,
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "completed on the temporary fallback" }],
+						api: fallbackModel.api,
+						provider: fallbackModel.provider,
+						model: fallbackModel.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.parse(timestamp),
+					},
+				},
+			]
+				.map(entry => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const settings = Settings.isolated();
+		settings.setModelRole("default", modelValue(primaryModel));
+
+		const result = await createStartupResumeSession(targetSessionFile, settings);
+
+		expect(result.session.model?.id).toBe(primaryModel.id);
+	});
 	it("restores a temporary model when switching sessions", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const temporaryModel = getAnthropicModelOrThrow("claude-sonnet-4-6");

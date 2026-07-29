@@ -92,6 +92,10 @@ interface AskDialogOptions {
 	onTimeout?: () => void;
 	tui?: TUI;
 	inputGuard?: AskDialogInputGuard;
+	/** Absolute deadline supplied by another Ask surface, when one already presented. */
+	deadlineMs?: number;
+	/** Notifies that this dialog first rendered, with its established deadline. */
+	onDeadline?: (deadlineMs: number) => void;
 }
 
 interface QuestionState {
@@ -356,6 +360,7 @@ export class AskDialogComponent implements Component {
 	#timeoutExpired = false;
 	#closed = false;
 	#tabBar: TabBar | undefined;
+	#deadlineMs: number | undefined;
 	#stableHeight: { key: string; total: number } | undefined;
 	#previewCache: PreviewRenderCache = new Map();
 	#overflowLayouts = new WeakMap<ExtensionAskDialogQuestion, Set<string>>();
@@ -391,6 +396,7 @@ export class AskDialogComponent implements Component {
 					this.#remainingSeconds = seconds;
 				},
 				() => this.#handleTimeout(),
+				{ start: false },
 			);
 		}
 	}
@@ -409,9 +415,6 @@ export class AskDialogComponent implements Component {
 
 	handleInput(keyData: string): void {
 		if (this.#closed || this.#promptActive) return;
-		// Reset the inactivity countdown on any key that reaches past the
-		// closed/prompt guards, matching HookSelector/HookInput semantics.
-		this.#countdown?.reset();
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
 			return;
@@ -434,6 +437,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		this.#startCountdown();
 		// Keep the proxied draft's cursor visible while it owns input (the editor
 		// renders as the next sibling in the same container, so this lands in the
 		// same frame).
@@ -510,10 +514,47 @@ export class AskDialogComponent implements Component {
 		return Math.min(needed, maxHeight);
 	}
 
+	#startCountdown(): void {
+		if (this.#closed || !this.#countdown || this.#deadlineMs !== undefined) return;
+		const timeout = this.options.timeout;
+		if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) return;
+		const inheritedDeadline = this.options.deadlineMs;
+		const deadlineMs =
+			typeof inheritedDeadline === "number" && Number.isFinite(inheritedDeadline)
+				? inheritedDeadline
+				: Date.now() + timeout;
+		this.#deadlineMs = deadlineMs;
+		this.options.onDeadline?.(deadlineMs);
+		this.#countdown.start(deadlineMs);
+	}
+
 	#titleText(): string {
-		return this.#remainingSeconds === undefined
-			? tSettingsUi("Ask")
-			: tSettingsUi("Ask ({seconds}s)", { seconds: this.#remainingSeconds });
+		if (this.#remainingSeconds === undefined) return tSettingsUi("Ask");
+		const defaultable = this.questions.flatMap(question => {
+			const recommended = getValidRecommendedIndex(question);
+			const option = recommended === undefined ? undefined : question.options[recommended];
+			return option ? [option.label] : [];
+		});
+		if (this.questions.length === 1) {
+			const [label] = defaultable;
+			return label === undefined
+				? tSettingsUi("Ask")
+				: tSettingsUi("Ask · defaults to {label} in {seconds}s", {
+						label,
+						seconds: this.#remainingSeconds,
+					});
+		}
+		const manual = this.questions.length - defaultable.length;
+		return tSettingsUi(
+			"Ask · defaults {defaultable} answer{defaultablePlural} in {seconds}s · {manual} manual question{manualPlural}",
+			{
+				defaultable: defaultable.length,
+				defaultablePlural: defaultable.length === 1 ? "" : "s",
+				seconds: this.#remainingSeconds,
+				manual,
+				manualPlural: manual === 1 ? "" : "s",
+			},
+		);
 	}
 
 	#hasSubmitTab(): boolean {

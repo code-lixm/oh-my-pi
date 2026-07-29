@@ -10,12 +10,12 @@
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type {
 	BusChannel,
-	CollabUiRequest,
 	GuestFrame,
 	ParsedCollabLink,
 	Participant,
 	SessionState,
 	AgentSnapshot as WireAgentSnapshot,
+	CollabUiRequestDraft as WireCollabUiRequestDraft,
 } from "@oh-my-pi/pi-wire";
 import {
 	DEFAULT_RELAY_URL,
@@ -25,13 +25,12 @@ import {
 	WRITE_TOKEN_BYTES,
 } from "@oh-my-pi/pi-wire";
 import type { ContextUsage } from "../extensibility/extensions/types";
+import type { AgentActivityState } from "../registry/agent-activity";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { SessionEntry, SessionHeader } from "../session/session-entries";
 
 export type {
 	CollabPromptDetails,
-	CollabUiRequest,
-	CollabUiRequestDraft,
 	CollabUiResponseValue,
 	CollabUiSelectItem,
 	ParsedCollabLink,
@@ -43,7 +42,19 @@ export { COLLAB_PROMPT_MESSAGE_TYPE, COLLAB_PROTO } from "@oh-my-pi/pi-wire";
 export { DEFAULT_RELAY_URL, ENVELOPE_HEADER_LENGTH, ROOM_ID_BYTES };
 
 export type CollabParticipant = Participant;
-export type AgentSnapshot = WireAgentSnapshot;
+/** Agent-registry fields added after the base wire snapshot; absent on old hosts. */
+export type AgentSnapshot = WireAgentSnapshot & {
+	sessionTitle?: string;
+	sessionId?: string;
+	activityState?: AgentActivityState;
+};
+
+/**
+ * Host-only additions to the base wire UI request. `deadlineMs` is an epoch
+ * timestamp established by the presenting host surface, never a relative tick.
+ */
+export type CollabUiRequestDraft = WireCollabUiRequestDraft & { deadlineMs?: number };
+export type CollabUiRequest = CollabUiRequestDraft & { reqId: number };
 
 /** Debounced footer snapshot broadcast by the host. */
 export type CollabSessionState = SessionState & {
@@ -54,6 +65,12 @@ export type CollabSessionState = SessionState & {
 	model?: Model;
 	/** Host status-line context numbers (guest system prompt/tools differ, so local estimates drift). */
 	contextUsage?: ContextUsage;
+	/** Current top-level session identity; optional for pre-multisession hosts. */
+	sessionTitle?: string;
+	sessionId?: string;
+	activeTopLevelAgentId?: string;
+	/** Current activity of the active top-level runtime, when observable. */
+	activityState?: AgentActivityState;
 };
 
 /**

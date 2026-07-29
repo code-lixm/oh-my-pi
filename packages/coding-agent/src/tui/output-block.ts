@@ -11,7 +11,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { theme as activeTheme, getThemeEpoch, type Theme, type ThemeColor } from "../modes/theme/theme";
+import { theme as activeTheme, getThemeEpoch, type Theme, type ThemeBg, type ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
@@ -23,6 +23,7 @@ export interface OutputBlockOptions {
 	state?: State;
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
+	/** Paint the state-derived background token, including accent-card surfaces. */
 	applyBg?: boolean;
 	/** Accent-mode surface tint strength. Omit for the standard subtle tool-card tint. */
 	accentTintOpacity?: number;
@@ -159,10 +160,11 @@ export function applyStableBackground(text: string, bgAnsi: string): string {
 }
 
 /**
- * Prefix one row with a half-cell `▌` accent glyph. The body background is a
- * low-opacity preblend of the same semantic color over the theme surface.
- * Literal padded cells are required here: Ghostty does not display BCE/ECH
- * fills with the active background consistently in committed transcript rows.
+ * Prefix one row with a half-cell `▌` accent glyph. Without an explicit state
+ * background, the body uses a low-opacity preblend of the semantic color over
+ * the theme surface. Literal padded cells are required here: Ghostty does not
+ * display BCE/ECH fills with the active background consistently in committed
+ * transcript rows.
  */
 export function renderOutputAccentLine(
 	line: string,
@@ -170,32 +172,42 @@ export function renderOutputAccentLine(
 	theme: Theme,
 	color: ThemeColor,
 	tintOpacity = 0.06,
+	backgroundColor?: ThemeBg,
 ): string {
 	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));
 	if (surfaceWidth === 0) return rightInset;
-	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, tintOpacity);
+	const surfaceBgAnsi = backgroundColor
+		? theme.getBgAnsi(backgroundColor)
+		: theme.getSurfaceTintBgAnsi(color, tintOpacity);
 	const railFgAnsi = color === "borderMuted" ? theme.getSurfaceTintFgAnsi(color) : theme.getFgAnsi(color);
-	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, tintedBgAnsi);
+	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, surfaceBgAnsi);
 	if (surfaceWidth === 1) return `${rail}${rightInset}`;
 	const contentWidth = Math.max(0, surfaceWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH);
 	const content = contentWidth > 0 ? padToWidth(truncateToWidth(line, contentWidth), contentWidth) : "";
-	const tintedBody = applyStableBackground(` ${content}`, tintedBgAnsi);
-	return `${rail}${tintedBody}${rightInset}`;
+	const surfaceBody = applyStableBackground(` ${content}`, surfaceBgAnsi);
+	return `${rail}${surfaceBody}${rightInset}`;
 }
 
 /** Render a full-width block-internal breathing row inside an accent card. */
-export function renderOutputAccentPadLine(width: number, theme: Theme, color: ThemeColor): string {
+export function renderOutputAccentPadLine(
+	width: number,
+	theme: Theme,
+	color: ThemeColor,
+	backgroundColor?: ThemeBg,
+): string {
 	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));
 	if (surfaceWidth === 0) return rightInset;
-	const tintedBgAnsi = theme.getSurfaceTintBgAnsi(color, ACCENT_PAD_TINT_OPACITY);
+	const surfaceBgAnsi = backgroundColor
+		? theme.getBgAnsi(backgroundColor)
+		: theme.getSurfaceTintBgAnsi(color, ACCENT_PAD_TINT_OPACITY);
 	const railFgAnsi = color === "borderMuted" ? theme.getSurfaceTintFgAnsi(color) : theme.getFgAnsi(color);
-	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, tintedBgAnsi);
+	const rail = applyStableBackground(`${railFgAnsi}${OUTPUT_BLOCK_ACCENT_GLYPH}\x1b[39m`, surfaceBgAnsi);
 	if (surfaceWidth === 1) return `${rail}${rightInset}`;
 	const contentWidth = Math.max(0, surfaceWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH);
-	const tintedBody = applyStableBackground(` ${" ".repeat(contentWidth)}`, tintedBgAnsi);
-	return `${rail}${tintedBody}${rightInset}`;
+	const surfaceBody = applyStableBackground(` ${" ".repeat(contentWidth)}`, surfaceBgAnsi);
+	return `${rail}${surfaceBody}${rightInset}`;
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
@@ -208,14 +220,15 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	const v = theme.boxRound.vertical;
 	const cap = h;
 	const lineWidth = Math.max(0, width);
-	// Border colors remain semantic while pending/running blocks stay unfilled;
-	// callers can still opt into state backgrounds through `applyBg`.
+	// Border colors remain semantic while callers opt into state-derived
+	// background tokens explicitly through `applyBg`.
 	const borderColor: ThemeColor =
 		options.borderColor ?? (state === "error" ? "error" : state === "warning" ? "warning" : "borderMuted");
 	const border = (text: string) => theme.fg(borderColor, text);
+	const backgroundColor = state && applyBg ? getStateBgColor(state) : undefined;
 	const bgFn = (() => {
-		if (!state || !applyBg) return undefined;
-		const bgAnsi = theme.getBgAnsi(getStateBgColor(state));
+		if (!backgroundColor) return undefined;
+		const bgAnsi = theme.getBgAnsi(backgroundColor);
 		return (text: string) => applyStableBackground(text, bgAnsi);
 	})();
 
@@ -241,19 +254,18 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 		const lines: string[] = [];
 		const borderlessLineWidth = Math.max(0, lineWidth - accentGutterWidth - accentRightInset);
 		const borderlessContentWidth = Math.max(0, borderlessLineWidth - contentPaddingRight);
-		// Block-internal padding rows render with the same tinted surface as the
-		// body, but the rail glyph uses the low-emphasis surface tint foreground
-		// instead of the full semantic color — visually lighter so the leading
-		// and trailing breathing rows read as part of the margin rather than a
-		// second tinted block. Inter-block plain margins remain owned by the
-		// transcript container.
+		// Block-internal padding rows use the same painted surface as their body.
+		// The rail glyph uses the low-emphasis surface-tint foreground only for
+		// muted rails, keeping edge padding visually quieter than content rows.
 		const pushLine = (line: string): void => {
 			if (accentMode) {
 				if (line === "") {
-					lines.push(renderOutputAccentPadLine(lineWidth, theme, borderColor));
+					lines.push(renderOutputAccentPadLine(lineWidth, theme, borderColor, backgroundColor));
 					return;
 				}
-				lines.push(renderOutputAccentLine(line, lineWidth, theme, borderColor, options.accentTintOpacity));
+				lines.push(
+					renderOutputAccentLine(line, lineWidth, theme, borderColor, options.accentTintOpacity, backgroundColor),
+				);
 				return;
 			}
 			lines.push(padToWidth(truncateToWidth(line, lineWidth), lineWidth, bgFn));

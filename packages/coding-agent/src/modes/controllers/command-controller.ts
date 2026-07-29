@@ -1228,6 +1228,7 @@ export class CommandController {
 		} else {
 			this.ctx.present(this.ctx.bashComponent);
 		}
+		this.ctx.refreshWorkingActivitySummary?.();
 		this.ctx.ui.requestRender();
 
 		try {
@@ -1264,6 +1265,7 @@ export class CommandController {
 		}
 
 		this.ctx.bashComponent = undefined;
+		this.ctx.refreshWorkingActivitySummary?.();
 		this.ctx.ui.requestRender();
 	}
 
@@ -1302,6 +1304,7 @@ export class CommandController {
 		} else {
 			this.ctx.present(this.ctx.pythonComponent);
 		}
+		this.ctx.refreshWorkingActivitySummary?.();
 		this.ctx.ui.requestRender();
 
 		try {
@@ -1330,6 +1333,7 @@ export class CommandController {
 		}
 
 		this.ctx.pythonComponent = undefined;
+		this.ctx.refreshWorkingActivitySummary?.();
 		this.ctx.ui.requestRender();
 	}
 

@@ -12,6 +12,8 @@ import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { tSettingsUi } from "../../i18n/settings-locale";
+import { IrcBus } from "../../irc/bus";
+import { formatAgentActivity } from "../../modes/components/agent-activity";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
 import {
@@ -33,7 +35,8 @@ import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import { selectPrompt } from "../../prompts/prompt-locale";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import idleRecapPromptZh from "../../prompts/system/recap-user.zh-CN.md" with { type: "text" };
-import type { AgentSessionEvent } from "../../session/agent-session";
+import type { AgentActivityState } from "../../registry/agent-activity";
+import type { AgentSessionActivityEvent, AgentSessionEvent } from "../../session/agent-session";
 import { type CustomMessage, isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -74,6 +77,26 @@ function isServerResolvedCursorTodo(content: CursorExecResolvedCarrier & { argum
 	if (content[kCursorExecResolved] === true) return true;
 	const args = content.arguments;
 	return typeof args === "object" && args !== null && "todos" in args && Array.isArray(args.todos);
+}
+
+function formatWorkingActivityMessage(activity: AgentActivityState): string {
+	const formatted = formatAgentActivity(activity, Date.now(), {
+		detailMaxWidth: TRUNCATE_LENGTHS.LINE,
+		toolArgsMaxWidth: TRUNCATE_LENGTHS.LINE,
+	});
+	const phase = tSettingsUi(formatted.phaseLabel);
+	const health = tSettingsUi(formatted.healthLabel);
+	const state = formatted.health === "active" || phase === health ? phase : `${health} · ${phase}`;
+	const elapsed = [
+		formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
+		formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return previewLine(
+		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(" · "),
+		TRUNCATE_LENGTHS.LINE,
+	);
 }
 
 type AgentSessionEventHandlers = {
@@ -349,7 +372,48 @@ export class EventController {
 		const trimmed = intent.trim();
 		if (!trimmed || trimmed === this.#lastIntent) return;
 		this.#lastIntent = trimmed;
-		this.ctx.setWorkingMessage(`${trimmed}${interruptHint()}`);
+		if (!this.ctx.refreshWorkingActivitySummary) {
+			this.ctx.setWorkingMessage(`${trimmed}${interruptHint()}`);
+		}
+	}
+
+	syncTerminalTitleState(): void {
+		this.#syncTerminalTitleState();
+	}
+
+	#syncTerminalTitleState(activity?: AgentActivityState): void {
+		const currentActivity = activity ?? this.ctx.viewSession.activity;
+		if (
+			this.#approvalAttentionToolCallIds.size > 0 ||
+			currentActivity?.phase === "waiting-user" ||
+			IrcBus.global().getPendingReplySnapshot().messages.length > 0
+		) {
+			setTerminalTitleState("attention");
+			return;
+		}
+		setTerminalTitleState(this.ctx.viewSession.isStreaming ? "working" : "idle");
+	}
+
+	#syncWorkingMessageFromActivity(event: AgentSessionEvent): void {
+		const activity = (event as Partial<AgentSessionActivityEvent>).activity ?? this.ctx.viewSession.activity;
+		this.#syncTerminalTitleState(activity);
+		if (this.ctx.refreshWorkingActivitySummary) {
+			this.ctx.refreshWorkingActivitySummary();
+			return;
+		}
+		if (!activity) return;
+		if (
+			this.ctx.session.isAborting ||
+			!this.ctx.loadingAnimation ||
+			this.ctx.autoCompactionLoader ||
+			this.ctx.retryLoader ||
+			this.#lastIntent ||
+			activity.phase === "idle"
+		) {
+			return;
+		}
+		const message = formatWorkingActivityMessage(activity);
+		if (message) this.ctx.setWorkingMessage(`${message}${interruptHint()}`);
 	}
 
 	subscribeToAgent(): void {
@@ -404,6 +468,7 @@ export class EventController {
 		// state changes rather than event volume (issue #4353).
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
 		await run(event);
+		this.#syncWorkingMessageFromActivity(event);
 	}
 
 	#setTerminalProgress(active: boolean): void {
@@ -480,7 +545,7 @@ export class EventController {
 		this.ctx.statusLine.markActivityStart();
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
-		setTerminalTitleState("working");
+		this.#syncTerminalTitleState();
 		this.ctx.ui.requestRender();
 	}
 
@@ -1052,7 +1117,7 @@ export class EventController {
 		this.#updateWorkingMessageFromIntent(event.intent);
 		if (event.toolName === "ask" || this.#toolWillPromptForApproval(event.toolName, event.args)) {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
-			setTerminalTitleState("attention");
+			this.#syncTerminalTitleState();
 		}
 		this.#resolveDisplaceablePoll(event.toolName);
 		if (event.toolName !== "hub") this.#finalizeHubActivityGroup();
@@ -1240,7 +1305,7 @@ export class EventController {
 			this.#approvalAttentionToolCallIds.delete(event.toolCallId) &&
 			this.#approvalAttentionToolCallIds.size === 0
 		) {
-			setTerminalTitleState("working");
+			this.#syncTerminalTitleState();
 		}
 		if (event.toolName === "hub") this.#surfaceHubResultFeedback(event.result.details);
 		if (event.toolName === "read") {
@@ -1392,7 +1457,7 @@ export class EventController {
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
-		setTerminalTitleState("idle");
+		this.#syncTerminalTitleState();
 
 		await this.#finishAgentEnd(event);
 	}

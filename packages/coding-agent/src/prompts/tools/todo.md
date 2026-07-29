@@ -10,7 +10,7 @@ Completing tasks out of phase order can move this pointer **back** to an earlier
 |`init`|`list: [{phase, items: string[]}]`|Initialize full list (replaces existing)|
 |`init`|`items: string[]`|Flattened single-phase init|
 |`start`|`task`|Mark in progress|
-|`done`|`task` or `phase`|Mark completed|
+|`done`|`task`|Mark one completed; phase-wide completion is rejected|
 |`drop`|`task` or `phase`|Mark abandoned|
 |`block`|`task` or `phase`, optional `reason`|Mark **blocked** — open but waiting on external input; excluded from the stop-time incomplete-todo reminder|
 |`unblock`|`task` or `phase`|Return a blocked task to `pending`|
@@ -23,9 +23,11 @@ Completing tasks out of phase order can move this pointer **back** to an earlier
 - **Phase name**: short noun phrase (e.g. `Foundation`, `Auth`, `Verification`). Unique identifier. NEVER prefix `1.`, `A)`, `Phase 1:`.
 
 ## Rules
-- Mark tasks done immediately after finishing. Complete phases in order.
-- NEVER make a todo call your turn's only tool call — batch it with the real work: `init` with the first reads/edits, each `done`/`start` with the next action. Solo todo turns waste a round trip.
-- Waiting on something you can't act on (a user decision, another agent, an external service)? `block` the task (optional `reason`) — it stays in the tracker but won't trip the stop reminder; `unblock` when it's actionable again. If the blocker is itself agent-actionable, `append` an unblocking task instead.
+- Mark each task done immediately after finishing; NEVER batch-close a phase.
+- A subagent result is a ledger boundary: reconcile completed tasks before the next action.
+- Implementation evidence closes implementation tasks only; verification stays open until its command succeeds.
+- NEVER make a todo call your turn's only tool call — batch it with the next real action.
+- Waiting externally? `block`; agent-actionable blocker? `append` an unblocking task.
 - Keep `task`/`phase` strings stable once introduced.
 - Lost the exact task text? `view` echoes the list — NEVER guess from memory.
 

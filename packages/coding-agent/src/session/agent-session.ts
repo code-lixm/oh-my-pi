@@ -178,6 +178,7 @@ import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.
 import sideChannelNoToolsReminderZh from "../prompts/system/side-channel-no-tools.zh-CN.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import vibeModeActivePromptZh from "../prompts/system/vibe-mode-active.zh-CN.md" with { type: "text" };
+import type { AgentActivityPhase, AgentActivityState } from "../registry/agent-activity";
 import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
@@ -195,7 +196,7 @@ import {
 	toReasoningEffort,
 } from "../thinking";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
-import { resolveApproval } from "../tools/approval";
+import { type ApprovalMode, resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
@@ -228,8 +229,9 @@ import type {
 	WorkspaceRestoreResult,
 } from "../workspace-checkpoints/types";
 import { WORKSPACE_CONVERSATION_ROOT_ENTRY_ID } from "../workspace-checkpoints/types";
-import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
+import type { AgentSessionEvent } from "./agent-session-events";
 import type {
+	AgentSessionActivityEvent,
 	AgentSessionConfig,
 	AgentSessionDisposeOptions,
 	AsyncJobSnapshot,
@@ -363,6 +365,30 @@ import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 const PLAN_MODE_REMINDER_MAX = 3;
 
+const ACTIVITY_HEARTBEAT_INTERVAL_MS = 250;
+
+type ActivityScopeKind = "auto-compaction" | "auto-retry" | "manual-compaction";
+
+type ActivityScope = {
+	id: number;
+	kind: ActivityScopeKind;
+	previous: AgentActivityState;
+};
+
+function createIdleActivityState(): AgentActivityState {
+	const now = Date.now();
+	return { phase: "idle", label: "Idle", phaseStartedAtMs: now, lastActivityAtMs: now };
+}
+
+function activityDetail(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value
+		.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return normalized.length > 0 ? normalized.slice(0, 160) : undefined;
+}
+
 /** Internal marker for hook messages queued through the agent loop */
 // ============================================================================
 // Constants
@@ -413,6 +439,7 @@ type AgentContinueSkipReason =
 	| PostPromptSkipReason
 	| "session-unavailable"
 	| "should-continue-false"
+	| "post-preflight-unavailable"
 	| "post-restore-unavailable";
 
 type ScheduledAgentContinueOptions = {
@@ -468,7 +495,11 @@ export class AgentSession {
 	#unsubscribeModelRoles?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
-	#eventListeners: AgentSessionEventListener[] = [];
+	#eventListeners: Array<(event: AgentSessionEvent) => void> = [];
+	#activity: AgentActivityState = createIdleActivityState();
+	#activityScopes: ActivityScope[] = [];
+	#activityScopeSequence = 0;
+	#lastPublishedActivityAtMs = 0;
 	#commandMetadataChangedListeners: CommandMetadataChangedListener[] = [];
 
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
@@ -725,7 +756,197 @@ export class AgentSession {
 		}
 	}
 
+	#transitionActivity(
+		phase: AgentActivityPhase,
+		label: string,
+		detail?: string,
+		options?: { restartPhase?: boolean; progress?: AgentActivityState["progress"] },
+	): void {
+		const now = Date.now();
+		const previous = this.#activity;
+		const phaseChanged = previous.phase !== phase;
+		this.#activity = {
+			phase,
+			label,
+			...(detail ? { detail } : {}),
+			phaseStartedAtMs: phaseChanged || options?.restartPhase === true ? now : previous.phaseStartedAtMs,
+			lastActivityAtMs: now,
+			...(options?.progress ? { progress: options.progress } : {}),
+		};
+		this.#publishActivity(
+			phaseChanged || options?.restartPhase === true || previous.label !== label || previous.detail !== detail,
+		);
+	}
+
+	#touchActivity(): void {
+		const now = Date.now();
+		if (now <= this.#activity.lastActivityAtMs) return;
+		this.#activity = { ...this.#activity, lastActivityAtMs: now };
+		this.#publishActivity(false);
+	}
+
+	#publishActivity(force: boolean): void {
+		if (this.#agentKind !== "main" || !this.#agentId) return;
+		const activity = this.#activity;
+		if (!force && activity.lastActivityAtMs - this.#lastPublishedActivityAtMs < ACTIVITY_HEARTBEAT_INTERVAL_MS) {
+			return;
+		}
+		const registry = AgentRegistry.global();
+		registry.setActivity(this.#agentId, activity.detail ? `${activity.label}: ${activity.detail}` : activity.label);
+		registry.setActivityState(this.#agentId, activity, this);
+		this.#lastPublishedActivityAtMs = activity.lastActivityAtMs;
+	}
+
+	#beginActivityScope(kind: ActivityScopeKind, phase: AgentActivityPhase, label: string, detail?: string): () => void {
+		const id = ++this.#activityScopeSequence;
+		this.#activityScopes.push({ id, kind, previous: this.#activity });
+		this.#transitionActivity(phase, label, detail, { restartPhase: true });
+		return () => this.#endActivityScope(id);
+	}
+
+	#endActivityScope(id: number): void {
+		const index = this.#activityScopes.findIndex(scope => scope.id === id);
+		if (index < 0) return;
+		const [scope] = this.#activityScopes.splice(index, 1);
+		if (!scope || index < this.#activityScopes.length) return;
+		if (this.#activityScopes.length === 0 && !this.isStreaming) {
+			this.#transitionActivity("idle", "Idle", undefined, { restartPhase: true });
+			return;
+		}
+		this.#transitionActivity(scope.previous.phase, scope.previous.label, scope.previous.detail, {
+			restartPhase: true,
+			progress: scope.previous.progress,
+		});
+	}
+
+	#endLatestActivityScope(kind: ActivityScopeKind): void {
+		for (let index = this.#activityScopes.length - 1; index >= 0; index--) {
+			const scope = this.#activityScopes[index];
+			if (scope?.kind === kind) {
+				this.#endActivityScope(scope.id);
+				return;
+			}
+		}
+	}
+
+	#markActivityQueued(label = "Queued"): void {
+		if (this.#activityScopes.length > 0) return;
+		this.#transitionActivity("queued", label);
+	}
+
+	#toolWillWaitForUser(toolName: string, args: unknown): boolean {
+		if (toolName === "ask") return true;
+		const tool = this.getToolByName(toolName);
+		if (!tool) return false;
+		const mode = (this.settings.get("tools.approvalMode") ?? "yolo") as ApprovalMode;
+		const policies = (this.settings.get("tools.approval") ?? {}) as Record<string, unknown>;
+		return resolveApproval(tool, args, mode, policies).policy === "prompt";
+	}
+
+	#updateActivityForAgentEvent(event: AgentEvent): void {
+		switch (event.type) {
+			case "agent_start":
+				this.#transitionActivity("requesting", "Requesting model");
+				return;
+			case "agent_end":
+				this.#transitionActivity("finishing", "Finishing response");
+				return;
+			case "message_start":
+				if (event.message.role === "assistant") {
+					this.#transitionActivity("thinking", "Thinking");
+				} else {
+					this.#touchActivity();
+				}
+				return;
+			case "message_update":
+				if (
+					event.assistantMessageEvent.type === "thinking_start" ||
+					event.assistantMessageEvent.type === "thinking_delta"
+				) {
+					this.#transitionActivity("thinking", "Thinking");
+				} else if (
+					event.assistantMessageEvent.type === "text_start" ||
+					event.assistantMessageEvent.type === "text_delta"
+				) {
+					this.#transitionActivity("streaming", "Streaming response");
+				} else {
+					this.#touchActivity();
+				}
+				return;
+			case "message_end":
+				if (event.message.role === "assistant") {
+					this.#transitionActivity("finishing", "Finishing response");
+				} else if (event.message.role === "toolResult") {
+					this.#transitionActivity("streaming", "Processing tool result", activityDetail(event.message.toolName));
+				} else {
+					this.#touchActivity();
+				}
+				return;
+			case "tool_execution_start": {
+				const detail = activityDetail(event.intent) ?? activityDetail(event.toolName);
+				if (this.#toolWillWaitForUser(event.toolName, event.args)) {
+					this.#transitionActivity("waiting-user", "Waiting for user", detail);
+				} else if (event.toolName === "task") {
+					this.#transitionActivity("delegating", "Delegating work", detail);
+				} else if (event.toolName === "hub") {
+					this.#transitionActivity("waiting-peer", "Waiting for peer", detail);
+				} else {
+					this.#transitionActivity("tool", "Using tool", detail);
+				}
+				return;
+			}
+			case "tool_execution_update":
+				if (this.#activity.phase !== "waiting-user" || event.toolName === "ask") {
+					this.#touchActivity();
+					return;
+				}
+				if (event.toolName === "task") {
+					this.#transitionActivity("delegating", "Delegating work", activityDetail(event.toolName));
+				} else if (event.toolName === "hub") {
+					this.#transitionActivity("waiting-peer", "Waiting for peer", activityDetail(event.toolName));
+				} else {
+					this.#transitionActivity("tool", "Using tool", activityDetail(event.toolName));
+				}
+				return;
+			case "tool_execution_end":
+				this.#transitionActivity("streaming", "Processing tool result", activityDetail(event.toolName));
+				return;
+			default:
+				this.#touchActivity();
+		}
+	}
+
+	#updateActivityForSessionEvent(event: AgentSessionEvent): void {
+		switch (event.type) {
+			case "auto_compaction_start":
+				this.#beginActivityScope("auto-compaction", "compacting", "Compacting context", event.action);
+				return;
+			case "auto_compaction_end":
+				this.#endLatestActivityScope("auto-compaction");
+				return;
+			case "auto_retry_start":
+				this.#beginActivityScope(
+					"auto-retry",
+					"retrying",
+					"Retrying request",
+					`Attempt ${event.attempt}/${event.maxAttempts}`,
+				);
+				return;
+			case "auto_retry_end":
+				this.#endLatestActivityScope("auto-retry");
+				return;
+			case "agent_end":
+				if (event.isTerminal === false) this.#markActivityQueued("Queued continuation");
+				return;
+			default:
+				return;
+		}
+	}
+
 	#beginInFlight(): void {
+		if (this.#activityScopes.length === 0) {
+			this.#transitionActivity("requesting", "Preparing request");
+		}
 		this.#promptInFlightCount++;
 		if (this.#promptInFlightCount === 1) {
 			this.#acquirePowerAssertion();
@@ -738,6 +959,13 @@ export class AgentSession {
 			this.#releasePowerAssertion();
 			this.#flushPendingAgentEnd();
 			this.#drainStrandedQueuedMessages();
+			if (
+				!this.agent.state.isStreaming &&
+				this.#activityScopes.length === 0 &&
+				this.#activity.phase === "requesting"
+			) {
+				this.#transitionActivity("idle", "Idle", undefined, { restartPhase: true });
+			}
 		}
 	}
 
@@ -876,6 +1104,13 @@ export class AgentSession {
 		this.#releasePowerAssertion();
 		this.#flushPendingAgentEnd();
 		this.#drainStrandedQueuedMessages();
+		if (this.#activityScopes.length === 0 && !this.agent.state.isStreaming) {
+			if (this.agent.hasQueuedMessages() || this.#pendingNextTurnMessages.length > 0) {
+				this.#markActivityQueued();
+			} else {
+				this.#transitionActivity("idle", "Idle", undefined, { restartPhase: true });
+			}
+		}
 	}
 
 	#flushPendingAgentEnd(): void {
@@ -1073,7 +1308,7 @@ export class AgentSession {
 			model: () => this.model,
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
-			setThinkingLevel: level => this.setThinkingLevel(level),
+			setTransientThinkingLevel: level => this.#models.restoreThinkingLevel(level),
 			thinkingLevelCeiling: () => this.#models.thinkingLevelCeiling,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
@@ -1082,6 +1317,7 @@ export class AgentSession {
 			streamingEditAbortTriggered: () => this.#streamingEditGuard.abortTriggered,
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
+			setActivity: (phase, label, detail) => this.#transitionActivity(phase, label, detail),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			waitForSessionMessagePersistence: message => this.#waitForSessionMessagePersistence(message),
@@ -1144,21 +1380,25 @@ export class AgentSession {
 		const configuredOnResponse = config.onResponse;
 		this.#onResponse = configuredOnResponse
 			? async (response, model) => {
+					this.#touchActivity();
 					this.rawSseDebugBuffer.recordResponse(response, model);
 					this.#stats.ingestProviderUsageHeaders(response, model);
 					await configuredOnResponse(response, model);
 				}
 			: (response, model) => {
+					this.#touchActivity();
 					this.rawSseDebugBuffer.recordResponse(response, model);
 					this.#stats.ingestProviderUsageHeaders(response, model);
 				};
 		const configuredOnSseEvent = config.onSseEvent;
 		this.#onSseEvent = configuredOnSseEvent
 			? (event, model) => {
+					this.#touchActivity();
 					this.rawSseDebugBuffer.recordEvent(event, model);
 					configuredOnSseEvent(event, model);
 				}
 			: (event, model) => {
+					this.#touchActivity();
 					this.rawSseDebugBuffer.recordEvent(event, model);
 				};
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
@@ -1298,6 +1538,7 @@ export class AgentSession {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#publishActivity(true);
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
@@ -1452,6 +1693,8 @@ export class AgentSession {
 			nonMessageTokenSource: () => this,
 			memoryBackendSession: () => this,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
+			beginActivityScope: (phase, label, detail) =>
+				this.#beginActivityScope("manual-compaction", phase, label, detail),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: (task, options) => this.#schedulePostPromptTask(task, options),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
@@ -1621,8 +1864,10 @@ export class AgentSession {
 	}
 	async #runRunnableAgentTurn<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		this.#recordSessionRunStart();
+		this.#transitionActivity("requesting", "Requesting model");
 		if (this.#agentKind !== "sub" || !this.#agentId) return run();
 		if (this.taskRunnableConcurrency.hasLease(this.#agentId)) return run();
+		this.#markActivityQueued("Waiting for runnable slot");
 		const waitSignal = signal
 			? AbortSignal.any([signal, this.#runnableTurnWaitAbortController.signal])
 			: this.#runnableTurnWaitAbortController.signal;
@@ -1632,6 +1877,7 @@ export class AgentSession {
 		});
 		try {
 			if (waitSignal.aborted) throw waitSignal.reason ?? new Error("Runnable agent turn aborted");
+			this.#transitionActivity("requesting", "Requesting model");
 			return await run();
 		} finally {
 			this.#onRunnableAgentRelease?.();
@@ -1943,6 +2189,7 @@ export class AgentSession {
 		if (manager.isDeliverySuppressed(jobId)) return;
 		const durationMs = job ? Math.max(0, Date.now() - job.startTime) : undefined;
 		this.yieldQueue.enqueue<AsyncResultEntry>("async-result", { jobId, result: formatted, job, durationMs, epoch });
+		if (job?.type === "task" && job.status === "completed") this.#todo.onTaskProgressBoundary();
 	}
 
 	async #formatAsyncResultForFollowUp(result: string): Promise<string> {
@@ -1970,11 +2217,18 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	#emit(event: AgentSessionEvent): void {
+		if (event.type === "agent_end" && event.isTerminal !== false) {
+			this.#activityScopes = [];
+			this.#transitionActivity("idle", "Idle", undefined, { restartPhase: true });
+		}
+		// Keep the legacy wire shape stable; in-process consumers can still read the snapshot directly.
+		const activityEvent = event as AgentSessionActivityEvent;
+		Object.defineProperty(activityEvent, "activity", { configurable: true, value: this.#activity });
 		// Copy array before iteration to avoid mutation during iteration.
 		const listeners = [...this.#eventListeners];
 		for (const l of listeners) {
 			try {
-				const result = l(event) as unknown;
+				const result = l(activityEvent) as unknown;
 				// Listener may be an async function whose returned Promise we don't await;
 				// attach a catch so a rejection does not become an unhandled rejection.
 				if (isPromise(result)) {
@@ -2123,6 +2377,7 @@ export class AgentSession {
 	#subscriberEmitGate: Promise<void> = Promise.resolve();
 
 	async #emitSessionEvent(event: AgentSessionEvent): Promise<void> {
+		this.#updateActivityForSessionEvent(event);
 		if (event.type === "message_update") {
 			this.#emit(event);
 			void this.#queueExtensionEvent(event);
@@ -2436,6 +2691,7 @@ export class AgentSession {
 	}
 
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		this.#updateActivityForAgentEvent(event);
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
@@ -3079,6 +3335,7 @@ export class AgentSession {
 	}
 
 	#scheduleAgentContinue(options?: ScheduledAgentContinueOptions): void {
+		this.#markActivityQueued("Queued continuation");
 		this.#schedulePostPromptTask(
 			async signal => {
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
@@ -3096,7 +3353,13 @@ export class AgentSession {
 				}
 				this.#beginInFlight();
 				try {
-					await this.#recovery.maybeRestoreRetryFallbackPrimary();
+					const queuedUserTurn = [...this.agent.peekSteeringQueue(), ...this.agent.peekFollowUpQueue()].some(
+						isUserQueuedMessage,
+					);
+					if (queuedUserTurn) {
+						this.#advisors.beginUserTurn();
+						await this.#recovery.prepareForUserTurn();
+					}
 					if (
 						this.settings.get("retry.modelFallback") &&
 						this.settings.get("retry.usageAwareFallback") &&
@@ -3106,7 +3369,7 @@ export class AgentSession {
 						return;
 					}
 					if (signal.aborted || this.#isDisposed) {
-						this.#skipAgentContinue("post-restore-unavailable", options);
+						this.#skipAgentContinue("post-preflight-unavailable", options);
 						return;
 					}
 					await this.#runRunnableAgentTurn(() => this.agent.continue(), signal);
@@ -3545,7 +3808,7 @@ export class AgentSession {
 	 * Session persistence is handled internally (saves messages on message_end).
 	 * Multiple listeners can be added. Returns unsubscribe function for this listener.
 	 */
-	subscribe(listener: AgentSessionEventListener): () => void {
+	subscribe(listener: (event: AgentSessionEvent) => void): () => void {
 		this.#eventListeners.push(listener);
 
 		// Return unsubscribe function for this specific listener
@@ -3925,6 +4188,11 @@ export class AgentSession {
 		return this.agent.state;
 	}
 
+	/** Structured current work state, updated from real session lifecycle activity. */
+	get activity(): AgentActivityState {
+		return this.#activity;
+	}
+
 	/** Current model (may be undefined if not yet selected) */
 	get model(): Model | undefined {
 		return this.agent.state.model;
@@ -4100,7 +4368,6 @@ export class AgentSession {
 		if (signal.aborted) return;
 		this.#usageReserveApprovedSelector = undefined;
 		await this.#recovery.applyRetryFallbackCandidate(role, fallback.selector, currentSelector, {
-			pinFallback: true,
 			apiKey: fallback.apiKey,
 			signal,
 		});
@@ -5174,7 +5441,14 @@ export class AgentSession {
 		this.#beginInFlight();
 		const generation = this.#promptGeneration;
 		try {
-			await this.#recovery.maybeRestoreRetryFallbackPrimary();
+			const startsUserTurn =
+				options?.synthetic !== true &&
+				options?.userInitiated !== false &&
+				(message.role === "user" || (message.role === "custom" && message.attribution === "user"));
+			if (startsUserTurn) {
+				this.#advisors.beginUserTurn();
+				await this.#recovery.prepareForUserTurn();
+			}
 			if (!(await this.#runUsageAwarePreflight())) return;
 			// Flush any pending bash messages before the new prompt
 			await this.#bash.flushPending();
@@ -6275,6 +6549,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort();
+		await this.#recovery.restoreUserModelAfterFallback();
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		this.#recordSessionRunStop(options?.drop ? "session_drop" : "new_session");
@@ -7288,6 +7563,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
+		await this.#recovery.restoreUserModelAfterFallback();
 		await this.#sessionBeforeSwitchReconciler?.();
 		if (switchingToDifferentSession) this.#recordSessionRunStop("session_switch");
 
@@ -7379,15 +7655,12 @@ export class AgentSession {
 				this.sessionManager.getLastModelChangeRole(),
 			);
 			if (targetModelStrings.length > 0) {
-				const availableModels = this.#modelRegistry.getAvailable();
 				let match: Model | undefined;
 				for (const targetModelStr of targetModelStrings) {
-					const slashIdx = targetModelStr.indexOf("/");
-					if (slashIdx <= 0) continue;
-					const provider = targetModelStr.slice(0, slashIdx);
-					const modelId = targetModelStr.slice(slashIdx + 1);
-					match = availableModels.find(m => m.provider === provider && m.id === modelId);
-					if (match) break;
+					const resolved = resolveModelOverride([targetModelStr], this.#modelRegistry, this.settings);
+					if (!resolved.model) continue;
+					match = resolved.model;
+					break;
 				}
 				if (match) {
 					const currentModel = this.model;

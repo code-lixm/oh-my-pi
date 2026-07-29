@@ -14,9 +14,6 @@ import { type ConfiguredThinkingLevel, concreteThinkingLevel } from "../thinking
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
 
-/** Policy controlling restoration of a fallback chain's primary model. */
-export type RetryFallbackRevertPolicy = "never" | "cooldown-expiry";
-
 /** Parsed model selector used by retry fallback resolution. */
 export interface RetryFallbackSelector {
 	raw: string;
@@ -42,14 +39,15 @@ export interface RetryFallbackResolutionContext {
 	modelLookup: RetryFallbackModelLookup;
 }
 
-/** Active retry fallback state retained until the primary can be restored. */
+/** Runtime fallback state scoped to the user-initiated turn that selected it. */
 export interface ActiveRetryFallbackState {
-	/** Chain key that produced this fallback: a model-role name or a model-selector key. */
-	role: string;
+	/** Chain key that owns subsequent retries; absent for an intrinsic provider fallback. */
+	role?: string;
+	/** User-selected primary selector restored before the next user turn. */
 	originalSelector: string;
 	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
+	/** Last temporary fallback selector, used to preserve an intervening user change. */
 	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
-	pinned: boolean;
 }
 
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
@@ -205,11 +203,6 @@ export function validateRetryFallbackChains(
 			}
 		}
 	}
-}
-
-/** Returns the configured fallback-primary restoration policy. */
-export function getRetryFallbackRevertPolicy(settings: Settings): RetryFallbackRevertPolicy {
-	return settings.get("retry.fallbackRevertPolicy") === "never" ? "never" : "cooldown-expiry";
 }
 
 /** Resolves the primary selector represented by a fallback-chain key. */

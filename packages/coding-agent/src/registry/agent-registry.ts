@@ -11,6 +11,7 @@
 
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
+import type { AgentActivityState } from "./agent-activity";
 
 export const MAIN_AGENT_ID = "Main";
 
@@ -43,8 +44,14 @@ export interface AgentRef {
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
-	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
+	/** Human-readable title for a top-level session. Distinct from the agent's display name. */
+	sessionTitle?: string;
+	/** Durable session id without the registry's `top-level:` addressing prefix. */
+	sessionId?: string;
+	/** Short gist retained for compatibility with model-facing peer rosters. */
 	activity?: string;
+	/** Structured current activity shared by local and remote observer surfaces. */
+	activityState?: AgentActivityState;
 }
 
 export type AgentRefExpectation = AgentRef | AgentSession;
@@ -52,7 +59,8 @@ export type AgentRefExpectation = AgentRef | AgentSession;
 export type RegistryEvent =
 	| { type: "registered"; ref: AgentRef }
 	| { type: "status_changed"; ref: AgentRef }
-	| { type: "removed"; ref: AgentRef };
+	| { type: "removed"; ref: AgentRef }
+	| { type: "metadata_changed"; ref: AgentRef };
 
 type RegistryListener = (event: RegistryEvent) => void;
 
@@ -61,6 +69,9 @@ export interface RegisterInput {
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
+	sessionTitle?: string;
+	sessionId?: string;
+	activityState?: AgentActivityState;
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
@@ -99,7 +110,10 @@ export class AgentRegistry {
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
 			createdAt: now,
-			lastActivity: now,
+			lastActivity: input.activityState?.lastActivityAtMs ?? now,
+			sessionTitle: input.sessionTitle,
+			sessionId: input.sessionId,
+			activityState: input.activityState,
 		};
 		this.#refs.set(ref.id, ref);
 		this.#emit({ type: "registered", ref });
@@ -122,10 +136,10 @@ export class AgentRegistry {
 		if (!ref || !this.#matchesExpected(ref, expected)) return false;
 		if (ref.status === status) return true;
 		ref.status = status;
-		// Activity describes current work; it is meaningless once the agent
-		// leaves `running`, so drop it to avoid showing stale work in rosters.
+		// A non-running ref must not advertise an active roster gist, but its
+		// structured last activity remains useful to parked/restored observers.
 		if (status !== "running") ref.activity = undefined;
-		ref.lastActivity = Date.now();
+		ref.lastActivity = status !== "running" && ref.activityState ? ref.activityState.lastActivityAtMs : Date.now();
 		this.#emit({ type: "status_changed", ref });
 		return true;
 	}
@@ -152,6 +166,34 @@ export class AgentRegistry {
 		ref.lastActivity = Date.now();
 		if (ref.activity === gist) return;
 		ref.activity = gist;
+	}
+
+	updateMetadata(
+		id: string,
+		metadata: Partial<Pick<AgentRef, "displayName" | "sessionTitle" | "sessionId" | "sessionFile" | "activityState">>,
+		expected?: AgentRefExpectation,
+	): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		let changed = false;
+		for (const key of ["displayName", "sessionTitle", "sessionId", "sessionFile", "activityState"] as const) {
+			if (!(key in metadata) || ref[key] === metadata[key]) continue;
+			Object.assign(ref, { [key]: metadata[key] });
+			changed = true;
+		}
+		if (!changed) return true;
+		ref.lastActivity = Date.now();
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
+	setActivityState(id: string, activityState: AgentActivityState, expected?: AgentRefExpectation): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || !this.#matchesExpected(ref, expected) || ref.status !== "running") return false;
+		ref.activityState = activityState;
+		ref.lastActivity = activityState.lastActivityAtMs;
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
 	}
 
 	attachSession(
@@ -219,4 +261,24 @@ export class AgentRegistry {
 			}
 		}
 	}
+}
+
+export function isTopLevelAgent(ref: AgentRef | undefined): ref is AgentRef & { kind: "main" } {
+	return ref?.kind === "main";
+}
+
+/** Resolve an agent to its owning top-level session without assuming that the root id is `Main`. */
+export function resolveTopLevelAgent(registry: AgentRegistry, agentId: string): AgentRef | undefined {
+	const seen = new Set<string>();
+	let current = registry.get(agentId);
+	while (current && !seen.has(current.id)) {
+		if (isTopLevelAgent(current)) return current;
+		seen.add(current.id);
+		current = current.parentId ? registry.get(current.parentId) : undefined;
+	}
+	return undefined;
+}
+
+export function agentDisplayLabel(ref: AgentRef): string {
+	return ref.kind === "main" ? ref.sessionTitle?.trim() || ref.displayName : ref.displayName;
 }

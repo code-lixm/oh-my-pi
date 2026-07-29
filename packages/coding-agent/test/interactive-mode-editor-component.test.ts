@@ -73,4 +73,21 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(mode.editor.onEscape).toBeDefined();
 		expect(refreshSpy).toHaveBeenCalled();
 	});
+
+	it("passes an explicit mouse-tracking choice to the focused-agent fullscreen overlay", () => {
+		for (const mouseTracking of [false, true]) {
+			session.settings.set("tui.mouseInput", mouseTracking);
+			let capturedOptions: { mouseTracking?: boolean } | undefined;
+			const showOverlay = vi.spyOn(mode.ui, "showOverlay").mockImplementation((_component, options) => {
+				capturedOptions = options;
+				return { hide: vi.fn() } as never;
+			});
+
+			mode.showFocusedAgentView("Worker");
+
+			expect(capturedOptions?.mouseTracking).toBe(mouseTracking);
+			mode.hideFocusedAgentView();
+			showOverlay.mockRestore();
+		}
+	});
 });

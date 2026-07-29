@@ -179,6 +179,10 @@ export function getExtensionUISelectOptionLabel(option: ExtensionUISelectItem): 
 export interface ExtensionUIDialogOptions {
 	signal?: AbortSignal;
 	timeout?: number;
+	/** Absolute epoch deadline shared by mirrored UI surfaces; it never resets on input. */
+	deadlineMs?: number;
+	/** Receives the deadline fixed when a presenting surface first renders. */
+	onDeadline?: (deadlineMs: number) => void;
 	/** Invoked when the UI times out while waiting for a selection/input */
 	onTimeout?: () => void;
 	/** Invoked when the UI-managed timeout countdown starts */

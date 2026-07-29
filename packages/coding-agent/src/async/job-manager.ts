@@ -33,6 +33,10 @@ export interface AsyncJob {
 	type: "bash" | "task";
 	status: "running" | "completed" | "failed" | "cancelled";
 	startTime: number;
+	/** Time the job entered the manager, including jobs that start immediately. */
+	queuedAt?: number;
+	/** Time a queued job actually acquired its caller-managed execution slot. */
+	startedAt?: number;
 	label: string;
 	abortController: AbortController;
 	promise: Promise<void>;
@@ -40,6 +44,8 @@ export interface AsyncJob {
 	errorText?: string;
 	/** Latest tool-render details reported by the running job. */
 	latestDetails?: Record<string, unknown>;
+	/** Time of the most recent explicit progress report from the job body. */
+	lastProgressAt?: number;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -59,6 +65,13 @@ export interface AsyncJob {
 	 * until the caller invokes `markRunning()` from the run context.
 	 */
 	queued?: boolean;
+}
+
+/** Occupancy of the manager's real execution slots at one observation point. */
+export interface AsyncJobConcurrencySnapshot {
+	running: number;
+	queued: number;
+	limit: number;
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -174,6 +187,36 @@ export class AsyncJobManager {
 		return activeCount >= this.#maxRunningJobs;
 	}
 
+	/** Snapshot real manager capacity without scheduling work or polling. */
+	getConcurrencySnapshot(): AsyncJobConcurrencySnapshot {
+		let running = 0;
+		let queued = 0;
+		for (const job of this.#jobs.values()) {
+			if (job.status !== "running") continue;
+			if (job.queued) queued++;
+			else running++;
+		}
+		return { running, queued, limit: this.#maxRunningJobs };
+	}
+
+	/**
+	 * One-based position among this owner's caller-managed queued jobs, in
+	 * registration order. Jobs from other owners never affect the position.
+	 */
+	getQueuePosition(id: string): number | undefined {
+		const job = this.#jobs.get(id);
+		if (job?.status !== "running" || !job.queued) return undefined;
+
+		let position = 0;
+		for (const candidate of this.#jobs.values()) {
+			if (candidate.ownerId !== job.ownerId || candidate.status !== "running" || !candidate.queued) continue;
+			position++;
+			if (candidate.id === id) return position;
+		}
+
+		return undefined;
+	}
+
 	register(
 		type: "bash" | "task",
 		label: string,
@@ -207,22 +250,26 @@ export class AsyncJobManager {
 		this.#suppressedDeliveries.delete(id);
 		const abortController = new AbortController();
 		const startTime = Date.now();
+		const queued = options?.queued === true;
 
 		const job: AsyncJob = {
 			id,
 			type,
 			status: "running",
 			startTime,
+			queuedAt: startTime,
+			startedAt: queued ? undefined : startTime,
 			label,
 			abortController,
 			promise: Promise.resolve(),
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
-			queued: options?.queued === true,
+			queued,
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
 			if (details) job.latestDetails = details;
+			job.lastProgressAt = Date.now();
 			if (!options?.onProgress) return;
 			try {
 				await options.onProgress(text, details);
@@ -240,7 +287,9 @@ export class AsyncJobManager {
 					signal: abortController.signal,
 					reportProgress,
 					markRunning: () => {
+						if (job.status !== "running" || !job.queued) return;
 						job.queued = false;
+						job.startedAt ??= Date.now();
 					},
 				});
 				if (job.status === "cancelled") {

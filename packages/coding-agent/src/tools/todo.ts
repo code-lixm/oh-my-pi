@@ -823,10 +823,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			call: { op: "done", task: "Wire workspace" },
 		},
 		{
-			caption: "Complete a whole phase",
-			call: { op: "done", phase: "Auth" },
-		},
-		{
 			caption: "Remove all tasks",
 			call: { op: "rm" },
 		},
@@ -863,6 +859,16 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const entry = resolved;
 		const op = entry.op;
+		if (op === "done" && !entry.task) {
+			const errors = [
+				tSettingsUi("Complete todo items individually; phase-wide completion is unavailable to agents."),
+			];
+			return {
+				content: [{ type: "text", text: formatSummary(previousPhases, errors) }],
+				details: { op, phases: previousPhases, storage },
+				isError: true,
+			};
+		}
 		// Pure-view calls are reads: no normalization, no state write.
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly

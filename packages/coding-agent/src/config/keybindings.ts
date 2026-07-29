@@ -31,6 +31,7 @@ interface AppKeybindings {
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
 	"app.editor.external": true;
+	"app.editor.clear": true;
 	"app.message.followUp": true;
 	"app.retry": true;
 	"app.message.dequeue": true;
@@ -138,6 +139,10 @@ export const KEYBINDINGS = {
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",
 		description: tSettingsUi("Open external editor"),
+	},
+	"app.editor.clear": {
+		defaultKeys: "alt+c",
+		description: tSettingsUi("Clear editor"),
 	},
 	"app.message.followUp": {
 		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
@@ -530,6 +535,7 @@ function migrateKeybindingsConfigFile(agentDir: string): void {
 }
 
 const USER_CLAIMABLE_DEFAULT_KEYBINDINGS = [
+	"app.editor.clear",
 	"app.message.followUp",
 	"app.thinking.cycle",
 	"app.model.cycleForward",
@@ -540,6 +546,8 @@ function userClaimableDefaultKey(keybinding: Keybinding): KeyId | undefined {
 	switch (keybinding) {
 		case "app.message.followUp":
 			return "ctrl+q";
+		case "app.editor.clear":
+			return "alt+c";
 		case "app.thinking.cycle":
 			return "ctrl+p";
 		case "app.model.cycleForward":

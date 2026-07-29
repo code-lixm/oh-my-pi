@@ -84,7 +84,6 @@ import type { CustomMessage, CustomMessagePayload } from "./messages";
 import { isAdvisorCard, isTerminalTextAssistantAnswer } from "./queued-messages";
 import {
 	formatRetryFallbackSelector,
-	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
 } from "./retry-fallback-chains";
@@ -138,7 +137,7 @@ interface AdvisorRetryFallbackState {
 	role: string;
 	originalSelector: string;
 	originalThinkingLevel: ThinkingLevel;
-	lastAppliedThinkingLevel: ThinkingLevel;
+	userTurnEpoch: number;
 }
 
 interface ActiveAdvisor {
@@ -260,6 +259,7 @@ export class SessionAdvisors {
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
+	#userTurnEpoch = 0;
 	#advisorYieldQueueUnsubscribe: (() => void) | undefined;
 
 	constructor(host: SessionAdvisorsHost, options: SessionAdvisorsOptions) {
@@ -273,6 +273,11 @@ export class SessionAdvisors {
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
+	}
+
+	/** Marks a user-input process so stale advisor fallback state resets before its next batch. */
+	beginUserTurn(): void {
+		this.#userTurnEpoch++;
 	}
 
 	/** Delivers one completed primary turn to every live advisor. */
@@ -445,11 +450,11 @@ export class SessionAdvisors {
 	 * Re-prime the advisor across a conversation boundary: `/new`, `/branch`,
 	 * `/btw`, `/tree`, and session switch/resume. Beyond {@link AdvisorRuntime.reset}
 	 * (which only re-primes the advisor's transcript view and is also fired by
-	 * within-conversation rewrites like compaction/shake/rewind), this clears the
-	 * session-level interrupt latches so the prior conversation's cooldown cannot
-	 * leak into the new one: the post-interrupt immune-turn window
-	 * (`#advisorPrimaryTurnsCompleted`, `#advisorInterruptImmuneTurnStart`) and the
-	 * user-interrupt auto-resume suppression flag. It also drops advisor deliveries
+	 * within-conversation rewrites like compaction/shake/rewind), this restores a
+	 * transient fallback before clearing session-level interrupt latches: the
+	 * post-interrupt immune-turn window (`#advisorPrimaryTurnsCompleted`,
+	 * `#advisorInterruptImmuneTurnStart`) and the user-interrupt auto-resume
+	 * suppression flag. It also drops advisor deliveries
 	 * still queued against the prior conversation — pending asides in the yield
 	 * queue (advisor entries use `skipIdleFlush`, so they linger until the next
 	 * `drainLazy` rather than self-flushing), interrupting cards parked in the
@@ -464,6 +469,7 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			a.agentUnsubscribe?.();
 			a.agentUnsubscribe = undefined;
+			this.#restoreAdvisorUserModelAfterFallback(a, true);
 			a.runtime.reset();
 			a.adviseTool.resetDeliveredNotes();
 			a.emissionGuard.reset();
@@ -1014,27 +1020,15 @@ export class SessionAdvisors {
 		return nextThinkingLevel;
 	}
 
-	/** Restore an advisor's configured primary once its fallback cooldown expires. */
-	async #maybeRestoreAdvisorRetryFallbackPrimary(advisor: ActiveAdvisor): Promise<void> {
+	/** Restore an advisor's configured primary before its next advisor turn. */
+	#restoreAdvisorUserModelAfterFallback(advisor: ActiveAdvisor, force = false): void {
 		const fallback = advisor.retryFallback;
-		if (!fallback || getRetryFallbackRevertPolicy(this.#host.settings) !== "cooldown-expiry") return;
+		if (!fallback || (!force && fallback.userTurnEpoch === this.#userTurnEpoch)) return;
+		advisor.retryFallback = undefined;
+		advisor.retryFallbackPendingSuccess = false;
 
 		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
-		if (!originalSelector) {
-			advisor.retryFallback = undefined;
-			advisor.retryFallbackPendingSuccess = false;
-			return;
-		}
-		const currentSelector = formatRetryFallbackSelector(advisor.agent.state.model, advisor.thinkingLevel);
-		if (currentSelector === originalSelector.raw) {
-			if (!this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) {
-				advisor.retryFallback = undefined;
-				advisor.retryFallbackPendingSuccess = false;
-			}
-			return;
-		}
-		if (this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) return;
-
+		if (!originalSelector) return;
 		const resolvedPrimary = resolveModelOverride(
 			[originalSelector.raw],
 			this.#host.modelRegistry,
@@ -1043,17 +1037,7 @@ export class SessionAdvisors {
 		const primaryModel =
 			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
 		if (!primaryModel) return;
-		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, advisor.providerSessionId);
-		if (!apiKey) return;
-
-		const thinkingToApply =
-			advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
-				? fallback.originalThinkingLevel
-				: advisor.thinkingLevel;
-		this.#setAdvisorModel(advisor, primaryModel, thinkingToApply);
-		this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(primaryModel));
-		advisor.retryFallback = undefined;
-		advisor.retryFallbackPendingSuccess = false;
+		this.#setAdvisorModel(advisor, primaryModel, fallback.originalThinkingLevel);
 	}
 
 	/**
@@ -1139,19 +1123,16 @@ export class SessionAdvisors {
 
 			const originalThinkingLevel = advisor.thinkingLevel;
 			const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-			const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-			if (advisor.retryFallback) {
-				advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-			} else {
+			this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
+			if (!advisor.retryFallback) {
 				advisor.retryFallback = {
 					role,
 					originalSelector: currentSelector,
 					originalThinkingLevel,
-					lastAppliedThinkingLevel: nextThinkingLevel,
+					userTurnEpoch: this.#userTurnEpoch,
 				};
 			}
 			advisor.retryFallbackPendingSuccess = true;
-			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
 			await this.#host.emitSessionEvent({
 				type: "retry_fallback_applied",
 				from: currentSelector,
@@ -1186,7 +1167,6 @@ export class SessionAdvisors {
 			logger.warn("Advisor context promotion failed", {
 				advisor: advisor.name,
 				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${targetModel.provider}/${targetModel.id}`,
 				error: String(error),
 			});
 			return false;
@@ -1194,7 +1174,7 @@ export class SessionAdvisors {
 	}
 
 	async #maintainAdvisorContext(advisor: ActiveAdvisor, incomingTokens: number): Promise<boolean> {
-		await this.#maybeRestoreAdvisorRetryFallbackPrimary(advisor);
+		this.#restoreAdvisorUserModelAfterFallback(advisor);
 		const agent = advisor.agent;
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");

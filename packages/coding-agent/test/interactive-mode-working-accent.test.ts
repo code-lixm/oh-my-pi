@@ -3,10 +3,11 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import * as shimmerModule from "@oh-my-pi/pi-coding-agent/modes/theme/shimmer";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as sessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
-import type { Container, NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
+import { type Container, type NativeScrollbackLiveRegion, Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 type Harness = {
@@ -31,6 +32,7 @@ async function createHarness(sessionName: string): Promise<Harness> {
 	const session = {
 		sessionManager,
 		settings,
+		getAgentId: () => MAIN_AGENT_ID,
 		agent: {
 			state: { tools: [] },
 			metadataForProvider: () => undefined,
@@ -240,5 +242,27 @@ describe("InteractiveMode working-message session accent cache", () => {
 			expect(renders[i]).toContain(expectedBaselines[i]);
 		}
 		perfSpy.mockRestore();
+	});
+});
+
+describe("InteractiveMode loading activity summary", () => {
+	it("shows Main activity detail only while no visible activity card already owns it", async () => {
+		const { mode } = await createHarness("Working activity summary");
+		const marker = "UNIQUE_MAIN_ACTIVITY_DETAIL";
+		(mode.viewSession as unknown as { activity: unknown }).activity = {
+			phase: "tool",
+			label: "Read",
+			detail: marker,
+			phaseStartedAtMs: Date.now(),
+			lastActivityAtMs: Date.now(),
+		};
+		startStableLoader(mode);
+		expect(Bun.stripANSI(renderLoader(mode))).toContain(marker);
+		mode.subagentContainer.addChild(new Text("visible activity card"));
+		mode.refreshWorkingActivitySummary();
+		expect(Bun.stripANSI(renderLoader(mode))).not.toContain(marker);
+		mode.subagentContainer.clear();
+		mode.refreshWorkingActivitySummary();
+		expect(Bun.stripANSI(renderLoader(mode))).toContain(marker);
 	});
 });

@@ -33,6 +33,7 @@ type ConfigurableEditorAction = Extract<
 	| "app.tools.expand"
 	| "app.thinking.toggle"
 	| "app.editor.external"
+	| "app.editor.clear"
 	| "app.history.search"
 	| "app.message.dequeue"
 	| "app.retry"
@@ -55,6 +56,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.tools.expand": ["ctrl+o"],
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
+	"app.editor.clear": ["alt+c"],
 	"app.history.search": ["ctrl+r"],
 	"app.message.dequeue": ["alt+up"],
 	"app.retry": ["alt+r"],
@@ -417,14 +419,24 @@ export class CustomEditor extends Editor {
 	}
 
 	/** Clear the composer draft: optionally commit `historyText` to history, then
-	 *  reset the editor text and all pending draft-image state. The shared tail of
-	 *  every "message submitted" path; pass no argument for a plain discard. */
-	clearDraft(historyText?: string): void {
+	 * reset the editor text and all pending draft-image state. The shared tail of
+	 * every "message submitted" path; pass no argument for a plain discard.
+	 * Returns whether there was draft state to clear. */
+	clearDraft(historyText?: string): boolean {
 		if (historyText !== undefined) this.addToHistory(historyText);
+		if (
+			this.getText().length === 0 &&
+			(this.imageLinks?.length ?? 0) === 0 &&
+			this.pendingImages.length === 0 &&
+			this.pendingImageLinks.length === 0
+		) {
+			return false;
+		}
 		this.setText("");
 		this.imageLinks = undefined;
 		this.pendingImages = [];
 		this.pendingImageLinks = [];
+		return true;
 	}
 
 	/** Replace the composer draft with a restored historical prompt: sets the text and
@@ -543,6 +555,8 @@ export class CustomEditor extends Editor {
 	}
 	onEscape?: () => void;
 	onClear?: () => void;
+	/** Called when the configured editor-only clear shortcut is pressed. */
+	onClearEditor?: () => void;
 	onExit?: () => void;
 	onDisplayReset?: () => void;
 	onCycleThinkingLevel?: () => void;
@@ -957,6 +971,13 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
+			// Intercept configured editor-only clear shortcut.
+			if (this.#matchesAction(canonical, "app.editor.clear")) {
+				if (this.onClearEditor) this.onClearEditor();
+				else this.clearDraft();
+				return;
+			}
+
 			// Intercept configured clear shortcut
 			if (this.#matchesAction(canonical, "app.clear") && this.onClear) {
 				this.onClear();
@@ -1027,16 +1048,20 @@ export class CustomEditor extends Editor {
 	 */
 	handleDraftEdit(data: string): void {
 		// The base editor reserves Ctrl+C for parent handling and returns without
-		// touching the buffer, so the configured clear action must be dispatched
-		// explicitly here — otherwise the guard's "finish or clear the prompt"
-		// instruction has no working clear key. onClear (Ctrl+C → handleCtrlC)
-		// clears the draft on first press without swapping the editor slot; a
-		// standalone editor with no callback clears its own text.
+		// touching the buffer, so clear actions must be dispatched explicitly here —
+		// otherwise the guard's "finish or clear the prompt" instruction has no working
+		// clear key. Both actions clear through the composer draft path instead of
+		// swapping the editor slot.
 		const parsed = parseKey(data);
 		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
+		if (canonical !== undefined && this.#matchesAction(canonical, "app.editor.clear")) {
+			if (this.onClearEditor) this.onClearEditor();
+			else this.clearDraft();
+			return;
+		}
 		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
 			if (this.onClear) this.onClear();
-			else this.setText("");
+			else this.clearDraft();
 			return;
 		}
 		super.handleInput(data);

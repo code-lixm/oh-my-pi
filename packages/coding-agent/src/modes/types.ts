@@ -146,6 +146,10 @@ export interface InteractiveModeContext {
 	readonly viewSession: AgentSession;
 	/** Id of the focused agent, undefined when the main session is attached. */
 	readonly focusedAgentId: string | undefined;
+	/** Registry id of the ambient top-level runtime; unlike MAIN_AGENT_ID it changes after a top-level switch. */
+	readonly activeTopLevelId: string;
+	/** Foreground a live registered top-level runtime in the shared TUI. */
+	switchTopLevel(id: string): Promise<void>;
 	/** Focus a live subagent in the fullscreen read-only view. */
 	focusAgentSession(id: string): Promise<void>;
 	/** Cycle through live subagents; Main is reached only through unfocusSession. */
@@ -308,6 +312,8 @@ export interface InteractiveModeContext {
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;
 	ensureLoadingAnimation(): void;
+	/** Reconcile the loading row with visible live activity cards, when this UI supports it. */
+	refreshWorkingActivitySummary?(): void;
 	startPendingSubmission(input: {
 		text: string;
 		images?: ImageContent[];

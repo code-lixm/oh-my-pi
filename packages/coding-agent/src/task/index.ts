@@ -842,6 +842,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const agentSource = policy.agent.source;
 			const agentId = await outputManager.allocate(item.name?.trim() || generateTaskName());
 			const assignment = (item.task ?? "").trim();
+			const queuedAtMs = Date.now();
 			spawns.push({
 				agentId,
 				item,
@@ -853,6 +854,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agent: agentType,
 					agentSource,
 					status: "pending",
+					activity: {
+						phase: "queued",
+						label: "Queued",
+						phaseStartedAtMs: queuedAtMs,
+						lastActivityAtMs: queuedAtMs,
+					},
 					task: renderSubagentUserPrompt(assignment),
 					assignment,
 					recentTools: [],
@@ -1173,11 +1180,34 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							progress.cost = nextProgress.cost;
 							progress.toolCount = nextProgress.toolCount;
 							progress.currentTool = nextProgress.currentTool;
+							progress.currentToolArgs = nextProgress.currentToolArgs;
+							progress.currentToolStartMs = nextProgress.currentToolStartMs;
 							progress.lastIntent = nextProgress.lastIntent;
 							progress.recentTools = nextProgress.recentTools.slice();
 							progress.recentOutput = nextProgress.recentOutput.slice();
 							progress.retryState = nextProgress.retryState;
 							progress.retryFailure = nextProgress.retryFailure;
+							const inflightTaskDetails = nextProgress.inflightTaskDetails;
+							progress.inflightTaskDetails = inflightTaskDetails
+								? {
+										...inflightTaskDetails,
+										results: inflightTaskDetails.results.slice(),
+										...(inflightTaskDetails.outputPaths
+											? { outputPaths: inflightTaskDetails.outputPaths.slice() }
+											: {}),
+										...(inflightTaskDetails.progress
+											? { progress: inflightTaskDetails.progress.slice() }
+											: {}),
+										...(inflightTaskDetails.async ? { async: { ...inflightTaskDetails.async } } : {}),
+									}
+								: undefined;
+							const activity = nextProgress.activity;
+							progress.activity = activity
+								? {
+										...activity,
+										...(activity.progress ? { progress: { ...activity.progress } } : {}),
+									}
+								: undefined;
 						}
 						const updateText =
 							update.content.find(part => part.type === "text")?.text ??

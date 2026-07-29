@@ -9,6 +9,7 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
+import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -196,6 +197,20 @@ export interface RpcSubagentSnapshot {
 	sessionFile?: string;
 	lastUpdate: number;
 	progress?: AgentProgress;
+	/** Owning top-level session identity; absent for pre-multisession producers. */
+	sessionTitle?: string;
+	sessionId?: string;
+	activeTopLevelAgentId?: string;
+	/** Latest structured activity even when no full progress consumer is attached. */
+	activityState?: AgentActivityState;
+	/** Direct mirror of live nested task state; also retained under `progress`. */
+	inflightTaskDetails?: AgentProgress["inflightTaskDetails"];
+	/** Persisted model/retry metadata when the live progress object is unavailable. */
+	resolvedModel?: AgentProgress["resolvedModel"];
+	resolvedModelIsFallback?: AgentProgress["resolvedModelIsFallback"];
+	retryState?: AgentProgress["retryState"];
+	retryFailure?: AgentProgress["retryFailure"];
+	terminalStatus?: Extract<AgentProgress["status"], "failed" | "aborted">;
 	parentToolCallId?: string;
 }
 

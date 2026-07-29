@@ -71,6 +71,20 @@ function runningProgress(id: string, index: number): AgentProgress {
 		status: "running",
 		task: "task prompt",
 		assignment: "Do the thing.",
+		activity: {
+			phase: "delegating",
+			label: "Delegating task",
+			phaseStartedAtMs: 1_100,
+			lastActivityAtMs: 1_200,
+		},
+		currentTool: "task",
+		currentToolArgs: "delegate source revision",
+		currentToolStartMs: 1_050,
+		inflightTaskDetails: {
+			projectAgentsDir: null,
+			results: [],
+			totalDurationMs: 17,
+		},
 		recentTools: [],
 		recentOutput: [],
 		toolCount: 0,
@@ -105,7 +119,11 @@ describe("task runnable progress scheduling", () => {
 		const tool = await TaskTool.create(createSession(manager, scheduler));
 		const gates = new Map<string, PromiseWithResolvers<void>>();
 		const startedIds: string[] = [];
-		const snapshots: Array<Array<{ id: string; status: string }>> = [];
+		const snapshots: AgentProgress[][] = [];
+		const runningProgressDelivered = deferred<void>();
+		const sourceProgressMutated = deferred<void>();
+		let emittedRunningProgress: AgentProgress | undefined;
+		let forwardedRunningProgress: AgentProgress | undefined;
 
 		vi.spyOn(structuredSubagentModule, "runStructuredSubagent").mockImplementation(async request => {
 			const id = request.identity?.id;
@@ -113,7 +131,19 @@ describe("task runnable progress scheduling", () => {
 			const gate = deferred<void>();
 			gates.set(id, gate);
 			startedIds.push(id);
-			request.onProgress?.(runningProgress(id, request.index ?? 0));
+			const progress = runningProgress(id, request.index ?? 0);
+			request.onProgress?.(progress);
+			if (request.index === 0) {
+				emittedRunningProgress = progress;
+				await runningProgressDelivered.promise;
+				progress.activity!.label = "mutated source activity";
+				progress.activity!.phaseStartedAtMs = 9_001;
+				progress.activity!.lastActivityAtMs = 9_002;
+				progress.currentToolArgs = "mutated source tool args";
+				progress.currentToolStartMs = 9_003;
+				progress.inflightTaskDetails!.totalDurationMs = 9_004;
+				sourceProgressMutated.resolve();
+			}
 			await gate.promise;
 			return {
 				result: makeResult(id),
@@ -125,6 +155,7 @@ describe("task runnable progress scheduling", () => {
 			} as Awaited<ReturnType<typeof structuredSubagentModule.runStructuredSubagent>>;
 		});
 
+		const executeStartedAt = Date.now();
 		const result = await tool.execute(
 			"tc-pending",
 			{
@@ -137,14 +168,29 @@ describe("task runnable progress scheduling", () => {
 			} as TaskParams,
 			undefined,
 			update => {
-				if (update.details?.progress) {
-					snapshots.push(update.details.progress.map(progress => ({ id: progress.id, status: progress.status })));
+				const progress = update.details?.progress;
+				if (!progress) return;
+				snapshots.push(progress);
+				const forwarded = progress.find(
+					candidate => candidate.index === 0 && candidate.currentToolArgs === "delegate source revision",
+				);
+				if (forwarded && !forwardedRunningProgress) {
+					forwardedRunningProgress = forwarded;
+					runningProgressDelivered.resolve();
 				}
 			},
 		);
+		const initialObservedAt = Date.now();
 
-		const initialProgress = result.details?.progress?.map(progress => progress.status);
-		expect(initialProgress).toEqual(new Array(10).fill("pending"));
+		const initialProgress = result.details?.progress;
+		expect(initialProgress).toHaveLength(10);
+		for (const progress of initialProgress ?? []) {
+			expect(progress.status).toBe("pending");
+			expect(progress.activity?.phase).toBe("queued");
+			expect(progress.activity?.phaseStartedAtMs).toBeGreaterThanOrEqual(executeStartedAt);
+			expect(progress.activity?.lastActivityAtMs).toBeGreaterThanOrEqual(progress.activity!.phaseStartedAtMs);
+			expect(progress.activity?.lastActivityAtMs).toBeLessThanOrEqual(initialObservedAt);
+		}
 
 		await waitUntil(() => startedIds.length === 8, "expected only eight children to reach runStructuredSubagent");
 		expect(scheduler.snapshot()).toEqual({ active: 8, queued: 2, limit: 8 });
@@ -154,6 +200,33 @@ describe("task runnable progress scheduling", () => {
 		expect(snapshots.some(snapshot => snapshot.filter(progress => progress.status === "pending").length === 2)).toBe(
 			true,
 		);
+		const queuedSnapshot = snapshots.find(
+			snapshot => snapshot.filter(progress => progress.status === "pending").length === 2,
+		);
+		expect(queuedSnapshot).toBeDefined();
+		if (!queuedSnapshot) throw new Error("Expected a queued outer progress snapshot");
+		for (const progress of queuedSnapshot.filter(progress => progress.status === "pending")) {
+			expect(progress.activity?.phase).toBe("queued");
+			expect(Number.isFinite(progress.activity?.phaseStartedAtMs)).toBe(true);
+			expect(Number.isFinite(progress.activity?.lastActivityAtMs)).toBe(true);
+		}
+
+		await waitUntil(() => forwardedRunningProgress !== undefined, "expected forwarded child activity progress");
+		await sourceProgressMutated.promise;
+		if (!emittedRunningProgress || !forwardedRunningProgress) {
+			throw new Error("Expected source and forwarded child progress");
+		}
+		expect(forwardedRunningProgress.activity).toEqual({
+			phase: "delegating",
+			label: "Delegating task",
+			phaseStartedAtMs: 1_100,
+			lastActivityAtMs: 1_200,
+		});
+		expect(forwardedRunningProgress.currentToolArgs).toBe("delegate source revision");
+		expect(forwardedRunningProgress.currentToolStartMs).toBe(1_050);
+		expect(forwardedRunningProgress.inflightTaskDetails).toMatchObject({ totalDurationMs: 17 });
+		expect(forwardedRunningProgress.activity).not.toBe(emittedRunningProgress.activity);
+		expect(forwardedRunningProgress.inflightTaskDetails).not.toBe(emittedRunningProgress.inflightTaskDetails);
 
 		for (const id of startedIds) gates.get(id)?.resolve();
 		await waitUntil(() => startedIds.length === 10, "queued children never started after earlier ones finished");

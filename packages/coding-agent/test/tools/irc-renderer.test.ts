@@ -107,14 +107,12 @@ describe("hubToolRenderer send", () => {
 			}),
 		);
 		assertHeaderGlyphSpacing(collapsed, glyph, "IRC");
-		const outboundHeader = lineWith(collapsed, `IRC ${uiTheme.nav.selected} AuthLoader`);
+		const outboundHeader = lineWith(collapsed, "IRC Main → AuthLoader");
 		expect(outboundHeader).toContain("revived");
-		const replyHeader = lineWith(collapsed, `${uiTheme.nav.back} AuthLoader`);
+		const replyHeader = lineWith(collapsed, "AuthLoader → Main");
 		const replyHeaderText = stripAnsi(replyHeader).trimStart();
 		expect(replyHeaderText.startsWith(uiTheme.boxRound.vertical)).toBe(true);
-		expect(replyHeaderText.slice(uiTheme.boxRound.vertical.length).trimStart()).toContain(
-			`${uiTheme.nav.back} AuthLoader`,
-		);
+		expect(replyHeaderText.slice(uiTheme.boxRound.vertical.length).trimStart()).toContain("AuthLoader → Main");
 
 		const outboundBody = lineWith(collapsed, "auth.ts line 1");
 		const replyLine = lineWith(collapsed, "reply line 1");
@@ -171,6 +169,41 @@ describe("hubToolRenderer send", () => {
 		expect(rendered.some(line => line.includes("RateLimiter") && line.includes('unknown agent "RateLimiter"'))).toBe(
 			true,
 		);
+	});
+
+	it("renders successful receipts as muted delivery facts and failed receipts as errors", async () => {
+		const uiTheme = await theme();
+		const renderReceipt = (outcome: "woken" | "failed") =>
+			rawLines(
+				hubToolRenderer.renderResult(
+					{
+						content: [{ type: "text", text: "" }],
+						details: {
+							op: "send",
+							from: "Main",
+							to: "AuthLoader",
+							receipts: [
+								outcome === "failed"
+									? { to: "AuthLoader", outcome, error: "recipient exited" }
+									: { to: "AuthLoader", outcome },
+							],
+						} satisfies CoordinationDetails,
+						isError: outcome === "failed",
+					},
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{ op: "send", to: "AuthLoader", message: "ping" },
+				),
+				160,
+			);
+
+		const deliveredHeader = renderReceipt("woken")[0] ?? "";
+		const failedHeader = renderReceipt("failed")[0] ?? "";
+
+		expect(stripAnsi(deliveredHeader)).toContain("IRC Main → AuthLoader");
+		expect(deliveredHeader).toContain(uiTheme.fg("muted", "woken"));
+		expect(stripAnsi(failedHeader)).toContain("IRC Main → AuthLoader");
+		expect(failedHeader).toContain(uiTheme.fg("error", "failed"));
 	});
 
 	it("keeps delivery receipt and outbound body visible when an awaited send gets no reply", async () => {
@@ -566,7 +599,13 @@ describe("createIrcMessageCard", () => {
 		const glyph = uiTheme.styledSymbol("tool.irc", "accent");
 		const incoming = lines(
 			createIrcMessageCard(
-				{ kind: "incoming", from: "AuthLoader", body: "incoming body", timestamp: Date.now() - 15_000 },
+				{
+					kind: "incoming",
+					from: "AuthLoader",
+					body: "incoming body",
+					expectsReply: true,
+					timestamp: Date.now() - 15_000,
+				},
 				() => false,
 				uiTheme,
 			),
@@ -603,12 +642,13 @@ describe("createIrcMessageCard", () => {
 		assertHeaderGlyphSpacing(autoreply, glyph, "IRC");
 		assertHeaderGlyphSpacing(relay, glyph, "IRC");
 
-		const incomingHeader = lineWith(incoming, `IRC ${uiTheme.nav.back} AuthLoader`);
-		const autoreplyHeader = lineWith(autoreply, `IRC ${uiTheme.nav.selected} Main`);
-		const relayHeader = lineWith(relay, `IRC AuthLoader ${uiTheme.nav.selected} Main`);
+		const incomingHeader = lineWith(incoming, "IRC AuthLoader → you");
+		const autoreplyHeader = lineWith(autoreply, "IRC you → Main");
+		const relayHeader = lineWith(relay, "IRC AuthLoader → Main");
 		const incomingHeaderCol = headerStart(incomingHeader);
 		expect(headerStart(autoreplyHeader)).toBe(incomingHeaderCol);
 		expect(headerStart(relayHeader)).toBe(incomingHeaderCol);
+		expect(stripAnsi(incomingHeader)).toContain("needs reply");
 
 		const incomingCols = quoteColumns(lineWith(incoming, "incoming body"), "incoming body", uiTheme.md.quoteBorder);
 		const autoreplyCols = quoteColumns(

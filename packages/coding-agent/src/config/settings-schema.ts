@@ -1034,7 +1034,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Mouse Input"),
 			description: tSettingsUi(
-				"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.",
+				"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.",
 			),
 		},
 	},
@@ -1806,29 +1806,6 @@ export const SETTINGS_SCHEMA = {
 			),
 		},
 	},
-	"retry.fallbackRevertPolicy": {
-		type: "enum",
-		values: ["cooldown-expiry", "never"] as const,
-		default: "cooldown-expiry",
-		ui: {
-			tab: "model",
-			group: tSettingsUi("Retry & Fallback"),
-			label: tSettingsUi("Fallback Revert Policy"),
-			description: tSettingsUi("When to return to the primary model after a fallback"),
-			options: [
-				{
-					value: "cooldown-expiry",
-					label: tSettingsUi("Cooldown expiry"),
-					description: tSettingsUi("Return to the primary model after its suppression window ends"),
-				},
-				{
-					value: "never",
-					label: tSettingsUi("Never"),
-					description: tSettingsUi("Stay on the fallback model until manually changed"),
-				},
-			],
-		},
-	},
 
 	"providers.anthropic.serverSideFallback": {
 		type: "boolean",
@@ -2147,13 +2124,13 @@ export const SETTINGS_SCHEMA = {
 
 	"ask.timeout": {
 		type: "number",
-		default: 0,
+		default: 30,
 		ui: {
 			tab: "interaction",
 			group: tSettingsUi("Notifications"),
 			label: tSettingsUi("Ask Timeout"),
 			description: tSettingsUi(
-				"Auto-select explicit recommended ask options after this many seconds; questions without one keep waiting (0 disables)",
+				"In YOLO mode, auto-select explicit recommended ask options after this many seconds from presentation; questions without one keep waiting (0 disables)",
 			),
 			options: [
 				{ value: "0", label: tSettingsUi("Disabled") },

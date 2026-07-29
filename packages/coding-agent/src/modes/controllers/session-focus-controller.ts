@@ -4,13 +4,13 @@
  *
  * Focusing re-points the transcript, streaming event subscription, status
  * line, and editor prompt/interrupt at a subagent's live AgentSession (from
- * AgentRegistry) without touching the main session underneath; unfocusing
- * re-attaches the main session and rebuilds the transcript from its
+ * AgentRegistry) without touching the local top-level session underneath;
+ * unfocusing re-attaches that local root and rebuilds the transcript from its
  * authoritative state.
  */
 
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
+import { AgentRegistry, type RegistryEvent, resolveTopLevelAgent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import type { InteractiveModeContext } from "../types";
@@ -37,8 +37,8 @@ export class SessionFocusController {
 	/** Focus a live agent in the fullscreen read-only transcript view. */
 	async focusAgent(id: string): Promise<void> {
 		if (this.ctx.collabGuest) throw new Error("Viewing agents is unavailable in a collab session.");
-		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const ref = this.registry.get(id);
+		if (ref?.kind === "main" && ref.session === this.ctx.session) return this.unfocus();
 		if (!ref?.session || (ref.status !== "running" && ref.status !== "waiting" && ref.status !== "idle")) {
 			throw new Error(tSettingsUi("Agent {id} is not live", { id }));
 		}
@@ -51,7 +51,7 @@ export class SessionFocusController {
 		this.ctx.showFocusedAgentView(id);
 	}
 
-	/** Cycle through live subagents in stable creation order. Main is reached only via Esc. */
+	/** Cycle through live subagents in stable creation order; the local root is reached only via Esc. */
 	async cycleAgent(direction: "next" | "previous"): Promise<void> {
 		const agentIds = this.registry
 			.list()
@@ -78,17 +78,23 @@ export class SessionFocusController {
 		return this.focusAgent(agentIds[targetIndex]!);
 	}
 
-	/** Focus the focused agent's parent agent, falling back to the main session. No-op when unfocused. */
+	/** Focus the focused agent's parent, returning to the local root only from a top-level agent. */
 	async focusParent(): Promise<void> {
 		if (!this.#focusedAgentId) return;
-		const parentId = this.registry.get(this.#focusedAgentId)?.parentId;
-		if (parentId && parentId !== MAIN_AGENT_ID && this.registry.get(parentId)) {
-			return this.focusAgent(parentId);
-		}
-		return this.unfocus();
+		const focused = this.registry.get(this.#focusedAgentId);
+		if (!focused) return;
+		if (focused.kind === "main") return this.unfocus();
+
+		// A malformed chain must never silently route the view to an unrelated root.
+		const topLevel = resolveTopLevelAgent(this.registry, focused.id);
+		const parentId = focused.parentId;
+		const parent = parentId ? this.registry.get(parentId) : undefined;
+		if (!topLevel || !parent) return;
+		if (parent.id === topLevel.id && parent.session === this.ctx.session) return this.unfocus();
+		return this.focusAgent(parent.id);
 	}
 
-	/** Return to the main session. No-op when unfocused. */
+	/** Return to the local top-level session. No-op when unfocused. */
 	async unfocus(): Promise<void> {
 		if (!this.#focusedAgentId) return;
 		this.#focusedAgentId = undefined;

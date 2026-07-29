@@ -30,7 +30,6 @@ import { renderStatusLine } from "../tui";
 import {
 	CachedOutputBlock,
 	getOutputBlockBorderStyle,
-	isBorderlessOutputStyle,
 	markFramedBlockComponent,
 	type OutputBlockBorderStyle,
 	outputBlockContentWidth,
@@ -1528,9 +1527,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const outputBlock = new CachedOutputBlock();
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
-					const borderless = isBorderlessOutputStyle(getOutputBlockBorderStyle());
 					const header =
-						config.showHeader === false && !borderless
+						config.showHeader === false
 							? undefined
 							: renderStatusLine(
 									{
@@ -1612,9 +1610,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 									: "error"
 								: "success";
 					const borderStyle = getOutputBlockBorderStyle();
-					const borderless = isBorderlessOutputStyle(borderStyle);
 					const header =
-						config.showHeader === false && !borderless
+						config.showHeader === false
 							? undefined
 							: renderStatusLine(
 									success

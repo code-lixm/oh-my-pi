@@ -28,6 +28,7 @@ type HubToolActivityEntry = {
 	args: HubRenderArgs;
 	result?: HubActivityResult;
 	partial: boolean;
+	hidden?: boolean;
 };
 
 export type HubIrcActivityEvent = {
@@ -36,6 +37,7 @@ export type HubIrcActivityEvent = {
 	to?: string;
 	body?: string;
 	replyTo?: string;
+	expectsReply?: boolean;
 	timestamp?: number;
 	sourceId?: string;
 };
@@ -66,9 +68,9 @@ function receiptStatus(receipts: readonly IrcDeliveryReceipt[], isError: boolean
 		};
 	}
 	if (receipts.length === 1) {
-		return { color: "success", text: tSettingsUi(receipts[0]!.outcome) };
+		return { color: "dim", text: tSettingsUi(receipts[0]!.outcome) };
 	}
-	return { color: "success", text: tSettingsUi("{count} delivered", { count: receipts.length }) };
+	return { color: "dim", text: tSettingsUi("{count} delivered", { count: receipts.length }) };
 }
 function activityStatus(status: string): { color: ThemeColor; text: string } {
 	switch (status) {
@@ -245,6 +247,8 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		if (!entry) return;
 		entry.result = result;
 		entry.partial = isPartial;
+		entry.hidden = false;
+		if (!isPartial) this.#collapseIdenticalRoster(entry);
 		this.#invalidate();
 	}
 
@@ -314,6 +318,45 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		return true;
 	}
 
+	/** Keep one live roster row for an uninterrupted run of equal `list` snapshots. */
+	#collapseIdenticalRoster(entry: HubToolActivityEntry): void {
+		const result = entry.result;
+		if (entry.args.op !== "list" || !result || result.isError || entry.partial) return;
+		const index = this.#entries.indexOf(entry);
+		if (index < 1) return;
+
+		let previous: HubToolActivityEntry | undefined;
+		for (let previousIndex = index - 1; previousIndex >= 0; previousIndex--) {
+			const candidate = this.#entries[previousIndex];
+			if (candidate?.kind !== "tool" || candidate.args.op !== "list") return;
+			if (!candidate.hidden) {
+				previous = candidate;
+				break;
+			}
+		}
+		if (!previous?.result || previous.partial || previous.result.isError) return;
+
+		const peers = (result.details as Partial<CoordinationDetails> | undefined)?.peers ?? [];
+		const previousPeers = (previous.result.details as Partial<CoordinationDetails> | undefined)?.peers ?? [];
+		const sameRoster =
+			peers.length === previousPeers.length &&
+			peers.every((peer, peerIndex) => {
+				const prior = previousPeers[peerIndex];
+				return (
+					prior !== undefined &&
+					peer.id === prior.id &&
+					peer.displayName === prior.displayName &&
+					peer.kind === prior.kind &&
+					peer.status === prior.status &&
+					peer.parentId === prior.parentId &&
+					peer.unread === prior.unread &&
+					peer.lastActivity === prior.lastActivity &&
+					peer.activity === prior.activity
+				);
+			});
+		if (sameRoster) entry.hidden = true;
+	}
+
 	#buildFrame(width: number): OutputBlockOptions | undefined {
 		const contentWidth = outputBlockContentWidth(width);
 		const renderExpanded = this.#finalized && this.#expanded;
@@ -326,7 +369,9 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			rows.push(...entryRows);
 			const settled =
 				entry.kind === "tool"
-					? entry.result !== undefined && !entry.partial && (this.#finalized || !isWaitingPollEntry(entry))
+					? entry.result !== undefined &&
+						!entry.partial &&
+						(this.#finalized || (!isWaitingPollEntry(entry) && entry.args.op !== "list"))
 					: entry.settled;
 			if (stablePrefix && settled) settledContentRows += entryRows.length;
 			else stablePrefix = false;
@@ -350,6 +395,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	}
 
 	#entryLines(entry: HubActivityEntry, expanded: boolean): string[] {
+		if (entry.kind === "tool" && entry.hidden) return [];
 		if (entry.kind !== "tool") return this.#ircLines(entry, expanded);
 		const op = entry.args.op;
 		if (op === "send") return this.#sendLines(entry, expanded);
@@ -361,16 +407,22 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 
 	#sendLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
 		const details = (entry.result?.details ?? {}) as Partial<CoordinationDetails>;
+		const from = details.from ?? "?";
 		const peer = details.to ?? entry.args.to?.trim() ?? "?";
 		const receipts = details.receipts ?? [];
 		const status = entry.result
 			? receiptStatus(receipts, entry.result.isError === true)
 			: { color: "dim" as const, text: tSettingsUi("pending") };
-		const head = `  ${theme.fg("accent", theme.nav.selected)} ${theme.fg("customMessageLabel", replaceTabs(peer))} ${theme.fg(status.color, status.text)}`;
+		const head = `  ${theme.fg("customMessageLabel", replaceTabs(from))} ${theme.fg("accent", "→")} ${theme.fg("customMessageLabel", replaceTabs(peer))} ${theme.fg(status.color, status.text)}`;
 		const body = entry.args.message?.trim() || (entry.result?.isError ? resultText(entry.result) : "");
 		const lines = activityBodyLines(head, body, expanded, "dim");
 		if (details.waited === null && entry.result?.isError) {
 			lines.push(`  ${theme.fg("warning", tSettingsUi("no reply"))}`);
+		}
+		for (const receipt of receipts) {
+			if (receipt.outcome !== "failed") continue;
+			const detail = receipt.error ? ` ${theme.format.dash} ${replaceTabs(receipt.error)}` : "";
+			lines.push(`  ${theme.fg("error", `${replaceTabs(receipt.to)}${detail}`)}`);
 		}
 		return lines;
 	}
@@ -434,15 +486,16 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 
 	#ircLines(entry: HubIrcActivityEntry, expanded: boolean): string[] {
 		const age = entry.age;
+		const needsReply = entry.expectsReply ? ` ${theme.fg("warning", tSettingsUi("needs reply"))}` : "";
 		if (entry.kind === "incoming") {
-			const head = `  ${theme.fg("accent", theme.nav.back)} ${theme.fg("customMessageLabel", replaceTabs(entry.from?.trim() || "?"))}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+			const head = `  ${theme.fg("customMessageLabel", replaceTabs(entry.from?.trim() || "?"))} ${theme.fg("accent", "→")} ${theme.fg("customMessageLabel", replaceTabs(entry.to?.trim() || tSettingsUi("you")))}${needsReply}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			return activityBodyLines(head, entry.body ?? "", expanded);
 		}
 		if (entry.kind === "autoreply") {
-			const head = `  ${theme.fg("accent", theme.nav.selected)} ${theme.fg("customMessageLabel", replaceTabs(entry.to?.trim() || "?"))} ${theme.fg("dim", tSettingsUi("auto"))}`;
+			const head = `  ${theme.fg("customMessageLabel", replaceTabs(entry.from?.trim() || tSettingsUi("you")))} ${theme.fg("accent", "→")} ${theme.fg("customMessageLabel", replaceTabs(entry.to?.trim() || "?"))} ${theme.fg("dim", tSettingsUi("auto"))}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			return activityBodyLines(head, entry.body ?? "", expanded, "dim");
 		}
-		const head = `  ${theme.fg("customMessageLabel", replaceTabs(entry.from?.trim() || "?"))} ${theme.fg("accent", theme.nav.selected)} ${theme.fg("customMessageLabel", replaceTabs(entry.to?.trim() || "?"))}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+		const head = `  ${theme.fg("customMessageLabel", replaceTabs(entry.from?.trim() || "?"))} ${theme.fg("accent", "→")} ${theme.fg("customMessageLabel", replaceTabs(entry.to?.trim() || "?"))}${needsReply}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 		return activityBodyLines(head, entry.body ?? "", expanded);
 	}
 }

@@ -3,11 +3,19 @@
  */
 import type { TUI } from "@oh-my-pi/pi-tui";
 
+export interface CountdownTimerOptions {
+	/** Absolute deadline to use when the timer starts. */
+	deadlineMs?: number;
+	/** Defer starting until {@link CountdownTimer.start} is called. */
+	start?: boolean;
+}
+
 export class CountdownTimer {
 	#intervalId: NodeJS.Timeout | undefined;
 	#expireTimeoutId: NodeJS.Timeout | undefined;
 	#remainingSeconds: number;
 	#deadlineMs = 0;
+	#started = false;
 	readonly #initialMs: number;
 
 	constructor(
@@ -15,10 +23,11 @@ export class CountdownTimer {
 		private tui: TUI | undefined,
 		private onTick: (seconds: number) => void,
 		private onExpire: () => void,
+		options: CountdownTimerOptions = {},
 	) {
 		this.#initialMs = timeoutMs;
 		this.#remainingSeconds = Math.ceil(timeoutMs / 1000);
-		this.#start();
+		if (options.start !== false) this.start(options.deadlineMs);
 	}
 
 	#calculateRemainingSeconds(now = Date.now()): number {
@@ -26,17 +35,28 @@ export class CountdownTimer {
 		return Math.ceil(remainingMs / 1000);
 	}
 
-	#start(): void {
+	/** Start once, optionally from a deadline established by another surface. */
+	start(deadlineMs?: number): void {
+		if (this.#started) return;
+		this.#started = true;
+		this.#arm(deadlineMs ?? Date.now() + this.#initialMs);
+	}
+
+	#arm(deadlineMs: number): void {
+		this.dispose();
+		this.#deadlineMs = deadlineMs;
 		const now = Date.now();
-		this.#deadlineMs = now + this.#initialMs;
 		this.#remainingSeconds = this.#calculateRemainingSeconds(now);
 		this.onTick(this.#remainingSeconds);
 		this.tui?.requestRender();
 
-		this.#expireTimeoutId = setTimeout(() => {
-			this.dispose();
-			this.onExpire();
-		}, this.#initialMs);
+		this.#expireTimeoutId = setTimeout(
+			() => {
+				this.dispose();
+				this.onExpire();
+			},
+			Math.max(0, this.#deadlineMs - now),
+		);
 
 		this.#startInterval();
 	}
@@ -56,10 +76,13 @@ export class CountdownTimer {
 		}, 1000);
 	}
 
-	/** Reset the countdown to its initial value */
+	/** Reset the countdown to its initial value. */
 	reset(): void {
-		this.dispose();
-		this.#start();
+		if (!this.#started) {
+			this.start();
+			return;
+		}
+		this.#arm(Date.now() + this.#initialMs);
 	}
 
 	dispose(): void {

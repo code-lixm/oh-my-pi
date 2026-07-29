@@ -172,8 +172,8 @@ describe("FocusedAgentView", () => {
 		expect(wide[1]).toContain("Build worker");
 		expect(wide[1].endsWith(controls)).toBe(true);
 		expect(wide.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
-		expect(wide.at(-3)).toContain("Main needs input");
-		expect(wide.at(-2)).toContain("running");
+		expect(wide[2]).toContain("running");
+		expect(wide.at(-2)).toContain("Main needs input");
 		expect(wide.at(-1)).not.toContain(controls);
 		expect(wide.filter(line => line.includes("trace-")).length).toBe(
 			narrow.filter(line => line.includes("trace-")).length + 1,
@@ -217,7 +217,7 @@ describe("FocusedAgentView", () => {
 		expect(rendered[1]).not.toContain("Esc:主任务");
 		expect(rendered[1]).not.toContain("j/k:滚动");
 		expect(rendered[1]).not.toContain("enter:展开");
-		expect(rendered.at(-3)).toContain("运行中");
+		expect(rendered[2]).toContain("运行中");
 		expect(rendered.at(-2)).toContain(controls);
 		expect(rendered.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
 		expect(rendered.join("\n")).not.toContain("p:上一个");
@@ -243,21 +243,39 @@ describe("FocusedAgentView", () => {
 		expect(rendered).toContain("last 8.0 tok/s");
 	});
 
-	it("uses the registry status in the footer when progress is unavailable", () => {
+	it("places registry metadata directly below the title and never repeats it after the transcript", () => {
 		setSettingsUiLocale("en");
 		pinRows(14);
 
 		for (const status of ["idle", "waiting"] as const) {
 			const registry = new AgentRegistry();
 			registerSub(registry, "Worker", "Build worker", session("claude-live"), status);
-			const rendered = makeView({ registry, progressById: { Worker: undefined } })
+			const lines = makeView({ registry, progressById: { Worker: undefined } })
 				.render(120)
 				.map(line => Bun.stripANSI(line));
-			const footer = rendered.at(-2) ?? "";
+			const titleIndex = lines.findIndex(line => line.includes("Build worker"));
+			const metadataIndex = lines.findIndex((line, index) => index > titleIndex && line.includes(status));
+			const transcriptIndex = lines.findIndex(line => line.includes("subagent transcript line"));
 
-			expect(footer).toContain(status);
-			expect(footer).not.toContain("Waiting for progress…");
+			expect(metadataIndex).toBe(titleIndex + 1);
+			expect(metadataIndex).toBeLessThan(transcriptIndex);
+			expect(lines.slice(transcriptIndex + 1).join("\n")).not.toContain(status);
 		}
+	});
+
+	it("reserves the transcript scrollbar column even when the focused transcript fits", () => {
+		setSettingsUiLocale("en");
+		pinRows(14);
+		const registry = new AgentRegistry();
+		registerSub(registry, "Worker", "Build worker", session("claude-live"));
+		const marker = "single-line-transcript-marker";
+		const lines = makeView({ registry, transcriptLines: [marker] })
+			.render(100)
+			.map(line => Bun.stripANSI(line));
+		const transcriptLine = lines.find(line => line.includes(marker));
+
+		expect(transcriptLine).toBeDefined();
+		expect(transcriptLine?.endsWith("█")).toBe(true);
 	});
 
 	it("closes on Esc, navigates configured previous/next keys, toggles expand, and ignores ordinary text", () => {

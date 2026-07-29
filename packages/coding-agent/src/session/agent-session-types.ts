@@ -24,6 +24,7 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
+import type { AgentActivityState } from "../registry/agent-activity";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import type { ConfiguredThinkingLevel } from "../thinking";
@@ -33,6 +34,7 @@ import type {
 	WorkspaceCheckpointMutatorGuard,
 	WorkspaceCheckpointService,
 } from "../workspace-checkpoints/types";
+import type { AgentSessionEvent } from "./agent-session-events";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -62,7 +64,14 @@ export interface AsyncJobSnapshot {
 	delivery: AsyncJobDeliveryState;
 }
 
+export type { AgentActivityPhase, AgentActivityState } from "../registry/agent-activity";
 export type { ShakeMode, ShakeResult } from "./shake-types";
+
+/** An in-process session event annotated with the activity snapshot current at dispatch. */
+export type AgentSessionActivityEvent = AgentSessionEvent & { readonly activity: AgentActivityState };
+
+/** Listener variant that can consume the structured session activity snapshot. */
+export type AgentSessionActivityListener = (event: AgentSessionActivityEvent) => void;
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -93,12 +102,10 @@ export interface UsageFallbackConfirmation {
 export interface InitialRetryFallbackState {
 	/** Role whose configured primary was unavailable. */
 	role: string;
-	/** Configured primary selector retained for restoration when it becomes available. */
+	/** Configured primary selector restored before the next user turn. */
 	originalSelector: string;
 	/** Thinking selector configured for the unavailable primary. */
 	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
-	/** Prevent cooldown restoration when startup selected this fallback from live usage health. */
-	pinned?: boolean;
 }
 
 /** Dependencies and initial state used to construct an AgentSession. */

@@ -1,13 +1,13 @@
 import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
-import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
+import type { CollabUiSelectItem } from "@oh-my-pi/pi-wire";
+import type { CollabUiRequestDraft } from "../../collab/protocol";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
 	CompactOptions,
 	ExtensionActions,
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
-	ExtensionAskDialogResultItem,
 	ExtensionCommandContextActions,
 	ExtensionContextActions,
 	ExtensionError,
@@ -48,6 +48,34 @@ interface CollabAskDialogWinner {
  *  `string | "unavailable" | undefined` channel that let a guest answer of
  *  "unavailable" collide with the transport sentinel. */
 type GuestUiResult = { kind: "answered"; value: string } | { kind: "cancelled" } | { kind: "unavailable" };
+
+interface GuestAskQuestionState {
+	selectedOptions: Set<string>;
+	customInput?: string;
+	timedOut: boolean;
+}
+
+type GuestAskQuestionOutcome = "answered" | "chat" | "cancelled" | "deadline" | "unavailable";
+type GuestAskRequestResult = GuestUiResult | { kind: "deadline" };
+type GuestAskRequester = (request: CollabUiRequestDraft) => Promise<GuestAskRequestResult>;
+function getValidAskRecommendedIndex(question: ExtensionAskDialogQuestion): number | undefined {
+	const { recommended } = question;
+	if (typeof recommended !== "number" || !Number.isInteger(recommended)) return undefined;
+	return recommended >= 0 && recommended < question.options.length ? recommended : undefined;
+}
+
+function hasAskAutomaticDeadline(questions: ExtensionAskDialogQuestion[], timeout: number | undefined): boolean {
+	return (
+		typeof timeout === "number" &&
+		Number.isFinite(timeout) &&
+		timeout > 0 &&
+		questions.some(question => getValidAskRecommendedIndex(question) !== undefined)
+	);
+}
+
+function isGuestAskQuestionAnswered(state: GuestAskQuestionState): boolean {
+	return state.selectedOptions.size > 0 || state.customInput !== undefined;
+}
 
 function toWireSelectOptions(options: ExtensionUISelectItem[]): CollabUiSelectItem[] {
 	return options.map(option =>
@@ -605,12 +633,29 @@ export class ExtensionUiController {
 		const parentSignal = dialogOptions?.signal;
 		const localSignal = parentSignal ? AbortSignal.any([parentSignal, localAbort.signal]) : localAbort.signal;
 		const remoteSignal = parentSignal ? AbortSignal.any([parentSignal, remoteAbort.signal]) : remoteAbort.signal;
-		const localWinner = this.#showLocalAskDialog(questions, { ...dialogOptions, signal: localSignal }).then(
-			(value): CollabAskDialogWinner => ({ source: "local", value }),
-		);
-		const remoteWinner: Promise<CollabAskDialogWinner> = this.#runGuestAskDialog(questions, remoteSignal).then(
-			result => (result === "unavailable" ? localWinner : { source: "remote", value: result }),
-		);
+		const { promise: deadlineReady, resolve: resolveDeadlineReady } = Promise.withResolvers<number | undefined>();
+		if (!hasAskAutomaticDeadline(questions, dialogOptions?.timeout)) {
+			resolveDeadlineReady(undefined);
+		}
+		let localSettled = false;
+		const localWinner = this.#showLocalAskDialog(questions, {
+			...dialogOptions,
+			signal: localSignal,
+			onDeadline: deadlineMs => {
+				dialogOptions?.onDeadline?.(deadlineMs);
+				resolveDeadlineReady(deadlineMs);
+			},
+		}).then((value): CollabAskDialogWinner => {
+			localSettled = true;
+			resolveDeadlineReady(undefined);
+			return { source: "local", value };
+		});
+		const remoteWinner: Promise<CollabAskDialogWinner> = (async () => {
+			const deadlineMs = await deadlineReady;
+			if (localSettled || remoteSignal.aborted) return await localWinner;
+			const result = await this.#runGuestAskDialog(questions, remoteSignal, deadlineMs);
+			return result === "unavailable" ? await localWinner : { source: "remote", value: result };
+		})();
 		const winner = await Promise.race([localWinner, remoteWinner]);
 		if (winner.source === "remote") localAbort.abort();
 		else remoteAbort.abort();
@@ -690,6 +735,8 @@ export class ExtensionUiController {
 				},
 				{
 					timeout: dialogOptions?.timeout,
+					deadlineMs: dialogOptions?.deadlineMs,
+					onDeadline: dialogOptions?.onDeadline,
 					onTimeout: dialogOptions?.onTimeout,
 					tui: this.ctx.ui,
 					inputGuard,
@@ -751,122 +798,203 @@ export class ExtensionUiController {
 	async #runGuestAskDialog(
 		questions: ExtensionAskDialogQuestion[],
 		signal: AbortSignal,
+		deadlineMs?: number,
 	): Promise<ExtensionAskDialogResult | "unavailable" | undefined> {
-		const results: ExtensionAskDialogResultItem[] = [];
-		for (const question of questions) {
-			const result = await this.#runGuestAskQuestion(question, signal);
-			if (result === "unavailable" || result === undefined) return result;
-			if (result === "chat") return { kind: "chat" };
-			results.push(result);
+		const states: GuestAskQuestionState[] = questions.map(() => ({
+			selectedOptions: new Set<string>(),
+			timedOut: false,
+		}));
+		const deadline = typeof deadlineMs === "number" && Number.isFinite(deadlineMs) ? deadlineMs : undefined;
+		let deadlineExpired = false;
+		let deadlineDeferredForEditor = false;
+		let deadlineDefaultsApplied = false;
+		let activeRequest: { kind: CollabUiRequestDraft["kind"]; abort: AbortController } | undefined;
+		const applyDeadlineDefaults = (): void => {
+			if (deadlineDefaultsApplied) return;
+			deadlineDefaultsApplied = true;
+			for (const [index, question] of questions.entries()) {
+				const state = states[index];
+				if (!state || isGuestAskQuestionAnswered(state)) continue;
+				const recommended = getValidAskRecommendedIndex(question);
+				const option = recommended === undefined ? undefined : question.options[recommended];
+				if (!option) continue;
+				state.selectedOptions.add(option.label);
+				state.timedOut = true;
+			}
+		};
+		const flushDeferredDeadline = (): boolean => {
+			if (!deadlineDeferredForEditor) return false;
+			deadlineDeferredForEditor = false;
+			applyDeadlineDefaults();
+			return true;
+		};
+		const expireDeadline = (): void => {
+			if (deadlineExpired) return;
+			deadlineExpired = true;
+			if (activeRequest?.kind === "editor") {
+				// Match the local Ask dialog: do not throw away an in-progress custom
+				// answer; apply defaults only after that editor settles.
+				deadlineDeferredForEditor = true;
+				return;
+			}
+			applyDeadlineDefaults();
+			activeRequest?.abort.abort();
+		};
+		const deadlineTimer =
+			deadline === undefined ? undefined : setTimeout(expireDeadline, Math.max(0, deadline - Date.now()));
+		const requestGuest: GuestAskRequester = async request => {
+			const abort = new AbortController();
+			const active = { kind: request.kind, abort };
+			const useDeadline = deadline !== undefined && !deadlineExpired;
+			activeRequest = active;
+			try {
+				const result = await this.#requestGuestUiString(
+					useDeadline ? { ...request, deadlineMs: deadline } : request,
+					AbortSignal.any([signal, abort.signal]),
+				);
+				return useDeadline && deadlineExpired && !signal.aborted && result.kind !== "answered"
+					? { kind: "deadline" }
+					: result;
+			} finally {
+				if (activeRequest === active) activeRequest = undefined;
+			}
+		};
+		try {
+			for (let index = 0; index < questions.length; ) {
+				const question = questions[index];
+				const state = states[index];
+				if (!question || !state) {
+					index++;
+					continue;
+				}
+				if (isGuestAskQuestionAnswered(state)) {
+					index++;
+					continue;
+				}
+				const outcome = await this.#runGuestAskQuestion(question, state, requestGuest, flushDeferredDeadline);
+				if (outcome === "unavailable") return "unavailable";
+				if (outcome === "cancelled") return undefined;
+				if (outcome === "chat") return { kind: "chat" };
+				if (outcome === "answered") index++;
+			}
+			return {
+				kind: "submit",
+				results: questions.map((question, index) => {
+					const state = states[index]!;
+					return {
+						id: question.id,
+						question: question.question,
+						options: question.options.map(option => option.label),
+						multi: question.multi ?? false,
+						selectedOptions: question.options
+							.map(option => option.label)
+							.filter(label => state.selectedOptions.has(label)),
+						customInput: state.customInput,
+						timedOut: state.timedOut || undefined,
+					};
+				}),
+			};
+		} finally {
+			clearTimeout(deadlineTimer);
 		}
-		return { kind: "submit", results };
 	}
 
 	async #runGuestAskQuestion(
 		question: ExtensionAskDialogQuestion,
-		signal: AbortSignal,
-	): Promise<ExtensionAskDialogResultItem | "chat" | "unavailable" | undefined> {
+		state: GuestAskQuestionState,
+		requestGuest: GuestAskRequester,
+		flushDeferredDeadline: () => boolean,
+	): Promise<GuestAskQuestionOutcome> {
 		const askOtherOption = tSettingsUi("Other (type your own)");
 		const askChatOption = tSettingsUi("Chat about this");
 		const askNextOption = tSettingsUi("Next →");
-		const selected = new Set<string>();
-		let customInput: string | undefined;
 		const baseOptions: CollabUiSelectItem[] = question.options.map(option =>
 			option.description?.trim() ? { label: option.label, description: option.description.trim() } : option.label,
 		);
 		if (question.multi) {
 			while (true) {
 				const checkedIndices = question.options
-					.map((option, index) => (selected.has(option.label) ? index : -1))
+					.map((option, index) => (state.selectedOptions.has(option.label) ? index : -1))
 					.filter(index => index >= 0);
 				// Mirror the local dialog's Next gating: omit the Next option until
 				// at least one option is checked or a custom answer exists, so a
-				// guest cannot submit an empty multi-select result
-				// (PRRT_kwDOQxs0bc6OFbDW). The remote select has no "disabled" row
-				// concept, so we omit rather than dim it.
-				const hasAnswer = selected.size > 0 || customInput !== undefined;
+				// guest cannot submit an empty multi-select result.
+				const hasAnswer = isGuestAskQuestionAnswered(state);
 				const options = [...baseOptions, askOtherOption];
 				if (hasAnswer) options.push(askNextOption);
 				options.push(askChatOption);
-				const choice = await this.#requestGuestUiString(
-					{
-						kind: "select",
-						title: question.question,
-						options,
-						selectionMarker: "checkbox",
-						checkedIndices,
-						markableCount: question.options.length,
-						helpText: hasAnswer
-							? tSettingsUi("up/down navigate  enter toggle  Next → continue  esc cancel")
-							: tSettingsUi("up/down navigate  enter toggle  esc cancel"),
-					},
-					signal,
-				);
+				const choice = await requestGuest({
+					kind: "select",
+					title: question.question,
+					options,
+					selectionMarker: "checkbox",
+					checkedIndices,
+					markableCount: question.options.length,
+					helpText: hasAnswer
+						? tSettingsUi("up/down navigate  enter toggle  Next → continue  esc cancel")
+						: tSettingsUi("up/down navigate  enter toggle  esc cancel"),
+				});
+				if (choice.kind === "deadline") return "deadline";
 				if (choice.kind === "unavailable") return "unavailable";
-				if (choice.kind === "cancelled") return undefined;
+				if (choice.kind === "cancelled") return "cancelled";
 				if (choice.value === askChatOption) return "chat";
-				if (choice.value === askNextOption) break;
+				if (choice.value === askNextOption) return "answered";
 				if (choice.value === askOtherOption) {
-					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle(tSettingsUi("Custom answer: "), question.question) },
-						signal,
-					);
+					const input = await requestGuest({
+						kind: "editor",
+						title: boundPromptTitle(tSettingsUi("Custom answer: "), question.question),
+						prefill: state.customInput,
+					});
+					if (input.kind === "answered") state.customInput = input.value;
+					const deadlineApplied = flushDeferredDeadline();
+					if (input.kind === "deadline") return "deadline";
 					if (input.kind === "unavailable") return "unavailable";
-					// Guest cancelled the Other editor: keep the ask open and
-					// return to the option list instead of cancelling the whole ask.
-					if (input.kind === "cancelled") continue;
-					customInput = input.value;
-					break;
+					if (input.kind === "cancelled") {
+						if (deadlineApplied) return isGuestAskQuestionAnswered(state) ? "answered" : "deadline";
+						continue;
+					}
+					return "answered";
 				}
-				if (selected.has(choice.value)) selected.delete(choice.value);
-				else selected.add(choice.value);
-			}
-		} else {
-			const recommended =
-				typeof question.recommended === "number" && Number.isInteger(question.recommended)
-					? question.recommended
-					: 0;
-			const initialIndex = Math.max(0, Math.min(recommended, Math.max(0, question.options.length - 1)));
-			while (true) {
-				const choice = await this.#requestGuestUiString(
-					{
-						kind: "select",
-						title: question.question,
-						options: [...baseOptions, askOtherOption, askChatOption],
-						initialIndex,
-						selectionMarker: "radio",
-						markableCount: question.options.length,
-						helpText: tSettingsUi("up/down navigate  enter select  esc cancel"),
-					},
-					signal,
-				);
-				if (choice.kind === "unavailable") return "unavailable";
-				if (choice.kind === "cancelled") return undefined;
-				if (choice.value === askChatOption) return "chat";
-				if (choice.value === askOtherOption) {
-					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle(tSettingsUi("Custom answer: "), question.question) },
-						signal,
-					);
-					if (input.kind === "unavailable") return "unavailable";
-					// Guest cancelled the Other editor: re-show the select list
-					// instead of cancelling the whole ask.
-					if (input.kind === "cancelled") continue;
-					customInput = input.value;
-				} else {
-					selected.add(choice.value);
-				}
-				break;
+				if (state.selectedOptions.has(choice.value)) state.selectedOptions.delete(choice.value);
+				else state.selectedOptions.add(choice.value);
 			}
 		}
-		return {
-			id: question.id,
-			question: question.question,
-			options: question.options.map(option => option.label),
-			multi: question.multi ?? false,
-			selectedOptions: question.options.map(option => option.label).filter(label => selected.has(label)),
-			customInput,
-		};
+		const recommended = getValidAskRecommendedIndex(question);
+		while (true) {
+			const choice = await requestGuest({
+				kind: "select",
+				title: question.question,
+				options: [...baseOptions, askOtherOption, askChatOption],
+				...(recommended === undefined ? {} : { initialIndex: recommended }),
+				selectionMarker: "radio",
+				markableCount: question.options.length,
+				helpText: tSettingsUi("up/down navigate  enter select  esc cancel"),
+			});
+			if (choice.kind === "deadline") return "deadline";
+			if (choice.kind === "unavailable") return "unavailable";
+			if (choice.kind === "cancelled") return "cancelled";
+			if (choice.value === askChatOption) return "chat";
+			if (choice.value === askOtherOption) {
+				const input = await requestGuest({
+					kind: "editor",
+					title: boundPromptTitle(tSettingsUi("Custom answer: "), question.question),
+					prefill: state.customInput,
+				});
+				if (input.kind === "answered") state.customInput = input.value;
+				const deadlineApplied = flushDeferredDeadline();
+				if (input.kind === "deadline") return "deadline";
+				if (input.kind === "unavailable") return "unavailable";
+				if (input.kind === "cancelled") {
+					if (deadlineApplied) return isGuestAskQuestionAnswered(state) ? "answered" : "deadline";
+					continue;
+				}
+				return "answered";
+			} else {
+				state.selectedOptions.clear();
+				state.selectedOptions.add(choice.value);
+			}
+			return "answered";
+		}
 	}
 
 	async #requestGuestUiString(request: CollabUiRequestDraft, signal: AbortSignal): Promise<GuestUiResult> {

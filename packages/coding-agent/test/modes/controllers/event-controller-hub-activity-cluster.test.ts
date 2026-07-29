@@ -247,6 +247,70 @@ describe("EventController hub activity cluster", () => {
 		expect(renderText(chatContainer)).not.toContain("ready");
 	});
 
+	it("collapses consecutive identical list snapshots while retaining the original roster", async () => {
+		const { controller, chatContainer } = createLiveFixture();
+		const peers = [
+			{
+				id: "Worker",
+				displayName: "Worker",
+				kind: "sub",
+				status: "running",
+				parentId: "Main",
+				unread: 0,
+				lastActivity: 1_700_000_000_100,
+				activity: "checking routes",
+			},
+		];
+
+		for (const toolCallId of ["hub-list-first", "hub-list-same"]) {
+			await controller.handleEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "hub",
+				args: { op: "list" },
+			} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId,
+				toolName: "hub",
+				result: {
+					content: [{ type: "text", text: "1 peer" }],
+					details: { op: "list", peers },
+				},
+				isError: false,
+			} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+		}
+
+		const rendered = renderText(hubGroups(chatContainer)[0]!);
+		expect(rendered).toContain("checking routes");
+		expect(rendered.match(/Worker/g)).toHaveLength(1);
+	});
+
+	it("drops a successful empty inbox result instead of leaving a transcript card", async () => {
+		const { controller, chatContainer } = createLiveFixture();
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-empty-inbox",
+			toolName: "hub",
+			args: { op: "inbox" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "hub-empty-inbox",
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "Inbox empty." }],
+				details: { op: "inbox", inbox: [] },
+				useless: true,
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(renderText(chatContainer)).not.toContain("Inbox empty.");
+	});
+
 	it("keeps awaited send receipts and outbound body visible without no-reply text", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 

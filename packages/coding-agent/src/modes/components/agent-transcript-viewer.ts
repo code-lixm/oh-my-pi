@@ -15,22 +15,30 @@
  */
 import * as fs from "node:fs";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Component, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
+import {
+	type Component,
+	matchesKey,
+	padding,
+	routeSgrMouseInput,
+	ScrollView,
+	type TUI,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
+import type { AgentRef, AgentRegistry } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
+import { renderAgentActivityDisplay, renderAgentStatusBadge, selectAgentActivity } from "./agent-activity-display";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
-import { formatContextUsage } from "./status-line/context-thresholds";
 
 export interface AgentTranscriptViewerDeps {
 	agentId: string;
@@ -59,6 +67,7 @@ export interface AgentTranscriptViewerDeps {
 const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
+const HEADER_METADATA_GAP = 2;
 
 /** Sanitize wire-delivered error text for a single TUI row: tabs → spaces,
  *  newlines collapsed, absolute paths shortened, truncated to `maxWidth`.
@@ -69,7 +78,7 @@ function sanitizeErrorLine(text: string, maxWidth: number): string {
 	const singleLine = replaceTabs(text)
 		.replace(/[\r\n]+/g, " ")
 		.replace(/\/[^\s'")\]]+/g, p => shortenPath(p));
-	return truncateToWidth(singleLine, Math.max(10, maxWidth));
+	return truncateToWidth(singleLine, Math.max(1, maxWidth));
 }
 
 interface LocalTranscriptSentinel {
@@ -120,21 +129,6 @@ function sentinelsFromFile(file: string, size: number): LocalTranscriptSentinel[
 	return sentinelOffsets(size).map(offset => ({ offset, bytes: readFileRangeSync(file, offset, length) }));
 }
 
-function statusBadge(status: AgentStatus): string {
-	switch (status) {
-		case "running":
-			return theme.fg("success", tSettingsUi("running"));
-		case "waiting":
-			return theme.fg("warning", tSettingsUi("waiting"));
-		case "idle":
-			return theme.fg("accent", tSettingsUi("idle"));
-		case "parked":
-			return theme.fg("muted", tSettingsUi("parked"));
-		case "aborted":
-			return theme.fg("error", tSettingsUi("aborted"));
-	}
-}
-
 export class AgentTranscriptViewer implements Component {
 	#builder: ChatTranscriptBuilder;
 	#scrollView: ScrollView;
@@ -167,7 +161,7 @@ export class AgentTranscriptViewer implements Component {
 		});
 		this.#scrollView = new ScrollView([], {
 			height: 10,
-			scrollbar: "auto",
+			scrollbar: "always",
 			theme: { track: t => theme.fg("dim", t), thumb: t => theme.fg("accent", t) },
 		});
 		this.#refresh();
@@ -502,11 +496,27 @@ export class AgentTranscriptViewer implements Component {
 		// gutter — so body rows are emitted WITHOUT an extra outer space, sharing that
 		// gutter with the header/footer (which add one). Stacking both shifted the body
 		// one column right of the title.
-		const innerWidth = Math.max(20, width - 2);
+		const innerWidth = Math.max(1, width - 2);
 		const contentWidth = Math.max(1, width - 1);
 		const ref = this.deps.registry.get(this.deps.agentId);
-
-		const headerLines = this.#headerLines(ref?.status, ref?.kind, ref?.parentId);
+		const observed = this.#observed();
+		const activity = selectAgentActivity(
+			ref?.activityState,
+			observed?.progress,
+			Boolean(this.deps.remote || ref?.status === "parked"),
+		);
+		const activityDisplay = renderAgentActivityDisplay({
+			activity,
+			progress: observed?.progress,
+			width: innerWidth,
+		});
+		const headerLines = this.#headerLines(
+			ref,
+			observed,
+			activityDisplay.activityLine,
+			activityDisplay.statsLine,
+			innerWidth,
+		);
 		const footerLines = this.#footerLines();
 		const noticeLine =
 			this.#remoteError && !this.#builder.isEmpty
@@ -518,7 +528,7 @@ export class AgentTranscriptViewer implements Component {
 		const viewportHeight = Math.max(3, termHeight - chrome);
 
 		const contentLines = this.#builder.isEmpty
-			? [` ${theme.fg("dim", this.#placeholder(Math.max(10, contentWidth - 1)))}`]
+			? [` ${theme.fg("dim", this.#placeholder(Math.max(1, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
 		this.#scrollView.setLines(contentLines);
 		this.#scrollView.setHeight(viewportHeight);
@@ -526,71 +536,69 @@ export class AgentTranscriptViewer implements Component {
 
 		const lines: string[] = [];
 		lines.push(...new DynamicBorder().render(width));
-		for (const headerLine of headerLines) lines.push(` ${headerLine}`);
+		for (const headerLine of headerLines) lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
 		lines.push(...new DynamicBorder().render(width));
 		for (const row of this.#scrollView.render(width)) lines.push(row);
 		if (noticeLine) lines.push(noticeLine);
-		lines.push(...footerLines);
+		for (const footerLine of footerLines) lines.push(` ${truncateToWidth(footerLine, innerWidth)}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
 
-	#headerLines(status: AgentStatus | undefined, kind: string | undefined, parentId: string | undefined): string[] {
-		const lines = [theme.fg("accent", `${tSettingsUi("Agent Hub")} ${theme.sep.dot} ${this.deps.agentId}`)];
-		if (status && kind) {
-			const kindTag = theme.fg(
-				"dim",
-				` ${parentId ? `${kind} ${theme.sep.dot} ${tSettingsUi("of {parentId}", { parentId })}` : kind}`,
-			);
-			const progress = this.deps.observers
-				?.getSessions()
-				.find(session => session.id === this.deps.agentId)?.progress;
-			const model = progress?.resolvedModel ?? this.#model;
-			const modelLabel = model ? theme.fg("muted", `${theme.sep.dot}${replaceTabs(model)}`) : "";
-			lines.push(`${theme.bold(this.deps.agentId)} ${statusBadge(status)}${kindTag}${modelLabel}`);
-		}
+	#headerLines(
+		ref: AgentRef | undefined,
+		observed: ObservableSession | undefined,
+		activityLine: string | undefined,
+		statsLine: string | undefined,
+		width: number,
+	): string[] {
+		const lines = [[theme.fg("accent", tSettingsUi("Agent Hub")), theme.bold(this.deps.agentId)].join(theme.sep.dot)];
+		lines.push(...this.#alignHeaderFields(this.#identity(ref, observed), statsLine, width));
+		if (activityLine) lines.push(truncateToWidth(activityLine, Math.max(1, width)));
 		return lines;
+	}
+
+	#identity(ref: AgentRef | undefined, observed: ObservableSession | undefined): string | undefined {
+		if (!ref?.status || !ref.kind) return undefined;
+		const kind = ref.parentId
+			? `${ref.kind} ${theme.sep.dot} ${tSettingsUi("of {parentId}", { parentId: ref.parentId })}`
+			: ref.kind;
+		const model = observed?.progress?.resolvedModel ?? this.#model;
+		return [
+			renderAgentStatusBadge(ref.status),
+			theme.fg("dim", kind),
+			model ? theme.fg("muted", replaceTabs(model)) : "",
+		]
+			.filter(Boolean)
+			.join(theme.sep.dot);
+	}
+
+	#alignHeaderFields(primary: string | undefined, secondary: string | undefined, width: number): string[] {
+		const maxWidth = Math.max(1, width);
+		if (!primary) return secondary ? [truncateToWidth(secondary, maxWidth)] : [];
+		const left = truncateToWidth(primary, maxWidth);
+		if (!secondary) return [left];
+		const leftWidth = visibleWidth(left);
+		const rightWidth = visibleWidth(secondary);
+		if (leftWidth + HEADER_METADATA_GAP + rightWidth <= maxWidth) {
+			return [`${left}${padding(maxWidth - leftWidth - rightWidth)}${secondary}`];
+		}
+		return [left, truncateToWidth(secondary, maxWidth)];
 	}
 
 	#footerLines(): string[] {
-		const lines: string[] = [];
-		const statsLine = this.#statsLine();
-		if (statsLine) lines.push(` ${statsLine}`);
-		const hint = tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
-			expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
-		});
-		lines.push(` ${theme.fg("dim", hint)}`);
-		return lines;
+		return [
+			theme.fg(
+				"dim",
+				tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
+					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
+				}),
+			),
+		];
 	}
 
-	#statsLine(): string {
-		const observed: ObservableSession | undefined = this.deps.observers
-			?.getSessions()
-			.find(s => s.id === this.deps.agentId);
-		const progress = observed?.progress;
-		if (!progress) return "";
-		const stats: string[] = [];
-		if (progress.tokensPerSecond && progress.tokensPerSecond > 0) {
-			const rate = `${progress.tokensPerSecond.toFixed(1)} tok/s`;
-			stats.push(progress.tokensPerSecondLive ? rate : `last ${rate}`);
-		}
-		if (progress.tokens > 0) stats.push(`${formatNumber(progress.tokens)} tok`);
-		if (progress.contextTokens && progress.contextTokens > 0) {
-			stats.push(
-				progress.contextWindow && progress.contextWindow > 0
-					? formatContextUsage((progress.contextTokens / progress.contextWindow) * 100, progress.contextWindow)
-					: formatNumber(progress.contextTokens),
-			);
-		}
-		if (progress.durationMs > 0) stats.push(formatDuration(progress.durationMs));
-		const parts: string[] = [];
-		if (stats.length > 0 || progress.toolCount > 0) {
-			const toolStat =
-				progress.toolCount > 0 ? `${formatNumber(progress.toolCount)} ${theme.icon.extensionTool}` : "";
-			parts.push(theme.fg("dim", [toolStat, ...stats].filter(Boolean).join(theme.sep.dot)));
-		}
-		if (progress.cost > 0) parts.push(theme.fg("statusLineCost", `$${progress.cost.toFixed(2)}`));
-		return parts.join(theme.sep.dot);
+	#observed(): ObservableSession | undefined {
+		return this.deps.observers?.getSessions().find(session => session.id === this.deps.agentId);
 	}
 
 	#placeholder(maxWidth: number): string {

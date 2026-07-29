@@ -281,6 +281,13 @@ describe("SessionFocusController", () => {
 		const h = makeHarness();
 		const parent = makeSessionStub();
 		const worker = makeSessionStub();
+		h.registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: "Main",
+			kind: "main",
+			session: h.main.session,
+			status: "idle",
+		});
 		registerSub(h.registry, "Parent", parent.session, MAIN_AGENT_ID, "Review parent");
 		registerSub(h.registry, "Worker", worker.session, "Parent", "Patch worker");
 
@@ -303,6 +310,70 @@ describe("SessionFocusController", () => {
 		]);
 	});
 
+	it("focusParent enters a secondary top-level session before returning to the local Main session", async () => {
+		const h = makeHarness();
+		const secondary = makeSessionStub();
+		const worker = makeSessionStub();
+		h.registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: "Main",
+			kind: "main",
+			session: h.main.session,
+			status: "idle",
+		});
+		h.registry.register({
+			id: "top-level:review",
+			displayName: "Review session",
+			kind: "main",
+			session: secondary.session,
+			status: "idle",
+		});
+		registerSub(h.registry, "Worker", worker.session, "top-level:review", "Patch worker");
+
+		await h.controller.focusAgent("Worker");
+		await h.controller.focusParent();
+
+		expect(h.controller.focusedAgentId).toBe("top-level:review");
+		expect(h.controller.target).toBe(secondary.session);
+		expect(h.setSessionCalls).toEqual([
+			[worker.session, "Worker", "Patch worker"],
+			[secondary.session, "top-level:review", "Review session"],
+		]);
+
+		await h.controller.focusParent();
+
+		expect(h.controller.focusedAgentId).toBeUndefined();
+		expect(h.controller.target).toBeUndefined();
+		expect(h.setSessionCalls.at(-1)).toEqual([h.main.session, undefined, undefined]);
+	});
+
+	it("keeps focus on a child whose parent is missing instead of falling back to Main", async () => {
+		const h = makeHarness();
+		const worker = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, "Missing", "Orphaned worker");
+
+		await h.controller.focusAgent("Worker");
+		await h.controller.focusParent();
+
+		expect(h.controller.focusedAgentId).toBe("Worker");
+		expect(h.controller.target).toBe(worker.session);
+		expect(h.setSessionCalls).toEqual([[worker.session, "Worker", "Orphaned worker"]]);
+	});
+
+	it("keeps focus on a child whose parent chain cycles", async () => {
+		const h = makeHarness();
+		const worker = makeSessionStub();
+		const parent = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, "Parent", "Cycle worker");
+		registerSub(h.registry, "Parent", parent.session, "Worker", "Cycle parent");
+
+		await h.controller.focusAgent("Worker");
+		await h.controller.focusParent();
+
+		expect(h.controller.focusedAgentId).toBe("Worker");
+		expect(h.controller.target).toBe(worker.session);
+		expect(h.setSessionCalls).toEqual([[worker.session, "Worker", "Cycle worker"]]);
+	});
 	it("auto-unfocuses and hides the read-only view when the focused ref detaches", async () => {
 		for (const status of ["parked", "aborted"] as const) {
 			const h = makeHarness();

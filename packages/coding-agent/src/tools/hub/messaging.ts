@@ -17,7 +17,7 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
-import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { type AgentRegistry, resolveTopLevelAgent } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { canSpawnAtDepth } from "../../task/types";
 import {
@@ -56,7 +56,8 @@ export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
 
 export function formatIncoming(msg: IrcMessage): string {
 	const replyTag = msg.replyTo ? ` (reply to ${msg.replyTo})` : "";
-	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
+	const expectsReplyTag = msg.expectsReply ? " (needs reply)" : "";
+	return `[${msg.id}] ${msg.from} → ${msg.to}${replyTag}${expectsReplyTag}: ${msg.body}`;
 }
 
 export function normalizeIrcTimeoutMs(value: number): number {
@@ -211,10 +212,11 @@ export async function executeSend(
 		// parked agent on a broadcast would be a stampede. Direct sends go
 		// through the bus unfiltered so parked recipients are revived.
 		const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
-		// A broadcast that also reaches the main agent delivers the body to it
-		// directly (its own incoming card); relaying the sibling legs to the
-		// main UI would then show the same body once per other recipient.
-		const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
+		// A sibling leg is relayed only when this broadcast also delivers the
+		// message directly to the sender's owning root. Other top-level roots
+		// cannot own that relay, even when their ids happen to be broadcast targets.
+		const owningRootId = isBroadcast ? resolveTopLevelAgent(registry, senderId)?.id : undefined;
+		const suppressRelay = owningRootId !== undefined && targets.includes(owningRootId);
 		const receipts = await Promise.all(
 			targets.map(target =>
 				bus.send(
@@ -369,16 +371,7 @@ export function ircGlyph(theme: Theme): string {
 }
 
 function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
-	switch (outcome) {
-		case "woken":
-			return "success";
-		case "revived":
-			return "warning";
-		case "injected":
-			return "accent";
-		case "failed":
-			return "error";
-	}
+	return outcome === "failed" ? "error" : "muted";
 }
 
 /** Glyph + status word, matching the agent-hub status conventions. */
@@ -433,13 +426,13 @@ export function bodyLines(
 	return lines;
 }
 
-/** Header title carrying the op direction: `IRC ➤ peer` out, `IRC ⟵ peer` in. */
-function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
+/** Header title carries an explicit direction even before the local id is known. */
+function callTitle(args: HubRenderArgs | undefined, _theme: Theme): string {
 	switch (args?.op) {
 		case "send":
-			return `${tSettingsUi("IRC")} ${theme.nav.selected} ${args.to?.trim() || "…"}`;
+			return `${tSettingsUi("IRC")} … → ${args.to?.trim() || "…"}`;
 		case "wait":
-			return `${tSettingsUi("IRC")} ${theme.nav.back} ${args.from?.trim() || tSettingsUi("anyone")}`;
+			return `${tSettingsUi("IRC")} ${args.from?.trim() || tSettingsUi("anyone")} → …`;
 		case "inbox":
 			return tSettingsUi("IRC inbox");
 		case "list":
@@ -488,22 +481,20 @@ export function createIrcMessageCard(
 		to?: string;
 		body?: string;
 		replyTo?: string;
+		expectsReply?: boolean;
 		timestamp?: number;
 	},
 	getExpanded: () => boolean,
 	uiTheme: Theme,
 ): Component {
-	const from = card.from?.trim() || "?";
-	const title =
-		card.kind === "incoming"
-			? `${tSettingsUi("IRC")} ${uiTheme.nav.back} ${from}`
-			: card.kind === "autoreply"
-				? `${tSettingsUi("IRC")} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-				: `${tSettingsUi("IRC")} ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+	const from = card.from?.trim() || (card.kind === "autoreply" ? tSettingsUi("you") : "?");
+	const to = card.to?.trim() || (card.kind === "incoming" ? tSettingsUi("you") : "?");
+	const title = `${tSettingsUi("IRC")} ${from} → ${to}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
 	if (card.kind === "autoreply") meta.push(tSettingsUi("auto"));
 	if (card.replyTo) meta.push(tSettingsUi("reply"));
+	if (card.expectsReply) meta.push(uiTheme.fg("warning", tSettingsUi("needs reply")));
 	const age = messageAge(card.timestamp);
 	if (age) meta.push(age);
 	return framedBlock(uiTheme, width => {
@@ -531,8 +522,9 @@ function renderSendResult(
 	theme: Theme,
 ): string[] {
 	const receipts = details.receipts ?? [];
+	const from = details.from ?? "?";
 	const to = details.to ?? args?.to?.trim() ?? "?";
-	const title = `${tSettingsUi("IRC")} ${theme.nav.selected} ${to}`;
+	const title = `${tSettingsUi("IRC")} ${from} → ${to}`;
 
 	// Pre-delivery failures (validation) and empty broadcasts carry no receipts.
 	if (receipts.length === 0) {
@@ -556,7 +548,7 @@ function renderSendResult(
 		meta.push(theme.fg(outcomeColor(receipt.outcome), tSettingsUi(receipt.outcome)));
 	} else {
 		if (delivered.length > 0)
-			meta.push(theme.fg("success", tSettingsUi("{count} delivered", { count: delivered.length })));
+			meta.push(theme.fg("dim", tSettingsUi("{count} delivered", { count: delivered.length })));
 		if (failedCount > 0) meta.push(theme.fg("error", tSettingsUi("{count} failed", { count: failedCount })));
 	}
 	// Successful send-await timeouts carry no actionable "no reply" signal: the
@@ -594,8 +586,9 @@ function renderSendResult(
 
 	if (waited) {
 		const age = messageAge(waited.ts);
+		const needsReply = waited.expectsReply ? ` ${theme.fg("warning", tSettingsUi("needs reply"))}` : "";
 		lines.push(
-			`  ${theme.fg("dim", theme.nav.back)} ${theme.fg("accent", waited.from)}${age ? ` ${theme.fg("dim", age)}` : ""}`,
+			`  ${theme.fg("dim", waited.from)} ${theme.fg("accent", "→")} ${theme.fg("accent", waited.to)}${needsReply}${age ? ` ${theme.fg("dim", age)}` : ""}`,
 		);
 		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
 	} else if (timedOut && result.isError) {
@@ -620,7 +613,7 @@ function renderWaitResult(
 			renderStatusLine(
 				{
 					icon: "warning",
-					title: `${tSettingsUi("IRC")} ${theme.nav.back} ${args?.from?.trim() || tSettingsUi("anyone")}`,
+					title: `${tSettingsUi("IRC")} ${args?.from?.trim() || tSettingsUi("anyone")} → …`,
 					meta: [tSettingsUi("timed out")],
 				},
 				theme,
@@ -630,9 +623,10 @@ function renderWaitResult(
 	}
 	const meta = [messageAge(waited.ts)];
 	if (waited.replyTo) meta.push(tSettingsUi("reply"));
+	if (waited.expectsReply) meta.push(theme.fg("warning", tSettingsUi("needs reply")));
 	return [
 		renderStatusLine(
-			{ iconOverride: ircGlyph(theme), title: `${tSettingsUi("IRC")} ${theme.nav.back} ${waited.from}`, meta },
+			{ iconOverride: ircGlyph(theme), title: `${tSettingsUi("IRC")} ${waited.from} → ${waited.to}`, meta },
 			theme,
 		),
 		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
@@ -668,7 +662,8 @@ function renderInboxResult(
 			renderItem: msg => {
 				const age = messageAge(msg.ts);
 				const replyBadge = msg.replyTo ? ` ${formatBadge(tSettingsUi("reply"), "muted", theme)}` : "";
-				const head = `${theme.fg("accent", msg.from)}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}`;
+				const needsReply = msg.expectsReply ? ` ${formatBadge(tSettingsUi("needs reply"), "warning", theme)}` : "";
+				const head = `${theme.fg("accent", msg.from)} ${theme.fg("dim", "→")} ${theme.fg("toolOutput", msg.to)}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}${needsReply}`;
 				return [head, ...bodyLines(msg.body, expanded, theme, { collapsedLines: 1 })];
 			},
 		},

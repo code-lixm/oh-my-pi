@@ -68,6 +68,97 @@ describe("hub jobs snapshot", () => {
 		expect((result.details as CoordinationDetails)?.jobs).toEqual([]);
 	});
 
+	test("surfaces queued positions, lifecycle timestamps, capacity, and only determinate progress", async () => {
+		const manager = new AsyncJobManager({ maxRunningJobs: 2, onJobComplete: () => {} });
+		managers.push(manager);
+		manager.registerDeliverySink("Main", () => {});
+		manager.registerDeliverySink("Other", () => {});
+		const firstReported = Promise.withResolvers<void>();
+		const secondReported = Promise.withResolvers<void>();
+		const firstCanStart = Promise.withResolvers<void>();
+		const secondCanStart = Promise.withResolvers<void>();
+		const foreignCanStart = Promise.withResolvers<void>();
+		const firstStarted = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+
+		const firstId = manager.register(
+			"task",
+			"Index workspace",
+			async ({ markRunning, reportProgress }) => {
+				await reportProgress("Indexed 2 files", { current: 2, total: 5, unit: "files" });
+				firstReported.resolve();
+				await firstCanStart.promise;
+				markRunning();
+				firstStarted.resolve();
+				await finish.promise;
+				return "indexed";
+			},
+			{ id: "first", ownerId: "Main", queued: true },
+		);
+		const foreignId = manager.register(
+			"task",
+			"Other owner",
+			async ({ markRunning }) => {
+				await foreignCanStart.promise;
+				markRunning();
+				await finish.promise;
+				return "other";
+			},
+			{ id: "foreign", ownerId: "Other", queued: true },
+		);
+		const secondId = manager.register(
+			"task",
+			"Unknown total",
+			async ({ markRunning, reportProgress }) => {
+				await reportProgress("Working", { current: 3 });
+				secondReported.resolve();
+				await secondCanStart.promise;
+				markRunning();
+				await finish.promise;
+				return "done";
+			},
+			{ id: "second", ownerId: "Main", queued: true },
+		);
+		await Promise.all([firstReported.promise, secondReported.promise]);
+		const tool = new HubTool(createToolSession({ manager, agentId: "Main" }));
+
+		const queuedResult = await tool.execute("queued", { op: "jobs" });
+		const queuedDetails = queuedResult.details as CoordinationDetails;
+		const firstQueued = queuedDetails.jobs?.find(job => job.id === firstId);
+		const secondQueued = queuedDetails.jobs?.find(job => job.id === secondId);
+		if (!firstQueued || !secondQueued) throw new Error("Expected both owned jobs in the hub snapshot");
+		expect(queuedDetails.jobs?.some(job => job.id === foreignId)).toBe(false);
+		expect(queuedDetails.jobConcurrency).toEqual({ running: 0, queued: 3, limit: 2 });
+		expect(firstQueued).toMatchObject({
+			queued: true,
+			queuePosition: 1,
+			progress: { completed: 2, total: 5, unit: "files" },
+		});
+		expect(typeof firstQueued.queuedAt).toBe("number");
+		expect(typeof firstQueued.lastProgressAt).toBe("number");
+		expect(firstQueued.startedAt).toBeUndefined();
+		expect(secondQueued).toMatchObject({ queued: true, queuePosition: 2 });
+		expect(secondQueued.progress).toBeUndefined();
+		expect(resultText(queuedResult)).toContain("queued (#1)");
+		expect(resultText(queuedResult)).toContain("queued (#2)");
+
+		firstCanStart.resolve();
+		await firstStarted.promise;
+		const runningResult = await tool.execute("running", { op: "jobs" });
+		const runningDetails = runningResult.details as CoordinationDetails;
+		const firstRunning = runningDetails.jobs?.find(job => job.id === firstId);
+		if (!firstRunning) throw new Error("Expected started job in the hub snapshot");
+		expect(runningDetails.jobConcurrency).toEqual({ running: 1, queued: 2, limit: 2 });
+		expect(firstRunning.queued).toBeUndefined();
+		expect(firstRunning.queuePosition).toBeUndefined();
+		expect(typeof firstRunning.startedAt).toBe("number");
+
+		secondCanStart.resolve();
+		foreignCanStart.resolve();
+		finish.resolve();
+		await manager.waitForAll();
+	});
+
 	test("list surfaces running subagents that have no backing job", async () => {
 		const registry = new AgentRegistry();
 		registerRunningSub(registry, "Worker");
@@ -81,7 +172,7 @@ describe("hub jobs snapshot", () => {
 
 		expect((result.details as CoordinationDetails)?.agents?.map(agent => agent.id)).toEqual(["Worker"]);
 		const text = resultText(result);
-		expect(text).toContain("Running Agents (1)");
+		expect(text).toContain("Active Agent Turns (1) — not job-backed");
 		expect(text).toContain("Worker");
 		expect(result.useless).toBeUndefined();
 	});

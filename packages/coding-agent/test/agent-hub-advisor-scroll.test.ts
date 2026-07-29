@@ -26,6 +26,7 @@ import {
 	type TUI,
 } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 const TS = new Date().toISOString();
 
@@ -179,12 +180,31 @@ function withViewer(fn: (viewer: AgentTranscriptViewer) => void): void {
 	}
 }
 
+function withShortViewer(fn: (viewer: AgentTranscriptViewer) => void): void {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-view-short-"));
+	const file = path.join(dir, "__advisor.jsonl");
+	fs.writeFileSync(
+		file,
+		`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "short", timestamp: TS, cwd: "/tmp" })}\n${messageLine("short", "SHORT_SCROLLBAR_MARKER")}\n`,
+	);
+	const viewer = makeViewer(file);
+	try {
+		fn(viewer);
+	} finally {
+		viewer.dispose();
+		removeSyncWithRetries(dir);
+	}
+}
+
 describe("AgentTranscriptViewer", () => {
 	let rowsDesc: PropertyDescriptor | undefined;
+	let previousLocale = getSettingsUiLocale();
 
 	beforeEach(async () => {
+		previousLocale = getSettingsUiLocale();
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
+		setSettingsUiLocale("en");
 		initTheme();
 		rowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
 		Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => 24, set: () => {} });
@@ -196,6 +216,7 @@ describe("AgentTranscriptViewer", () => {
 		} else {
 			Object.defineProperty(process.stdout, "rows", { configurable: true, value: undefined, writable: true });
 		}
+		setSettingsUiLocale(previousLocale);
 	});
 
 	it("aligns the title and body content on the same gutter", () => {
@@ -209,6 +230,35 @@ describe("AgentTranscriptViewer", () => {
 			expect(bodyLine).toBeDefined();
 			// The body must not sit one column right of the title.
 			expect(gutter(bodyLine!)).toBe(gutter(titleLine!));
+		});
+	});
+
+	it("places transcript metadata below the title and keeps it out of the footer", () => {
+		withViewer(viewer => {
+			viewer.render(80);
+			viewer.handleInput("g");
+			const lines = viewer.render(80).map(line => Bun.stripANSI(line));
+			const titleIndex = lines.findIndex(line => line.includes("Agent Hub"));
+			const metadataIndex = lines.findIndex((line, index) => index > titleIndex && line.includes("parked"));
+			const bodyIndex = lines.findIndex(line => line.includes("PROMPTMARKER"));
+
+			expect(metadataIndex).toBe(titleIndex + 1);
+			expect(metadataIndex).toBeLessThan(bodyIndex);
+			expect(lines.slice(bodyIndex + 1).join("\n")).not.toContain("parked");
+		});
+	});
+
+	it("reserves a transcript scrollbar column even when history fits in the viewport", () => {
+		withShortViewer(viewer => {
+			viewer.render(80);
+			viewer.handleInput("g");
+			const markerLine = viewer
+				.render(80)
+				.map(line => Bun.stripANSI(line))
+				.find(line => line.includes("SHORT_SCROLLBAR_MARKER"));
+
+			expect(markerLine).toBeDefined();
+			expect(markerLine?.endsWith("█")).toBe(true);
 		});
 	});
 

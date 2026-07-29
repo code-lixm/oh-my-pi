@@ -775,8 +775,7 @@ export class UiHelpers {
 	}
 
 	clearEditor(): void {
-		this.ctx.editor.clearDraft();
-		this.ctx.ui.requestRender();
+		if (this.ctx.editor.clearDraft()) this.ctx.ui.requestRender();
 	}
 
 	showError(errorMessage: string): void {

@@ -5,7 +5,12 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../../i18n/settings-locale";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
-import { MAIN_AGENT_ID } from "../../../registry/agent-registry";
+import {
+	AgentRegistry,
+	agentDisplayLabel,
+	MAIN_AGENT_ID,
+	resolveTopLevelAgent,
+} from "../../../registry/agent-registry";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
@@ -27,6 +32,12 @@ export type { SegmentContext } from "./types";
 
 function withIcon(icon: string, text: string): string {
 	return icon ? `${icon} ${text}` : text;
+}
+
+function focusedRootLabel(agentId: string): string {
+	const root = resolveTopLevelAgent(AgentRegistry.global(), agentId);
+	if (!root) return "?";
+	return root.id === MAIN_AGENT_ID && !root.sessionTitle?.trim() ? MAIN_AGENT_ID : agentDisplayLabel(root);
 }
 
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
@@ -94,8 +105,9 @@ const piSegment: StatusLineSegment = {
 	render(ctx) {
 		if (ctx.focusedAgentId) {
 			const icon = theme.icon.ghost ? `${theme.icon.ghost} ` : "";
+			const root = focusedRootLabel(ctx.focusedAgentId);
 			const name = ctx.focusedAgentDisplayName ?? ctx.focusedAgentId;
-			return { content: theme.fg("warning", `${icon}${MAIN_AGENT_ID} › ${name} `), visible: true };
+			return { content: theme.fg("warning", `${icon}${root} › ${name} `), visible: true };
 		}
 		const content = theme.icon.pi ? `${theme.icon.pi} ` : "";
 		return { content: theme.fg("accent", content), visible: true };

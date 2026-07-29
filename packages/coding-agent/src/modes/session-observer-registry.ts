@@ -1,3 +1,5 @@
+import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
+import { getPersistedAgentSnapshot } from "../registry/persisted-agent-snapshot";
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
@@ -22,6 +24,12 @@ export interface ObservableSession {
 	lastUpdate: number;
 	/** Latest progress snapshot from the subagent executor */
 	progress?: AgentProgress;
+	/** Last resolved selector restored from a durable task result, when available. */
+	resolvedModel?: string;
+	resolvedModelIsFallback?: boolean;
+	/** Durable retry state/result; omitted rather than synthesized for old JSONL. */
+	retryState?: AgentProgress["retryState"];
+	retryFailure?: AgentProgress["retryFailure"];
 }
 
 /** Coarse source of an observer change; callers use it to separate lifecycle work from high-frequency progress. */
@@ -93,6 +101,43 @@ export class SessionObserverRegistry {
 
 	getSessions(): ObservableSession[] {
 		const sessions = [...this.#sessions.values()];
+		const mainSessionFile = this.#sessions.get("main")?.sessionFile;
+		if (mainSessionFile) {
+			const registry = AgentRegistry.global();
+			for (const ref of registry.list()) {
+				if (ref.kind !== "sub" || ref.status !== "parked" || this.#sessions.has(ref.id)) continue;
+				if (resolveTopLevelAgent(registry, ref.id)?.sessionFile !== mainSessionFile) continue;
+				const observation = getPersistedAgentSnapshot(ref)?.observations.get(ref.id);
+				if (!observation?.status) continue;
+				const status =
+					observation.status === "completed" || observation.status === "failed" || observation.status === "aborted"
+						? observation.status
+						: observation.status === "pending" || observation.status === "running"
+							? "active"
+							: undefined;
+				const lastUpdate = observation.lastUpdate ?? observation.activityState?.lastActivityAtMs;
+				if (!status || lastUpdate === undefined) continue;
+				const sortOrder = this.#ensureSortOrder(ref.id);
+				this.#ensureParentSortOrder(observation.parentToolCallId, sortOrder);
+				sessions.push({
+					id: ref.id,
+					kind: "subagent",
+					label: observation.description ?? ref.displayName,
+					agent: observation.agent,
+					description: observation.description,
+					status,
+					sessionFile: ref.sessionFile ?? undefined,
+					parentToolCallId: observation.parentToolCallId,
+					index: observation.index,
+					lastUpdate,
+					progress: observation.progress,
+					resolvedModel: observation.resolvedModel,
+					resolvedModelIsFallback: observation.resolvedModelIsFallback,
+					retryState: observation.retryState,
+					retryFailure: observation.retryFailure,
+				});
+			}
+		}
 		sessions.sort((a, b) => {
 			if (a.kind === "main" && b.kind !== "main") return -1;
 			if (b.kind === "main" && a.kind !== "main") return 1;
@@ -112,8 +157,8 @@ export class SessionObserverRegistry {
 
 	getActiveSubagentCount(): number {
 		let count = 0;
-		for (const s of this.#sessions.values()) {
-			if (s.kind === "subagent" && s.status === "active") count++;
+		for (const session of this.getSessions()) {
+			if (session.kind === "subagent" && session.status === "active") count++;
 		}
 		return count;
 	}

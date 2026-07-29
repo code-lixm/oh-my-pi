@@ -40,6 +40,7 @@ import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prom
 import subagentSystemPromptTemplateZh from "../prompts/system/subagent-system-prompt.zh-CN.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import submitReminderTemplateZh from "../prompts/system/subagent-yield-reminder.zh-CN.md" with { type: "text" };
+import type { AgentActivityState } from "../registry/agent-activity";
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
@@ -70,6 +71,7 @@ import {
 	type AgentProgress,
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
+	oneLineLabel,
 	type SingleResult,
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
@@ -946,6 +948,12 @@ interface SubagentRunMonitor {
 	/** Final raw output: end-of-run assistant text when available, else accumulated chunks. */
 	rawOutput(): string;
 	scheduleProgress(flush?: boolean): void;
+	/** Record a provider dispatch after the session reaches the transport boundary. */
+	noteModelRequest(): void;
+	/** Clear stale in-flight work and enter final result assembly. */
+	beginFinalization(): void;
+	/** Mark the finalized progress snapshot idle. */
+	completeFinalization(): void;
 	/** Stop processing events and clear listeners/timers. Call once the run settled. */
 	finish(): void;
 }
@@ -993,6 +1001,49 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		durationMs: 0,
 		modelOverride: args.modelOverride,
 	};
+
+	const setActivity = (phase: AgentActivityState["phase"], label: string, detail?: string): void => {
+		const now = Date.now();
+		const previous = progress.activity;
+		progress.activity = {
+			phase,
+			label,
+			...(detail === undefined ? {} : { detail }),
+			phaseStartedAtMs: previous?.phase === phase ? previous.phaseStartedAtMs : now,
+			lastActivityAtMs: now,
+		};
+	};
+	const touchActivity = (): void => {
+		const activity = progress.activity;
+		if (!activity) return;
+		progress.activity = { ...activity, lastActivityAtMs: Date.now() };
+	};
+	const clearCurrentTool = (): void => {
+		progress.currentTool = undefined;
+		progress.currentToolArgs = undefined;
+		progress.currentToolStartMs = undefined;
+	};
+	const setToolActivity = (toolName: string): void => {
+		if (toolName === "task") {
+			setActivity("delegating", "Delegating task");
+			return;
+		}
+		// Tool arguments can hold arbitrary prompt or command content. The activity
+		// summary intentionally exposes only a one-line, control-safe tool name.
+		const safeToolName = oneLineLabel(toolName, 64) || "tool";
+		setActivity("tool", `Running ${safeToolName}`);
+	};
+	const beginFinalization = (): void => {
+		clearCurrentTool();
+		progress.inflightTaskDetails = undefined;
+		progress.retryState = undefined;
+		if (progress.tokensPerSecondLive !== undefined) progress.tokensPerSecondLive = false;
+		setActivity("finishing", "Finishing");
+	};
+	const completeFinalization = (): void => {
+		setActivity("idle", "Idle");
+	};
+	setActivity("queued", "Queued");
 
 	const outputChunks: string[] = [];
 	const finalOutputChunks: string[] = [];
@@ -1065,6 +1116,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		if (resolved) return;
 		abortSent = true;
 		abortReason = reason;
+		beginFinalization();
 		abortController.abort();
 		void abortActiveSession();
 	};
@@ -1176,6 +1228,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const PROGRESS_COALESCE_MS = 150;
 	let lastProgressEmitMs = 0;
 	let progressTimeoutId: NodeJS.Timeout | null = null;
+	let lastRegistryActivityState: AgentActivityState | undefined;
 
 	// Recompute progress.recentOutput from the capped tail. Deferred: text_delta
 	// appends only extend the tail and mark it dirty; the (up to 8KB) split/filter
@@ -1191,13 +1244,36 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		progress.recentOutput = filtered.slice(-8).reverse();
 	};
 
+	const snapshotProgress = (): AgentProgress => {
+		const activity = progress.activity;
+		return {
+			...progress,
+			...(activity
+				? {
+						activity: {
+							...activity,
+							...(activity.progress ? { progress: { ...activity.progress } } : {}),
+						},
+					}
+				: {}),
+		};
+	};
+
 	const emitProgressNow = () => {
 		refreshRecentOutput();
 		progress.durationMs = Date.now() - startTime;
-		onProgress?.({ ...progress });
+		onProgress?.(snapshotProgress());
 		const activityGist =
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);
 		if (activityGist) AgentRegistry.global().setActivity(id, activityGist);
+		const activityState = progress.activity;
+		if (
+			activityState &&
+			activityState !== lastRegistryActivityState &&
+			AgentRegistry.global().setActivityState(id, activityState)
+		) {
+			lastRegistryActivityState = activityState;
+		}
 		if (args.eventBus) {
 			args.eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 				index,
@@ -1207,7 +1283,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				parentToolCallId: args.parentToolCallId,
 				detached: args.detached,
 				assignment,
-				progress: { ...progress },
+				progress: snapshotProgress(),
 				sessionFile: args.sessionFile,
 			});
 		}
@@ -1336,7 +1412,17 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		switch (event.type) {
 			case "agent_start":
 				progress.status = "running";
+				setActivity("requesting", "Requesting model");
 				flushProgress = true;
+				break;
+
+			case "turn_start":
+				setActivity("requesting", "Requesting model");
+				break;
+
+			case "turn_end":
+				if (progress.activity?.phase === "finishing") touchActivity();
+				else setActivity("requesting", "Requesting model");
 				break;
 
 			case "message_start":
@@ -1344,6 +1430,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					resetRecentOutput();
 					progress.tokensPerSecond = undefined;
 					progress.tokensPerSecondLive = true;
+					setActivity("streaming", "Streaming response");
 				}
 				// An async-result follow-up injected after a recorded yield
 				// supersedes that yield: its payload predates the job outcome the
@@ -1368,6 +1455,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				}
 				progress.currentToolArgs = extractToolArgsPreview(startArgs);
 				progress.currentToolStartMs = now;
+				setToolActivity(event.toolName);
 				const intent = event.intent?.trim();
 				if (intent) {
 					progress.lastIntent = intent;
@@ -1395,9 +1483,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						progress.recentTools.pop();
 					}
 				}
-				progress.currentTool = undefined;
-				progress.currentToolArgs = undefined;
-				progress.currentToolStartMs = undefined;
+				clearCurrentTool();
 				// The finalized TaskToolDetails will be captured below into
 				// `extractedToolData.task`; drop the in-flight snapshot so the
 				// renderer doesn't double-count it against the final entry.
@@ -1479,11 +1565,17 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						consecutiveYieldToolErrors = 0;
 					}
 				}
+				if (abortSent) {
+					beginFinalization();
+				} else {
+					setActivity("thinking", "Processing tool result");
+				}
 				flushProgress = true;
 				break;
 			}
 
 			case "tool_execution_update": {
+				setToolActivity(event.toolName);
 				// Surface nested-subagent progress mid-flight. The child task
 				// tool emits incremental `onUpdate` calls carrying its current
 				// `TaskToolDetails` (results + progress); we stash the latest
@@ -1502,6 +1594,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 			case "message_update": {
 				if (event.message?.role !== "assistant") break;
+				setActivity("streaming", "Streaming response");
 				const liveTokensPerSecond = calculateTokensPerSecond([event.message], true, now);
 				if (liveTokensPerSecond !== null) {
 					progress.tokensPerSecond = liveTokensPerSecond;
@@ -1531,6 +1624,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				// Extract text from assistant and toolResult messages (not user prompts)
 				const role = event.message?.role;
 				if (role === "assistant") {
+					touchActivity();
 					if (progress.tokensPerSecond !== undefined) progress.tokensPerSecondLive = false;
 					progress.requests += 1;
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
@@ -1636,7 +1730,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				break;
 			}
 
-			case "agent_end":
+			case "agent_end": {
 				// Extract final content from assistant messages only (not user prompts)
 				if (event.messages && Array.isArray(event.messages)) {
 					for (const msg of event.messages) {
@@ -1651,8 +1745,16 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						}
 					}
 				}
+				if (!("isTerminal" in event) || event.isTerminal !== false) {
+					beginFinalization();
+				} else {
+					clearCurrentTool();
+					if (progress.retryState) touchActivity();
+					else setActivity("queued", "Queued");
+				}
 				flushProgress = true;
 				break;
+			}
 		}
 
 		scheduleProgress(flushProgress);
@@ -1666,7 +1768,19 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			if (nextModel && nextModel !== activeModel) {
 				activeModel = nextModel;
 				progress.resolvedModel = nextModel;
+				touchActivity();
 				scheduleProgress(true);
+			}
+			if (event.type === "auto_compaction_start") {
+				setActivity("compacting", "Compacting context", oneLineLabel(event.action, 60));
+				scheduleProgress(true);
+				return;
+			}
+			if (event.type === "auto_compaction_end") {
+				if (event.aborted && !event.willRetry) beginFinalization();
+				else setActivity("requesting", "Requesting model");
+				scheduleProgress(true);
+				return;
 			}
 			if (event.type === "auto_retry_start") {
 				progress.retryState = {
@@ -1677,6 +1791,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					startedAtMs: Date.now(),
 				};
 				progress.retryFailure = undefined;
+				setActivity("retrying", "Retrying request", `Attempt ${event.attempt} of ${event.maxAttempts}`);
 				scheduleProgress(true);
 				return;
 			}
@@ -1688,6 +1803,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 						attempt,
 						errorMessage: event.finalError ?? "Auto-retry failed",
 					};
+					beginFinalization();
+				} else if (progress.activity?.phase === "retrying") {
+					setActivity("requesting", "Requesting model");
+				} else {
+					touchActivity();
 				}
 				scheduleProgress(true);
 				return;
@@ -1710,12 +1830,14 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			if (event.type === "retry_fallback_applied") {
 				progress.resolvedModel = event.to;
 				progress.resolvedModelIsFallback = true;
+				touchActivity();
 				scheduleProgress(true);
 				return;
 			}
 			if (event.type === "retry_fallback_succeeded") {
 				progress.resolvedModel = event.model;
 				progress.resolvedModelIsFallback = true;
+				touchActivity();
 				scheduleProgress(true);
 				return;
 			}
@@ -1797,6 +1919,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		lastAssistantSalvageText: () => lastAssistantSalvageText,
 		rawOutput: () => (finalOutputChunks.length > 0 ? finalOutputChunks.join("") : outputChunks.join("")),
 		scheduleProgress,
+		noteModelRequest: () => {
+			setActivity("requesting", "Requesting model");
+			scheduleProgress();
+		},
+		beginFinalization,
+		completeFinalization,
 		finish: () => {
 			resolved = true;
 			listenerController.abort();
@@ -2194,6 +2322,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 					(signal?.aborted ? monitor.resolveSignalAbortReason() : monitor.resolveAbortReasonText()))
 		: undefined;
 	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	monitor.beginFinalization();
+	monitor.scheduleProgress(true);
+	monitor.completeFinalization();
 	monitor.scheduleProgress(true);
 
 	// Emit lifecycle end event after finalization so yield status is reflected
@@ -2897,6 +3028,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				parentEvalSessionId: options.parentEvalSessionId,
 				onFirstChatDispatch: () => {
 					firstChatDispatchAt ??= performance.now();
+					monitor.noteModelRequest();
 				},
 			});
 

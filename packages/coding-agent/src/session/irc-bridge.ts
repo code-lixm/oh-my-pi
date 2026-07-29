@@ -5,7 +5,7 @@ import { IrcBus, type IrcMessage } from "../irc/bus";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
@@ -75,6 +75,7 @@ export class IrcBridge {
 				const from = Reflect.get(details, "from");
 				const body = Reflect.get(details, "message");
 				const replyTo = Reflect.get(details, "replyTo");
+				const expectsReply = Reflect.get(details, "expectsReply");
 				if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
 					queue.remaining.push(record);
 					continue;
@@ -94,6 +95,7 @@ export class IrcBridge {
 					body,
 					ts: record.timestamp,
 					...(typeof replyTo === "string" ? { replyTo } : {}),
+					...(expectsReply === true ? { expectsReply: true } : {}),
 				});
 			}
 		}
@@ -107,8 +109,8 @@ export class IrcBridge {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
 		const streaming = this.#host.isStreaming();
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
-		const autoReply =
-			(opts?.expectsReply ?? false) && ((streaming && !this.#host.settings.get("async.enabled")) || planModeIdle);
+		const expectsReply = msg.expectsReply === true || opts?.expectsReply === true;
+		const autoReply = expectsReply && ((streaming && !this.#host.settings.get("async.enabled")) || planModeIdle);
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -118,16 +120,32 @@ export class IrcBridge {
 				replyTo: msg.replyTo ?? "",
 				autoReplied: autoReply,
 				interrupting: streaming,
+				expectsReply,
 			}),
 			display: true,
-			details: { id: msg.id, from: msg.from, message: msg.body, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) },
+			details: {
+				id: msg.id,
+				from: msg.from,
+				to: msg.to,
+				message: msg.body,
+				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
+				...(expectsReply ? { expectsReply: true } : {}),
+			},
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
-			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
-			if (recipientParentId === msg.from) {
+			const registry = AgentRegistry.global();
+			const recipientRoot = resolveTopLevelAgent(registry, msg.to);
+			const senderRoot = resolveTopLevelAgent(registry, msg.from);
+			const recipientParentId = registry.get(msg.to)?.parentId;
+			const senderOwnsRecipient =
+				recipientRoot !== undefined &&
+				senderRoot !== undefined &&
+				recipientRoot.id === senderRoot.id &&
+				(recipientRoot.id === msg.from || recipientParentId === msg.from);
+			if (senderOwnsRecipient) {
 				this.#host.agent.steer({
 					role: "user",
 					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
@@ -184,9 +202,9 @@ export class IrcBridge {
 			const record: CustomMessage = {
 				role: "custom",
 				customType: "irc:autoreply",
-				content: `[IRC you → \`${msg.from}\` (auto)]\n\n${body}`,
+				content: `[IRC \`${msg.to}\` → \`${msg.from}\` (auto)]\n\n${body}`,
 				display: true,
-				details: { to: msg.from, body, replyTo: msg.id },
+				details: { from: msg.to, to: msg.from, body, replyTo: msg.id },
 				attribution: "agent",
 				timestamp: Date.now(),
 			};

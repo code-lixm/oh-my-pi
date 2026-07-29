@@ -123,7 +123,7 @@ describe("bashToolRenderer", () => {
 		}
 	});
 
-	it("renders completed results borderlessly under display.borderStyle none", async () => {
+	it("renders pending borderless calls with the command as the first content row", async () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 
 		try {
@@ -131,32 +131,52 @@ describe("bashToolRenderer", () => {
 			const theme = await getThemeByName("dark");
 			expect(theme).toBeDefined();
 			const uiTheme = theme!;
+			const command = "sleep 30";
+			const component = bashToolRenderer.renderCall({ command }, { expanded: false, isPartial: true }, uiTheme);
+			const plainLines = component.render(80).map(line => Bun.stripANSI(line).trimEnd());
+			const text = plainLines.join("\n");
+
+			expect(plainLines.findIndex(line => line.includes(`$ ${command}`))).toBe(0);
+			expect(text).not.toContain("Bash");
+			expect(text).toContain(`$ ${command}`);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
+	});
+
+	it("renders completed borderless results without a Bash title under display.borderStyle none", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("none");
+			const theme = await getThemeByName("dark");
+			expect(theme).toBeDefined();
+			const uiTheme = theme!;
+			const command = "printf '%s\\n' \"$RESULT\"";
 			const component = bashToolRenderer.renderResult(
 				{
-					content: [{ type: "text", text: "line one\nline two\n\nWall time: 0.02 seconds" }],
+					content: [{ type: "text", text: "result one\nresult two\n\nWall time: 0.02 seconds" }],
 					details: { timeoutSeconds: 300, wallTimeMs: 20 },
 					isError: false,
 				},
 				{ expanded: false, isPartial: false },
 				uiTheme,
-				{ command: "printf 'line one\\nline two\\n'" },
+				{ command },
 			);
 			const plainLines = component.render(80).map(line => Bun.stripANSI(line).trimEnd());
 			const text = plainLines.join("\n");
-			const commandIndex = plainLines.findIndex(line => line.includes("$ printf 'line one\\nline two\\n'"));
-			// Search only after the command row so the "line one" sentinel does not
-			// falsely match the command literal embedded in the command string.
-			const outputIndex = plainLines.slice(commandIndex + 1).findIndex(line => line.includes("line one"));
-			// separator: true emits one blank line between command and output sections.
-			expect(
-				plainLines.slice(commandIndex + 1, commandIndex + 1 + outputIndex).some(line => line.trim().length === 0),
-			).toBe(true);
+			const commandIndex = plainLines.findIndex(line => line.includes(`$ ${command}`));
+			const outputIndex = plainLines.findIndex((line, index) => index > commandIndex && line.includes("result one"));
 
-			expect(text).toContain(uiTheme.symbol("tool.bash"));
-			expect(text).toContain("Bash");
-			expect(text).toContain("$ printf 'line one\\nline two\\n'");
-			expect(text).toContain("line one");
-			expect(text).toContain("line two");
+			expect(commandIndex).toBe(0);
+			expect(outputIndex).toBeGreaterThan(commandIndex);
+			// separator: true emits one blank line between command and output sections.
+			expect(plainLines.slice(commandIndex + 1, outputIndex).some(line => line.trim().length === 0)).toBe(true);
+			expect(text).not.toContain(uiTheme.symbol("tool.bash"));
+			expect(text).not.toContain("Bash");
+			expect(text).toContain(`$ ${command}`);
+			expect(text).toContain("result one");
+			expect(text).toContain("result two");
 			expect(text).not.toContain("Output");
 			for (const glyph of [
 				uiTheme.tree.branch,

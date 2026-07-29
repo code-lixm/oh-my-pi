@@ -150,9 +150,9 @@ describe("IRC", () => {
 			const main = makeFakeSession();
 			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
 			const a = makeFakeSession();
-			registry.register({ id: "0-A", displayName: "task", kind: "sub", session: a.session });
+			registry.register({ id: "0-A", displayName: "task", kind: "sub", parentId: "Main", session: a.session });
 			const b = makeFakeSession();
-			registry.register({ id: "0-B", displayName: "task", kind: "sub", session: b.session });
+			registry.register({ id: "0-B", displayName: "task", kind: "sub", parentId: "Main", session: b.session });
 
 			await bus.send({ from: "Main", to: "0-A", body: "outbound from main" });
 			await bus.send({ from: "0-A", to: "Main", body: "inbound to main" });
@@ -160,6 +160,106 @@ describe("IRC", () => {
 
 			expect(main.relayed).toHaveLength(1);
 			expect(main.relayed[0]?.details).toEqual({ from: "0-A", to: "0-B", body: "sibling note" });
+		});
+
+		it("relays sibling traffic only to its owning secondary top-level UI", async () => {
+			const main = makeFakeSession();
+			const review = makeFakeSession();
+			const a = makeFakeSession();
+			const b = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
+			registry.register({ id: "top-level:review", displayName: "review", kind: "main", session: review.session });
+			registry.register({
+				id: "review-a",
+				displayName: "task",
+				kind: "sub",
+				parentId: "top-level:review",
+				session: a.session,
+			});
+			registry.register({
+				id: "review-b",
+				displayName: "task",
+				kind: "sub",
+				parentId: "top-level:review",
+				session: b.session,
+			});
+
+			await bus.send({ from: "review-a", to: "review-b", body: "review sibling note" });
+
+			expect(review.relayed.map(record => record.details)).toEqual([
+				{ from: "review-a", to: "review-b", body: "review sibling note" },
+			]);
+			expect(main.relayed).toEqual([]);
+		});
+
+		it("does not relay traffic across top-level session trees", async () => {
+			const main = makeFakeSession();
+			const review = makeFakeSession();
+			const mainChild = makeFakeSession();
+			const reviewChild = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
+			registry.register({ id: "top-level:review", displayName: "review", kind: "main", session: review.session });
+			registry.register({
+				id: "main-child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session: mainChild.session,
+			});
+			registry.register({
+				id: "review-child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "top-level:review",
+				session: reviewChild.session,
+			});
+
+			await bus.send({ from: "main-child", to: "review-child", body: "cross-session note" });
+
+			expect(main.relayed).toEqual([]);
+			expect(review.relayed).toEqual([]);
+		});
+
+		it("fails closed instead of relaying missing or cyclic parent chains to Main", async () => {
+			const main = makeFakeSession();
+			const orphanA = makeFakeSession();
+			const orphanB = makeFakeSession();
+			const cycleA = makeFakeSession();
+			const cycleB = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
+			registry.register({
+				id: "orphan-a",
+				displayName: "task",
+				kind: "sub",
+				parentId: "missing",
+				session: orphanA.session,
+			});
+			registry.register({
+				id: "orphan-b",
+				displayName: "task",
+				kind: "sub",
+				parentId: "missing",
+				session: orphanB.session,
+			});
+			registry.register({
+				id: "cycle-a",
+				displayName: "task",
+				kind: "sub",
+				parentId: "cycle-b",
+				session: cycleA.session,
+			});
+			registry.register({
+				id: "cycle-b",
+				displayName: "task",
+				kind: "sub",
+				parentId: "cycle-a",
+				session: cycleB.session,
+			});
+
+			await bus.send({ from: "orphan-a", to: "orphan-b", body: "orphan note" });
+			await bus.send({ from: "cycle-a", to: "cycle-b", body: "cycle note" });
+
+			expect(main.relayed).toEqual([]);
 		});
 
 		it("send to an unknown or aborted agent fails", async () => {
@@ -716,8 +816,14 @@ describe("IRC", () => {
 			const main = makeFakeSession();
 			registry.register({ id: "Main", displayName: "main", kind: "main", session: main.session });
 			const b = makeFakeSession();
-			registry.register({ id: "0-B", displayName: "task", kind: "sub", session: b.session });
-			registry.register({ id: "0-A", displayName: "task", kind: "sub", session: makeFakeSession().session });
+			registry.register({ id: "0-B", displayName: "task", kind: "sub", parentId: "Main", session: b.session });
+			registry.register({
+				id: "0-A",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session: makeFakeSession().session,
+			});
 
 			const tool = new HubTool(makeToolSession(registry, "0-A"));
 			await tool.execute("call-1", { op: "send", to: "all", message: "anyone there?" });
@@ -1030,6 +1136,7 @@ describe("IRC", () => {
 			sessions.push(session);
 			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: makeFakeSession().session });
 			registry.register({ id: "0-Child", displayName: "task", kind: "sub", parentId: "Main", session });
 
 			const outcome = await session.deliverIrcMessage({
@@ -1048,6 +1155,36 @@ describe("IRC", () => {
 			expect(parentSteer?.role).toBe("user");
 			if (parentSteer?.role !== "user") throw new Error("expected queued parent IRC steer");
 			expect(parentSteer.content).toContain("change approach");
+		});
+
+		it("queues a secondary top-level message as steering for its streaming child", async () => {
+			const { session } = createRealSession();
+			sessions.push(session);
+			Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
+			registry.register({
+				id: "top-level:review",
+				displayName: "review",
+				kind: "main",
+				session: makeFakeSession().session,
+			});
+			registry.register({
+				id: "review-child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "top-level:review",
+				session,
+			});
+
+			await session.deliverIrcMessage({
+				id: "msg-secondary-parent",
+				from: "top-level:review",
+				to: "review-child",
+				body: "review this change",
+				ts: Date.now(),
+			});
+
+			expect(session.agent.hasIrcInterrupts?.()).toBe(false);
+			expect(session.agent.peekSteeringQueue()).toHaveLength(1);
 		});
 
 		it("auto-replies via an ephemeral side turn when the sender awaits and async execution is disabled", async () => {

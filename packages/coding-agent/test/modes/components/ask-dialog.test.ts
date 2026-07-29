@@ -600,279 +600,195 @@ describe("AskDialogComponent", () => {
 		expect(onSubmit.mock.calls[0][0].results[0].customInput).toBe("custom detail");
 	});
 
-	it("defers a timeout that fires during a pending prompt and honors the resolved custom input", async () => {
+	it("starts the hard deadline on first render and never resets it for navigation or ordinary input", () => {
+		vi.useFakeTimers();
+		setSettingsUiLocale("en");
+		const onSubmit = vi.fn();
+		const onTimeout = vi.fn();
+		const component = new AskDialogComponent(
+			[
+				{
+					id: "database",
+					question: "Which database?",
+					options: [{ label: "SQLite" }, { label: "Postgres" }],
+					recommended: 1,
+				},
+			],
+			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+			{ timeout: 1_000, onTimeout },
+		);
+
+		vi.advanceTimersByTime(5_000);
+		expect(onSubmit).not.toHaveBeenCalled();
+
+		expect(render(component)).toContain("Ask · defaults to Postgres in 1s");
+		vi.advanceTimersByTime(900);
+		component.handleInput(DOWN);
+		component.handleInput("x");
+		vi.advanceTimersByTime(100);
+
+		expect(onTimeout).toHaveBeenCalledTimes(1);
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+		expect(onSubmit.mock.calls[0][0].results[0]).toEqual(
+			expect.objectContaining({ selectedOptions: ["Postgres"], timedOut: true }),
+		);
+	});
+
+	it("renders the multi-question default and manual counts in the deadline title", () => {
+		setSettingsUiLocale("en");
+		const component = new AskDialogComponent(
+			[
+				{
+					id: "automatic",
+					question: "Can default?",
+					options: [{ label: "No" }, { label: "Yes" }],
+					recommended: 1,
+				},
+				{
+					id: "manual",
+					question: "Needs a person?",
+					options: [{ label: "Later" }, { label: "Now" }],
+				},
+			],
+			{ onSubmit: vi.fn(), onCancel: vi.fn(), onPrompt: vi.fn() },
+			{ timeout: 1_000 },
+		);
+
+		expect(render(component)).toContain("Ask · defaults 1 answer in 1s · 1 manual question");
+		component.dispose();
+	});
+
+	it("defers an expired deadline while custom input is active, then preserves the custom answer before filling recommendations", async () => {
 		vi.useFakeTimers();
 		const deferred = Promise.withResolvers<string | undefined>();
 		const onPrompt = vi.fn().mockReturnValue(deferred.promise);
 		const onSubmit = vi.fn();
 		const onTimeout = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "First?",
-				options: [{ label: "Option A" }, { label: "Option B" }],
-			},
-			{
-				id: "q2",
-				question: "Second?",
-				options: [{ label: "Option C" }, { label: "Option D" }],
-				recommended: 1,
-			},
-		];
-
 		const component = new AskDialogComponent(
-			questions,
+			[
+				{
+					id: "custom",
+					question: "First?",
+					options: [{ label: "Option A" }, { label: "Option B" }],
+				},
+				{
+					id: "automatic",
+					question: "Second?",
+					options: [{ label: "Option C" }, { label: "Option D" }],
+					recommended: 1,
+				},
+			],
 			{ onSubmit, onCancel: vi.fn(), onPrompt },
-			{ timeout: 1000, onTimeout },
+			{ timeout: 1_000, onTimeout },
 		);
 
-		// Open the "Other (type your own)" prompt on question 1.
+		render(component);
 		component.handleInput(DOWN);
 		component.handleInput(DOWN);
 		component.handleInput(ENTER);
 		expect(onPrompt).toHaveBeenCalledTimes(1);
 
-		// Timer expires while the prompt is pending: the timeout must be deferred,
-		// not submit the recommended fallback out from under the user.
-		vi.advanceTimersByTime(1000);
+		vi.advanceTimersByTime(1_000);
 		expect(onTimeout).not.toHaveBeenCalled();
 		expect(onSubmit).not.toHaveBeenCalled();
 
-		// Resolving the prompt honors the typed answer, then runs the deferred
-		// timeout handling exactly once.
 		deferred.resolve("my answer");
 		await Promise.resolve();
 		await Promise.resolve();
 
 		expect(onTimeout).toHaveBeenCalledTimes(1);
 		expect(onSubmit).toHaveBeenCalledTimes(1);
-		const results = onSubmit.mock.calls[0][0].results;
-		expect(results[0].customInput).toBe("my answer");
-		expect(results[0].selectedOptions).toEqual([]);
-		expect(results[0].timedOut).toBeUndefined();
-		expect(results[1].selectedOptions).toEqual(["Option D"]);
-		expect(results[1].timedOut).toBe(true);
+		expect(onSubmit.mock.calls[0][0].results).toEqual([
+			expect.objectContaining({ id: "custom", customInput: "my answer", selectedOptions: [], timedOut: undefined }),
+			expect.objectContaining({ id: "automatic", selectedOptions: ["Option D"], timedOut: true }),
+		]);
 	});
 
-	it("keeps a single-question custom prompt answer when timeout expires while the prompt is pending", async () => {
+	it("fills only unanswered recommended questions in a multi-question ask and keeps submitted answers", () => {
 		vi.useFakeTimers();
-		const deferred = Promise.withResolvers<string | undefined>();
-		const onPrompt = vi.fn().mockReturnValue(deferred.promise);
 		const onSubmit = vi.fn();
-		const onTimeout = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "Only question?",
-				options: [{ label: "Fallback" }],
-			},
-		];
-
 		const component = new AskDialogComponent(
-			questions,
-			{ onSubmit, onCancel: vi.fn(), onPrompt },
-			{ timeout: 1000, onTimeout },
+			[
+				{
+					id: "first",
+					question: "First?",
+					options: [{ label: "Option A" }, { label: "Option B" }],
+				},
+				{
+					id: "automatic",
+					question: "Second?",
+					options: [{ label: "Option C" }, { label: "Option D" }],
+					recommended: 1,
+				},
+				{
+					id: "submitted",
+					question: "Third?",
+					options: [{ label: "Option E" }, { label: "Option F" }],
+					recommended: 1,
+				},
+			],
+			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+			{ timeout: 1_000 },
 		);
 
+		render(component);
 		component.handleInput(DOWN);
 		component.handleInput(ENTER);
-		expect(onPrompt).toHaveBeenCalledTimes(1);
-
-		vi.advanceTimersByTime(1000);
-		expect(onTimeout).not.toHaveBeenCalled();
-		expect(onSubmit).not.toHaveBeenCalled();
-
-		deferred.resolve("my answer");
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onTimeout).not.toHaveBeenCalled();
-		const result = onSubmit.mock.calls[0][0].results[0];
-		expect(result.customInput).toBe("my answer");
-		expect(result.selectedOptions).toEqual([]);
-		expect(result.timedOut).toBeUndefined();
-	});
-
-	it("fills only recommended unanswered questions on timeout and waits for the rest", () => {
-		vi.useFakeTimers();
-		const onSubmit = vi.fn();
-		const onTimeout = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "Needs manual choice?",
-				options: [{ label: "Option A" }, { label: "Option B" }],
-			},
-			{
-				id: "q2",
-				question: "Can auto-fill?",
-				options: [{ label: "Option C" }, { label: "Option D" }],
-				recommended: 1,
-			},
-			{
-				id: "q3",
-				question: "Keep my answer?",
-				options: [{ label: "Option E" }, { label: "Option F" }],
-				recommended: 1,
-			},
-		];
-
-		const component = new AskDialogComponent(
-			questions,
-			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
-			{ timeout: 1000, onTimeout },
-		);
-
-		component.handleInput(TAB);
 		component.handleInput(TAB);
 		component.handleInput(UP);
 		component.handleInput(ENTER);
+		vi.advanceTimersByTime(1_000);
 
-		vi.advanceTimersByTime(1000);
+		expect(onSubmit).toHaveBeenCalledTimes(1);
+		expect(onSubmit.mock.calls[0][0].results).toEqual([
+			expect.objectContaining({ id: "first", selectedOptions: ["Option B"], timedOut: undefined }),
+			expect.objectContaining({ id: "automatic", selectedOptions: ["Option D"], timedOut: true }),
+			expect.objectContaining({ id: "submitted", selectedOptions: ["Option E"], timedOut: undefined }),
+		]);
+	});
 
-		expect(onTimeout).toHaveBeenCalledTimes(1);
-		expect(onSubmit).not.toHaveBeenCalled();
+	it("leaves missing and invalid recommendations unanswered instead of falling back to option zero", () => {
+		vi.useFakeTimers();
+		const onSubmit = vi.fn();
+		const component = new AskDialogComponent(
+			[
+				{
+					id: "missing",
+					question: "Missing recommendation?",
+					options: [{ label: "Option A" }, { label: "Option B" }],
+				},
+				{
+					id: "invalid",
+					question: "Invalid recommendation?",
+					options: [{ label: "Option C" }, { label: "Option D" }],
+					recommended: 9,
+				},
+				{
+					id: "automatic",
+					question: "Valid recommendation?",
+					options: [{ label: "Option E" }, { label: "Option F" }],
+					recommended: 1,
+				},
+			],
+			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+			{ timeout: 1_000 },
+		);
 
-		vi.advanceTimersByTime(1000);
-
-		expect(onTimeout).toHaveBeenCalledTimes(1);
+		render(component);
+		vi.advanceTimersByTime(1_000);
 		expect(onSubmit).not.toHaveBeenCalled();
 
 		component.handleInput(TAB);
-		component.handleInput(DOWN);
-		component.handleInput(ENTER);
 		component.handleInput(TAB);
 		component.handleInput(TAB);
 		component.handleInput(ENTER);
 
 		expect(onSubmit).toHaveBeenCalledTimes(1);
-		const results = onSubmit.mock.calls[0][0].results;
-		expect(results[0].selectedOptions).toEqual(["Option B"]);
-		expect(results[0].timedOut).toBeUndefined();
-		expect(results[1].selectedOptions).toEqual(["Option D"]);
-		expect(results[1].timedOut).toBe(true);
-		expect(results[2].selectedOptions).toEqual(["Option E"]);
-		expect(results[2].timedOut).toBeUndefined();
-	});
-
-	it("treats an invalid recommended index like no recommendation after timeout", () => {
-		vi.useFakeTimers();
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const onTimeout = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "Needs manual choice?",
-				options: [{ label: "Option A" }, { label: "Option B" }],
-				recommended: 9,
-			},
-			{
-				id: "q2",
-				question: "Can auto-fill?",
-				options: [{ label: "Option C" }, { label: "Option D" }],
-				recommended: 0,
-			},
-		];
-
-		const component = new AskDialogComponent(
-			questions,
-			{ onSubmit, onCancel, onPrompt: vi.fn() },
-			{ timeout: 1000, onTimeout },
-		);
-
-		vi.advanceTimersByTime(1000);
-
-		expect(onTimeout).toHaveBeenCalledTimes(1);
-		expect(onSubmit).not.toHaveBeenCalled();
-
-		vi.advanceTimersByTime(1000);
-
-		expect(onTimeout).toHaveBeenCalledTimes(1);
-		expect(onSubmit).not.toHaveBeenCalled();
-
-		component.handleInput(TAB);
-		component.handleInput(TAB);
-		const review = render(component);
-		expect(review).toContain("unanswered");
-		expect(review).toContain("Option C");
-
-		component.handleInput(CANCEL);
-		expect(onCancel).toHaveBeenCalledTimes(1);
-		expect(onSubmit).not.toHaveBeenCalled();
-	});
-
-	it("resets the inactivity countdown on user input after the closed/prompt guard", () => {
-		vi.useFakeTimers();
-		const onTimeout = vi.fn();
-		const onSubmit = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "Choose one?",
-				options: [{ label: "Option A" }, { label: "Option B" }],
-				recommended: 0,
-			},
-		];
-
-		const component = new AskDialogComponent(
-			questions,
-			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
-			{ timeout: 5000, onTimeout },
-		);
-
-		// Advance most of the timeout window.
-		vi.advanceTimersByTime(4000);
-		expect(onTimeout).not.toHaveBeenCalled();
-
-		// User input (DOWN) should reset the countdown.
-		component.handleInput(DOWN);
-
-		// Advancing past the *original* deadline must NOT fire the timeout —
-		// the reset moved the deadline forward by the interaction.
-		vi.advanceTimersByTime(2000);
-		expect(onTimeout).not.toHaveBeenCalled();
-
-		// Advancing the remaining time after the reset DOES fire.
-		vi.advanceTimersByTime(3000);
-		expect(onTimeout).toHaveBeenCalledTimes(1);
-	});
-
-	it("does not reset the countdown while a prompt is active", async () => {
-		vi.useFakeTimers();
-		const deferred = Promise.withResolvers<string | undefined>();
-		const onPrompt = vi.fn().mockReturnValue(deferred.promise);
-		const onTimeout = vi.fn();
-		const questions: ExtensionAskDialogQuestion[] = [
-			{
-				id: "q1",
-				question: "Choose one?",
-				options: [{ label: "Option A" }],
-				recommended: 0,
-			},
-		];
-
-		const component = new AskDialogComponent(
-			questions,
-			{ onSubmit: vi.fn(), onCancel: vi.fn(), onPrompt },
-			{ timeout: 5000, onTimeout },
-		);
-
-		// Open the custom-input prompt (DOWN to "Other", ENTER).
-		component.handleInput(DOWN);
-		component.handleInput(ENTER);
-		expect(onPrompt).toHaveBeenCalledTimes(1);
-
-		// While the prompt is pending, input is guarded — no reset.
-		component.handleInput(DOWN);
-		vi.advanceTimersByTime(5000);
-		// Timeout is deferred during prompt, not fired.
-		expect(onTimeout).not.toHaveBeenCalled();
-
-		deferred.resolve("answer");
-		await Promise.resolve();
-		await Promise.resolve();
+		expect(onSubmit.mock.calls[0][0].results).toEqual([
+			expect.objectContaining({ id: "missing", selectedOptions: [], timedOut: undefined }),
+			expect.objectContaining({ id: "invalid", selectedOptions: [], timedOut: undefined }),
+			expect.objectContaining({ id: "automatic", selectedOptions: ["Option F"], timedOut: true }),
+		]);
 	});
 
 	it("bounds custom input prompt title for long multi-line questions", async () => {

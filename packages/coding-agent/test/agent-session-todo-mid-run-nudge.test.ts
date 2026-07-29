@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { Agent, type AgentTool, type AsideMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -11,6 +12,7 @@ import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getPromptLocale, type PromptLocale, setPromptLocale } from "../src/prompts/prompt-locale";
 
 /**
  * Regression coverage for issue #3651 and its redesign: the mid-run todo
@@ -18,11 +20,12 @@ import { TempDir } from "@oh-my-pi/pi-utils";
  * gentle MODEL-ONLY hint — deliberately separate from the user-visible
  * stop-time reminder ladder. The contract this defends:
  *
- *   1. Only successful mutating/delegation results (`bash`, `eval`, `edit`,
- *      `write`, `ast_edit`, `task`) tick the counter. Read-only exploration
- *      and errored results never do.
- *   2. At {@link MID_RUN_NUDGE_MUTATION_THRESHOLD} mutations without a
- *      `todo` call, the aside provider injects a hidden custom message
+ *   1. Successful mutations tick the counter; a successful `task` result or
+ *      successfully delivered async task completion is an immediate
+ *      reconciliation boundary. Read-only exploration and errored results
+ *      never nudge.
+ *   2. At {@link MID_RUN_NUDGE_MUTATION_THRESHOLD} ordinary mutations without
+ *      a `todo` call, the aside provider injects a hidden custom message
  *      (`display: false`) — NO `todo_reminder` event, nothing renders.
  *   3. A `todo` tool result resets the counter.
  *   4. At most {@link MID_RUN_NUDGE_MAX_PER_CYCLE} nudges fire per
@@ -42,6 +45,8 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let modelRegistry: ModelRegistry;
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: (() => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
+	let previousPromptLocale: PromptLocale;
+	let asyncJobManager: AsyncJobManager;
 
 	const THRESHOLD = 4; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
 	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_NUDGE_MAX_PER_CYCLE
@@ -128,26 +133,51 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		await Bun.sleep(0);
 	}
 
-	async function drainNudges(): Promise<CustomMessage[]> {
-		if (!asideProvider) throw new Error("aside provider was never captured");
-		const thunks = await asideProvider();
+	function collectNudges(entries: AsideMessage[]): CustomMessage[] {
 		const out: CustomMessage[] = [];
-		for (const entry of thunks) {
+		for (const entry of entries) {
 			const message = typeof entry === "function" ? entry() : entry;
-			if (!message) continue;
-			if (message.role !== "custom") continue;
-			if ((message as CustomMessage).customType !== NUDGE_TYPE) continue;
-			out.push(message as CustomMessage);
+			if (message?.role !== "custom" || message.customType !== NUDGE_TYPE) continue;
+			out.push(message);
 		}
 		return out;
 	}
 
+	function drainNudgesSynchronously(): CustomMessage[] {
+		if (!asideProvider) throw new Error("aside provider was never captured");
+		const entries = asideProvider();
+		if (entries instanceof Promise) throw new Error("aside provider unexpectedly returned a Promise");
+		return collectNudges(entries);
+	}
+
+	async function drainNudges(): Promise<CustomMessage[]> {
+		if (!asideProvider) throw new Error("aside provider was never captured");
+		return collectNudges(await asideProvider());
+	}
+
+	function registerGatedAsyncJob(type: "bash" | "task", id: string): PromiseWithResolvers<string> {
+		const gate = Promise.withResolvers<string>();
+		asyncJobManager.register(type, `async ${type} ${id}`, async () => await gate.promise, {
+			id,
+			ownerId: "Main",
+		});
+		return gate;
+	}
+
+	async function drainOwnedAsyncDeliveries(): Promise<void> {
+		await asyncJobManager.waitForOwnerJobs("Main");
+		await asyncJobManager.drainDeliveries({ filter: { ownerId: "Main" } });
+	}
+
 	beforeEach(async () => {
+		previousPromptLocale = getPromptLocale();
+		setPromptLocale("en");
 		tempDir = TempDir.createSync("@pi-todo-mid-run-nudge-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		asyncJobManager = new AsyncJobManager({});
 
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected built-in anthropic model to exist");
@@ -191,6 +221,8 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
+			agentId: "Main",
+			asyncJobManager,
 		});
 
 		reminderEvents = [];
@@ -212,11 +244,14 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 
 	afterEach(async () => {
 		await session.dispose();
+		asyncJobManager.cancelAll();
+		await asyncJobManager.dispose();
 		authStorage.close();
 		try {
 			await tempDir.remove();
 		} catch {}
 		vi.restoreAllMocks();
+		setPromptLocale(previousPromptLocale);
 	});
 
 	it("read-only exploration never ticks the counter, no matter how long", async () => {
@@ -235,12 +270,12 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("injects a hidden custom nudge after four successful mutations/delegations — no event, no render", async () => {
-		for (const toolName of ["edit", "task", "write", "bash"]) emitToolResult(toolName);
+	it("immediately reconciles after one successful task result without bulk-closing todos", () => {
+		emitToolResult("task");
 
-		await settle();
-		const nudges = await drainNudges();
-		expect(nudges.length).toBe(1);
+		const nudges = drainNudgesSynchronously();
+
+		expect(nudges).toHaveLength(1);
 		const nudge = nudges[0];
 		// Hidden from the TUI/transcript, visible to the model only.
 		expect(nudge?.display).toBe(false);
@@ -251,16 +286,113 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		// enumeration, no attempt counter.
 		expect(text).not.toContain("Sweep call sites");
 		expect(text).not.toMatch(/reminder \d\/\d/i);
+		// A task result is a subagent-progress boundary. The model must reconcile
+		// its ledger one item at a time instead of treating implementation work as
+		// permission to close a whole phase or unverified verification work.
+		expect(text).toMatch(/\b(?:subagent|task progress)\b/i);
+		expect(text).toMatch(/\b(?:reconcile|update)\b/i);
+		expect(text).toMatch(/\b(?:completed|done)\b/i);
+		expect(text).toMatch(/\b(?:one[- ]by[- ]one|individually)\b/i);
+		expect(text).toMatch(/\b(?:do not|never)\b[^.]*\b(?:bulk|batch)\b[^.]*\b(?:close|complete)\b/i);
+		expect(text).toMatch(/\b(?:implementation|implemented)\b/i);
+		expect(text).toMatch(/\b(?:unverified|verification)\b/i);
 
 		// SEPARATE concept from the stop-time reminder: no todo_reminder event,
 		// so nothing renders a TodoReminderComponent or reaches extensions.
 		expect(reminderEvents).toEqual([]);
 
-		// Counter reset: another full runway is required before the next nudge,
-		// so an immediate poll right after firing must NOT re-inject.
-		expect(await drainNudges()).toEqual([]);
+		// Taking the nudge resets its mutation budget, so an immediate next aside
+		// poll cannot re-inject without another task or mutation runway.
+		const followUpNudges = drainNudgesSynchronously();
+		expect(followUpNudges).toEqual([]);
 	});
 
+	it("re-arms reconciliation when a real async task result is enqueued after its initial task result was reconciled", async () => {
+		// This mirrors an async TaskTool call's immediate result: the ledger nudge
+		// is consumed now, before the background subagent can finish.
+		emitToolResult("task");
+		expect(drainNudgesSynchronously()).toHaveLength(1);
+		expect(drainNudgesSynchronously()).toEqual([]);
+
+		const completion = registerGatedAsyncJob("task", "completed-task-result");
+		completion.resolve("subagent completed its assigned change");
+		await drainOwnedAsyncDeliveries();
+
+		// Delivery passed through AgentSession's real async-result queue rather
+		// than another synthetic tool result, so it must independently re-arm the
+		// next aside reconciliation boundary.
+		expect(session.hasPendingAsyncWork()).toBe(true);
+		expect(drainNudgesSynchronously()).toHaveLength(1);
+		expect(drainNudgesSynchronously()).toEqual([]);
+	});
+
+	it("does not arm reconciliation for completed bash or failed/cancelled task deliveries", async () => {
+		const bashCompletion = registerGatedAsyncJob("bash", "completed-bash-result");
+		bashCompletion.resolve("bash completed");
+		await drainOwnedAsyncDeliveries();
+		// Bash still produces a real async-result follow-up, but it is not
+		// subagent progress and must not re-open the todo ledger.
+		expect(session.hasPendingAsyncWork()).toBe(true);
+		expect(drainNudgesSynchronously()).toEqual([]);
+
+		asyncJobManager.register(
+			"task",
+			"failed async task",
+			async () => {
+				throw new Error("expected async task failure");
+			},
+			{ id: "failed-task-result", ownerId: "Main" },
+		);
+		await drainOwnedAsyncDeliveries();
+		// A failed task reaches the same async-result sink but is not completion
+		// evidence, so its delivery must leave todos untouched.
+		expect(session.hasPendingAsyncWork()).toBe(true);
+		expect(drainNudgesSynchronously()).toEqual([]);
+
+		const cancelled = registerGatedAsyncJob("task", "cancelled-task-result");
+		asyncJobManager.cancelAll({ ownerId: "Main" });
+		cancelled.resolve("cancelled task output");
+		await drainOwnedAsyncDeliveries();
+		expect(session.hasPendingAsyncWork()).toBe(false);
+		expect(drainNudgesSynchronously()).toEqual([]);
+	});
+
+	it("does not arm reconciliation for suppressed or disposed async task deliveries", async () => {
+		const suppressed = registerGatedAsyncJob("task", "suppressed-task-result");
+		// Foreground wait acknowledgement suppresses the manager delivery before
+		// the job settles, so no async-result may become a progress boundary.
+		asyncJobManager.acknowledgeDeliveries(["suppressed-task-result"]);
+		suppressed.resolve("suppressed task output");
+		await drainOwnedAsyncDeliveries();
+		expect(session.hasPendingAsyncWork()).toBe(false);
+		expect(drainNudgesSynchronously()).toEqual([]);
+
+		// Full disposal unregisters the owner sink. A task that settles after this
+		// point is dead-lettered and cannot mutate the disposed session's tracker.
+		await session.dispose();
+		asyncJobManager.register("task", "disposed async task", async () => "late task output", {
+			id: "disposed-task-result",
+			ownerId: "Main",
+		});
+		await drainOwnedAsyncDeliveries();
+		expect(session.hasPendingAsyncWork()).toBe(false);
+		expect(drainNudgesSynchronously()).toEqual([]);
+	});
+	it("renders the selected Chinese reconciliation nudge after one task result", async () => {
+		setPromptLocale("zh-CN");
+		emitToolResult("task");
+
+		await settle();
+		const nudges = await drainNudges();
+		expect(nudges).toHaveLength(1);
+		const text = typeof nudges[0]?.content === "string" ? nudges[0].content : "";
+		expect(text).toContain("收到子代理结果或任务进度后");
+		expect(text).toContain("只逐项标记已有完成证据的任务");
+		expect(text).toContain("NEVER 批量关闭整个阶段");
+		expect(text).toContain("实现完成不等于验证完成");
+		expect(text).toContain("验证命令成功前必须保持验证任务开放");
+		expect(text).not.toContain("A subagent result");
+	});
 	it("errored Bash results do not tick the counter", async () => {
 		for (let i = 0; i < THRESHOLD * 3; i++) emitToolResult("bash", { isError: true });
 

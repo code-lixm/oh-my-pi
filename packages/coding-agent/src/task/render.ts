@@ -1105,10 +1105,8 @@ function renderAgentProgress(
 	// the in-flight snapshot (if any). Surfacing this in the live view means
 	// the user sees deep-tree progress without waiting for this agent to finish
 	// its own turn.
-	const completedTaskCalls = (progress.extractedToolData?.task as TaskToolDetails[] | undefined) ?? [];
-	const inflight = progress.inflightTaskDetails;
-	if (completedTaskCalls.length > 0 || inflight) {
-		const snapshots = inflight ? [...completedTaskCalls, inflight] : completedTaskCalls;
+	const snapshots = nestedTaskSnapshots(progress);
+	if (snapshots.length > 0) {
 		const nestedLines = renderNestedTaskTree(
 			snapshots,
 			expanded,
@@ -1739,6 +1737,30 @@ function isTaskToolDetails(value: unknown): value is TaskToolDetails {
 		"results" in (value as TaskToolDetails) &&
 		Array.isArray((value as TaskToolDetails).results)
 	);
+}
+
+/** Collect validated completed and in-flight task snapshots without trusting transported tool data. */
+function nestedTaskSnapshots(
+	progress: Pick<AgentProgress, "extractedToolData" | "inflightTaskDetails">,
+): TaskToolDetails[] {
+	const completed = Array.isArray(progress.extractedToolData?.task)
+		? progress.extractedToolData.task.filter(isTaskToolDetails)
+		: [];
+	return isTaskToolDetails(progress.inflightTaskDetails) ? [...completed, progress.inflightTaskDetails] : completed;
+}
+
+/**
+ * Compact nested-task subtree for narrow observer surfaces.
+ *
+ * Uses the same cycle/depth guards and collapsed selection as the task tool's
+ * live renderer, while accepting untrusted persisted or transported snapshots.
+ */
+export function renderCompactNestedTaskTree(
+	progress: Pick<AgentProgress, "extractedToolData" | "inflightTaskDetails">,
+	theme: Theme,
+): string[] {
+	const snapshots = nestedTaskSnapshots(progress);
+	return snapshots.length > 0 ? renderNestedTaskTree(snapshots, false, theme) : [];
 }
 
 // Nested subagent snapshots sit one or more levels below the frame border, so

@@ -40,6 +40,20 @@ export interface HubPeerInfo {
 	activity?: string;
 }
 
+/** Real determinate job work only; absent when no trustworthy total was reported. */
+export interface JobProgressSnapshot {
+	completed: number;
+	total: number;
+	unit?: string;
+}
+
+/** Actual AsyncJobManager slot occupancy at the instant a hub result was built. */
+export interface JobConcurrencySnapshot {
+	running: number;
+	queued: number;
+	limit: number;
+}
+
 /** Background-job row surfaced by `wait`/`cancel`/`jobs` results. */
 export interface JobSnapshot {
 	id: string;
@@ -47,6 +61,18 @@ export interface JobSnapshot {
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	durationMs: number;
+	/** True only while the job is parked before its caller-managed execution gate. */
+	queued?: boolean;
+	/** Time this job entered the manager, including immediately-started jobs. */
+	queuedAt?: number;
+	/** Time a queued job actually entered its run body. */
+	startedAt?: number;
+	/** Time of the latest explicit job progress report. */
+	lastProgressAt?: number;
+	/** One-based order among this owner's currently queued jobs. */
+	queuePosition?: number;
+	/** Present only when the job reported a real finite total. */
+	progress?: JobProgressSnapshot;
 	/** Effective task model selector, including an explicit reasoning suffix when configured. */
 	resolvedModel?: string;
 	resultText?: string;
@@ -95,6 +121,8 @@ export interface CoordinationDetails {
 	taskRequestConcurrency?: TaskRequestConcurrencySnapshot;
 	/** Root-session running/runnable subagent scheduler state. */
 	taskRunnableConcurrency?: TaskRunnableConcurrencySnapshot;
+	/** Background-job manager occupancy, distinct from subagent request/runnable limiters. */
+	jobConcurrency?: JobConcurrencySnapshot;
 }
 
 /** Hub result details: coordination snapshots or launch (process) state. */

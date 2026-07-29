@@ -147,8 +147,8 @@ const TINY_TITLE_PROGRESS_DONE_TTL_MS = 3_000;
 // events for seconds. Only reveal the bar once a still-incomplete event arrives after
 // this grace window, so an already-downloaded model never flashes the bar.
 const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
-// Double-tap ← on an empty editor opens the Agent Hub (and, in a focused
-// subagent view, ←← returns to the main session). The second tap must land
+// Double-tap ← on an empty editor opens the Agent Hub; a focused subagent opens
+// the same center rather than jumping straight to Main. The second tap must land
 // inside this window. The lower bound rejects terminal-synthesized arrow-key
 // bursts: "click to move cursor" / pointer features in iTerm2, WezTerm, kitty,
 // and tmux emit several arrow keys in a single stdin read (sub-millisecond
@@ -471,6 +471,8 @@ export class InputController {
 
 		this.ctx.editor.setActionKeys("app.clear", this.ctx.keybindings.getKeys("app.clear"));
 		this.ctx.editor.onClear = () => this.handleCtrlC();
+		this.ctx.editor.setActionKeys("app.editor.clear", this.ctx.keybindings.getKeys("app.editor.clear"));
+		this.ctx.editor.onClearEditor = () => this.ctx.clearEditor();
 		this.ctx.editor.setActionKeys("app.exit", this.ctx.keybindings.getKeys("app.exit"));
 		this.ctx.editor.setActionKeys("app.display.reset", this.ctx.keybindings.getKeys("app.display.reset"));
 		this.ctx.editor.onDisplayReset = () => {
@@ -581,13 +583,14 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentHub());
 		}
 
-		// Double-tap left arrow on an empty editor: opens the agent hub from the
-		// main session, or returns the focused subagent view to the main session.
-		// Focused ←← intentionally matches Esc. From the main session the gesture
-		// stays inert when there are no subagents (requireContent); the explicit
-		// hub key still opens the empty roster. `armCloseTap` hands this gesture's
-		// tap state to the hub so the same ←← that opened it also arms its close —
-		// otherwise the hub's fresh detector demands a second ←← (issue #4780).
+		// Double-tap left arrow on an empty editor opens the Agent Hub from Main
+		// and from a focused subagent. The shared center preserves the visible
+		// Main → Agent Hub → subagent hierarchy; Esc remains the direct return to
+		// Main from a focused view. From Main the gesture stays inert when there
+		// are no subagents (requireContent); the explicit hub key still opens the
+		// empty roster. `armCloseTap` hands this gesture's tap state to the hub so
+		// the same ←← that opened it also arms its close — otherwise the hub's
+		// fresh detector demands a second ←← (issue #4780).
 		this.ctx.editor.onLeftAtStart = () => {
 			if (this.ctx.focusedAgentId) {
 				this.#handleFocusedLeftTap();
@@ -614,7 +617,9 @@ export class InputController {
 
 	#handleFocusedLeftTap(): void {
 		if (this.#detectLeftDoubleTap()) {
-			void this.ctx.unfocusSession();
+			void this.ctx.unfocusSession().then(() => {
+				this.ctx.showAgentHub({ requireContent: true, armCloseTap: true });
+			});
 		}
 	}
 

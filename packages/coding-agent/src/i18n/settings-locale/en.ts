@@ -807,6 +807,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Choose next action:": "Choose next action:",
 	"Choose the provider the web_search tool should prefer.": "Choose the provider the web_search tool should prefer.",
 	"Clear all limits": "Clear all limits",
+	"Clear editor": "Clear editor",
 	"Clear screen or cancel": "Clear screen or cancel",
 	"Clear: artifact cache": "Clear: artifact cache",
 	"Cleared all todos.": "Cleared all todos.",
@@ -1543,7 +1544,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Consecutive identical tool calls required before the corrective steer is injected":
 		"Consecutive identical tool calls required before the corrective steer is injected",
 	"Context-full": "Context-full",
-	"Cooldown expiry": "Cooldown expiry",
 	"Copied /btw answer to clipboard": "Copied /btw answer to clipboard",
 	"Create Todos Automatically": "Create Todos Automatically",
 	"Dark Theme": "Dark Theme",
@@ -1661,7 +1661,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Exa Websets": "Exa Websets",
 	"Excluded Web Search Providers": "Excluded Web Search Providers",
 	Execution: "Execution",
-	"Fallback Revert Policy": "Fallback Revert Policy",
 	"Fetch Provider": "Fetch Provider",
 	"Files with fewer total lines are read verbatim instead of structurally summarized":
 		"Files with fewer total lines are read verbatim instead of structurally summarized",
@@ -2127,8 +2126,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
 	"Mouse Input": "Mouse Input",
-	"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.":
-		"Enable mouse clicks to position the main prompt cursor. This reserves terminal mouse input while the prompt is focused, so native transcript selection may require your terminal's selection modifier.",
+	"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.":
+		"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.",
 	"Repeated grid with ink cycling six hues at sentence boundaries.":
 		"Repeated grid with ink cycling six hues at sentence boundaries.",
 	"Repetition Penalty": "Repetition Penalty",
@@ -2401,7 +2400,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"When steering messages interrupt tool execution": "When steering messages interrupt tool execution",
 	"When to interrupt mid-stream vs inject warning after completion":
 		"When to interrupt mid-stream vs inject warning after completion",
-	"When to return to the primary model after a fallback": "When to return to the primary model after a fallback",
 	"Where /share uploads the encrypted session blob": "Where /share uploads the encrypted session blob",
 	"Where model selector role assignments are saved": "Where model selector role assignments are saved",
 	"Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)": "Windows FSCTL_DUPLICATE_EXTENTS_TO_FILE (NTFS/ReFS)",
@@ -3091,6 +3089,14 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"auto → {provider}/{id}": "auto → {provider}/{id}",
 	"c copy · b branch to chat · Esc dismiss": "c copy · b branch to chat · Esc dismiss",
 	"j/k:select  Enter:open  r:revive  x:kill  Esc/←←:close": "j/k:select  Enter:open  r:revive  x:kill  Esc/←←:close",
+	Main: "Main",
+	"Enter:open transcript": "Enter:open transcript",
+	"Enter:send message · Esc:cancel message": "Enter:send message · Esc:cancel message",
+	"Enter:switch session": "Enter:switch session",
+	"j/k:select · {enterAction} · f:focus live subagent": "j/k:select · {enterAction} · f:focus live subagent",
+	"m:message subagent · p:Main": "m:message subagent · p:Main",
+	"r:revive parked subagent · x:kill subagent · Esc/←←:close":
+		"r:revive parked subagent · x:kill subagent · Esc/←←:close",
 	"no subagents yet — task spawns appear here": "no subagents yet — task spawns appear here",
 	"rendering sample…": "rendering sample…",
 	"unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.":
@@ -3293,6 +3299,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Timeout: {seconds}s (requested {requestedSeconds}s clamped)":
 		"Timeout: {seconds}s (requested {requestedSeconds}s clamped)",
 	Todo: "Todo",
+	"Complete todo items individually; phase-wide completion is unavailable to agents.":
+		"Complete todo items individually; phase-wide completion is unavailable to agents.",
 	"Todo list cleared.": "Todo list cleared.",
 	"Todo list is empty.": "Todo list is empty.",
 	"Todo operation failed": "Todo operation failed",
@@ -3307,6 +3315,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"accepting: {reason}": "accepting: {reason}",
 	"all running jobs": "all running jobs",
 	anyone: "anyone",
+	you: "you",
 	"auto-retry gave up after {attempt} attempt: ": "auto-retry gave up after {attempt} attempt: ",
 	"auto-retry gave up after {attempt} attempts: ": "auto-retry gave up after {attempt} attempts: ",
 	"auto-selected after timeout — not a user choice": "auto-selected after timeout — not a user choice",
@@ -3357,6 +3366,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"no other agents": "no other agents",
 	"no output": "no output",
 	"no reply": "no reply",
+	"needs reply": "needs reply",
 	now: "now",
 	"options:{count}": "options:{count}",
 	"poll {count} jobs": "poll {count} jobs",
@@ -4336,7 +4346,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Speech-to-text is disabled. Enable it in settings: stt.enabled":
 		"Speech-to-text is disabled. Enable it in settings: stt.enabled",
 	"Status: {status}{pausedSuffix}": "Status: {status}{pausedSuffix}",
-	"Stay on the fallback model until manually changed": "Stay on the fallback model until manually changed",
 	"Still closing… (flushing memory backend / network)": "Still closing… (flushing memory backend / network)",
 	"Still starting after {elapsed}s": "Still starting after {elapsed}s",
 	"This exits plan mode without approving a plan.": "This exits plan mode without approving a plan.",
@@ -4980,4 +4989,22 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Spruce: "Spruce",
 	Vale: "Vale",
 	"{key} cancel": "{key} cancel",
+	Working: "Working",
+	Queued: "Queued",
+	"Requesting model": "Requesting model",
+	"Streaming response": "Streaming response",
+	"Using tool": "Using tool",
+	"Delegating work": "Delegating work",
+	"Retrying request": "Retrying request",
+	"Compacting context": "Compacting context",
+	"Waiting for user": "Waiting for user",
+	"Waiting for peer": "Waiting for peer",
+	"Finishing response": "Finishing response",
+	Idle: "Idle",
+	Active: "Active",
+	Quiet: "Quiet",
+	"Suspected stall": "Suspected stall",
+	Blocked: "Blocked",
+	"phase {elapsed}": "phase {elapsed}",
+	"quiet {elapsed}": "quiet {elapsed}",
 };

@@ -2243,7 +2243,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			)
 				? availableModels
 				: allModels;
-			let usageFallbackTriggered = false;
 			for (let patternIndex = 0; patternIndex < expandedModelPatterns.length; patternIndex += 1) {
 				const { pattern, retryFallback } = expandedModelPatterns[patternIndex];
 				const primary = parseModelPattern(pattern, resolutionModels, matchPreferences);
@@ -2290,7 +2289,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								`Usage depleted for ${primary.model.provider}/${primary.model.id}; reserve policy is fail-closed.`,
 							);
 						}
-						usageFallbackTriggered = true;
 						continue;
 					}
 					if (usageHealth?.state === "reserve") {
@@ -2300,7 +2298,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							);
 						}
 						if (usageReservePolicy === "auto" || (!options.hasUI && !options.deferUsageReserveConfirmation)) {
-							usageFallbackTriggered = true;
 							continue;
 						}
 					}
@@ -2384,8 +2381,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}
 				}
 				model = selectedModel;
-				initialRetryFallback =
-					retryFallback && usageFallbackTriggered ? { ...retryFallback, pinned: true } : retryFallback;
+				initialRetryFallback = retryFallback;
 				modelFallbackMessage = undefined;
 				if (selectedExplicitThinkingLevel) {
 					restoredSessionThinkingLevel = selectedThinkingLevel;
@@ -2893,6 +2889,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: agentKind === "sub" ? ("idle" as const) : ("running" as const),
+			...(agentKind === "main"
+				? {
+						sessionTitle: sessionManager.getSessionName(),
+						sessionId: sessionManager.getSessionId(),
+					}
+				: {}),
 		};
 		registeredAgentRef =
 			options.expectedAgentRef === undefined
@@ -3125,14 +3127,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		if (hasExistingSession) {
 			agent.replaceMessages(existingSession.messages);
 		} else {
-			// Save initial model, thinking level, and service tier for new sessions so they can be restored on resume.
-			if (model) {
-				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
-			}
-			if (!autoThinking) {
-				// Do not write the `auto` selector before the first turn resolves; auto
-				// classification persists its concrete effort once a real user turn runs.
-				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
+			// A startup retry fallback is scoped to its first user turn. Persist its
+			// configured primary so resumed context cannot infer the fallback from an
+			// assistant message.
+			if (initialRetryFallback) {
+				sessionManager.appendModelChange(initialRetryFallback.originalSelector);
+			} else {
+				if (model) {
+					sessionManager.appendModelChange(`${model.provider}/${model.id}`);
+				}
+				if (!autoThinking) {
+					// Do not write the `auto` selector before the first turn resolves; auto
+					// classification persists its concrete effort once a real user turn runs.
+					sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
+				}
 			}
 			if (Object.keys(initialServiceTierByFamily).length > 0) {
 				sessionManager.appendServiceTierChange(initialServiceTierByFamily);
@@ -3340,7 +3348,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
+		if (agentKind === "main") {
+			agentRegistry.updateMetadata(resolvedAgentId, { activityState: session.activity }, registeredAgentRef);
+		}
 		{
+			// A parked revival keeps its existing ref instead of copying the registration
+			// input, so synchronize from the live manager before listening for future names.
+			const updateTopLevelSessionMetadata =
+				agentKind === "main"
+					? () => {
+							if (!registeredAgentRef) return;
+							agentRegistry.updateMetadata(
+								resolvedAgentId,
+								{
+									sessionTitle: sessionManager.getSessionName(),
+									sessionId: sessionManager.getSessionId(),
+								},
+								registeredAgentRef,
+							);
+						}
+					: undefined;
+			updateTopLevelSessionMetadata?.();
+			const unsubscribeSessionNameChanged = updateTopLevelSessionMetadata
+				? sessionManager.onSessionNameChanged(updateTopLevelSessionMetadata)
+				: undefined;
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {
 				try {
@@ -3367,6 +3398,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}
 					await originalDispose();
 				} finally {
+					unsubscribeSessionNameChanged?.();
 					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();
 				}

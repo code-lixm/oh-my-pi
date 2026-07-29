@@ -1584,7 +1584,6 @@ export async function runRootCommand(
 						eventBus: nextEventBus,
 						preloadedExtensions: nextExtensions,
 						agentId: `top-level:${nextSessionManager.getSessionId()}`,
-						agentDisplayName: "main",
 						ownsAgentLifecycle: false,
 					});
 					return {

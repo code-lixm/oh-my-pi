@@ -1,5 +1,8 @@
 import * as fs from "node:fs/promises";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { type AgentRef, AgentRegistry, resolveTopLevelAgent } from "../../registry/agent-registry";
+import { getPersistedAgentSnapshot } from "../../registry/persisted-agent-snapshot";
+import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
 import {
@@ -111,6 +114,8 @@ export class RpcSubagentRegistry {
 	#unsubscribers: Array<() => void> = [];
 	#output: RpcSubagentOutput;
 	#subscriptionLevel: RpcSubagentSubscriptionLevel = "off";
+	#persistedSessionFile: string | undefined;
+	#persistedHydration: Promise<void> | undefined;
 
 	constructor(eventBus: EventBus, output: RpcSubagentOutput) {
 		this.#output = output;
@@ -133,6 +138,8 @@ export class RpcSubagentRegistry {
 		this.#subagents.clear();
 		this.#transcriptSessionFilesBySubagentId.clear();
 		this.#staleSubagentIds.clear();
+		this.#persistedSessionFile = undefined;
+		this.#persistedHydration = undefined;
 	}
 
 	clear(): void {
@@ -144,6 +151,8 @@ export class RpcSubagentRegistry {
 		}
 		this.#subagents.clear();
 		this.#transcriptSessionFilesBySubagentId.clear();
+		this.#persistedSessionFile = undefined;
+		this.#persistedHydration = undefined;
 	}
 
 	setSubscriptionLevel(level: RpcSubagentSubscriptionLevel): void {
@@ -154,8 +163,42 @@ export class RpcSubagentRegistry {
 		return this.#subscriptionLevel;
 	}
 
+	/** Load parked refs once for the active RPC session without replaying transcripts. */
+	async hydratePersisted(sessionFile: string | undefined): Promise<void> {
+		if (!sessionFile?.endsWith(".jsonl")) return;
+		if (this.#persistedSessionFile === sessionFile && this.#persistedHydration) {
+			await this.#persistedHydration;
+			return;
+		}
+		this.#persistedSessionFile = sessionFile;
+		const hydration = registerPersistedSubagents(AgentRegistry.global(), sessionFile).catch(error => {
+			logger.warn("Failed to hydrate persisted RPC subagents", { sessionFile, error: String(error) });
+		});
+		this.#persistedHydration = hydration;
+		await hydration;
+	}
 	getSubagents(): RpcSubagentSnapshot[] {
-		return [...this.#subagents.values()].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+		const snapshots = new Map(this.#subagents);
+		for (const ref of AgentRegistry.global().list()) {
+			if (snapshots.has(ref.id) || this.#staleSubagentIds.has(ref.id)) continue;
+			const snapshot = this.#persistedSnapshot(ref);
+			if (snapshot) snapshots.set(snapshot.id, snapshot);
+		}
+		return [...snapshots.values()]
+			.map(snapshot => {
+				const ref = AgentRegistry.global().get(snapshot.id);
+				const persistedProgress =
+					ref?.session === null
+						? getPersistedAgentSnapshot(ref)?.observations.get(snapshot.id)?.progress
+						: undefined;
+				const progress = snapshot.progress ?? persistedProgress;
+				return {
+					...snapshot,
+					...(snapshot.progress === undefined && progress !== undefined ? { progress } : {}),
+					...this.#mirrorMetadata(snapshot.id, progress, snapshot),
+				};
+			})
+			.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
 	}
 
 	#rememberTranscriptSession(subagentId: string, sessionFile: string | undefined): void {
@@ -173,10 +216,92 @@ export class RpcSubagentRegistry {
 		for (const snapshot of this.#subagents.values()) {
 			if (snapshot.sessionFile === sessionFile) return true;
 		}
+		for (const ref of AgentRegistry.global().list()) {
+			if (this.#staleSubagentIds.has(ref.id)) continue;
+			if (this.#persistedSnapshot(ref)?.sessionFile === sessionFile) return true;
+		}
 		for (const transcriptSessionFile of this.#transcriptSessionFilesBySubagentId.values()) {
 			if (transcriptSessionFile === sessionFile) return true;
 		}
 		return false;
+	}
+
+	#persistedSnapshot(ref: AgentRef | undefined): RpcSubagentSnapshot | undefined {
+		if (ref?.kind !== "sub" || ref.session !== null) return undefined;
+		const persisted = getPersistedAgentSnapshot(ref);
+		const observation = persisted?.observations.get(ref.id);
+		if (
+			!observation ||
+			observation.id !== ref.id ||
+			observation.index === undefined ||
+			observation.agent === undefined ||
+			observation.agentSource === undefined ||
+			observation.status === undefined ||
+			observation.lastUpdate === undefined
+		) {
+			return undefined;
+		}
+		const sessionFile = observation.sessionFile ?? ref.sessionFile ?? undefined;
+		const snapshot: RpcSubagentSnapshot = {
+			id: observation.id,
+			index: observation.index,
+			agent: observation.agent,
+			agentSource: observation.agentSource,
+			status: observation.status,
+			lastUpdate: observation.lastUpdate,
+			...(observation.description === undefined ? {} : { description: observation.description }),
+			...(observation.task === undefined ? {} : { task: observation.task }),
+			...(observation.assignment === undefined ? {} : { assignment: observation.assignment }),
+			...(sessionFile === undefined ? {} : { sessionFile }),
+			...(observation.parentToolCallId === undefined ? {} : { parentToolCallId: observation.parentToolCallId }),
+			...(observation.progress === undefined ? {} : { progress: observation.progress }),
+		};
+		return { ...snapshot, ...this.#mirrorMetadata(ref.id, observation.progress, snapshot) };
+	}
+
+	#mirrorMetadata(id: string, progress: AgentProgress | undefined, existing: RpcSubagentSnapshot | undefined) {
+		const registry = AgentRegistry.global();
+		const ref = registry.get(id);
+		const persisted = ref?.session === null ? getPersistedAgentSnapshot(ref) : undefined;
+		const observation = persisted?.observations.get(id);
+		const topLevel = resolveTopLevelAgent(registry, id);
+		const sessionTitle = topLevel?.sessionTitle ?? persisted?.sessionTitle ?? existing?.sessionTitle;
+		const sessionId = topLevel?.sessionId ?? persisted?.sessionId ?? existing?.sessionId;
+		const activeTopLevelAgentId = topLevel?.id ?? existing?.activeTopLevelAgentId;
+		const activityState =
+			progress?.activity ??
+			ref?.activityState ??
+			observation?.activityState ??
+			persisted?.activityState ??
+			existing?.activityState;
+		const inflightTaskDetails = progress
+			? progress.inflightTaskDetails
+			: (observation?.progress?.inflightTaskDetails ?? existing?.inflightTaskDetails);
+		const resolvedModel =
+			progress?.resolvedModel ?? observation?.resolvedModel ?? persisted?.resolvedModel ?? existing?.resolvedModel;
+		const resolvedModelIsFallback =
+			progress?.resolvedModelIsFallback ??
+			observation?.resolvedModelIsFallback ??
+			persisted?.resolvedModelIsFallback ??
+			existing?.resolvedModelIsFallback;
+		const retryState = progress?.retryState ?? observation?.retryState ?? existing?.retryState;
+		const retryFailure = progress?.retryFailure ?? observation?.retryFailure ?? existing?.retryFailure;
+		const terminalStatus =
+			persisted?.terminalStatus ??
+			(observation?.status === "failed" || observation?.status === "aborted" ? observation.status : undefined) ??
+			existing?.terminalStatus;
+		return {
+			...(sessionTitle === undefined ? {} : { sessionTitle }),
+			...(sessionId === undefined ? {} : { sessionId }),
+			...(activeTopLevelAgentId === undefined ? {} : { activeTopLevelAgentId }),
+			...(activityState === undefined ? {} : { activityState }),
+			...(inflightTaskDetails === undefined ? {} : { inflightTaskDetails }),
+			...(resolvedModel === undefined ? {} : { resolvedModel }),
+			...(resolvedModelIsFallback === undefined ? {} : { resolvedModelIsFallback }),
+			...(retryState === undefined ? {} : { retryState }),
+			...(retryFailure === undefined ? {} : { retryFailure }),
+			...(terminalStatus === undefined ? {} : { terminalStatus }),
+		};
 	}
 
 	handleLifecycle(payload: SubagentLifecyclePayload): void {
@@ -200,6 +325,7 @@ export class RpcSubagentRegistry {
 			parentToolCallId: payload.parentToolCallId ?? existing?.parentToolCallId,
 			lastUpdate: Date.now(),
 			progress: existing?.progress,
+			...this.#mirrorMetadata(payload.id, existing?.progress, existing),
 		};
 		this.#rememberTranscriptSession(payload.id, sessionFile);
 		if (isTerminalLifecycleStatus(payload.status)) {
@@ -233,6 +359,7 @@ export class RpcSubagentRegistry {
 			lastUpdate: Date.now(),
 			parentToolCallId: payload.parentToolCallId ?? existing?.parentToolCallId,
 			progress,
+			...this.#mirrorMetadata(progress.id, progress, existing),
 		});
 		if (this.#subscriptionLevel !== "off") {
 			this.#output({ type: "subagent_progress", payload });
@@ -248,7 +375,13 @@ export class RpcSubagentRegistry {
 	resolveSessionFile(selector: RpcSubagentTranscriptSelector): string {
 		if (selector.subagentId) {
 			const snapshot = this.#subagents.get(selector.subagentId);
-			const sessionFile = snapshot?.sessionFile ?? this.#transcriptSessionFilesBySubagentId.get(selector.subagentId);
+			const persisted = this.#staleSubagentIds.has(selector.subagentId)
+				? undefined
+				: this.#persistedSnapshot(AgentRegistry.global().get(selector.subagentId));
+			const sessionFile =
+				snapshot?.sessionFile ??
+				persisted?.sessionFile ??
+				this.#transcriptSessionFilesBySubagentId.get(selector.subagentId);
 			if (!sessionFile) {
 				throw new Error(`Unknown subagent or session file unavailable: ${selector.subagentId}`);
 			}

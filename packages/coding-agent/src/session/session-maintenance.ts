@@ -60,6 +60,7 @@ import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import type { NonMessageTokenSource } from "../modes/utils/context-usage";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
+import type { AgentActivityPhase } from "../registry/agent-activity";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
@@ -192,6 +193,7 @@ export interface SessionMaintenanceHost {
 	nonMessageTokenSource(): NonMessageTokenSource;
 	memoryBackendSession(): MemoryBackendOperationContext["session"];
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
+	beginActivityScope(phase: AgentActivityPhase, label: string, detail?: string): () => void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(
 		task: (signal: AbortSignal) => Promise<void>,
@@ -207,6 +209,7 @@ export interface SessionMaintenanceHost {
 				| "stale-generation"
 				| "session-unavailable"
 				| "should-continue-false"
+				| "post-preflight-unavailable"
 				| "post-restore-unavailable",
 		) => void;
 		onError?: () => void;
@@ -540,6 +543,7 @@ export class SessionMaintenance {
 		}
 		const compactionAbortController = new AbortController();
 		this.#compactionAbortController = compactionAbortController;
+		const restoreActivity = this.#host.beginActivityScope("compacting", "Compacting session");
 
 		try {
 			this.#host.disconnectFromAgent();
@@ -869,6 +873,7 @@ export class SessionMaintenance {
 				this.#compactionAbortController = undefined;
 			}
 			this.#host.reconnectToAgent();
+			restoreActivity();
 			// Compaction disconnected before `await abort()`, so abort's finally drain
 
 			// (and any steer/follow-up that arrived mid-compaction — async IRC, an

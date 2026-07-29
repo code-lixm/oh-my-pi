@@ -433,6 +433,12 @@ export class Agent {
 	#cursorToolResultBuffer: CursorToolResultEntry[] = [];
 
 	streamFn: StreamFn;
+	#timedStreamFn: StreamFn = (...args) => {
+		this.#state.requestStartedAt = Date.now();
+		delete this.#state.firstByteAt;
+		delete this.#state.lastDeltaAt;
+		return this.streamFn(...args);
+	};
 	getApiKey?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined;
 	/**
 	 * Hook invoked after tool arguments are validated and before execution.
@@ -1088,6 +1094,9 @@ export class Agent {
 		this.#state.streamMessage = null;
 		this.#state.pendingToolCalls.clear();
 		this.#state.error = undefined;
+		delete this.#state.requestStartedAt;
+		delete this.#state.firstByteAt;
+		delete this.#state.lastDeltaAt;
 		this.#steeringQueue = [];
 		this.#followUpQueue = [];
 		this.#notifySteeringWaiters();
@@ -1209,6 +1218,9 @@ export class Agent {
 		this.#state.isStreaming = true;
 		this.#state.streamMessage = null;
 		this.#state.error = undefined;
+		delete this.#state.requestStartedAt;
+		delete this.#state.firstByteAt;
+		delete this.#state.lastDeltaAt;
 
 		// Clear Cursor tool result buffer at start of each run
 		this.#cursorToolResultBuffer = [];
@@ -1406,8 +1418,8 @@ export class Agent {
 
 		try {
 			const stream = messages
-				? agentLoop(messages, context, config, this.#abortController.signal, this.streamFn)
-				: agentLoopContinue(context, config, this.#abortController.signal, this.streamFn);
+				? agentLoop(messages, context, config, this.#abortController.signal, this.#timedStreamFn)
+				: agentLoopContinue(context, config, this.#abortController.signal, this.#timedStreamFn);
 
 			for await (const event of stream) {
 				if (event.type === "turn_start") turnOpen = true;
@@ -1417,15 +1429,33 @@ export class Agent {
 					case "message_start":
 						partial = event.message;
 						this.#state.streamMessage = event.message;
-						break;
-
-					case "message_update":
-						partial = event.message;
-						this.#state.streamMessage = event.message;
-						if (event.assistantMessageEvent.type === "toolcall_end") {
-							completedToolCallIds.add(event.assistantMessageEvent.toolCall.id);
+						if (
+							event.message.role === "assistant" &&
+							this.#state.requestStartedAt !== undefined &&
+							this.#state.firstByteAt === undefined
+						) {
+							this.#state.firstByteAt = Date.now();
 						}
 						break;
+
+					case "message_update": {
+						partial = event.message;
+						this.#state.streamMessage = event.message;
+						const assistantEvent = event.assistantMessageEvent;
+						const isDelta =
+							assistantEvent.type === "text_delta" ||
+							assistantEvent.type === "thinking_delta" ||
+							assistantEvent.type === "toolcall_delta";
+						if (this.#state.firstByteAt === undefined || isDelta) {
+							const observedAt = Date.now();
+							this.#state.firstByteAt ??= observedAt;
+							if (isDelta) this.#state.lastDeltaAt = observedAt;
+						}
+						if (assistantEvent.type === "toolcall_end") {
+							completedToolCallIds.add(assistantEvent.toolCall.id);
+						}
+						break;
+					}
 
 					case "message_end":
 						partial = null;

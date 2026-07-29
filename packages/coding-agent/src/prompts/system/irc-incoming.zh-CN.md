@@ -1,5 +1,5 @@
 <irc>
-代理 `{{from}}` 发来协作消息{{#if replyTo}}（回复 {{replyTo}}）{{/if}}：
+代理 `{{from}}` 发来协作消息{{#if expectsReply}}，需要你的回复{{/if}}{{#if replyTo}}（回复 {{replyTo}}）{{/if}}：
 
 {{message}}
 

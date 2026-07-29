@@ -888,7 +888,7 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("routes a focused double-← through the global input listener like Esc", () => {
+	it("returns a focused subagent view to Main before opening the Agent Hub on double-←", async () => {
 		const now = vi.spyOn(Date, "now");
 		const { ctx, inputListeners } = createContext();
 		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
@@ -900,11 +900,13 @@ describe("InputController escape behavior", () => {
 		const first = inputListeners[0]("\x1b[D");
 		now.mockReturnValue(2_200); // 200ms later — a deliberate second tap
 		const second = inputListeners[0]("\x1b[D");
+		await Promise.resolve();
 
-		// Both taps are consumed; only the second completes the gesture.
+		// Both taps are consumed; the completed gesture returns to Main before showing the hub.
 		expect(first).toEqual({ consume: true });
 		expect(second).toEqual({ consume: true });
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
+		expect(ctx.showAgentHub).toHaveBeenCalledWith({ requireContent: true, armCloseTap: true });
 		expect(ctx.focusParentSession).not.toHaveBeenCalled();
 	});
 	it("does not open tree or branch or clear the display on default double-Esc", () => {
@@ -1102,14 +1104,15 @@ describe("InputController double-tap ← gesture", () => {
 		expect(showAgentHub).not.toHaveBeenCalled();
 	});
 
-	it("returns a focused subagent view to the main session on a deliberate double-tap", () => {
+	it("opens the Agent Hub after returning a focused subagent view to Main", async () => {
 		const now = vi.spyOn(Date, "now");
 		const { showAgentHub, unfocusSession, tap } = setup("Agent1");
 		now.mockReturnValue(1_000);
 		tap();
 		now.mockReturnValue(1_200);
 		tap();
+		await Promise.resolve();
 		expect(unfocusSession).toHaveBeenCalledTimes(1);
-		expect(showAgentHub).not.toHaveBeenCalled();
+		expect(showAgentHub).toHaveBeenCalledWith({ requireContent: true, armCloseTap: true });
 	});
 });

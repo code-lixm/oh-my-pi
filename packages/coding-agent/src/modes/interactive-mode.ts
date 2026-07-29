@@ -81,6 +81,7 @@ import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { resolveLocalUrlToPath } from "../internal-urls";
+import { IrcBus, type IrcMessage } from "../irc/bus";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -102,6 +103,7 @@ import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compa
 import planModeCompactInstructionsPromptZh from "../prompts/system/plan-mode-compact-instructions.zh-CN.md" with {
 	type: "text",
 };
+import type { AgentActivityState } from "../registry/agent-activity";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
@@ -126,7 +128,7 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
 	formatPhaseDisplayName,
@@ -156,6 +158,12 @@ import {
 	type VibeParentSession,
 	VibeSessionRegistry,
 } from "../vibe/runtime";
+import { formatAgentActivity } from "./components/agent-activity";
+import {
+	renderAgentActivityDisplay,
+	renderAgentStatusBadge,
+	truncateAgentActivityLine,
+} from "./components/agent-activity-display";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -256,6 +264,7 @@ const RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS = 200;
 // owns its own clock via `createCappedClock` so unrelated animations are not
 // coupled through shared module state.
 const SHIMMER_MAX_DELTA_MS = 80;
+const WORKING_ACTIVITY_REFRESH_MS = 1_000;
 
 function createCappedClock(
 	maxDeltaMs: number,
@@ -322,6 +331,32 @@ function renderWorkingMessage(message: string, accent?: WorkingMessageAccent, ti
 		],
 		theme,
 		time,
+	);
+}
+
+function formatWorkingActivityMessage(
+	activity: AgentActivityState | undefined,
+	maxWidth: number,
+	now: number = Date.now(),
+): string | undefined {
+	if (!activity || activity.phase === "idle") return undefined;
+	const width = Math.max(1, maxWidth);
+	const formatted = formatAgentActivity(activity, now, {
+		detailMaxWidth: Math.max(1, width - 28),
+		toolArgsMaxWidth: Math.max(1, width - 28),
+	});
+	const phase = tSettingsUi(formatted.phaseLabel);
+	const health = tSettingsUi(formatted.healthLabel);
+	const state = formatted.health === "active" || phase === health ? phase : `${health}${theme.sep.dot}${phase}`;
+	const elapsed = [
+		formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
+		formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
+	]
+		.filter(Boolean)
+		.join(theme.sep.dot);
+	return truncateToWidth(
+		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(theme.sep.dot),
+		width,
 	);
 }
 
@@ -443,18 +478,15 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 const SUBAGENT_FEEDBACK_VISIBLE_MS = 10_000;
 
 /**
- * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of `Id: status` rows. Detached running agents show their task
- * description; recent agent-to-agent feedback temporarily replaces it with the
- * actual message text. Feedback-only rows remain visible even when the sender
- * already completed or was not observed locally, so communication never needs
- * a separate transcript card. Repeated messages from one agent collapse into
- * its latest row. Returns an empty array when neither work nor feedback remains.
+ * Build the anchored subagent HUD. Live rows share the activity formatter used
+ * by agent views; feedback remains transient, while reply obligations come
+ * directly from IrcBus and stay present until the bus resolves or dismisses them.
  */
 export function renderSubagentHudLines(
 	sessions: ObservableSession[],
 	columns: number,
 	feedback: readonly SubagentFeedback[] = [],
+	pendingReplies: readonly IrcMessage[] = [],
 ): string[] {
 	const feedbackById = new Map(feedback.map(item => [item.agentId, item]));
 	const rows = sessions
@@ -479,42 +511,75 @@ export function renderSubagentHudLines(
 			feedback: item,
 		});
 	}
-	if (rows.length === 0) return [];
+	if (rows.length === 0 && pendingReplies.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = rows.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = rows.length - visible.length;
+	const rowWidth = Math.max(1, columns - 4);
 	const renderedRows = renderTreeList(
 		{
 			items: visible,
 			expanded: true,
 			renderItem: row => {
 				const displayId = formatTaskId(row.session.id);
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+				const sessionStatus =
+					row.session.status === "active" ? (row.session.progress?.status ?? "running") : row.session.status;
+				const activity = renderAgentActivityDisplay({
+					activity: row.session.progress?.activity,
+					progress: row.session.progress,
+					width: rowWidth,
+				});
+				const status = renderAgentStatusBadge(sessionStatus);
+				let header = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
 				const feedbackText = row.feedback?.text.trim();
-				const description =
-					feedbackText || row.session.description?.trim() || row.session.progress?.description?.trim();
-				if (description) {
-					const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - 10);
-					const tone = feedbackText ? "toolOutput" : "accent";
-					line += `${theme.fg("accent", ":")} ${theme.fg(tone, truncateToWidth(replaceTabs(description), budget))}`;
-				} else {
-					const taskPreview = row.session.progress?.task?.trim();
+				if (feedbackText) {
+					header += `${theme.fg("accent", ":")} ${theme.fg(
+						"toolOutput",
+						truncateAgentActivityLine(feedbackText, rowWidth),
+					)}`;
+				} else if (!activity.activityLine) {
+					const description = row.session.description?.trim() || row.session.progress?.description?.trim();
+					const taskPreview = description || row.session.progress?.task?.trim();
 					if (taskPreview) {
-						line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
+						header += description
+							? `${theme.fg("accent", ":")} ${theme.fg("muted", truncateAgentActivityLine(description, rowWidth))}`
+							: ` ${theme.fg("muted", truncateAgentActivityLine(taskPreview, rowWidth))}`;
 					}
 				}
-				return line;
+				if (status) header += theme.sep.dot + status;
+				const lines = [header];
+				if (activity.activityLine) lines.push(activity.activityLine);
+				if (activity.statsLine) lines.push(activity.statsLine);
+				return lines.map(line => truncateAgentActivityLine(line, rowWidth));
 			},
 		},
 		theme,
 	);
-	if (hiddenCount > 0) {
-		renderedRows.push(
-			theme.fg("dim", tSettingsUi("… {hiddenCount} more running — open Agent Hub for full list", { hiddenCount })),
+	const replyRows = pendingReplies.map(message => {
+		const route = `${formatTaskId(message.from)} → ${formatTaskId(message.to)}`;
+		const heading = `${theme.fg("warning", tSettingsUi("needs reply"))}${theme.fg("dim", `${theme.sep.dot}${route}`)}`;
+		const body = message.body.trim();
+		return truncateAgentActivityLine(
+			body ? `${heading}${theme.sep.dot}${theme.fg("toolOutput", body)}` : heading,
+			rowWidth,
 		);
-	}
-	return ["", theme.bold(theme.fg("accent", tSettingsUi("Subagents"))), ...renderedRows.map(line => ` ${line}`)];
+	});
+	const lines = [
+		"",
+		theme.bold(theme.fg("accent", tSettingsUi("Subagents"))),
+		...renderedRows.map(line => ` ${line}`),
+		...replyRows.map(line => ` ${line}`),
+		...(hiddenCount > 0
+			? [
+					theme.fg(
+						"dim",
+						tSettingsUi("… {hiddenCount} more running — open Agent Hub for full list", { hiddenCount }),
+					),
+				]
+			: []),
+	];
+	return lines.map(line => truncateAgentActivityLine(line, Math.max(1, columns)));
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -601,6 +666,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
+	#workingActivityRefreshTimer?: NodeJS.Timeout;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
 	#workingMessageAccentCacheHasValue = false;
@@ -700,20 +766,28 @@ export class InteractiveMode implements InteractiveModeContext {
 	get sessionName(): string | undefined {
 		return this.session.sessionName;
 	}
+	/** Registry identity of the ambient runtime, independent of focus and the initial Main id. */
+	get activeTopLevelId(): string {
+		return this.#topLevelId(this.#activeRuntime);
+	}
 	async focusAgentSession(id: string): Promise<void> {
 		await this.#focusController.focusAgent(id);
+		this.#eventController.syncTerminalTitleState();
 		this.#renderTodoList();
 	}
 	async cycleAgentSession(direction: "next" | "previous"): Promise<void> {
 		await this.#focusController.cycleAgent(direction);
+		this.#eventController.syncTerminalTitleState();
 		this.#renderTodoList();
 	}
 	async focusParentSession(): Promise<void> {
 		await this.#focusController.focusParent();
+		this.#eventController.syncTerminalTitleState();
 		this.#renderTodoList();
 	}
 	async unfocusSession(): Promise<void> {
 		await this.#focusController.unfocus();
+		this.#eventController.syncTerminalTitleState();
 		this.#renderTodoList();
 	}
 	showFocusedAgentView(id: string): void {
@@ -755,6 +829,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			width: "100%",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.settings.get("tui.mouseInput"),
 		});
 		this.ui.setFocus(view);
 		this.ui.requestRender();
@@ -768,10 +843,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 	clearTransientSessionUi(): void {
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
+		this.#stopLoadingAnimation(false);
 		if (this.autoCompactionLoader) {
 			this.autoCompactionLoader.stop();
 			this.autoCompactionLoader = undefined;
@@ -791,10 +863,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.pendingTools.clear();
 	}
 
+	#topLevelId(runtime: InteractiveRuntime): string {
+		return runtime.session.getAgentId() ?? MAIN_AGENT_ID;
+	}
+
 	#runtimeKeys(runtime: InteractiveRuntime): string[] {
 		const sessionManager = runtime.session.sessionManager;
-		return [sessionManager.getSessionId(), sessionManager.getSessionFile()].filter((key): key is string =>
-			Boolean(key),
+		return [this.#topLevelId(runtime), sessionManager.getSessionId(), sessionManager.getSessionFile()].filter(
+			(key): key is string => Boolean(key),
 		);
 	}
 
@@ -842,6 +918,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			runtime,
 			tSettingsUi("New session started; previous session continues in background."),
 		);
+	}
+
+	async switchTopLevel(id: string): Promise<void> {
+		const runtime = this.#runtimes.get(id);
+		if (!runtime || this.#topLevelId(runtime) !== id) {
+			throw new Error("That top-level session is no longer live.");
+		}
+		if (this.#hasBlockingSessionDialog()) {
+			throw new Error(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
+		}
+		await this.#attachTopLevelRuntime(runtime, tSettingsUi("Switched to session"));
 	}
 
 	async #disposeAllRuntimeSessions(reason?: Parameters<SessionTeardown>[0]): Promise<void> {
@@ -896,6 +983,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.renderInitialMessages({ clearTerminalHistory: true });
 		await this.reloadTodos();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		this.#eventController.syncTerminalTitleState();
 		this.updateEditorBorderColor();
 		this.showStatus(label);
 		this.ui.requestRender(true, { clearScrollback: true });
@@ -953,6 +1041,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerUiSyncNeedsTodoReconcile = false;
 	#subagentFeedback = new Map<string, SubagentFeedback>();
 	#subagentFeedbackTimers = new Map<string, NodeJS.Timeout>();
+	#subagentActivityRefreshTimer?: NodeJS.Timeout;
+	#ircPendingReplyUnsubscribe?: () => void;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
 	#mcpStatusOrder: string[] = [];
@@ -1301,6 +1391,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#observerRegistry.onChange(kind => {
 			this.#scheduleObserverUiSync(kind);
 		});
+		this.#ircPendingReplyUnsubscribe = IrcBus.global().onPendingReplyChange(() => {
+			this.#renderSubagentList();
+			this.#eventController.syncTerminalTitleState();
+			this.ui.requestRender();
+		});
+		this.#renderSubagentList();
 		// Let the transient todo tool result light up pending todos executed by a
 		// live subagent, matching the sticky HUD's active set (#5873).
 		setActiveTodoDescriptionsProvider(() => this.#getActiveSubagentDescriptions());
@@ -1350,6 +1446,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		pushTerminalTitle();
 		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+		this.#eventController.syncTerminalTitleState();
 		this.updateEditorBorderColor();
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
@@ -2447,14 +2544,51 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
+	#syncSubagentActivityRefresh(sessions: readonly ObservableSession[]): void {
+		const hasLiveActivity = sessions.some(session => {
+			const activity = session.progress?.activity;
+			return (
+				session.kind === "subagent" &&
+				session.status === "active" &&
+				session.detached === true &&
+				activity !== undefined &&
+				activity.phase !== "idle"
+			);
+		});
+		if (!hasLiveActivity) {
+			this.#stopSubagentActivityRefresh();
+			return;
+		}
+		if (this.#subagentActivityRefreshTimer) return;
+		this.#subagentActivityRefreshTimer = setInterval(() => {
+			this.#renderSubagentList();
+			this.ui.requestRender();
+		}, WORKING_ACTIVITY_REFRESH_MS);
+		this.#subagentActivityRefreshTimer.unref?.();
+	}
+
+	#stopSubagentActivityRefresh(): void {
+		if (!this.#subagentActivityRefreshTimer) return;
+		clearInterval(this.#subagentActivityRefreshTimer);
+		this.#subagentActivityRefreshTimer = undefined;
+	}
+
 	/** Anchored HUD for detached work and transient subagent feedback. */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
-		const lines = renderSubagentHudLines(this.#observerRegistry.getSessions(), this.ui.terminal.columns, [
-			...this.#subagentFeedback.values(),
-		]);
-		if (lines.length === 0) return;
-		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		const sessions = this.#observerRegistry.getSessions();
+		this.#syncSubagentActivityRefresh(sessions);
+		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
+		const lines = renderSubagentHudLines(
+			sessions,
+			columns,
+			[...this.#subagentFeedback.values()],
+			IrcBus.global().getPendingReplySnapshot().messages,
+		);
+		if (lines.length > 0) {
+			this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		}
+		this.#refreshWorkingActivityMessage();
 	}
 
 	showSubagentFeedback(feedback: SubagentFeedback): void {
@@ -4380,14 +4514,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusedAgentViewOverlay?.hide();
 		this.#focusedAgentViewOverlay = undefined;
 		this.#focusedAgentView = undefined;
-		if (this.loadingAnimation) {
-			this.#stopLoadingAnimation(false);
-		}
+		this.#stopLoadingAnimation(false);
 		this.#cleanupMicAnimation();
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#clearSubagentFeedback();
+		this.#stopSubagentActivityRefresh();
+		this.#ircPendingReplyUnsubscribe?.();
+		this.#ircPendingReplyUnsubscribe = undefined;
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();
@@ -4723,6 +4858,53 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#cacheWorkingMessageAccent(key, main && dim ? { main, dim } : undefined);
 	}
 
+	/** Activity cards already explain the work; keep the loading row compact beside them. */
+	#hasVisibleActivityCard(): boolean {
+		return (
+			this.subagentContainer.children.length > 0 ||
+			this.pendingTools.size > 0 ||
+			this.bashComponent !== undefined ||
+			this.pythonComponent !== undefined ||
+			this.pendingBashComponents.length > 0 ||
+			this.pendingPythonComponents.length > 0
+		);
+	}
+
+	/** Reconcile the bottom loader after an activity card appears or disappears. */
+	refreshWorkingActivitySummary(): void {
+		this.#refreshWorkingActivityMessage();
+	}
+
+	#refreshWorkingActivityMessage(): void {
+		const loader = this.loadingAnimation;
+		if (!loader) {
+			this.#stopWorkingActivityRefresh();
+			return;
+		}
+		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
+		const maxWidth = Math.max(1, columns - 4);
+		const hint = interruptHint();
+		const summary = this.#hasVisibleActivityCard()
+			? undefined
+			: formatWorkingActivityMessage(this.viewSession.activity, Math.max(1, maxWidth - visibleWidth(hint)));
+		loader.setMessage(summary ? `${summary}${hint}` : this.#defaultWorkingMessage);
+	}
+
+	#startWorkingActivityRefresh(): void {
+		if (this.#workingActivityRefreshTimer) return;
+		this.#workingActivityRefreshTimer = setInterval(
+			() => this.#refreshWorkingActivityMessage(),
+			WORKING_ACTIVITY_REFRESH_MS,
+		);
+		this.#workingActivityRefreshTimer.unref?.();
+	}
+
+	#stopWorkingActivityRefresh(): void {
+		if (!this.#workingActivityRefreshTimer) return;
+		clearInterval(this.#workingActivityRefreshTimer);
+		this.#workingActivityRefreshTimer = undefined;
+	}
+
 	ensureLoadingAnimation(): void {
 		if (!this.loadingAnimation) {
 			this.#clearWorkingMessageAccentCache();
@@ -4756,9 +4938,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		}
 		this.applyPendingWorkingMessage();
+		this.#startWorkingActivityRefresh();
+		this.#refreshWorkingActivityMessage();
 	}
 
 	#stopLoadingAnimation(clearStatusContainer: boolean): void {
+		this.#stopWorkingActivityRefresh();
 		if (!this.loadingAnimation) return;
 		this.loadingAnimation.stop();
 		this.loadingAnimation = undefined;
@@ -5071,6 +5256,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	resetObserverRegistry(): void {
 		this.#clearSubagentFeedback();
+		this.#stopSubagentActivityRefresh();
 		this.#observerRegistry.resetSessions();
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 	}

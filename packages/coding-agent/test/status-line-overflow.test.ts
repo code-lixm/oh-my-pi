@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,6 +8,8 @@ import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-coding-agent/utils/session-color";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
@@ -23,6 +25,10 @@ beforeAll(async () => {
 afterAll(() => {
 	resetSettingsForTest();
 	setProjectDir(originalProjectDir);
+});
+
+afterEach(() => {
+	AgentRegistry.resetGlobalForTests();
 });
 
 /** Minimal SegmentContext factory — only path/git fields matter for these tests. */
@@ -79,8 +85,27 @@ function createCtx(overrides?: { pathMaxLength?: number; branch?: string | null 
 	};
 }
 
+function registerFocusedChild(root: { id: string; displayName: string; sessionTitle?: string }, childId: string): void {
+	const registry = AgentRegistry.global();
+	registry.register({
+		...root,
+		kind: "main",
+		session: {} as AgentSession,
+		status: "idle",
+	});
+	registry.register({
+		id: childId,
+		displayName: childId,
+		kind: "sub",
+		parentId: root.id,
+		session: {} as AgentSession,
+		status: "idle",
+	});
+}
+
 describe("pi status-line segment", () => {
 	it("shows the focused subagent display name as Main › name", () => {
+		registerFocusedChild({ id: MAIN_AGENT_ID, displayName: MAIN_AGENT_ID }, "Worker-7");
 		const ctx: SegmentContext = {
 			...createCtx(),
 			focusedAgentId: "Worker-7",
@@ -93,6 +118,7 @@ describe("pi status-line segment", () => {
 	});
 
 	it("falls back to the focused subagent id when no display name is available", () => {
+		registerFocusedChild({ id: MAIN_AGENT_ID, displayName: MAIN_AGENT_ID }, "Worker-7");
 		const ctx: SegmentContext = {
 			...createCtx(),
 			focusedAgentId: "Worker-7",
@@ -101,6 +127,59 @@ describe("pi status-line segment", () => {
 
 		expect(result.visible).toBe(true);
 		expect(result.content).toContain("Main › Worker-7 ");
+	});
+
+	it("shows the owning secondary session title for a focused child", () => {
+		registerFocusedChild(
+			{
+				id: "top-level:review",
+				displayName: "4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f",
+				sessionTitle: "Review session",
+			},
+			"Worker-9",
+		);
+		const result = renderSegment("pi", {
+			...createCtx(),
+			focusedAgentId: "Worker-9",
+			focusedAgentDisplayName: "Patch worker",
+		});
+
+		expect(result.content).toContain("Review session › Patch worker ");
+	});
+
+	it("fails closed to an unknown root for missing and cyclic parent chains", () => {
+		const registry = AgentRegistry.global();
+		registry.register({
+			id: "orphan",
+			displayName: "orphan",
+			kind: "sub",
+			parentId: "missing",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		const missing = renderSegment("pi", { ...createCtx(), focusedAgentId: "orphan" });
+		expect(missing.content).toContain("? › orphan ");
+
+		AgentRegistry.resetGlobalForTests();
+		const cyclic = AgentRegistry.global();
+		cyclic.register({
+			id: "cycle-a",
+			displayName: "cycle-a",
+			kind: "sub",
+			parentId: "cycle-b",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		cyclic.register({
+			id: "cycle-b",
+			displayName: "cycle-b",
+			kind: "sub",
+			parentId: "cycle-a",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		const cycle = renderSegment("pi", { ...createCtx(), focusedAgentId: "cycle-a" });
+		expect(cycle.content).toContain("? › cycle-a ");
 	});
 });
 

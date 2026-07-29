@@ -7,6 +7,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
@@ -27,7 +28,14 @@ import {
 	type ToolUIColor,
 	type ToolUIStatus,
 } from "../render-utils";
-import type { AgentActivitySnapshot, CancelOutcome, CoordinationDetails, HubRenderArgs, JobSnapshot } from "./types";
+import type {
+	AgentActivitySnapshot,
+	CancelOutcome,
+	CoordinationDetails,
+	HubRenderArgs,
+	JobProgressSnapshot,
+	JobSnapshot,
+} from "./types";
 
 const WAIT_DURATION_MS: Record<string, number> = {
 	"5s": 5_000,
@@ -141,43 +149,101 @@ interface TrackedJobLike {
 	status: string;
 	label: string;
 	startTime: number;
+	queued?: boolean;
+	queuedAt?: number;
+	startedAt?: number;
+	lastProgressAt?: number;
 	latestDetails?: Record<string, unknown>;
 	resultText?: string;
 	errorText?: string;
 }
 
+function progressRecordFor(job: TrackedJobLike): Record<string, unknown> | undefined {
+	const progressValue = job.latestDetails?.progress;
+	if (!Array.isArray(progressValue)) return undefined;
+
+	let first: Record<string, unknown> | undefined;
+	for (const item of progressValue) {
+		const candidate = isRecord(item) ? item : undefined;
+		if (!candidate) continue;
+		if (!first) first = candidate;
+		if (candidate.id === job.id) return candidate;
+	}
+	return first;
+}
+
+function determinateProgress(value: unknown): JobProgressSnapshot | undefined {
+	const progress = isRecord(value) ? value : undefined;
+	if (!progress) return undefined;
+	const total = progress.total;
+	const completed = typeof progress.completed === "number" ? progress.completed : progress.current;
+	if (
+		typeof completed !== "number" ||
+		typeof total !== "number" ||
+		!Number.isFinite(completed) ||
+		!Number.isFinite(total) ||
+		completed < 0 ||
+		total <= 0 ||
+		completed > total
+	) {
+		return undefined;
+	}
+	const unit = typeof progress.unit === "string" ? progress.unit.trim() : "";
+	return unit ? { completed, total, unit } : { completed, total };
+}
+
 export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobSnapshot[] {
 	const now = Date.now();
+	const manager = session.asyncJobManager;
 	return jobs.map(j => {
-		const current = session.asyncJobManager?.getJob(j.id);
+		const current = manager?.getJob(j.id);
 		const latest = current ?? j;
+		const progressRecord = progressRecordFor(latest);
+		const queued = latest.status === "running" && latest.queued === true;
+		const queuePosition = queued ? manager?.getQueuePosition(latest.id) : undefined;
+		const agentActivity = progressRecord?.activity;
+		const jobActivity = latest.latestDetails?.activity;
+		const progressFromAgent = isRecord(agentActivity) ? agentActivity.progress : undefined;
+		const progressFromJob = isRecord(jobActivity) ? jobActivity.progress : undefined;
+		const progress =
+			determinateProgress(progressFromAgent) ??
+			determinateProgress(progressFromJob) ??
+			determinateProgress(latest.latestDetails?.progress) ??
+			determinateProgress(latest.latestDetails);
 		let resolvedModel: string | undefined;
 		if (latest.type === "task") {
-			const progressValue = latest.latestDetails?.progress;
-			if (Array.isArray(progressValue)) {
-				let progressRecord: Record<string, unknown> | undefined;
-				for (const item of progressValue) {
-					if (!item || typeof item !== "object") continue;
-					const candidate = item as Record<string, unknown>;
-					if (!progressRecord) progressRecord = candidate;
-					if (candidate.id === latest.id) {
-						progressRecord = candidate;
-						break;
-					}
-				}
-				const modelValue = progressRecord?.resolvedModel;
-				if (typeof modelValue === "string") {
-					const trimmed = modelValue.trim();
-					if (trimmed) resolvedModel = trimmed;
-				}
+			const modelValue = progressRecord?.resolvedModel;
+			if (typeof modelValue === "string") {
+				const trimmed = modelValue.trim();
+				if (trimmed) resolvedModel = trimmed;
 			}
 		}
+		const queuedAt =
+			typeof latest.queuedAt === "number" && Number.isFinite(latest.queuedAt) && latest.queuedAt >= 0
+				? latest.queuedAt
+				: undefined;
+		const startedAt =
+			typeof latest.startedAt === "number" && Number.isFinite(latest.startedAt) && latest.startedAt >= 0
+				? latest.startedAt
+				: undefined;
+		const lastProgressAt =
+			typeof latest.lastProgressAt === "number" &&
+			Number.isFinite(latest.lastProgressAt) &&
+			latest.lastProgressAt >= 0
+				? latest.lastProgressAt
+				: undefined;
 		return {
 			id: latest.id,
 			type: latest.type,
 			status: latest.status as JobSnapshot["status"],
 			label: latest.label,
 			durationMs: Math.max(0, now - latest.startTime),
+			...(queued ? { queued: true } : {}),
+			...(queuedAt !== undefined ? { queuedAt } : {}),
+			...(startedAt !== undefined ? { startedAt } : {}),
+			...(lastProgressAt !== undefined ? { lastProgressAt } : {}),
+			...(queuePosition !== undefined ? { queuePosition } : {}),
+			...(progress ? { progress } : {}),
 			...(resolvedModel ? { resolvedModel } : {}),
 			...(latest.resultText ? { resultText: latest.resultText } : {}),
 			...(latest.errorText ? { errorText: latest.errorText } : {}),
@@ -208,6 +274,13 @@ export function buildJobResult(
 	const running = jobResults.filter(j => j.status === "running");
 
 	const lines: string[] = [];
+	const jobConcurrency = manager.getConcurrencySnapshot();
+	if (jobConcurrency.running > 0 || jobConcurrency.queued > 0) {
+		lines.push("## Background Job Capacity\n");
+		lines.push(`- Running: ${jobConcurrency.running}/${jobConcurrency.limit}`);
+		lines.push(`- Queued: ${jobConcurrency.queued}`);
+		lines.push("");
+	}
 	const taskRunnableConcurrency = session.taskRunnableConcurrency?.snapshot();
 	if (taskRunnableConcurrency) {
 		const limit = taskRunnableConcurrency.limit ?? "unlimited";
@@ -247,9 +320,14 @@ export function buildJobResult(
 	}
 
 	if (running.length > 0) {
-		lines.push(`## Still Running (${running.length})\n`);
+		lines.push(`## Active Background Jobs (${running.length})\n`);
 		for (const j of running) {
-			lines.push(`- \`${j.id}\` [${j.type}] — ${j.label}`);
+			const state = j.queued
+				? j.queuePosition === undefined
+					? "queued"
+					: `queued (#${j.queuePosition})`
+				: "running";
+			lines.push(`- \`${j.id}\` [${j.type}] — ${state}: ${j.label}`);
 		}
 	}
 
@@ -271,6 +349,7 @@ export function buildJobResult(
 		...(agents.length ? { agents } : {}),
 		...(taskRequestConcurrency ? { taskRequestConcurrency } : {}),
 		...(taskRunnableConcurrency ? { taskRunnableConcurrency } : {}),
+		jobConcurrency,
 	};
 	return {
 		content: [{ type: "text", text: lines.join("\n").trimEnd() }],

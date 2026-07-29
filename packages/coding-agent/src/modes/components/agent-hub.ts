@@ -1,27 +1,45 @@
 /**
  * Agent Hub overlay component.
  *
- * One overlay, two views:
- * - Table view: every registered agent except Main (Main IS the ambient
- *   chat), live from the global AgentRegistry — status, unread irc count,
- *   current/last task, last activity. Select with j/k, Enter opens a chat,
- *   `r` revives a parked agent, `x` aborts + releases one.
- * - Chat view: per-agent transcript (incremental session-file tail, absorbed
- *   from the old session observer overlay) plus an input line. Submitting
- *   revives a parked agent, then prompts/steers it; the message lands in the
- *   agent's persisted history via the normal prompt path.
+ * One overlay with a grouped table and read-only transcript viewer:
+ * - The active Main is header-only. Background Main runtimes are selectable
+ *   switch targets; subagents are grouped beneath their owning Main.
+ * - Enter/click switches a Main runtime or opens the selected subagent transcript.
+ *   `f` focuses a live subagent, `m` sends it a message, `p` returns to its
+ *   owning Main, and `r`/`x` revive/kill it. Focusing a background subagent
+ *   switches to its owning Main first.
+ * - The transcript viewer tails persisted/local or collab-host history without
+ *   changing the ambient runtime.
  *
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
  */
 import { type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { Container, Ellipsis, matchesKey, type OverlayHandle, padding, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
+import {
+	Container,
+	Ellipsis,
+	Input,
+	matchesKey,
+	type OverlayHandle,
+	padding,
+	routeSgrMouseInput,
+	type SgrMouseEvent,
+	type TUI,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
 import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import {
+	type AgentRef,
+	AgentRegistry,
+	type AgentStatus,
+	agentDisplayLabel,
+	MAIN_AGENT_ID,
+	resolveTopLevelAgent,
+} from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { parseThinkingLevel } from "../../thinking";
@@ -29,6 +47,12 @@ import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/rend
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
+import {
+	renderAgentActivityDisplay,
+	renderAgentStatusBadge,
+	selectAgentActivity,
+	truncateAgentActivityLine,
+} from "./agent-activity-display";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -55,7 +79,24 @@ function clampHubLine(line: string, width: number): string {
 
 const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, waiting: 1, idle: 2, parked: 3, aborted: 4 };
 
-/** Status glyph, colored per theme status conventions. The title-line counts spell out the words. */
+type HubRow = { kind: "main"; ref: AgentRef } | { kind: "subagent"; ref: AgentRef };
+
+interface RootSubagentGroup {
+	rootId: string;
+	label: string;
+	rows: HubRow[];
+}
+
+type HubGroup = { kind: "mains"; rows: HubRow[] } | { kind: "subagents"; groups: RootSubagentGroup[] };
+
+interface RenderedHubBlock {
+	lines: string[];
+	rowIndex?: number;
+}
+
+const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Status glyph keeps the compact row identity stable; the badge spells out the same status. */
 function statusGlyph(status: AgentStatus): string {
 	switch (status) {
 		case "running":
@@ -161,12 +202,18 @@ export interface AgentHubDeps {
 	proseOnlyThinking?: () => boolean;
 	/** Keys toggling tool output expansion (app.tools.expand). */
 	expandKeys?: KeyId[];
-	/** Focus the main view on this agent's live session (ctx.focusAgentSession). When absent (collab guest, tests), Enter opens the in-hub chat view instead. */
+	/** Focus the main view on this agent's live session (ctx.focusAgentSession). */
 	focusAgent?: (id: string) => Promise<void>;
+	/** Registry identity of the ambient Main runtime. It is header-only, never a selectable row. */
+	activeTopLevelId?: string;
+	/** Switch the shared TUI to a live background Main runtime. */
+	switchTopLevel?: (id: string) => Promise<void>;
 	/** Current main session file; used to seed parked historical subagents after restart. */
 	sessionFile?: string | null;
 	/** Collab guest: route actions/transcripts to the host instead of local sessions. */
 	remote?: AgentHubRemote;
+	/** Whether the hub and nested transcript capture terminal pointer events. Defaults off for native selection. */
+	mouseTracking?: boolean;
 }
 
 export class AgentHubOverlayComponent extends Container {
@@ -181,15 +228,23 @@ export class AgentHubOverlayComponent extends Container {
 	#ageTimer: NodeJS.Timeout | undefined;
 	#dataChangeTimer?: NodeJS.Timeout;
 	#remote: AgentHubRemote | undefined;
+	#mouseTracking: boolean;
 	/** Resolves after persisted historical subagents have been registered and rows refreshed. */
 	readonly persistedSubagentsReady: Promise<void>;
 
 	// Table state
-	#rows: AgentRef[] = [];
+	#rows: HubRow[] = [];
 	#selectedRow = 0;
 	#notice: string | undefined;
+	#messageAgentId: string | undefined;
+	#messageInput: Input | undefined;
 	/** Captured row order from the first refresh; keeps the hub stable while open. */
 	#rowOrder: Map<string, number> | undefined;
+	/** Stable Main group order captured when the overlay opens. */
+	#rootOrder: Map<string, number> | undefined;
+	#groups: HubGroup[] = [];
+	/** Screen rows from the latest render that activate a concrete hub row. */
+	#rowAtScreenLine = new Map<number, number>();
 	/** Double-tap window state for the table's left-left "close hub" gesture. */
 	#lastLeftTap = 0;
 
@@ -202,6 +257,8 @@ export class AgentHubOverlayComponent extends Container {
 	#proseOnlyThinking: (() => boolean) | undefined;
 	#expandKeys: KeyId[];
 	#focusAgent: ((id: string) => Promise<void>) | undefined;
+	#activeTopLevelId: string;
+	#switchTopLevel: ((id: string) => Promise<void>) | undefined;
 
 	// Fullscreen transcript overlay opened by openChat(), if any.
 	#transcriptOverlay: OverlayHandle | undefined;
@@ -219,6 +276,7 @@ export class AgentHubOverlayComponent extends Container {
 		this.#requestRender = deps.requestRender;
 		this.#hubKeys = deps.hubKeys;
 		this.#remote = deps.remote;
+		this.#mouseTracking = deps.mouseTracking ?? false;
 		this.#ui =
 			deps.ui ??
 			({
@@ -232,6 +290,8 @@ export class AgentHubOverlayComponent extends Container {
 		this.#proseOnlyThinking = deps.proseOnlyThinking;
 		this.#expandKeys = deps.expandKeys ?? ["ctrl+o"];
 		this.#focusAgent = deps.focusAgent;
+		this.#activeTopLevelId = deps.activeTopLevelId ?? MAIN_AGENT_ID;
+		this.#switchTopLevel = deps.switchTopLevel;
 
 		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange()));
 		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
@@ -286,6 +346,10 @@ export class AgentHubOverlayComponent extends Container {
 				return;
 			}
 		}
+		if (keyData.startsWith("\x1b[<")) {
+			this.#handleMouseInput(keyData);
+			return;
+		}
 		this.#handleTableInput(keyData);
 	}
 
@@ -334,7 +398,12 @@ export class AgentHubOverlayComponent extends Container {
 			},
 		});
 		this.#transcriptViewer = viewer;
-		this.#transcriptOverlay = this.#ui.showOverlay(viewer, { width: "100%", margin: 0, fullscreen: true });
+		this.#transcriptOverlay = this.#ui.showOverlay(viewer, {
+			width: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking: this.#mouseTracking,
+		});
 		this.#ui.setFocus(viewer);
 		this.#requestRender();
 	}
@@ -368,39 +437,98 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#refreshRows(): void {
-		const selectedId = this.#rows[this.#selectedRow]?.id;
-		const refs = this.#registry.list().filter(ref => ref.id !== MAIN_AGENT_ID);
+		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
+		const refs = this.#registry.list();
 
 		if (!this.#rowOrder) {
-			// First refresh (usually the constructor): order by status, then recency.
-			this.#rows = refs.sort(
+			const initial = [...refs].sort(
 				(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastActivity - a.lastActivity,
 			);
-			this.#rowOrder = new Map(this.#rows.map((ref, i) => [ref.id, i]));
-		} else {
-			// After the hub is open, freeze the relative order so keyboard selection
-			// does not jump around as agents heartbeat or update activity. New agents
-			// are appended at the end and then stay put.
-			this.#rows = refs.sort((a, b) => {
-				const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-				if (statusDiff !== 0) return statusDiff;
-				const aOrder = this.#rowOrder!.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-				const bOrder = this.#rowOrder!.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-				return aOrder - bOrder;
-			});
-			for (const ref of this.#rows) {
-				if (!this.#rowOrder.has(ref.id)) {
-					this.#rowOrder.set(ref.id, this.#rowOrder.size);
-				}
-			}
+			this.#rowOrder = new Map(initial.map((ref, index) => [ref.id, index]));
+			this.#rootOrder = new Map();
+			const active = initial.find(ref => ref.id === this.#activeTopLevelId);
+			this.#rootOrder.set(active?.id ?? this.#activeTopLevelId, 0);
 		}
 
-		const keptIndex = selectedId ? this.#rows.findIndex(ref => ref.id === selectedId) : -1;
+		const rowOrder = this.#rowOrder ?? new Map<string, number>();
+		this.#rowOrder = rowOrder;
+		for (const ref of refs) {
+			if (!rowOrder.has(ref.id)) rowOrder.set(ref.id, rowOrder.size);
+		}
+		const ordered = [...refs].sort((a, b) => (rowOrder.get(a.id) ?? 0) - (rowOrder.get(b.id) ?? 0));
+		const rootOrder = this.#rootOrder ?? new Map<string, number>();
+		this.#rootOrder = rootOrder;
+		for (const ref of ordered) {
+			if (ref.kind === "main" && !rootOrder.has(ref.id)) rootOrder.set(ref.id, rootOrder.size);
+		}
+
+		const mainRows: HubRow[] = ordered
+			.filter(ref => ref.kind === "main" && ref.id !== this.#activeTopLevelId)
+			.map(ref => ({ kind: "main", ref }));
+		const grouped = new Map<string, RootSubagentGroup>();
+		for (const ref of ordered) {
+			if (ref.kind === "main") continue;
+			const root = resolveTopLevelAgent(this.#registry, ref.id);
+			const rootId = root?.id ?? ref.parentId ?? this.#activeTopLevelId;
+			if (!rootOrder.has(rootId)) rootOrder.set(rootId, rootOrder.size);
+			let group = grouped.get(rootId);
+			if (!group) {
+				group = {
+					rootId,
+					label:
+						root !== undefined
+							? this.#displayLabel(root)
+							: ref.parentId === this.#activeTopLevelId || !ref.parentId
+								? this.#activeMainLabel()
+								: tSettingsUi("Main"),
+					rows: [],
+				};
+				grouped.set(rootId, group);
+			}
+			group.rows.push({ kind: "subagent", ref });
+		}
+		const subagentGroups = [...grouped.values()].sort((left, right) => {
+			const leftActive = left.rootId === this.#activeTopLevelId;
+			const rightActive = right.rootId === this.#activeTopLevelId;
+			if (leftActive !== rightActive) return leftActive ? -1 : 1;
+			return (rootOrder.get(left.rootId) ?? 0) - (rootOrder.get(right.rootId) ?? 0);
+		});
+
+		this.#groups = [
+			...(mainRows.length > 0 ? [{ kind: "mains" as const, rows: mainRows }] : []),
+			...(subagentGroups.length > 0 ? [{ kind: "subagents" as const, groups: subagentGroups }] : []),
+		];
+		this.#rows = [...mainRows, ...subagentGroups.flatMap(group => group.rows)];
+
+		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
 	}
 
+	#displayLabel(ref: AgentRef): string {
+		const label = agentDisplayLabel(ref).trim();
+		if (!label || UUID_LABEL.test(label)) return ref.kind === "main" ? tSettingsUi("Main") : tSettingsUi("Subagent");
+		return replaceTabs(label).replace(/[\r\n]+/g, " ");
+	}
+
+	#activeMainLabel(): string {
+		const ref = this.#registry.get(this.#activeTopLevelId);
+		return ref ? this.#displayLabel(ref) : tSettingsUi("Main");
+	}
+
 	#observableFor(id: string): ObservableSession | undefined {
-		return this.#observers.getSessions().find(s => s.id === id);
+		return this.#observers.getSessions().find(session => session.id === id);
+	}
+
+	#activityLines(ref: AgentRef, observed: ObservableSession | undefined, width: number): string[] {
+		const progress = observed?.progress;
+		const activity = selectAgentActivity(ref.activityState, progress);
+		const display = renderAgentActivityDisplay({ activity, progress, width });
+		const lines = [display.activityLine, display.statsLine].filter((line): line is string => Boolean(line));
+		if (lines.length === 0) {
+			const fallback = observed?.description || progress?.task || ref.activity;
+			if (fallback) lines.push(theme.fg("muted", sanitizeLine(fallback, width)));
+		}
+		return lines.map(line => truncateAgentActivityLine(line, width));
 	}
 
 	// ========================================================================
@@ -409,62 +537,126 @@ export class AgentHubOverlayComponent extends Container {
 
 	#renderTable(width: number): string[] {
 		const lines: string[] = [];
+		this.#rowAtScreenLine.clear();
 		lines.push(...new DynamicBorder().render(width));
 		const counts = this.#statusSummary();
+		const activeLabel = this.#activeMainLabel();
 		lines.push(
-			` ${theme.fg("accent", tSettingsUi("Agent Hub"))}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`,
+			` ${theme.fg("accent", tSettingsUi("Agent Hub"))}${theme.fg("dim", `${theme.sep.dot}${tSettingsUi("Main")}: `)}${theme.bold(activeLabel)}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`,
 		);
 		lines.push(...new DynamicBorder().render(width));
 
+		const hintLines = this.#hintLines();
+		let messageLine: string | undefined;
+		if (this.#messageInput && this.#messageAgentId) {
+			const target = this.#registry.get(this.#messageAgentId);
+			const label = target ? this.#displayLabel(target) : tSettingsUi("Subagent");
+			const prefix = ` ${theme.fg("muted", `m → ${label}: `)}`;
+			const input = this.#messageInput.render(Math.max(1, width - 2 - visibleWidth(prefix)))[0] ?? "";
+			messageLine = truncateToWidth(`${prefix}${input}`, Math.max(1, width - 2));
+		}
 		if (this.#rows.length === 0) {
 			lines.push(` ${theme.fg("dim", tSettingsUi("no subagents yet — task spawns appear here"))}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
-			// Chrome: 2 borders + title + notice? + blank + hints + border
-			const budget = Math.max(4, termHeight - 7 - (this.#notice ? 1 : 0));
-			const entries = this.#rows.map((ref, i) => this.#renderEntry(ref, i === this.#selectedRow, width));
-			// Entries are 1-2 lines tall; grow a window around the selection until
-			// the line budget is spent, so the selected entry stays centered.
-			let start = this.#selectedRow;
-			let end = this.#selectedRow + 1;
-			let used = entries[start]?.length ?? 0;
+			const chromeRows = 5 + hintLines.length + (messageLine ? 1 : 0) + (this.#notice ? 1 : 0);
+			const budget = Math.max(3, termHeight - chromeRows);
+			const blocks = this.#renderBlocks(width);
+			const selectedBlock = blocks.findIndex(block => block.rowIndex === this.#selectedRow);
+			let start = Math.max(0, selectedBlock);
+			let end = Math.min(blocks.length, start + 1);
+			let used = blocks[start]?.lines.length ?? 0;
 			for (let grew = true; grew; ) {
 				grew = false;
-				if (end < entries.length && used + entries[end].length <= budget) {
-					used += entries[end].length;
+				if (end < blocks.length && used + blocks[end]!.lines.length <= budget) {
+					used += blocks[end]!.lines.length;
 					end++;
 					grew = true;
 				}
-				if (start > 0 && used + entries[start - 1].length <= budget) {
+				if (start > 0 && used + blocks[start - 1]!.lines.length <= budget) {
 					start--;
-					used += entries[start].length;
+					used += blocks[start]!.lines.length;
 					grew = true;
 				}
 			}
 			if (start > 0) {
 				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
 			}
-			for (let i = start; i < end; i++) {
-				lines.push(...entries[i]);
+			for (const block of blocks.slice(start, end)) {
+				const lineStart = lines.length;
+				lines.push(...block.lines);
+				if (block.rowIndex !== undefined) {
+					for (let offset = 0; offset < block.lines.length; offset++) {
+						this.#rowAtScreenLine.set(lineStart + offset, block.rowIndex);
+					}
+				}
 			}
-			if (end < this.#rows.length) {
-				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: this.#rows.length - end })}`)}`);
+			if (end < blocks.length) {
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: blocks.length - end })}`)}`);
 			}
 		}
 
+		if (messageLine) lines.push(messageLine);
 		if (this.#notice) {
 			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width - 2)))}`);
 		}
 		lines.push("");
-		lines.push(` ${theme.fg("dim", tSettingsUi("j/k:select  Enter:open  r:revive  x:kill  Esc/←←:close"))}`);
+		lines.push(...hintLines.map(line => ` ${theme.fg("dim", line)}`));
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
 
+	#renderBlocks(width: number): RenderedHubBlock[] {
+		const blocks: RenderedHubBlock[] = [];
+		const statusColumnWidth = this.#statusColumnWidth();
+		let rowIndex = 0;
+		for (const group of this.#groups) {
+			if (group.kind === "mains") {
+				blocks.push({ lines: [` ${theme.bold(theme.fg("accent", tSettingsUi("Main")))}`] });
+				for (const row of group.rows) {
+					blocks.push({
+						lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width, statusColumnWidth),
+						rowIndex,
+					});
+					rowIndex++;
+				}
+				continue;
+			}
+			blocks.push({ lines: [` ${theme.bold(theme.fg("accent", tSettingsUi("Subagents")))}`] });
+			for (const rootGroup of group.groups) {
+				blocks.push({
+					lines: [
+						` ${theme.fg("dim", `${theme.sep.dot} ${tSettingsUi("Main")}:`)} ${theme.bold(sanitizeLine(rootGroup.label, Math.max(10, width - 5)))}`,
+					],
+				});
+				for (const row of rootGroup.rows) {
+					blocks.push({
+						lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width, statusColumnWidth),
+						rowIndex,
+					});
+					rowIndex++;
+				}
+			}
+		}
+		return blocks;
+	}
+
+	#hintLines(): string[] {
+		if (this.#messageInput) return [tSettingsUi("Enter:send message · Esc:cancel message")];
+		const selected = this.#rows[this.#selectedRow];
+		const enterAction =
+			selected?.kind === "main" ? tSettingsUi("Enter:switch session") : tSettingsUi("Enter:open transcript");
+		return [
+			tSettingsUi("j/k:select · {enterAction} · f:focus live subagent", { enterAction }),
+			tSettingsUi("m:message subagent · p:Main"),
+			tSettingsUi("r:revive parked subagent · x:kill subagent · Esc/←←:close"),
+		];
+	}
+
 	#statusSummary(): string {
 		const counts: Record<AgentStatus, number> = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
-		for (const ref of this.#rows) {
-			counts[ref.status]++;
+		for (const row of this.#rows) {
+			counts[row.ref.status]++;
 		}
 		const parts: string[] = [];
 		for (const status of ["running", "waiting", "idle", "parked", "aborted"] as const) {
@@ -474,54 +666,52 @@ export class AgentHubOverlayComponent extends Container {
 		return parts.join(theme.sep.dot);
 	}
 
-	/**
-	 * One agent entry, 1-2 lines:
-	 * `❯ ⟳ Name  type  ↳ parent  ⧉ 2 ········ model ◒ level · age` — identity
-	 * left, metadata right-aligned (inlined when the terminal is too narrow) —
-	 * plus an indented dim task line when the agent's work is known.
-	 */
-	#renderEntry(ref: AgentRef, selected: boolean, width: number): string[] {
+	#statusColumnWidth(): number {
+		return this.#rows.reduce(
+			(width, row) => Math.max(width, visibleWidth(renderAgentStatusBadge(row.ref.status))),
+			0,
+		);
+	}
+
+	#renderEntry(row: HubRow, selected: boolean, width: number, statusColumnWidth: number): string[] {
+		const ref = row.ref;
 		const max = Math.max(1, width - 2);
 		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
-		const fields: string[] = [`${cursor} ${statusGlyph(ref.status)} ${theme.bold(replaceTabs(ref.id))}`];
-		if (ref.displayName && ref.displayName !== ref.id) {
-			fields.push(theme.fg("dim", replaceTabs(ref.displayName)));
-		}
-		if (ref.parentId && ref.parentId !== MAIN_AGENT_ID) {
-			fields.push(theme.fg("dim", `↳ ${replaceTabs(ref.parentId)}`));
-		}
-		if (ref.kind === "advisor") {
-			fields.push(theme.fg("warning", tSettingsUi("read-only")));
-		}
+		let identity = ` ${cursor} ${statusGlyph(ref.status)} ${theme.bold(this.#displayLabel(ref))}`;
+		if (row.kind === "main") identity += `  ${theme.fg("dim", tSettingsUi("Main"))}`;
+		if (ref.kind === "advisor") identity += `  ${theme.fg("warning", tSettingsUi("read-only"))}`;
 		const unread = this.#irc.unreadCount(ref.id);
-		if (unread > 0) {
-			fields.push(theme.fg("warning", `⧉ ${unread}`));
+		if (unread > 0) identity += `  ${theme.fg("warning", `⧉ ${unread}`)}`;
+
+		const status = renderAgentStatusBadge(ref.status);
+		const entry: string[] = [];
+		if (status && max >= statusColumnWidth + 3) {
+			const identityWidth = Math.max(1, max - statusColumnWidth - 2);
+			const title = truncateToWidth(identity, identityWidth);
+			const statusCell = `${padding(Math.max(0, statusColumnWidth - visibleWidth(status)))}${status}`;
+			entry.push(`${title}${padding(max - visibleWidth(title) - statusColumnWidth)}${statusCell}`);
+		} else {
+			entry.push(truncateToWidth(identity, max));
+			if (status) entry.push(`     ${status}`);
 		}
-		const left = ` ${fields.join("  ")}`;
 
 		const observed = this.#observableFor(ref.id);
-		const meta: string[] = [];
 		const badge = modelBadge(ref, observed);
-		if (badge) meta.push(badge);
-		meta.push(theme.fg("dim", formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))));
-		const right = meta.join(theme.sep.dot);
+		const age = theme.fg("dim", formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000))));
+		const metadata = badge ? `${badge}${theme.sep.dot}${age}` : age;
+		entry.push(`     ${truncateToWidth(metadata, Math.max(1, max - 5))}`);
 
-		const leftWidth = visibleWidth(left);
-		const rightWidth = visibleWidth(right);
-		const line =
-			leftWidth + 2 + rightWidth <= max
-				? left + padding(max - leftWidth - rightWidth) + right
-				: truncateToWidth(`${left}  ${right}`.replace(/[\r\n]+/g, " "), max);
-		const entry = [line];
-
-		const task = observed?.description ?? observed?.progress?.task ?? ref.activity;
-		if (task) {
-			entry.push(`     ${theme.fg("muted", sanitizeLine(task, Math.max(10, max - 5)))}`);
+		for (const activityLine of this.#activityLines(ref, observed, Math.max(1, max - 5))) {
+			entry.push(`     ${activityLine}`);
 		}
 		return entry;
 	}
 
 	#handleTableInput(keyData: string): void {
+		if (this.#messageInput) {
+			this.#handleMessageInput(keyData);
+			return;
+		}
 		if (matchesKey(keyData, "escape")) {
 			this.#onDone();
 			return;
@@ -537,22 +727,27 @@ export class AgentHubOverlayComponent extends Container {
 			return;
 		}
 		if (matchesKey(keyData, "j") || matchesSelectDown(keyData)) {
-			if (this.#rows.length > 0) {
-				this.#selectedRow = Math.min(this.#selectedRow + 1, this.#rows.length - 1);
-			}
-			this.#requestRender();
+			this.#moveSelection(1);
 			return;
 		}
 		if (matchesKey(keyData, "k") || matchesSelectUp(keyData)) {
-			if (this.#rows.length > 0) {
-				this.#selectedRow = Math.max(this.#selectedRow - 1, 0);
-			}
-			this.#requestRender();
+			this.#moveSelection(-1);
 			return;
 		}
 		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
-			const selected = this.#rows[this.#selectedRow];
-			if (selected) this.#activateAgent(selected);
+			this.#activateSelected();
+			return;
+		}
+		if (keyData === "f") {
+			this.#focusSelected();
+			return;
+		}
+		if (keyData === "m") {
+			this.#startMessage();
+			return;
+		}
+		if (keyData === "p") {
+			this.#switchToMain();
 			return;
 		}
 		if (keyData === "r") {
@@ -561,31 +756,185 @@ export class AgentHubOverlayComponent extends Container {
 		}
 		if (keyData === "x") {
 			this.#killSelected();
-			return;
 		}
 	}
 
-	/**
-	 * Enter on a live row opens its fullscreen read-only transcript and closes
-	 * the hub. Persisted/advisor/collab rows use the file/remote-backed viewer.
-	 */
-	#activateAgent(ref: AgentRef): void {
-		this.#notice = undefined;
-		const focusAgent = this.#focusAgent;
-		// Advisors and non-live agents have no attachable session; their persisted
-		// transcript remains available through the same read-only fullscreen viewer.
-		if (
-			ref.kind === "advisor" ||
-			ref.status === "parked" ||
-			ref.status === "aborted" ||
-			this.#remote ||
-			!focusAgent
-		) {
-			this.openChat(ref.id);
+	#moveSelection(delta: -1 | 1): void {
+		if (this.#rows.length === 0) return;
+		this.#selectedRow = Math.max(0, Math.min(this.#selectedRow + delta, this.#rows.length - 1));
+		this.#requestRender();
+	}
+
+	#handleMessageInput(keyData: string): void {
+		const input = this.#messageInput;
+		const agentId = this.#messageAgentId;
+		if (!input || !agentId) {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
 			return;
 		}
+		if (matchesKey(keyData, "escape")) {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
+			this.#notice = undefined;
+			this.#requestRender();
+			return;
+		}
+		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
+			this.#submitMessage(agentId, input.getValue());
+			return;
+		}
+		input.handleInput(keyData);
+		this.#requestRender();
+	}
+
+	#startMessage(): void {
+		const row = this.#rows[this.#selectedRow];
+		if (row?.kind !== "subagent") {
+			this.#notice = "Select a subagent to message.";
+			this.#requestRender();
+			return;
+		}
+		const ref = row.ref;
+		if (ref.kind === "advisor") {
+			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript and cannot be messaged.`;
+			this.#requestRender();
+			return;
+		}
+		if (ref.status === "aborted") {
+			this.#notice = `"${this.#displayLabel(ref)}" was aborted and cannot be messaged.`;
+			this.#requestRender();
+			return;
+		}
+		this.#notice = undefined;
+		this.#messageAgentId = ref.id;
+		this.#messageInput = new Input();
+		this.#requestRender();
+	}
+
+	#submitMessage(agentId: string, body: string): void {
+		const text = body.trim();
+		if (!text) {
+			this.#notice = "Type a message before sending.";
+			this.#requestRender();
+			return;
+		}
+		const target = this.#registry.get(agentId);
+		if (!target || target.kind === "advisor" || target.status === "aborted") {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
+			this.#notice = target
+				? `"${this.#displayLabel(target)}" cannot receive a message.`
+				: "The selected subagent is no longer available.";
+			this.#requestRender();
+			return;
+		}
+		this.#messageInput = undefined;
+		this.#messageAgentId = undefined;
+		this.#notice = undefined;
+		if (this.#remote) {
+			try {
+				this.#remote.chat(agentId, text);
+			} catch (error) {
+				this.#notice = error instanceof Error ? error.message : String(error);
+			}
+			this.#requestRender();
+			return;
+		}
+		void this.#irc
+			.send({ from: this.#activeTopLevelId, to: agentId, body: text })
+			.then(receipt => {
+				if (receipt.outcome === "failed") this.#notice = receipt.error ?? "Message delivery failed.";
+				this.#requestRender();
+			})
+			.catch((error: unknown) => {
+				this.#notice = error instanceof Error ? error.message : String(error);
+				this.#requestRender();
+			});
+		this.#requestRender();
+	}
+
+	#handleMouseInput(keyData: string): void {
+		if (this.#messageInput) return;
+		routeSgrMouseInput(keyData, (event: SgrMouseEvent) => {
+			if (event.wheel !== null) {
+				this.#moveSelection(event.wheel);
+				return true;
+			}
+			if (!event.leftClick) return true;
+			const rowIndex = this.#rowAtScreenLine.get(event.row);
+			if (rowIndex === undefined) return true;
+			this.#selectedRow = rowIndex;
+			this.#requestRender();
+			this.#activateSelected();
+			return true;
+		});
+	}
+
+	#activateSelected(): void {
+		const selected = this.#rows[this.#selectedRow];
+		if (!selected) return;
+		this.#notice = undefined;
+		if (selected.kind === "main") {
+			this.#switchSelectedMain(selected.ref);
+			return;
+		}
+		this.openChat(selected.ref.id);
+	}
+
+	#switchSelectedMain(ref: AgentRef): void {
+		const switchTopLevel = this.#switchTopLevel;
+		if (!switchTopLevel) {
+			this.#notice = `Cannot switch to "${this.#displayLabel(ref)}" from this Agent Hub.`;
+			this.#requestRender();
+			return;
+		}
+		void switchTopLevel(ref.id)
+			.then(() => this.#onDone())
+			.catch((error: unknown) => {
+				this.#notice = error instanceof Error ? error.message : String(error);
+				this.#requestRender();
+			});
+	}
+
+	#focusSelected(): void {
+		const row = this.#rows[this.#selectedRow];
+		if (row?.kind !== "subagent") {
+			this.#notice = "Select a live subagent to focus.";
+			this.#requestRender();
+			return;
+		}
+		const ref = row.ref;
+		const isLive =
+			ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
+		if (ref.kind === "advisor") {
+			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript.`;
+			this.#requestRender();
+			return;
+		}
+		if (!isLive) {
+			this.#notice = `"${this.#displayLabel(ref)}" is not live; open its transcript or revive it first.`;
+			this.#requestRender();
+			return;
+		}
+		const focusAgent = this.#focusAgent;
+		if (!focusAgent) {
+			this.#notice = "Live subagent focus is unavailable in this Agent Hub.";
+			this.#requestRender();
+			return;
+		}
+		const root = resolveTopLevelAgent(this.#registry, ref.id);
+		const needsSwitch = root !== undefined && root.id !== this.#activeTopLevelId;
+		const switchTopLevel = needsSwitch ? this.#switchTopLevel : undefined;
+		if (root && needsSwitch && !switchTopLevel) {
+			this.#notice = `Switching to "${this.#displayLabel(root)}" is unavailable in this Agent Hub.`;
+			this.#requestRender();
+			return;
+		}
+		this.#notice = undefined;
 		void (async () => {
 			try {
+				if (root && switchTopLevel) await switchTopLevel(root.id);
 				await focusAgent(ref.id);
 				this.#onDone();
 			} catch (error) {
@@ -595,16 +944,43 @@ export class AgentHubOverlayComponent extends Container {
 		})();
 	}
 
+	#switchToMain(): void {
+		const row = this.#rows[this.#selectedRow];
+		if (!row || row.kind === "main") {
+			this.#notice = "Select a subagent to return to its Main.";
+			this.#requestRender();
+			return;
+		}
+		const parent = resolveTopLevelAgent(this.#registry, row.ref.id);
+		if (!parent) {
+			this.#notice = `The Main for "${this.#displayLabel(row.ref)}" is unavailable.`;
+			this.#requestRender();
+			return;
+		}
+		this.#notice = undefined;
+		if (parent.id === this.#activeTopLevelId) {
+			this.#onDone();
+			return;
+		}
+		this.#switchSelectedMain(parent);
+	}
+
 	#reviveSelected(): void {
-		const ref = this.#rows[this.#selectedRow];
-		if (!ref) return;
+		const row = this.#rows[this.#selectedRow];
+		if (!row) return;
+		if (row.kind === "main") {
+			this.#notice = "Main stays live; switch to it with Enter.";
+			this.#requestRender();
+			return;
+		}
+		const ref = row.ref;
 		if (ref.kind === "advisor") {
-			this.#notice = `"${ref.id}" is a read-only advisor transcript — nothing to revive.`;
+			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — nothing to revive.`;
 			this.#requestRender();
 			return;
 		}
 		if (ref.status !== "parked") {
-			this.#notice = `Agent "${ref.id}" is ${ref.status} — only parked agents can be revived.`;
+			this.#notice = `"${this.#displayLabel(ref)}" is ${ref.status} — only parked agents can be revived.`;
 			this.#requestRender();
 			return;
 		}
@@ -614,7 +990,6 @@ export class AgentHubOverlayComponent extends Container {
 			this.#requestRender();
 			return;
 		}
-		// Fire-and-forget; failures surface as an inline notice
 		this.#lifecycle()
 			.ensureLive(ref.id)
 			.catch((error: unknown) => {
@@ -625,10 +1000,16 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#killSelected(): void {
-		const ref = this.#rows[this.#selectedRow];
-		if (!ref) return;
+		const row = this.#rows[this.#selectedRow];
+		if (!row) return;
+		if (row.kind === "main") {
+			this.#notice = "Main cannot be killed from the Agent Hub.";
+			this.#requestRender();
+			return;
+		}
+		const ref = row.ref;
 		if (ref.kind === "advisor") {
-			this.#notice = `"${ref.id}" is a read-only advisor transcript — cannot be killed.`;
+			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — cannot be killed.`;
 			this.#requestRender();
 			return;
 		}

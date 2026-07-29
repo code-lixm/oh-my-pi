@@ -1,6 +1,7 @@
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import { type BaseType, type } from "arktype";
+import type { AgentActivityState } from "../registry/agent-activity";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel, TaskEffort } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
@@ -402,6 +403,7 @@ export interface AgentProgress {
 	task: string;
 	assignment?: string;
 	description?: string;
+	activity?: AgentActivityState;
 	lastIntent?: string;
 	currentTool?: string;
 	currentToolArgs?: string;

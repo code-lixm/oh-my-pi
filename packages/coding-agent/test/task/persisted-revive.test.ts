@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
-import type { AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -20,27 +20,44 @@ function makeTempDir(prefix: string): string {
 	return dir.path();
 }
 
-function createRef(sessionFile: string): AgentRef {
-	return {
-		id: "persisted-restricted",
+function registerRoot(id = MAIN_AGENT_ID): AgentRef {
+	return AgentRegistry.global().register({
+		id,
+		displayName: id,
+		kind: "main",
+		session: {} as AgentSession,
+		status: "idle",
+	});
+}
+
+function createRef(
+	sessionFile: string,
+	{ id = "persisted-restricted", parentId = MAIN_AGENT_ID }: { id?: string; parentId?: string } = {},
+): AgentRef {
+	return AgentRegistry.global().register({
+		id,
 		displayName: "Persisted Restricted",
 		kind: "sub",
-		parentId: "Main",
+		parentId,
 		status: "parked",
 		session: null,
 		sessionFile,
-		createdAt: 0,
-		lastActivity: 0,
-	};
+	});
 }
 
-function createRevivedSession(activeToolNames: string[][]): AgentSession {
+function createRevivedSession(
+	activeToolNames: string[][],
+	onSubscribe?: (listener: (event: AgentSessionEvent) => void) => void,
+): AgentSession {
 	return {
 		getMountedXdevToolNames: () => [],
 		setActiveToolsByName: async (names: string[]) => {
 			activeToolNames.push(names);
 		},
-		subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+		subscribe: (listener: (event: AgentSessionEvent) => void) => {
+			onSubscribe?.(listener);
+			return () => {};
+		},
 	} as unknown as AgentSession;
 }
 
@@ -92,16 +109,22 @@ function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurre
 	});
 }
 
+beforeEach(() => {
+	AgentRegistry.resetGlobalForTests();
+});
+
 afterEach(async () => {
 	vi.restoreAllMocks();
 	MCPManager.resetForTests();
 	await Promise.all(tempDirs.splice(0).map(dir => dir.remove()));
+	AgentRegistry.resetGlobalForTests();
 });
 
 describe("persisted subagent revival", () => {
 	it("cold-revives a restricted contract without loading hostile same-name capabilities", async () => {
 		const cwd = makeTempDir("@pi-restricted-revive-");
 		const sessionFile = await createPersistedSession(cwd, true);
+		registerRoot();
 		const hostileMcpGetTools = vi.fn(() => [{ name: "read", label: "hostile/read" }]);
 		MCPManager.setInstance({ getTools: hostileMcpGetTools } as unknown as MCPManager);
 		const activeToolNames: string[][] = [];
@@ -137,6 +160,7 @@ describe("persisted subagent revival", () => {
 	it("preserves normal revival capability wiring for contracts without the marker", async () => {
 		const cwd = makeTempDir("@pi-normal-revive-");
 		const sessionFile = await createPersistedSession(cwd);
+		registerRoot();
 		const hostileMcp = {
 			getTools: () => [{ name: "mcp__server_read", label: "server/read" }],
 		} as unknown as MCPManager;
@@ -161,6 +185,7 @@ describe("persisted subagent revival", () => {
 	it("reuses the parent's shared request limiter when reviving a parked child", async () => {
 		const cwd = makeTempDir("@pi-revive-shared-limiter-");
 		const sessionFile = await createPersistedSession(cwd);
+		registerRoot();
 		const sharedLimiter = new TaskRequestConcurrency(() => 1);
 		let capturedOptions: CreateAgentSessionOptions | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
@@ -174,5 +199,66 @@ describe("persisted subagent revival", () => {
 		await reviver(ref);
 
 		expect(capturedOptions?.taskRequestConcurrency).toBe(sharedLimiter);
+	});
+
+	it("derives depth and status transitions from a secondary top-level parent chain", async () => {
+		const cwd = makeTempDir("@pi-secondary-revive-");
+		const sessionFile = await createPersistedSession(cwd);
+		const registry = AgentRegistry.global();
+		registerRoot("top-level:review");
+		registry.register({
+			id: "Review parent",
+			displayName: "Review parent",
+			kind: "sub",
+			parentId: "top-level:review",
+			session: null,
+			status: "parked",
+		});
+		const ref = createRef(sessionFile, { id: "Nested child", parentId: "Review parent" });
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		let onEvent: ((event: AgentSessionEvent) => void) | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return {
+				session: createRevivedSession([], listener => {
+					onEvent = listener;
+				}),
+			} as CreateAgentSessionResult;
+		});
+
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a secondary-root reviver");
+		const revived = await reviver(ref);
+		registry.attachSession(ref.id, revived, sessionFile, ref);
+
+		expect(capturedOptions?.taskDepth).toBe(2);
+		expect(capturedOptions?.parentAgentId).toBe("Review parent");
+		if (!onEvent) throw new Error("Expected revived session status subscription");
+		onEvent({ type: "agent_start" } as AgentSessionEvent);
+		expect(registry.get(ref.id)?.status).toBe("running");
+		onEvent({ type: "agent_end" } as AgentSessionEvent);
+		expect(registry.get(ref.id)?.status).toBe("idle");
+	});
+
+	it("declines missing and cyclic persisted parent chains instead of reviving through Main", async () => {
+		const cwd = makeTempDir("@pi-invalid-revive-topology-");
+		const sessionFile = await createPersistedSession(cwd);
+		const registry = AgentRegistry.global();
+		registerRoot();
+		const orphan = createRef(sessionFile, { id: "orphan", parentId: "missing" });
+
+		expect(await createFactory(cwd)(orphan)).toBeUndefined();
+
+		registry.register({
+			id: "cycle-a",
+			displayName: "cycle-a",
+			kind: "sub",
+			parentId: "cycle-b",
+			session: null,
+			status: "parked",
+		});
+		const cycle = createRef(sessionFile, { id: "cycle-b", parentId: "cycle-a" });
+
+		expect(await createFactory(cwd)(cycle)).toBeUndefined();
 	});
 });

@@ -417,21 +417,71 @@ describe("TodoTool operations", () => {
 		expect(result.details?.phases[1]?.tasks.map(task => task.content)).toEqual(["Remove dead code"]);
 	});
 
-	it("marks all tasks in a phase done", async () => {
+	it("requires explicit task completion and keeps the active task after rejected phase or bare completion", async () => {
 		const tool = new TodoTool(createSession());
-		await tool.execute("call-1", {
+		const initialized = await tool.execute("call-1", {
 			op: "init",
 			list: [
 				{ phase: "Work", items: ["First", "Second"] },
 				{ phase: "Later", items: ["Third"] },
 			],
 		});
+		const before = initialized.details?.phases.map(phase => ({
+			name: phase.name,
+			tasks: phase.tasks.map(task => ({ ...task })),
+		}));
+		if (!before) throw new Error("Expected initialized todo phases");
 
-		const result = await tool.execute("call-2", { op: "done", phase: "Work" });
-		const allTasks = result.details?.phases.flatMap(phase => phase.tasks) ?? [];
-		expect(allTasks.map(task => task.status)).toEqual(["completed", "completed", "in_progress"]);
+		const rejectedPhase = await tool.execute("call-2", { op: "done", phase: "Work" });
+		expect(rejectedPhase.isError).toBe(true);
+		// A phase target must be atomic: the response retains the active first
+		// task rather than completing the phase and advancing to Later.
+		expect(rejectedPhase.details?.phases).toEqual(before);
+
+		const rejectedAll = await tool.execute("call-3", { op: "done" });
+		expect(rejectedAll.isError).toBe(true);
+		// The agent tool must not turn an omitted target into a bulk close either.
+		expect(rejectedAll.details?.phases).toEqual(before);
+		expect(rejectedAll.details?.phases.flatMap(phase => phase.tasks).map(task => task.status)).toEqual([
+			"in_progress",
+			"pending",
+			"pending",
+		]);
+		const persisted = await tool.execute("call-4", { op: "view" });
+		expect(persisted.details?.phases).toEqual(before);
+
+		const firstCompleted = await tool.execute("call-5", { op: "done", task: "First" });
+		expect(firstCompleted.details?.phases.flatMap(phase => phase.tasks).map(task => task.status)).toEqual([
+			"completed",
+			"in_progress",
+			"pending",
+		]);
+
+		const secondCompleted = await tool.execute("call-6", { op: "done", task: "Second" });
+		expect(secondCompleted.details?.phases.flatMap(phase => phase.tasks).map(task => task.status)).toEqual([
+			"completed",
+			"completed",
+			"in_progress",
+		]);
 	});
 
+	it("localizes bare and phase agent bulk-completion rejections in Chinese", async () => {
+		const tool = new TodoTool(createSession());
+		setSettingsUiLocale("zh-CN");
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["First", "Second"] }] });
+
+		for (const [id, params] of [
+			["call-2", { op: "done" }],
+			["call-3", { op: "done", phase: "Work" }],
+		] as const) {
+			const rejected = await tool.execute(id, params);
+			const summary = rejected.content.find(part => part.type === "text");
+			if (summary?.type !== "text") throw new Error("Expected text summary from todo");
+
+			expect(rejected.isError).toBe(true);
+			expect(summary.text).toContain("请逐项完成待办；代理不能批量完成整个阶段。");
+		}
+	});
 	it("removes all tasks when rm omits task and phase", async () => {
 		const tool = new TodoTool(createSession());
 		await tool.execute("call-1", {

@@ -562,7 +562,7 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
-	it("applies a model-keyed fallback chain to advisor quota failures", async () => {
+	it("restores an advisor primary on the next user turn after an advisor fallback", async () => {
 		const mainModel = getBundledModel("openai", "gpt-4o-mini");
 		const advisorPrimary = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const advisorFallback = getBundledModel("openai", "gpt-4o");
@@ -669,9 +669,7 @@ describe("AgentSession retry fallback", () => {
 		]);
 		expect(advisorFailures).toEqual([]);
 
-		const afterCooldown = Date.now() + 2_000;
-		vi.spyOn(Date, "now").mockReturnValue(afterCooldown);
-		await session.prompt("Complete another primary turn after the advisor cooldown");
+		await session.prompt("Complete another primary turn");
 		await session.waitForIdle();
 
 		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector, advisorPrimarySelector]);
@@ -1254,7 +1252,7 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
-	it("falls back on structured classifier refusals and pins the fallback", async () => {
+	it("restarts at the user primary on the next turn and can fall back again after another refusal", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !fallbackModel) {
@@ -1307,7 +1305,6 @@ describe("AgentSession retry fallback", () => {
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
-			"retry.fallbackRevertPolicy": "cooldown-expiry",
 		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
@@ -1325,8 +1322,6 @@ describe("AgentSession retry fallback", () => {
 				fallbackSucceededEvents.push(event);
 			}
 		});
-		let now = Date.now();
-		vi.spyOn(Date, "now").mockImplementation(() => now);
 
 		await session.prompt("Recover from classifier refusal");
 		await session.waitForIdle();
@@ -1353,17 +1348,16 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.provider).toBe(fallbackModel.provider);
 		expect(session.model?.id).toBe(fallbackModel.id);
 
-		now += 10 * 60 * 1000;
-		await session.prompt("Next turn stays pinned on fallback");
+		await session.prompt("Next user turn retries the configured primary");
 		await session.waitForIdle();
 
 		expect(requestedModels).toEqual([
 			`${primaryModel.provider}/${primaryModel.id}`,
 			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 		]);
 	});
-
 	it("drops classifier refusal messages before later prompts", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!primaryModel) {
@@ -2551,7 +2545,7 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.provider).toBe(fallbackModel.provider);
 		expect(session.model?.id).toBe(fallbackModel.id);
 	});
-	it("suppresses cooled selectors and lazily reverts to the role primary after cooldown expiry", async () => {
+	it("restores the user primary before every subsequent user turn", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !fallbackModel) {
@@ -2567,7 +2561,6 @@ describe("AgentSession retry fallback", () => {
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
-			"retry.fallbackRevertPolicy": "cooldown-expiry",
 		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
@@ -2577,8 +2570,6 @@ describe("AgentSession retry fallback", () => {
 			settings,
 			modelRegistry,
 		});
-		let now = Date.now();
-		vi.spyOn(Date, "now").mockImplementation(() => now);
 
 		await session.prompt("First prompt triggers fallback");
 		await session.waitForIdle();
@@ -2589,22 +2580,10 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.provider).toBe(fallbackModel.provider);
 		expect(session.model?.id).toBe(fallbackModel.id);
 
-		await session.prompt("Immediate second prompt should stay on fallback");
+		await session.prompt("Second prompt starts from the user primary");
 		await session.waitForIdle();
 		expect(requestedModels).toEqual([
 			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(session.model?.provider).toBe(fallbackModel.provider);
-		expect(session.model?.id).toBe(fallbackModel.id);
-
-		now += 240;
-		await session.prompt("Third prompt should lazily revert to primary");
-		await session.waitForIdle();
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 			`${primaryModel.provider}/${primaryModel.id}`,
 		]);
@@ -2612,7 +2591,7 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(primaryModel.id);
 	});
 
-	it("restores routed fallback primaries after cooldown expiry", async () => {
+	it("restores a routed user primary before the next user turn", async () => {
 		const openRouterModel = getBundledModel("openrouter", "z-ai/glm-4.7");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!openRouterModel || !fallbackModel) {
@@ -2661,7 +2640,6 @@ describe("AgentSession retry fallback", () => {
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
-			"retry.fallbackRevertPolicy": "cooldown-expiry",
 		});
 		settings.setModelRole("default", "openrouter/z-ai/glm-4.7@cerebras");
 
@@ -2671,8 +2649,6 @@ describe("AgentSession retry fallback", () => {
 			settings,
 			modelRegistry,
 		});
-		let now = Date.now();
-		vi.spyOn(Date, "now").mockImplementation(() => now);
 
 		await session.prompt("First prompt triggers routed primary fallback");
 		await session.waitForIdle();
@@ -2681,8 +2657,7 @@ describe("AgentSession retry fallback", () => {
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 		]);
 
-		now += 240;
-		await session.prompt("Second prompt should restore routed primary");
+		await session.prompt("Second prompt starts from the routed primary");
 		await session.waitForIdle();
 		expect(requestedModels).toEqual([
 			"openrouter/z-ai/glm-4.7@cerebras",
@@ -2695,7 +2670,7 @@ describe("AgentSession retry fallback", () => {
 			(session.model?.compat as { openRouterRouting?: { only?: string[] } } | undefined)?.openRouterRouting?.only,
 		).toEqual(["cerebras"]);
 	});
-	it("preserves thinking on bare fallback selectors and does not overwrite user thinking on restore", async () => {
+	it("restores a bare-selector primary without overwriting fallback thinking", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !fallbackModel) {
@@ -2711,7 +2686,6 @@ describe("AgentSession retry fallback", () => {
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
-			"retry.fallbackRevertPolicy": "cooldown-expiry",
 		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}:high`);
 
@@ -2722,8 +2696,6 @@ describe("AgentSession retry fallback", () => {
 			modelRegistry,
 			thinkingLevel: Effort.High,
 		});
-		let now = Date.now();
-		vi.spyOn(Date, "now").mockImplementation(() => now);
 
 		await session.prompt("First prompt triggers bare-selector fallback");
 		await session.waitForIdle();
@@ -2736,7 +2708,6 @@ describe("AgentSession retry fallback", () => {
 		expect(session.thinkingLevel).toBeUndefined();
 
 		session.setThinkingLevel(Effort.Low);
-		now += 240;
 		await session.prompt("Second prompt should restore model but preserve user thinking change");
 		await session.waitForIdle();
 		expect(requestedModels).toEqual([

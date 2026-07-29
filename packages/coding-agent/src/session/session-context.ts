@@ -80,7 +80,7 @@ export interface SessionContext {
 	cacheMissExplainedAt?: boolean[];
 }
 
-/** Lists session model strings to try when restoring, in fallback order. */
+/** Lists explicitly persisted session model selectors to try on restore, in fallback order. */
 export function getRestorableSessionModels(
 	models: Readonly<Record<string, string>>,
 	lastModelChangeRole: string | undefined,
@@ -221,14 +221,6 @@ export function buildSessionContext(
 	const injectedTtsrRulesSet = new Set<string>();
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
-	// Track whether an explicit `model_change` with role="default" has been
-	// seen on this path. Once a user (or the agent itself) records an
-	// explicit default, later assistant-message inference must NOT overwrite
-	// it: temporary fallbacks (retry fallback, context promotion) and
-	// server-side model downgrades both produce assistant messages tagged
-	// with the wrong model id, which previously clobbered the user's pick on
-	// resume (issue #849).
-	let hasExplicitDefaultModel = false;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -239,21 +231,9 @@ export function buildSessionContext(
 			if (entry.model) {
 				const role = entry.role ?? "default";
 				models[role] = entry.model;
-				if (role === "default") {
-					hasExplicitDefaultModel = true;
-				}
 			}
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
-		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			// Legacy fallback: infer default model from assistant messages only
-			// when no explicit `model_change` (role=default) entry has been
-			// recorded yet. Newer sessions always record an explicit default
-			// model_change at the start of the conversation, so this branch is
-			// only used to keep pre-model_change sessions working.
-			if (!hasExplicitDefaultModel) {
-				models.default = `${entry.message.provider}/${entry.message.model}`;
-			}
 		} else if (entry.type === "compaction") {
 			compaction = entry;
 		} else if (entry.type === "ttsr_injection") {

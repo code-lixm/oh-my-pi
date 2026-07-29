@@ -28,6 +28,7 @@ import type { RecoveredRetryError } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
+import type { AgentActivityPhase } from "../registry/agent-activity";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -43,17 +44,15 @@ import {
 	findRetryFallbackCandidates,
 	formatRetryFallbackSelector,
 	getRetryFallbackChains,
-	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackChains,
 	type RetryFallbackResolutionContext,
-	type RetryFallbackRevertPolicy,
 	type RetryFallbackSelector,
 	resolveRetryFallbackChainKey,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
 import { getLatestCompactionEntry } from "./session-context";
-import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
+import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
@@ -103,7 +102,7 @@ export interface TurnRecoveryHost {
 	model(): Model | undefined;
 	thinkingLevel(): ThinkingLevel | undefined;
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
+	setTransientThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
 	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
 	thinkingLevelCeiling(): Effort | undefined;
 	isDisposed(): boolean;
@@ -113,6 +112,7 @@ export interface TurnRecoveryHost {
 	streamingEditAbortTriggered(): boolean;
 	promptGeneration(): number;
 	sessionId(): string;
+	setActivity(phase: AgentActivityPhase, label: string, detail?: string): void;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	scheduleAgentContinue(options: { delayMs?: number; generation?: number; onError?: (error: unknown) => void }): void;
 	waitForSessionMessagePersistence(message: AssistantMessage): Promise<void>;
@@ -159,6 +159,7 @@ export class TurnRecovery {
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined;
+	#fallbackProcessClaimed = false;
 	#pendingRecoveredRetryErrors: PendingRecoveredRetryError[] = [];
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
@@ -170,7 +171,6 @@ export class TurnRecovery {
 			this.#activeRetryFallback = {
 				...options.initialRetryFallback,
 				lastAppliedFallbackThinkingLevel: host.configuredThinkingLevel(),
-				pinned: options.initialRetryFallback.pinned ?? false,
 			};
 		}
 		this.#validateRetryFallbackChains();
@@ -221,7 +221,7 @@ export class TurnRecovery {
 			await this.#host.emitSessionEvent({
 				type: "retry_fallback_succeeded",
 				model: formatRetryFallbackSelector(model, this.#host.thinkingLevel()),
-				role: this.#activeRetryFallback.role,
+				role: this.#activeRetryFallback.role ?? "fireworks-fast",
 			});
 		}
 		const recoveredErrors = await this.#markPendingRecoveredRetryErrors(message);
@@ -279,9 +279,46 @@ export class TurnRecovery {
 		return this.#runRecoveryCompactionWithRollback(reason, message, allowDefer, options);
 	}
 
-	/** Restores the configured primary after fallback cooldown expiry. */
-	maybeRestoreRetryFallbackPrimary(): Promise<void> {
-		return this.#maybeRestoreRetryFallbackPrimary();
+	/** Ends a fallback scope and restores the user's primary before another user turn. */
+	async restoreUserModelAfterFallback(): Promise<void> {
+		const fallback = this.#activeRetryFallback;
+		if (!fallback) return;
+
+		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
+		if (!originalSelector) return;
+		const resolvedPrimary = resolveModelOverride(
+			[originalSelector.raw],
+			this.#host.modelRegistry,
+			this.#host.settings,
+		);
+		const primaryModel =
+			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
+		if (!primaryModel) return;
+		this.clearActiveRetryFallback();
+
+		const currentModel = this.#host.model();
+		const currentSelector = currentModel
+			? formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel())
+			: undefined;
+		if (currentSelector !== originalSelector.raw) {
+			await this.#host.setModelWithProviderSessionReset(primaryModel);
+		}
+		const currentThinkingLevel = this.#host.configuredThinkingLevel();
+		const thinkingToRestore =
+			currentThinkingLevel === fallback.lastAppliedFallbackThinkingLevel
+				? fallback.originalThinkingLevel
+				: currentThinkingLevel;
+		this.#host.setTransientThinkingLevel(thinkingToRestore);
+	}
+
+	/** Claims startup fallback for its first user process or restores a prior process's primary. */
+	async prepareForUserTurn(): Promise<void> {
+		if (!this.#activeRetryFallback) return;
+		if (!this.#fallbackProcessClaimed) {
+			this.#fallbackProcessClaimed = true;
+			return;
+		}
+		await this.restoreUserModelAfterFallback();
 	}
 
 	/** Applies automatic retry, credential rotation, and model fallback policy. */
@@ -939,20 +976,16 @@ export class TurnRecovery {
 	#getRetryFallbackChains(): RetryFallbackChains {
 		return getRetryFallbackChains(this.#host.settings);
 	}
-
 	#validateRetryFallbackChains(): void {
 		validateRetryFallbackChains(this.#host.settings, this.#host.modelRegistry, message =>
 			this.#host.configWarnings.push(message),
 		);
 	}
 
-	#getRetryFallbackRevertPolicy(): RetryFallbackRevertPolicy {
-		return getRetryFallbackRevertPolicy(this.#host.settings);
-	}
-
-	/** Clears fallback ownership after an explicit model change. */
+	/** Clears fallback ownership after an explicit model change or session boundary. */
 	clearActiveRetryFallback(): void {
 		this.#activeRetryFallback = undefined;
+		this.#fallbackProcessClaimed = false;
 	}
 
 	/** Checks whether a fallback selector remains in cooldown. */
@@ -1002,7 +1035,7 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal },
+		options?: { apiKey?: string; signal?: AbortSignal },
 	): Promise<void> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1027,23 +1060,20 @@ export class TurnRecovery {
 			requestedThinkingLevel === AUTO_THINKING
 				? requestedThinkingLevel
 				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
-		const candidateSelector = formatModelStringWithRouting(candidate);
 		await this.#host.setModelWithProviderSessionReset(candidate);
-		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
-		this.#host.setThinkingLevel(nextThinkingLevel);
+		this.#host.setTransientThinkingLevel(nextThinkingLevel);
 		if (!this.#activeRetryFallback) {
 			this.#activeRetryFallback = {
 				role,
 				originalSelector: currentSelector,
 				originalThinkingLevel: currentThinkingLevel,
 				lastAppliedFallbackThinkingLevel: nextThinkingLevel,
-				pinned: options?.pinFallback === true,
 			};
 		} else {
+			this.#activeRetryFallback.role ??= role;
 			this.#activeRetryFallback.lastAppliedFallbackThinkingLevel = nextThinkingLevel;
-			this.#activeRetryFallback.pinned = this.#activeRetryFallback.pinned || options?.pinFallback === true;
 		}
+		this.#fallbackProcessClaimed = true;
 		await this.#host.emitSessionEvent({
 			type: "retry_fallback_applied",
 			from: currentSelector,
@@ -1052,7 +1082,7 @@ export class TurnRecovery {
 		});
 	}
 
-	async #tryRetryModelFallback(currentSelector: string, options?: { pinFallback?: boolean }): Promise<boolean> {
+	async #tryRetryModelFallback(currentSelector: string): Promise<boolean> {
 		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
 		if (!role) return false;
 
@@ -1067,7 +1097,7 @@ export class TurnRecovery {
 			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 			if (!apiKey) continue;
-			await this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
+			await this.applyRetryFallbackCandidate(role, selector, currentSelector);
 			return true;
 		}
 
@@ -1112,9 +1142,8 @@ export class TurnRecovery {
 	 * the chain is consulted before the error becomes final. Skips failures a
 	 * model switch cannot fix or must not replay: cancellations (abort-flavored
 	 * errors are not model faults), context overflow (compaction's job),
-	 * classifier refusals (chain consult is handled on the retryable path with
-	 * `pinFallback`), and turns that already emitted a tool call (replaying
-	 * could duplicate work).
+	 * classifier refusals (handled on the retryable path), and turns that already
+	 * emitted a tool call (replaying could duplicate work).
 	 */
 	isHardErrorFallbackEligible(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
@@ -1133,10 +1162,8 @@ export class TurnRecovery {
 		return this.findRetryFallbackCandidates(role, currentSelector).length > 0;
 	}
 
-	/**
-	 * Switch the active model from a Fireworks Fast (`-fast`) variant to its base
-	 * (Standard) id and stick there for the rest of the session — the auto
-	 * fallback that makes Fast a safe default. Returns false when the current
+	/** Switch the active model from a Fireworks Fast (`-fast`) variant to its base
+	 * (Standard) id for the current user turn. Returns false when the current
 	 * model is not a fast variant, the base id is missing, or it has no key.
 	 */
 	async #tryFireworksFastFallback(currentSelector: string): Promise<boolean> {
@@ -1147,9 +1174,16 @@ export class TurnRecovery {
 		const apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId());
 		if (!apiKey) return false;
 		const baseSelector = formatModelStringWithRouting(baseModel);
+		const currentThinkingLevel = this.#host.configuredThinkingLevel();
 		await this.#host.setModelWithProviderSessionReset(baseModel);
-		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
+		if (!this.#activeRetryFallback) {
+			this.#activeRetryFallback = {
+				originalSelector: currentSelector,
+				originalThinkingLevel: currentThinkingLevel,
+				lastAppliedFallbackThinkingLevel: currentThinkingLevel,
+			};
+		}
+		this.#fallbackProcessClaimed = true;
 		await this.#host.emitSessionEvent({
 			type: "retry_fallback_applied",
 			from: currentSelector,
@@ -1157,55 +1191,6 @@ export class TurnRecovery {
 			role: "fireworks-fast",
 		});
 		return true;
-	}
-
-	async #maybeRestoreRetryFallbackPrimary(): Promise<void> {
-		if (!this.#activeRetryFallback) return;
-		if (this.#activeRetryFallback.pinned) return;
-		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return;
-
-		const {
-			originalSelector: originalSelectorRaw,
-			originalThinkingLevel,
-			lastAppliedFallbackThinkingLevel,
-		} = this.#activeRetryFallback;
-		const originalSelector = parseRetryFallbackSelector(originalSelectorRaw, this.#host.modelRegistry);
-		if (!originalSelector) {
-			this.clearActiveRetryFallback();
-			return;
-		}
-
-		const currentModel = this.#host.model();
-		if (!currentModel) return;
-		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
-		if (currentSelector === originalSelector.raw) {
-			if (!this.isRetryFallbackSelectorSuppressed(originalSelector)) {
-				this.clearActiveRetryFallback();
-			}
-			return;
-		}
-		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) return;
-
-		const resolvedPrimary = resolveModelOverride(
-			[originalSelector.raw],
-			this.#host.modelRegistry,
-			this.#host.settings,
-		);
-		const primaryModel =
-			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
-		if (!primaryModel) return;
-		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
-		if (!apiKey) return;
-
-		const currentThinkingLevel = this.#host.configuredThinkingLevel();
-		const thinkingToApply =
-			currentThinkingLevel === lastAppliedFallbackThinkingLevel ? originalThinkingLevel : currentThinkingLevel;
-		const primarySelector = formatModelStringWithRouting(primaryModel);
-		await this.#host.setModelWithProviderSessionReset(primaryModel);
-		this.#host.sessionManager.appendModelChange(primarySelector, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.#host.settings.getStorage()?.recordModelUsage(primarySelector);
-		this.#host.setThinkingLevel(thinkingToApply);
-		this.clearActiveRetryFallback();
 	}
 
 	#parseRetryAfterMsFromError(errorMessage: string): number | undefined {
@@ -1383,7 +1368,7 @@ export class TurnRecovery {
 				if (!classifierRefusal) {
 					this.noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
 				}
-				switchedModel = await this.#tryRetryModelFallback(currentSelector, { pinFallback: classifierRefusal });
+				switchedModel = await this.#tryRetryModelFallback(currentSelector);
 			}
 			// Auto fallback from a Fireworks Fast variant to its base model. Independent
 			// of the role-fallback setting: it's intrinsic to the Fast contract (speed
@@ -1649,6 +1634,7 @@ export class TurnRecovery {
 	async #promptAgentWithIdleRetry(messages: AgentMessage[], options?: { toolChoice?: ToolChoice }): Promise<void> {
 		const deadline = Date.now() + 30_000;
 		for (;;) {
+			this.#host.setActivity("requesting", "Requesting model");
 			try {
 				await this.#host.agent.prompt(messages, options);
 				return;
@@ -1659,6 +1645,7 @@ export class TurnRecovery {
 				if (Date.now() >= deadline) {
 					throw new Error("Timed out waiting for prior agent run to finish before prompting.");
 				}
+				this.#host.setActivity("queued", "Waiting for prior request");
 				await this.#host.agent.waitForIdle();
 			}
 		}
@@ -1720,6 +1707,7 @@ export class TurnRecovery {
 		// Reset retry budget for a fresh attempt
 		this.#retryAttempt = 0;
 
+		this.#host.setActivity("queued", "Retry queued");
 		// Re-attempt the turn
 		this.#host.scheduleAgentContinue({ delayMs: 1 });
 

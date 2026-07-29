@@ -170,27 +170,31 @@ function getRecommendedSuffix(): string {
 // the deadline but never invoke `onTimeout`). Cancels beyond it are user Esc.
 const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
 
-/** Add "(Recommended)" suffix to the option at the given index if not already present */
+/** Return an explicitly supplied, in-range recommended option index. */
+function getValidRecommendedIndex(options: readonly AskOption[], recommended?: number): number | undefined {
+	if (typeof recommended !== "number" || !Number.isInteger(recommended)) return undefined;
+	if (recommended < 0 || recommended >= options.length) return undefined;
+	return recommended;
+}
+
+/** Add "(Recommended)" suffix to the explicit valid recommendation, if any. */
 function addRecommendedSuffix(options: AskOption[], recommendedIndex?: number): ExtensionUISelectItem[] {
-	if (recommendedIndex === undefined || recommendedIndex < 0 || recommendedIndex >= options.length) {
-		return options.map(option => toSelectOption(option));
-	}
-	return options.map((option, i) => {
+	const recommended = getValidRecommendedIndex(options, recommendedIndex);
+	if (recommended === undefined) return options.map(option => toSelectOption(option));
+	return options.map((option, index) => {
 		const recommendedSuffix = getRecommendedSuffix();
 		const label =
-			i === recommendedIndex && !option.label.endsWith(recommendedSuffix)
+			index === recommended && !option.label.endsWith(recommendedSuffix)
 				? option.label + recommendedSuffix
 				: option.label;
 		return toSelectOption(option, label);
 	});
 }
 
+/** Timeout defaults are opt-in: absent or invalid recommendations never fall back to option zero. */
 function getAutoSelectionOnTimeout(options: AskOption[], recommended?: number): string[] {
-	if (options.length === 0) return [];
-	if (typeof recommended === "number" && recommended >= 0 && recommended < options.length) {
-		return [options[recommended]!.label];
-	}
-	return [options[0]!.label];
+	const recommendedIndex = getValidRecommendedIndex(options, recommended);
+	return recommendedIndex === undefined ? [] : [options[recommendedIndex]!.label];
 }
 
 /** Strip "(Recommended)" suffix from a label */
@@ -431,10 +435,66 @@ interface NavigationControls {
 }
 interface AskSingleQuestionOptions {
 	recommended?: number;
-	timeout?: number;
+	deadline?: AskDeadline;
 	signal?: AbortSignal;
 	initialSelection?: Pick<SelectionResult, "selectedOptions" | "customInput" | "note">;
 	navigation?: NavigationControls;
+}
+
+/** One Ask invocation shares one hard deadline across its fallback selectors. */
+class AskDeadline {
+	#deadlineMs: number | undefined;
+	#timeoutId: NodeJS.Timeout | undefined;
+	#expired = false;
+	#stopped = false;
+	#activeSelector: AbortController | undefined;
+
+	constructor(readonly timeoutMs: number) {}
+
+	get deadlineMs(): number | undefined {
+		return this.#deadlineMs;
+	}
+
+	get expired(): boolean {
+		return this.#expired;
+	}
+
+	start(): void {
+		if (this.#stopped || this.#deadlineMs !== undefined) return;
+		this.#deadlineMs = Date.now() + this.timeoutMs;
+		this.#timeoutId = setTimeout(() => this.expire(), this.timeoutMs);
+	}
+
+	expire(): void {
+		if (this.#stopped || this.#expired) return;
+		this.#expired = true;
+		if (this.#timeoutId) {
+			clearTimeout(this.#timeoutId);
+			this.#timeoutId = undefined;
+		}
+		this.#activeSelector?.abort();
+	}
+
+	bindSelector(controller: AbortController): void {
+		if (this.#stopped || this.#expired) {
+			controller.abort();
+			return;
+		}
+		this.#activeSelector = controller;
+	}
+
+	releaseSelector(controller: AbortController): void {
+		if (this.#activeSelector === controller) this.#activeSelector = undefined;
+	}
+
+	dispose(): void {
+		this.#stopped = true;
+		if (this.#timeoutId) {
+			clearTimeout(this.#timeoutId);
+			this.#timeoutId = undefined;
+		}
+		this.#activeSelector = undefined;
+	}
 }
 
 interface UIContext {
@@ -473,7 +533,10 @@ async function askSingleQuestion(
 	multi: boolean,
 	options: AskSingleQuestionOptions = {},
 ): Promise<SelectionResult> {
-	const { recommended, timeout, signal, initialSelection, navigation } = options;
+	const { recommended, deadline, signal, initialSelection, navigation } = options;
+	const validRecommended = getValidRecommendedIndex(questionOptions, recommended);
+	const autoDeadline = validRecommended === undefined ? undefined : deadline;
+	const nativeTimeoutMs = autoDeadline?.timeoutMs;
 	const doneLabel = `${theme.status.success} ${tSettingsUi("Done selecting")}`;
 	let selectedOptions = [...(initialSelection?.selectedOptions ?? [])];
 	let customInput = initialSelection?.customInput;
@@ -486,38 +549,23 @@ async function askSingleQuestion(
 		initialIndex?: number,
 		marker?: { selectionMarker: "radio" | "checkbox"; checkedIndices?: readonly number[]; markableCount: number },
 	): Promise<{ choice: string | undefined; timedOut: boolean; navigation?: "back" | "forward" }> => {
-		let timeoutTriggered = false;
-		const onTimeout = () => {
-			timeoutTriggered = true;
-		};
+		if (autoDeadline?.expired) return { choice: undefined, timedOut: true };
 		let navigationAction: "back" | "forward" | undefined;
 		const helpText = navigation
 			? "up/down navigate  enter select  ←/→ question  esc cancel"
 			: "up/down navigate  enter select  esc cancel";
-		const timeoutMs = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
-		const timeoutController = timeoutMs === undefined ? undefined : new AbortController();
+		const timeoutController = autoDeadline ? new AbortController() : undefined;
 		const dialogSignal =
 			signal && timeoutController
 				? AbortSignal.any([signal, timeoutController.signal])
 				: (timeoutController?.signal ?? signal);
-		let timeoutId: NodeJS.Timeout | undefined;
-		let timeoutStartedMs = Date.now();
-		const armFallbackTimeout = (durationMs: number) => {
-			clearTimeout(timeoutId);
-			timeoutStartedMs = Date.now();
-			timeoutId = setTimeout(() => {
-				timeoutTriggered = true;
-				timeoutController?.abort();
-			}, durationMs);
-		};
 		const dialogOptions = {
 			initialIndex,
-			timeout,
+			timeout: nativeTimeoutMs,
 			signal: dialogSignal,
 			outline: true,
-			onTimeout,
-			onTimeoutStart: timeoutMs === undefined ? undefined : () => armFallbackTimeout(timeoutMs),
-			onTimeoutReset: timeoutMs === undefined ? undefined : () => armFallbackTimeout(timeoutMs),
+			onTimeout: autoDeadline ? () => autoDeadline.expire() : undefined,
+			onTimeoutStart: deadline ? () => deadline.start() : undefined,
 			helpText,
 			selectionMarker: marker?.selectionMarker,
 			checkedIndices: marker?.checkedIndices,
@@ -533,31 +581,33 @@ async function askSingleQuestion(
 					}
 				: undefined,
 		};
+		if (timeoutController && autoDeadline) autoDeadline.bindSelector(timeoutController);
 		try {
 			const runSelect = () => {
 				const selection = ui.select(prompt, optionsToShow, dialogOptions);
-				if (timeoutMs !== undefined && !ui.timeoutStartsOnPresentation) {
-					armFallbackTimeout(timeoutMs);
-				}
+				if (deadline && (!autoDeadline || !ui.timeoutStartsOnPresentation)) deadline.start();
 				return selection;
 			};
 			const choice = dialogSignal ? await untilAborted(dialogSignal, runSelect) : await runSelect();
-			if (!timeoutTriggered && choice === undefined && typeof timeout === "number") {
-				// Fallback for UI surfaces that enforce `timeout` without invoking
-				// `onTimeout`: their auto-cancel resolves right at the deadline. A
-				// cancel arriving well past the deadline is a deliberate user Esc on
-				// a surface that kept the dialog open — keep treating it as a cancel.
-				const elapsed = Date.now() - timeoutStartedMs;
-				timeoutTriggered = elapsed >= timeout && elapsed <= timeout + TIMEOUT_DETECTION_TOLERANCE_MS;
+			const deadlineMs = deadline?.deadlineMs;
+			if (autoDeadline && !autoDeadline.expired && choice === undefined && deadlineMs !== undefined) {
+				// Surfaces that close at their own deadline may not call `onTimeout`.
+				const now = Date.now();
+				if (now >= deadlineMs && now <= deadlineMs + TIMEOUT_DETECTION_TOLERANCE_MS) autoDeadline.expire();
 			}
-			return { choice, timedOut: timeoutTriggered, navigation: navigationAction };
+			return { choice, timedOut: autoDeadline?.expired ?? false, navigation: navigationAction };
 		} catch (error) {
-			if (timeoutTriggered && error instanceof Error && error.name === "AbortError") {
+			if (
+				autoDeadline?.expired &&
+				timeoutController?.signal.aborted &&
+				error instanceof Error &&
+				error.name === "AbortError"
+			) {
 				return { choice: undefined, timedOut: true, navigation: navigationAction };
 			}
 			throw error;
 		} finally {
-			clearTimeout(timeoutId);
+			if (timeoutController && autoDeadline) autoDeadline.releaseSelector(timeoutController);
 		}
 	};
 
@@ -576,7 +626,7 @@ async function askSingleQuestion(
 	const promptWithProgress = navigation?.progressText ? `${question} (${navigation.progressText})` : question;
 	if (multi) {
 		const selected = new Set<string>(selectedOptions);
-		let cursorIndex = Math.min(Math.max(recommended ?? 0, 0), Math.max(questionOptions.length - 1, 0));
+		let cursorIndex = Math.min(Math.max(validRecommended ?? 0, 0), Math.max(questionOptions.length - 1, 0));
 		const firstSelected = selectedOptions[0];
 		if (firstSelected) {
 			const selectedIndex = questionOptions.findIndex(option => option.label === firstSelected);
@@ -591,8 +641,8 @@ async function askSingleQuestion(
 			opts.push(getOtherOptionLabel());
 
 			const checkedIndices: number[] = [];
-			for (let i = 0; i < questionOptions.length; i++) {
-				if (selected.has(questionOptions[i]!.label)) checkedIndices.push(i);
+			for (let index = 0; index < questionOptions.length; index++) {
+				if (selected.has(questionOptions[index]!.label)) checkedIndices.push(index);
 			}
 			const prefix = selected.size > 0 ? `(${selected.size} selected) ` : "";
 			const {
@@ -605,58 +655,41 @@ async function askSingleQuestion(
 				markableCount: questionOptions.length,
 			});
 
+			if (selectTimedOut) break;
 			if (arrowNavigation) {
 				return { selectedOptions: Array.from(selected), customInput, note, timedOut, navigation: arrowNavigation };
 			}
 			if (choice === undefined) {
-				if (selectTimedOut) {
-					timedOut = true;
-					break;
-				}
 				return { selectedOptions: Array.from(selected), customInput, note, timedOut, cancelled: true };
 			}
 			if (choice === doneLabel) break;
 
 			if (choice === RESERVED_OTHER_LABEL || choice === getOtherOptionLabel()) {
-				if (selectTimedOut) {
-					timedOut = true;
-					break;
-				}
 				const customResult = await promptForCustomInput(`${prefix}${promptWithProgress}`, opts, {
 					selectionMarker: "checkbox",
 					checkedIndices,
 					markableCount: questionOptions.length,
 				});
-				if (customResult.input === undefined) {
-					continue;
-				}
+				if (customResult.input === undefined) continue;
 				customInput = customResult.input;
 				break;
 			}
 
 			const selectedIdx = opts.findIndex(opt => getSelectOptionLabel(opt) === choice);
-			if (selectedIdx >= 0) {
-				cursorIndex = selectedIdx;
-			}
-
+			if (selectedIdx >= 0) cursorIndex = selectedIdx;
 			if (selected.has(choice)) {
 				selected.delete(choice);
 			} else {
 				selected.add(choice);
 			}
-
-			if (selectTimedOut) {
-				timedOut = true;
-				break;
-			}
 		}
 		selectedOptions = Array.from(selected);
 	} else {
 		while (true) {
-			const displayOptions = addRecommendedSuffix(questionOptions, recommended);
+			const displayOptions = addRecommendedSuffix(questionOptions, validRecommended);
 			const optionsWithNavigation: ExtensionUISelectItem[] = [...displayOptions, getOtherOptionLabel()];
 
-			let initialIndex = recommended;
+			let initialIndex = validRecommended;
 			const previouslySelected = selectedOptions[0];
 			if (previouslySelected) {
 				const selectedIndex = questionOptions.findIndex(option => option.label === previouslySelected);
@@ -677,28 +710,19 @@ async function askSingleQuestion(
 				selectionMarker: "radio",
 				markableCount: displayOptions.length,
 			});
-			timedOut = selectTimedOut;
-
+			if (selectTimedOut) break;
 			if (arrowNavigation) {
 				return { selectedOptions, customInput, note, timedOut, navigation: arrowNavigation };
 			}
 			if (choice === undefined) {
-				if (!timedOut) {
-					return { selectedOptions, customInput, note, timedOut, cancelled: true };
-				}
-				break;
+				return { selectedOptions, customInput, note, timedOut, cancelled: true };
 			}
 			if (choice === RESERVED_OTHER_LABEL || choice === getOtherOptionLabel()) {
-				if (selectTimedOut) {
-					break;
-				}
 				const customResult = await promptForCustomInput(promptWithProgress, optionsWithNavigation, {
 					selectionMarker: "radio",
 					markableCount: displayOptions.length,
 				});
-				if (customResult.input === undefined) {
-					continue;
-				}
+				if (customResult.input === undefined) continue;
 				customInput = customResult.input;
 				selectedOptions = [];
 				break;
@@ -707,18 +731,18 @@ async function askSingleQuestion(
 			customInput = undefined;
 			break;
 		}
-		if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-			selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
-		}
-		if (navigation?.allowForward) {
-			return { selectedOptions, customInput, note, timedOut, navigation: "forward" };
-		}
 	}
 
-	if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-		selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
+	if (deadline?.expired && selectedOptions.length === 0 && customInput === undefined) {
+		const automaticSelection = getAutoSelectionOnTimeout(questionOptions, validRecommended);
+		if (automaticSelection.length > 0) {
+			selectedOptions = automaticSelection;
+			timedOut = true;
+		}
 	}
-
+	if (navigation?.allowForward) {
+		return { selectedOptions, customInput, note, timedOut, navigation: "forward" };
+	}
 	return { selectedOptions, customInput, note, timedOut };
 }
 
@@ -883,12 +907,18 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				extensionUi.editor(title, prefill, dialogOptions, editorOptions),
 		};
 
-		// Determine timeout based on settings and plan mode
+		// Ask defaults are only safe for explicitly YOLO-approved, non-plan work.
 		const planModeEnabled = this.session.getPlanModeState?.()?.enabled ?? false;
-		// Settings.get("ask.timeout") returns seconds (0 = disabled), convert to ms
+		const approvalMode = this.session.settings.get("tools.approvalMode");
 		const timeoutSeconds = this.session.settings.get("ask.timeout");
-		const settingsTimeout = timeoutSeconds === 0 ? null : timeoutSeconds * 1000;
-		const timeout = planModeEnabled ? null : settingsTimeout;
+		const timeout =
+			approvalMode === "yolo" &&
+			!planModeEnabled &&
+			typeof timeoutSeconds === "number" &&
+			Number.isFinite(timeoutSeconds) &&
+			timeoutSeconds > 0
+				? timeoutSeconds * 1000
+				: undefined;
 
 		// Send notification if waiting and not suppressed
 		this.#sendAskNotification();
@@ -912,19 +942,22 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			try {
 				const showRichDialog = () =>
 					richAskDialog(
-						params.questions.map(q => ({
-							id: q.id,
-							question: q.question,
-							...(q.header?.trim() ? { header: q.header } : {}),
-							options: q.options.map(option => ({
-								label: option.label,
-								...(option.description?.trim() ? { description: option.description.trim() } : {}),
-								...(option.preview?.trim() ? { preview: option.preview } : {}),
-							})),
-							...(q.multi !== undefined ? { multi: q.multi } : {}),
-							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
-						})),
-						{ timeout: timeout ?? undefined, signal },
+						params.questions.map(q => {
+							const recommended = getValidRecommendedIndex(q.options, q.recommended);
+							return {
+								id: q.id,
+								question: q.question,
+								...(q.header?.trim() ? { header: q.header } : {}),
+								options: q.options.map(option => ({
+									label: option.label,
+									...(option.description?.trim() ? { description: option.description.trim() } : {}),
+									...(option.preview?.trim() ? { preview: option.preview } : {}),
+								})),
+								...(q.multi !== undefined ? { multi: q.multi } : {}),
+								...(recommended !== undefined ? { recommended } : {}),
+							};
+						}),
+						{ timeout, signal },
 					);
 				const richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();
 				if (!richResult) {
@@ -996,6 +1029,13 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			}
 		}
 
+		const fallbackDeadline =
+			timeout !== undefined &&
+			params.questions.some(
+				question => getValidRecommendedIndex(question.options, question.recommended) !== undefined,
+			)
+				? new AskDeadline(timeout)
+				: undefined;
 		const askQuestion = async (
 			q: AskParams["questions"][number],
 			options?: { previous?: QuestionResult; navigation?: NavigationControls },
@@ -1005,6 +1045,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				...(option.description?.trim() ? { description: option.description.trim() } : {}),
 			}));
 			const optionLabels = questionOptions.map(getAskOptionLabel);
+			const recommended = getValidRecommendedIndex(questionOptions, q.recommended);
 			try {
 				const { selectedOptions, customInput, note, navigation, cancelled, timedOut } = await askSingleQuestion(
 					ui,
@@ -1012,8 +1053,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 					questionOptions,
 					q.multi ?? false,
 					{
-						recommended: q.recommended,
-						timeout: timeout ?? undefined,
+						recommended,
+						deadline: fallbackDeadline,
 						signal,
 						initialSelection: options?.previous,
 						navigation: options?.navigation,
@@ -1021,6 +1062,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				);
 				return { optionLabels, selectedOptions, customInput, note, navigation, cancelled, timedOut };
 			} catch (error) {
+				fallbackDeadline?.dispose();
 				if (error instanceof Error && error.name === "AbortError") {
 					throw new ToolAbortError("Ask input was cancelled");
 				}
@@ -1033,6 +1075,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			const { optionLabels, selectedOptions, customInput, note, cancelled, timedOut } = await askQuestion(q);
 
 			if (!timedOut && (cancelled || (selectedOptions.length === 0 && customInput === undefined))) {
+				fallbackDeadline?.dispose();
 				context.abort();
 				throw new ToolAbortError("Ask tool was cancelled by the user");
 			}
@@ -1054,6 +1097,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				multi: q.multi ?? false,
 			});
 
+			fallbackDeadline?.dispose();
 			return { content: [{ type: "text" as const, text: responseText }], details };
 		}
 
@@ -1061,7 +1105,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		let questionIndex = 0;
 		while (questionIndex < params.questions.length) {
 			const q = params.questions[questionIndex];
-			if (!q) throw new Error("Ask question index exceeded the requested question list");
+			if (!q) {
+				fallbackDeadline?.dispose();
+				throw new Error("Ask question index exceeded the requested question list");
+			}
 			const previous = resultsByIndex[questionIndex];
 			const navigation: NavigationControls = {
 				allowBack: questionIndex > 0,
@@ -1079,6 +1126,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			} = await askQuestion(q, { previous, navigation });
 
 			if (cancelled && !timedOut) {
+				fallbackDeadline?.dispose();
 				context.abort();
 				throw new ToolAbortError("Ask tool was cancelled by the user");
 			}
@@ -1102,22 +1150,28 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			questionIndex += 1;
 		}
 
-		const results = params.questions.map((q, index) => {
-			const result = resultsByIndex[index];
-			if (result) return result;
-			return {
+		const results = params.questions.map((q, index): QuestionResult => {
+			const result: QuestionResult = resultsByIndex[index] ?? {
 				id: q.id,
 				question: q.question,
-				options: q.options.map(o => o.label),
+				options: q.options.map(option => option.label),
 				multi: q.multi ?? false,
 				selectedOptions: [],
 			};
+			if (fallbackDeadline?.expired && result.selectedOptions.length === 0 && result.customInput === undefined) {
+				const automaticSelection = getAutoSelectionOnTimeout(q.options, q.recommended);
+				if (automaticSelection.length > 0) {
+					return { ...result, selectedOptions: automaticSelection, timedOut: true };
+				}
+			}
+			return result;
 		});
 
 		const details: AskToolDetails = { results };
 		const responseLines = results.map(formatQuestionResult);
 		const responseText = `User answers:\n${responseLines.join("\n")}`;
 
+		fallbackDeadline?.dispose();
 		return { content: [{ type: "text" as const, text: responseText }], details };
 	}
 }

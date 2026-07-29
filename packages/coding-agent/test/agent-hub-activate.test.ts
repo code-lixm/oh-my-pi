@@ -1,7 +1,7 @@
 /**
- * Hub Enter contract: activating a non-remote agent row delegates to the
- * `focusAgent` dep (session focus proxy) and closes the hub on success; a
- * focus failure keeps the hub open and surfaces the error as a notice.
+ * Agent Hub activation contract: Enter switches a background Main runtime or
+ * inspects a selected subagent transcript; `f` is the explicit live-focus action.
+ * Failures keep the hub open and surface a notice.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -17,16 +17,44 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 const AGENT_ID = "Worker";
 const TEST_CWD = path.resolve("agent-hub-cwd");
+const initialLocale = getSettingsUiLocale();
 
-function registerWorker(agents: AgentRegistry) {
-	agents.register({
+function registerMain(
+	agents: AgentRegistry,
+	{
+		id = "Main",
+		displayName = id,
+		sessionTitle,
+		sessionFile = null,
+	}: {
+		id?: string;
+		displayName?: string;
+		sessionTitle?: string;
+		sessionFile?: string | null;
+	} = {},
+) {
+	return agents.register({
+		id,
+		displayName,
+		kind: "main",
+		sessionTitle,
+		session: { subscribe: () => () => {} } as unknown as AgentSession,
+		sessionFile,
+		status: "idle",
+	});
+}
+
+function registerWorker(agents: AgentRegistry, parentId = "Main") {
+	if (parentId === "Main" && !agents.get("Main")) registerMain(agents);
+	return agents.register({
 		id: AGENT_ID,
 		displayName: AGENT_ID,
 		kind: "sub",
-		parentId: "Main",
+		parentId,
 		session: { subscribe: () => () => {} } as unknown as AgentSession,
 		sessionFile: null,
 		status: "running",
@@ -35,18 +63,11 @@ function registerWorker(agents: AgentRegistry) {
 
 function makeHub(focusAgent: (id: string) => Promise<void>) {
 	const agents = new AgentRegistry();
-	agents.register({
-		id: AGENT_ID,
-		displayName: AGENT_ID,
-		kind: "sub",
-		parentId: "Main",
-		session: { subscribe: () => () => {} } as unknown as AgentSession,
-		sessionFile: null,
-		status: "running",
-	});
+	registerWorker(agents);
 	let doneCalls = 0;
 	const done = Promise.withResolvers<void>();
 	const renderRequested = Promise.withResolvers<void>();
+	const transcriptOverlays: unknown[] = [];
 	const hub = new AgentHubOverlayComponent({
 		observers: new SessionObserverRegistry(),
 		hubKeys: [],
@@ -58,8 +79,22 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 		registry: agents,
 		irc: new IrcBus(agents),
 		focusAgent,
+		ui: {
+			showOverlay: (component: unknown) => {
+				transcriptOverlays.push(component);
+				return { hide() {}, setHidden() {}, isHidden: () => false };
+			},
+			setFocus() {},
+		} as never,
 	});
-	return { hub, doneCalls: () => doneCalls, done: done.promise, renderRequested: renderRequested.promise };
+	return {
+		agents,
+		hub,
+		doneCalls: () => doneCalls,
+		done: done.promise,
+		renderRequested: renderRequested.promise,
+		transcriptOverlays,
+	};
 }
 
 describe("Agent hub Enter activation", () => {
@@ -70,20 +105,35 @@ describe("Agent hub Enter activation", () => {
 	beforeEach(async () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
+		setSettingsUiLocale("en");
 	});
 
 	afterEach(() => {
 		resetSettingsForTest();
+		AgentRegistry.resetGlobalForTests();
+		setSettingsUiLocale(initialLocale);
 	});
 
-	it("Enter focuses the selected agent and closes the hub", async () => {
+	it("Enter opens the selected subagent transcript without focusing or closing the hub", () => {
+		const focusAgent = vi.fn(async () => {});
+		const { hub, doneCalls, transcriptOverlays } = makeHub(focusAgent);
+
+		hub.handleInput("\r");
+
+		expect(transcriptOverlays).toHaveLength(1);
+		expect(focusAgent).not.toHaveBeenCalled();
+		expect(doneCalls()).toBe(0);
+		hub.dispose();
+	});
+
+	it("f focuses the selected live subagent and closes the hub", async () => {
 		const focusedIds: string[] = [];
 		const { hub, doneCalls, done } = makeHub(async id => {
 			focusedIds.push(id);
 		});
 
-		hub.handleInput("\r");
-		await done; // activation is fire-and-forget async; onDone signals completion
+		hub.handleInput("f");
+		await done;
 
 		expect(focusedIds).toEqual([AGENT_ID]);
 		expect(doneCalls()).toBe(1);
@@ -94,12 +144,70 @@ describe("Agent hub Enter activation", () => {
 		const message = 'Agent "X" is aborted and cannot be revived';
 		const { hub, doneCalls, renderRequested } = makeHub(() => Promise.reject(new Error(message)));
 
-		hub.handleInput("\r");
-		await renderRequested; // the rejection path requests a render after setting the notice
+		hub.handleInput("f");
+		await renderRequested;
 
 		expect(doneCalls()).toBe(0);
 		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
 		expect(rendered).toContain(message);
+		hub.dispose();
+	});
+
+	it("Enter switches the selected background Main runtime instead of focusing it", async () => {
+		const agents = new AgentRegistry();
+		registerMain(agents, { displayName: "Primary" });
+		registerMain(agents, { id: "top-level:review", displayName: "Review session", sessionTitle: "Review session" });
+		const switched: string[] = [];
+		const done = Promise.withResolvers<void>();
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => done.resolve(),
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			activeTopLevelId: "Main",
+			switchTopLevel: async id => {
+				switched.push(id);
+			},
+			focusAgent: async () => {
+				throw new Error("Enter on a Main row must not focus it");
+			},
+		});
+
+		hub.handleInput("\r");
+		await done.promise;
+
+		expect(switched).toEqual(["top-level:review"]);
+		hub.dispose();
+	});
+
+	it("p switches from a child to its owning Main runtime", async () => {
+		const agents = new AgentRegistry();
+		registerMain(agents, { displayName: "Primary" });
+		registerMain(agents, { id: "top-level:review", displayName: "Review session", sessionTitle: "Review session" });
+		registerWorker(agents, "top-level:review");
+		const switched: string[] = [];
+		const done = Promise.withResolvers<void>();
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => done.resolve(),
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			activeTopLevelId: "Main",
+			switchTopLevel: async id => {
+				switched.push(id);
+			},
+			focusAgent: async () => {},
+		});
+
+		hub.handleInput("j");
+		hub.handleInput("p");
+		await done.promise;
+
+		expect(switched).toEqual(["top-level:review"]);
 		hub.dispose();
 	});
 
@@ -110,6 +218,7 @@ describe("Agent hub Enter activation", () => {
 		await Bun.write(sessionFile, "");
 		await Bun.write(workerSessionFile, "");
 		const agents = new AgentRegistry();
+		registerMain(agents, { sessionFile });
 		const hub = new AgentHubOverlayComponent({
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
@@ -129,6 +238,75 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
+	it("restores persisted children beneath the uniquely matched background Main", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-secondary-persisted-");
+		const primarySessionFile = path.join(tempDir.path(), "main.jsonl");
+		const secondarySessionFile = path.join(tempDir.path(), "review.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "review", "Worker.jsonl");
+		await Bun.write(primarySessionFile, "");
+		await Bun.write(secondarySessionFile, "");
+		await fs.mkdir(path.dirname(workerSessionFile), { recursive: true });
+		await Bun.write(workerSessionFile, "");
+		const agents = new AgentRegistry();
+		registerMain(agents, { displayName: "Primary session", sessionFile: primarySessionFile });
+		registerMain(agents, {
+			id: "top-level:review",
+			displayName: "4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f",
+			sessionTitle: "Review session",
+			sessionFile: secondarySessionFile,
+		});
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			activeTopLevelId: "Main",
+			sessionFile: secondarySessionFile,
+		});
+		await hub.persistedSubagentsReady;
+
+		expect(agents.get("Worker")).toMatchObject({
+			parentId: "top-level:review",
+			sessionFile: workerSessionFile,
+			status: "parked",
+		});
+		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+		expect(rendered).toContain("Main: Review session");
+		expect(rendered).not.toContain("4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f");
+		hub.dispose();
+	});
+
+	it("does not restore a child under Main when a populated registry has no matching active session", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-unmatched-persisted-");
+		const sessionFile = path.join(tempDir.path(), "detached.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "detached", "Worker.jsonl");
+		await Bun.write(sessionFile, "");
+		await fs.mkdir(path.dirname(workerSessionFile), { recursive: true });
+		await Bun.write(workerSessionFile, "");
+		const agents = new AgentRegistry();
+		registerMain(agents, {
+			id: "top-level:other",
+			displayName: "Other session",
+			sessionFile: path.join(tempDir.path(), "other.jsonl"),
+		});
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			sessionFile,
+		});
+		await hub.persistedSubagentsReady;
+
+		expect(agents.get("Worker")).toBeUndefined();
+		hub.dispose();
+	});
 	it("does not generically revive active or tombstoned Vibe children copied by a post-exit fork", async () => {
 		using tempDir = TempDir.createSync("@omp-agent-hub-vibe-fork-");
 		const manager = SessionManager.create(tempDir.path(), tempDir.path());
@@ -171,6 +349,7 @@ describe("Agent hub Enter activation", () => {
 		await manager.close();
 
 		const agents = new AgentRegistry();
+		registerMain(agents, { sessionFile: fork.newSessionFile });
 		const hub = new AgentHubOverlayComponent({
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
@@ -189,20 +368,21 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("selector controller opens Agent Hub as a fullscreen overlay and restores the visible owner after Enter focuses an agent", async () => {
-		const agents = new AgentRegistry();
+	it("selector controller opens Agent Hub fullscreen and Enter inspects a subagent without focusing it", () => {
+		AgentRegistry.resetGlobalForTests();
+		const agents = AgentRegistry.global();
 		registerWorker(agents);
 
 		const approvalPrompt = { id: "approval-prompt" };
 		let capturedHub: AgentHubOverlayComponent | undefined;
 		const overlayHide = vi.fn();
-		const focusedIds: string[] = [];
-		const focusResolved = Promise.withResolvers<void>();
-		const ownerFocused = Promise.withResolvers<void>();
+		const overlays: unknown[] = [];
 		const focusTargets: unknown[] = [];
 		const requestRender = vi.fn();
+		const focusAgentSession = vi.fn(async () => {});
 		const showOverlay = vi.fn((component: unknown) => {
-			capturedHub = component as AgentHubOverlayComponent;
+			overlays.push(component);
+			capturedHub ??= component as AgentHubOverlayComponent;
 			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
 		});
 		const editorContainer = {
@@ -216,17 +396,13 @@ describe("Agent hub Enter activation", () => {
 				showOverlay,
 				setFocus: (target: unknown) => {
 					focusTargets.push(target);
-					if (target === approvalPrompt) ownerFocused.resolve();
 				},
 				requestRender,
 			},
 			editor: { id: "editor" },
 			editorContainer,
-			collabGuest: { agentRegistry: agents, hubRemote: undefined },
-			focusAgentSession: async (id: string) => {
-				focusedIds.push(id);
-				focusResolved.resolve();
-			},
+			collabGuest: undefined,
+			focusAgentSession,
 			session: { getToolByName: () => undefined, extensionRunner: undefined },
 			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null },
 			hideThinkingBlock: false,
@@ -235,7 +411,7 @@ describe("Agent hub Enter activation", () => {
 
 		controller.showAgentHub(new SessionObserverRegistry());
 
-		expect(capturedHub).toBeDefined();
+		if (!capturedHub) throw new Error("Expected Agent Hub overlay");
 		expect(showOverlay).toHaveBeenCalledWith(
 			capturedHub,
 			expect.objectContaining({
@@ -250,14 +426,52 @@ describe("Agent hub Enter activation", () => {
 		expect(editorContainer.addChild).not.toHaveBeenCalled();
 		expect(focusTargets[0]).toBe(capturedHub);
 
-		capturedHub!.handleInput("\r");
-		await focusResolved.promise;
-		await ownerFocused.promise;
+		capturedHub.handleInput("\r");
 
-		expect(focusedIds).toEqual([AGENT_ID]);
-		expect(overlayHide).toHaveBeenCalledTimes(1);
-		expect(focusTargets.at(-1)).toBe(approvalPrompt);
+		expect(overlays).toHaveLength(2);
+		expect(focusAgentSession).not.toHaveBeenCalled();
+		expect(overlayHide).not.toHaveBeenCalled();
+		expect(focusTargets.at(-1)).not.toBe(approvalPrompt);
 		expect(requestRender).toHaveBeenCalled();
+	});
+
+	it("propagates an explicit mouse-tracking choice through the Hub and its transcript overlay", () => {
+		for (const mouseTracking of [false, true]) {
+			AgentRegistry.resetGlobalForTests();
+			const agents = AgentRegistry.global();
+			registerWorker(agents);
+			const overlays: Array<{ component: unknown; options: { mouseTracking?: boolean } }> = [];
+			const ctx = {
+				keybindings: { getKeys: () => [] },
+				settings: { get: (key: string) => (key === "tui.mouseInput" ? mouseTracking : undefined) },
+				ui: {
+					showOverlay: (component: unknown, options: { mouseTracking?: boolean }) => {
+						overlays.push({ component, options });
+						return { hide() {}, setHidden() {}, isHidden: () => false };
+					},
+					setFocus() {},
+					requestRender() {},
+				},
+				editor: { id: "editor" },
+				editorContainer: { children: [], clear() {}, addChild() {} },
+				collabGuest: undefined,
+				focusAgentSession: async () => {},
+				session: { getToolByName: () => undefined, extensionRunner: undefined },
+				sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null },
+				hideThinkingBlock: false,
+			};
+			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+
+			controller.showAgentHub(new SessionObserverRegistry());
+			const hub = overlays[0]?.component as AgentHubOverlayComponent | undefined;
+			expect(hub).toBeDefined();
+			expect(overlays[0]?.options.mouseTracking).toBe(mouseTracking);
+
+			hub?.handleInput("\r");
+			expect(overlays).toHaveLength(2);
+			expect(overlays[1]?.options.mouseTracking).toBe(mouseTracking);
+			hub?.dispose();
+		}
 	});
 
 	it("selector controller hides the fullscreen hub and restores the visible owner on Escape", () => {
@@ -397,6 +611,7 @@ describe("Agent hub double-← gating", () => {
 		await Bun.write(sessionFile, "");
 		await Bun.write(workerSessionFile, "");
 		const agents = new AgentRegistry();
+		registerMain(agents, { sessionFile });
 		const { controller, shown, shownReady } = setup(agents, sessionFile);
 
 		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
@@ -420,6 +635,7 @@ describe("Agent hub double-← gating", () => {
 
 	it("armCloseTap lets a single ← dismiss the hub the opening ←← raised", () => {
 		const agents = new AgentRegistry();
+		registerMain(agents);
 		// A parked/persisted agent opens the hub under requireContent (issue #4780).
 		agents.register({
 			id: "Parked",
@@ -461,6 +677,7 @@ describe("Agent hub data refresh coalescing", () => {
 	it("coalesces a synchronous registry burst into one render and refreshes rows", async () => {
 		vi.useFakeTimers();
 		const agents = new AgentRegistry();
+		registerMain(agents);
 		const observers = new SessionObserverRegistry();
 		const requestRender = vi.fn();
 		const hub = new AgentHubOverlayComponent({

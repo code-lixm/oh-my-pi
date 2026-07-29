@@ -2,9 +2,11 @@ import type { Agent, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message, Model, TextContent, ToolChoice } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, prompt, stringProperty } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { selectPrompt } from "../prompts/prompt-locale";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
+import midRunTodoNudgePromptZh from "../prompts/system/mid-run-todo-nudge.zh-CN.md" with { type: "text" };
 import { getLatestTodoPhasesFromEntries, isTodoPhase, type TodoItem, type TodoPhase } from "../tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -96,9 +98,18 @@ export class TodoTracker {
 	onToolResult(toolName: string, isError: boolean): void {
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
+		} else if (!isError && toolName === "task") {
+			this.onTaskProgressBoundary();
+			return;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
 			this.#mutationsSinceLastTouch++;
 		}
+		this.#reminderAwaitingProgress = false;
+	}
+
+	/** Arms immediate ledger reconciliation after a subagent progress boundary. */
+	onTaskProgressBoundary(): void {
+		this.#mutationsSinceLastTouch = MID_RUN_NUDGE_MUTATION_THRESHOLD;
 		this.#reminderAwaitingProgress = false;
 	}
 
@@ -288,7 +299,7 @@ export class TodoTracker {
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount++;
 		const { toolRefs } = this.#buildEagerPreludeContext();
-		const reminder = prompt.render(midRunTodoNudgePrompt, {
+		const reminder = prompt.render(selectPrompt(midRunTodoNudgePrompt, midRunTodoNudgePromptZh), {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,

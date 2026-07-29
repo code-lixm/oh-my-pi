@@ -52,7 +52,6 @@ function createContext(opts: { pendingImages: ImageContent[]; pendingImageLinks?
 }
 
 describe("InputController focused submit observation-only behavior", () => {
-
 	it("leaves text and pending images untouched without prompting the focused session", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, editor, prompt, showError } = createContext({

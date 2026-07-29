@@ -189,16 +189,67 @@ describe("TodoCommandController", () => {
 		expect(reminderTextFrom(ctx)).toMatch(/Do NOT re-add them/i);
 	});
 
-	it("keeps status-mutation reminders neutral (no do-not-recreate directive)", async () => {
+	it("keeps manual /todo done all-completion available", async () => {
 		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-done-"));
 		const phases: TodoPhase[] = [
-			{ name: "Foundation", tasks: [{ content: "Scaffold crate", status: "in_progress" }] },
+			{
+				name: "Foundation",
+				tasks: [
+					{ content: "Scaffold crate", status: "in_progress" },
+					{ content: "Review migration", status: "pending" },
+				],
+			},
+			{ name: "Verification", tasks: [{ content: "Run focused test", status: "pending" }] },
 		];
 		const ctx = createContext(tempRoot, phases);
 		const controller = new TodoCommandController(ctx);
 
 		await controller.handleTodoCommand("done");
 
+		const setTodoPhases = ctx.session.setTodoPhases as unknown as Mock<(next: TodoPhase[]) => void>;
+		expect(setTodoPhases).toHaveBeenCalledTimes(1);
+		expect(setTodoPhases.mock.calls[0]?.[0]).toEqual([
+			{
+				name: "Foundation",
+				tasks: [
+					{ content: "Scaffold crate", status: "completed" },
+					{ content: "Review migration", status: "completed" },
+				],
+			},
+			{ name: "Verification", tasks: [{ content: "Run focused test", status: "completed" }] },
+		]);
 		expect(reminderTextFrom(ctx)).not.toMatch(/Do NOT/i);
+		expect(ctx.showError).not.toHaveBeenCalled();
+	});
+
+	it("keeps manual /todo done <phase> bulk completion available", async () => {
+		const phases: TodoPhase[] = [
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Implement change", status: "in_progress" },
+					{ content: "Review change", status: "pending" },
+				],
+			},
+			{ name: "Verification", tasks: [{ content: "Run focused test", status: "pending" }] },
+		];
+		const ctx = createContext("/tmp", phases);
+		const controller = new TodoCommandController(ctx);
+
+		await controller.handleTodoCommand("done Work");
+
+		const setTodoPhases = ctx.session.setTodoPhases as unknown as Mock<(next: TodoPhase[]) => void>;
+		expect(setTodoPhases).toHaveBeenCalledTimes(1);
+		expect(setTodoPhases.mock.calls[0]?.[0]).toEqual([
+			{
+				name: "Work",
+				tasks: [
+					{ content: "Implement change", status: "completed" },
+					{ content: "Review change", status: "completed" },
+				],
+			},
+			{ name: "Verification", tasks: [{ content: "Run focused test", status: "in_progress" }] },
+		]);
+		expect(ctx.showError).not.toHaveBeenCalled();
 	});
 });

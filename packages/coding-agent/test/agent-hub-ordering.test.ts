@@ -53,15 +53,15 @@ function makeHub(agents: AgentRegistry) {
 	});
 }
 
-function renderedAgentIds(hub: AgentHubOverlayComponent): string[] {
-	// Entry first lines are ` <cursor> <status-glyph> <id> …`; task lines are
-	// indented deeper and chrome lines never carry the cursor slot.
-	const ids: string[] = [];
+function renderedAgentLabels(hub: AgentHubOverlayComponent): string[] {
+	// Entry first lines are ` <cursor> <status-glyph> <display label> …`; task
+	// lines are indented deeper and chrome lines never carry the cursor slot.
+	const labels: string[] = [];
 	for (const raw of hub.render(120)) {
 		const match = /^ (?:❯| ) (\S+) (\S+)/u.exec(Bun.stripANSI(raw));
-		if (match) ids.push(match[2]!);
+		if (match) labels.push(match[2]!);
 	}
-	return ids;
+	return labels;
 }
 
 describe("Agent hub row ordering", () => {
@@ -102,7 +102,7 @@ describe("Agent hub row ordering", () => {
 			agents.register({ id: "C", displayName: "Gamma", kind: "sub", session: sessionC });
 
 			hub = makeHub(agents);
-			expect(renderedAgentIds(hub)).toEqual(["C", "B", "A"]);
+			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha"]);
 
 			// Bump A's lastActivity far ahead of the others. The hub is already open,
 			// so the captured order must not change.
@@ -115,9 +115,9 @@ describe("Agent hub row ordering", () => {
 			const sessionD = {} as AgentSession;
 			agents.register({ id: "D", displayName: "Delta", kind: "sub", session: sessionD });
 
-			expect(renderedAgentIds(hub)).toEqual(["C", "B", "A"]);
+			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha"]);
 			vi.advanceTimersByTime(100);
-			expect(renderedAgentIds(hub)).toEqual(["C", "B", "A", "D"]);
+			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha", "Delta"]);
 		} finally {
 			hub?.dispose();
 			vi.useRealTimers();
@@ -169,7 +169,7 @@ describe("Agent hub row ordering", () => {
 		hub.dispose();
 	});
 
-	it("switches summary status labels to zh-CN at runtime without localizing agent ids", () => {
+	it("switches summary status labels to zh-CN at runtime without localizing user-facing agent labels", () => {
 		geometry = stubStdoutGeometry(120);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
@@ -205,9 +205,9 @@ describe("Agent hub row ordering", () => {
 			expect(chinese).not.toContain("parked");
 			expect(chinese).not.toContain("aborted");
 
-			for (const id of ["job-17", "job-18", "job-19", "job-20"]) {
-				expect(english).toContain(id);
-				expect(chinese).toContain(id);
+			for (const label of ["Alpha", "Beta", "Gamma", "Delta"]) {
+				expect(english).toContain(label);
+				expect(chinese).toContain(label);
 			}
 		} finally {
 			hub.dispose();
@@ -290,6 +290,158 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → fireworks/kimi-k2");
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("groups subagents beneath their owning Main and omits an active-Main row", () => {
+		geometry = stubStdoutGeometry(120);
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "Main",
+			displayName: "Primary registry identity",
+			kind: "main",
+			sessionTitle: "Primary workspace",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		agents.register({
+			id: "top-level:review",
+			displayName: "Review registry identity",
+			kind: "main",
+			sessionTitle: "Review workspace",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		agents.register({
+			id: "Primary worker",
+			displayName: "Primary worker",
+			kind: "sub",
+			parentId: "Main",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		agents.register({
+			id: "Review worker",
+			displayName: "Review worker",
+			kind: "sub",
+			parentId: "top-level:review",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			activeTopLevelId: "Main",
+		});
+
+		try {
+			const lines = hub.render(120).map(Bun.stripANSI);
+			const rendered = lines.join("\n");
+			expect(rendered).toContain("Agent Hub");
+			expect(rendered).toContain("Main: Primary workspace");
+			expect(rendered).toContain("Main: Review workspace");
+			expect(rendered).toContain("Primary worker");
+			expect(rendered).toContain("Review worker");
+			const primaryGroup = lines.findIndex(line => line.includes("Main: Primary workspace"));
+			const reviewGroup = lines.findIndex(line => line.includes("Main: Review workspace"));
+			expect(primaryGroup).toBeLessThan(lines.findIndex(line => line.includes("Primary worker")));
+			expect(reviewGroup).toBeLessThan(lines.findIndex(line => line.includes("Review worker")));
+			// The active Main appears once in the header and once as the child-group label,
+			// never as an independently selectable row.
+			expect(lines.filter(line => line.includes("Primary workspace"))).toHaveLength(2);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("renders every lifecycle state in one aligned status column", () => {
+		setSettingsUiLocale("en");
+		geometry = stubStdoutGeometry(120);
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "Main",
+			displayName: "Primary",
+			kind: "main",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		const states = [
+			["Runner", "running"],
+			["Waiter", "waiting"],
+			["Idler", "idle"],
+			["Parker", "parked"],
+			["Aborter", "aborted"],
+		] as const;
+		for (const [id, status] of states) {
+			agents.register({ id, displayName: id, kind: "sub", parentId: "Main", session: {} as AgentSession, status });
+		}
+		const hub = makeHub(agents);
+
+		try {
+			const lines = hub.render(120).map(Bun.stripANSI);
+			const statusEnds = states.map(([label, status]) => {
+				const row = lines.find(line => line.includes(label));
+				expect(row).toBeDefined();
+				const statusAt = row!.indexOf(status);
+				expect(statusAt).toBeGreaterThan(0);
+				expect(row!.trimEnd()).toEndWith(status);
+				expect(visibleWidth(row!)).toBeLessThanOrEqual(118);
+				return visibleWidth(row!.slice(0, statusAt + status.length));
+			});
+			expect(new Set(statusEnds).size).toBe(1);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("hides UUID-only Main and subagent labels behind generic names", () => {
+		geometry = stubStdoutGeometry(120);
+		const uuid = "4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f";
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "Main",
+			displayName: "Primary workspace",
+			kind: "main",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		agents.register({
+			id: `top-level:${uuid}`,
+			displayName: uuid,
+			kind: "main",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		agents.register({
+			id: "uuid-labelled child",
+			displayName: uuid,
+			kind: "sub",
+			parentId: `top-level:${uuid}`,
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+			activeTopLevelId: "Main",
+		});
+
+		try {
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered).not.toContain(uuid);
+			expect(rendered).toMatch(/\bSubagent\b/u);
 		} finally {
 			hub.dispose();
 		}

@@ -1,5 +1,5 @@
 <irc>
-Agent `{{from}}` sent a coordination message{{#if replyTo}} (replying to {{replyTo}}){{/if}}:
+Agent `{{from}}` sent a coordination message{{#if expectsReply}} and needs your reply{{/if}}{{#if replyTo}} (replying to {{replyTo}}){{/if}}:
 
 {{message}}
 

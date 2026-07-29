@@ -21,7 +21,14 @@
 - Added compact battery-style status-line usage rendering with remaining-quota blocks, deterministic latest-window selection, and configurable battery width.
 
 - Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
+- Added a configurable `app.editor.clear` shortcut (default `Alt+C`) that clears the complete prompt draft, including pending images, without overloading interrupt or exit behavior.
 ### Changed
+- Changed Bash tool cards to omit the redundant standalone icon/title row, leaving the `$ …` command preview as the first content line.
+- Changed Agent Hub to separate top-level sessions from subagents, use session titles instead of opaque root IDs, and apply object-specific navigation for switching, inspecting, focusing, messaging, returning to parents, reviving, and stopping agents.
+- Added structured main/subagent activity reporting across Working indicators, Hub rows, focused transcripts, remote snapshots, persisted agents, provider streams, and queued jobs without inventing percentage progress or treating ordinary model silence as a stall.
+- Added durable needs-reply communication state, explicit sender/recipient routing and delivery receipts, and root-aware relay behavior for concurrent top-level sessions.
+- Changed YOLO Ask prompts to use a 30-second default hard deadline from first render, preserving user answers and waiting indefinitely when a question has no valid recommended option; `ask.timeout = 0` still disables automatic selection.
+- Changed agent-managed todos to reject phase-wide completion, reconcile immediately after successful subagent task results, and keep verification items open until their commands succeed; `/todo` remains an explicit user-controlled bulk editor.
 
 - Changed interactive model-role cycling to use `Tab` for the next model and `Shift+Tab` for the previous model, with autocomplete retaining priority and thinking-level cycling moving to `Ctrl+P`.
 - Changed agent execution guidance to continue independent parent work after asynchronous delegation, treat no-progress waits and terminal peer states as non-blocking, and prevent broad-suite failures from expanding scope or triggering repeated full-suite reruns.
@@ -48,6 +55,10 @@
 - Fixed resumed `accent` tool cards retaining color only behind the left rail and text glyphs; replayed headers, body content, and internal padding now emit a real full-width tinted surface with the final column left as an inset.
 - Fixed double-Escape having no cancellation target while asynchronous task/subagent jobs were running; background confirmation now cancels owner-scoped jobs and clears their pending result delivery.
 - Fixed focused subagent views showing `Waiting for progress…` indefinitely when observer progress was absent; the HUD now reports the live registry status.
+- Fixed retry fallback models leaking into later user turns, session persistence, and model-usage recency; temporary fallback model/thinking state now remains scoped to one user process and restores the explicit primary before the next user input.
+- Fixed Agent Hub navigation and presentation to preserve the `Main → Agent Hub → subagent` hierarchy, keep lifecycle status in a stable right column with model/age metadata below, and route focused-view `←←` back through the shared Hub.
+- Fixed fullscreen subagent panels capturing terminal mouse input while `tui.mouseInput` is disabled; native text selection now remains available by default, while the opt-in setting consistently enables pointer interaction across focused, Hub, and transcript overlays.
+- Fixed LSP result cards under the `accent` border style omitting semantic success, warning, and error surface tints.
 - Fixed Todo mid-run reconciliation waiting for twelve successful mutations before nudging the agent; successful delegation now counts as phase progress and the threshold is four, while read-only research and failed calls remain excluded.
 - Fixed mid-turn transcript rebuilds losing grouped Hub activity ownership; live todo and Hub components now remain in the transcript and are handed back to the event controller across theme, settings, and focus replays.
 - Fixed structural repository investigations skipping the available CodeGraph tool and starting with text scans; primary and subagent guidance now requires a `codegraph` call before `grep`/`glob`/`read`, while retaining immediate fallback when indexing is unavailable or incomplete.

@@ -1,4 +1,4 @@
-import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
+import { type AppKeybinding, KEYBINDINGS, type KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
 	keybindings: Pick<KeybindingsManager, "getDisplayString">;
@@ -26,6 +26,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"| `Ctrl+W` / `Option+Backspace` | Delete word backwards |",
 		"| `Ctrl+U` | Delete to start of line |",
 		"| `Ctrl+K` | Delete to end of line |",
+		`| \`${appKey(bindings, "app.editor.clear")}\` | ${KEYBINDINGS["app.editor.clear"].description ?? "app.editor.clear"} |`,
 		`| \`${appKey(bindings, "app.clipboard.copyLine")}\` | Copy current line |`,
 		`| \`${appKey(bindings, "app.clipboard.copyPrompt")}\` | Copy whole prompt |`,
 		"",

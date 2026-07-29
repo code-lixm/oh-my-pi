@@ -28,7 +28,9 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AskDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ask-dialog";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
@@ -330,6 +332,33 @@ describe("collab TUI guest ui-request handling (#4049)", () => {
 		expect(await h.nextUiResponse()).toEqual({ reqId: 1, value: "Yes" });
 	});
 
+	it("does not send a late guest answer after the host's absolute deadline has already elapsed", async () => {
+		const h = await openHarness();
+		h.hostSocket.send({
+			t: "ui-request",
+			request: {
+				reqId: 12,
+				kind: "select",
+				title: "Expired elsewhere",
+				options: ["A"],
+				deadlineMs: Date.now() - 1,
+			},
+		});
+
+		const expired = await h.nextDialog();
+		await expired.whenAborted;
+		expect(expired.aborted).toBe(true);
+
+		h.hostSocket.send({
+			t: "ui-request",
+			request: { reqId: 13, kind: "select", title: "Still live", options: ["B"] },
+		});
+		const next = await h.nextDialog();
+		next.settle("B");
+		expect(await h.nextUiResponse()).toEqual({ reqId: 13, value: "B" });
+		expect(h.uiResponses).toEqual([{ reqId: 13, value: "B" }]);
+	});
+
 	it("presents an editor ui-request and sends an explicit cancel as ui-response without a value", async () => {
 		const h = await openHarness();
 		h.hostSocket.send({
@@ -477,6 +506,28 @@ function makeHostContext(): InteractiveModeContext {
 	} as unknown as InteractiveModeContext;
 }
 
+/** Context double that renders each local rich Ask immediately, establishing its deadline before mirroring it. */
+function makeRenderedAskHostContext(): InteractiveModeContext {
+	const base = makeHostContext();
+	let activeAskDialog: AskDialogComponent | undefined;
+	return {
+		...base,
+		editorContainer: {
+			clear: () => {},
+			addChild: (child: unknown) => {
+				if (child instanceof AskDialogComponent) activeAskDialog = child;
+			},
+		},
+		editor: { getText: () => "", setText: () => {} },
+		ui: {
+			requestRender: () => activeAskDialog?.render(80),
+			setFocus: () => {},
+			terminal: { rows: 40, columns: 80 },
+			addInputListener: () => () => {},
+		},
+	} as unknown as InteractiveModeContext;
+}
+
 /** Raw wire-speaking guest with a configurable hello proto. */
 async function joinRawGuest(
 	link: string,
@@ -517,6 +568,59 @@ async function joinRawGuest(
 	};
 	return { socket, nextFrame };
 }
+
+describe("collab rich Ask deadline", () => {
+	it("forwards the first local absolute deadline and lets the first remote answer win", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("theme unavailable");
+		setThemeInstance(theme);
+		const ctx = makeRenderedAskHostContext();
+		const host = new CollabHost(ctx);
+		await host.start("ws://localhost:8787");
+		ctx.collabHost = host;
+		let guest: { socket: CollabSocket; nextFrame(): Promise<CollabFrame> } | undefined;
+		try {
+			guest = await joinRawGuest(host.link, COLLAB_PROTO);
+			const welcome = await guest.nextFrame();
+			if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+
+			const now = spyOn(Date, "now").mockReturnValue(1_000_000);
+			try {
+				const controller = new ExtensionUiController(ctx);
+				const result = controller.showAskDialog(
+					[
+						{
+							id: "database",
+							question: "Which database?",
+							options: [{ label: "SQLite" }, { label: "Postgres" }],
+							recommended: 1,
+						},
+					],
+					{ timeout: 5_000 },
+				);
+				const request = await guest.nextFrame();
+				if (request.t !== "ui-request" || request.request.kind !== "select") {
+					throw new Error(`expected select ui-request, got ${request.t}`);
+				}
+				expect(request.request.deadlineMs).toBe(1_005_000);
+
+				guest.socket.send({ t: "ui-response", reqId: request.request.reqId, value: "Postgres" });
+				const outcome = await result;
+				expect(outcome).toEqual({
+					kind: "submit",
+					results: [
+						expect.objectContaining({ id: "database", selectedOptions: ["Postgres"], timedOut: undefined }),
+					],
+				});
+			} finally {
+				now.mockRestore();
+			}
+		} finally {
+			guest?.socket.close();
+			await host.stop("test done");
+		}
+	});
+});
 
 describe("collab proto handshake (#4049)", () => {
 	it("host rejects a stale-proto hello with a protocol-mismatch error and never welcomes or admits the guest", async () => {

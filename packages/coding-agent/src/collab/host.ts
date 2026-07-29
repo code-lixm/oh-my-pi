@@ -13,18 +13,11 @@ import { timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
-import type {
-	BusChannel,
-	CollabUiRequest,
-	CollabUiRequestDraft,
-	CollabUiResponseValue,
-	AgentEvent as WireAgentEvent,
-	SessionEntry as WireSessionEntry,
-} from "@oh-my-pi/pi-wire";
+import type { BusChannel, AgentEvent as WireAgentEvent, SessionEntry as WireSessionEntry } from "@oh-my-pi/pi-wire";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { InteractiveModeContext } from "../modes/types";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "../session/agent-session";
 import { stripImagesFromMessage, USER_INTERRUPT_LABEL } from "../session/messages";
 import type { SessionEntry as StoredSessionEntry } from "../session/session-entries";
@@ -39,6 +32,9 @@ import {
 	type CollabParticipant,
 	type CollabPromptDetails,
 	type CollabSessionState,
+	type CollabUiRequest,
+	type CollabUiRequestDraft,
+	type CollabUiResponseValue,
 	formatCollabLink,
 	formatCollabWebLink,
 	generateRoomId,
@@ -279,7 +275,10 @@ export class CollabHost {
 				this.#busUnsubscribers.push(bus.on(channel, data => this.#broadcast({ t: "bus", channel, data })));
 			}
 		}
-		this.#registryUnsubscribe = AgentRegistry.global().onChange(() => this.#scheduleAgentsBroadcast());
+		this.#registryUnsubscribe = AgentRegistry.global().onChange(() => {
+			this.#scheduleAgentsBroadcast();
+			this.#scheduleStateBroadcast();
+		});
 		this.#ctx.sessionManager.onEntryAppended = entry => {
 			if (isWireSessionEntry(entry)) this.#broadcast({ t: "entry", entry: shrinkForReplication(entry) });
 			// Model/thinking/title changes land as entries while idle; refresh
@@ -527,6 +526,13 @@ export class CollabHost {
 		// render exactly the same anchored, provider-real count the host's own
 		// status line shows.
 		const breakdown = this.#ctx.statusLine.getCachedContextBreakdown();
+		const registry = AgentRegistry.global();
+		const activeAgentId = session.getAgentId?.();
+		const activeTopLevel =
+			resolveTopLevelAgent(registry, activeAgentId ?? "") ??
+			registry
+				.list()
+				.find(ref => ref.kind === "main" && (ref.session === session || ref.sessionId === this.#sessionId));
 		const tokens = breakdown.usedTokens ?? 0;
 		return {
 			isStreaming: session.isStreaming,
@@ -542,6 +548,10 @@ export class CollabHost {
 				percent: breakdown.contextWindow > 0 ? (tokens / breakdown.contextWindow) * 100 : 0,
 			},
 			participants: this.participants,
+			sessionTitle: activeTopLevel?.sessionTitle ?? session.sessionName,
+			sessionId: activeTopLevel?.sessionId ?? this.#sessionId,
+			activeTopLevelAgentId: activeTopLevel?.id ?? activeAgentId,
+			activityState: activeTopLevel?.activityState ?? registry.get(activeAgentId ?? "")?.activityState,
 		};
 	}
 
@@ -573,6 +583,9 @@ export class CollabHost {
 					hasSessionFile: !!ref.sessionFile,
 					createdAt: ref.createdAt,
 					lastActivity: ref.lastActivity,
+					sessionTitle: ref.sessionTitle,
+					sessionId: ref.sessionId,
+					activityState: ref.activityState,
 				}))
 		);
 	}

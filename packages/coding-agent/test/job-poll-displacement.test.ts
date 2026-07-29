@@ -545,4 +545,3 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		expect(eventController.inheritHubActivityGroup.mock.calls[0]?.[0]).toBe(liveGroup);
 	});
 });
-

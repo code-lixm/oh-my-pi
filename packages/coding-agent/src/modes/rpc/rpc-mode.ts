@@ -1143,6 +1143,7 @@ export async function runRpcMode(
 				if (!subagentRegistry) {
 					return error(id, "get_subagents", "Subagent event bus is unavailable");
 				}
+				await subagentRegistry.hydratePersisted(session.sessionFile);
 				return success(id, "get_subagents", { subagents: subagentRegistry.getSubagents() });
 			}
 
@@ -1154,6 +1155,7 @@ export async function runRpcMode(
 					if (command.fromByte !== undefined && !Number.isFinite(command.fromByte)) {
 						return error(id, "get_subagent_messages", "fromByte must be a finite number");
 					}
+					await subagentRegistry.hydratePersisted(session.sessionFile);
 					const sessionFile = subagentRegistry.resolveSessionFile(command);
 					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
 					return success(id, "get_subagent_messages", transcript);

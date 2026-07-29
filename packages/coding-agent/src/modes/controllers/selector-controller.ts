@@ -549,6 +549,7 @@ export class SelectorController {
 			anchor: "top-left",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: false,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
@@ -2185,6 +2186,7 @@ export class SelectorController {
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
 		];
+		const mouseTracking = this.ctx.settings?.get("tui.mouseInput") ?? false;
 		let hub: AgentHubOverlayComponent | undefined;
 		let overlayHandle: OverlayHandle | undefined;
 
@@ -2213,8 +2215,11 @@ export class SelectorController {
 			cwd: this.ctx.sessionManager.getCwd(),
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
-			focusAgent: id => this.ctx.focusAgentSession(id),
+			activeTopLevelId: this.ctx.activeTopLevelId,
+			switchTopLevel: this.ctx.collabGuest ? undefined : id => this.ctx.switchTopLevel(id),
+			focusAgent: this.ctx.collabGuest ? undefined : id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
+			mouseTracking,
 		});
 
 		const showReadyHub = () => {
@@ -2233,6 +2238,7 @@ export class SelectorController {
 				maxHeight: "100%",
 				margin: 0,
 				fullscreen: true,
+				mouseTracking,
 			});
 			this.ctx.ui.setFocus(hub);
 			// When the hub was raised by the editor's double-← gesture, prime its own

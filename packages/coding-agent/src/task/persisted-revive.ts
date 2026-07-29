@@ -4,7 +4,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
@@ -60,16 +60,22 @@ export function createPersistedSubagentReviverFactory(
 			return undefined;
 		}
 		const init = peek.init;
+		const topLevel = resolveTopLevelAgent(registry, ref.id);
+		if (!topLevel || topLevel.id === ref.id || ref.kind !== "sub") return undefined;
 		// taskDepth drives real capability gating (task-spawn allowance, memory
-		// startup, …); derive it from the persisted parent chain rather than
-		// assuming a fixed level.
-		let taskDepth = 1;
-		let parentId = ref.parentId;
+		// startup, …); derive it from the persisted parent chain and stop at any
+		// top-level session, not a process-global id.
+		let taskDepth = 0;
+		let current = ref;
 		const seen = new Set<string>();
-		while (parentId && parentId !== MAIN_AGENT_ID && !seen.has(parentId)) {
-			seen.add(parentId);
+		while (current.id !== topLevel.id) {
+			if (seen.has(current.id)) return undefined;
+			seen.add(current.id);
 			taskDepth++;
-			parentId = registry.get(parentId)?.parentId;
+			if (!current.parentId) return undefined;
+			const parent = registry.get(current.parentId);
+			if (!parent) return undefined;
+			current = parent;
 		}
 		return async expectedRef => {
 			// Re-open fresh on every revive: park closes the writer, so this takes

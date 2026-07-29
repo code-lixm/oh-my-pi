@@ -16,6 +16,8 @@ import {
 	SPACE_REPEAT_MAX_GAP_MS,
 } from "../../../src/modes/components/custom-editor";
 import { getEditorTheme, initTheme, theme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
+import { UiHelpers } from "../../../src/modes/utils/ui-helpers";
 
 function makeEditor() {
 	const editor = new CustomEditor(getEditorTheme());
@@ -105,6 +107,51 @@ describe("CustomEditor restored image drafts", () => {
 			text: "Inspect [Image #1, 1x1]",
 			images: [image],
 		});
+	});
+});
+
+describe("CustomEditor draft clear shortcut", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("clears a multiline image draft to an empty cursor with one redraw", () => {
+		const { editor } = makeEditor();
+		const changes = vi.fn();
+		editor.onChange = changes;
+		editor.setActionKeys("app.editor.clear", ["alt+c"]);
+		const requestRender = vi.fn();
+		const helpers = new UiHelpers({ editor, ui: { requestRender } } as unknown as InteractiveModeContext);
+		editor.onClearEditor = () => helpers.clearEditor();
+		editor.setText("first line\nsecond line");
+		editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "abc" }];
+		editor.pendingImageLinks = ["file:///tmp/draft.png"];
+		editor.imageLinks = ["file:///tmp/draft.png"];
+		changes.mockClear();
+
+		editor.handleInput("\x1bc");
+
+		expect(editor.getText()).toBe("");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+		expect(editor.pendingImages).toEqual([]);
+		expect(editor.pendingImageLinks).toEqual([]);
+		expect(editor.imageLinks).toBeUndefined();
+		expect(changes).toHaveBeenCalledTimes(1);
+		expect(changes).toHaveBeenLastCalledWith("");
+		expect(requestRender).toHaveBeenCalledTimes(1);
+
+		editor.handleInput("\x1bc");
+		expect(changes).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not treat ordinary c as the Alt+C clear gesture", () => {
+		const { editor } = makeEditor();
+		editor.setActionKeys("app.editor.clear", ["alt+c"]);
+
+		editor.handleInput("c");
+
+		expect(editor.getText()).toBe("c");
 	});
 });
 
