@@ -579,6 +579,7 @@ export function createWorkspaceCheckpointCoordinator(
 			try {
 				const built: PreviewWorkspaceRestoreRequest = {
 					checkpointId: request.checkpointId,
+					sessionId: svc.sessionId ?? undefined,
 					scope: request.scope,
 					strategy: request.strategy,
 					paths: request.paths,

@@ -378,13 +378,17 @@ export class Coordinator {
 
 		const workspaceId = this.#store.workspaceIdForRoot(rootPath);
 		return this.#withLock(rootPath, workspaceId, async () => {
-			const state = await this.#store.getWorkspaceState(rootPath);
+			const state = await this.#store.getWorkspaceState(rootPath, request.sessionId);
 			if (!state?.undoHeadCheckpointId) return null;
 			const checkpoint = await this.#store.getCheckpoint(state.undoHeadCheckpointId);
 			if (!checkpoint) {
 				throw new WorkspaceCheckpointError(`undo head checkpoint missing: ${state.undoHeadCheckpointId}`);
 			}
-			if (request.sessionId && checkpoint.sessionId && checkpoint.sessionId !== request.sessionId) {
+			if (
+				request.sessionId !== undefined &&
+				checkpoint.sessionId !== null &&
+				checkpoint.sessionId !== request.sessionId
+			) {
 				throw new WorkspaceCheckpointError(`undo head belongs to a different session (${checkpoint.sessionId})`);
 			}
 
@@ -484,14 +488,34 @@ export class Coordinator {
 		const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest));
 		const { id: manifestObjectId } = await content.putBytes(manifestBytes);
 
-		const previousState = await this.#store.getWorkspaceState(rootPath);
-		const previousHead = previousState?.lastCheckpointId ?? null;
+		const previousState = await this.#store.getWorkspaceState(rootPath, request.sessionId);
+		const legacyPreviousState =
+			request.sessionId === undefined ? null : await this.#store.getWorkspaceState(rootPath);
+		const requestedSessionId = request.sessionId ?? null;
+		let parentId = request.parentId ?? previousState?.lastCheckpointId ?? null;
+		if (parentId) {
+			const parent = await this.#store.getCheckpoint(parentId);
+			if (!parent) {
+				if (request.parentId) {
+					throw new WorkspaceCheckpointError(`parent checkpoint not found: ${parentId}`);
+				}
+				parentId = null;
+			} else if (
+				path.resolve(parent.rootPath) !== path.resolve(rootPath) ||
+				parent.sessionId !== requestedSessionId
+			) {
+				if (request.parentId) {
+					throw new WorkspaceCheckpointError("parent checkpoint belongs to a different workspace session");
+				}
+				parentId = null;
+			}
+		}
 
 		const created = await this.#store.createCheckpoint({
 			...request,
 			rootPath,
 			manifestObjectId,
-			parentId: request.parentId ?? previousHead ?? undefined,
+			parentId: parentId ?? undefined,
 			advanceLastCheckpoint: options.updateWorkspaceState !== false,
 		});
 		const record = await this.#store.updateCheckpoint(created.id, {
@@ -504,6 +528,7 @@ export class Coordinator {
 			const nextState: WorkspaceState = {
 				workspaceId,
 				rootPath,
+				sessionId: request.sessionId ?? null,
 				undoHeadCheckpointId: created.id,
 				redoHeadCheckpointId: null,
 				restoreSequence: previousState?.restoreSequence ?? 0,
@@ -511,7 +536,16 @@ export class Coordinator {
 				updatedAt: this.#now().toISOString(),
 			};
 			await this.#store.putWorkspaceState(nextState);
-			await this.#store.clearRedoEdge(rootPath);
+			if (request.sessionId !== undefined) {
+				// Keep the root-only cursor as a compatibility mirror for offline CLI.
+				await this.#store.putWorkspaceState({
+					...nextState,
+					sessionId: null,
+					restoreSequence: legacyPreviousState?.restoreSequence ?? 0,
+				});
+			}
+			await this.#store.clearRedoEdge(rootPath, request.sessionId);
+			if (request.sessionId !== undefined) await this.#store.clearRedoEdge(rootPath);
 		}
 
 		return record;
@@ -625,6 +659,13 @@ export class Coordinator {
 		const checkpoint = await this.#store.getCheckpoint(request.checkpointId);
 		if (!checkpoint) {
 			throw new WorkspaceCheckpointError(`checkpoint not found: ${request.checkpointId}`);
+		}
+		if (
+			request.sessionId !== undefined &&
+			checkpoint.sessionId !== null &&
+			checkpoint.sessionId !== request.sessionId
+		) {
+			throw new WorkspaceCheckpointError(`checkpoint belongs to a different session (${checkpoint.sessionId})`);
 		}
 		const manifest = await this.#loadManifest(checkpoint);
 		const liveScan =
@@ -796,7 +837,9 @@ export class Coordinator {
 			});
 		}
 
-		const previousState = await this.#store.getWorkspaceState(rootPath);
+		const sessionId = checkpoint.sessionId ?? undefined;
+		const previousState = await this.#store.getWorkspaceState(rootPath, sessionId);
+		const legacyPreviousState = checkpoint.sessionId === null ? null : await this.#store.getWorkspaceState(rootPath);
 		const guard = await this.#createRestoreGuard(rootPath, checkpoint, this.#includePathsForManifest(manifest));
 		const transactionOperations: WorkspaceRestoreOperation[] = [];
 		for (const op of planRecord.operations) {
@@ -872,6 +915,7 @@ export class Coordinator {
 			const nextState: WorkspaceState = {
 				workspaceId,
 				rootPath,
+				sessionId: checkpoint.sessionId,
 				undoHeadCheckpointId: transition === "undo" ? null : guard.id,
 				redoHeadCheckpointId: transition === "undo" ? guard.id : null,
 				restoreSequence: (previousState?.restoreSequence ?? 0) + 1,
@@ -879,17 +923,30 @@ export class Coordinator {
 				updatedAt: nowIso,
 			};
 			await this.#store.putWorkspaceState(nextState);
+			if (checkpoint.sessionId !== null) {
+				await this.#store.putWorkspaceState({
+					...nextState,
+					sessionId: null,
+					restoreSequence: (legacyPreviousState?.restoreSequence ?? 0) + 1,
+					lastCheckpointId: legacyPreviousState?.lastCheckpointId ?? planRecord.checkpointId,
+				});
+			}
 			if (transition === "undo") {
 				const redoEdge: RedoEdge = {
 					rootPath,
+					sessionId: checkpoint.sessionId,
 					targetCheckpointId: guard.id,
 					sourceCheckpointId: planRecord.checkpointId,
 					planId: planRecord.id,
 					createdAt: nowIso,
 				};
 				await this.#store.setRedoEdge(redoEdge);
+				if (checkpoint.sessionId !== null) {
+					await this.#store.setRedoEdge({ ...redoEdge, sessionId: null });
+				}
 			} else {
-				await this.#store.clearRedoEdge(rootPath);
+				await this.#store.clearRedoEdge(rootPath, sessionId);
+				if (checkpoint.sessionId !== null) await this.#store.clearRedoEdge(rootPath);
 			}
 
 			const restoredPaths = [...new Set(apply.appliedPaths)];
@@ -916,7 +973,7 @@ export class Coordinator {
 	undoLast(request: UndoWorkspaceRequest): Promise<WorkspaceRestoreResult> {
 		const workspaceId = this.#store.workspaceIdForRoot(request.rootPath);
 		return this.#withLock(request.rootPath, workspaceId, async () => {
-			const state = await this.#store.getWorkspaceState(request.rootPath);
+			const state = await this.#store.getWorkspaceState(request.rootPath, request.sessionId);
 			if (!state?.undoHeadCheckpointId) {
 				throw new WorkspaceCheckpointError(`no undo head available for ${request.rootPath}`);
 			}
@@ -924,11 +981,12 @@ export class Coordinator {
 			if (!head) {
 				throw new WorkspaceCheckpointError(`undo head checkpoint missing: ${state.undoHeadCheckpointId}`);
 			}
-			if (request.sessionId && head.sessionId && head.sessionId !== request.sessionId) {
+			if (request.sessionId !== undefined && head.sessionId !== null && head.sessionId !== request.sessionId) {
 				throw new WorkspaceCheckpointError(`undo head belongs to a different session (${head.sessionId})`);
 			}
 			const preview = await this.#previewRestoreInner({
 				checkpointId: head.id,
+				sessionId: request.sessionId,
 				scope: request.scope ?? "code",
 				strategy: "preserve",
 			});
@@ -945,8 +1003,8 @@ export class Coordinator {
 		const workspaceId = this.#store.workspaceIdForRoot(request.rootPath);
 		return this.#withLock(request.rootPath, workspaceId, async () => {
 			const [state, edge] = await Promise.all([
-				this.#store.getWorkspaceState(request.rootPath),
-				this.#store.getRedoEdge(request.rootPath),
+				this.#store.getWorkspaceState(request.rootPath, request.sessionId),
+				this.#store.getRedoEdge(request.rootPath, request.sessionId),
 			]);
 			if (!state?.redoHeadCheckpointId || !edge) {
 				throw new WorkspaceCheckpointError(`no redo head available for ${request.rootPath}`);
@@ -960,11 +1018,12 @@ export class Coordinator {
 			if (!target) {
 				throw new WorkspaceCheckpointError(`redo target missing: ${state.redoHeadCheckpointId}`);
 			}
-			if (request.sessionId && target.sessionId && target.sessionId !== request.sessionId) {
+			if (request.sessionId !== undefined && target.sessionId !== null && target.sessionId !== request.sessionId) {
 				throw new WorkspaceCheckpointError(`redo target belongs to a different session (${target.sessionId})`);
 			}
 			const preview = await this.#previewRestoreInner({
 				checkpointId: target.id,
+				sessionId: request.sessionId,
 				scope: "code",
 				strategy: "preserve",
 			});

@@ -99,7 +99,7 @@ export class FocusedAgentView implements Component {
 			header = truncateToWidth(headerContent, headerContentWidth);
 			header += `${padding(innerWidth - visibleWidth(header) - hintWidth)}${hint}`;
 		}
-		const stats = this.#stats(progress, innerWidth);
+		const stats = this.#stats(ref, progress, innerWidth);
 		const alert = this.deps.mainNeedsInput()
 			? theme.fg("warning", tSettingsUi("Main needs input · Esc return"))
 			: undefined;
@@ -156,8 +156,8 @@ export class FocusedAgentView implements Component {
 		return content;
 	}
 
-	#stats(progress: AgentProgress | undefined, width: number): string {
-		if (!progress) return theme.fg("dim", tSettingsUi("Waiting for progress…"));
+	#stats(ref: AgentRef | undefined, progress: AgentProgress | undefined, width: number): string {
+		if (!progress) return theme.fg("dim", tSettingsUi(ref?.status ?? "running"));
 		const parts: string[] = [];
 		if (progress.retryState) {
 			parts.push(

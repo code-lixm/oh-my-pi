@@ -121,11 +121,11 @@ RFC 2119：MUST，REQUIRED，SHOULD，RECOMMENDED，MAY，OPTIONAL。`NEVER` = `
 {{#has tools "read"}}- 使用带 offset/limit 的 `{{toolRefs.read}}`，而不是整文件读取。{{/has}}
 {{#has tools "codegraph"}}
 # CodeGraph 探索
-仓库的结构性问题走 `codegraph`，而不是逐文件扫描。
-- 仓库结构、调用链、跨文件流、影响范围、模块职责：优先使用 `codegraph`。
-- 精确文本、日志/非代码文本、文件发现、索引缺失/未同步/不可用：退回 `grep`/`glob`/`read`。
-- `codegraph` 已返回的源码视为已读，不要再重复 `grep`/`read`，除非过期、被淘汰或索引未覆盖。
-- `codegraph` 报告“无索引/无 Git”等不可用情况时，立刻降级到 `grep`/`glob`/`read` 继续；不要因为索引缺失而卡住。
+仓库的结构性问题 MUST 首先调用 `codegraph`，NEVER 以逐文件扫描代替首次调用。
+- 仓库结构、调用链、跨文件流、影响范围、模块职责：先调用 `codegraph`，再决定是否需要补充工具。
+- 仅精确文本、日志/非代码文本、文件发现可直接使用 `grep`/`glob`/`read`。
+- `codegraph` 已返回的源码视为已读；除非过期、被淘汰或索引未覆盖，NEVER 重复 `grep`/`read`。
+- `codegraph` 报告索引缺失、未同步、无 Git 或不可用？立刻降级到 `grep`/`glob`/`read`；NEVER 因索引等待而卡住。
 {{/has}}
 
 {{#has tools "lsp"}}

@@ -123,6 +123,8 @@ export interface WorkspaceRestoreOperation {
 
 export interface PreviewWorkspaceRestoreRequest {
 	checkpointId: string;
+	/** When supplied, reject checkpoints owned by another transcript session. */
+	sessionId?: string;
 	scope: WorkspaceRestoreScope;
 	strategy: WorkspaceRestoreStrategy;
 	paths?: string[];
@@ -247,7 +249,7 @@ export interface WorkspaceCheckpointStoreLike {
 	close(): void;
 	/** Stable workspace id derived from rootPath+agentDir; identical across restarts. */
 	getWorkspaceId(rootPath: string): Promise<string>;
-	getWorkspaceState(rootPath: string): Promise<WorkspaceStateRecord | null>;
+	getWorkspaceState(rootPath: string, sessionId?: string): Promise<WorkspaceStateRecord | null>;
 	putWorkspaceState(state: WorkspaceStateRecord): Promise<void>;
 	listWorkspaces(): Promise<WorkspaceStateRecord[]>;
 	createCheckpoint(record: WorkspaceCheckpointRecord): Promise<void>;
@@ -259,9 +261,9 @@ export interface WorkspaceCheckpointStoreLike {
 	createRestorePlan(plan: WorkspaceRestorePlanRecord): Promise<void>;
 	getRestorePlan(id: string): Promise<WorkspaceRestorePlanRecord | null>;
 	updateRestorePlan(id: string, patch: WorkspaceRestorePlanPatch): Promise<void>;
-	getRedoEdge(rootPath: string): Promise<WorkspaceRedoEdge | null>;
+	getRedoEdge(rootPath: string, sessionId?: string): Promise<WorkspaceRedoEdge | null>;
 	setRedoEdge(edge: WorkspaceRedoEdge): Promise<void>;
-	clearRedoEdge(rootPath: string): Promise<void>;
+	clearRedoEdge(rootPath: string, sessionId?: string): Promise<void>;
 	listIncompleteTransactions(rootPath: string): Promise<WorkspaceTransactionPointer[]>;
 	recordTransactionStart(tx: WorkspaceTransactionPointer): Promise<void>;
 	markTransactionStatus(id: string, status: WorkspaceTransactionStatus): Promise<void>;
@@ -331,6 +333,7 @@ export interface WorkspaceRestorePlanPatch {
 export interface WorkspaceStateRecord {
 	workspaceId: string;
 	rootPath: string;
+	sessionId: string | null;
 	undoHeadCheckpointId: string | null;
 	redoHeadCheckpointId: string | null;
 	lastCheckpointId: string | null;
@@ -340,7 +343,8 @@ export interface WorkspaceStateRecord {
 
 export interface WorkspaceRedoEdge {
 	rootPath: string;
-	sourceCheckpointId: string;
+	sessionId: string | null;
+	sourceCheckpointId: string | null;
 	targetCheckpointId: string;
 	planId: string | null;
 	createdAt: string;

@@ -21,7 +21,11 @@ import {
 import { CustomMessageComponent } from "../../modes/components/custom-message";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
-import { isHubMessageFeedbackArgs } from "../../modes/components/hub-activity-group";
+import {
+	HubActivityGroupComponent,
+	isHubGroupedActivityArgs,
+	isHubMessageFeedbackArgs,
+} from "../../modes/components/hub-activity-group";
 import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
@@ -315,6 +319,19 @@ export class UiHelpers {
 		// before the next non-toolResult message and at end of rebuild — sealing the
 		// read run so the row sits under it. Mirrors the live path, where the read
 		// group is created during streaming and the row is appended below it.
+		let hubActivityGroup: HubActivityGroupComponent | null = null;
+		const finalizeHubActivityGroup = () => {
+			hubActivityGroup?.finalize();
+			hubActivityGroup = null;
+		};
+		const ensureHubActivityGroup = () => {
+			if (!hubActivityGroup?.canAppend) {
+				hubActivityGroup = new HubActivityGroupComponent();
+				hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
+				this.ctx.chatContainer.addChild(hubActivityGroup);
+			}
+			return hubActivityGroup;
+		};
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
 		let pendingUsageTtft: number | undefined;
@@ -322,6 +339,7 @@ export class UiHelpers {
 		const flushPendingUsage = () => {
 			if (!pendingUsage) return;
 			readGroup?.seal();
+			finalizeHubActivityGroup();
 			readGroup = null;
 			this.ctx.chatContainer.addChild(
 				createUsageRowBlock(pendingUsage, pendingUsageDuration, pendingUsageTtft, pendingUsageTimestamp),
@@ -400,6 +418,7 @@ export class UiHelpers {
 					// finalize alone keeps a pending entry live and would stop the whole
 					// transcript below it from committing to native scrollback.
 					readGroup?.seal();
+					finalizeHubActivityGroup();
 					readGroup = null;
 				}
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
@@ -407,6 +426,7 @@ export class UiHelpers {
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
 				const appendAssistantSegment = (segment: AssistantMessage | undefined) => {
 					if (!segment || !assistantHasVisibleContent(segment)) return;
+					finalizeHubActivityGroup();
 					const component = createAssistantMessageComponent(this.ctx, segment);
 					this.ctx.chatContainer.addChild(component);
 				};
@@ -421,6 +441,24 @@ export class UiHelpers {
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
+					if (content.name === "hub" && isHubGroupedActivityArgs(content.arguments)) {
+						readGroup?.seal();
+						readGroup = null;
+						const group = ensureHubActivityGroup();
+						group.displaceWaitingPoll(content.id);
+						group.updateArgs(content.arguments, content.id);
+						if (hasErrorStop && errorMessage) {
+							group.updateResult(
+								{ content: [{ type: "text", text: errorMessage }], isError: true },
+								false,
+								content.id,
+							);
+						} else {
+							this.ctx.pendingTools.set(content.id, group);
+						}
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
 					if (content.name === "hub" && isHubMessageFeedbackArgs(content.arguments)) {
 						hiddenHubMessageToolCallIds.add(content.id);
 						appendAssistantSegment(afterToolSegment);
@@ -428,6 +466,7 @@ export class UiHelpers {
 					}
 					resolveWaitingPoll(content.name);
 
+					finalizeHubActivityGroup();
 					if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
@@ -543,6 +582,19 @@ export class UiHelpers {
 			} else if (message.role === "toolResult") {
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				if (hiddenHubMessageToolCallIds.delete(message.toolCallId)) continue;
+				const pendingHubComponent = this.ctx.pendingTools.get(message.toolCallId);
+				if (
+					message.toolName === "hub" &&
+					pendingHubComponent instanceof HubActivityGroupComponent &&
+					pendingHubComponent.discardHiddenMessageActivity(message, message.toolCallId)
+				) {
+					this.ctx.pendingTools.delete(message.toolCallId);
+					if (pendingHubComponent.isEmpty) {
+						this.ctx.chatContainer.removeChild(pendingHubComponent);
+						if (hubActivityGroup === pendingHubComponent) hubActivityGroup = null;
+					}
+					continue;
+				}
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
 				const isReadGroupResult =
 					message.toolName === "read" &&
@@ -611,6 +663,7 @@ export class UiHelpers {
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
+				if (message.role === "user") finalizeHubActivityGroup();
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, options);
 			}
@@ -624,11 +677,15 @@ export class UiHelpers {
 		// A trailing waiting poll is final history on rebuild; seal it so it
 		// freezes (and its spinner timer stops) like every other block.
 		resolveWaitingPoll();
-		// A trailing todo snapshot is live state, not history: when the rebuild
-		// runs mid-turn (settings overlay close, focus attach during streaming),
-		// hand it back to the controller so a follow-up `todo` update keeps
-		// displacing instead of stacking. Idle rebuilds (resume / compaction)
-		// fall through to the seal path so the snapshot freezes as history.
+		// Mid-turn rebuilds hand live trailing controls back to the event
+		// controller. The transcript keeps the same component instance so later
+		// updates displace/append in place rather than stacking another snapshot.
+		if (hubActivityGroup && this.ctx.viewSession.isStreaming) {
+			this.ctx.eventController?.inheritHubActivityGroup(hubActivityGroup);
+			hubActivityGroup = null;
+		} else {
+			finalizeHubActivityGroup();
+		}
 		if (todoSnapshot && this.ctx.viewSession.isStreaming) {
 			this.ctx.eventController?.inheritDisplaceableTodo(todoSnapshot);
 			todoSnapshot = null;

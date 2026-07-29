@@ -301,4 +301,87 @@ describe("AgentSession owner-routed async delivery", () => {
 		await session.settleAsyncWork();
 		expect(session.hasPendingAsyncWork()).toBe(false);
 	});
+
+	it("cancels only its own running jobs and prevents its queued result from reaching a later turn", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const manager = new AsyncJobManager({ retentionMs: 60_000 });
+		AsyncJobManager.setInstance(manager);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+			ownedAsyncJobManager: manager,
+		});
+
+		manager.register("task", "queued owned result", async () => "CANCELLED ASYNC RESULT", {
+			id: "queued-main-job",
+			ownerId: "Main",
+		});
+		await manager.waitForOwnerJobs("Main");
+		await manager.drainDeliveries({ filter: { ownerId: "Main" } });
+		expect(session.hasPendingAsyncWork()).toBe(true);
+
+		let ownedAborted = false;
+		let otherOwnerAborted = false;
+		const waitForAbort = (signal: AbortSignal, onAbort: () => void) =>
+			new Promise<string>(resolve => {
+				signal.addEventListener(
+					"abort",
+					() => {
+						onAbort();
+						resolve("cancelled");
+					},
+					{ once: true },
+				);
+			});
+		manager.register("bash", "running owned job", ({ signal }) => waitForAbort(signal, () => (ownedAborted = true)), {
+			id: "running-main-job",
+			ownerId: "Main",
+		});
+		manager.register(
+			"bash",
+			"running other-owner job",
+			({ signal }) => waitForAbort(signal, () => (otherOwnerAborted = true)),
+			{ id: "running-other-job", ownerId: "Other" },
+		);
+
+		try {
+			expect(session.runningAsyncJobCount).toBe(1);
+			expect(session.cancelAsyncJobs()).toBe(1);
+			expect(ownedAborted).toBe(true);
+			expect(otherOwnerAborted).toBe(false);
+			expect(session.runningAsyncJobCount).toBe(0);
+			expect(session.hasPendingAsyncWork()).toBe(false);
+
+			const callsBefore = mock.calls.length;
+			await session.sendUserMessage("fresh turn");
+			const laterCalls = mock.calls.slice(callsBefore);
+			const messageTexts = laterCalls.flatMap(call =>
+				call.context.messages.flatMap(message => {
+					if (typeof message.content === "string") return [message.content];
+					return Array.isArray(message.content)
+						? message.content.flatMap(content => (content.type === "text" ? [content.text] : []))
+						: [];
+				}),
+			);
+			expect(messageTexts.some(text => text.includes("fresh turn"))).toBe(true);
+			expect(messageTexts.some(text => text.includes("CANCELLED ASYNC RESULT"))).toBe(false);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+		}
+	});
 });

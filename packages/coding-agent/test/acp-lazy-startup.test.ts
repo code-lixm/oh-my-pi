@@ -162,6 +162,7 @@ describe("ACP lazy startup", () => {
 			asyncEnabled: boolean;
 			asyncMaxJobs: number;
 			bashAutoBackground: boolean;
+			bashAsync: boolean;
 			bashAutoBackgroundThresholdMs: number;
 		};
 
@@ -193,6 +194,7 @@ describe("ACP lazy startup", () => {
 							observed = {
 								asyncEnabled: settings.get("async.enabled"),
 								asyncMaxJobs: settings.get("async.maxJobs"),
+								bashAsync: settings.get("bash.async.enabled"),
 								bashAutoBackground: settings.get("bash.autoBackground.enabled"),
 								bashAutoBackgroundThresholdMs: settings.get("bash.autoBackground.thresholdMs"),
 							};
@@ -219,6 +221,7 @@ describe("ACP lazy startup", () => {
 		await expect(runAcpStartup(Settings.isolated())).resolves.toEqual({
 			asyncEnabled: true,
 			asyncMaxJobs: 100,
+			bashAsync: true,
 			bashAutoBackground: false,
 			bashAutoBackgroundThresholdMs: 60000,
 		});
@@ -229,6 +232,7 @@ describe("ACP lazy startup", () => {
 				Settings.isolated({
 					"async.enabled": false,
 					"async.maxJobs": 7,
+					"bash.async.enabled": false,
 					"bash.autoBackground.enabled": true,
 					"bash.autoBackground.thresholdMs": 1234,
 				}),
@@ -236,6 +240,7 @@ describe("ACP lazy startup", () => {
 		).resolves.toEqual({
 			asyncEnabled: false,
 			asyncMaxJobs: 7,
+			bashAsync: false,
 			bashAutoBackground: true,
 			bashAutoBackgroundThresholdMs: 1234,
 		});
@@ -270,6 +275,7 @@ describe("ACP lazy startup", () => {
 		const rpcOnlyExplicit = {
 			"async.enabled": false,
 			"async.maxJobs": 7,
+			"bash.async.enabled": false,
 			"bash.autoBackground.enabled": true,
 			"bash.autoBackground.thresholdMs": 5_000,
 		} as const;

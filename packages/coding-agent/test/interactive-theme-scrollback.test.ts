@@ -147,49 +147,77 @@ describe("InteractiveMode theme scrollback refresh", () => {
 		resetSettingsForTest();
 	});
 
-	for (const scenario of [
-		{
-			name: "outside terminal multiplexers",
-			setup: () => {},
-		},
-		{
-			name: "inside terminal multiplexers",
-			setup: () => {
-				Bun.env.TMUX = "/tmp/tmux-1000/default,1,0";
-				Bun.env.TERM = "tmux-256color";
-			},
-		},
-	] as const) {
-		it(`clears physical history and fully replays the transcript when a theme is committed ${scenario.name}`, async () => {
-			await terminal.waitForRender();
-			scenario.setup();
-			const { markers, markerRows, baseY } = await seedStyledHistory(mode, terminal);
-			const beforeRedraws = mode.ui.fullRedraws;
-			const darkUserBg = theme.getBgAnsi("userMessageBg");
-			const writes = captureWrites(terminal);
+	it("clears physical history and fully replays the transcript when a theme is committed outside terminal multiplexers", async () => {
+		await terminal.waitForRender();
+		const { markers, markerRows, baseY } = await seedStyledHistory(mode, terminal);
+		const beforeRedraws = mode.ui.fullRedraws;
+		const darkUserBg = theme.getBgAnsi("userMessageBg");
+		const writes = captureWrites(terminal);
 
-			await setTheme("light");
-			await terminal.waitForRender();
+		await setTheme("light");
+		await terminal.waitForRender();
 
-			const lightUserBg = theme.getBgAnsi("userMessageBg");
-			expect(lightUserBg).not.toBe(darkUserBg);
-			expect(mode.ui.fullRedraws).toBeGreaterThan(beforeRedraws);
+		const lightUserBg = theme.getBgAnsi("userMessageBg");
+		expect(lightUserBg).not.toBe(darkUserBg);
+		expect(mode.ui.fullRedraws).toBeGreaterThan(beforeRedraws);
 
-			const renderedWrites = writes.join("");
-			expect(countOccurrences(renderedWrites, FULL_SCROLLBACK_CLEAR)).toBe(1);
-			const clearIndex = renderedWrites.indexOf(FULL_SCROLLBACK_CLEAR);
-			expect(clearIndex).toBeGreaterThanOrEqual(0);
-			const replay = renderedWrites.slice(clearIndex + FULL_SCROLLBACK_CLEAR.length);
-			expect(replay).toContain(lightUserBg);
-			expect(replay).not.toContain(darkUserBg);
-			expectMarkersExactlyOnce(replay, markers);
+		const renderedWrites = writes.join("");
+		expect(countOccurrences(renderedWrites, FULL_SCROLLBACK_CLEAR)).toBe(1);
+		const clearIndex = renderedWrites.indexOf(FULL_SCROLLBACK_CLEAR);
+		expect(clearIndex).toBeGreaterThanOrEqual(0);
+		const replay = renderedWrites.slice(clearIndex + FULL_SCROLLBACK_CLEAR.length);
+		expect(replay).toContain(lightUserBg);
+		expect(replay).not.toContain(darkUserBg);
+		expectMarkersExactlyOnce(replay, markers);
 
-			const finalRows = terminal.getScrollBuffer();
-			expect(extractMarkerRows(finalRows, markers)).toEqual(markerRows);
-			expectMarkersExactlyOnce(finalRows.join("\n"), markers);
-			expect(terminal.getBufferPosition().baseY).toBe(baseY);
+		const finalRows = terminal.getScrollBuffer();
+		expect(extractMarkerRows(finalRows, markers)).toEqual(markerRows);
+		expectMarkersExactlyOnce(finalRows.join("\n"), markers);
+		expect(terminal.getBufferPosition().baseY).toBe(baseY);
+	});
+
+	it("preserves pane history and repaints with the committed theme inside terminal multiplexers", async () => {
+		await terminal.waitForRender();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1,0";
+		Bun.env.TERM = "tmux-256color";
+		await seedStyledHistory(mode, terminal);
+		const paneHistoryMarker = "THEME_SCROLLBACK_PANE_HISTORY";
+		// Pane-owned history cannot be reconstructed from the semantic transcript.
+		terminal.write(`${paneHistoryMarker}\r\n${"\r\n".repeat(terminal.rows)}`);
+		const paneHistoryBeforeCommit = terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n");
+		expect(paneHistoryBeforeCommit).toContain(paneHistoryMarker);
+		const darkUserBg = theme.getBgAnsi("userMessageBg");
+		const writes = captureWrites(terminal);
+
+		await setTheme("light");
+		await terminal.waitForRender();
+
+		const lightUserBg = theme.getBgAnsi("userMessageBg");
+		expect(lightUserBg).not.toBe(darkUserBg);
+		const commitWrites = writes.join("");
+		expect(commitWrites).not.toContain(FULL_SCROLLBACK_CLEAR);
+		expect(commitWrites).toContain(lightUserBg);
+		expect(commitWrites).not.toContain(darkUserBg);
+
+		const paneHistoryAfterCommit = terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n");
+		expect(paneHistoryAfterCommit).toContain(paneHistoryMarker);
+
+		writes.length = 0;
+		const postCommitMarker = "THEME_SCROLLBACK_LIGHT_APPEND";
+		mode.addMessageToChat({
+			role: "user",
+			content: `${postCommitMarker} Uses the committed light theme.`,
+			timestamp: 1_730_000_000_100,
 		});
-	}
+		mode.ui.requestRender();
+		await terminal.waitForRender();
+
+		const postCommitWrites = writes.join("");
+		expect(postCommitWrites).toContain(postCommitMarker);
+		expect(postCommitWrites).toContain(lightUserBg);
+		expect(postCommitWrites).not.toContain(darkUserBg);
+		expect(terminal.getViewport().join("\n")).toContain(postCommitMarker);
+	});
 
 	it("keeps theme previews as non-destructive viewport repaints", async () => {
 		await terminal.waitForRender();

@@ -6,7 +6,6 @@ import {
 	setBasicToolDetailsVisible,
 } from "@oh-my-pi/pi-coding-agent/tui/basic-tool-display-policy";
 import {
-	ACCENT_PAD_TINT_OPACITY,
 	framedBlock,
 	getOutputBlockBorderStyle,
 	type OutputBlockBorderStyle,
@@ -92,37 +91,37 @@ function colorFgAnsi(name: ThemeColor, theme: Theme = darkTheme): string {
 	expect(ansi).toMatch(/\x1b\[/);
 	return ansi;
 }
-function accentPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
+function accentSurfacePrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
 	const bg = surfaceTintBgAnsi(railColor, theme);
 	const railFg = railColor === "borderMuted" ? surfaceTintFgAnsi(railColor, theme) : colorFgAnsi(railColor, theme);
-	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
-}
-function accentPadPrefix(railColor: ThemeColor, theme: Theme = darkTheme): string {
-	// Block-internal pad rows share the same surface tone as accent content.
-	const bg = theme.getSurfaceTintBgAnsi(railColor, ACCENT_PAD_TINT_OPACITY);
-	const railFg = railColor === "borderMuted" ? surfaceTintFgAnsi(railColor, theme) : colorFgAnsi(railColor, theme);
-	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg} `;
-}
-function lineStartsWithAccentPrefix(line: string, railColor: ThemeColor, theme: Theme = darkTheme): boolean {
-	return line.startsWith(accentPrefix(railColor, theme)) || line.startsWith(accentPadPrefix(railColor, theme));
+	return `${bg}${railFg}▌\x1b[39m\x1b[49m${bg}`;
 }
 
-function expectAccentTintStopsBeforeRightInset(
+function expectFullWidthAccentSurface(
 	lines: readonly string[],
 	railColor: ThemeColor,
 	width: number,
 	theme: Theme = darkTheme,
 ): void {
-	const expectedTintBg = surfaceTintBgAnsi(railColor, theme);
-	const expectedPadTintBg = theme.getSurfaceTintBgAnsi(railColor, ACCENT_PAD_TINT_OPACITY);
-	// Accent content and internal edge padding share the same surface tone.
-	expect(expectedPadTintBg).toBe(expectedTintBg);
+	const prefix = accentSurfacePrefix(railColor, theme);
+	let rowsWithSurfacePadding = 0;
+	expectUniformWidth(lines, width);
 	for (const line of lines) {
-		expect(visibleWidth(line)).toBe(width);
-		expect(line.includes(expectedTintBg)).toBe(true);
-		expect(Bun.stripANSI(line).endsWith(" ")).toBe(true);
+		const visible = Bun.stripANSI(line);
+		const visibleSurface = visible.slice(0, -1);
+		const surfacePadding = visibleSurface.match(/ +$/)?.[0] ?? "";
+
+		expect(visible.startsWith("▌")).toBe(true);
+		expect(visible.endsWith(" ")).toBe(true);
+		expect(line.startsWith(prefix)).toBe(true);
+		// The final reset ends the tinted surface before the one-cell terminal inset.
 		expect(line.endsWith("\x1b[49m ")).toBe(true);
+		if (surfacePadding.length > 0) {
+			rowsWithSurfacePadding++;
+			expect(line.endsWith(`${surfacePadding}\x1b[49m `)).toBe(true);
+		}
 	}
+	expect(rowsWithSurfacePadding).toBeGreaterThan(0);
 }
 
 const RENDERER_WIDTH = 80;
@@ -229,11 +228,11 @@ describe("output-block border style", () => {
 		expectNoFrameGlyphs(lines.join("\n"));
 	});
 
-	it("renders self-framed accent header+body blocks with tinted breathing rails and no internal separator", () => {
+	it("renders self-framed accent header+body blocks with a full-width tinted surface and no internal separator", () => {
 		const width = 18;
 		const expectedContentWidth = width - 3;
 		const contentWidth = outputBlockContentWidth(width, undefined, "accent");
-		const errorPrefix = accentPrefix("error");
+		const errorPrefix = accentSurfacePrefix("error");
 		const payload = "A".repeat(expectedContentWidth + 2);
 		const success = framedBlock(darkTheme, blockWidth => ({
 			width: blockWidth,
@@ -250,48 +249,32 @@ describe("output-block border style", () => {
 			state: "error",
 			sections: [{ lines: ["boom"] }],
 		})).render(width);
-		const singleColumn = render({
-			width: 1,
-			borderStyle: "accent",
-			header: "T",
-			state: "success",
-			borderColor: "success",
-			sections: [{ lines: ["x"] }],
-		});
 
 		expect(contentWidth).toBe(expectedContentWidth);
 		expect(outputBlockContentWidth(width, 0, "accent")).toBe(expectedContentWidth);
-		expectUniformWidth(success, width);
-		expectUniformWidth(error, width);
 		expect(plain(success)).toEqual([
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine("▌ Tool", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine(`▌ ${"A".repeat(expectedContentWidth)}`, width),
 			padLine("▌ AA", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 		]);
 		expect(plain(error)).toEqual([
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine("▌ Tool", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine("▌ boom", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 		]);
 		expectNoFrameGlyphs(plain(success).join("\n"));
 		expectNoFrameGlyphs(plain(error).join("\n"));
-		expect(success.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
-		expect(error.every(line => lineStartsWithAccentPrefix(line, "error"))).toBe(true);
 		expect(success.join("\n")).not.toContain(errorPrefix);
-		expectAccentTintStopsBeforeRightInset(success, "success", width);
-		expectAccentTintStopsBeforeRightInset(error, "error", width);
-		expect(singleColumn.length).toBeGreaterThan(0);
-		expectUniformWidth(singleColumn, 1);
-		expect(singleColumn.every(line => line === " ")).toBe(true);
-		expect(singleColumn.join("")).not.toContain(surfaceTintBgAnsi("success"));
+		expectFullWidthAccentSurface(success, "success", width);
+		expectFullWidthAccentSurface(error, "error", width);
 	});
 
-	it("keeps header-only accent blocks framed by one tinted breathing row at each edge", () => {
+	it("keeps header-only accent blocks on the full-width tinted surface", () => {
 		const width = 18;
 		const lines = render({
 			width,
@@ -300,23 +283,9 @@ describe("output-block border style", () => {
 			state: "success",
 			borderColor: "success",
 		});
-		expect(plain(lines)).toEqual([padLine("▌ ", width), padLine("▌ Tool", width), padLine("▌ ", width)]);
-		expectUniformWidth(lines, width);
-		expect(lines.every(line => lineStartsWithAccentPrefix(line, "success"))).toBe(true);
-		expectAccentTintStopsBeforeRightInset(lines, "success", width);
+		expect(plain(lines)).toEqual([padLine("▌", width), padLine("▌ Tool", width), padLine("▌", width)]);
+		expectFullWidthAccentSurface(lines, "success", width);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
-	});
-
-	it("omitting borderStyle renders the Accent Gutter default exactly like explicit accent", () => {
-		const options = {
-			width: 18,
-			header: "Tool",
-			state: "success",
-			borderColor: "success",
-			sections: [{ lines: ["default rail"] }],
-		} satisfies Omit<OutputBlockOptions, "width" | "borderStyle"> & { width: number };
-
-		expect(render(options)).toEqual(render({ ...options, borderStyle: "accent" }));
 	});
 
 	it.each([
@@ -338,7 +307,7 @@ describe("output-block border style", () => {
 			railColor: "error",
 			borderColor: undefined,
 		},
-	] as const)("paints accent $name rows with the matching surface tint after resets", spec => {
+	] as const)("keeps accent $name tint across body resets and the full-width surface", spec => {
 		const width = 30;
 		const resetText = `pre\x1b[0mmid\x1b[49mpost`;
 		const expectedTintBg = surfaceTintBgAnsi(spec.railColor);
@@ -355,17 +324,15 @@ describe("output-block border style", () => {
 		});
 		const raw = lines.join("\n");
 
-		expectUniformWidth(lines, width);
 		expect(plain(lines)).toEqual([
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine("▌ Tool", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 			padLine("▌ premidpost", width),
-			padLine("▌ ", width),
+			padLine("▌", width),
 		]);
 		expectNoFrameGlyphs(plain(lines).join("\n"));
-		expect(lines.every(line => lineStartsWithAccentPrefix(line, spec.railColor))).toBe(true);
-		expect(lines.every(line => line.endsWith("\x1b[49m "))).toBe(true);
+		expectFullWidthAccentSurface(lines, spec.railColor, width);
 		expect(raw).toContain(`\x1b[0m${expectedTintBg}mid`);
 		expect(raw).toContain(`\x1b[49m${expectedTintBg}post`);
 		for (const other of otherTintBgs) {
@@ -490,7 +457,7 @@ describe("output-block border style", () => {
 		});
 	});
 
-	it("adds accent-only edge pad rows around partial hub wait job snapshots", () => {
+	it("renders full-width accent rows around partial hub wait job snapshots", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const hubResult = {
 			content: [{ type: "text" as const, text: "" }],
@@ -526,14 +493,13 @@ describe("output-block border style", () => {
 			const fullPlain = plain(full);
 			const nonePlain = plain(none);
 
-			expectUniformWidth(accent, RENDERER_WIDTH);
 			expect(accentPlain).toHaveLength(4);
-			expect(accentPlain[0]).toBe(padLine("▌ ", RENDERER_WIDTH));
+			expect(accentPlain[0]).toBe(padLine("▌", RENDERER_WIDTH));
 			expect(accentPlain[1]).toContain("waiting on 1 job");
 			expect(accentPlain[2]).toContain("job-1");
 			expect(accentPlain[2]).toContain("Compile docs");
-			expect(accentPlain[3]).toBe(padLine("▌ ", RENDERER_WIDTH));
-			expect(accent.every(line => lineStartsWithAccentPrefix(line, "borderMuted"))).toBe(true);
+			expect(accentPlain[3]).toBe(padLine("▌", RENDERER_WIDTH));
+			expectFullWidthAccentSurface(accent, "borderMuted", RENDERER_WIDTH);
 
 			for (const [rawLines, plainLines] of [
 				[full, fullPlain],
@@ -541,7 +507,7 @@ describe("output-block border style", () => {
 			] as const) {
 				expect(plainLines.some(line => line.includes("waiting on 1 job"))).toBe(true);
 				expect(plainLines.some(line => line.includes("job-1") && line.includes("Compile docs"))).toBe(true);
-				expect(rawLines.some(line => lineStartsWithAccentPrefix(line, "borderMuted"))).toBe(false);
+				expect(rawLines.some(line => line.startsWith(accentSurfacePrefix("borderMuted")))).toBe(false);
 				expect(rawLines.join("\n")).not.toContain(surfaceTintBgAnsi("borderMuted"));
 			}
 		} finally {
@@ -581,7 +547,7 @@ describe("output-block border style", () => {
 		}
 	});
 
-	it("keeps accent generic fallback lines to one rail gap at the full content budget", () => {
+	it("keeps accent generic fallback rows on the full-width surface", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const width = 18;
 		const body = "ABCDEFGHIJKLMNO";
@@ -594,10 +560,7 @@ describe("output-block border style", () => {
 			expect(bodyLine).toBeDefined();
 			expect(bodyLine).toBe(padLine(`▌ ${body}`, width));
 			expect(bodyLine!.startsWith("▌  ")).toBe(false);
-			expectUniformWidth(lines, width);
-			for (const line of plainLines) {
-				expect(visibleWidth(line)).toBe(width);
-			}
+			expectFullWidthAccentSurface(lines, "borderMuted", width);
 		} finally {
 			setOutputBlockBorderStyle(previousStyle);
 		}

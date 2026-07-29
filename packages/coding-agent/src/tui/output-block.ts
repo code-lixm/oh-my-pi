@@ -161,6 +161,8 @@ export function applyStableBackground(text: string, bgAnsi: string): string {
 /**
  * Prefix one row with a half-cell `▌` accent glyph. The body background is a
  * low-opacity preblend of the same semantic color over the theme surface.
+ * Literal padded cells are required here: Ghostty does not display BCE/ECH
+ * fills with the active background consistently in committed transcript rows.
  */
 export function renderOutputAccentLine(
 	line: string,
@@ -182,15 +184,7 @@ export function renderOutputAccentLine(
 	return `${rail}${tintedBody}${rightInset}`;
 }
 
-/**
- * Render a block-internal padding row (leading or trailing breathing row
- * inside an accent card). The rail glyph and ANSI prefix match
- * `renderOutputAccentLine` so block edges stay visually anchored, but the
- * tinted surface background drops to a near-zero opacity so the row reads as
- * part of the margin rather than a second tinted block — small intra-card
- * padding. Inter-block plain margins remain owned by the transcript
- * container.
- */
+/** Render a full-width block-internal breathing row inside an accent card. */
 export function renderOutputAccentPadLine(width: number, theme: Theme, color: ThemeColor): string {
 	const surfaceWidth = Math.max(0, width - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 	const rightInset = padding(Math.min(width, OUTPUT_BLOCK_ACCENT_RIGHT_INSET));

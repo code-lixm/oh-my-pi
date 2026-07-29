@@ -62,6 +62,7 @@ function createContext(): {
 		abortEval: Spy;
 		abortHandoff: Spy;
 		addMessageToChat: Spy;
+		cancelAsyncJobs: Spy;
 		cancelPendingSubmission: Spy;
 		clearEditor: Spy;
 		clearQueue: Spy;
@@ -91,6 +92,7 @@ function createContext(): {
 	const abortEval = vi.fn();
 	const abortHandoff = vi.fn();
 	const addMessageToChat = vi.fn();
+	const cancelAsyncJobs = vi.fn();
 	const cancelPendingSubmission = vi.fn(() => false);
 	const clearQueue = vi.fn(() => ({ steering: [], followUp: [] }));
 	const getQueuedMessages = vi.fn(() => ({ steering: [], followUp: [] }));
@@ -155,12 +157,14 @@ function createContext(): {
 			isGeneratingHandoff: false,
 			isBashRunning: false,
 			isEvalRunning: false,
+			runningAsyncJobCount: 0,
 			queuedMessageCount: 0,
 			messages: [],
 			extensionRunner: undefined,
 			abort,
 			abortBash,
 			abortEval,
+			cancelAsyncJobs,
 			clearQueue,
 			getQueuedMessages,
 			prompt,
@@ -230,6 +234,7 @@ function createContext(): {
 			abortEval,
 			abortHandoff,
 			addMessageToChat,
+			cancelAsyncJobs,
 			cancelPendingSubmission,
 			clearQueue,
 			clearEditor: ctx.clearEditor as Spy,
@@ -272,6 +277,7 @@ function abortViewSession(ctx: InteractiveModeContext): AbortViewSession {
 
 type MutableSessionState = InteractiveModeContext["session"] & {
 	isStreaming: boolean;
+	runningAsyncJobCount: number;
 };
 
 function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
@@ -428,6 +434,57 @@ describe("InputController escape behavior", () => {
 
 		expect(spies.abortHandoff).toHaveBeenCalledTimes(1);
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
+	it("requires a second Esc to cancel only running async jobs without interrupting main, bash, or eval work", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).runningAsyncJobCount = 1;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.cancelAsyncJobs).not.toHaveBeenCalled();
+		expect(spies.requestRender).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abortEval).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.cancelAsyncJobs).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.abortBash).not.toHaveBeenCalled();
+		expect(spies.abortEval).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
+	it("cancels running async jobs before an overlapping main stream", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		const session = mutableSessionState(ctx);
+		session.runningAsyncJobCount = 1;
+		session.isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.cancelAsyncJobs).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.cancelAsyncJobs).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).toHaveBeenCalledTimes(1);
 		expect(spies.abort).not.toHaveBeenCalled();
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});

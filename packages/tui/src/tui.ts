@@ -2007,9 +2007,9 @@ export class TUI extends Container {
 			this.#armMultiplexerResizeTimer(!isMultiplexerSession());
 			return;
 		}
-		// Explicit display resets must clear stale native scrollback even inside
-		// multiplexers; resize-debounce resets still use the mux-safe branch above.
-		this.#prepareForcedRender(true);
+		// Multiplexers own pane scrollback: repaint in place rather than clearing
+		// history that the renderer cannot safely reconstruct.
+		this.#prepareForcedRender(!isMultiplexerSession());
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
@@ -3322,7 +3322,7 @@ export class TUI extends Container {
 					clearScrollback:
 						divergenceRebuild ||
 						deferredAltExit.length > 0 ||
-						replaceRequested ||
+						(replaceRequested && !isMultiplexerSession()) ||
 						(!isMultiplexerSession() && geometryRebuild),
 				}
 			: { kind: "update", chunkTo, windowTop };

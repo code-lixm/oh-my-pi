@@ -664,6 +664,50 @@ test("GC plan: checkpoint at workspace pointer undo head is NOT removed", async 
 	expect(result.removedCheckpointIds).not.toContain(cp.id);
 });
 
+test("GC plan retains session-scoped workspace pointers and redo edges", async () => {
+	const harness = await openHarness();
+	const { store, gc, wsA } = harness;
+	const alphaHead = await store.createCheckpoint({
+		rootPath: wsA,
+		reason: "turn",
+		sessionId: "alpha",
+		manifestObjectId: mobjid("alpha-session-pointer"),
+		advanceLastCheckpoint: false,
+	});
+	const betaRedoTarget = await store.createCheckpoint({
+		rootPath: wsA,
+		reason: "turn",
+		sessionId: "beta",
+		manifestObjectId: mobjid("beta-session-redo"),
+		advanceLastCheckpoint: false,
+	});
+	await store.putWorkspaceState({
+		rootPath: wsA,
+		sessionId: "alpha",
+		undoHeadCheckpointId: alphaHead.id,
+		lastCheckpointId: alphaHead.id,
+	});
+	await store.setRedoEdge({
+		rootPath: wsA,
+		sessionId: "beta",
+		targetCheckpointId: betaRedoTarget.id,
+		sourceCheckpointId: null,
+		planId: null,
+		createdAt: new Date().toISOString(),
+	});
+	ageRecentCheckpoints(store, wsA, 2);
+
+	let result = await gc.plan({ rootPath: wsA });
+	expect(result.removedCheckpointIds).not.toContain(alphaHead.id);
+	expect(result.removedCheckpointIds).not.toContain(betaRedoTarget.id);
+
+	await store.deleteWorkspaceState(wsA, "alpha");
+	await store.clearRedoEdge(wsA, "beta");
+	result = await gc.plan({ rootPath: wsA });
+	expect(result.removedCheckpointIds).toContain(alphaHead.id);
+	expect(result.removedCheckpointIds).toContain(betaRedoTarget.id);
+});
+
 test("GC run: old orphaned automatic checkpoint is deleted and manifestObjectId returned", async () => {
 	const harness = await openHarness();
 	const { store, gc, wsA } = harness;
@@ -1083,8 +1127,174 @@ test("workspaceIdForRoot is stable and equal to the store's method", async () =>
 	expect(derived).toBe(fromStore);
 });
 
-test("schemaVersion is 1", async () => {
+test("v1 metadata DB upgrades attributed legacy pointers and redo edges into session scope", async () => {
+	const harness = await openHarness();
+	const { storageDir, wsA } = harness;
+	const dbPath = path.join(storageDir, "metadata.db");
+	const alphaUndoId = "legacy-alpha-undo";
+	const alphaRedoId = "legacy-alpha-redo";
+	const updatedAt = "2026-07-29T00:00:00.000Z";
+	const redoCreatedAt = "2026-07-28T00:00:00.000Z";
+
+	harness.store.close();
+	await Promise.all([
+		fs.rm(dbPath, { force: true }),
+		fs.rm(`${dbPath}-wal`, { force: true }),
+		fs.rm(`${dbPath}-shm`, { force: true }),
+	]);
+	const legacyDb = new Database(dbPath);
+	try {
+		legacyDb.run(`
+			CREATE TABLE schema_meta (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL
+			);
+			CREATE TABLE workspaces (
+				workspace_id TEXT PRIMARY KEY,
+				root_path TEXT NOT NULL UNIQUE,
+				undo_head_checkpoint_id TEXT,
+				redo_head_checkpoint_id TEXT,
+				restore_sequence INTEGER NOT NULL DEFAULT 0,
+				last_checkpoint_id TEXT,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE checkpoints (
+				id TEXT PRIMARY KEY,
+				workspace_id TEXT NOT NULL,
+				root_path TEXT NOT NULL,
+				manifest_object_id TEXT NOT NULL,
+				parent_id TEXT,
+				session_id TEXT,
+				session_entry_id TEXT,
+				prompt_entry_id TEXT,
+				label TEXT,
+				reason TEXT NOT NULL,
+				completeness TEXT NOT NULL DEFAULT 'complete',
+				created_at TEXT NOT NULL,
+				file_count INTEGER NOT NULL DEFAULT 0,
+				total_bytes INTEGER NOT NULL DEFAULT 0,
+				pinned INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE redo_edges (
+				root_path TEXT PRIMARY KEY,
+				target_checkpoint_id TEXT NOT NULL,
+				source_checkpoint_id TEXT,
+				plan_id TEXT,
+				created_at TEXT NOT NULL
+			);
+		`);
+		legacyDb.prepare("INSERT INTO schema_meta(key, value) VALUES ('version', '1')").run();
+		legacyDb
+			.prepare(
+				`INSERT INTO workspaces (
+					workspace_id, root_path, undo_head_checkpoint_id, redo_head_checkpoint_id,
+					restore_sequence, last_checkpoint_id, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(workspaceIdForRoot(wsA), wsA, alphaUndoId, alphaRedoId, 7, alphaUndoId, updatedAt);
+		const insertCheckpoint = legacyDb.prepare(
+			`INSERT INTO checkpoints (
+				id, workspace_id, root_path, manifest_object_id, parent_id, session_id,
+				session_entry_id, prompt_entry_id, label, reason, completeness, created_at,
+				file_count, total_bytes, pinned
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		);
+		insertCheckpoint.run(
+			alphaUndoId,
+			workspaceIdForRoot(wsA),
+			wsA,
+			mobjid("legacy-alpha-undo"),
+			null,
+			"alpha",
+			null,
+			null,
+			null,
+			"manual",
+			"complete",
+			updatedAt,
+			0,
+			0,
+			0,
+		);
+		insertCheckpoint.run(
+			alphaRedoId,
+			workspaceIdForRoot(wsA),
+			wsA,
+			mobjid("legacy-alpha-redo"),
+			alphaUndoId,
+			"alpha",
+			null,
+			null,
+			null,
+			"restore_guard",
+			"complete",
+			redoCreatedAt,
+			0,
+			0,
+			0,
+		);
+		legacyDb
+			.prepare(
+				"INSERT INTO redo_edges(root_path, target_checkpoint_id, source_checkpoint_id, plan_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(wsA, alphaRedoId, alphaUndoId, null, updatedAt);
+	} finally {
+		legacyDb.close();
+	}
+
+	const upgraded = makeStore(storageDir);
+	harness.store = upgraded;
+	await upgraded.init();
+	const legacyState = await upgraded.getWorkspaceState(wsA);
+	const sessionState = await upgraded.getWorkspaceState(wsA, "alpha");
+	const legacyEdge = await upgraded.getRedoEdge(wsA);
+	const sessionEdge = await upgraded.getRedoEdge(wsA, "alpha");
+
+	expect(upgraded.schemaVersion).toBe(2);
+	expect(legacyState).toMatchObject({
+		sessionId: null,
+		undoHeadCheckpointId: alphaUndoId,
+		redoHeadCheckpointId: alphaRedoId,
+		lastCheckpointId: alphaUndoId,
+		restoreSequence: 7,
+	});
+	expect(sessionState).toMatchObject({
+		sessionId: "alpha",
+		undoHeadCheckpointId: alphaUndoId,
+		redoHeadCheckpointId: alphaRedoId,
+		lastCheckpointId: alphaUndoId,
+		restoreSequence: 7,
+	});
+	expect(legacyEdge).toMatchObject({
+		sessionId: null,
+		targetCheckpointId: alphaRedoId,
+		sourceCheckpointId: alphaUndoId,
+	});
+	expect(sessionEdge).toMatchObject({
+		sessionId: "alpha",
+		targetCheckpointId: alphaRedoId,
+		sourceCheckpointId: alphaUndoId,
+	});
+
+	upgraded.close();
+	const reopened = makeStore(storageDir);
+	harness.store = reopened;
+	await reopened.init();
+	expect(await reopened.getWorkspaceState(wsA, "alpha")).toMatchObject({
+		sessionId: "alpha",
+		undoHeadCheckpointId: alphaUndoId,
+		redoHeadCheckpointId: alphaRedoId,
+		lastCheckpointId: alphaUndoId,
+		restoreSequence: 7,
+	});
+	expect(await reopened.getRedoEdge(wsA, "alpha")).toMatchObject({
+		sessionId: "alpha",
+		targetCheckpointId: alphaRedoId,
+		sourceCheckpointId: alphaUndoId,
+	});
+});
+test("schemaVersion is 2", async () => {
 	const harness = await openHarness();
 	const { store } = harness;
-	expect(store.schemaVersion).toBe(1);
+	expect(store.schemaVersion).toBe(2);
 });

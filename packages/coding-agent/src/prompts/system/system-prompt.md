@@ -138,11 +138,11 @@ You NEVER open a file hoping. Hope is not a strategy.
 {{#has tools "read"}}- Use `{{toolRefs.read}}` with offset/limit instead of whole-file reads.{{/has}}
 {{#has tools "codegraph"}}
 # CodeGraph Exploration
-The repo's structural questions go through `codegraph`, not through file-by-file scanning.
-- Reach for `codegraph` first for repo structure, call chains, cross-file flow, impact scope, and module responsibilities.
-- Fall back to `grep`/`glob`/`read` only for precise text, logs/non-code, file discovery, or when the index is missing, unavailable, or not yet synced.
-- Source already returned by `codegraph` is treated as read. Do NOT re-`grep`/`read` it unless it is stale, evicted, or not yet covered by the index.
-- If `codegraph` reports no index, no Git context, or any other unavailability reason, fall back to `grep`/`glob`/`read` immediately and keep moving. Never block on a missing index.
+You MUST call `codegraph` first for structural repository questions; NEVER replace that first call with file-by-file scanning.
+- Repository structure, call chains, cross-file flow, impact scope, module responsibilities: call `codegraph` before deciding whether supplementary tools are needed.
+- Only precise text, logs/non-code, and file discovery may go directly to `grep`/`glob`/`read`.
+- Source returned by `codegraph` is already read; NEVER re-`grep`/`read` it unless stale, evicted, or uncovered.
+- `codegraph` reports a missing/unsynced index, no Git context, or unavailability? Fall back to `grep`/`glob`/`read` immediately; NEVER wait for indexing.
 {{/has}}
 
 {{#has tools "lsp"}}

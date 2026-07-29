@@ -541,7 +541,6 @@ export class AgentSession {
 	#workspaceCheckpointService: WorkspaceCheckpointService | undefined;
 	#workspaceCheckpointConversationAdapter: AgentSessionConfig["workspaceCheckpointConversationAdapter"] | undefined;
 	#workspaceCheckpointMutatorGuard: AgentSessionConfig["workspaceCheckpointMutatorGuard"] | undefined;
-	#workspaceCheckpointWorkspaceId: string | undefined;
 	#workspaceCheckpointRootPath: string | undefined;
 	#workspaceCheckpointCursor: WorkspaceCheckpointCursor | undefined;
 	/** Active isolated-task mutator count (subagents spawned by the parent). */
@@ -1543,7 +1542,6 @@ export class AgentSession {
 		this.#workspaceCheckpointService = config.workspaceCheckpointService;
 		this.#workspaceCheckpointConversationAdapter = config.workspaceCheckpointConversationAdapter;
 		this.#workspaceCheckpointMutatorGuard = config.workspaceCheckpointMutatorGuard;
-		this.#workspaceCheckpointWorkspaceId = config.workspaceCheckpointWorkspaceId;
 		this.#workspaceCheckpointRootPath = config.workspaceCheckpointRootPath;
 		const compositeGuard: WorkspaceCheckpointMutatorGuard = {
 			isMutatorActive: () => this.#bash.isRunning || this.#taskMutatorCount > 0,
@@ -1568,7 +1566,7 @@ export class AgentSession {
 		this.#workspaceCheckpointCompositeGuard = this.#workspaceCheckpointMutatorGuard ?? compositeGuard;
 		this.#workspaceCheckpoint = createWorkspaceCheckpointCoordinator({
 			getCwd: () => this.sessionManager.getCwd(),
-			getSessionId: () => this.sessionId,
+			getSessionId: () => this.sessionManager.getSessionId(),
 			getSessionLeafId: () => this.sessionManager.getLeafId(),
 			getService: () => this.#workspaceCheckpointService,
 			getConversationAdapter: () => this.#workspaceCheckpointConversationAdapter,
@@ -1589,7 +1587,6 @@ export class AgentSession {
 				this.#extensionRunner ? this.#extensionRunner.withWorkspaceRestoreLock(body) : body(),
 			getServiceOptions: () => ({
 				rootPath: this.#workspaceCheckpointRootPath,
-				sessionId: this.#workspaceCheckpointWorkspaceId,
 			}),
 		});
 
@@ -1826,6 +1823,22 @@ export class AgentSession {
 		}));
 		const delivery = manager.getDeliveryState(ownerFilter);
 		return { running, recent, delivery };
+	}
+
+	/** Number of running background jobs owned by this agent. */
+	get runningAsyncJobCount(): number {
+		if (!this.#asyncJobManager || !this.#agentId) return 0;
+		return this.#asyncJobManager.getRunningJobs({ ownerId: this.#agentId }).length;
+	}
+
+	/**
+	 * Cancel this agent's background activity, including queued result delivery.
+	 * Returns the number of running jobs signalled before cleanup.
+	 */
+	cancelAsyncJobs(): number {
+		const running = this.runningAsyncJobCount;
+		this.#cancelOwnAsyncJobs();
+		return running;
 	}
 
 	/**

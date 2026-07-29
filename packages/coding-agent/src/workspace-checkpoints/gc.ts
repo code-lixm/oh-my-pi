@@ -40,6 +40,7 @@ export const DEFAULT_CHECKPOINT_GC_MIN_KEEP_MS = 24 * 60 * 60 * 1000;
 
 interface WorkspacePointer {
 	rootPath: string;
+	sessionId: string | null;
 	undoHeadCheckpointId: string | null;
 	redoHeadCheckpointId: string | null;
 	lastCheckpointId: string | null;
@@ -55,7 +56,9 @@ interface TransactionRow {
 
 interface RedoEdgeRow {
 	rootPath: string;
+	sessionId: string | null;
 	targetCheckpointId: string;
+	sourceCheckpointId: string | null;
 }
 
 export class CheckpointGc {
@@ -102,7 +105,10 @@ export class CheckpointGc {
 			if (tx.checkpointId) txProtectedIds.add(tx.checkpointId);
 		}
 		const redoEdgeIds = new Set<string>();
-		for (const edge of redoEdges) redoEdgeIds.add(edge.targetCheckpointId);
+		for (const edge of redoEdges) {
+			redoEdgeIds.add(edge.targetCheckpointId);
+			if (edge.sourceCheckpointId) redoEdgeIds.add(edge.sourceCheckpointId);
+		}
 
 		const eligible: WorkspaceCheckpointRecord[] = [];
 		const kept: WorkspaceCheckpointRecord[] = [];
@@ -173,8 +179,15 @@ export class CheckpointGc {
 		const workspaces = await this.#store.listWorkspaces();
 		for (const ws of workspaces) {
 			if (rootPath !== undefined && ws.rootPath !== rootPath) continue;
-			const edge = await this.#store.getRedoEdge(ws.rootPath);
-			if (edge) edges.push({ rootPath: ws.rootPath, targetCheckpointId: edge.targetCheckpointId });
+			const edge = await this.#store.getRedoEdge(ws.rootPath, ws.sessionId);
+			if (edge) {
+				edges.push({
+					rootPath: ws.rootPath,
+					sessionId: ws.sessionId,
+					targetCheckpointId: edge.targetCheckpointId,
+					sourceCheckpointId: edge.sourceCheckpointId,
+				});
+			}
 		}
 		return edges;
 	}

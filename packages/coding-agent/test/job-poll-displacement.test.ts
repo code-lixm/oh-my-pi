@@ -357,10 +357,18 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		return { helpers, chatContainer, eventController };
 	}
 
-	function assistantWithToolCalls(content: Array<{ id: string; name: string; arguments: Record<string, unknown> }>) {
+	function assistantWithToolCalls(
+		content: Array<{ id: string; name: string; arguments: Record<string, unknown> }>,
+		textAfterToolCall?: { id: string; text: string },
+	) {
 		return {
 			role: "assistant",
-			content: content.map(tool => ({ type: "toolCall", ...tool })),
+			content: content.flatMap(tool => [
+				{ type: "toolCall", ...tool },
+				...(textAfterToolCall && tool.id === textAfterToolCall.id
+					? [{ type: "text", text: textAfterToolCall.text }]
+					: []),
+			]),
 			api: "anthropic-messages",
 			provider: "anthropic",
 			model: "claude-sonnet-4-5",
@@ -445,12 +453,18 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			messages: [assistant, todoToolResult("todo-1", ["plan", "read"]), todoToolResult("todo-2", ["fix", "test"])],
 		} as SessionContext);
 
-		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
-		expect(todoComponents(chatContainer)).toHaveLength(0);
+		const todos = todoComponents(chatContainer);
+		expect(todos).toHaveLength(1);
+		const trailingTodo = todos[0]!;
+		const rendered = renderText(trailingTodo);
 		expect(rendered).not.toContain("plan");
-		expect(rendered).not.toContain("fix");
+		expect(rendered).not.toContain("read");
+		expect(rendered).toContain("fix");
+		expect(rendered).toContain("test");
+		expect(trailingTodo.isDisplaceableBlock()).toBe(true);
+		expect(trailingTodo.isTranscriptBlockFinalized()).toBe(false);
 		expect(eventController.inheritDisplaceableTodo).toHaveBeenCalledTimes(1);
-		expect(eventController.inheritDisplaceableTodo).toHaveBeenCalledWith(null);
+		expect(eventController.inheritDisplaceableTodo.mock.calls[0]?.[0]).toBe(trailingTodo);
 	});
 
 	it("keeps the prior todo snapshot when a follow-up todo errors", () => {
@@ -486,7 +500,49 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		expect(groups).toHaveLength(1);
 		expect(renderText(groups[0]!)).toContain("hub-1 job 0");
 		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledTimes(1);
-		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledWith(groups[0]);
+		expect(eventController.inheritHubActivityGroup.mock.calls[0]?.[0]).toBe(groups[0]);
 		expect(groups[0]!.canAppend).toBe(true);
 	});
+
+	it("separates hub activity groups around visible assistant text during mid-turn rebuild", () => {
+		const { helpers, chatContainer, eventController } = createHelpersFixture({ streaming: true });
+		const boundaryText = "Visible assistant boundary.";
+		const assistant = assistantWithToolCalls(
+			[
+				{ id: "hub-before-text", name: "hub", arguments: { op: "wait", ids: ["j0"] } },
+				{ id: "hub-after-text", name: "hub", arguments: { op: "wait", ids: ["j1"] } },
+			],
+			{ id: "hub-before-text", text: boundaryText },
+		);
+
+		helpers.renderSessionContext({
+			messages: [
+				assistant,
+				hubToolResult("hub-before-text", ["completed"]),
+				hubToolResult("hub-after-text", ["running"]),
+			],
+		} as SessionContext);
+
+		const groups = chatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(groups).toHaveLength(2);
+		const [previousGroup, liveGroup] = groups;
+		const previousGroupIndex = chatContainer.children.indexOf(previousGroup!);
+		const liveGroupIndex = chatContainer.children.indexOf(liveGroup!);
+		expect(
+			chatContainer.children
+				.slice(previousGroupIndex + 1, liveGroupIndex)
+				.some(component => renderText(component).includes(boundaryText)),
+		).toBe(true);
+		expect(renderText(previousGroup!)).toContain("hub-before-text job 0");
+		expect(renderText(liveGroup!)).toContain("hub-after-text job 0");
+		expect(previousGroup!.canAppend).toBe(false);
+		expect(previousGroup!.isTranscriptBlockFinalized()).toBe(true);
+		expect(liveGroup!.canAppend).toBe(true);
+		expect(liveGroup!.isTranscriptBlockFinalized()).toBe(false);
+		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledTimes(1);
+		expect(eventController.inheritHubActivityGroup.mock.calls[0]?.[0]).toBe(liveGroup);
+	});
 });
+

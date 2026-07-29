@@ -347,7 +347,11 @@ describe("task.batch spawning", () => {
 
 		const manager = createManager();
 		const tool = await TaskTool.create(
-			createSession({ manager, agentId: "ParentA", settings: { "async.enabled": true, "task.batch": true } }),
+			createSession({
+				manager,
+				agentId: "ParentA",
+				settings: { "async.enabled": true, "bash.async.enabled": false, "task.batch": true },
+			}),
 		);
 		const alphaSchema = { type: "object", properties: { alpha: { type: "string" } } };
 		const betaSchema = { type: "object", properties: { beta: { type: "number" } } };

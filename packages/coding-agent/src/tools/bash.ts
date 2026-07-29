@@ -562,7 +562,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly #autoBackgroundThresholdMs: number;
 
 	constructor(private readonly session: ToolSession) {
-		this.#asyncEnabled = this.session.settings.get("async.enabled");
+		this.#asyncEnabled =
+			this.session.settings.get("async.enabled") && this.session.settings.get("bash.async.enabled");
 		this.#autoBackgroundEnabled = this.session.settings.get("bash.autoBackground.enabled");
 		this.#autoBackgroundThresholdMs = Math.max(
 			0,
@@ -920,7 +921,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			}
 		}
 		if (asyncRequested && !this.#asyncEnabled) {
-			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
+			throw new ToolError(
+				"Async bash execution is disabled. Enable both async.enabled and bash.async.enabled to use async mode.",
+			);
 		}
 
 		// Check both the original command and the cwd-normalized command so

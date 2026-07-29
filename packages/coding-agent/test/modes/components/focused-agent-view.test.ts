@@ -243,6 +243,23 @@ describe("FocusedAgentView", () => {
 		expect(rendered).toContain("last 8.0 tok/s");
 	});
 
+	it("uses the registry status in the footer when progress is unavailable", () => {
+		setSettingsUiLocale("en");
+		pinRows(14);
+
+		for (const status of ["idle", "waiting"] as const) {
+			const registry = new AgentRegistry();
+			registerSub(registry, "Worker", "Build worker", session("claude-live"), status);
+			const rendered = makeView({ registry, progressById: { Worker: undefined } })
+				.render(120)
+				.map(line => Bun.stripANSI(line));
+			const footer = rendered.at(-2) ?? "";
+
+			expect(footer).toContain(status);
+			expect(footer).not.toContain("Waiting for progress…");
+		}
+	});
+
 	it("closes on Esc, navigates configured previous/next keys, toggles expand, and ignores ordinary text", () => {
 		const calls: string[] = [];
 		const view = makeView({

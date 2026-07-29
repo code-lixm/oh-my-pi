@@ -161,6 +161,7 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 
 const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"async.enabled",
+	"bash.async.enabled",
 	"async.maxJobs",
 	"bash.autoBackground.enabled",
 	"bash.autoBackground.thresholdMs",

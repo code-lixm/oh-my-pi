@@ -8,7 +8,7 @@
 ### Fixed
 
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
-- Fixed explicit history-replacement redraws inside terminal multiplexers skipping ED3 and replaying only virtualized tails; destructive resets now rehydrate the complete component frame, clear stale native scrollback, and replay each row once.
+- Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
 ## [17.0.6] - 2026-07-20
 
 ### Fixed

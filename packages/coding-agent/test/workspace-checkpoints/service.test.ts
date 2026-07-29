@@ -476,6 +476,33 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		expect(await readText(workspaceRoot, "draft.txt")).toBe("diverged-after-preview\n");
 	});
 
+	it("rejects a session-bound preview of another session's checkpoint while offline preview remains available", async () => {
+		const harness = await openHarness("preview-session-boundary");
+		const { workspaceRoot, service } = harness;
+
+		await writeText(workspaceRoot, "note.txt", "alpha checkpoint\n");
+		const alphaCheckpoint = await service.create({ rootPath: workspaceRoot, reason: "manual", sessionId: "alpha" });
+		await writeText(workspaceRoot, "note.txt", "live workspace\n");
+
+		const crossSessionError = await expectRejected<WorkspaceCheckpointError>(
+			service.previewRestore({
+				checkpointId: alphaCheckpoint.id,
+				sessionId: "beta",
+				scope: "code",
+				strategy: "preserve",
+			}),
+		);
+		expect(crossSessionError).toBeInstanceOf(WorkspaceCheckpointError);
+
+		const offlinePlan = await service.previewRestore({
+			checkpointId: alphaCheckpoint.id,
+			scope: "code",
+			strategy: "preserve",
+		});
+		expect(offlinePlan.checkpointId).toBe(alphaCheckpoint.id);
+		expect(sortedOperationKeys(offlinePlan.operations)).toEqual(["update:note.txt"]);
+	});
+
 	it("previews changed ordinary and large files without materializing their live contents", async () => {
 		const harness = await openHarness("preview-hash-only");
 		const { workspaceRoot, store, storeDir, service } = harness;
@@ -715,57 +742,89 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		);
 	});
 
-	it("keeps undo and redo isolated to the restore guard's session", async () => {
-		const harness = await openHarness("undo-session");
+	it("keeps same-root sessions' checkpoint histories and undo-redo cursors independent", async () => {
+		const harness = await openHarness("session-isolation");
 		const { workspaceRoot, service, store } = harness;
 
-		await writeText(workspaceRoot, "note.txt", "alpha target\n");
-		const alphaCheckpoint = await service.create({ rootPath: workspaceRoot, reason: "manual", sessionId: "alpha" });
-		await writeText(workspaceRoot, "note.txt", "alpha pre-apply\n");
+		await writeText(workspaceRoot, "note.txt", "alpha one\n");
+		const alphaOne = await service.create({ rootPath: workspaceRoot, reason: "manual", sessionId: "alpha" });
+		await writeText(workspaceRoot, "note.txt", "beta one\n");
+		const betaOne = await service.create({ rootPath: workspaceRoot, reason: "manual", sessionId: "beta" });
+		await writeText(workspaceRoot, "note.txt", "alpha two\n");
+		const alphaTwo = await service.create({ rootPath: workspaceRoot, reason: "manual", sessionId: "alpha" });
 
-		const plan = await service.previewRestore({
-			checkpointId: alphaCheckpoint.id,
-			scope: "code",
-			strategy: "preserve",
+		expect(betaOne.parentId).toBeNull();
+		expect(alphaTwo.parentId).toBe(alphaOne.id);
+		expect(checkpointIds(await service.list({ rootPath: workspaceRoot, sessionId: "alpha" })).sort()).toEqual(
+			[alphaOne.id, alphaTwo.id].sort(),
+		);
+		expect(checkpointIds(await service.list({ rootPath: workspaceRoot, sessionId: "beta" }))).toEqual([betaOne.id]);
+
+		const alphaBeforeUndo = await store.getWorkspaceState(workspaceRoot, "alpha");
+		const betaBeforeUndo = await store.getWorkspaceState(workspaceRoot, "beta");
+		expect(alphaBeforeUndo).toMatchObject({
+			sessionId: "alpha",
+			undoHeadCheckpointId: alphaTwo.id,
+			lastCheckpointId: alphaTwo.id,
 		});
-		const applied = await service.restore({ planId: plan.id });
-		expect(applied.guardCheckpointId).not.toBeNull();
-		const alphaDirectGuardId = applied.guardCheckpointId!;
+		expect(betaBeforeUndo).toMatchObject({
+			sessionId: "beta",
+			undoHeadCheckpointId: betaOne.id,
+			lastCheckpointId: betaOne.id,
+		});
 
-		expect((await store.getCheckpoint(alphaDirectGuardId))?.sessionId).toBe("alpha");
-		const stateAfterApply = await store.getWorkspaceState(workspaceRoot);
-		const betaUndoError = await expectRejected<WorkspaceCheckpointError>(
-			service.undo({ rootPath: workspaceRoot, sessionId: "beta", scope: "code" }),
-		);
+		await writeText(workspaceRoot, "note.txt", "working copy\n");
+		const alphaUndone = await service.undo({ rootPath: workspaceRoot, sessionId: "alpha", scope: "code" });
+		if (!alphaUndone.guardCheckpointId) throw new Error("expected alpha undo guard");
+		const alphaRedoGuardId = alphaUndone.guardCheckpointId;
+		expect(alphaUndone.checkpointId).toBe(alphaTwo.id);
+		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha two\n");
+		const alphaAfterUndo = await store.getWorkspaceState(workspaceRoot, "alpha");
+		const alphaRedoAfterUndo = await store.getRedoEdge(workspaceRoot, "alpha");
+		expect(alphaAfterUndo).toMatchObject({
+			sessionId: "alpha",
+			undoHeadCheckpointId: null,
+			redoHeadCheckpointId: alphaRedoGuardId,
+			lastCheckpointId: alphaTwo.id,
+		});
+		expect(alphaRedoAfterUndo).toMatchObject({
+			sessionId: "alpha",
+			targetCheckpointId: alphaRedoGuardId,
+			sourceCheckpointId: alphaTwo.id,
+		});
+		expect(await store.getWorkspaceState(workspaceRoot, "beta")).toEqual(betaBeforeUndo);
+		expect(await store.getRedoEdge(workspaceRoot, "beta")).toBeNull();
 
-		expect(betaUndoError).toBeInstanceOf(WorkspaceCheckpointError);
-		expect(betaUndoError.message).toContain("different session");
-		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha target\n");
-		expect(await store.getWorkspaceState(workspaceRoot)).toEqual(stateAfterApply);
+		const betaUndone = await service.undo({ rootPath: workspaceRoot, sessionId: "beta", scope: "code" });
+		if (!betaUndone.guardCheckpointId) throw new Error("expected beta undo guard");
+		const betaRedoGuardId = betaUndone.guardCheckpointId;
+		expect(betaUndone.checkpointId).toBe(betaOne.id);
+		expect(await readText(workspaceRoot, "note.txt")).toBe("beta one\n");
+		const betaAfterUndo = await store.getWorkspaceState(workspaceRoot, "beta");
+		const betaRedoAfterUndo = await store.getRedoEdge(workspaceRoot, "beta");
+		expect(betaAfterUndo).toMatchObject({
+			sessionId: "beta",
+			undoHeadCheckpointId: null,
+			redoHeadCheckpointId: betaRedoGuardId,
+			lastCheckpointId: betaOne.id,
+		});
+		expect(betaRedoAfterUndo).toMatchObject({
+			sessionId: "beta",
+			targetCheckpointId: betaRedoGuardId,
+			sourceCheckpointId: betaOne.id,
+		});
+		expect(await store.getWorkspaceState(workspaceRoot, "alpha")).toEqual(alphaAfterUndo);
+		expect(await store.getRedoEdge(workspaceRoot, "alpha")).toEqual(alphaRedoAfterUndo);
 
-		const undone = await service.undo({ rootPath: workspaceRoot, sessionId: "alpha", scope: "code" });
-		expect(undone.guardCheckpointId).not.toBeNull();
-		const alphaRedoGuardId = undone.guardCheckpointId!;
+		const alphaRedone = await service.redo({ rootPath: workspaceRoot, sessionId: "alpha" });
+		expect(alphaRedone.checkpointId).toBe(alphaRedoGuardId);
+		expect(await readText(workspaceRoot, "note.txt")).toBe("working copy\n");
+		expect(await store.getWorkspaceState(workspaceRoot, "beta")).toEqual(betaAfterUndo);
+		expect(await store.getRedoEdge(workspaceRoot, "beta")).toEqual(betaRedoAfterUndo);
 
-		expect(undone.redoAvailable).toBeTrue();
-		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha pre-apply\n");
-		expect((await store.getCheckpoint(alphaRedoGuardId))?.sessionId).toBe("alpha");
-		const stateAfterUndo = await store.getWorkspaceState(workspaceRoot);
-		const edgeAfterUndo = await store.getRedoEdge(workspaceRoot);
-		expect(edgeAfterUndo).toEqual(expect.objectContaining({ targetCheckpointId: alphaRedoGuardId }));
-		const betaRedoError = await expectRejected<WorkspaceCheckpointError>(
-			service.redo({ rootPath: workspaceRoot, sessionId: "beta" }),
-		);
-
-		expect(betaRedoError).toBeInstanceOf(WorkspaceCheckpointError);
-		expect(betaRedoError.message).toContain("different session");
-		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha pre-apply\n");
-		expect(await store.getWorkspaceState(workspaceRoot)).toEqual(stateAfterUndo);
-		expect(await store.getRedoEdge(workspaceRoot)).toEqual(edgeAfterUndo);
-
-		const redone = await service.redo({ rootPath: workspaceRoot, sessionId: "alpha" });
-		expect(redone.checkpointId).toBe(alphaRedoGuardId);
-		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha target\n");
+		const betaRedone = await service.redo({ rootPath: workspaceRoot, sessionId: "beta" });
+		expect(betaRedone.checkpointId).toBe(betaRedoGuardId);
+		expect(await readText(workspaceRoot, "note.txt")).toBe("alpha two\n");
 	});
 
 	it("undoes and redoes a checkpoint without a direct restore", async () => {

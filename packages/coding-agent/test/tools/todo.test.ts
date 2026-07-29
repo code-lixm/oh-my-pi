@@ -16,7 +16,8 @@ import {
 	todoMatchesAnyDescription,
 	todoToolRenderer,
 } from "@oh-my-pi/pi-coding-agent/tools";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import { type } from "arktype";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
@@ -33,6 +34,30 @@ function createSession(initialPhases: TodoPhase[] = []): ToolSession {
 			phases = next;
 		},
 	};
+}
+
+function expectTodoAccentSurface(lines: readonly string[], width: number): void {
+	const tint = theme.getSurfaceTintBgAnsi("borderMuted", 0.06);
+	const railFg = theme.getSurfaceTintFgAnsi("borderMuted");
+	const prefix = `${tint}${railFg}▌\x1b[39m\x1b[49m${tint}`;
+	let rowsWithSurfacePadding = 0;
+
+	expect(lines.map(line => visibleWidth(line))).toEqual(Array(lines.length).fill(width));
+	for (const line of lines) {
+		const visible = Bun.stripANSI(line);
+		const visibleSurface = visible.slice(0, -1);
+		const surfacePadding = visibleSurface.match(/ +$/)?.[0] ?? "";
+
+		expect(visible.startsWith("▌")).toBe(true);
+		expect(visible.endsWith(" ")).toBe(true);
+		expect(line.startsWith(prefix)).toBe(true);
+		expect(line.endsWith("\x1b[49m ")).toBe(true);
+		if (surfacePadding.length > 0) {
+			rowsWithSurfacePadding++;
+			expect(line.endsWith(`${surfacePadding}\x1b[49m `)).toBe(true);
+		}
+	}
+	expect(rowsWithSurfacePadding).toBeGreaterThan(0);
 }
 
 beforeAll(async () => {
@@ -154,6 +179,41 @@ it("renders completed tasks as checked before revealing strikethrough", async ()
 	const revealFrame = component.render(120).join("\n");
 	expect(Bun.stripANSI(revealFrame)).toContain("finish");
 	expect(revealFrame).toContain("\x1b[9m");
+});
+
+it("renders a completed task tree on the full-width accent surface", async () => {
+	const previousStyle = getOutputBlockBorderStyle();
+	const width = 72;
+	const tool = new TodoTool(createSession());
+	await tool.execute("init", {
+		op: "init",
+		list: [
+			{
+				phase: "Execution",
+				items: ["Read Ghostty screenshot", "Restore full-width accent cells", "Verify the rendered card"],
+			},
+		],
+	});
+	await tool.execute("done-screenshot", { op: "done", task: "Read Ghostty screenshot" });
+	const result = await tool.execute("done-accent", { op: "done", task: "Restore full-width accent cells" });
+
+	try {
+		setOutputBlockBorderStyle("accent");
+		const lines = todoToolRenderer
+			.renderResult(result, { expanded: true, isPartial: false, spinnerFrame: TODO_STRIKE_HOLD_FRAMES + 1 }, theme, {
+				op: "done",
+				task: "Restore full-width accent cells",
+			})
+			.render(width);
+		const rendered = Bun.stripANSI(lines.join("\n"));
+
+		expect(rendered).toContain("Read Ghostty screenshot");
+		expect(rendered).toContain("Restore full-width accent cells");
+		expect(rendered).toContain("Verify the rendered card");
+		expectTodoAccentSurface(lines, width);
+	} finally {
+		setOutputBlockBorderStyle(previousStyle);
+	}
 });
 
 describe("TodoTool operations", () => {

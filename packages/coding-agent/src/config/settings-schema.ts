@@ -3824,6 +3824,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"bash.async.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "shell",
+			group: tSettingsUi("Bash"),
+			label: tSettingsUi("Bash Async Execution"),
+			description: tSettingsUi("Allow bash calls to run as explicit async background jobs"),
+		},
+	},
+
 	"bash.autoBackground.enabled": {
 		type: "boolean",
 		default: false,

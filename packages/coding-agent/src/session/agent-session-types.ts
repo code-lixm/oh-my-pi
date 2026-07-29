@@ -241,8 +241,6 @@ export interface AgentSessionConfig {
 	workspaceCheckpointConversationAdapter?: WorkspaceCheckpointConversationAdapter;
 	/** Mutator guard that blocks restores while a bash/task mutator is active. */
 	workspaceCheckpointMutatorGuard?: WorkspaceCheckpointMutatorGuard;
-	/** Stable workspace id override; defaults to a derivation from the cwd. */
-	workspaceCheckpointWorkspaceId?: string;
 	/** Root path override for the checkpoint store; defaults to the session cwd. */
 	workspaceCheckpointRootPath?: string;
 }

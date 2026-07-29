@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type Component, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -13,8 +13,64 @@ import { VirtualTerminal } from "./virtual-terminal";
 // dropped everything above the retained tail. The reporter hit this under WSL.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
-const WSL_DISTRO_NAME = process.env.WSL_DISTRO_NAME;
-const TMUX = process.env.TMUX;
+const MULTIPLEXER_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"CMUX_REMOTE_TRANSPORT",
+] as const;
+const TEST_ENV_KEYS = ["WSL_DISTRO_NAME", ...MULTIPLEXER_ENV_KEYS, "TERM"] as const;
+type TestEnvKey = (typeof TEST_ENV_KEYS)[number];
+type EnvironmentSnapshot = {
+	bun: Record<TestEnvKey, string | undefined>;
+	process: Record<TestEnvKey, string | undefined>;
+};
+
+let environmentSnapshot: EnvironmentSnapshot | undefined;
+
+function captureEnvironment(): EnvironmentSnapshot {
+	const bun = {} as Record<TestEnvKey, string | undefined>;
+	const processEnv = {} as Record<TestEnvKey, string | undefined>;
+	for (const key of TEST_ENV_KEYS) {
+		bun[key] = Bun.env[key];
+		processEnv[key] = process.env[key];
+	}
+	return { bun, process: processEnv };
+}
+
+function restoreEnvironment(snapshot: EnvironmentSnapshot): void {
+	for (const key of TEST_ENV_KEYS) {
+		const bunValue = snapshot.bun[key];
+		if (bunValue === undefined) delete Bun.env[key];
+		else Bun.env[key] = bunValue;
+		const processValue = snapshot.process[key];
+		if (processValue === undefined) delete process.env[key];
+		else process.env[key] = processValue;
+	}
+}
+
+function setEnvironmentValue(key: TestEnvKey, value: string | undefined): void {
+	if (value === undefined) {
+		delete Bun.env[key];
+		delete process.env[key];
+	} else {
+		Bun.env[key] = value;
+		process.env[key] = value;
+	}
+}
+
+function isMultiplexerTerm(value: string | undefined): boolean {
+	const term = value?.toLowerCase() ?? "";
+	return term.startsWith("tmux") || term.startsWith("screen");
+}
+
+function clearMultiplexerMarkers(): void {
+	for (const key of MULTIPLEXER_ENV_KEYS) setEnvironmentValue(key, undefined);
+	if (isMultiplexerTerm(Bun.env.TERM)) Bun.env.TERM = "xterm-256color";
+	if (isMultiplexerTerm(process.env.TERM)) process.env.TERM = "xterm-256color";
+}
 
 // A full paint clears the viewport with ED2 (`CSI 2 J`), or — when it also
 // clears native scrollback — homes the cursor and emits ED3 (`CSI H CSI 3 J`)
@@ -42,12 +98,15 @@ class LargeContent implements Component {
 }
 
 describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY", () => {
+	beforeEach(() => {
+		environmentSnapshot = captureEnvironment();
+		// A direct WSL paint must not inherit the host's multiplexer policy.
+		clearMultiplexerMarkers();
+	});
 	afterEach(() => {
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
-		if (WSL_DISTRO_NAME === undefined) delete process.env.WSL_DISTRO_NAME;
-		else process.env.WSL_DISTRO_NAME = WSL_DISTRO_NAME;
-		if (TMUX === undefined) delete process.env.TMUX;
-		else process.env.TMUX = TMUX;
+		if (environmentSnapshot) restoreEnvironment(environmentSnapshot);
+		environmentSnapshot = undefined;
 		vi.restoreAllMocks();
 	});
 
@@ -55,7 +114,7 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 		// Reporter's environment: WSL. isConPTYHosted() is true on linux when a
 		// WSL marker is present (stdout still crosses into ConPTY at wslhost).
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-		process.env.WSL_DISTRO_NAME = "Ubuntu";
+		setEnvironmentValue("WSL_DISTRO_NAME", "Ubuntu");
 		const term = new VirtualTerminal(80, 24, 20_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);
@@ -118,8 +177,8 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 		// a full paint. Its one-shot unbounded intent must be consumed by that
 		// update, not leak into the next /resume or handoff replacement.
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-		process.env.WSL_DISTRO_NAME = "Ubuntu";
-		process.env.TMUX = "/tmp/tmux-1000/default,1,0";
+		setEnvironmentValue("WSL_DISTRO_NAME", "Ubuntu");
+		setEnvironmentValue("TMUX", "/tmp/tmux-1000/default,1,0");
 		const term = new VirtualTerminal(80, 24, 20_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);

@@ -451,11 +451,8 @@ describe("tool execution left-edge alignment", () => {
 			expect(childWidths).toEqual([WIDTH - 3, WIDTH - 3]);
 			expect(first.every(line => line.startsWith(errorRail))).toBe(true);
 			expect(first.join("\n")).toContain(errorBg);
-			expect(plain).toEqual([
-				`▌ ${childLines[0]}${" ".repeat(WIDTH - 2 - childLines[0].length)}`,
-				`▌ ${childLines[1]}${" ".repeat(WIDTH - 2 - childLines[1].length)}`,
-			]);
-			expect(first.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH]);
+			expect(plain).toEqual(childLines.map(line => `▌ ${line}`));
+			expect(first.map(line => visibleWidth(line))).toEqual(childLines.map(line => 2 + visibleWidth(line)));
 			expect(plain.join("\n")).not.toContain("│");
 			expect(plain.join("\n")).not.toContain("╭");
 			expect(plain.join("\n")).not.toContain("╰");

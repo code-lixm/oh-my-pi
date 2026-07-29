@@ -39,16 +39,17 @@ import type {
 // import every checkpoint-shaped record from one place.
 export type { WorkspaceCheckpointRecord } from "./types";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DATABASE_FILENAME = "metadata.db";
 const BUSY_TIMEOUT_MS = 5_000;
 
 // ─── Public types ───────────────────────────────────────────────────────
 
-/** Persisted, per-root workspace pointer — undo/redo heads + restore sequence. */
+/** Persisted workspace pointer — legacy root-only or transcript-session scoped. */
 export interface WorkspaceState {
 	workspaceId: string;
 	rootPath: string;
+	sessionId: string | null;
 	undoHeadCheckpointId: string | null;
 	redoHeadCheckpointId: string | null;
 	restoreSequence: number;
@@ -59,6 +60,8 @@ export interface WorkspaceState {
 /** Input shape for {@link CheckpointMetadataStore.putWorkspaceState}. */
 export interface WorkspaceStateInput {
 	rootPath: string;
+	/** Omit or set null for the legacy root-only state. */
+	sessionId?: string | null;
 	undoHeadCheckpointId?: string | null;
 	redoHeadCheckpointId?: string | null;
 	restoreSequence?: number;
@@ -110,9 +113,21 @@ export interface RestorePlanPatch {
 
 export type RestorePlanStatus = WorkspaceRestorePlanStatus;
 
-/** Persisted redo edge — the next state we can `redo` to after an undo. */
+/** Persisted redo edge — legacy root-only or transcript-session scoped. */
 export interface RedoEdge {
 	rootPath: string;
+	sessionId: string | null;
+	targetCheckpointId: string;
+	sourceCheckpointId: string | null;
+	planId: string | null;
+	createdAt: string;
+}
+
+/** Input shape for {@link CheckpointMetadataStore.setRedoEdge}. */
+export interface RedoEdgeInput {
+	rootPath: string;
+	/** Omit or set null for the legacy root-only edge. */
+	sessionId?: string | null;
 	targetCheckpointId: string;
 	sourceCheckpointId: string | null;
 	planId: string | null;
@@ -199,10 +214,10 @@ export interface CheckpointMetadataStore {
 	init(): Promise<void>;
 	close(): void;
 	// workspace pointer
-	getWorkspaceState(rootPath: string): Promise<WorkspaceState | null>;
+	getWorkspaceState(rootPath: string, sessionId?: string | null): Promise<WorkspaceState | null>;
 	putWorkspaceState(state: WorkspaceStateInput): Promise<WorkspaceState>;
 	listWorkspaces(): Promise<WorkspaceState[]>;
-	deleteWorkspaceState(rootPath: string): Promise<boolean>;
+	deleteWorkspaceState(rootPath: string, sessionId?: string | null): Promise<boolean>;
 	// checkpoint
 	createCheckpoint(
 		request: CreateWorkspaceCheckpointRequest & {
@@ -228,9 +243,9 @@ export interface CheckpointMetadataStore {
 		limit?: number;
 	}): Promise<WorkspaceRestorePlanRecord[]>;
 	// redo edge
-	setRedoEdge(edge: RedoEdge): Promise<RedoEdge>;
-	clearRedoEdge(rootPath: string): Promise<boolean>;
-	getRedoEdge(rootPath: string): Promise<RedoEdge | null>;
+	setRedoEdge(edge: RedoEdgeInput): Promise<RedoEdge>;
+	clearRedoEdge(rootPath: string, sessionId?: string | null): Promise<boolean>;
+	getRedoEdge(rootPath: string, sessionId?: string | null): Promise<RedoEdge | null>;
 	// transaction
 	recordTransactionStart(input: WorkspaceTransactionStartInput): Promise<WorkspaceTransaction>;
 	recordTransactionFromPointer(pointer: WorkspaceTransactionPointerInput): Promise<WorkspaceTransaction>;
@@ -324,6 +339,40 @@ CREATE TABLE IF NOT EXISTS redo_edges (
 	FOREIGN KEY (plan_id) REFERENCES restore_plans(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_workspace_states (
+	workspace_id TEXT NOT NULL,
+	root_path TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	undo_head_checkpoint_id TEXT,
+	redo_head_checkpoint_id TEXT,
+	restore_sequence INTEGER NOT NULL DEFAULT 0,
+	last_checkpoint_id TEXT,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (root_path, session_id),
+	FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+	FOREIGN KEY (undo_head_checkpoint_id) REFERENCES checkpoints(id) ON DELETE SET NULL,
+	FOREIGN KEY (redo_head_checkpoint_id) REFERENCES checkpoints(id) ON DELETE SET NULL,
+	FOREIGN KEY (last_checkpoint_id) REFERENCES checkpoints(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS session_workspace_states_workspace_idx
+	ON session_workspace_states(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_redo_edges (
+	root_path TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	target_checkpoint_id TEXT NOT NULL,
+	source_checkpoint_id TEXT,
+	plan_id TEXT,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (root_path, session_id),
+	FOREIGN KEY (target_checkpoint_id) REFERENCES checkpoints(id) ON DELETE CASCADE,
+	FOREIGN KEY (plan_id) REFERENCES restore_plans(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS session_redo_edges_target_idx
+	ON session_redo_edges(target_checkpoint_id);
+
 CREATE TABLE IF NOT EXISTS transactions (
 	id TEXT PRIMARY KEY,
 	workspace_id TEXT NOT NULL,
@@ -398,6 +447,14 @@ interface RedoEdgeRow {
 	created_at: string;
 }
 
+interface SessionWorkspaceRow extends WorkspaceRow {
+	session_id: string;
+}
+
+interface SessionRedoEdgeRow extends RedoEdgeRow {
+	session_id: string;
+}
+
 interface TransactionRow {
 	id: string;
 	workspace_id: string;
@@ -422,6 +479,10 @@ function normalizeRoot(rootPath: string): string {
 		throw new Error(`workspace-checkpoints: invalid rootPath ${JSON.stringify(rootPath)}`);
 	}
 	return path.resolve(rootPath);
+}
+
+function isSessionScoped(sessionId: string | null | undefined): sessionId is string {
+	return sessionId !== null && sessionId !== undefined;
 }
 
 /** Stable, fs-safe workspace id derived from an absolute root path. */
@@ -485,9 +546,10 @@ function rowToPlan(row: RestorePlanRow): WorkspaceRestorePlanRecord {
 	};
 }
 
-function rowToRedoEdge(row: RedoEdgeRow): RedoEdge {
+function rowToRedoEdge(row: RedoEdgeRow, sessionId: string | null = null): RedoEdge {
 	return {
 		rootPath: row.root_path,
+		sessionId,
 		targetCheckpointId: row.target_checkpoint_id,
 		sourceCheckpointId: row.source_checkpoint_id,
 		planId: row.plan_id,
@@ -518,6 +580,20 @@ function rowToWorkspace(row: WorkspaceRow): WorkspaceState {
 	return {
 		workspaceId: row.workspace_id,
 		rootPath: row.root_path,
+		sessionId: null,
+		undoHeadCheckpointId: row.undo_head_checkpoint_id,
+		redoHeadCheckpointId: row.redo_head_checkpoint_id,
+		restoreSequence: row.restore_sequence,
+		lastCheckpointId: row.last_checkpoint_id,
+		updatedAt: row.updated_at,
+	};
+}
+
+function rowToSessionWorkspace(row: SessionWorkspaceRow): WorkspaceState {
+	return {
+		workspaceId: row.workspace_id,
+		rootPath: row.root_path,
+		sessionId: row.session_id,
 		undoHeadCheckpointId: row.undo_head_checkpoint_id,
 		redoHeadCheckpointId: row.redo_head_checkpoint_id,
 		restoreSequence: row.restore_sequence,
@@ -566,16 +642,30 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 		this.#db.run(SCHEMA_SQL);
 		const existing = readSchemaVersion(this.#db);
 		if (existing === null) {
-			this.#db.run("INSERT INTO schema_meta(key, value) VALUES('version', ?)", [String(SCHEMA_VERSION)]);
+			const initialize = this.#db.transaction(() => {
+				// A schema_meta-less DB may predate version tracking. Migrating is a
+				// no-op for a fresh database and preserves any pre-existing pointers.
+				migrateV1ToV2(this.#db);
+				this.#db.run("INSERT INTO schema_meta(key, value) VALUES('version', ?)", [String(SCHEMA_VERSION)]);
+			});
+			initialize();
 		} else if (existing > SCHEMA_VERSION) {
 			throw new Error(
 				`workspace-checkpoints: metadata DB schema version ${existing} is newer than supported ${SCHEMA_VERSION}`,
 			);
 		} else if (existing < SCHEMA_VERSION) {
-			// Future migrations land here. We intentionally leave the row
-			// untouched at the new version after upgrade scripts run; for v1
-			// there is nothing to migrate yet.
-			this.#db.run("UPDATE schema_meta SET value = ? WHERE key = 'version'", [String(SCHEMA_VERSION)]);
+			const migrate = this.#db.transaction(() => {
+				let version = existing;
+				if (version === 1) {
+					migrateV1ToV2(this.#db);
+					version = 2;
+				}
+				if (version !== SCHEMA_VERSION) {
+					throw new Error(`workspace-checkpoints: unsupported metadata DB schema version ${existing}`);
+				}
+				this.#db.run("UPDATE schema_meta SET value = ? WHERE key = 'version'", [String(SCHEMA_VERSION)]);
+			});
+			migrate();
 		}
 		const restorePlanColumns = this.#db.prepare<{ name: string }, []>("PRAGMA table_info(restore_plans)").all();
 		const restorePlanColumnNames = new Set(restorePlanColumns.map(column => column.name));
@@ -591,6 +681,14 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 			.get(normalizeRoot(rootPath));
 	}
 
+	#findSessionWorkspaceRow(rootPath: string, sessionId: string): SessionWorkspaceRow | null {
+		return this.#db
+			.prepare<SessionWorkspaceRow, [string, string]>(
+				"SELECT * FROM session_workspace_states WHERE root_path = ? AND session_id = ?",
+			)
+			.get(normalizeRoot(rootPath), sessionId);
+	}
+
 	#findCheckpointRow(id: string): CheckpointRow | null {
 		return this.#db.prepare<CheckpointRow, [string]>("SELECT * FROM checkpoints WHERE id = ?").get(id);
 	}
@@ -603,6 +701,14 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 		return this.#db
 			.prepare<RedoEdgeRow, [string]>("SELECT * FROM redo_edges WHERE root_path = ?")
 			.get(normalizeRoot(rootPath));
+	}
+
+	#findSessionRedoEdgeRow(rootPath: string, sessionId: string): SessionRedoEdgeRow | null {
+		return this.#db
+			.prepare<SessionRedoEdgeRow, [string, string]>(
+				"SELECT * FROM session_redo_edges WHERE root_path = ? AND session_id = ?",
+			)
+			.get(normalizeRoot(rootPath), sessionId);
 	}
 
 	#findTransactionRow(id: string): TransactionRow | null {
@@ -624,22 +730,65 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 
 	// ─── workspace pointer ────────────────────────────────────────────────
 
-	getWorkspaceState(rootPath: string): Promise<WorkspaceState | null> {
-		const row = this.#findWorkspaceRow(rootPath);
-		return Promise.resolve(row ? rowToWorkspace(row) : null);
+	getWorkspaceState(rootPath: string, sessionId?: string | null): Promise<WorkspaceState | null> {
+		if (!isSessionScoped(sessionId)) {
+			const row = this.#findWorkspaceRow(rootPath);
+			return Promise.resolve(row ? rowToWorkspace(row) : null);
+		}
+		const row = this.#findSessionWorkspaceRow(rootPath, sessionId);
+		return Promise.resolve(row ? rowToSessionWorkspace(row) : null);
 	}
 
 	putWorkspaceState(state: WorkspaceStateInput): Promise<WorkspaceState> {
 		const resolved = normalizeRoot(state.rootPath);
 		const workspaceId = workspaceIdForRoot(resolved);
 		const updatedAt = nowIso();
+		if (!isSessionScoped(state.sessionId)) {
+			const insertOrReplace = this.#db.transaction(() => {
+				this.#db.run(
+					`INSERT INTO workspaces (
+						workspace_id, root_path, undo_head_checkpoint_id, redo_head_checkpoint_id,
+						restore_sequence, last_checkpoint_id, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(root_path) DO UPDATE SET
+						undo_head_checkpoint_id = excluded.undo_head_checkpoint_id,
+						redo_head_checkpoint_id = excluded.redo_head_checkpoint_id,
+						restore_sequence = excluded.restore_sequence,
+						last_checkpoint_id = excluded.last_checkpoint_id,
+						updated_at = excluded.updated_at`,
+					[
+						workspaceId,
+						resolved,
+						state.undoHeadCheckpointId ?? null,
+						state.redoHeadCheckpointId ?? null,
+						state.restoreSequence ?? 0,
+						state.lastCheckpointId ?? null,
+						updatedAt,
+					],
+				);
+			});
+			insertOrReplace();
+			const persisted = this.#findWorkspaceRow(resolved);
+			if (!persisted) {
+				throw new Error(`workspace-checkpoints: failed to read back workspace state for ${resolved} after upsert`);
+			}
+			return Promise.resolve(rowToWorkspace(persisted));
+		}
+
+		const sessionId = state.sessionId;
 		const insertOrReplace = this.#db.transaction(() => {
 			this.#db.run(
-				`INSERT INTO workspaces (
-					workspace_id, root_path, undo_head_checkpoint_id, redo_head_checkpoint_id,
+				`INSERT INTO workspaces (workspace_id, root_path, restore_sequence, updated_at)
+				 VALUES (?, ?, 0, ?)
+				 ON CONFLICT(root_path) DO NOTHING`,
+				[workspaceId, resolved, updatedAt],
+			);
+			this.#db.run(
+				`INSERT INTO session_workspace_states (
+					workspace_id, root_path, session_id, undo_head_checkpoint_id, redo_head_checkpoint_id,
 					restore_sequence, last_checkpoint_id, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(root_path) DO UPDATE SET
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(root_path, session_id) DO UPDATE SET
 					undo_head_checkpoint_id = excluded.undo_head_checkpoint_id,
 					redo_head_checkpoint_id = excluded.redo_head_checkpoint_id,
 					restore_sequence = excluded.restore_sequence,
@@ -648,6 +797,7 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 				[
 					workspaceId,
 					resolved,
+					sessionId,
 					state.undoHeadCheckpointId ?? null,
 					state.redoHeadCheckpointId ?? null,
 					state.restoreSequence ?? 0,
@@ -657,21 +807,37 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 			);
 		});
 		insertOrReplace();
-		const persisted = this.#findWorkspaceRow(resolved);
+		const persisted = this.#findSessionWorkspaceRow(resolved, sessionId);
 		if (!persisted) {
-			throw new Error(`workspace-checkpoints: failed to read back workspace state for ${resolved} after upsert`);
+			throw new Error(
+				`workspace-checkpoints: failed to read back workspace state for ${resolved} session ${sessionId} after upsert`,
+			);
 		}
-		return Promise.resolve(rowToWorkspace(persisted));
+		return Promise.resolve(rowToSessionWorkspace(persisted));
 	}
 
 	listWorkspaces(): Promise<WorkspaceState[]> {
-		const rows = this.#db.prepare<WorkspaceRow, []>("SELECT * FROM workspaces ORDER BY updated_at DESC").all();
-		return Promise.resolve(rows.map(rowToWorkspace));
+		const legacyRows = this.#db.prepare<WorkspaceRow, []>("SELECT * FROM workspaces").all();
+		const sessionRows = this.#db.prepare<SessionWorkspaceRow, []>("SELECT * FROM session_workspace_states").all();
+		const states = [...legacyRows.map(rowToWorkspace), ...sessionRows.map(rowToSessionWorkspace)];
+		states.sort(
+			(a, b) =>
+				b.updatedAt.localeCompare(a.updatedAt) ||
+				a.rootPath.localeCompare(b.rootPath) ||
+				(a.sessionId ?? "").localeCompare(b.sessionId ?? ""),
+		);
+		return Promise.resolve(states);
 	}
 
-	deleteWorkspaceState(rootPath: string): Promise<boolean> {
+	deleteWorkspaceState(rootPath: string, sessionId?: string | null): Promise<boolean> {
 		const resolved = normalizeRoot(rootPath);
-		const result = this.#db.prepare("DELETE FROM workspaces WHERE root_path = ?").run(resolved);
+		if (!isSessionScoped(sessionId)) {
+			const result = this.#db.prepare("DELETE FROM workspaces WHERE root_path = ?").run(resolved);
+			return Promise.resolve(intValue(result.changes) > 0);
+		}
+		const result = this.#db
+			.prepare("DELETE FROM session_workspace_states WHERE root_path = ? AND session_id = ?")
+			.run(resolved, sessionId);
 		return Promise.resolve(intValue(result.changes) > 0);
 	}
 
@@ -691,7 +857,7 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 		const createdAt = nowIso();
 		const pinned = request.pinned === true ? 1 : 0;
 		const tx = this.#db.transaction(() => {
-			// Make sure the workspace row exists so the FK holds.
+			// Make sure the legacy workspace row exists so checkpoint FKs hold.
 			this.#db.run(
 				`INSERT INTO workspaces (workspace_id, root_path, restore_sequence, updated_at)
 				 VALUES (?, ?, 0, ?)
@@ -723,11 +889,24 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 				],
 			);
 			if (request.advanceLastCheckpoint !== false) {
-				this.#db.run("UPDATE workspaces SET last_checkpoint_id = ?, updated_at = ? WHERE workspace_id = ?", [
-					id,
-					createdAt,
-					workspaceId,
-				]);
+				if (!isSessionScoped(request.sessionId)) {
+					this.#db.run("UPDATE workspaces SET last_checkpoint_id = ?, updated_at = ? WHERE workspace_id = ?", [
+						id,
+						createdAt,
+						workspaceId,
+					]);
+				} else {
+					this.#db.run(
+						`INSERT INTO session_workspace_states (
+							workspace_id, root_path, session_id, undo_head_checkpoint_id, redo_head_checkpoint_id,
+							restore_sequence, last_checkpoint_id, updated_at
+						) VALUES (?, ?, ?, NULL, NULL, 0, ?, ?)
+						ON CONFLICT(root_path, session_id) DO UPDATE SET
+							last_checkpoint_id = excluded.last_checkpoint_id,
+							updated_at = excluded.updated_at`,
+						[workspaceId, resolved, request.sessionId, id, createdAt],
+					);
+				}
 			}
 		});
 		tx();
@@ -959,37 +1138,70 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 
 	// ─── redo edge ───────────────────────────────────────────────────────
 
-	setRedoEdge(edge: RedoEdge): Promise<RedoEdge> {
+	setRedoEdge(edge: RedoEdgeInput): Promise<RedoEdge> {
 		const rootPath = normalizeRoot(edge.rootPath);
+		if (!isSessionScoped(edge.sessionId)) {
+			const tx = this.#db.transaction(() => {
+				this.#db.run(
+					`INSERT INTO redo_edges (root_path, target_checkpoint_id, source_checkpoint_id, plan_id, created_at)
+					 VALUES (?, ?, ?, ?, ?)
+					 ON CONFLICT(root_path) DO UPDATE SET
+						target_checkpoint_id = excluded.target_checkpoint_id,
+						source_checkpoint_id = excluded.source_checkpoint_id,
+						plan_id = excluded.plan_id,
+						created_at = excluded.created_at`,
+					[rootPath, edge.targetCheckpointId, edge.sourceCheckpointId, edge.planId, edge.createdAt],
+				);
+			});
+			tx();
+			const persisted = this.#findRedoEdgeRow(rootPath);
+			if (!persisted) {
+				throw new Error(`workspace-checkpoints: failed to read back redo edge for ${rootPath}`);
+			}
+			return Promise.resolve(rowToRedoEdge(persisted));
+		}
+
+		const sessionId = edge.sessionId;
 		const tx = this.#db.transaction(() => {
 			this.#db.run(
-				`INSERT INTO redo_edges (root_path, target_checkpoint_id, source_checkpoint_id, plan_id, created_at)
-				 VALUES (?, ?, ?, ?, ?)
-				 ON CONFLICT(root_path) DO UPDATE SET
+				`INSERT INTO session_redo_edges (
+					root_path, session_id, target_checkpoint_id, source_checkpoint_id, plan_id, created_at
+				) VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(root_path, session_id) DO UPDATE SET
 					target_checkpoint_id = excluded.target_checkpoint_id,
 					source_checkpoint_id = excluded.source_checkpoint_id,
 					plan_id = excluded.plan_id,
 					created_at = excluded.created_at`,
-				[rootPath, edge.targetCheckpointId, edge.sourceCheckpointId, edge.planId, edge.createdAt],
+				[rootPath, sessionId, edge.targetCheckpointId, edge.sourceCheckpointId, edge.planId, edge.createdAt],
 			);
 		});
 		tx();
-		const persisted = this.#findRedoEdgeRow(rootPath);
+		const persisted = this.#findSessionRedoEdgeRow(rootPath, sessionId);
 		if (!persisted) {
-			throw new Error(`workspace-checkpoints: failed to read back redo edge for ${rootPath}`);
+			throw new Error(`workspace-checkpoints: failed to read back redo edge for ${rootPath} session ${sessionId}`);
 		}
-		return Promise.resolve(rowToRedoEdge(persisted));
+		return Promise.resolve(rowToRedoEdge(persisted, sessionId));
 	}
 
-	clearRedoEdge(rootPath: string): Promise<boolean> {
+	clearRedoEdge(rootPath: string, sessionId?: string | null): Promise<boolean> {
 		const resolved = normalizeRoot(rootPath);
-		const result = this.#db.prepare("DELETE FROM redo_edges WHERE root_path = ?").run(resolved);
+		if (!isSessionScoped(sessionId)) {
+			const result = this.#db.prepare("DELETE FROM redo_edges WHERE root_path = ?").run(resolved);
+			return Promise.resolve(intValue(result.changes) > 0);
+		}
+		const result = this.#db
+			.prepare("DELETE FROM session_redo_edges WHERE root_path = ? AND session_id = ?")
+			.run(resolved, sessionId);
 		return Promise.resolve(intValue(result.changes) > 0);
 	}
 
-	getRedoEdge(rootPath: string): Promise<RedoEdge | null> {
-		const row = this.#findRedoEdgeRow(rootPath);
-		return Promise.resolve(row ? rowToRedoEdge(row) : null);
+	getRedoEdge(rootPath: string, sessionId?: string | null): Promise<RedoEdge | null> {
+		if (!isSessionScoped(sessionId)) {
+			const row = this.#findRedoEdgeRow(rootPath);
+			return Promise.resolve(row ? rowToRedoEdge(row) : null);
+		}
+		const row = this.#findSessionRedoEdgeRow(rootPath, sessionId);
+		return Promise.resolve(row ? rowToRedoEdge(row, sessionId) : null);
 	}
 
 	// ─── transaction ────────────────────────────────────────────────────
@@ -1210,43 +1422,47 @@ class SqliteCheckpointMetadataStore implements CheckpointMetadataStore {
 			add(row.checkpoint_id, "active_transaction");
 		}
 
-		// Checkpoint at the redo edge.
+		// Redo edges retain both sides of their transition in legacy and scoped tables.
 		const redoParams: string[] = [];
 		const redoClauses: string[] = ["1=1"];
 		if (rootPath !== undefined) {
 			redoClauses.push("root_path = ?");
 			redoParams.push(normalizeRoot(rootPath));
 		}
-		const redoRows = this.#db
-			.prepare<{ target_checkpoint_id: string; source_checkpoint_id: string | null }, string[]>(
-				`SELECT target_checkpoint_id, source_checkpoint_id FROM redo_edges WHERE ${redoClauses.join(" AND ")}`,
-			)
-			.all(...redoParams);
+		const redoSql = `SELECT target_checkpoint_id, source_checkpoint_id FROM redo_edges WHERE ${redoClauses.join(" AND ")}`;
+		const sessionRedoSql = `SELECT target_checkpoint_id, source_checkpoint_id FROM session_redo_edges WHERE ${redoClauses.join(" AND ")}`;
+		const redoRows = [
+			...this.#db
+				.prepare<{ target_checkpoint_id: string; source_checkpoint_id: string | null }, string[]>(redoSql)
+				.all(...redoParams),
+			...this.#db
+				.prepare<{ target_checkpoint_id: string; source_checkpoint_id: string | null }, string[]>(sessionRedoSql)
+				.all(...redoParams),
+		];
 		for (const row of redoRows) {
 			add(row.target_checkpoint_id, "redo_edge");
 			add(row.source_checkpoint_id, "redo_edge");
 		}
 
-		// Workspace pointers always retain their heads + the latest checkpoint.
+		// Legacy and session-scoped workspace pointers retain their heads + latest checkpoint.
 		const workspaceParams: string[] = [];
 		const workspaceClauses: string[] = ["1=1"];
 		if (rootPath !== undefined) {
 			workspaceClauses.push("root_path = ?");
 			workspaceParams.push(normalizeRoot(rootPath));
 		}
-		const wsRows = this.#db
-			.prepare<
-				{
-					undo_head_checkpoint_id: string | null;
-					redo_head_checkpoint_id: string | null;
-					last_checkpoint_id: string | null;
-				},
-				string[]
-			>(
-				`SELECT undo_head_checkpoint_id, redo_head_checkpoint_id, last_checkpoint_id FROM workspaces WHERE ${workspaceClauses.join(" AND ")}`,
-			)
-			.all(...workspaceParams);
-		for (const row of wsRows) {
+		type PointerRow = {
+			undo_head_checkpoint_id: string | null;
+			redo_head_checkpoint_id: string | null;
+			last_checkpoint_id: string | null;
+		};
+		const pointerSql = `SELECT undo_head_checkpoint_id, redo_head_checkpoint_id, last_checkpoint_id FROM workspaces WHERE ${workspaceClauses.join(" AND ")}`;
+		const sessionPointerSql = `SELECT undo_head_checkpoint_id, redo_head_checkpoint_id, last_checkpoint_id FROM session_workspace_states WHERE ${workspaceClauses.join(" AND ")}`;
+		const pointerRows = [
+			...this.#db.prepare<PointerRow, string[]>(pointerSql).all(...workspaceParams),
+			...this.#db.prepare<PointerRow, string[]>(sessionPointerSql).all(...workspaceParams),
+		];
+		for (const row of pointerRows) {
 			add(row.undo_head_checkpoint_id, "workspace_pointer");
 			add(row.redo_head_checkpoint_id, "workspace_pointer");
 			add(row.last_checkpoint_id, "workspace_pointer");
@@ -1272,6 +1488,127 @@ function readSchemaVersion(db: Database): number | null {
 	if (!row) return null;
 	const parsed = Number.parseInt(row.value, 10);
 	return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Lift v1's root-global pointers into every transcript session represented by
+ * its checkpoints. The root-global rows remain untouched for offline CLI
+ * compatibility; v2 session callers only consult the copied scoped rows.
+ */
+function migrateV1ToV2(db: Database): void {
+	// Each session starts from its own latest checkpoint rather than the one
+	// global v1 head, which may belong to an unrelated transcript.
+	db.run(`
+		INSERT INTO session_workspace_states (
+			workspace_id, root_path, session_id, undo_head_checkpoint_id, redo_head_checkpoint_id,
+			restore_sequence, last_checkpoint_id, updated_at
+		)
+		SELECT
+			checkpoint.workspace_id,
+			checkpoint.root_path,
+			checkpoint.session_id,
+			checkpoint.id,
+			NULL,
+			workspace.restore_sequence,
+			checkpoint.id,
+			checkpoint.created_at
+		FROM checkpoints AS checkpoint
+		JOIN workspaces AS workspace ON workspace.workspace_id = checkpoint.workspace_id
+		WHERE checkpoint.session_id IS NOT NULL
+			AND NOT EXISTS (
+				SELECT 1
+				FROM checkpoints AS newer
+				WHERE newer.root_path = checkpoint.root_path
+					AND newer.session_id = checkpoint.session_id
+					AND (
+						newer.created_at > checkpoint.created_at
+						OR (newer.created_at = checkpoint.created_at AND newer.id > checkpoint.id)
+					)
+			)
+		ON CONFLICT(root_path, session_id) DO UPDATE SET
+			workspace_id = excluded.workspace_id,
+			undo_head_checkpoint_id = excluded.undo_head_checkpoint_id,
+			restore_sequence = excluded.restore_sequence,
+			last_checkpoint_id = excluded.last_checkpoint_id,
+			updated_at = excluded.updated_at
+	`);
+
+	// Some v1 databases have a redo head without an edge. Preserve that pointer
+	// in its target checkpoint's session, while retaining the migrated latest
+	// undo/last heads above.
+	db.run(`
+		INSERT INTO session_workspace_states (
+			workspace_id, root_path, session_id, undo_head_checkpoint_id, redo_head_checkpoint_id,
+			restore_sequence, last_checkpoint_id, updated_at
+		)
+		SELECT
+			checkpoint.workspace_id,
+			workspace.root_path,
+			checkpoint.session_id,
+			NULL,
+			workspace.redo_head_checkpoint_id,
+			workspace.restore_sequence,
+			NULL,
+			workspace.updated_at
+		FROM workspaces AS workspace
+		JOIN checkpoints AS checkpoint ON checkpoint.id = workspace.redo_head_checkpoint_id
+		WHERE checkpoint.session_id IS NOT NULL
+		ON CONFLICT(root_path, session_id) DO UPDATE SET
+			redo_head_checkpoint_id = excluded.redo_head_checkpoint_id,
+			updated_at = CASE
+				WHEN excluded.updated_at > session_workspace_states.updated_at THEN excluded.updated_at
+				ELSE session_workspace_states.updated_at
+			END
+	`);
+
+	// Redo has an explicit transition edge in normal v1 data. Its target is the
+	// authoritative scope because it is the checkpoint that the redo will load.
+	db.run(`
+		INSERT INTO session_redo_edges (
+			root_path, session_id, target_checkpoint_id, source_checkpoint_id, plan_id, created_at
+		)
+		SELECT
+			edge.root_path,
+			checkpoint.session_id,
+			edge.target_checkpoint_id,
+			edge.source_checkpoint_id,
+			edge.plan_id,
+			edge.created_at
+		FROM redo_edges AS edge
+		JOIN checkpoints AS checkpoint ON checkpoint.id = edge.target_checkpoint_id
+		WHERE checkpoint.session_id IS NOT NULL
+		ON CONFLICT(root_path, session_id) DO UPDATE SET
+			target_checkpoint_id = excluded.target_checkpoint_id,
+			source_checkpoint_id = excluded.source_checkpoint_id,
+			plan_id = excluded.plan_id,
+			created_at = excluded.created_at
+	`);
+
+	db.run(`
+		INSERT INTO session_workspace_states (
+			workspace_id, root_path, session_id, undo_head_checkpoint_id, redo_head_checkpoint_id,
+			restore_sequence, last_checkpoint_id, updated_at
+		)
+		SELECT
+			checkpoint.workspace_id,
+			checkpoint.root_path,
+			checkpoint.session_id,
+			NULL,
+			edge.target_checkpoint_id,
+			workspace.restore_sequence,
+			NULL,
+			edge.created_at
+		FROM redo_edges AS edge
+		JOIN checkpoints AS checkpoint ON checkpoint.id = edge.target_checkpoint_id
+		JOIN workspaces AS workspace ON workspace.workspace_id = checkpoint.workspace_id
+		WHERE checkpoint.session_id IS NOT NULL
+		ON CONFLICT(root_path, session_id) DO UPDATE SET
+			redo_head_checkpoint_id = excluded.redo_head_checkpoint_id,
+			updated_at = CASE
+				WHEN excluded.updated_at > session_workspace_states.updated_at THEN excluded.updated_at
+				ELSE session_workspace_states.updated_at
+			END
+	`);
 }
 
 /** Build a fresh {@link CheckpointMetadataStore}. Caller MUST call `init()` before use. */

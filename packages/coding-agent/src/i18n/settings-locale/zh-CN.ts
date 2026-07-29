@@ -636,7 +636,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	Subagent: "子代理",
 	Subagents: "子代理",
 	"Main needs input · Esc return": "主代理需要输入 · 按 Esc 返回",
-	"Waiting for progress…": "正在等待进度…",
 	"{count} tools": "{count} 个工具",
 	"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand":
 		"{previous}:上一个 · {next}:下一个 · Esc:主任务 · j/k:滚动 · {expand}:展开",
@@ -1432,6 +1431,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Autocomplete Items": "自动补全条目",
 	"Automatically background long-running bash commands and deliver the result later":
 		"自动将长时间运行的 bash 命令放到后台，并稍后返回结果",
+	"Allow bash calls to run as explicit async background jobs": "允许 bash 调用作为显式异步后台任务运行",
 	"Automatically compact context when it gets too large": "上下文过大时自动压缩",
 	"Automatically enter plan mode at the start of every new session": "在每个新会话开始时自动进入计划模式",
 	"Automatically format code files using LSP after writing": "写入后自动使用 LSP 格式化代码文件",
@@ -1444,6 +1444,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Base URL of a self-hosted SearXNG instance used for web search": "用于 Web 搜索的自托管 SearXNG 实例基础 URL",
 	"Basic Tool Details": "基础工具详情",
 	"Bash Auto-Background": "Bash 自动后台运行",
+	"Bash Async Execution": "Bash 异步执行",
 	"Bash Interceptor": "Bash 拦截器",
 	"Batch Task Calls": "批量任务调用",
 	Block: "方块",

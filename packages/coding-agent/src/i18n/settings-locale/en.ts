@@ -637,7 +637,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Subagent: "Subagent",
 	Subagents: "Subagents",
 	"Main needs input · Esc return": "Main needs input · Esc return",
-	"Waiting for progress…": "Waiting for progress…",
 	"{count} tools": "{count} tools",
 	"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand":
 		"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand",
@@ -1471,6 +1470,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Autocomplete Items": "Autocomplete Items",
 	"Automatically background long-running bash commands and deliver the result later":
 		"Automatically background long-running bash commands and deliver the result later",
+	"Allow bash calls to run as explicit async background jobs":
+		"Allow bash calls to run as explicit async background jobs",
 	"Automatically compact context when it gets too large": "Automatically compact context when it gets too large",
 	"Automatically enter plan mode at the start of every new session":
 		"Automatically enter plan mode at the start of every new session",
@@ -1486,6 +1487,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Base URL of a self-hosted SearXNG instance used for web search",
 	"Basic Tool Details": "Basic Tool Details",
 	"Bash Auto-Background": "Bash Auto-Background",
+	"Bash Async Execution": "Bash Async Execution",
 	"Bash Interceptor": "Bash Interceptor",
 	"Batch Task Calls": "Batch Task Calls",
 	Block: "Block",

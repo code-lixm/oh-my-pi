@@ -235,6 +235,7 @@ async function createHarness(options?: {
 	customCommands?: LoadedCustomCommand[];
 	extensionRunner?: ExtensionRunner;
 	includeModel?: boolean;
+	providerSessionId?: string;
 	streamHandler?: MockModelOptions["handler"];
 }): Promise<Harness> {
 	const tempDir = TempDir.createSync("@pi-workspace-checkpoint-session-lifecycle-");
@@ -280,6 +281,7 @@ async function createHarness(options?: {
 		sessionManager,
 		settings,
 		modelRegistry,
+		providerSessionId: options?.providerSessionId,
 		workspaceCheckpointService: service,
 		workspaceCheckpointMutatorGuard: options?.guard,
 		customCommands: options?.customCommands,
@@ -647,6 +649,7 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 		expect(preview).toEqual({ available: true, value: previewPlan });
 		expect(harness.service.previewCalls[0]).toEqual({
 			checkpointId: "cp-1",
+			sessionId: harness.sessionManager.getSessionId(),
 			scope: "conversation",
 			strategy: "exact",
 			paths: ["src/a.ts"],
@@ -756,43 +759,52 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 		expect(reopened.workspaceCheckpointCursor).toEqual(cursor);
 	});
 
-	it("rebinds checkpoint calls to the current session identity and moved workspace", async () => {
-		const harness = await createHarness();
+	it("uses SessionManager transcript IDs for checkpoint calls despite a shared providerSessionId", async () => {
+		const providerSessionId = "provider-session-shared-across-transcripts";
+		const harness = await createHarness({ providerSessionId });
 		const firstRoot = harness.sessionManager.getCwd();
-		const firstSessionId = harness.session.sessionId;
+		const firstTranscriptId = harness.sessionManager.getSessionId();
+		expect(firstTranscriptId).not.toBe(providerSessionId);
+		expect(harness.session.sessionId).toBe(providerSessionId);
 
 		await harness.session.createWorkspaceCheckpoint("before session transition");
 		await harness.session.captureIgnoredMutationBaseline(path.join(firstRoot, "ignored", "before.txt"));
 		await harness.session.listWorkspaceCheckpoints();
 		await harness.session.undoWorkspace("code");
-		expect(harness.service.createCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstSessionId });
+		await harness.session.redoWorkspace();
+		expect(harness.service.createCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstTranscriptId });
 		expect(harness.service.captureIgnoredCalls.at(-1)).toMatchObject({
 			rootPath: firstRoot,
 			path: path.join(firstRoot, "ignored", "before.txt"),
-			sessionId: firstSessionId,
+			sessionId: firstTranscriptId,
 		});
-		expect(harness.service.listCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstSessionId });
-		expect(harness.service.undoCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstSessionId });
+		expect(harness.service.listCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstTranscriptId });
+		expect(harness.service.undoCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstTranscriptId });
+		expect(harness.service.redoCalls.at(-1)).toMatchObject({ rootPath: firstRoot, sessionId: firstTranscriptId });
 
 		const movedRoot = path.join(harness.tempDir.path(), "moved-workspace");
 		fs.mkdirSync(movedRoot);
 		expect(await harness.session.newSession()).toBe(true);
 		await harness.session.moveSession(movedRoot);
-		const movedSessionId = harness.session.sessionId;
-		expect(movedSessionId).not.toBe(firstSessionId);
+		const movedTranscriptId = harness.sessionManager.getSessionId();
+		expect(movedTranscriptId).not.toBe(firstTranscriptId);
+		expect(movedTranscriptId).not.toBe(providerSessionId);
+		expect(harness.session.sessionId).toBe(providerSessionId);
 
 		await harness.session.createWorkspaceCheckpoint("after session transition");
 		await harness.session.captureIgnoredMutationBaseline(path.join(movedRoot, "ignored", "after.txt"));
 		await harness.session.listWorkspaceCheckpoints();
 		await harness.session.undoWorkspace("code");
-		expect(harness.service.createCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedSessionId });
+		await harness.session.redoWorkspace();
+		expect(harness.service.createCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedTranscriptId });
 		expect(harness.service.captureIgnoredCalls.at(-1)).toMatchObject({
 			rootPath: movedRoot,
 			path: path.join(movedRoot, "ignored", "after.txt"),
-			sessionId: movedSessionId,
+			sessionId: movedTranscriptId,
 		});
-		expect(harness.service.listCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedSessionId });
-		expect(harness.service.undoCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedSessionId });
+		expect(harness.service.listCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedTranscriptId });
+		expect(harness.service.undoCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedTranscriptId });
+		expect(harness.service.redoCalls.at(-1)).toMatchObject({ rootPath: movedRoot, sessionId: movedTranscriptId });
 	});
 
 	it("waits for active mutators or reports mutator_active before restoring", async () => {

@@ -143,7 +143,7 @@ describe("Warp terminal capabilities", () => {
 				process.execPath,
 				"--eval",
 				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
-console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+process.stdout.write(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
 			],
 			env,
 			stdout: "pipe",
@@ -157,6 +157,10 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 
 		expect(stderr).toBe("");
 		expect(exitCode).toBe(0);
+		expect(
+			stdout.trim(),
+			`Warp capability probe emitted no JSON on stdout (exit ${exitCode}; stderr: ${stderr})`,
+		).not.toBe("");
 		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
 		expect(resolved.id).toBe("warp");
 		expect(resolved.imageProtocol).toBe(resolved.expected);

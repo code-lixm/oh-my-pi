@@ -159,7 +159,14 @@ const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
 const ESCAPE_CANCEL_CONFIRM_WINDOW_MS = 2_000;
 
-type EscapeCancellationTarget = `maintenance:${0 | 1}${0 | 1}${0 | 1}` | "loop" | "collab" | "main" | "bash" | "eval";
+type EscapeCancellationTarget =
+	| `maintenance:${0 | 1}${0 | 1}${0 | 1}`
+	| "loop"
+	| "collab"
+	| "main"
+	| "bash"
+	| "eval"
+	| "async";
 
 export class InputController {
 	constructor(
@@ -403,6 +410,13 @@ export class InputController {
 				} else {
 					this.#clearEscapeCancellation();
 				}
+				return;
+			}
+			const hasRunningAsyncJobs = this.ctx.session.runningAsyncJobCount > 0;
+			if (hasRunningAsyncJobs) {
+				if (!this.#confirmEscapeCancellation("async")) return;
+				this.ctx.session.cancelAsyncJobs();
+				this.ctx.ui.requestRender();
 				return;
 			}
 			if (this.ctx.loadingAnimation) {

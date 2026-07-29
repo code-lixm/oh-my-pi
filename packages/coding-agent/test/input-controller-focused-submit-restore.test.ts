@@ -1,20 +1,15 @@
 /**
- * Regression: when an image-only or text+image submission is delivered to a
- * focused subagent (`#submitToFocusedSession`) and `viewSession.prompt`
- * rejects, the controller must restore both `text` AND `pendingImages` /
- * `pendingImageLinks`. Previously only `text` was handed back, so the pasted
- * image silently disappeared from the composer on retry.
+ * Focused subagent views are observation-only: editor submits never steer the
+ * focused session and leave text plus pending image draft state untouched.
  */
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
 function createContext(opts: { pendingImages: ImageContent[]; pendingImageLinks?: (string | undefined)[] }) {
 	let editorText = "";
-	const prompt = vi.fn(async () => {
-		throw new Error("focused dispatch rejected");
-	});
+	const prompt = vi.fn(async () => {});
 	const showError = vi.fn();
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
@@ -56,42 +51,41 @@ function createContext(opts: { pendingImages: ImageContent[]; pendingImageLinks?
 	return { ctx, editor, prompt, showError };
 }
 
-describe("InputController focused submit restore-on-error", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
+describe("InputController focused submit observation-only behavior", () => {
 
-	it("restores text and pending images when focused prompt rejects", async () => {
+	it("leaves text and pending images untouched without prompting the focused session", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, editor, prompt, showError } = createContext({
 			pendingImages: [image],
 			pendingImageLinks: ["local://draft.png"],
 		});
 		editor.setText("look at this");
+		editor.imageLinks = ["local://draft.png"];
 
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 		await ctx.editor.onSubmit?.("look at this");
 
-		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(showError).toHaveBeenCalledWith("focused dispatch rejected");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(showError).not.toHaveBeenCalled();
 		expect(editor.getText()).toBe("look at this");
 		expect(ctx.editor.pendingImages).toEqual([image]);
 		expect(ctx.editor.pendingImageLinks).toEqual(["local://draft.png"]);
 		expect(ctx.editor.imageLinks).toEqual(["local://draft.png"]);
 	});
 
-	it("restores image-only drafts when focused prompt rejects", async () => {
+	it("leaves image-only drafts untouched without prompting the focused session", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, editor, prompt, showError } = createContext({ pendingImages: [image] });
 		editor.setText("");
+		editor.imageLinks = [undefined];
 
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 		await ctx.editor.onSubmit?.("");
 
-		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(showError).toHaveBeenCalledWith("focused dispatch rejected");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(showError).not.toHaveBeenCalled();
 		expect(editor.getText()).toBe("");
 		expect(ctx.editor.pendingImages).toEqual([image]);
 		expect(ctx.editor.pendingImageLinks).toEqual([undefined]);

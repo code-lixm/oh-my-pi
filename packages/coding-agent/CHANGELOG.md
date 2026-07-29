@@ -6,6 +6,7 @@
 
 - Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed project-path-and-branch indexes under `~/.omp/codegraph/`; it combines non-blocking background initialization with persistent progress, optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, automatic TTL/orphan/per-project/global storage governance, graph-first agent guidance, and safe `omp codegraph status|list|clear|clear-all|prune` management without writing `.codegraph` into source repositories.
 - Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
+- Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -44,8 +45,13 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
-
+- Fixed resumed `accent` tool cards retaining color only behind the left rail and text glyphs; replayed headers, body content, and internal padding now emit a real full-width tinted surface with the final column left as an inset.
+- Fixed double-Escape having no cancellation target while asynchronous task/subagent jobs were running; background confirmation now cancels owner-scoped jobs and clears their pending result delivery.
+- Fixed focused subagent views showing `Waiting for progress…` indefinitely when observer progress was absent; the HUD now reports the live registry status.
 - Fixed Todo mid-run reconciliation waiting for twelve successful mutations before nudging the agent; successful delegation now counts as phase progress and the threshold is four, while read-only research and failed calls remain excluded.
+- Fixed mid-turn transcript rebuilds losing grouped Hub activity ownership; live todo and Hub components now remain in the transcript and are handed back to the event controller across theme, settings, and focus replays.
+- Fixed structural repository investigations skipping the available CodeGraph tool and starting with text scans; primary and subagent guidance now requires a `codegraph` call before `grep`/`glob`/`read`, while retaining immediate fallback when indexing is unavailable or incomplete.
+- Fixed workspace checkpoint ownership to use stable transcript session IDs instead of mutable provider session IDs, with per-session parent, rewind, undo, and redo state plus safe migration of existing metadata.
 - Fixed workspace checkpoint restore history so direct applies, undo, and redo persist the correct pre-restore guards across restarts, enforce session isolation under the workspace lock, invalidate stale redo state on new checkpoints, and keep internal guards out of permanent retention roots.
 - Fixed workspace checkpoints losing Git-ignored updates, creates, deletes, and renames by capturing path-tight pre-mutation baselines, persisting ignored tombstones across manifest upgrades, and preserving physical-path aliases without changing workspace identity.
 - Fixed workspace checkpoints leaking file, Git capsule, crash-staging, and read-only preview blobs in the content-addressed store; retention now performs fail-closed reachability sweeps under the workspace lock, hashes live comparisons without materializing CAS objects, and throttles automatic full-store traversals while still applying metadata limits on every checkpoint.
