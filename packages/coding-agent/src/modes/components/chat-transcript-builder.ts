@@ -321,7 +321,7 @@ export class ChatTranscriptBuilder {
 
 	#appendAssistantMessage(message: Extract<AgentMessage, { role: "assistant" }>): void {
 		const hideThinkingBlock = this.deps.hideThinkingBlock?.() ?? false;
-		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : true;
+		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : false;
 		const timeline = splitAssistantMessageToolTimeline(message);
 		const assistantComponent = new AssistantMessageComponent(
 			timeline.beforeTools,

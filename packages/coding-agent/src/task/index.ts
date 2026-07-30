@@ -110,6 +110,7 @@ export { AgentOutputManager } from "./output-manager";
 export type {
 	AgentDefinition,
 	AgentProgress,
+	AsyncJobDeliveryStatus,
 	SingleResult,
 	SubagentEventPayload,
 	SubagentLifecyclePayload,
@@ -352,6 +353,8 @@ interface SyncSpawnRef {
 	item: TaskItem;
 	index: number;
 	preAllocatedId?: string;
+	/** Queue time retained when this sync spawn shares a mixed task call. */
+	startedAtMs?: number;
 }
 
 /** Merged view of a sync spawn set's payloads: joined text plus flattened results/usage/paths. */
@@ -854,6 +857,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agent: agentType,
 					agentSource,
 					status: "pending",
+					startedAtMs: queuedAtMs,
 					activity: {
 						phase: "queued",
 						label: "Queued",
@@ -926,6 +930,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const message = error instanceof Error ? error.message : String(error);
 				failedSchedules.push(`${spawn.agentId}: ${message}`);
 				spawn.progress.status = "failed";
+				const completedAtMs = Date.now();
+				spawn.progress.completedAtMs = completedAtMs;
+				spawn.progress.durationMs = Math.max(0, completedAtMs - (spawn.progress.startedAtMs ?? completedAtMs));
 				settledCount += 1;
 				failedCount += 1;
 			}
@@ -942,7 +949,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						}),
 					},
 				],
-				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+				details: {
+					projectAgentsDir: null,
+					results: [],
+					totalDurationMs: 0,
+					progress: spawns.map(spawn => ({ ...spawn.progress })),
+				},
 			};
 		}
 
@@ -1049,19 +1061,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						item: spawn.item,
 						index: spawn.index,
 						preAllocatedId: spawn.agentId,
+						startedAtMs: spawn.progress.startedAtMs,
 					})),
-					onItemProgress: onUpdate
-						? (index, progress) => {
-								const spawn = spawns.find(candidate => candidate.index === index);
-								if (spawn) spawn.progress = { ...progress, index };
-								onUpdate({
-									content: [
-										{ type: "text", text: tSettingsUi("Running {syncLabel} inline...", { syncLabel }) },
-									],
-									details: buildAsyncDetails(),
-								});
-							}
-						: undefined,
+					onItemProgress: (index, progress) => {
+						const spawn = spawns.find(candidate => candidate.index === index);
+						if (spawn) spawn.progress = { ...progress, index };
+						if (!onUpdate) return;
+						onUpdate({
+							content: [{ type: "text", text: tSettingsUi("Running {syncLabel} inline...", { syncLabel }) }],
+							details: buildAsyncDetails(),
+						});
+					},
 				}),
 			signal,
 		);
@@ -1085,8 +1095,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						? "completed"
 						: "failed";
 				spawn.progress.durationMs = result.durationMs;
+				const resultText = result.output || result.stderr;
+				if (spawn.progress.resultText === undefined && resultText) spawn.progress.resultText = resultText;
 			} else {
 				spawn.progress.status = payloads[position] ? "failed" : "aborted";
+			}
+			const completedAtMs = spawn.progress.completedAtMs ?? Date.now();
+			spawn.progress.completedAtMs = completedAtMs;
+			if (spawn.progress.startedAtMs !== undefined) {
+				spawn.progress.durationMs = Math.max(0, completedAtMs - spawn.progress.startedAtMs);
 			}
 		}
 
@@ -1156,6 +1173,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const acquiredAt = startedAt;
 				if (runSignal.aborted) {
 					progress.status = "aborted";
+					progress.completedAtMs = startedAt;
+					progress.durationMs = Math.max(0, startedAt - (progress.startedAtMs ?? startedAt));
 					onSettled?.(true);
 					throw new Error(tSettingsUi("Aborted before execution"));
 				}
@@ -1171,6 +1190,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							// Async job lifecycle is tracked separately by `markRunning()`.
 							// Agent progress stays pending until the child emits `agent_start`.
 							progress.status = nextProgress.status;
+							progress.startedAtMs ??= nextProgress.startedAtMs;
+							if (nextProgress.completedAtMs === undefined) delete progress.completedAtMs;
+							else progress.completedAtMs = nextProgress.completedAtMs;
+							progress.durationMs = nextProgress.durationMs;
 							progress.resolvedModel = nextProgress.resolvedModel;
 							progress.resolvedModelIsFallback = nextProgress.resolvedModelIsFallback;
 							progress.tokens = nextProgress.tokens;
@@ -1187,6 +1210,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							progress.recentOutput = nextProgress.recentOutput.slice();
 							progress.retryState = nextProgress.retryState;
 							progress.retryFailure = nextProgress.retryFailure;
+							if (nextProgress.resultText === undefined) delete progress.resultText;
+							else progress.resultText = nextProgress.resultText;
 							const inflightTaskDetails = nextProgress.inflightTaskDetails;
 							progress.inflightTaskDetails = inflightTaskDetails
 								? {
@@ -1222,7 +1247,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						agentId,
 						progress.index,
 						true,
-						{ invokedAt: startedAt, acquiredAt },
+						{ invokedAt: progress.startedAtMs ?? startedAt, acquiredAt },
 					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
@@ -1230,7 +1255,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// (results: []) — treat it as a failure, not success.
 					const resultFailed = !singleResult || (singleResult.aborted ?? false) || singleResult.exitCode !== 0;
 					progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
-					progress.durationMs = singleResult?.durationMs ?? Math.max(0, Date.now() - startedAt);
+					const completedAtMs = progress.completedAtMs ?? Date.now();
+					progress.completedAtMs = completedAtMs;
+					progress.durationMs =
+						progress.startedAtMs === undefined
+							? (singleResult?.durationMs ?? Math.max(0, completedAtMs - startedAt))
+							: Math.max(0, completedAtMs - progress.startedAtMs);
 					progress.tokens = singleResult?.tokens ?? 0;
 					progress.requests = singleResult?.requests ?? 0;
 					progress.contextTokens = singleResult?.contextTokens;
@@ -1238,6 +1268,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.cost = singleResult?.usage?.cost.total ?? 0;
 					progress.extractedToolData = singleResult?.extractedToolData;
 					progress.retryFailure = singleResult?.retryFailure;
+					const resultText = singleResult ? singleResult.output || singleResult.stderr : undefined;
+					if (progress.resultText === undefined && resultText) progress.resultText = resultText;
 					progress.retryState = undefined;
 					if (singleResult?.resolvedModel) {
 						progress.resolvedModel = singleResult.resolvedModel;
@@ -1262,7 +1294,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						throw error;
 					}
 					progress.status = "failed";
-					progress.durationMs = Math.max(0, Date.now() - startedAt);
+					const completedAtMs = progress.completedAtMs ?? Date.now();
+					progress.completedAtMs = completedAtMs;
+					progress.durationMs = Math.max(0, completedAtMs - (progress.startedAtMs ?? startedAt));
 					onSettled?.(true);
 					const statusText = tSettingsUi("Background task {agentId} failed.", { agentId });
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
@@ -1274,6 +1308,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			{
 				id: agentId,
 				agentId,
+				description: progress.assignment ?? progress.task,
 				queued: true,
 				ownerId: this.session.getAgentId?.() ?? undefined,
 				onProgress: text => {
@@ -1334,12 +1369,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			defaultAgent,
 			signal,
 			spawns,
-			onItemProgress: onUpdate
-				? (index, progress) => {
-						latestProgress.set(index, { ...progress, index });
-						emitCombined();
-					}
-				: undefined,
+			onItemProgress: (index, progress) => {
+				latestProgress.set(index, { ...progress, index });
+				emitCombined();
+			},
 		});
 
 		const merged = mergeSyncPayloads(spawns, payloads);
@@ -1351,6 +1384,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				totalDurationMs: Date.now() - startTime,
 				usage: merged.usage,
 				outputPaths: merged.outputPaths,
+				progress: Array.from(latestProgress.entries())
+					.sort((a, b) => a[0] - b[0])
+					.map(([, progress]) => progress),
 			},
 		};
 	}
@@ -1374,7 +1410,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			spawns,
 			spawns.length,
 			async (spawn, _position, workerSignal) => {
-				const invokedAt = Date.now();
+				const invokedAt = spawn.startedAtMs ?? Date.now();
 				const itemOnUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined = onItemProgress
 					? update => {
 							const progress = update.details?.progress?.[0];
@@ -1491,6 +1527,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				execution.policy.discovery.projectAgentsDir,
 				Date.now() - startTime,
 				execution.mergeSummary,
+				latestProgress,
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
@@ -1499,8 +1536,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				details: {
 					projectAgentsDir: null,
 					results: [],
-					totalDurationMs: Date.now() - startTime,
 					...(latestProgress ? { progress: [latestProgress] } : {}),
+					totalDurationMs: Date.now() - startTime,
 				},
 			};
 		} finally {
@@ -1513,6 +1550,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		projectAgentsDir: string | null,
 		totalDurationMs: number,
 		mergeSummary: string,
+		progress?: AgentProgress,
 	): AgentToolResult<TaskToolDetails> {
 		const status = result.aborted
 			? "cancelled"
@@ -1562,6 +1600,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				totalDurationMs,
 				usage: result.usage,
 				outputPaths: result.outputPath ? [result.outputPath] : undefined,
+				...(progress ? { progress: [progress] } : {}),
 			},
 		};
 	}

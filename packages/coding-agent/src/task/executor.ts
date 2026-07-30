@@ -885,6 +885,8 @@ interface RunMonitorArgs {
 	parentToolCallId?: string;
 	detached?: boolean;
 	sessionFile?: string;
+	/** Epoch time at the spawn boundary; keeps queued and running progress on one clock. */
+	startedAtMs?: number;
 	/** Soft assistant-request budget; 0 disables the guard. */
 	softRequestBudget: number;
 	/** Whether crossing the soft budget injects a wrap-up steering notice. */
@@ -979,8 +981,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		softRequestBudget,
 		softRequestBudgetNotice,
 		maxRuntimeMs,
+		startedAtMs: requestedStartedAtMs,
 	} = args;
-	const startTime = Date.now();
+	const startedAtMs =
+		typeof requestedStartedAtMs === "number" && Number.isFinite(requestedStartedAtMs)
+			? requestedStartedAtMs
+			: Date.now();
 
 	const progress: AgentProgress = {
 		index,
@@ -988,6 +994,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		agent: agent.name,
 		agentSource: agent.source,
 		status: "pending",
+		startedAtMs,
 		task,
 		assignment,
 		description: args.description,
@@ -1261,7 +1268,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 	const emitProgressNow = () => {
 		refreshRecentOutput();
-		progress.durationMs = Date.now() - startTime;
+		progress.durationMs = Math.max(0, (progress.completedAtMs ?? Date.now()) - startedAtMs);
 		onProgress?.(snapshotProgress());
 		const activityGist =
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);
@@ -2277,6 +2284,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	) {
 		rawOutput = `[cancelled after ${progress.requests} req, ${progress.tokens} tok — last activity: "${formatSalvageSnippet(salvageText)}"]`;
 	}
+	// Keep the final payload intact for observers; renderers own sanitization and truncation.
+	progress.resultText = rawOutput;
+
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
 	const { abortedViaYield, hasYield } = finalized;
@@ -2321,8 +2331,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 				: (done.abortReason ??
 					(signal?.aborted ? monitor.resolveSignalAbortReason() : monitor.resolveAbortReasonText()))
 		: undefined;
-	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
 	monitor.beginFinalization();
+	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	progress.completedAtMs ??= Date.now();
 	monitor.scheduleProgress(true);
 	monitor.completeFinalization();
 	monitor.scheduleProgress(true);
@@ -2337,6 +2348,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			agentSource: agent.source,
 			description: progress.description,
 			status: progress.status as "completed" | "failed" | "aborted",
+			startedAtMs: progress.startedAtMs,
+			completedAtMs: progress.completedAtMs,
 			sessionFile: args.sessionFile,
 			index,
 		});
@@ -2356,7 +2369,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		stderr,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
-		durationMs: Date.now() - args.startTime,
+		durationMs: progress.durationMs,
 		tokens: progress.tokens,
 		requests: progress.requests,
 		contextTokens: progress.contextTokens,
@@ -2505,6 +2518,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		sessionFile,
+		startedAtMs: startTime,
 		softRequestBudget: 0,
 		softRequestBudgetNotice: false,
 		maxRuntimeMs: options.maxRuntimeMs ?? 0,
@@ -2519,6 +2533,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			agentSource: agent.source,
 			description: options.description,
 			status: "started",
+			startedAtMs: monitor.progress.startedAtMs,
 			sessionFile,
 			index,
 		});
@@ -2688,6 +2703,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		index,
 		id,
 		agent,
+		startedAtMs: options.invokedAt,
 		task,
 		assignment,
 		description: options.description,
@@ -3077,6 +3093,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					agentSource: agent.source,
 					description: options.description,
 					status: "started",
+					startedAtMs: progress.startedAtMs,
 					sessionFile: subtaskSessionFile,
 					index,
 				});

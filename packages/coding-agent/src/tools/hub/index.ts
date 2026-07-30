@@ -162,7 +162,8 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 	readonly parameters = hubSchema;
 	readonly strict = true;
 	readonly interruptible = (params: Partial<HubParams>): boolean => {
-		if (params.op === "wait") return true;
+		if (params.op === "wait" || (params.op === "send" && params.await === true && typeof params.to === "string"))
+			return true;
 		return params.op === "logs" && params.follow === true;
 	};
 	readonly loadMode = "essential";

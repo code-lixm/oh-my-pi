@@ -6,7 +6,7 @@
 import { describe, expect, it } from "bun:test";
 import { IrcBus, type IrcMessage, type IrcPendingReplyEvent } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, type AgentStatus } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 function fakeSession(): { session: AgentSession; delivered: IrcMessage[] } {
@@ -22,6 +22,68 @@ function fakeSession(): { session: AgentSession; delivered: IrcMessage[] } {
 		delivered,
 	};
 }
+
+type ReplyEndpoint = "sender" | "recipient";
+type ActiveReplyStatus = Extract<AgentStatus, "running" | "waiting">;
+
+interface OutstandingReplyFixture {
+	registry: AgentRegistry;
+	lifecycle: AgentLifecycleManager;
+	bus: IrcBus;
+	events: IrcPendingReplyEvent[];
+	message: IrcMessage;
+	ids: Record<ReplyEndpoint, string>;
+}
+
+async function openOutstandingReply(
+	senderStatus: ActiveReplyStatus,
+	recipientStatus: ActiveReplyStatus,
+): Promise<OutstandingReplyFixture> {
+	const registry = new AgentRegistry();
+	const lifecycle = new AgentLifecycleManager(registry);
+	const bus = new IrcBus(registry, lifecycle);
+	const sender = fakeSession();
+	const recipient = fakeSession();
+	const ids = { sender: "Sender", recipient: "Recipient" } as const;
+	registry.register({
+		id: ids.sender,
+		displayName: ids.sender,
+		kind: "main",
+		session: sender.session,
+		status: senderStatus,
+	});
+	registry.register({
+		id: ids.recipient,
+		displayName: ids.recipient,
+		kind: "sub",
+		parentId: ids.sender,
+		session: recipient.session,
+		status: recipientStatus,
+	});
+	const events: IrcPendingReplyEvent[] = [];
+	bus.onPendingReplyChange(event => events.push(event));
+
+	const receipt = await bus.send(
+		{ from: ids.sender, to: ids.recipient, body: "Need a decision" },
+		{ expectsReply: true },
+	);
+	if (receipt.outcome !== "injected") {
+		await lifecycle.dispose();
+		throw new Error(`Expected reply request to be injected, got ${receipt.outcome}`);
+	}
+	const message = recipient.delivered[0];
+	if (!message) {
+		await lifecycle.dispose();
+		throw new Error("Expected reply request to reach Recipient");
+	}
+	return { registry, lifecycle, bus, events, message, ids };
+}
+
+const terminalReplyTransitions = (["sender", "recipient"] as const).flatMap(endpoint =>
+	(["running", "waiting"] as const).flatMap(fromStatus =>
+		(["idle", "parked", "aborted"] as const).map(toStatus => ({ endpoint, fromStatus, toStatus })),
+	),
+);
 
 describe("IRC expected-reply lifecycle", () => {
 	it("opens obligations, resolves only the reciprocal reply, and clears them on dismissal or recipient end", async () => {
@@ -89,4 +151,49 @@ describe("IRC expected-reply lifecycle", () => {
 			await lifecycle.dispose();
 		}
 	});
+
+	it.each(terminalReplyTransitions)(
+		"clears an outstanding reply when the $endpoint moves from $fromStatus to $toStatus",
+		async ({ endpoint, fromStatus, toStatus }) => {
+			const fixture = await openOutstandingReply(
+				endpoint === "sender" ? fromStatus : "running",
+				endpoint === "recipient" ? fromStatus : "running",
+			);
+			try {
+				expect(fixture.bus.getPendingReplySnapshot().messages.map(message => message.id)).toEqual([
+					fixture.message.id,
+				]);
+				expect(fixture.events.map(event => event.type)).toEqual(["opened"]);
+
+				expect(fixture.registry.setStatus(fixture.ids[endpoint], toStatus)).toBe(true);
+
+				expect(fixture.bus.getPendingReplySnapshot().messages).toEqual([]);
+				expect(fixture.events.map(event => event.type)).toEqual(["opened", "dismissed"]);
+				const lastEvent = fixture.events.at(-1);
+				expect(lastEvent?.type).toBe("dismissed");
+				expect(lastEvent?.message.id).toBe(fixture.message.id);
+				expect(lastEvent?.snapshot.messages).toEqual([]);
+			} finally {
+				await fixture.lifecycle.dispose();
+			}
+		},
+	);
+
+	it.each([{ endpoint: "sender" }, { endpoint: "recipient" }] as const)(
+		"keeps an outstanding reply while the $endpoint moves from running to waiting",
+		async ({ endpoint }) => {
+			const fixture = await openOutstandingReply("running", "running");
+			try {
+				expect(fixture.registry.setStatus(fixture.ids[endpoint], "waiting")).toBe(true);
+
+				expect(fixture.bus.getPendingReplySnapshot().messages.map(message => message.id)).toEqual([
+					fixture.message.id,
+				]);
+				expect(fixture.events.map(event => event.type)).toEqual(["opened"]);
+				expect(fixture.events.at(-1)?.snapshot.messages.map(message => message.id)).toEqual([fixture.message.id]);
+			} finally {
+				await fixture.lifecycle.dispose();
+			}
+		},
+	);
 });

@@ -1,5 +1,5 @@
 import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
-import { formatBytes } from "@oh-my-pi/pi-utils";
+import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { applyStableBackground, framedBlock, outputBlockContentWidth } from "../../tui";
 import { hasImageMarker, imageReferenceHyperlink, renderPlaceholders } from "../image-references";
@@ -44,13 +44,19 @@ export class UserMessageComponent extends Container {
 						? imageReferenceHyperlink(label, index, imageLinks, imageLabel)
 						: theme.fg("accent", `\x1b[1m${label}\x1b[22m`),
 			});
-		const md = new Markdown(text, framedImageMessage ? 0 : 1, framedImageMessage ? 0 : 1, getMarkdownTheme(), {
-			color,
-			bgColor:
-				synthetic || framedImageMessage
-					? undefined
-					: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
-		});
+		const md = new Markdown(
+			sanitizeText(text),
+			framedImageMessage ? 0 : 1,
+			framedImageMessage ? 0 : 1,
+			getMarkdownTheme(),
+			{
+				color,
+				bgColor:
+					synthetic || framedImageMessage
+						? undefined
+						: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
+			},
+		);
 		md.setIgnoreTight(true);
 		if (framedImageMessage) {
 			this.addChild(
@@ -168,7 +174,7 @@ function summarizeSyntheticInput(text: string): string {
 	const size = formatBytes(Buffer.byteLength(text, "utf-8"));
 	const lineCount = text === "" ? 0 : text.split("\n").length;
 	const dot = theme.sep.dot.trim();
-	return `${syntheticInputLabel(text)} ${dot} ${size} ${dot} ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+	return `${syntheticInputLabel(sanitizeText(text))} ${dot} ${size} ${dot} ${lineCount} line${lineCount === 1 ? "" : "s"}`;
 }
 
 /** First Markdown heading text in `text`, else `Synthetic input`. */

@@ -153,6 +153,7 @@ interface TrackedJobLike {
 	queuedAt?: number;
 	startedAt?: number;
 	lastProgressAt?: number;
+	endedAt?: number;
 	latestDetails?: Record<string, unknown>;
 	resultText?: string;
 	errorText?: string;
@@ -237,7 +238,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 			type: latest.type,
 			status: latest.status as JobSnapshot["status"],
 			label: latest.label,
-			durationMs: Math.max(0, now - latest.startTime),
+			durationMs: Math.max(0, (latest.endedAt ?? now) - latest.startTime),
 			...(queued ? { queued: true } : {}),
 			...(queuedAt !== undefined ? { queuedAt } : {}),
 			...(startedAt !== undefined ? { startedAt } : {}),

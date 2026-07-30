@@ -20,7 +20,7 @@ describe("InputController thinking visibility", () => {
 		const ctx = {
 			hideThinkingBlock: false,
 			effectiveHideThinkingBlock: false,
-			settings: { set },
+			settings: { get: () => false, set },
 			session: { agent: { hideThinkingSummary: false }, thinkingLevel: "high" },
 			chatContainer,
 			streamingComponent: undefined,
@@ -85,7 +85,7 @@ describe("InputController thinking visibility", () => {
 			hideThinkingBlock: false,
 			effectiveHideThinkingBlock: false,
 			hasDisplayableThinkingContent: true,
-			settings: { set },
+			settings: { get: () => false, set },
 			session: { agent: { hideThinkingSummary: false }, thinkingLevel: "off" },
 			chatContainer: { children: [assistant], clear: vi.fn(), addChild: vi.fn() },
 			streamingComponent: undefined,

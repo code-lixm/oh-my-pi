@@ -250,6 +250,17 @@ function parseCompleteProgress(value: unknown): AgentProgress | undefined {
 	if (assignment !== undefined) progress.assignment = assignment;
 	const description = typeof record.description === "string" ? record.description : undefined;
 	if (description !== undefined) progress.description = description;
+	const resultText = typeof record.resultText === "string" ? record.resultText : undefined;
+	if (resultText !== undefined) progress.resultText = resultText;
+	const deliveryStatus = record.deliveryStatus;
+	if (
+		deliveryStatus === "pending" ||
+		deliveryStatus === "delivering" ||
+		deliveryStatus === "delivered" ||
+		deliveryStatus === "dead-letter"
+	) {
+		progress.deliveryStatus = deliveryStatus;
+	}
 	const activity = parseActivityState(record.activity);
 	if (activity) progress.activity = activity;
 	const lastIntent = typeof record.lastIntent === "string" ? record.lastIntent : undefined;

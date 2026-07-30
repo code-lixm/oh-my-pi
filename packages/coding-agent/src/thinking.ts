@@ -111,6 +111,33 @@ export function shouldDisableReasoning(level: ThinkingLevel | undefined): boolea
 	return level === ThinkingLevel.Off;
 }
 
+interface ThinkingSummaryVisibilityTarget {
+	hideThinkingSummary: boolean | undefined;
+}
+
+interface RegisteredThinkingSession {
+	session: { agent: ThinkingSummaryVisibilityTarget } | null;
+}
+
+/** Visible thinking always requests provider summaries; omission only applies while blocks are hidden. */
+export function resolveHideThinkingSummary(hideThinkingBlock: boolean, omitThinking: boolean): boolean {
+	return hideThinkingBlock && omitThinking;
+}
+
+/** Apply the effective provider-summary policy to Main and every live registered session. */
+export function applyThinkingSummaryVisibility(
+	primary: ThinkingSummaryVisibilityTarget,
+	registered: Iterable<RegisteredThinkingSession>,
+	hideThinkingBlock: boolean,
+	omitThinking: boolean,
+): void {
+	const hideThinkingSummary = resolveHideThinkingSummary(hideThinkingBlock, omitThinking);
+	primary.hideThinkingSummary = hideThinkingSummary;
+	for (const ref of registered) {
+		if (ref.session) ref.session.agent.hideThinkingSummary = hideThinkingSummary;
+	}
+}
+
 /**
  * Resolves a selector against the current model while preserving explicit "off".
  */

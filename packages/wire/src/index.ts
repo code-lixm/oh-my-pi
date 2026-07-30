@@ -31,6 +31,8 @@ export interface ImageContent {
 export interface ThinkingContent {
 	type: "thinking";
 	thinking: string;
+	/** Frozen wall-clock duration recorded when this thinking block completed. */
+	durationMs?: number;
 }
 
 export interface RedactedThinkingContent {

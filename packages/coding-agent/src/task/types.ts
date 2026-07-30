@@ -23,6 +23,9 @@ export type StructuredSubagentSchemaSource = "caller" | "agent" | "session" | "n
 /** Final validation state of a structured subagent invocation. */
 export type StructuredSubagentValidationStatus = "valid" | "invalid" | "unavailable";
 
+/** Durable lifecycle for an asynchronously delivered task result. */
+export type AsyncJobDeliveryStatus = "pending" | "delivering" | "delivered" | "dead-letter";
+
 /**
  * Parsed structured completion and its schema-validation metadata.
  *
@@ -92,6 +95,10 @@ export interface SubagentLifecyclePayload {
 	agentSource: AgentSource;
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";
+	/** Epoch time (ms) when the task began or was queued. */
+	startedAtMs?: number;
+	/** Epoch time (ms) when the task reached its terminal status. */
+	completedAtMs?: number;
 	sessionFile?: string;
 	parentToolCallId?: string;
 	index: number;
@@ -400,6 +407,15 @@ export interface AgentProgress {
 	agent: string;
 	agentSource: AgentSource;
 	status: "pending" | "running" | "completed" | "failed" | "aborted";
+	/** Epoch time (ms) when the task began or was queued. */
+	startedAtMs?: number;
+	/** Epoch time (ms) when a terminal task completed, failed, or was aborted. Undefined while it runs. */
+	completedAtMs?: number;
+	/** Exact terminal return payload. Renderers sanitize and bound it at display time. */
+	resultText?: string;
+	/** Authoritative async-delivery state when the producer can supply one. */
+	deliveryStatus?: AsyncJobDeliveryStatus;
+
 	task: string;
 	assignment?: string;
 	description?: string;

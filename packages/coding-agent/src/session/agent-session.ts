@@ -600,6 +600,12 @@ export class AgentSession {
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
+	/**
+	 * Timing for thinking blocks in the assistant message currently streaming.
+	 * Finalized values remain until `message_end` so its distinct final snapshot
+	 * receives the same durable metadata before listeners and persistence.
+	 */
+	#thinkingBlockTimings = new Map<number, { startedAtMs: number; durationMs?: number }>();
 
 	// Custom commands (TypeScript slash commands)
 	#customCommands: LoadedCustomCommand[] = [];
@@ -2059,6 +2065,7 @@ export class AgentSession {
 			status: job.status,
 			label: job.label,
 			startTime: job.startTime,
+			endedAt: job.endedAt,
 		}));
 		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(job => ({
 			id: job.id,
@@ -2066,6 +2073,7 @@ export class AgentSession {
 			status: job.status,
 			label: job.label,
 			startTime: job.startTime,
+			endedAt: job.endedAt,
 		}));
 		const delivery = manager.getDeliveryState(ownerFilter);
 		return { running, recent, delivery };
@@ -2690,7 +2698,54 @@ export class AgentSession {
 		return true;
 	}
 
+	#stampThinkingDuration(message: AssistantMessage, contentIndex: number, durationMs: number): void {
+		const content = message.content[contentIndex];
+		if (content?.type === "thinking") content.durationMs = durationMs;
+	}
+
+	#trackThinkingDurations(event: AgentEvent): void {
+		if (event.type === "message_start") {
+			if (event.message.role === "assistant") this.#thinkingBlockTimings.clear();
+			return;
+		}
+
+		if (event.type === "message_update") {
+			if (event.message.role !== "assistant") return;
+			const { assistantMessageEvent } = event;
+			const now = Date.now();
+			switch (assistantMessageEvent.type) {
+				case "thinking_start":
+					this.#thinkingBlockTimings.set(assistantMessageEvent.contentIndex, { startedAtMs: now });
+					break;
+				case "thinking_delta":
+					// Some providers omit `thinking_start`; its first delta is the start.
+					if (!this.#thinkingBlockTimings.has(assistantMessageEvent.contentIndex)) {
+						this.#thinkingBlockTimings.set(assistantMessageEvent.contentIndex, { startedAtMs: now });
+					}
+					break;
+				case "thinking_end": {
+					const timing = this.#thinkingBlockTimings.get(assistantMessageEvent.contentIndex);
+					if (!timing) break;
+					timing.durationMs ??= Math.max(0, now - timing.startedAtMs);
+					this.#stampThinkingDuration(event.message, assistantMessageEvent.contentIndex, timing.durationMs);
+					break;
+				}
+			}
+			return;
+		}
+
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			const now = Date.now();
+			for (const [contentIndex, timing] of this.#thinkingBlockTimings) {
+				const durationMs = timing.durationMs ?? Math.max(0, now - timing.startedAtMs);
+				this.#stampThinkingDuration(event.message, contentIndex, durationMs);
+			}
+			this.#thinkingBlockTimings.clear();
+		}
+	}
+
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		this.#trackThinkingDurations(event);
 		this.#updateActivityForAgentEvent(event);
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.

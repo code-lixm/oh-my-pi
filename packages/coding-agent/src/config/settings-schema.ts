@@ -1292,7 +1292,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	proseOnlyThinking: {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "model",
 			group: tSettingsUi("Thinking"),

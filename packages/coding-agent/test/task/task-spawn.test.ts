@@ -19,7 +19,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentDefinition, SingleResult, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 const taskAgent: AgentDefinition = {
@@ -103,9 +103,10 @@ describe("task spawn routing", () => {
 			projectAgentsDir: null,
 		});
 		const gate = deferred();
+		const actualPayload = "ACTUAL_SUBAGENT_PAYLOAD";
 		const runSpy = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			await gate.promise;
-			return makeResult(options.id ?? "?");
+			return makeResult(options.id ?? "?", { output: actualPayload });
 		});
 
 		const manager = createManager();
@@ -136,6 +137,16 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("Spawnling is now idle");
 		expect(job!.resultText).toContain("message it via `hub` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
+		const latestDetails = job!.latestDetails;
+		expect(latestDetails).toBeDefined();
+		if (!latestDetails) throw new Error("Expected terminal task progress details");
+		const taskDetails = latestDetails as unknown as TaskToolDetails;
+		const progress = taskDetails.progress;
+		expect(progress).toBeDefined();
+		if (!progress) throw new Error("Expected terminal task progress");
+		const terminalProgress = progress.find(progress => progress.id === "Spawnling");
+		expect(terminalProgress).toMatchObject({ status: "completed", resultText: actualPayload });
+		expect(terminalProgress?.resultText).not.toContain("is now idle");
 		expect(runSpy).toHaveBeenCalledTimes(1);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini"]);
 	});

@@ -53,13 +53,13 @@ function makeHub(agents: AgentRegistry) {
 	});
 }
 
-function renderedAgentLabels(hub: AgentHubOverlayComponent): string[] {
-	// Entry first lines are ` <cursor> <status-glyph> <display label> …`; task
-	// lines are indented deeper and chrome lines never carry the cursor slot.
+function renderedAgentLabels(hub: AgentHubOverlayComponent, knownLabels: readonly string[]): string[] {
+	// Sort assertions only need the relative order of the fixture labels. Do not
+	// bind them to incidental cursor or status-glyph columns in the row chrome.
 	const labels: string[] = [];
 	for (const raw of hub.render(120)) {
-		const match = /^ (?:❯| ) (\S+) (\S+)/u.exec(Bun.stripANSI(raw));
-		if (match) labels.push(match[2]!);
+		const label = knownLabels.find(candidate => Bun.stripANSI(raw).includes(candidate));
+		if (label) labels.push(label);
 	}
 	return labels;
 }
@@ -102,7 +102,7 @@ describe("Agent hub row ordering", () => {
 			agents.register({ id: "C", displayName: "Gamma", kind: "sub", session: sessionC });
 
 			hub = makeHub(agents);
-			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha"]);
+			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual(["Gamma", "Beta", "Alpha"]);
 
 			// Bump A's lastActivity far ahead of the others. The hub is already open,
 			// so the captured order must not change.
@@ -115,9 +115,14 @@ describe("Agent hub row ordering", () => {
 			const sessionD = {} as AgentSession;
 			agents.register({ id: "D", displayName: "Delta", kind: "sub", session: sessionD });
 
-			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha"]);
+			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual(["Gamma", "Beta", "Alpha"]);
 			vi.advanceTimersByTime(100);
-			expect(renderedAgentLabels(hub)).toEqual(["Gamma", "Beta", "Alpha", "Delta"]);
+			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual([
+				"Gamma",
+				"Beta",
+				"Alpha",
+				"Delta",
+			]);
 		} finally {
 			hub?.dispose();
 			vi.useRealTimers();
@@ -125,7 +130,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("truncates lines and sanitizes newlines to prevent terminal wrapping", () => {
+	it("strips untrusted terminal controls and bounds hub rows", () => {
 		geometry = stubStdoutGeometry(80);
 		const agents = new AgentRegistry();
 		const sessionA = {} as AgentSession;
@@ -143,7 +148,7 @@ describe("Agent hub row ordering", () => {
 				kind: "subagent",
 				label: "Subagent",
 				status: "active",
-				description: "Complete the assignment below, thoroughly:\n- check performance\n- check leaks",
+				description: "CONTROL_MARKER\x1b[2J\treview terminal safety\n- check wrapping\r- check leaks",
 				lastUpdate: Date.now(),
 			},
 		]);
@@ -158,15 +163,20 @@ describe("Agent hub row ordering", () => {
 			focusAgent: async () => {},
 		});
 
-		const lines = hub.render(80);
-		for (const line of lines) {
-			const cleanLine = Bun.stripANSI(line);
-			expect(cleanLine.includes("\n")).toBe(false);
-			expect(cleanLine.includes("\r")).toBe(false);
-			const width = visibleWidth(line);
-			expect(width).toBeLessThanOrEqual(78);
+		try {
+			const lines = hub.render(80);
+			const rawOutput = lines.join("\n");
+			expect(rawOutput).not.toContain("\x1b[2J");
+			expect(rawOutput).not.toContain("\t");
+			expect(Bun.stripANSI(rawOutput)).toContain("CONTROL_MARKER");
+			for (const line of lines) {
+				const cleanLine = Bun.stripANSI(line);
+				expect(cleanLine).not.toMatch(/[\t\r\n]/u);
+				expect(visibleWidth(line)).toBeLessThanOrEqual(78);
+			}
+		} finally {
+			hub.dispose();
 		}
-		hub.dispose();
 	});
 
 	it("switches summary status labels to zh-CN at runtime without localizing user-facing agent labels", () => {
@@ -219,7 +229,7 @@ describe("Agent hub row ordering", () => {
 		const agents = new AgentRegistry();
 		// A collab guest / observer-only row carries no live AgentSession, so the
 		// badge must come from the executor-reported progress instead.
-		agents.register({ id: "GuestAgent", displayName: "Guest Agent", kind: "sub", session: null });
+		agents.register({ id: "GuestAgent", displayName: "Guest", kind: "sub", session: null, status: "running" });
 
 		const observers = new SessionObserverRegistry();
 		vi.spyOn(observers, "getSessions").mockReturnValue([
@@ -247,7 +257,16 @@ describe("Agent hub row ordering", () => {
 		});
 
 		try {
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → openai/gpt-4o");
+			for (const width of [60, 120]) {
+				geometry?.restore();
+				geometry = stubStdoutGeometry(width);
+				const lines = hub.render(width);
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width - 2);
+				const rendered = Bun.stripANSI(lines.join("\n"));
+				expect(rendered).toContain("Guest");
+				expect(rendered).toContain("running");
+				expect(rendered).toContain("fallback → openai/gpt-4o");
+			}
 		} finally {
 			hub.dispose();
 		}
@@ -295,7 +314,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("groups subagents beneath their owning Main and omits an active-Main row", () => {
+	it("flattens non-Main agents without rendering owning Main labels or groups", () => {
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
 		agents.register({
@@ -342,60 +361,135 @@ describe("Agent hub row ordering", () => {
 		});
 
 		try {
-			const lines = hub.render(120).map(Bun.stripANSI);
-			const rendered = lines.join("\n");
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
 			expect(rendered).toContain("Agent Hub");
-			expect(rendered).toContain("Main: Primary workspace");
-			expect(rendered).toContain("Main: Review workspace");
 			expect(rendered).toContain("Primary worker");
 			expect(rendered).toContain("Review worker");
-			const primaryGroup = lines.findIndex(line => line.includes("Main: Primary workspace"));
-			const reviewGroup = lines.findIndex(line => line.includes("Main: Review workspace"));
-			expect(primaryGroup).toBeLessThan(lines.findIndex(line => line.includes("Primary worker")));
-			expect(reviewGroup).toBeLessThan(lines.findIndex(line => line.includes("Review worker")));
-			// The active Main appears once in the header and once as the child-group label,
-			// never as an independently selectable row.
-			expect(lines.filter(line => line.includes("Primary workspace"))).toHaveLength(2);
+			expect(rendered).not.toContain("Primary registry identity");
+			expect(rendered).not.toContain("Review registry identity");
+			expect(rendered).not.toContain("Primary workspace");
+			expect(rendered).not.toContain("Review workspace");
+			expect(rendered).not.toContain("Main:");
+			expect(rendered).not.toContain("Subagents");
 		} finally {
 			hub.dispose();
 		}
 	});
 
-	it("renders every lifecycle state in one aligned status column", () => {
+	it("keeps fixed wide columns and an independent narrow model row within the viewport", () => {
+		vi.useFakeTimers();
 		setSettingsUiLocale("en");
-		geometry = stubStdoutGeometry(120);
+		geometry = stubStdoutGeometry(160);
 		const agents = new AgentRegistry();
+		setSystemTime(1_000);
 		agents.register({
 			id: "Main",
-			displayName: "Primary",
+			displayName: "Primary workspace",
 			kind: "main",
 			session: {} as AgentSession,
 			status: "idle",
 		});
-		const states = [
-			["Runner", "running"],
-			["Waiter", "waiting"],
-			["Idler", "idle"],
-			["Parker", "parked"],
-			["Aborter", "aborted"],
-		] as const;
-		for (const [id, status] of states) {
-			agents.register({ id, displayName: id, kind: "sub", parentId: "Main", session: {} as AgentSession, status });
-		}
-		const hub = makeHub(agents);
+		const session = { model: { id: "test/model" } } as unknown as AgentSession;
+		agents.register({
+			id: "Telemetry Worker",
+			displayName: "Telemetry Worker",
+			kind: "sub",
+			parentId: "Main",
+			session,
+			status: "running",
+		});
+		setSystemTime(61_000);
+		const observers = new SessionObserverRegistry();
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id: "Telemetry Worker",
+				kind: "subagent",
+				label: "Subagent",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					activity: {
+						phase: "streaming",
+						label: "Streaming response",
+						detail: "Reading render contract",
+						phaseStartedAtMs: 60_000,
+						lastActivityAtMs: 60_000,
+					},
+					tokensPerSecond: 12.3,
+					tokensPerSecondLive: true,
+					contextTokens: 4_000,
+					contextWindow: 8_000,
+					toolCount: 2,
+					tokens: 1_234,
+					cost: 0.25,
+					durationMs: 5_000,
+				} as never,
+			},
+		]);
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+		});
 
 		try {
-			const lines = hub.render(120).map(Bun.stripANSI);
-			const statusEnds = states.map(([label, status]) => {
-				const row = lines.find(line => line.includes(label));
-				expect(row).toBeDefined();
-				const statusAt = row!.indexOf(status);
-				expect(statusAt).toBeGreaterThan(0);
-				expect(row!.trimEnd()).toEndWith(status);
-				expect(visibleWidth(row!)).toBeLessThanOrEqual(118);
-				return visibleWidth(row!.slice(0, statusAt + status.length));
-			});
-			expect(new Set(statusEnds).size).toBe(1);
+			const wideLines = hub.render(160).map(Bun.stripANSI);
+			const wideRendered = wideLines.join("\n");
+			const columnHeader = wideLines.find(
+				line => line.includes("Status") && line.includes("Duration") && line.includes("Model"),
+			);
+			const workerRow = wideLines.find(line => line.includes("Telemetry Worker"));
+			const summaryRow = wideLines.find(line => line.includes("Dynamic summary"));
+
+			expect(columnHeader).toBeDefined();
+			expect(workerRow).toBeDefined();
+			expect(summaryRow).toContain("Reading render contract");
+			expect(workerRow!.indexOf("running")).toBe(columnHeader!.indexOf("Status"));
+			expect(workerRow!.indexOf("[")).toBe(columnHeader!.indexOf("Progress"));
+			expect(workerRow!.indexOf("00:00:05")).toBe(columnHeader!.indexOf("Duration"));
+			expect(workerRow!.indexOf("test/model")).toBe(columnHeader!.indexOf("Model"));
+			expect(wideRendered).not.toContain("Primary workspace");
+			expect(wideRendered).not.toContain("Main:");
+			expect(wideRendered).not.toContain("Subagents");
+
+			const columnIndex = wideLines.indexOf(columnHeader!);
+			const topHints = wideLines
+				.slice(0, columnIndex)
+				.filter(
+					line =>
+						line.includes("j/k select") ||
+						line.includes("f focus") ||
+						line.includes("m message") ||
+						line.includes("x kill"),
+				)
+				.join("\n");
+			expect(topHints).toContain("j/k select");
+			expect(topHints).toContain("Enter open transcript");
+			expect(topHints).toContain("f focus");
+			expect(topHints).toContain("m message");
+			expect(topHints).toContain("x kill");
+			expect(topHints).toContain("Esc/←← close");
+			expect(topHints).not.toContain("r revive");
+
+			for (const width of [60, 80]) {
+				geometry?.restore();
+				geometry = stubStdoutGeometry(width);
+				const narrowLines = hub.render(width).map(Bun.stripANSI);
+				const narrowRendered = narrowLines.join("\n");
+				for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width - 2);
+				const workerIndex = narrowLines.findIndex(line => line.includes("Telemetry Worker"));
+				const modelIndex = narrowLines.findIndex(line => line.includes("Model") && line.includes("test/model"));
+				expect(workerIndex).toBeGreaterThanOrEqual(0);
+				expect(modelIndex).toBeGreaterThan(workerIndex);
+				expect(narrowRendered).toContain("running");
+				expect(narrowRendered).not.toContain("Primary workspace");
+				expect(narrowRendered).not.toContain("Main:");
+				expect(narrowRendered).not.toContain("Subagents");
+			}
 		} finally {
 			hub.dispose();
 		}

@@ -24,24 +24,37 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { AgentRef, AgentRegistry } from "../../registry/agent-registry";
+import type { AgentActivityState } from "../../registry/agent-activity";
+import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { renderAgentActivityDisplay, renderAgentStatusBadge, selectAgentActivity } from "./agent-activity-display";
+import {
+	formatAgentDuration,
+	renderAgentActivityDisplay,
+	renderAgentStatusBadge,
+	selectAgentActivity,
+} from "./agent-activity-display";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
+import { rawKeyHint } from "./keybinding-hints";
 
 export interface AgentTranscriptViewerDeps {
 	agentId: string;
+	/** Stable Hub-visible order. Main is excluded; advisors and terminal rows remain viewable. */
+	getVisibleAgentIds?: () => readonly string[];
+	/** Keeps the Hub selection synchronized after an in-place viewer retarget. */
+	onAgentChange?: (agentId: string) => void;
+	/** Latest async result-delivery state retained by the job manager. */
+	getTaskOutcome?: (agentId: string) => Pick<TranscriptProgressSnapshot, "resultText" | "deliveryStatus"> | undefined;
 	registry: AgentRegistry;
 	/** Collab guest: read transcript from the host instead of a local file. */
 	remote?: AgentHubRemote;
@@ -67,17 +80,46 @@ export interface AgentTranscriptViewerDeps {
 const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
-const HEADER_METADATA_GAP = 2;
+const FIXED_HEADER_ROWS = 6;
+const FIXED_FOOTER_ROWS = 1;
 
-/** Sanitize wire-delivered error text for a single TUI row: tabs → spaces,
- *  newlines collapsed, absolute paths shortened, truncated to `maxWidth`.
+/** Sanitize wire-delivered error text for a single TUI row: tabs/newlines → spaces, strip controls,
+ *  absolute paths shortened, truncated to `maxWidth`.
  *  `#remoteError` arrives as `String(err)` from the host — it can carry
  *  multi-line stacks and absolute host paths that would break the frame's
  *  1-row accounting and leak host filesystem layout to guests. */
 function sanitizeErrorLine(text: string, maxWidth: number): string {
-	const singleLine = replaceTabs(text)
-		.replace(/[\r\n]+/g, " ")
-		.replace(/\/[^\s'")\]]+/g, p => shortenPath(p));
+	const singleLine = sanitizeText(replaceTabs(text).replace(/[\r\n]+/g, " ")).replace(/\/[^\s'")\]]+/g, p =>
+		shortenPath(p),
+	);
+	return truncateToWidth(singleLine, Math.max(1, maxWidth));
+}
+
+/** Optional durable completion data supplied by task-progress owners. */
+interface TranscriptProgressSnapshot {
+	status?: string;
+	startedAtMs?: number;
+	completedAtMs?: number;
+	durationMs?: number;
+	resolvedModel?: string;
+	lastIntent?: string;
+	currentToolArgs?: string;
+	description?: string;
+	task?: string;
+	resultText?: string;
+	deliveryStatus?: "pending" | "delivering" | "delivered" | "dead-letter";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Normalize arbitrary task/agent text before it reaches one fixed-height TUI row. */
+function sanitizeViewerText(value: unknown, maxWidth: number): string {
+	if (typeof value !== "string") return "";
+	const singleLine = sanitizeText(replaceTabs(value).replace(/[\r\n]+/g, " "))
+		.replace(/ +/g, " ")
+		.trim();
 	return truncateToWidth(singleLine, Math.max(1, maxWidth));
 }
 
@@ -130,6 +172,7 @@ function sentinelsFromFile(file: string, size: number): LocalTranscriptSentinel[
 }
 
 export class AgentTranscriptViewer implements Component {
+	#agentId: string;
 	#builder: ChatTranscriptBuilder;
 	#scrollView: ScrollView;
 	#followBottom = true;
@@ -150,6 +193,7 @@ export class AgentTranscriptViewer implements Component {
 	#disposed = false;
 
 	constructor(private readonly deps: AgentTranscriptViewerDeps) {
+		this.#agentId = deps.agentId;
 		this.#builder = new ChatTranscriptBuilder({
 			ui: deps.ui,
 			getTool: deps.getTool,
@@ -165,8 +209,7 @@ export class AgentTranscriptViewer implements Component {
 			theme: { track: t => theme.fg("dim", t), thumb: t => theme.fg("accent", t) },
 		});
 		this.#refresh();
-		this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
-		this.#pollTimer.unref?.();
+		this.#startPolling();
 	}
 
 	dispose(): void {
@@ -174,6 +217,48 @@ export class AgentTranscriptViewer implements Component {
 		this.#stopPolling();
 		this.#remoteToken++;
 		this.#builder.dispose();
+	}
+
+	/** Current target, which may change while the fullscreen overlay stays mounted. */
+	get agentId(): string {
+		return this.#agentId;
+	}
+
+	/**
+	 * Change the displayed agent without recreating the fullscreen overlay.
+	 * Existing async remote reads are invalidated before the new source is loaded.
+	 */
+	retarget(agentId: string): boolean {
+		if (this.#disposed || !agentId || agentId === MAIN_AGENT_ID || agentId === this.#agentId) return false;
+		this.#agentId = agentId;
+		this.#resetTranscriptState();
+		this.deps.onAgentChange?.(agentId);
+		this.#startPolling();
+		this.#refresh();
+		this.deps.requestRender();
+		return true;
+	}
+
+	#resetTranscriptState(): void {
+		this.#localState = undefined;
+		this.#localUnavailable = "";
+		this.#remoteToken++;
+		this.#remoteBytes = 0;
+		this.#remoteFetchInFlight = false;
+		this.#remoteUnavailable = false;
+		this.#remoteError = "";
+		this.#hasRemoteData = false;
+		this.#model = undefined;
+		this.#builder.rebuild([]);
+		this.#scrollView.setLines([]);
+		this.#scrollView.scrollToTop();
+		this.#followBottom = true;
+	}
+
+	#startPolling(): void {
+		if (this.#pollTimer || this.#disposed) return;
+		this.#pollTimer = setInterval(() => this.#refresh(), POLL_MS);
+		this.#pollTimer.unref?.();
 	}
 
 	#stopPolling(): void {
@@ -193,7 +278,7 @@ export class AgentTranscriptViewer implements Component {
 			this.#fetchRemote();
 			return;
 		}
-		const sessionFile = this.deps.registry.get(this.deps.agentId)?.sessionFile;
+		const sessionFile = this.deps.registry.get(this.#agentId)?.sessionFile;
 		if (!sessionFile) {
 			this.#clearLocal("none");
 			return;
@@ -326,7 +411,7 @@ export class AgentTranscriptViewer implements Component {
 	#fetchRemote(): void {
 		const remote = this.deps.remote;
 		if (!remote || this.#remoteFetchInFlight) return;
-		const id = this.deps.agentId;
+		const id = this.#agentId;
 		const fromByte = this.#remoteBytes;
 		this.#remoteFetchInFlight = true;
 		const token = ++this.#remoteToken;
@@ -431,6 +516,21 @@ export class AgentTranscriptViewer implements Component {
 			return;
 		}
 
+		if (matchesKey(data, "escape")) {
+			this.deps.onClose();
+			return;
+		}
+
+		if (matchesKey(data, "alt+k")) {
+			this.#cycleAgent(-1);
+			return;
+		}
+
+		if (matchesKey(data, "alt+j")) {
+			this.#cycleAgent(1);
+			return;
+		}
+
 		// The hub/observe toggle keys close the whole hub (matches the table view's
 		// toggle semantics), not just this viewer.
 		for (const key of this.deps.hubKeys) {
@@ -438,11 +538,6 @@ export class AgentTranscriptViewer implements Component {
 				this.deps.onHubClose();
 				return;
 			}
-		}
-
-		if (matchesKey(data, "escape")) {
-			this.deps.onClose();
-			return;
 		}
 
 		for (const key of this.deps.expandKeys) {
@@ -484,21 +579,37 @@ export class AgentTranscriptViewer implements Component {
 		this.#followBottom = this.#scrollView.getScrollOffset() >= this.#scrollView.getMaxScrollOffset();
 	}
 
+	#visibleAgentIds(): string[] {
+		const visible = this.deps.getVisibleAgentIds?.() ?? this.deps.registry.list().map(ref => ref.id);
+		const ids: string[] = [];
+		const seen = new Set<string>();
+		for (const id of visible) {
+			if (!id || id === MAIN_AGENT_ID || seen.has(id)) continue;
+			seen.add(id);
+			ids.push(id);
+		}
+		return ids;
+	}
+
+	#cycleAgent(delta: -1 | 1): void {
+		const ids = this.#visibleAgentIds();
+		if (ids.length === 0) return;
+		const current = ids.indexOf(this.#agentId);
+		const next = current < 0 ? (delta < 0 ? ids.length - 1 : 0) : (current + delta + ids.length) % ids.length;
+		this.retarget(ids[next]!);
+	}
+
 	// ========================================================================
 	// Render
 	// ========================================================================
 
 	render(width: number): readonly string[] {
 		const termHeight = process.stdout.rows || 40;
-		// `innerWidth` widths the editor/notice chrome (gutter-prefixed below).
-		// `contentWidth` widths the transcript: ScrollView reserves the last column
-		// for the scrollbar, and the transcript components carry their own 1-col left
-		// gutter — so body rows are emitted WITHOUT an extra outer space, sharing that
-		// gutter with the header/footer (which add one). Stacking both shifted the body
-		// one column right of the title.
+		// Header/footer rows share the transcript's single-column gutter. ScrollView
+		// keeps the final column for its scrollbar, so the body receives no extra pad.
 		const innerWidth = Math.max(1, width - 2);
 		const contentWidth = Math.max(1, width - 1);
-		const ref = this.deps.registry.get(this.deps.agentId);
+		const ref = this.deps.registry.get(this.#agentId);
 		const observed = this.#observed();
 		const activity = selectAgentActivity(
 			ref?.activityState,
@@ -508,25 +619,19 @@ export class AgentTranscriptViewer implements Component {
 		const activityDisplay = renderAgentActivityDisplay({
 			activity,
 			progress: observed?.progress,
+			registryStatus: ref?.status,
+			frozenAtMs: ref?.lastActivity,
 			width: innerWidth,
 		});
 		const headerLines = this.#headerLines(
 			ref,
 			observed,
+			activity,
 			activityDisplay.activityLine,
 			activityDisplay.statsLine,
 			innerWidth,
 		);
-		const footerLines = this.#footerLines();
-		const noticeLine =
-			this.#remoteError && !this.#builder.isEmpty
-				? ` ${theme.fg("error", sanitizeErrorLine(this.#remoteError, innerWidth))}`
-				: undefined;
-
-		// Chrome: three borders + header rows + optional notice + footer rows.
-		const chrome = headerLines.length + 3 + footerLines.length + (noticeLine ? 1 : 0);
-		const viewportHeight = Math.max(3, termHeight - chrome);
-
+		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - FIXED_FOOTER_ROWS - 2);
 		const contentLines = this.#builder.isEmpty
 			? [` ${theme.fg("dim", this.#placeholder(Math.max(1, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
@@ -537,10 +642,8 @@ export class AgentTranscriptViewer implements Component {
 		const lines: string[] = [];
 		lines.push(...new DynamicBorder().render(width));
 		for (const headerLine of headerLines) lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
-		lines.push(...new DynamicBorder().render(width));
 		for (const row of this.#scrollView.render(width)) lines.push(row);
-		if (noticeLine) lines.push(noticeLine);
-		for (const footerLine of footerLines) lines.push(` ${truncateToWidth(footerLine, innerWidth)}`);
+		lines.push(` ${truncateToWidth(this.#hint(), innerWidth)}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
@@ -548,57 +651,254 @@ export class AgentTranscriptViewer implements Component {
 	#headerLines(
 		ref: AgentRef | undefined,
 		observed: ObservableSession | undefined,
+		activity: AgentActivityState | undefined,
 		activityLine: string | undefined,
 		statsLine: string | undefined,
 		width: number,
 	): string[] {
-		const lines = [[theme.fg("accent", tSettingsUi("Agent Hub")), theme.bold(this.deps.agentId)].join(theme.sep.dot)];
-		lines.push(...this.#alignHeaderFields(this.#identity(ref, observed), statsLine, width));
-		if (activityLine) lines.push(truncateToWidth(activityLine, Math.max(1, width)));
-		return lines;
-	}
+		const observedProgress: TranscriptProgressSnapshot | undefined = observed?.progress;
+		const outcome = this.deps.getTaskOutcome?.(this.#agentId);
+		const progress: TranscriptProgressSnapshot | undefined =
+			observedProgress || outcome
+				? {
+						...observedProgress,
+						resultText: observedProgress?.resultText ?? outcome?.resultText,
+						deliveryStatus: outcome?.deliveryStatus ?? observedProgress?.deliveryStatus,
+					}
+				: undefined;
+		const terminal = this.#isTerminal(ref, progress);
+		const taskResult = this.#taskResultLine(progress, terminal, width);
+		const reportStatus = this.#reportStatusLine(progress, terminal, width);
+		const remoteError =
+			this.#remoteError && !this.#builder.isEmpty
+				? theme.fg("error", sanitizeErrorLine(this.#remoteError, width))
+				: undefined;
+		const dynamicSummary =
+			activityLine ??
+			sanitizeViewerText(
+				progress?.lastIntent ?? progress?.currentToolArgs ?? progress?.description ?? progress?.task,
+				width,
+			);
+		const [summary, secondary, tertiary] = this.#summaryRows(
+			dynamicSummary,
+			statsLine,
+			taskResult,
+			reportStatus,
+			remoteError,
+			width,
+		);
 
-	#identity(ref: AgentRef | undefined, observed: ObservableSession | undefined): string | undefined {
-		if (!ref?.status || !ref.kind) return undefined;
-		const kind = ref.parentId
-			? `${ref.kind} ${theme.sep.dot} ${tSettingsUi("of {parentId}", { parentId: ref.parentId })}`
-			: ref.kind;
-		const model = observed?.progress?.resolvedModel ?? this.#model;
 		return [
-			renderAgentStatusBadge(ref.status),
-			theme.fg("dim", kind),
-			model ? theme.fg("muted", replaceTabs(model)) : "",
-		]
-			.filter(Boolean)
-			.join(theme.sep.dot);
-	}
-
-	#alignHeaderFields(primary: string | undefined, secondary: string | undefined, width: number): string[] {
-		const maxWidth = Math.max(1, width);
-		if (!primary) return secondary ? [truncateToWidth(secondary, maxWidth)] : [];
-		const left = truncateToWidth(primary, maxWidth);
-		if (!secondary) return [left];
-		const leftWidth = visibleWidth(left);
-		const rightWidth = visibleWidth(secondary);
-		if (leftWidth + HEADER_METADATA_GAP + rightWidth <= maxWidth) {
-			return [`${left}${padding(maxWidth - leftWidth - rightWidth)}${secondary}`];
-		}
-		return [left, truncateToWidth(secondary, maxWidth)];
-	}
-
-	#footerLines(): string[] {
-		return [
-			theme.fg(
-				"dim",
-				tSettingsUi("Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom", {
-					expandKey: this.deps.expandKeys[0] ?? "ctrl+o",
-				}),
+			this.#navigationLine(ref, width),
+			this.#metadataLine(
+				"Status",
+				this.#statusValue(ref, progress),
+				"Progress",
+				this.#progressValue(ref, activity),
+				width,
 			),
+			this.#metadataLine(
+				"Duration",
+				this.#runtimeValue(ref, progress, terminal),
+				"Model",
+				this.#modelValue(observed),
+				width,
+			),
+			summary,
+			secondary,
+			tertiary,
 		];
 	}
 
+	#navigationLine(ref: AgentRef | undefined, width: number): string {
+		const ids = this.#visibleAgentIds();
+		const index = ids.indexOf(this.#agentId);
+		const ordinal = `${index >= 0 ? index + 1 : 1}/${Math.max(1, ids.length)}`;
+		const name = sanitizeViewerText(ref?.displayName ?? this.#agentId, Math.max(1, width)) || "—";
+		const title = [theme.fg("dim", ordinal), theme.bold(name)].join(theme.fg("dim", theme.sep.dot));
+		return this.#centerWithControls(
+			rawKeyHint("Alt+K", tSettingsUi("previous")),
+			title,
+			rawKeyHint("Alt+J", tSettingsUi("next")),
+			width,
+		);
+	}
+
+	#centerWithControls(left: string, title: string, right: string, width: number): string {
+		const maxWidth = Math.max(1, width);
+		const leftWidth = visibleWidth(left);
+		const rightWidth = visibleWidth(right);
+		if (maxWidth < leftWidth + rightWidth + 2) return truncateToWidth(`${left} ${right}`, maxWidth);
+		const titleWidth = Math.max(1, maxWidth - leftWidth - rightWidth - 2);
+		const clippedTitle = truncateToWidth(title, titleWidth);
+		const clippedWidth = visibleWidth(clippedTitle);
+		const rightStart = maxWidth - rightWidth;
+		const centeredStart = Math.floor((maxWidth - clippedWidth) / 2);
+		const start = Math.min(Math.max(leftWidth + 1, centeredStart), rightStart - clippedWidth - 1);
+		return `${left}${padding(start - leftWidth)}${clippedTitle}${padding(rightStart - start - clippedWidth)}${right}`;
+	}
+
+	#metadataLine(
+		leftLabel: string,
+		leftValue: string | undefined,
+		rightLabel: string,
+		rightValue: string | undefined,
+		width: number,
+	): string {
+		const maxWidth = Math.max(1, width);
+		if (maxWidth < 4) return this.#metadataCell(leftLabel, leftValue, maxWidth);
+		const gap = 1;
+		const leftWidth = Math.floor((maxWidth - gap) / 2);
+		const rightWidth = maxWidth - gap - leftWidth;
+		const left = this.#metadataCell(leftLabel, leftValue, leftWidth);
+		const right = this.#metadataCell(rightLabel, rightValue, rightWidth);
+		return `${left}${padding(leftWidth - visibleWidth(left))}${padding(gap)}${right}${padding(rightWidth - visibleWidth(right))}`;
+	}
+
+	#metadataCell(label: string, value: string | undefined, width: number): string {
+		const labelText = theme.fg("dim", `${tSettingsUi(label)}:`);
+		const valueText = value || theme.fg("muted", "—");
+		return truncateToWidth(`${labelText} ${valueText}`, Math.max(1, width));
+	}
+
+	#statusValue(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): string | undefined {
+		if (ref?.status) return renderAgentStatusBadge(ref.status) || undefined;
+		const status = progress?.status;
+		switch (status) {
+			case "pending":
+			case "running":
+			case "completed":
+			case "failed":
+			case "aborted":
+				return renderAgentStatusBadge(status) || undefined;
+			default:
+				return undefined;
+		}
+	}
+
+	#progressValue(ref: AgentRef | undefined, activity: AgentActivityState | undefined): string | undefined {
+		const progress = activity?.progress;
+		if (progress && isFiniteNumber(progress.completed) && isFiniteNumber(progress.total) && progress.total > 0) {
+			const unit = sanitizeViewerText(progress.unit, 32);
+			return theme.fg(
+				"muted",
+				`${Math.max(0, Math.floor(progress.completed))}/${Math.floor(progress.total)}${unit ? ` ${unit}` : ""}`,
+			);
+		}
+		if (ref?.status === "waiting" || activity?.phase === "waiting-peer") {
+			return theme.fg("warning", tSettingsUi("Waiting for Main"));
+		}
+		return undefined;
+	}
+
+	#runtimeValue(
+		ref: AgentRef | undefined,
+		progress: TranscriptProgressSnapshot | undefined,
+		terminal: boolean,
+	): string | undefined {
+		const durationMs = progress?.durationMs;
+		const startedAtMs = progress?.startedAtMs;
+		const completedAtMs = progress?.completedAtMs;
+		const frozenAtMs = ref?.lastActivity;
+		const storedDuration = isFiniteNumber(durationMs) ? Math.max(0, durationMs) : undefined;
+		let elapsedMs: number | undefined;
+		if (terminal && isFiniteNumber(startedAtMs) && isFiniteNumber(completedAtMs)) {
+			elapsedMs = Math.max(0, completedAtMs - startedAtMs);
+		} else if (terminal && storedDuration !== undefined) {
+			elapsedMs = storedDuration;
+		} else if (isFiniteNumber(startedAtMs)) {
+			const endMs = !terminal ? Date.now() : isFiniteNumber(frozenAtMs) ? frozenAtMs : startedAtMs;
+			elapsedMs = Math.max(0, endMs - startedAtMs);
+		} else if (storedDuration !== undefined) {
+			elapsedMs = storedDuration;
+		}
+		return elapsedMs === undefined ? undefined : theme.fg("muted", formatAgentDuration(elapsedMs));
+	}
+
+	#modelValue(observed: ObservableSession | undefined): string | undefined {
+		return sanitizeViewerText(observed?.progress?.resolvedModel ?? this.#model, 160) || undefined;
+	}
+
+	#isTerminal(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): boolean {
+		return (
+			progress?.status === "completed" ||
+			progress?.status === "failed" ||
+			progress?.status === "aborted" ||
+			ref?.status === "idle" ||
+			ref?.status === "parked" ||
+			ref?.status === "aborted"
+		);
+	}
+
+	#labeledLine(label: string, value: string, width: number): string {
+		const maxWidth = Math.max(1, width);
+		const prefix = theme.fg("dim", `${tSettingsUi(label)}:`);
+		if (visibleWidth(prefix) >= maxWidth) return truncateToWidth(prefix, maxWidth);
+		return `${prefix} ${truncateToWidth(value, Math.max(1, maxWidth - visibleWidth(prefix) - 1))}`;
+	}
+
+	#taskResultLine(
+		progress: TranscriptProgressSnapshot | undefined,
+		terminal: boolean,
+		width: number,
+	): string | undefined {
+		if (!terminal) return undefined;
+		const result = sanitizeViewerText(progress?.resultText, Math.max(1, width));
+		return result ? this.#labeledLine("Task result", result, width) : undefined;
+	}
+
+	#reportStatusLine(
+		progress: TranscriptProgressSnapshot | undefined,
+		terminal: boolean,
+		width: number,
+	): string | undefined {
+		let status: string | undefined;
+		switch (progress?.deliveryStatus) {
+			case "pending":
+				status = theme.fg("warning", tSettingsUi("Delivery pending"));
+				break;
+			case "delivering":
+				status = theme.fg("accent", tSettingsUi("Delivering to Main"));
+				break;
+			case "delivered":
+				status = theme.fg("success", tSettingsUi("Delivered to Main"));
+				break;
+			case "dead-letter":
+				status = theme.fg("error", tSettingsUi("Main unavailable"));
+				break;
+			default:
+				if (terminal && progress?.resultText) status = theme.fg("success", tSettingsUi("Delivered to Main"));
+		}
+		return status ? this.#labeledLine("Report status", status, width) : undefined;
+	}
+
+	#summaryRows(
+		activityLine: string | undefined,
+		statsLine: string | undefined,
+		taskResult: string | undefined,
+		reportStatus: string | undefined,
+		remoteError: string | undefined,
+		width: number,
+	): [string, string, string] {
+		const activity = activityLine ? this.#labeledLine("Dynamic summary", activityLine, width) : undefined;
+		const error = remoteError ? this.#labeledLine("Dynamic summary", remoteError, width) : undefined;
+		const summary = activity ?? error ?? "";
+		if (taskResult || reportStatus) return [summary, taskResult ?? "", reportStatus ?? ""];
+		return [summary, statsLine ?? "", ""];
+	}
+
+	#hint(): string {
+		return [
+			rawKeyHint("Esc", tSettingsUi("Agent Hub")),
+			rawKeyHint("Alt+K", tSettingsUi("previous")),
+			rawKeyHint("Alt+J", tSettingsUi("next")),
+			rawKeyHint("j/k/g/G", tSettingsUi("scroll")),
+			rawKeyHint(this.deps.expandKeys[0] ?? "ctrl+o", tSettingsUi("expand")),
+		].join(theme.fg("dim", theme.sep.dot));
+	}
+
 	#observed(): ObservableSession | undefined {
-		return this.deps.observers?.getSessions().find(session => session.id === this.deps.agentId);
+		return this.deps.observers?.getSessions().find(session => session.id === this.#agentId);
 	}
 
 	#placeholder(maxWidth: number): string {
@@ -607,7 +907,7 @@ export class AgentTranscriptViewer implements Component {
 			if (this.#remoteUnavailable) return tSettingsUi("Transcript lives on the host — not available.");
 			return this.#hasRemoteData ? tSettingsUi("No messages yet.") : tSettingsUi("Loading transcript from host…");
 		}
-		if (!this.deps.registry.get(this.deps.agentId)?.sessionFile) return tSettingsUi("No session file available yet.");
+		if (!this.deps.registry.get(this.#agentId)?.sessionFile) return tSettingsUi("No session file available yet.");
 		return tSettingsUi("No messages yet.");
 	}
 }

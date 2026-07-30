@@ -20,8 +20,10 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { selectPrompt } from "../../prompts/prompt-locale";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import manualContinuePromptZh from "../../prompts/system/manual-continue.zh-CN.md" with { type: "text" };
+import { AgentRegistry } from "../../registry/agent-registry";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { applyThinkingSummaryVisibility } from "../../thinking";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
 import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
@@ -157,6 +159,8 @@ const TINY_TITLE_PROGRESS_REVEAL_DELAY_MS = 1_000;
 // deliberate human double-tap is always tens of milliseconds apart.
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
+const RIGHT_DOUBLE_TAP_MIN_GAP_MS = 40;
+const RIGHT_DOUBLE_TAP_MAX_GAP_MS = 500;
 const ESCAPE_CANCEL_CONFIRM_WINDOW_MS = 2_000;
 
 type EscapeCancellationTarget =
@@ -185,6 +189,7 @@ export class InputController {
 
 	#enhancedPaste?: EnhancedPasteController;
 	#focusedLeftTapListenerInstalled = false;
+	#focusedRightTapListenerInstalled = false;
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
@@ -192,6 +197,8 @@ export class InputController {
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
 	#leftTapCount = 0;
+	#rightTapCount = 0;
+	#lastRightTapTime = 0;
 	#escapeCancellationTarget: EscapeCancellationTarget | undefined;
 	#escapeCancellationArmedAt = 0;
 	#escapeCancellationSessionSubscribed = false;
@@ -288,6 +295,16 @@ export class InputController {
 				if (!matchesKey(data, "left")) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
 				this.#handleFocusedLeftTap();
+				return { consume: true };
+			});
+		}
+		if (!this.#focusedRightTapListenerInstalled) {
+			this.#focusedRightTapListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (!this.ctx.focusedAgentId) return undefined;
+				if (!matchesKey(data, "right")) return undefined;
+				if (this.ctx.editor.getText().trim()) return undefined;
+				if (this.#detectRightDoubleTap()) this.ctx.showJobsHub({ requireContent: true });
 				return { consume: true };
 			});
 		}
@@ -601,6 +618,16 @@ export class InputController {
 			}
 		};
 
+		// Double-tap right arrow on an empty editor opens the Jobs Hub. This is
+		// deliberately separate from the Agent Hub's left gesture so navigation
+		// remains directional: agents on the left, concrete background work on
+		// the right.
+		this.ctx.editor.onRightAtEnd = () => {
+			if (this.#detectRightDoubleTap()) {
+				this.ctx.showJobsHub({ requireContent: true });
+			}
+		};
+
 		this.#setupEnhancedPaste();
 
 		this.ctx.editor.onChange = (text: string) => {
@@ -646,6 +673,23 @@ export class InputController {
 			// Exactly two taps, the second a human-plausible interval after the first.
 			this.#leftTapCount = 0;
 			this.ctx.lastLeftTapTime = 0;
+			return true;
+		}
+		return false;
+	}
+
+	#detectRightDoubleTap(): boolean {
+		const now = Date.now();
+		const sinceLast = now - this.#lastRightTapTime;
+		this.#lastRightTapTime = now;
+		if (sinceLast >= RIGHT_DOUBLE_TAP_MAX_GAP_MS) {
+			this.#rightTapCount = 1;
+			return false;
+		}
+		this.#rightTapCount += 1;
+		if (this.#rightTapCount === 2 && sinceLast >= RIGHT_DOUBLE_TAP_MIN_GAP_MS) {
+			this.#rightTapCount = 0;
+			this.#lastRightTapTime = 0;
 			return true;
 		}
 		return false;
@@ -1951,6 +1995,12 @@ export class InputController {
 		}
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
 		this.ctx.settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
+		applyThinkingSummaryVisibility(
+			this.ctx.session.agent,
+			AgentRegistry.global().list(),
+			this.ctx.hideThinkingBlock,
+			this.ctx.settings.get("omitThinking"),
+		);
 
 		for (const child of this.ctx.chatContainer.children) {
 			if (child instanceof AssistantMessageComponent) {

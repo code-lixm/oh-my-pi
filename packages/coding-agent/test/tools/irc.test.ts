@@ -715,7 +715,7 @@ describe("IRC", () => {
 			expect(text).toContain("Peer messaging is unavailable");
 		});
 
-		it("only marks passive wait operations interruptible", () => {
+		it("marks waits and awaited peer sends interruptible, but keeps other sends non-interruptible", () => {
 			const session: ToolSession = {
 				cwd: "/tmp",
 				hasUI: false,
@@ -731,7 +731,9 @@ describe("IRC", () => {
 			expect(tool.interruptible({ op: "logs", follow: true })).toBe(true);
 			expect(tool.interruptible({ op: "logs" })).toBe(false);
 			expect(tool.interruptible({ op: "start" })).toBe(false);
-			expect(tool.interruptible({ op: "send", await: true })).toBe(false);
+			expect(tool.interruptible({ op: "send", to: "0-Sub", await: true })).toBe(true);
+			expect(tool.interruptible({ op: "send", to: "0-Sub" })).toBe(false);
+			expect(tool.interruptible({ op: "send", name: "worker", await: true })).toBe(false);
 		});
 
 		it("op=list includes parked peers, unread counts, and parent ids", async () => {

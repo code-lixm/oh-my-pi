@@ -41,6 +41,7 @@ import {
 	theme,
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import { AgentRegistry, resolveTopLevelAgent } from "../../registry/agent-registry";
 import type { SessionOAuthAccountList } from "../../session/agent-session-types";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import type { SessionInfo } from "../../session/session-listing";
@@ -56,6 +57,7 @@ import {
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
 import {
 	AUTO_THINKING,
+	applyThinkingSummaryVisibility,
 	type ConfiguredThinkingLevel,
 	concreteThinkingLevel,
 	parseConfiguredThinkingLevel,
@@ -92,6 +94,7 @@ import { CheckpointSelectorComponent } from "../components/checkpoint-selector";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { HistorySearchComponent } from "../components/history-search";
+import { JobsHubOverlayComponent } from "../components/jobs-hub";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
 import { formatRoleDisplayLabel } from "../components/model-browser";
@@ -654,6 +657,12 @@ export class SelectorController {
 			}
 			case "hideThinkingBlock":
 				this.ctx.hideThinkingBlock = value as boolean;
+				applyThinkingSummaryVisibility(
+					this.ctx.session.agent,
+					AgentRegistry.global().list(),
+					this.ctx.hideThinkingBlock,
+					this.ctx.settings.get("omitThinking"),
+				);
 				for (const child of this.ctx.chatContainer.children) {
 					if (child instanceof AssistantMessageComponent) {
 						child.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
@@ -674,7 +683,12 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			case "omitThinking":
-				this.ctx.session.agent.hideThinkingSummary = value as boolean;
+				applyThinkingSummaryVisibility(
+					this.ctx.session.agent,
+					AgentRegistry.global().list(),
+					this.ctx.hideThinkingBlock,
+					value as boolean,
+				);
 				break;
 			case "display.cacheMissMarker":
 				// Rebuild re-runs the usage-based detection under the new setting so
@@ -2254,5 +2268,54 @@ export class SelectorController {
 		}
 
 		showReadyHub();
+	}
+
+	showJobsHub(options?: { requireContent?: boolean }): void {
+		const manager = this.ctx.session.asyncJobManager;
+		if (!manager) {
+			this.ctx.showWarning(tSettingsUi("Async background jobs are unavailable in this session."));
+			return;
+		}
+		// Unlike persisted Agent Hub rows, job retention is process-local and the
+		// manager snapshot is synchronous, so an empty gesture never flashes an
+		// overlay before being rejected.
+		if (options?.requireContent && manager.getAllJobs().length === 0) return;
+
+		let hub: JobsHubOverlayComponent | undefined;
+		let overlayHandle: OverlayHandle | undefined;
+		const done = () => {
+			hub?.dispose();
+			overlayHandle?.hide();
+			if (!this.ctx.focusedAgentId) this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		hub = new JobsHubOverlayComponent({
+			manager,
+			onDone: done,
+			requestRender: () => this.ctx.ui.requestRender(),
+			focusAgent: this.ctx.collabGuest
+				? undefined
+				: async id => {
+						const root = resolveTopLevelAgent(AgentRegistry.global(), id);
+						if (root && root.id !== this.ctx.activeTopLevelId) await this.ctx.switchTopLevel(root.id);
+						await this.ctx.focusAgentSession(id);
+						done();
+					},
+			// Cancelling the AsyncJob's signal is the authoritative task/bash abort
+			// path. A task's live AgentSession receives that same signal and remains
+			// intentionally resumable in Agent Hub; this action cancels work, not the
+			// durable agent identity.
+			cancelJob: async job => manager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
+		});
+		overlayHandle = this.ctx.ui.showOverlay(hub, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get("tui.mouseInput") ?? false,
+		});
+		this.ctx.ui.setFocus(hub);
+		this.ctx.ui.requestRender();
 	}
 }

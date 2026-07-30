@@ -516,46 +516,31 @@ export function renderSubagentHudLines(
 	const dot = theme.styledSymbol("status.done", "accent");
 	const visible = rows.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
 	const hiddenCount = rows.length - visible.length;
-	const rowWidth = Math.max(1, columns - 4);
-	const renderedRows = renderTreeList(
-		{
-			items: visible,
-			expanded: true,
-			renderItem: row => {
-				const displayId = formatTaskId(row.session.id);
-				const sessionStatus =
-					row.session.status === "active" ? (row.session.progress?.status ?? "running") : row.session.status;
-				const activity = renderAgentActivityDisplay({
-					activity: row.session.progress?.activity,
-					progress: row.session.progress,
-					width: rowWidth,
-				});
-				const status = renderAgentStatusBadge(sessionStatus);
-				let header = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
-				const feedbackText = row.feedback?.text.trim();
-				if (feedbackText) {
-					header += `${theme.fg("accent", ":")} ${theme.fg(
-						"toolOutput",
-						truncateAgentActivityLine(feedbackText, rowWidth),
-					)}`;
-				} else if (!activity.activityLine) {
-					const description = row.session.description?.trim() || row.session.progress?.description?.trim();
-					const taskPreview = description || row.session.progress?.task?.trim();
-					if (taskPreview) {
-						header += description
-							? `${theme.fg("accent", ":")} ${theme.fg("muted", truncateAgentActivityLine(description, rowWidth))}`
-							: ` ${theme.fg("muted", truncateAgentActivityLine(taskPreview, rowWidth))}`;
-					}
-				}
-				if (status) header += theme.sep.dot + status;
-				const lines = [header];
-				if (activity.activityLine) lines.push(activity.activityLine);
-				if (activity.statsLine) lines.push(activity.statsLine);
-				return lines.map(line => truncateAgentActivityLine(line, rowWidth));
-			},
-		},
-		theme,
-	);
+	const rowWidth = Math.max(1, columns - 2);
+	const renderedRows = visible.map(row => {
+		const displayId = formatTaskId(row.session.id);
+		const sessionStatus =
+			row.session.status === "active" ? (row.session.progress?.status ?? "running") : row.session.status;
+		const showStatus = sessionStatus !== "running" && sessionStatus !== "completed";
+		const status = showStatus ? renderAgentStatusBadge(sessionStatus) : "";
+		const feedbackText = row.feedback?.text.trim();
+		const description = row.session.description?.trim() || row.session.progress?.description?.trim();
+		const taskPreview = description || row.session.progress?.task?.trim();
+		const activity = renderAgentActivityDisplay({
+			activity: row.session.progress?.activity,
+			progress: row.session.progress,
+			width: rowWidth,
+		});
+		const detail = feedbackText
+			? theme.fg("toolOutput", feedbackText)
+			: taskPreview
+				? theme.fg("muted", taskPreview)
+				: activity.activityLine;
+		let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+		if (status) line += theme.sep.dot + status;
+		if (detail) line += theme.sep.dot + detail;
+		return truncateAgentActivityLine(line, rowWidth);
+	});
 	const replyRows = pendingReplies.map(message => {
 		const route = `${formatTaskId(message.from)} → ${formatTaskId(message.to)}`;
 		const heading = `${theme.fg("warning", tSettingsUi("needs reply"))}${theme.fg("dim", `${theme.sep.dot}${route}`)}`;
@@ -568,8 +553,8 @@ export function renderSubagentHudLines(
 	const lines = [
 		"",
 		theme.bold(theme.fg("accent", tSettingsUi("Subagents"))),
-		...renderedRows.map(line => ` ${line}`),
 		...replyRows.map(line => ` ${line}`),
+		...renderedRows.map(line => ` ${line}`),
 		...(hiddenCount > 0
 			? [
 					theme.fg(
@@ -650,7 +635,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const thinkingOff = (this.viewSession?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
 		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
-	proseOnlyThinking = true;
+	proseOnlyThinking = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
@@ -5252,6 +5237,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void {
 		this.#selectorController.showAgentHub(this.#observerRegistry, options);
+	}
+
+	showJobsHub(options?: { requireContent?: boolean }): void {
+		this.#selectorController.showJobsHub(options);
 	}
 
 	resetObserverRegistry(): void {

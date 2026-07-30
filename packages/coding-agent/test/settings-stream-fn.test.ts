@@ -72,7 +72,7 @@ describe("createSettingsAwareStreamFn", () => {
 	});
 
 	it("forwards configured hidden thinking summaries", () => {
-		const settings = Settings.isolated({ omitThinking: true });
+		const settings = Settings.isolated({ hideThinkingBlock: true, omitThinking: true });
 		const { fn: base, calls } = captureBase();
 		const wrapped = createSettingsAwareStreamFn(settings, base);
 

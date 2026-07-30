@@ -22,6 +22,10 @@ export interface ObservableSession {
 	detached?: boolean;
 	index?: number;
 	lastUpdate: number;
+	/** Stable task start time carried across lifecycle-only observer updates. */
+	startedAtMs?: number;
+	/** Stable terminal time; absent while the task remains active. */
+	completedAtMs?: number;
 	/** Latest progress snapshot from the subagent executor */
 	progress?: AgentProgress;
 	/** Last resolved selector restored from a durable task result, when available. */
@@ -41,6 +45,28 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	failed: "failed",
 	aborted: "aborted",
 };
+
+function isFiniteEpoch(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function withSessionTiming(progress: AgentProgress, session?: ObservableSession): AgentProgress {
+	const snapshot = { ...progress };
+	const startedAtMs = isFiniteEpoch(progress.startedAtMs) ? progress.startedAtMs : session?.startedAtMs;
+	if (isFiniteEpoch(startedAtMs)) snapshot.startedAtMs = startedAtMs;
+	if (snapshot.status !== "completed" && snapshot.status !== "failed" && snapshot.status !== "aborted") {
+		delete snapshot.completedAtMs;
+		return snapshot;
+	}
+	const completedAtMs = isFiniteEpoch(progress.completedAtMs) ? progress.completedAtMs : session?.completedAtMs;
+	if (isFiniteEpoch(completedAtMs)) {
+		snapshot.completedAtMs = completedAtMs;
+		if (isFiniteEpoch(snapshot.startedAtMs)) {
+			snapshot.durationMs = Math.max(0, completedAtMs - snapshot.startedAtMs);
+		}
+	}
+	return snapshot;
+}
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
@@ -130,6 +156,8 @@ export class SessionObserverRegistry {
 					parentToolCallId: observation.parentToolCallId,
 					index: observation.index,
 					lastUpdate,
+					startedAtMs: observation.progress?.startedAtMs,
+					completedAtMs: observation.progress?.completedAtMs,
 					progress: observation.progress,
 					resolvedModel: observation.resolvedModel,
 					resolvedModelIsFallback: observation.resolvedModelIsFallback,
@@ -196,9 +224,30 @@ export class SessionObserverRegistry {
 				const sortOrder = this.#ensureSortOrder(payload.id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 				const existing = this.#sessions.get(payload.id);
+				const now = Date.now();
+				const startedAtMs = isFiniteEpoch(payload.startedAtMs)
+					? payload.startedAtMs
+					: (existing?.startedAtMs ?? existing?.progress?.startedAtMs);
+				const completedAtMs =
+					status === "active"
+						? undefined
+						: isFiniteEpoch(payload.completedAtMs)
+							? payload.completedAtMs
+							: (existing?.completedAtMs ?? existing?.progress?.completedAtMs ?? now);
 				if (existing) {
+					if (startedAtMs !== undefined) existing.startedAtMs = startedAtMs;
+					if (status === "active") {
+						delete existing.completedAtMs;
+					} else if (completedAtMs !== undefined) {
+						existing.completedAtMs = completedAtMs;
+					}
+					if (existing.progress) {
+						const nextStatus: AgentProgress["status"] = status === "active" ? "running" : status;
+						const nextProgress = { ...existing.progress, status: nextStatus };
+						existing.progress = withSessionTiming(nextProgress, existing);
+					}
 					existing.status = status;
-					existing.lastUpdate = Date.now();
+					existing.lastUpdate = now;
 					existing.index = payload.index;
 					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 					existing.detached = payload.detached ?? existing.detached;
@@ -216,7 +265,9 @@ export class SessionObserverRegistry {
 						parentToolCallId: payload.parentToolCallId,
 						detached: payload.detached,
 						index: payload.index,
-						lastUpdate: Date.now(),
+						lastUpdate: now,
+						startedAtMs,
+						...(completedAtMs === undefined ? {} : { completedAtMs }),
 					});
 				}
 				this.#notifyListeners("lifecycle");
@@ -229,16 +280,20 @@ export class SessionObserverRegistry {
 				const progress = payload.progress;
 				const id = progress.id;
 				const existing = this.#sessions.get(id);
+				const snapshot = withSessionTiming(progress, existing);
 
 				const sortOrder = this.#ensureSortOrder(id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 				if (existing) {
+					if (snapshot.startedAtMs !== undefined) existing.startedAtMs = snapshot.startedAtMs;
+					if (snapshot.completedAtMs === undefined) delete existing.completedAtMs;
+					else existing.completedAtMs = snapshot.completedAtMs;
 					existing.lastUpdate = Date.now();
 					existing.index = payload.index;
 					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 					existing.detached = payload.detached ?? existing.detached;
-					existing.progress = progress;
-					if (progress.description) existing.description = progress.description;
+					existing.progress = snapshot;
+					if (snapshot.description) existing.description = snapshot.description;
 					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
 				} else {
 					this.#sessions.set(id, {
@@ -253,7 +308,9 @@ export class SessionObserverRegistry {
 						detached: payload.detached,
 						index: payload.index,
 						lastUpdate: Date.now(),
-						progress,
+						startedAtMs: snapshot.startedAtMs,
+						completedAtMs: snapshot.completedAtMs,
+						progress: snapshot,
 					});
 				}
 				this.#notifyListeners("progress");

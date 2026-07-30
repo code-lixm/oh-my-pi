@@ -111,11 +111,11 @@ export class FocusedAgentView implements Component {
 		const alert = this.deps.mainNeedsInput()
 			? theme.fg("warning", tSettingsUi("Main needs input · Esc return"))
 			: undefined;
-		const footerLines = [
+		const controlLines = [
 			...(alert ? [truncateToWidth(alert, innerWidth)] : []),
 			...(!hintInHeader ? [truncateToWidth(hint, innerWidth)] : []),
-		];
-		const chromeRows = 4 + detailLines.length + footerLines.length;
+		].slice(0, 2);
+		const chromeRows = 4 + detailLines.length + controlLines.length;
 		const viewportHeight = Math.max(3, terminalRows - chromeRows);
 		const contentLines = this.deps.transcript.render(Math.max(1, width - 1));
 		this.#scrollView.setLines(
@@ -127,9 +127,8 @@ export class FocusedAgentView implements Component {
 		const border = new DynamicBorder().render(width);
 		const lines: string[] = [...border, ` ${header}`];
 		for (const detailLine of detailLines) lines.push(` ${truncateToWidth(detailLine, innerWidth)}`);
-		lines.push(...border, ...this.#scrollView.render(width));
-		for (const footerLine of footerLines) lines.push(` ${footerLine}`);
-		lines.push(...border);
+		for (const controlLine of controlLines) lines.push(` ${controlLine}`);
+		lines.push(...border, ...this.#scrollView.render(width), ...border);
 		return lines;
 	}
 
@@ -143,7 +142,13 @@ export class FocusedAgentView implements Component {
 
 	#headerDetails(ref: AgentRef | undefined, progress: AgentProgress | undefined, width: number): string[] {
 		const activity = selectAgentActivity(ref?.activityState, progress);
-		const display = renderAgentActivityDisplay({ activity, progress, width });
+		const display = renderAgentActivityDisplay({
+			activity,
+			progress,
+			registryStatus: ref?.status,
+			frozenAtMs: ref?.lastActivity,
+			width,
+		});
 		const lines = this.#alignHeaderFields(this.#metadata(ref, progress), display.statsLine, width);
 		if (display.activityLine) lines.push(truncateAgentActivityLine(display.activityLine, width));
 		lines.push(...this.#nestedTaskLines(progress, width));

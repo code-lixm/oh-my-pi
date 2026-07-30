@@ -143,46 +143,53 @@ describe("FocusedAgentView", () => {
 		expect(rendered).not.toContain("follow-up");
 	});
 
-	it("right-aligns complete controls in the header when they fit and gives the transcript the saved row", () => {
+	it("keeps wide focused controls and alerts above the transcript with no footer hint", () => {
 		setSettingsUiLocale("en");
 		pinRows(12);
 		const registry = new AgentRegistry();
 		registerSub(registry, "Worker", "Build worker", session("claude-live"));
 		const transcriptLines = Array.from({ length: 20 }, (_, index) => `trace-${String(index).padStart(2, "0")}`);
-		const progressById = { Worker: progress() };
-		const responsiveOptions = {
-			registry,
-			progressById,
-			transcriptLines,
-			mainNeedsInput: () => true,
-		};
 		const controls = "p:previous · n:next · Esc:Main · j/k:scroll · o:expand";
 		const wideWidth = 120;
-		const narrowWidth = 70;
-
-		expect(visibleWidth(controls)).toBeLessThanOrEqual(wideWidth - 2 - 24 - 2);
-		const wide = makeView(responsiveOptions)
+		const wide = makeView({
+			registry,
+			progressById: { Worker: progress() },
+			transcriptLines,
+			mainNeedsInput: () => true,
+		})
 			.render(wideWidth)
 			.map(line => Bun.stripANSI(line));
-		const narrow = makeView(responsiveOptions)
-			.render(narrowWidth)
-			.map(line => Bun.stripANSI(line));
+		const firstTranscript = wide.findIndex(line => line.includes("trace-"));
+		const hintIndex = wide.findIndex(line => line.includes(controls));
+		const alertIndex = wide.findIndex(line => line.includes("Main needs input"));
 
 		expect(wide[1]).toContain("Subagent 1/2");
 		expect(wide[1]).toContain("Build worker");
 		expect(wide[1].endsWith(controls)).toBe(true);
-		expect(wide.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
-		expect(wide[2]).toContain("running");
-		expect(wide.at(-2)).toContain("Main needs input");
-		expect(wide.at(-1)).not.toContain(controls);
-		expect(wide.filter(line => line.includes("trace-")).length).toBe(
-			narrow.filter(line => line.includes("trace-")).length + 1,
-		);
+		expect(firstTranscript).toBeGreaterThanOrEqual(0);
+		expect(hintIndex).toBeGreaterThanOrEqual(0);
+		expect(alertIndex).toBeGreaterThanOrEqual(0);
+		expect(hintIndex).toBeLessThan(firstTranscript);
+		expect(alertIndex).toBeLessThan(firstTranscript);
+		expect(
+			wide
+				.slice(0, firstTranscript)
+				.filter(
+					line =>
+						line.includes("p:previous") ||
+						line.includes("n:next") ||
+						line.includes("Esc:Main") ||
+						line.includes("j/k:scroll") ||
+						line.includes("o:expand") ||
+						line.includes("Main needs input"),
+				).length,
+		).toBeLessThanOrEqual(2);
+		expect(wide.slice(firstTranscript).join("\n")).not.toContain(controls);
+		expect(wide.slice(firstTranscript).join("\n")).not.toContain("Main needs input");
 		expectLinesWithinWidth(wide, wideWidth);
-		expectLinesWithinWidth(narrow, narrowWidth);
 	});
 
-	it("keeps localized remapped controls in the footer when CJK-width labels cannot leave 24 identity cells", () => {
+	it("keeps localized narrow focused controls above the transcript in at most two rows", () => {
 		setSettingsUiLocale("zh-CN");
 		pinRows(12);
 		const width = 82;
@@ -190,7 +197,7 @@ describe("FocusedAgentView", () => {
 		const displayName = "响应式导航检查员甲乙丙丁";
 		registerSub(registry, "Worker", displayName, session("模型/实时"));
 		const controls = "shift+tab:上一个 · tab:下一个 · Esc:主任务 · j/k:滚动 · enter:展开";
-		const view = makeView({
+		const rendered = makeView({
 			registry,
 			progressById: { Worker: progress() },
 			transcriptLines: [
@@ -201,28 +208,41 @@ describe("FocusedAgentView", () => {
 				"trace-cjk-04",
 				"trace-cjk-05",
 			],
+			mainNeedsInput: () => true,
 			previousKeys: ["shift+tab", "p"],
 			nextKeys: ["tab", "n"],
 			expandKeys: ["enter", "o"],
-		});
+		})
+			.render(width)
+			.map(line => Bun.stripANSI(line));
+		const firstTranscript = rendered.findIndex(line => line.includes("trace-cjk-"));
+		const hintIndex = rendered.findIndex(line => line.includes("shift+tab:上一个"));
+		const alertIndex = rendered.findIndex(line => line.includes("主代理需要输入"));
 
 		expect(visibleWidth(displayName)).toBe(24);
 		expect(visibleWidth(controls)).toBeGreaterThan(width - 2 - 24 - 2);
-		const rendered = view.render(width).map(line => Bun.stripANSI(line));
-
 		expect(rendered[1]).toContain("子代理 1/2");
 		expect(rendered[1]).toContain(displayName);
-		expect(rendered[1]).not.toContain(controls);
-		expect(rendered[1]).not.toContain("shift+tab");
-		expect(rendered[1]).not.toContain("Esc:主任务");
-		expect(rendered[1]).not.toContain("j/k:滚动");
-		expect(rendered[1]).not.toContain("enter:展开");
-		expect(rendered[2]).toContain("运行中");
-		expect(rendered.at(-2)).toContain(controls);
-		expect(rendered.reduce((count, line) => count + line.split(controls).length - 1, 0)).toBe(1);
-		expect(rendered.join("\n")).not.toContain("p:上一个");
-		expect(rendered.join("\n")).not.toContain("n:下一个");
-		expect(rendered.join("\n")).not.toContain("o:展开");
+		expect(firstTranscript).toBeGreaterThanOrEqual(0);
+		expect(hintIndex).toBeGreaterThanOrEqual(0);
+		expect(alertIndex).toBeGreaterThanOrEqual(0);
+		expect(hintIndex).toBeLessThan(firstTranscript);
+		expect(alertIndex).toBeLessThan(firstTranscript);
+		expect(
+			rendered
+				.slice(0, firstTranscript)
+				.filter(
+					line =>
+						line.includes("shift+tab:上一个") ||
+						line.includes("tab:下一个") ||
+						line.includes("Esc:主任务") ||
+						line.includes("j/k:滚动") ||
+						line.includes("enter:展开") ||
+						line.includes("主代理需要输入"),
+				).length,
+		).toBeLessThanOrEqual(2);
+		expect(rendered.slice(firstTranscript).join("\n")).not.toContain("shift+tab:上一个");
+		expect(rendered.slice(firstTranscript).join("\n")).not.toContain("主代理需要输入");
 		expectLinesWithinWidth(rendered, width);
 	});
 

@@ -6,7 +6,6 @@ import {
 	fuzzyMatch,
 	Input,
 	matchesKey,
-	Spacer,
 	Text,
 	TruncatedText,
 	truncateToWidth,
@@ -47,8 +46,8 @@ interface FlatNode {
 
 /** Filter mode for tree display */
 type FilterMode = TreeFilterMode;
-// Rows outside the tree viewport: three borders, three spacers, title, two hint rows, and search.
-const TREE_CHROME_ROWS = 10;
+// Rows outside the tree viewport: three borders, title, two hint rows, and search.
+const TREE_CHROME_ROWS = 7;
 
 /**
  * Tree list component with selection and ASCII art visualization
@@ -981,17 +980,14 @@ export class TreeSelectorComponent extends Container {
 
 		this.#labelInputContainer = new Container();
 
-		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(`  ${tSettingsUi("Session Tree")}`), 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${tSettingsUi("Session Tree")}`)), 0, 0));
 		this.addChild(new TruncatedText(`  ${primaryHints}`, 0, 0));
 		this.addChild(new TruncatedText(`  ${secondaryHints}`, 0, 0));
 		this.addChild(new SearchLine(this.#treeList));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
 		this.addChild(this.#treeContainer);
 		this.addChild(this.#labelInputContainer);
-		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
 		if (tree.length === 0) {

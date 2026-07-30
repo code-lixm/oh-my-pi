@@ -26,6 +26,7 @@ import {
 import { getOutputBlockBorderStyle, isBorderlessOutputStyle } from "../../tui/output-block";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
+import { formatAgentDuration } from "./agent-activity-display";
 import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cache-invalidation-marker";
 
 /** Cache key for the assistant Markdown children's code-block display options. */
@@ -315,7 +316,7 @@ export class AssistantMessageComponent extends Container {
 		private readonly onImageUpdate?: () => void,
 		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = [],
 		private readonly imageBudget?: ImageBudget,
-		private proseOnlyThinking = true,
+		private proseOnlyThinking = false,
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -760,8 +761,7 @@ export class AssistantMessageComponent extends Container {
 				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
 				if (!display.visible) parts.push("K0");
 				else if (this.hideThinkingBlock) parts.push("KH");
-				else parts.push("KV");
-			} else {
+				else parts.push(content.durationMs === undefined ? "KV0" : "KV1");
 				// Non-rendered blocks (toolCall, redactedThinking, …) still occupy a
 				// content index. Encode their position so an inserted/removed one shifts
 				// the key and forces the teardown path instead of mis-indexing children.
@@ -986,6 +986,18 @@ export class AssistantMessageComponent extends Container {
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
 				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
+				if (content.durationMs !== undefined) {
+					this.#contentContainer.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								tSettingsUi("Thinking time: {duration}", { duration: formatAgentDuration(content.durationMs) }),
+							),
+							1,
+							0,
+						),
+					);
+				}
 				hasRenderedContent = true;
 				thinkingIndex += 1;
 				if (hasVisibleContentAfter) {

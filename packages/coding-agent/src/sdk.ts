@@ -179,6 +179,7 @@ import {
 	concreteThinkingLevel,
 	parseConfiguredThinkingLevel,
 	parseThinkingLevel,
+	resolveHideThinkingSummary,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
@@ -1614,23 +1615,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const restrictToolNames = options.restrictToolNames === true;
 	const enableLsp = !restrictToolNames && (options.enableLsp ?? true);
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
-	// Only the first top-level session in a process owns an AsyncJobManager.
-	// Subagents inherit the parent's manager via `AsyncJobManager.instance()`
-	// (set below), and any additional top-level session spun up in-process
-	// (e.g. the agent-creation architect in `agent-dashboard.ts`) must share
-	// the live singleton — otherwise its dispose path would clobber the
-	// owning session's manager and break the `task`/`bash` async paths
-	// (issue #1923). The `instance()` guard means later sessions also skip
-	// constructing an orphaned manager that nothing would ever route to.
-	// Delivery is owner-routed: every AgentSession registers its own sink
-	// (see session/async-job-delivery.ts), so the manager takes no default
-	// onJobComplete here.
+	// The first top-level session owns the process AsyncJobManager. Descendants and
+	// explicitly identified secondary top-level sessions share it: every session
+	// registers a delivery sink under its unique agent id, so jobs remain owner-routed.
+	// Anonymous secondary sessions still receive no manager because they would reuse
+	// `Main` and could cancel or consume the primary session's work on disposal.
 	const asyncJobManager =
 		!options.parentTaskPrefix && !AsyncJobManager.instance()
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
-	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+	const canShareAsyncJobManager =
+		Boolean(options.parentTaskPrefix) || (options.agentId !== undefined && options.agentId !== MAIN_AGENT_ID);
+	const scopedAsyncJobManager = asyncJobManager ?? (canShareAsyncJobManager ? AsyncJobManager.instance() : undefined);
 	const taskRequestConcurrency =
 		options.taskRequestConcurrency ?? new TaskRequestConcurrency(() => settings.get("task.maxRequestConcurrency"));
 	const taskRunnableConcurrency =
@@ -1798,12 +1795,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				session?.endTaskMutator();
 			},
 			isTaskMutatorActive: () => session?.isTaskMutatorActive() ?? false,
-			// Subagents inherit the singleton (the parent's manager) so their bash/task
-			// completions still flow into the spawning conversation's yieldQueue.
-			// Secondary in-process top-level sessions (no parentTaskPrefix, no
-			// constructed manager because the singleton was already installed) leave
-			// this undefined so tools and session job snapshots refuse async work
-			// instead of silently routing into the owning session (issue #1923).
+			// Descendants and uniquely identified live top-level runtimes share the
+			// process manager; owner-scoped sinks keep completions, snapshots, and
+			// disposal isolated. Anonymous helper sessions remain synchronous.
 			asyncJobManager: scopedAsyncJobManager,
 			taskRequestConcurrency,
 			taskRunnableConcurrency,
@@ -3084,7 +3078,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			minP: settings.get("minP") >= 0 ? settings.get("minP") : undefined,
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
-			hideThinkingSummary: settings.get("omitThinking"),
+			hideThinkingSummary: resolveHideThinkingSummary(
+				settings.get("hideThinkingBlock"),
+				settings.get("omitThinking"),
+			),
 			kimiApiFormat,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),

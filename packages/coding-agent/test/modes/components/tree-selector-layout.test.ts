@@ -57,13 +57,13 @@ describe("TreeSelectorComponent layout chrome", () => {
 		counter = 0;
 	});
 
-	it("uses every row below the 10-line chrome for the tree viewport instead of a half-screen window", () => {
+	it("uses every row below the fixed 7-line chrome for the tree viewport instead of a half-screen window", () => {
 		const terminalHeight = 24;
 		const { tree, leafId } = buildLinearTree(40);
 		const lines = renderStripped(makeSelector(tree, leafId, terminalHeight));
 
 		expect(lines).toHaveLength(terminalHeight);
-		expect(visibleTreeRows(lines)).toBe(terminalHeight - 10);
+		expect(visibleTreeRows(lines)).toBe(terminalHeight - 7);
 	});
 
 	it("renders keyboard hints as two compact rows immediately above the search line", () => {
@@ -97,8 +97,8 @@ describe("TreeSelectorComponent layout chrome", () => {
 		expect(searchRow).toBeDefined();
 		expect(searchRow!).toContain("[no-tools]");
 		expect(noToolsLines.filter(line => line.includes("[no-tools]"))).toHaveLength(1);
-		expect(visibleTreeRows(defaultLines)).toBe(terminalHeight - 10);
-		expect(visibleTreeRows(noToolsLines)).toBe(terminalHeight - 10);
+		expect(visibleTreeRows(defaultLines)).toBe(terminalHeight - 7);
+		expect(visibleTreeRows(noToolsLines)).toBe(terminalHeight - 7);
 		expect(noToolsLines).toHaveLength(terminalHeight);
 	});
 });

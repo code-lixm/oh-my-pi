@@ -1,5 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../i18n/settings-locale";
+import type { AsyncJobDeliveryStatus } from "../task/types";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -38,10 +39,21 @@ export interface AsyncJob {
 	/** Time a queued job actually acquired its caller-managed execution slot. */
 	startedAt?: number;
 	label: string;
+	/** User-facing work summary, distinct from the stable id/label. */
+	description?: string;
 	abortController: AbortController;
 	promise: Promise<void>;
 	resultText?: string;
 	errorText?: string;
+	/** Final lifecycle timestamp. Frozen on completion, failure, or cancellation. */
+	endedAt?: number;
+	/** Latest text emitted through `reportProgress`; bash jobs retain their bounded live output tail here. */
+	latestProgressText?: string;
+	/** Stable result-delivery lifecycle; absent until this job settles with a deliverable outcome. */
+	deliveryStatus?: AsyncJobDeliveryStatus;
+	/** Most recent sink failure while a retry remains pending, or dead-letter cause. */
+	deliveryError?: string;
+
 	/** Latest tool-render details reported by the running job. */
 	latestDetails?: Record<string, unknown>;
 	/** Time of the most recent explicit progress report from the job body. */
@@ -114,6 +126,8 @@ export interface AsyncJobRegisterOptions {
 	ownerId?: string;
 	/** Registry id of the subagent this job runs; see {@link AsyncJob.agentId}. */
 	agentId?: string;
+	/** User-facing work summary available before the first progress event. */
+	description?: string;
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
@@ -260,6 +274,7 @@ export class AsyncJobManager {
 			queuedAt: startTime,
 			startedAt: queued ? undefined : startTime,
 			label,
+			description: options?.description,
 			abortController,
 			promise: Promise.resolve(),
 			ownerId: options?.ownerId,
@@ -268,6 +283,7 @@ export class AsyncJobManager {
 		};
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
+			job.latestProgressText = text;
 			if (details) job.latestDetails = details;
 			job.lastProgressAt = Date.now();
 			if (!options?.onProgress) return;
@@ -294,22 +310,26 @@ export class AsyncJobManager {
 				});
 				if (job.status === "cancelled") {
 					job.resultText = text;
+					job.endedAt ??= Date.now();
 					this.#scheduleEviction(id);
 					return;
 				}
 				job.status = "completed";
 				job.resultText = text;
+				job.endedAt = Date.now();
 				this.#enqueueDelivery(id, text);
 				this.#scheduleEviction(id);
 			} catch (error) {
 				if (job.status === "cancelled") {
 					job.errorText = error instanceof Error ? error.message : String(error);
+					job.endedAt ??= Date.now();
 					this.#scheduleEviction(id);
 					return;
 				}
 				const errorText = error instanceof Error ? error.message : String(error);
 				job.status = "failed";
 				job.errorText = errorText;
+				job.endedAt = Date.now();
 				this.#enqueueDelivery(id, errorText);
 				this.#scheduleEviction(id);
 			}
@@ -330,6 +350,7 @@ export class AsyncJobManager {
 		if (filter?.ownerId && job.ownerId !== filter.ownerId) return false;
 		if (job.status !== "running") return false;
 		job.status = "cancelled";
+		job.endedAt = Date.now();
 		job.abortController.abort();
 		this.#scheduleEviction(id);
 		return true;
@@ -337,6 +358,21 @@ export class AsyncJobManager {
 
 	getJob(id: string): AsyncJob | undefined {
 		return this.#jobs.get(id);
+	}
+
+	/**
+	 * Return the newest retained task job for an exact subagent id without
+	 * materializing or sorting a job list. Agent Hub polls this to read the
+	 * authoritative result and delivery lifecycle for one row.
+	 */
+	getLatestJobForAgent(agentId: string): AsyncJob | undefined {
+		if (!agentId) return undefined;
+		let latest: AsyncJob | undefined;
+		for (const job of this.#jobs.values()) {
+			if (job.type !== "task" || job.agentId !== agentId) continue;
+			if (!latest || job.startTime >= latest.startTime) latest = job;
+		}
+		return latest;
 	}
 
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
@@ -426,6 +462,16 @@ export class AsyncJobManager {
 		for (const jobId of uniqueJobIds) {
 			this.#suppressedDeliveries.add(jobId);
 		}
+		for (const jobId of uniqueJobIds) {
+			const job = this.#jobs.get(jobId);
+			if (!job || (job.status !== "completed" && job.status !== "failed")) continue;
+			if (
+				job.deliveryStatus !== "dead-letter" &&
+				!this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId)
+			) {
+				this.#setDeliveryStatus(jobId, "delivered");
+			}
+		}
 
 		const before = this.#deliveries.length;
 		this.#deliveries.splice(
@@ -464,6 +510,7 @@ export class AsyncJobManager {
 	cancelAll(filter?: AsyncJobFilter): void {
 		for (const job of this.getRunningJobs(filter)) {
 			job.status = "cancelled";
+			job.endedAt = Date.now();
 			job.abortController.abort();
 			this.#scheduleEviction(job.id);
 		}
@@ -683,6 +730,18 @@ export class AsyncJobManager {
 		this.#evictionTimers.clear();
 	}
 
+	#setDeliveryStatus(jobId: string, status: AsyncJobDeliveryStatus, error?: string): void {
+		const job = this.#jobs.get(jobId);
+		if (!job) return;
+		job.deliveryStatus = status;
+		if (error === undefined) delete job.deliveryError;
+		else job.deliveryError = error;
+	}
+
+	#markSuppressedDeliveryDelivered(jobId: string): void {
+		this.#setDeliveryStatus(jobId, "delivered");
+	}
+
 	#filterDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
 		const ownerId = filter?.ownerId;
 		if (!ownerId) return this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId));
@@ -726,7 +785,10 @@ export class AsyncJobManager {
 			const index = this.#deliveries.indexOf(selected);
 			if (index === -1) continue;
 			this.#deliveries.splice(index, 1);
-			if (this.isDeliverySuppressed(selected.jobId)) continue;
+			if (this.isDeliverySuppressed(selected.jobId)) {
+				this.#markSuppressedDeliveryDelivered(selected.jobId);
+				continue;
+			}
 
 			return this.#waitForDeliveryPromise(this.#deliverDelivery(selected), deadline);
 		}
@@ -737,8 +799,11 @@ export class AsyncJobManager {
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
-		// Skip delivery if already acknowledged
+		const job = this.#jobs.get(jobId);
+		this.#setDeliveryStatus(jobId, "pending");
+		// A foreground snapshot or watcher consumes the result instead of auto-delivering it.
 		if (this.isDeliverySuppressed(jobId)) {
+			this.#markSuppressedDeliveryDelivered(jobId);
 			return;
 		}
 		this.#deliveries.push({
@@ -746,7 +811,7 @@ export class AsyncJobManager {
 			text,
 			attempt: 0,
 			nextAttemptAt: Date.now(),
-			ownerId: this.#jobs.get(jobId)?.ownerId,
+			ownerId: job?.ownerId,
 		});
 		this.#ensureDeliveryLoop();
 	}
@@ -773,6 +838,7 @@ export class AsyncJobManager {
 			const delivery = this.#deliveries[0];
 			if (this.isDeliverySuppressed(delivery.jobId)) {
 				this.#deliveries.shift();
+				this.#markSuppressedDeliveryDelivered(delivery.jobId);
 				continue;
 			}
 			const waitMs = delivery.nextAttemptAt - Date.now();
@@ -784,6 +850,7 @@ export class AsyncJobManager {
 			}
 			if (this.isDeliverySuppressed(delivery.jobId)) {
 				this.#deliveries.shift();
+				this.#markSuppressedDeliveryDelivered(delivery.jobId);
 				continue;
 			}
 
@@ -816,19 +883,26 @@ export class AsyncJobManager {
 				jobId: delivery.jobId,
 				ownerId: delivery.ownerId,
 			});
+			this.#setDeliveryStatus(delivery.jobId, "dead-letter", "No delivery sink available");
+
 			delivery.promise = Promise.resolve();
 			return delivery.promise;
 		}
 		const promise = (async () => {
 			this.#inFlightDeliveries.push(delivery);
+			this.#setDeliveryStatus(delivery.jobId, "delivering");
 			try {
 				await sink(delivery.jobId, delivery.text, this.#jobs.get(delivery.jobId));
+				this.#setDeliveryStatus(delivery.jobId, "delivered");
 			} catch (error) {
 				delivery.attempt += 1;
 				delivery.lastError = error instanceof Error ? error.message : String(error);
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
 				if (!this.isDeliverySuppressed(delivery.jobId)) {
+					this.#setDeliveryStatus(delivery.jobId, "pending", delivery.lastError);
 					this.#deliveries.push(delivery);
+				} else {
+					this.#markSuppressedDeliveryDelivered(delivery.jobId);
 				}
 				logger.warn("Async job completion delivery failed", {
 					jobId: delivery.jobId,

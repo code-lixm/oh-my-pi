@@ -651,6 +651,8 @@ export interface ThinkingContent {
 	thinking: string;
 	thinkingSignature?: string; // e.g., for OpenAI responses, the reasoning item ID
 	itemId?: string; // item.id from output_item.added, used to match output_item.done
+	/** Frozen elapsed time for this completed thinking block, in milliseconds. */
+	durationMs?: number;
 }
 
 export interface RedactedThinkingContent {

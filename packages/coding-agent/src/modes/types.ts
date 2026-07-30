@@ -433,6 +433,7 @@ export interface InteractiveModeContext {
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
 	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
+	showJobsHub(options?: { requireContent?: boolean }): void;
 	resetObserverRegistry(): void;
 
 	// Input handling

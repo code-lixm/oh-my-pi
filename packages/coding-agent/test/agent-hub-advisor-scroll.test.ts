@@ -24,6 +24,7 @@ import {
 	setTerminalImageProtocol,
 	TERMINAL,
 	type TUI,
+	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
@@ -180,12 +181,12 @@ function withViewer(fn: (viewer: AgentTranscriptViewer) => void): void {
 	}
 }
 
-function withShortViewer(fn: (viewer: AgentTranscriptViewer) => void): void {
+function withShortViewer(fn: (viewer: AgentTranscriptViewer) => void, content = "SHORT_SCROLLBAR_MARKER"): void {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-view-short-"));
 	const file = path.join(dir, "__advisor.jsonl");
 	fs.writeFileSync(
 		file,
-		`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "short", timestamp: TS, cwd: "/tmp" })}\n${messageLine("short", "SHORT_SCROLLBAR_MARKER")}\n`,
+		`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "short", timestamp: TS, cwd: "/tmp" })}\n${messageLine("short", content)}\n`,
 	);
 	const viewer = makeViewer(file);
 	try {
@@ -219,32 +220,41 @@ describe("AgentTranscriptViewer", () => {
 		setSettingsUiLocale(previousLocale);
 	});
 
-	it("aligns the title and body content on the same gutter", () => {
+	it("aligns the navigation title and body content on the same gutter", () => {
 		withViewer(viewer => {
 			viewer.render(80); // populate the scroll view before navigating
 			viewer.handleInput("g"); // scroll to top so the first message is visible
 			const lines = viewer.render(80).map(l => Bun.stripANSI(l));
-			const titleLine = lines.find(l => l.includes("Agent Hub"));
+			const titleLine = lines.find(l => l.includes("advisor") && l.includes("Alt+K"));
 			const bodyLine = lines.find(l => l.includes("PROMPTMARKER"));
 			expect(titleLine).toBeDefined();
 			expect(bodyLine).toBeDefined();
-			// The body must not sit one column right of the title.
+			// The body must not sit one column right of the navigation title.
 			expect(gutter(bodyLine!)).toBe(gutter(titleLine!));
 		});
 	});
 
-	it("places transcript metadata below the title and keeps it out of the footer", () => {
+	it("keeps a six-row detail header and one footer controls row outside the transcript", () => {
 		withViewer(viewer => {
 			viewer.render(80);
 			viewer.handleInput("g");
 			const lines = viewer.render(80).map(line => Bun.stripANSI(line));
-			const titleIndex = lines.findIndex(line => line.includes("Agent Hub"));
-			const metadataIndex = lines.findIndex((line, index) => index > titleIndex && line.includes("parked"));
 			const bodyIndex = lines.findIndex(line => line.includes("PROMPTMARKER"));
+			const headerLines = lines.slice(1, bodyIndex);
+			const footer = lines.at(-2);
 
-			expect(metadataIndex).toBe(titleIndex + 1);
-			expect(metadataIndex).toBeLessThan(bodyIndex);
-			expect(lines.slice(bodyIndex + 1).join("\n")).not.toContain("parked");
+			expect(bodyIndex).toBeGreaterThanOrEqual(0);
+			expect(headerLines).toHaveLength(6);
+			expect(headerLines.join("\n")).toContain("advisor");
+			expect(headerLines.join("\n")).toContain("Status:");
+			expect(headerLines.join("\n")).toContain("Duration:");
+			expect(headerLines.join("\n")).toContain("parked");
+			expect(footer).toContain("Esc");
+			expect(footer).toContain("Alt+K");
+			expect(footer).toContain("Alt+J");
+			expect(footer).toContain("j/k/g/G");
+			expect(lines.slice(bodyIndex, -2).join("\n")).not.toContain("Alt+K");
+			expect(lines.join("\n")).not.toContain("Parent:");
 		});
 	});
 
@@ -260,6 +270,24 @@ describe("AgentTranscriptViewer", () => {
 			expect(markerLine).toBeDefined();
 			expect(markerLine?.endsWith("█")).toBe(true);
 		});
+	});
+
+	it("strips untrusted terminal controls and bounds narrow transcript rows", () => {
+		const width = 36;
+		withShortViewer(viewer => {
+			viewer.render(width);
+			viewer.handleInput("g");
+			const lines = viewer.render(width);
+			const rawOutput = lines.join("\n");
+
+			expect(rawOutput).not.toContain("\x1b[2J");
+			expect(rawOutput).not.toContain("\t");
+			expect(Bun.stripANSI(rawOutput)).toContain("CONTROL_MARKER");
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				expect(Bun.stripANSI(line)).not.toMatch(/[\t\r]/u);
+			}
+		}, "CONTROL_MARKER\x1b[2J\twith a deliberately long transcript heading");
 	});
 
 	it("collapses synthetic advisor inputs on cold open and expands their body on ctrl+o", () => {

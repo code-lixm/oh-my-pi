@@ -451,7 +451,7 @@ describe("AsyncJobManager", () => {
 		expect(defaultDeliveries).toEqual(["unowned-1"]);
 	});
 
-	test("dead-letters an owned delivery when its owner has no live sink", async () => {
+	test("dead-letters a task delivery without an owner sink while retaining its result", async () => {
 		const defaultDeliveries: string[] = [];
 		const manager = new AsyncJobManager({
 			onJobComplete: async jobId => {
@@ -461,15 +461,78 @@ describe("AsyncJobManager", () => {
 		const unregister = manager.registerDeliverySink("Sub", () => {});
 		unregister();
 
-		manager.register("bash", "orphan", async () => "orphan result", { id: "orphan-1", ownerId: "Sub" });
+		manager.register("task", "orphan", async () => "orphan result", {
+			id: "orphan-1",
+			ownerId: "Sub",
+			agentId: "Orphan",
+		});
 		await manager.waitForAll();
 		const drained = await manager.drainDeliveries({ timeoutMs: 500 });
 
 		// Dead-letter drops the delivery (drain settles) without misrouting it
-		// into the default sink; the outcome stays readable on the job row.
+		// into the default sink; the task result remains inspectable on the job row.
 		expect(drained).toBe(true);
 		expect(defaultDeliveries).toEqual([]);
-		expect(manager.getJob("orphan-1")?.resultText).toBe("orphan result");
+		expect(manager.getJob("orphan-1")).toMatchObject({
+			deliveryStatus: "dead-letter",
+			resultText: "orphan result",
+		});
+	});
+
+	test("keeps a completed task delivery pending while in flight, then marks it delivered", async () => {
+		const sinkStarted = Promise.withResolvers<void>();
+		const releaseSink = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async () => {
+			sinkStarted.resolve();
+			await releaseSink.promise;
+		});
+
+		const jobId = manager.register("task", "deliver worker result", async () => "actual worker payload", {
+			id: "task-delivery-1",
+			ownerId: "Main",
+			agentId: "Worker",
+		});
+		await manager.waitForAll();
+		await sinkStarted.promise;
+
+		expect(manager.getJob(jobId)).toMatchObject({
+			status: "completed",
+			resultText: "actual worker payload",
+			deliveryStatus: "delivering",
+		});
+		expect(manager.getDeliveryState({ ownerId: "Main" })).toMatchObject({
+			queued: 1,
+			pendingJobIds: [jobId],
+		});
+
+		releaseSink.resolve();
+		await expect(manager.drainDeliveries({ timeoutMs: 500, filter: { ownerId: "Main" } })).resolves.toBe(true);
+		expect(manager.getJob(jobId)?.deliveryStatus).toBe("delivered");
+		expect(manager.getDeliveryState({ ownerId: "Main" }).pendingJobIds).toEqual([]);
+	});
+
+	test("returns the newest task job for an exact agent without leaking another agent's job", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const olderWorkerJob = manager.register("task", "older worker task", async () => "older", {
+			id: "worker-old",
+			agentId: "Worker",
+		});
+		const otherAgentJob = manager.register("task", "other agent task", async () => "other", {
+			id: "reviewer-new",
+			agentId: "Reviewer",
+		});
+		const latestWorkerJob = manager.register("task", "latest worker task", async () => "latest", {
+			id: "worker-new",
+			agentId: "Worker",
+		});
+		manager.register("bash", "worker shell task", async () => "shell", { id: "worker-bash", agentId: "Worker" });
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 500 });
+
+		expect(manager.getLatestJobForAgent("Worker")?.id).toBe(latestWorkerJob);
+		expect(manager.getLatestJobForAgent("Reviewer")?.id).toBe(otherAgentJob);
+		expect(manager.getLatestJobForAgent("Worker")?.id).not.toBe(olderWorkerJob);
 	});
 
 	test("waitForOwnerJobs settles cancelled jobs and skips suppressed ones on request", async () => {

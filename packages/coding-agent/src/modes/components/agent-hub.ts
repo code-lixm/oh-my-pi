@@ -1,15 +1,12 @@
 /**
  * Agent Hub overlay component.
  *
- * One overlay with a grouped table and read-only transcript viewer:
- * - The active Main is header-only. Background Main runtimes are selectable
- *   switch targets; subagents are grouped beneath their owning Main.
- * - Enter/click switches a Main runtime or opens the selected subagent transcript.
- *   `f` focuses a live subagent, `m` sends it a message, `p` returns to its
- *   owning Main, and `r`/`x` revive/kill it. Focusing a background subagent
- *   switches to its owning Main first.
- * - The transcript viewer tails persisted/local or collab-host history without
- *   changing the ambient runtime.
+ * - Main remains an internal routing node and never appears as a selectable row.
+ * - Hub rows are the stable, Hub-visible order for subagents and read-only advisors.
+ * - Enter opens a fullscreen transcript; `f` focuses a live subagent, `m` sends
+ *   it a message, `p` returns to its owning Main, and `r`/`x` revive/kill it.
+ * - The transcript viewer cycles the same rows in place and tails persisted/local
+ *   or collab-host history without changing the ambient runtime.
  *
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
  */
@@ -26,7 +23,8 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { formatAge, getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { AsyncJobManager } from "../../async/job-manager";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
@@ -42,22 +40,24 @@ import {
 } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { AgentProgress, AsyncJobDeliveryStatus } from "../../task/types";
 import { parseThinkingLevel } from "../../thinking";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import {
-	renderAgentActivityDisplay,
+	formatAgentClockTime,
+	formatAgentDuration,
 	renderAgentStatusBadge,
 	selectAgentActivity,
-	truncateAgentActivityLine,
 } from "./agent-activity-display";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 import { DynamicBorder } from "./dynamic-border";
+import { rawKeyHint } from "./keybinding-hints";
 
-/** Refresh cadence for the relative-time column */
-const AGE_TICK_MS = 5_000;
+/** Refresh cadence for live duration, waiting time, and recent activity. */
+const HUB_TICK_MS = 1_000;
 const DATA_CHANGE_RENDER_COALESCE_MS = 100;
 /** Double-tap window for the table's left-left "close hub" gesture. */
 const LEFT_TAP_WINDOW_MS = 500;
@@ -67,9 +67,9 @@ function contentWidth(): number {
 	return Math.max(TRUNCATE_LENGTHS.SHORT, (process.stdout.columns || 80) - 6);
 }
 
-/** Sanitize a line for TUI display: replace tabs, then truncate to viewport width. */
+/** Sanitize untrusted text for TUI display: replace tabs/newlines, strip controls, then truncate to viewport width. */
 function sanitizeLine(text: string, maxWidth?: number): string {
-	const singleLine = replaceTabs(text).replace(/[\r\n]+/g, " ");
+	const singleLine = sanitizeText(replaceTabs(text).replace(/[\r\n]+/g, " "));
 	return truncateToWidth(singleLine, maxWidth ?? contentWidth());
 }
 
@@ -77,44 +77,61 @@ function clampHubLine(line: string, width: number): string {
 	return truncateToWidth(line.replace(/[\r\n]+/g, " "), Math.max(1, width - 2), Ellipsis.Omit);
 }
 
-const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, waiting: 1, idle: 2, parked: 3, aborted: 4 };
+const HUB_WIDE_MIN_WIDTH = 120;
+const HUB_STATUS_WIDTH = 12;
+const HUB_PROGRESS_WIDTH = 22;
+const HUB_DURATION_WIDTH = 8;
+const HUB_MODEL_WIDTH = 28;
+const HUB_ACTIVITY_WIDTH = 8;
+const HUB_COLUMN_GAP = "  ";
+const HUB_DETAIL_LABEL_WIDTH = 16;
 
-type HubRow = { kind: "main"; ref: AgentRef } | { kind: "subagent"; ref: AgentRef };
-
-interface RootSubagentGroup {
-	rootId: string;
-	label: string;
-	rows: HubRow[];
+function fixedCell(text: string, width: number): string {
+	const clipped = truncateToWidth(text, Math.max(1, width));
+	return `${clipped}${padding(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-type HubGroup = { kind: "mains"; rows: HubRow[] } | { kind: "subagents"; groups: RootSubagentGroup[] };
+function progressBar(completed: number, total: number, width = 11): string {
+	const safeTotal = Math.max(1, total);
+	const safeCompleted = Math.max(0, Math.min(completed, safeTotal));
+	const filled = Math.min(width, Math.floor((safeCompleted / safeTotal) * width));
+	return `[${"=".repeat(filled)}${".".repeat(width - filled)}]`;
+}
+
+const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, waiting: 1, idle: 2, parked: 3, aborted: 4 };
+
+type HubRow = { ref: AgentRef };
 
 interface RenderedHubBlock {
 	lines: string[];
 	rowIndex?: number;
 }
 
-const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type HubSection = "running" | "attention" | "queued" | "parked" | "completed" | "stopped";
 
-/** Status glyph keeps the compact row identity stable; the badge spells out the same status. */
-function statusGlyph(status: AgentStatus): string {
-	switch (status) {
-		case "running":
-			return theme.fg("accent", theme.status.running);
-		case "waiting":
-			return theme.fg("warning", theme.status.running);
-		case "idle":
-			return theme.fg("success", theme.status.enabled);
-		case "parked":
-			return theme.fg("muted", theme.status.shadowed);
-		case "aborted":
-			return theme.fg("error", theme.status.aborted);
-	}
-}
+const HUB_SECTION_ORDER: Record<HubSection, number> = {
+	running: 0,
+	attention: 1,
+	queued: 2,
+	parked: 3,
+	completed: 4,
+	stopped: 5,
+};
+
+const HUB_SECTION_LABEL: Record<HubSection, string> = {
+	running: "Running tasks",
+	attention: "Needs attention",
+	queued: "Queued",
+	parked: "Parked agents",
+	completed: "Recently completed",
+	stopped: "Stopped",
+};
+
+const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Model id + thinking level (`sonnet-4-6 ◒ high`), level colored per theme. */
 function formatModelBadge(modelId: string, level: ThinkingLevel | undefined): string {
-	const model = theme.fg("muted", replaceTabs(modelId));
+	const model = theme.fg("muted", sanitizeText(replaceTabs(modelId).replace(/[\r\n]+/g, " ")));
 	if (!level || level === ThinkingLevel.Off || level === ThinkingLevel.Inherit) return model;
 	const display = theme.thinking[level as keyof typeof theme.thinking] ?? level;
 	return `${model} ${theme.getThinkingBorderColor(level)(display)}`;
@@ -124,9 +141,10 @@ function formatModelBadge(modelId: string, level: ThinkingLevel | undefined): st
 function formatResolvedModelBadge(resolved: string, preserveProvider = false): string {
 	// Model ids may themselves contain colons (`qwen3:14b`), so only treat the
 	// suffix as a thinking level when it parses as one.
-	const colon = resolved.lastIndexOf(":");
-	const level = colon >= 0 ? parseThinkingLevel(resolved.slice(colon + 1)) : undefined;
-	const selector = level !== undefined ? resolved.slice(0, colon) : resolved;
+	const sanitized = sanitizeText(replaceTabs(resolved).replace(/[\r\n]+/g, " "));
+	const colon = sanitized.lastIndexOf(":");
+	const level = colon >= 0 ? parseThinkingLevel(sanitized.slice(colon + 1)) : undefined;
+	const selector = level !== undefined ? sanitized.slice(0, colon) : sanitized;
 	const label = preserveProvider ? selector : selector.slice(selector.indexOf("/") + 1);
 	return formatModelBadge(label, level);
 }
@@ -240,9 +258,6 @@ export class AgentHubOverlayComponent extends Container {
 	#messageInput: Input | undefined;
 	/** Captured row order from the first refresh; keeps the hub stable while open. */
 	#rowOrder: Map<string, number> | undefined;
-	/** Stable Main group order captured when the overlay opens. */
-	#rootOrder: Map<string, number> | undefined;
-	#groups: HubGroup[] = [];
 	/** Screen rows from the latest render that activate a concrete hub row. */
 	#rowAtScreenLine = new Map<number, number>();
 	/** Double-tap window state for the table's left-left "close hub" gesture. */
@@ -295,7 +310,7 @@ export class AgentHubOverlayComponent extends Container {
 
 		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange()));
 		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
-		this.#ageTimer = setInterval(() => this.#requestRender(), AGE_TICK_MS);
+		this.#ageTimer = setInterval(() => this.#requestRender(), HUB_TICK_MS);
 		this.#ageTimer.unref?.();
 
 		this.persistedSubagentsReady = this.#remote
@@ -379,6 +394,12 @@ export class AgentHubOverlayComponent extends Container {
 		this.#notice = undefined;
 		const viewer = new AgentTranscriptViewer({
 			agentId: id,
+			getVisibleAgentIds: () => this.#rows.map(row => row.ref.id),
+			onAgentChange: agentId => {
+				const rowIndex = this.#rows.findIndex(row => row.ref.id === agentId);
+				if (rowIndex >= 0) this.#selectedRow = rowIndex;
+			},
+			getTaskOutcome: agentId => this.#taskOutcome(agentId, this.#observableFor(agentId)?.progress),
 			registry: this.#registry,
 			remote: this.#remote,
 			observers: this.#observers,
@@ -438,16 +459,13 @@ export class AgentHubOverlayComponent extends Container {
 
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
-		const refs = this.#registry.list();
+		const refs = this.#registry.list().filter(ref => ref.kind !== "main");
 
 		if (!this.#rowOrder) {
 			const initial = [...refs].sort(
 				(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastActivity - a.lastActivity,
 			);
 			this.#rowOrder = new Map(initial.map((ref, index) => [ref.id, index]));
-			this.#rootOrder = new Map();
-			const active = initial.find(ref => ref.id === this.#activeTopLevelId);
-			this.#rootOrder.set(active?.id ?? this.#activeTopLevelId, 0);
 		}
 
 		const rowOrder = this.#rowOrder ?? new Map<string, number>();
@@ -455,80 +473,53 @@ export class AgentHubOverlayComponent extends Container {
 		for (const ref of refs) {
 			if (!rowOrder.has(ref.id)) rowOrder.set(ref.id, rowOrder.size);
 		}
-		const ordered = [...refs].sort((a, b) => (rowOrder.get(a.id) ?? 0) - (rowOrder.get(b.id) ?? 0));
-		const rootOrder = this.#rootOrder ?? new Map<string, number>();
-		this.#rootOrder = rootOrder;
-		for (const ref of ordered) {
-			if (ref.kind === "main" && !rootOrder.has(ref.id)) rootOrder.set(ref.id, rootOrder.size);
-		}
-
-		const mainRows: HubRow[] = ordered
-			.filter(ref => ref.kind === "main" && ref.id !== this.#activeTopLevelId)
-			.map(ref => ({ kind: "main", ref }));
-		const grouped = new Map<string, RootSubagentGroup>();
-		for (const ref of ordered) {
-			if (ref.kind === "main") continue;
-			const root = resolveTopLevelAgent(this.#registry, ref.id);
-			const rootId = root?.id ?? ref.parentId ?? this.#activeTopLevelId;
-			if (!rootOrder.has(rootId)) rootOrder.set(rootId, rootOrder.size);
-			let group = grouped.get(rootId);
-			if (!group) {
-				group = {
-					rootId,
-					label:
-						root !== undefined
-							? this.#displayLabel(root)
-							: ref.parentId === this.#activeTopLevelId || !ref.parentId
-								? this.#activeMainLabel()
-								: tSettingsUi("Main"),
-					rows: [],
-				};
-				grouped.set(rootId, group);
-			}
-			group.rows.push({ kind: "subagent", ref });
-		}
-		const subagentGroups = [...grouped.values()].sort((left, right) => {
-			const leftActive = left.rootId === this.#activeTopLevelId;
-			const rightActive = right.rootId === this.#activeTopLevelId;
-			if (leftActive !== rightActive) return leftActive ? -1 : 1;
-			return (rootOrder.get(left.rootId) ?? 0) - (rootOrder.get(right.rootId) ?? 0);
+		const ordered = [...refs].sort((a, b) => {
+			const statusDelta = HUB_SECTION_ORDER[this.#sectionFor(a)] - HUB_SECTION_ORDER[this.#sectionFor(b)];
+			return statusDelta || (rowOrder.get(a.id) ?? 0) - (rowOrder.get(b.id) ?? 0);
 		});
-
-		this.#groups = [
-			...(mainRows.length > 0 ? [{ kind: "mains" as const, rows: mainRows }] : []),
-			...(subagentGroups.length > 0 ? [{ kind: "subagents" as const, groups: subagentGroups }] : []),
-		];
-		this.#rows = [...mainRows, ...subagentGroups.flatMap(group => group.rows)];
+		this.#rows = ordered.map(ref => ({ ref }));
 
 		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
 	}
 
-	#displayLabel(ref: AgentRef): string {
-		const label = agentDisplayLabel(ref).trim();
-		if (!label || UUID_LABEL.test(label)) return ref.kind === "main" ? tSettingsUi("Main") : tSettingsUi("Subagent");
-		return replaceTabs(label).replace(/[\r\n]+/g, " ");
+	#sectionFor(ref: AgentRef): HubSection {
+		const progress = this.#observableFor(ref.id)?.progress;
+		if (progress?.status === "pending" || ref.activityState?.phase === "queued") return "queued";
+		if (ref.status === "waiting" || ref.activityState?.phase === "waiting-peer") return "attention";
+		if (ref.status === "running") return "running";
+		if (ref.status === "parked") return "parked";
+		if (progress?.status === "failed" || progress?.status === "aborted" || ref.status === "aborted") return "stopped";
+		return "completed";
 	}
 
-	#activeMainLabel(): string {
-		const ref = this.#registry.get(this.#activeTopLevelId);
-		return ref ? this.#displayLabel(ref) : tSettingsUi("Main");
+	#displayLabel(ref: AgentRef): string {
+		const label = sanitizeText(replaceTabs(agentDisplayLabel(ref)).replace(/[\r\n]+/g, " ")).trim();
+		if (!label || UUID_LABEL.test(label)) return ref.kind === "main" ? tSettingsUi("Main") : tSettingsUi("Subagent");
+		return label;
 	}
 
 	#observableFor(id: string): ObservableSession | undefined {
 		return this.#observers.getSessions().find(session => session.id === id);
 	}
 
-	#activityLines(ref: AgentRef, observed: ObservableSession | undefined, width: number): string[] {
-		const progress = observed?.progress;
-		const activity = selectAgentActivity(ref.activityState, progress);
-		const display = renderAgentActivityDisplay({ activity, progress, width });
-		const lines = [display.activityLine, display.statsLine].filter((line): line is string => Boolean(line));
-		if (lines.length === 0) {
-			const fallback = observed?.description || progress?.task || ref.activity;
-			if (fallback) lines.push(theme.fg("muted", sanitizeLine(fallback, width)));
+	#taskOutcome(
+		agentId: string,
+		progress?: AgentProgress,
+	): { resultText?: string; deliveryStatus?: AsyncJobDeliveryStatus } | undefined {
+		const job = AsyncJobManager.instance()?.getLatestJobForAgent(agentId);
+		let resultText = progress?.resultText;
+		if (!resultText && job) {
+			const detailProgress = job.latestDetails?.progress;
+			const firstProgress = Array.isArray(detailProgress) ? detailProgress[0] : undefined;
+			const candidate =
+				firstProgress && typeof firstProgress === "object" && "resultText" in firstProgress
+					? firstProgress.resultText
+					: undefined;
+			if (typeof candidate === "string") resultText = candidate;
 		}
-		return lines.map(line => truncateAgentActivityLine(line, width));
+		const deliveryStatus = job?.deliveryStatus ?? progress?.deliveryStatus;
+		return resultText || deliveryStatus ? { resultText, deliveryStatus } : undefined;
 	}
 
 	// ========================================================================
@@ -537,49 +528,68 @@ export class AgentHubOverlayComponent extends Container {
 
 	#renderTable(width: number): string[] {
 		const lines: string[] = [];
+		const innerWidth = Math.max(1, width - 2);
 		this.#rowAtScreenLine.clear();
-		lines.push(...new DynamicBorder().render(width));
-		const counts = this.#statusSummary();
-		const activeLabel = this.#activeMainLabel();
-		lines.push(
-			` ${theme.fg("accent", tSettingsUi("Agent Hub"))}${theme.fg("dim", `${theme.sep.dot}${tSettingsUi("Main")}: `)}${theme.bold(activeLabel)}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`,
-		);
-		lines.push(...new DynamicBorder().render(width));
-
-		const hintLines = this.#hintLines();
+		const hintLines = this.#hintLines(width);
 		let messageLine: string | undefined;
 		if (this.#messageInput && this.#messageAgentId) {
 			const target = this.#registry.get(this.#messageAgentId);
 			const label = target ? this.#displayLabel(target) : tSettingsUi("Subagent");
 			const prefix = ` ${theme.fg("muted", `m → ${label}: `)}`;
-			const input = this.#messageInput.render(Math.max(1, width - 2 - visibleWidth(prefix)))[0] ?? "";
-			messageLine = truncateToWidth(`${prefix}${input}`, Math.max(1, width - 2));
+			const input = this.#messageInput.render(Math.max(1, innerWidth - visibleWidth(prefix)))[0] ?? "";
+			messageLine = truncateToWidth(`${prefix}${input}`, innerWidth);
 		}
+
+		lines.push(...new DynamicBorder().render(width));
+		const counts = width >= 100 ? this.#statusSummary() : "";
+		const title = `${theme.fg("accent", tSettingsUi("Agent Hub"))}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`;
+		lines.push(` ${truncateToWidth(title, innerWidth)}`);
+		for (const hintLine of hintLines) lines.push(` ${truncateToWidth(hintLine, innerWidth)}`);
+		if (messageLine) lines.push(messageLine);
+
 		if (this.#rows.length === 0) {
 			lines.push(` ${theme.fg("dim", tSettingsUi("no subagents yet — task spawns appear here"))}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
-			const chromeRows = 5 + hintLines.length + (messageLine ? 1 : 0) + (this.#notice ? 1 : 0);
+			const chromeRows = 3 + hintLines.length + (messageLine ? 1 : 0) + (this.#notice ? 1 : 0);
 			const budget = Math.max(3, termHeight - chromeRows);
 			const blocks = this.#renderBlocks(width);
-			const selectedBlock = blocks.findIndex(block => block.rowIndex === this.#selectedRow);
-			let start = Math.max(0, selectedBlock);
-			let end = Math.min(blocks.length, start + 1);
-			let used = blocks[start]?.lines.length ?? 0;
-			for (let grew = true; grew; ) {
-				grew = false;
-				if (end < blocks.length && used + blocks[end]!.lines.length <= budget) {
-					used += blocks[end]!.lines.length;
-					end++;
-					grew = true;
+			const selectedBlock = Math.max(
+				0,
+				blocks.findIndex(block => block.rowIndex === this.#selectedRow),
+			);
+			const fitBlocks = (blockBudget: number): { start: number; end: number; used: number } => {
+				let start = selectedBlock;
+				let end = Math.min(blocks.length, start + 1);
+				let used = blocks[start]?.lines.length ?? 0;
+				for (let grew = true; grew; ) {
+					grew = false;
+					if (end < blocks.length && used + blocks[end]!.lines.length <= blockBudget) {
+						used += blocks[end]!.lines.length;
+						end++;
+						grew = true;
+					}
+					if (start > 0 && used + blocks[start - 1]!.lines.length <= blockBudget) {
+						start--;
+						used += blocks[start]!.lines.length;
+						grew = true;
+					}
 				}
-				if (start > 0 && used + blocks[start - 1]!.lines.length <= budget) {
-					start--;
-					used += blocks[start]!.lines.length;
-					grew = true;
-				}
+				return { start, end, used };
+			};
+			let blockBudget = budget;
+			let { start, end, used } = fitBlocks(blockBudget);
+			for (let pass = 0; pass < 3; pass++) {
+				const markerRows = (start > 0 ? 1 : 0) + (end < blocks.length ? 1 : 0);
+				const nextBudget = Math.max(1, budget - markerRows);
+				if (nextBudget === blockBudget) break;
+				blockBudget = nextBudget;
+				({ start, end, used } = fitBlocks(blockBudget));
 			}
-			if (start > 0) {
+			const markerCapacity = Math.max(0, budget - used);
+			const showStartMarker = start > 0 && markerCapacity > 0;
+			const showEndMarker = end < blocks.length && markerCapacity > (showStartMarker ? 1 : 0);
+			if (showStartMarker) {
 				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
 			}
 			for (const block of blocks.slice(start, end)) {
@@ -591,66 +601,109 @@ export class AgentHubOverlayComponent extends Container {
 					}
 				}
 			}
-			if (end < blocks.length) {
+			if (showEndMarker) {
 				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: blocks.length - end })}`)}`);
 			}
 		}
 
-		if (messageLine) lines.push(messageLine);
 		if (this.#notice) {
-			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, Math.max(10, width - 2)))}`);
+			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, innerWidth))}`);
 		}
-		lines.push("");
-		lines.push(...hintLines.map(line => ` ${theme.fg("dim", line)}`));
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
 
 	#renderBlocks(width: number): RenderedHubBlock[] {
 		const blocks: RenderedHubBlock[] = [];
-		const statusColumnWidth = this.#statusColumnWidth();
-		let rowIndex = 0;
-		for (const group of this.#groups) {
-			if (group.kind === "mains") {
-				blocks.push({ lines: [` ${theme.bold(theme.fg("accent", tSettingsUi("Main")))}`] });
-				for (const row of group.rows) {
-					blocks.push({
-						lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width, statusColumnWidth),
-						rowIndex,
-					});
-					rowIndex++;
-				}
-				continue;
-			}
-			blocks.push({ lines: [` ${theme.bold(theme.fg("accent", tSettingsUi("Subagents")))}`] });
-			for (const rootGroup of group.groups) {
+		if (width >= HUB_WIDE_MIN_WIDTH && this.#rows.length > 0) {
+			blocks.push({ lines: [this.#columnHeader(width)] });
+		}
+		const counts: Record<HubSection, number> = {
+			running: 0,
+			attention: 0,
+			queued: 0,
+			parked: 0,
+			completed: 0,
+			stopped: 0,
+		};
+		for (const row of this.#rows) counts[this.#sectionFor(row.ref)]++;
+		let section: HubSection | undefined;
+		for (let rowIndex = 0; rowIndex < this.#rows.length; rowIndex++) {
+			const row = this.#rows[rowIndex]!;
+			const nextSection = this.#sectionFor(row.ref);
+			if (nextSection !== section) {
+				section = nextSection;
 				blocks.push({
 					lines: [
-						` ${theme.fg("dim", `${theme.sep.dot} ${tSettingsUi("Main")}:`)} ${theme.bold(sanitizeLine(rootGroup.label, Math.max(10, width - 5)))}`,
+						theme.bold(theme.fg("accent", `${tSettingsUi(HUB_SECTION_LABEL[section])} (${counts[section]})`)),
 					],
 				});
-				for (const row of rootGroup.rows) {
-					blocks.push({
-						lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width, statusColumnWidth),
-						rowIndex,
-					});
-					rowIndex++;
-				}
 			}
+			blocks.push({
+				lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width),
+				rowIndex,
+			});
 		}
 		return blocks;
 	}
 
-	#hintLines(): string[] {
-		if (this.#messageInput) return [tSettingsUi("Enter:send message · Esc:cancel message")];
-		const selected = this.#rows[this.#selectedRow];
-		const enterAction =
-			selected?.kind === "main" ? tSettingsUi("Enter:switch session") : tSettingsUi("Enter:open transcript");
-		return [
-			tSettingsUi("j/k:select · {enterAction} · f:focus live subagent", { enterAction }),
-			tSettingsUi("m:message subagent · p:Main"),
-			tSettingsUi("r:revive parked subagent · x:kill subagent · Esc/←←:close"),
+	#columnHeader(width: number): string {
+		const max = Math.max(1, width - 2);
+		const nameWidth = Math.max(
+			18,
+			max -
+				3 -
+				HUB_STATUS_WIDTH -
+				HUB_PROGRESS_WIDTH -
+				HUB_DURATION_WIDTH -
+				HUB_MODEL_WIDTH -
+				HUB_ACTIVITY_WIDTH -
+				HUB_COLUMN_GAP.length * 5,
+		);
+		const cells = [
+			fixedCell(tSettingsUi("Agent"), nameWidth),
+			fixedCell(tSettingsUi("Status"), HUB_STATUS_WIDTH),
+			fixedCell(tSettingsUi("Progress"), HUB_PROGRESS_WIDTH),
+			fixedCell(tSettingsUi("Duration"), HUB_DURATION_WIDTH),
+			fixedCell(tSettingsUi("Model"), HUB_MODEL_WIDTH),
+			fixedCell(tSettingsUi("Activity"), HUB_ACTIVITY_WIDTH),
 		];
+		return theme.fg("dim", `   ${cells.join(HUB_COLUMN_GAP)}`);
+	}
+
+	#hintLines(width: number): string[] {
+		const maxWidth = Math.max(1, width - 2);
+		const separator = theme.fg("dim", theme.sep.dot);
+		const clamp = (line: string): string => truncateToWidth(line, maxWidth);
+		if (this.#messageInput) {
+			return [
+				clamp(
+					[
+						rawKeyHint("Enter", tSettingsUi("send message")),
+						rawKeyHint("Esc", tSettingsUi("cancel message")),
+					].join(separator),
+				),
+			];
+		}
+		const selected = this.#rows[this.#selectedRow];
+		const primary = [
+			rawKeyHint("j/k", tSettingsUi("select")),
+			rawKeyHint("Enter", tSettingsUi("open transcript")),
+			rawKeyHint("Esc/←←", tSettingsUi("close")),
+		].join(separator);
+		if (!selected) return [clamp(primary)];
+
+		const actions: string[] = [];
+		const ref = selected.ref;
+		const live = ref.status === "running" || ref.status === "waiting" || ref.status === "idle";
+		if (live && ref.kind !== "advisor") actions.push(rawKeyHint("f", tSettingsUi("focus")));
+		if (ref.status !== "aborted" && ref.kind !== "advisor") actions.push(rawKeyHint("m", tSettingsUi("message")));
+		actions.push(rawKeyHint("p", tSettingsUi("Main")));
+		if (ref.status === "parked") actions.push(rawKeyHint("r", tSettingsUi("revive")));
+		if (ref.status !== "aborted" && ref.kind !== "advisor") actions.push(rawKeyHint("x", tSettingsUi("kill")));
+		const secondary = actions.join(separator);
+		const combined = `${primary}${separator}${secondary}`;
+		return visibleWidth(combined) <= maxWidth ? [combined] : [clamp(primary), clamp(secondary)];
 	}
 
 	#statusSummary(): string {
@@ -666,45 +719,157 @@ export class AgentHubOverlayComponent extends Container {
 		return parts.join(theme.sep.dot);
 	}
 
-	#statusColumnWidth(): number {
-		return this.#rows.reduce(
-			(width, row) => Math.max(width, visibleWidth(renderAgentStatusBadge(row.ref.status))),
-			0,
-		);
-	}
-
-	#renderEntry(row: HubRow, selected: boolean, width: number, statusColumnWidth: number): string[] {
+	#renderEntry(row: HubRow, selected: boolean, width: number): string[] {
 		const ref = row.ref;
 		const max = Math.max(1, width - 2);
-		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
-		let identity = ` ${cursor} ${statusGlyph(ref.status)} ${theme.bold(this.#displayLabel(ref))}`;
-		if (row.kind === "main") identity += `  ${theme.fg("dim", tSettingsUi("Main"))}`;
-		if (ref.kind === "advisor") identity += `  ${theme.fg("warning", tSettingsUi("read-only"))}`;
-		const unread = this.#irc.unreadCount(ref.id);
-		if (unread > 0) identity += `  ${theme.fg("warning", `⧉ ${unread}`)}`;
-
-		const status = renderAgentStatusBadge(ref.status);
-		const entry: string[] = [];
-		if (status && max >= statusColumnWidth + 3) {
-			const identityWidth = Math.max(1, max - statusColumnWidth - 2);
-			const title = truncateToWidth(identity, identityWidth);
-			const statusCell = `${padding(Math.max(0, statusColumnWidth - visibleWidth(status)))}${status}`;
-			entry.push(`${title}${padding(max - visibleWidth(title) - statusColumnWidth)}${statusCell}`);
-		} else {
-			entry.push(truncateToWidth(identity, max));
-			if (status) entry.push(`     ${status}`);
-		}
-
 		const observed = this.#observableFor(ref.id);
-		const badge = modelBadge(ref, observed);
-		const age = theme.fg("dim", formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000))));
-		const metadata = badge ? `${badge}${theme.sep.dot}${age}` : age;
-		entry.push(`     ${truncateToWidth(metadata, Math.max(1, max - 5))}`);
+		const progress = observed?.progress;
+		const activity = selectAgentActivity(ref.activityState, progress);
+		const status =
+			ref.kind === "advisor" ? theme.fg("warning", tSettingsUi("read-only")) : renderAgentStatusBadge(ref.status);
+		const unread = this.#irc.unreadCount(ref.id);
+		const label = `${this.#displayLabel(ref)}${unread > 0 ? `  ⧉ ${unread}` : ""}`;
+		const model = modelBadge(ref, observed) ?? "—";
+		const summary = sanitizeLine(
+			progress?.lastIntent ??
+				activity?.detail ??
+				progress?.currentToolArgs ??
+				observed?.description ??
+				progress?.task ??
+				ref.activity ??
+				"—",
+			Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH),
+		);
+		const duration = this.#taskDuration(ref, observed);
+		const progressText = this.#progressCell(ref, observed);
+		const terminal =
+			progress?.status === "completed" ||
+			progress?.status === "failed" ||
+			progress?.status === "aborted" ||
+			ref.status === "idle" ||
+			ref.status === "parked" ||
+			ref.status === "aborted";
+		const activityTime = terminal
+			? formatAgentClockTime(progress?.completedAtMs ?? observed?.completedAtMs ?? ref.lastActivity)
+			: formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)));
+		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
+		const entry: string[] = [];
 
-		for (const activityLine of this.#activityLines(ref, observed, Math.max(1, max - 5))) {
-			entry.push(`     ${activityLine}`);
+		if (width >= HUB_WIDE_MIN_WIDTH) {
+			const nameWidth = Math.max(
+				18,
+				max -
+					3 -
+					HUB_STATUS_WIDTH -
+					HUB_PROGRESS_WIDTH -
+					HUB_DURATION_WIDTH -
+					HUB_MODEL_WIDTH -
+					HUB_ACTIVITY_WIDTH -
+					HUB_COLUMN_GAP.length * 5,
+			);
+			entry.push(
+				` ${cursor} ${[
+					fixedCell(theme.bold(label), nameWidth),
+					fixedCell(status, HUB_STATUS_WIDTH),
+					fixedCell(progressText, HUB_PROGRESS_WIDTH),
+					fixedCell(theme.fg("dim", duration), HUB_DURATION_WIDTH),
+					fixedCell(model, HUB_MODEL_WIDTH),
+					fixedCell(theme.fg("dim", activityTime), HUB_ACTIVITY_WIDTH),
+				].join(HUB_COLUMN_GAP)}`,
+			);
+		} else {
+			const suffix = status ? `  ${status}` : "";
+			const labelWidth = Math.max(8, max - 3 - visibleWidth(suffix));
+			entry.push(` ${cursor} ${fixedCell(theme.bold(label), labelWidth)}${suffix}`);
+			entry.push(
+				`   ${fixedCell(progressText, Math.max(18, max - HUB_DURATION_WIDTH - 5))}${HUB_COLUMN_GAP}${theme.fg("dim", duration)}`,
+			);
+			entry.push(
+				`   ${fixedCell(theme.fg("dim", tSettingsUi("Model")), HUB_DETAIL_LABEL_WIDTH)}${truncateToWidth(model, Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH))}`,
+			);
 		}
-		return entry;
+
+		entry.push(`   ${fixedCell(theme.fg("dim", tSettingsUi("Dynamic summary")), HUB_DETAIL_LABEL_WIDTH)}${summary}`);
+		const outcome = terminal ? this.#taskOutcome(ref.id, progress) : undefined;
+		if (outcome?.resultText) {
+			entry.push(
+				`   ${fixedCell(theme.fg("dim", tSettingsUi("Task result")), HUB_DETAIL_LABEL_WIDTH)}${sanitizeLine(outcome.resultText, Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH))}`,
+			);
+		}
+		const reportStatus = terminal
+			? this.#deliveryLabel(outcome?.deliveryStatus, Boolean(outcome?.resultText))
+			: undefined;
+		if (reportStatus) {
+			entry.push(
+				`   ${fixedCell(theme.fg("dim", tSettingsUi("Report status")), HUB_DETAIL_LABEL_WIDTH)}${reportStatus}`,
+			);
+		}
+		if (activity?.phase === "waiting-peer") {
+			const waiting = formatAgentDuration(Date.now() - activity.phaseStartedAtMs);
+			entry.push(
+				`   ${fixedCell(theme.fg("dim", tSettingsUi("Waiting for Main")), HUB_DETAIL_LABEL_WIDTH)}${waiting}${theme.fg("dim", `${theme.sep.dot}${tSettingsUi("Duration {duration}", { duration })}`)}`,
+			);
+		}
+
+		if (!selected) return entry;
+		return entry.map(line => {
+			const clipped = truncateToWidth(line, max);
+			return theme.bg("selectedBg", `${clipped}${padding(Math.max(0, max - visibleWidth(clipped)))}`);
+		});
+	}
+
+	#deliveryLabel(status: AsyncJobDeliveryStatus | undefined, hasResult: boolean): string | undefined {
+		switch (status) {
+			case "pending":
+				return theme.fg("warning", tSettingsUi("Delivery pending"));
+			case "delivering":
+				return theme.fg("accent", tSettingsUi("Delivering to Main"));
+			case "delivered":
+				return theme.fg("success", tSettingsUi("Delivered to Main"));
+			case "dead-letter":
+				return theme.fg("error", tSettingsUi("Main unavailable"));
+			default:
+				return hasResult ? theme.fg("success", tSettingsUi("Delivered to Main")) : undefined;
+		}
+	}
+
+	#taskDuration(ref: AgentRef, observed: ObservableSession | undefined): string {
+		const progress = observed?.progress;
+		const startedAtMs = progress?.startedAtMs ?? observed?.startedAtMs;
+		const completedAtMs = progress?.completedAtMs ?? observed?.completedAtMs;
+		const terminal =
+			progress?.status === "completed" ||
+			progress?.status === "failed" ||
+			progress?.status === "aborted" ||
+			ref.status === "idle" ||
+			ref.status === "parked" ||
+			ref.status === "aborted";
+		if (startedAtMs !== undefined) {
+			const end = terminal
+				? (completedAtMs ??
+					(progress?.durationMs !== undefined ? startedAtMs + progress.durationMs : ref.lastActivity))
+				: Date.now();
+			return formatAgentDuration(Math.max(0, end - startedAtMs));
+		}
+		return progress?.durationMs !== undefined ? formatAgentDuration(progress.durationMs) : "--:--:--";
+	}
+
+	#progressCell(ref: AgentRef, observed: ObservableSession | undefined): string {
+		const progress = observed?.progress;
+		const activity = selectAgentActivity(ref.activityState, progress);
+		const determinate = activity?.progress;
+		if (determinate && Number.isFinite(determinate.total) && determinate.total > 0) {
+			const completed = Math.max(0, Math.min(determinate.completed, determinate.total));
+			return `${progressBar(completed, determinate.total)} ${completed}/${determinate.total}`;
+		}
+		if (progress?.status === "completed" || ref.status === "idle" || ref.status === "parked") {
+			return `${progressBar(1, 1)} ${tSettingsUi("completed")}`;
+		}
+		if (progress?.status === "failed" || progress?.status === "aborted" || ref.status === "aborted") {
+			return `${progressBar(1, 1)} ${tSettingsUi(progress?.status ?? "aborted")}`;
+		}
+		const phase = activity?.label ? tSettingsUi(activity.label) : tSettingsUi(ref.status);
+		return `${progressBar(0, 1)} ${phase}`;
 	}
 
 	#handleTableInput(keyData: string): void {
@@ -790,11 +955,7 @@ export class AgentHubOverlayComponent extends Container {
 
 	#startMessage(): void {
 		const row = this.#rows[this.#selectedRow];
-		if (row?.kind !== "subagent") {
-			this.#notice = "Select a subagent to message.";
-			this.#requestRender();
-			return;
-		}
+		if (!row) return;
 		const ref = row.ref;
 		if (ref.kind === "advisor") {
 			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript and cannot be messaged.`;
@@ -875,10 +1036,6 @@ export class AgentHubOverlayComponent extends Container {
 		const selected = this.#rows[this.#selectedRow];
 		if (!selected) return;
 		this.#notice = undefined;
-		if (selected.kind === "main") {
-			this.#switchSelectedMain(selected.ref);
-			return;
-		}
 		this.openChat(selected.ref.id);
 	}
 
@@ -899,11 +1056,7 @@ export class AgentHubOverlayComponent extends Container {
 
 	#focusSelected(): void {
 		const row = this.#rows[this.#selectedRow];
-		if (row?.kind !== "subagent") {
-			this.#notice = "Select a live subagent to focus.";
-			this.#requestRender();
-			return;
-		}
+		if (!row) return;
 		const ref = row.ref;
 		const isLive =
 			ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
@@ -946,11 +1099,7 @@ export class AgentHubOverlayComponent extends Container {
 
 	#switchToMain(): void {
 		const row = this.#rows[this.#selectedRow];
-		if (!row || row.kind === "main") {
-			this.#notice = "Select a subagent to return to its Main.";
-			this.#requestRender();
-			return;
-		}
+		if (!row) return;
 		const parent = resolveTopLevelAgent(this.#registry, row.ref.id);
 		if (!parent) {
 			this.#notice = `The Main for "${this.#displayLabel(row.ref)}" is unavailable.`;
@@ -968,11 +1117,6 @@ export class AgentHubOverlayComponent extends Container {
 	#reviveSelected(): void {
 		const row = this.#rows[this.#selectedRow];
 		if (!row) return;
-		if (row.kind === "main") {
-			this.#notice = "Main stays live; switch to it with Enter.";
-			this.#requestRender();
-			return;
-		}
 		const ref = row.ref;
 		if (ref.kind === "advisor") {
 			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — nothing to revive.`;
@@ -1002,11 +1146,6 @@ export class AgentHubOverlayComponent extends Container {
 	#killSelected(): void {
 		const row = this.#rows[this.#selectedRow];
 		if (!row) return;
-		if (row.kind === "main") {
-			this.#notice = "Main cannot be killed from the Agent Hub.";
-			this.#requestRender();
-			return;
-		}
 		const ref = row.ref;
 		if (ref.kind === "advisor") {
 			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — cannot be killed.`;

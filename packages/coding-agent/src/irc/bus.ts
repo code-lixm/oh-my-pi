@@ -92,7 +92,11 @@ export class IrcBus {
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
 		this.#registry.onChange(event => {
-			if (event.type === "removed" || (event.type === "status_changed" && event.ref.status === "aborted")) {
+			if (
+				event.type === "removed" ||
+				(event.type === "status_changed" &&
+					(event.ref.status === "idle" || event.ref.status === "parked" || event.ref.status === "aborted"))
+			) {
 				this.dismissPendingRepliesFor(event.ref.id);
 			}
 		});

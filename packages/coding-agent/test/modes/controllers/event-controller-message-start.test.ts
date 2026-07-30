@@ -193,6 +193,7 @@ function createIrcContext() {
 		chatContainer,
 		pendingTools: new Map(),
 		session: {},
+		viewSession: { activity: { phase: "idle" }, isStreaming: false },
 		showSubagentFeedback,
 	} as unknown as InteractiveModeContext;
 	return { ctx, chatContainer, showSubagentFeedback };

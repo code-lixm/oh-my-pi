@@ -424,6 +424,7 @@ class ThinkingContent(TypedDict, total=False):
     type: Literal["thinking"]
     thinking: str
     thinkingSignature: NotRequired[str]
+    durationMs: NotRequired[int]
 
 
 class RedactedThinkingContent(TypedDict, total=False):

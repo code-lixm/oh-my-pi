@@ -7,6 +7,7 @@
 - Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed project-path-and-branch indexes under `~/.omp/codegraph/`; it combines non-blocking background initialization with persistent progress, optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, automatic TTL/orphan/per-project/global storage governance, graph-first agent guidance, and safe `omp codegraph status|list|clear|clear-all|prune` management without writing `.codegraph` into source repositories.
 - Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
 - Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
+- Added a fullscreen Jobs Hub, opened with a deliberate double-right-arrow gesture on an empty prompt, showing every retained background task and Bash job with live work/model/runtime metadata, scrollable bounded Bash output tails, agent focus, and cancellation controls.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -23,8 +24,12 @@
 - Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
 - Added a configurable `app.editor.clear` shortcut (default `Alt+C`) that clears the complete prompt draft, including pending images, without overloading interrupt or exit behavior.
 ### Changed
+- Changed visible thinking blocks to request provider summaries for Main and subagents, show complete content by default, and append a frozen `HH:MM:SS` duration after each completed thinking stage.
 - Changed Bash tool cards to omit the redundant standalone icon/title row, leaving the `$ …` command preview as the first content line.
-- Changed Agent Hub to separate top-level sessions from subagents, use session titles instead of opaque root IDs, and apply object-specific navigation for switching, inspecting, focusing, messaging, returning to parents, reviving, and stopping agents.
+- Changed Agent Hub into a subagent-only runtime dashboard: Main remains an internal routing target, while fixed columns keep status, determinate progress, `HH:MM:SS` runtime, actual model, and recent activity aligned across live, waiting, advisor, and completed rows.
+- Added per-agent live dynamic summaries plus terminal task-result and Main-delivery status rows without inventing a separate final summary.
+- Changed the Agent Hub transcript viewer to keep a fixed metadata/summary header and persistent controls, cycle every Hub-visible advisor/live/parked row in place with `Alt+K`/`Alt+J`, and reserve `j/k/g/G` for transcript scrolling.
+- Changed the anchored Subagents HUD to render one scan-friendly status/activity line per agent when space permits, fall back to two lines on narrow terminals, and leave detailed throughput, context, token, tool, and cost telemetry to the Agent Hub and focused views.
 - Added structured main/subagent activity reporting across Working indicators, Hub rows, focused transcripts, remote snapshots, persisted agents, provider streams, and queued jobs without inventing percentage progress or treating ordinary model silence as a stall.
 - Added durable needs-reply communication state, explicit sender/recipient routing and delivery receipts, and root-aware relay behavior for concurrent top-level sessions.
 - Changed YOLO Ask prompts to use a 30-second default hard deadline from first render, preserving user answers and waiting indefinitely when a question has no valid recommended option; `ask.timeout = 0` still disables automatic selection.
@@ -52,11 +57,14 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed mutually awaited Hub messages deadlocking subagents until timeout; `hub send(await:true)` now yields to incoming peer IRC while preserving the already-delivered send receipt.
+- Fixed live secondary Main sessions falling back to synchronous `task` execution, which could leave the foreground turn blocked while a subagent displayed `needs reply`; uniquely identified top-level runtimes now share the process job manager with owner-isolated delivery and cancellation.
 - Fixed resumed `accent` tool cards retaining color only behind the left rail and text glyphs; replayed headers, body content, and internal padding now emit a real full-width tinted surface with the final column left as an inset.
 - Fixed double-Escape having no cancellation target while asynchronous task/subagent jobs were running; background confirmation now cancels owner-scoped jobs and clears their pending result delivery.
 - Fixed focused subagent views showing `Waiting for progress…` indefinitely when observer progress was absent; the HUD now reports the live registry status.
 - Fixed retry fallback models leaking into later user turns, session persistence, and model-usage recency; temporary fallback model/thinking state now remains scoped to one user process and restores the explicit primary before the next user input.
-- Fixed Agent Hub navigation and presentation to preserve the `Main → Agent Hub → subagent` hierarchy, keep lifecycle status in a stable right column with model/age metadata below, and route focused-view `←←` back through the shared Hub.
+- Fixed Agent Hub navigation so transcript `Esc` returns to the Hub, `p` routes to the owning Main without displaying Main as a row, and transcript cycling follows the same stable Hub-visible order.
+- Fixed stopped subagents continuing to accumulate phase and quiet time in management views; task progress now preserves start/end timestamps and renders a frozen `HH:MM:SS` duration after completion.
 - Fixed fullscreen subagent panels capturing terminal mouse input while `tui.mouseInput` is disabled; native text selection now remains available by default, while the opt-in setting consistently enables pointer interaction across focused, Hub, and transcript overlays.
 - Fixed LSP result cards under the `accent` border style omitting semantic success, warning, and error surface tints.
 - Fixed Todo mid-run reconciliation waiting for twelve successful mutations before nudging the agent; successful delegation now counts as phase progress and the threshold is four, while read-only research and failed calls remain excluded.

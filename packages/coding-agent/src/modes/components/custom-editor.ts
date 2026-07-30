@@ -585,6 +585,8 @@ export class CustomEditor extends Editor {
 	onCapsLock?: () => void;
 	/** Called when left-arrow is pressed while the editor is empty (cursor necessarily at start). */
 	onLeftAtStart?: () => void;
+	/** Called when right-arrow is pressed while the editor is empty (cursor necessarily at end). */
+	onRightAtEnd?: () => void;
 
 	/** Fired when a sustained space-bar hold is recognized — the push-to-talk STT start. The
 	 *  optimistically-typed spaces have already been deleted by the time this runs. */
@@ -853,6 +855,13 @@ export class CustomEditor extends Editor {
 		// movement fall through to normal handling.
 		if (canonical === "left" && this.onLeftAtStart && this.getText().trim() === "") {
 			this.onLeftAtStart();
+			return;
+		}
+
+		// Right-arrow on an empty editor mirrors the Agent Hub gesture for the
+		// Jobs Hub. Modified arrows and in-text cursor movement stay normal.
+		if (canonical === "right" && this.onRightAtEnd && this.getText().trim() === "") {
+			this.onRightAtEnd();
 			return;
 		}
 

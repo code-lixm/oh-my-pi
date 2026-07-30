@@ -133,7 +133,7 @@ function sliceGraphemes(text: string, units: number): string {
 	return text;
 }
 
-export function visibleUnits(message: AssistantMessage, hideThinking: boolean, proseOnly = true): number {
+export function visibleUnits(message: AssistantMessage, hideThinking: boolean, proseOnly = false): number {
 	let total = 0;
 	for (const block of message.content) {
 		if (block.type === "text") {
@@ -176,7 +176,7 @@ export function buildDisplayMessage(
 	target: AssistantMessage,
 	revealed: number,
 	hideThinking: boolean,
-	proseOnly = true,
+	proseOnly = false,
 	countOf: (index: number, text: string) => number = (_index, text) => countGraphemes(text),
 	sliceOf: GraphemeSlicer = (_index, text, units) => sliceGraphemes(text, units),
 ): AssistantMessage {
@@ -223,7 +223,7 @@ export class StreamingRevealController {
 	#timer: NodeJS.Timeout | undefined;
 	#revealed = 0;
 	#hideThinkingBlock = false;
-	#proseOnlyThinking = true;
+	#proseOnlyThinking = false;
 	#smoothStreaming = true;
 	readonly #unitCounter = new BlockUnitCounter();
 	readonly #countOf = (index: number, text: string): number => this.#unitCounter.count(index, text);

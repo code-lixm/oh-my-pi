@@ -1,7 +1,7 @@
 /**
- * Agent Hub activation contract: Enter switches a background Main runtime or
- * inspects a selected subagent transcript; `f` is the explicit live-focus action.
- * Failures keep the hub open and surface a notice.
+ * Agent Hub activation contract: Enter opens the selected non-Main subagent
+ * transcript; `f` is the explicit live-focus action. Failures keep the hub
+ * open and surface a notice.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -153,16 +153,17 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("Enter switches the selected background Main runtime instead of focusing it", async () => {
+	it("hides Main runtimes and Enter opens the remaining subagent transcript", () => {
 		const agents = new AgentRegistry();
 		registerMain(agents, { displayName: "Primary" });
 		registerMain(agents, { id: "top-level:review", displayName: "Review session", sessionTitle: "Review session" });
+		registerWorker(agents, "top-level:review");
 		const switched: string[] = [];
-		const done = Promise.withResolvers<void>();
+		const transcriptOverlays: unknown[] = [];
 		const hub = new AgentHubOverlayComponent({
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
-			onDone: () => done.resolve(),
+			onDone: () => {},
 			requestRender: () => {},
 			registry: agents,
 			irc: new IrcBus(agents),
@@ -170,16 +171,28 @@ describe("Agent hub Enter activation", () => {
 			switchTopLevel: async id => {
 				switched.push(id);
 			},
-			focusAgent: async () => {
-				throw new Error("Enter on a Main row must not focus it");
-			},
+			ui: {
+				showOverlay: (component: unknown) => {
+					transcriptOverlays.push(component);
+					return { hide() {}, setHidden() {}, isHidden: () => false };
+				},
+				setFocus() {},
+			} as never,
 		});
 
-		hub.handleInput("\r");
-		await done.promise;
+		try {
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered).toContain(AGENT_ID);
+			expect(rendered).not.toContain("Primary");
+			expect(rendered).not.toContain("Review session");
+			expect(rendered).not.toContain("Main:");
 
-		expect(switched).toEqual(["top-level:review"]);
-		hub.dispose();
+			hub.handleInput("\r");
+			expect(transcriptOverlays).toHaveLength(1);
+			expect(switched).toEqual([]);
+		} finally {
+			hub.dispose();
+		}
 	});
 
 	it("p switches from a child to its owning Main runtime", async () => {
@@ -238,7 +251,7 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("restores persisted children beneath the uniquely matched background Main", async () => {
+	it("restores a persisted child from the uniquely matched background session without rendering its Main", async () => {
 		using tempDir = TempDir.createSync("@omp-agent-hub-secondary-persisted-");
 		const primarySessionFile = path.join(tempDir.path(), "main.jsonl");
 		const secondarySessionFile = path.join(tempDir.path(), "review.jsonl");
@@ -274,7 +287,9 @@ describe("Agent hub Enter activation", () => {
 			status: "parked",
 		});
 		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-		expect(rendered).toContain("Main: Review session");
+		expect(rendered).toContain("Worker");
+		expect(rendered).not.toContain("Review session");
+		expect(rendered).not.toContain("Main:");
 		expect(rendered).not.toContain("4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f");
 		hub.dispose();
 	});
