@@ -1,7 +1,7 @@
 /**
- * Regression coverage for the unified Agent Hub task list: task rows are
- * activity-prioritized and use localized user-facing statuses, while routing
- * traffic and status sections never become list entries.
+ * Regression coverage for the unified Agent Hub task list: task rows keep
+ * registration order while live observer snapshots refresh localized
+ * user-facing statuses, without exposing routing traffic or status sections.
  */
 import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -10,6 +10,8 @@ import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
@@ -81,70 +83,84 @@ describe("Agent hub row ordering", () => {
 		setSettingsUiLocale(previousLocale);
 	});
 
-	it("orders active work first and same-status rows by recent activity", () => {
+	it("keeps registered rows fixed while observer status and activity refresh", () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
+		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
 		const observers = new SessionObserverRegistry();
+		const eventBus = new EventBus();
+		observers.subscribeToEventBus(eventBus);
 		const session = {} as AgentSession;
 
-		setSystemTime(100);
-		agents.register({ id: "older", displayName: "Older running", kind: "sub", session, status: "running" });
-		setSystemTime(200);
-		agents.register({ id: "fresh", displayName: "Fresh running", kind: "sub", session, status: "running" });
-		setSystemTime(800);
-		agents.register({ id: "queued", displayName: "Queued task", kind: "sub", session, status: "running" });
-		setSystemTime(900);
-		agents.register({ id: "waiting", displayName: "Waiting task", kind: "sub", session, status: "running" });
 		setSystemTime(1_000);
-		agents.register({ id: "finished", displayName: "Finished task", kind: "sub", session, status: "running" });
+		agents.register({ id: "first", displayName: "First observed", kind: "sub", session, status: "running" });
+		setSystemTime(2_000);
+		agents.register({ id: "second", displayName: "Second observed", kind: "sub", session, status: "running" });
 
-		vi.spyOn(observers, "getSessions").mockReturnValue([
-			{
-				id: "queued",
-				kind: "subagent",
-				label: "Queued task",
-				status: "active",
-				lastUpdate: 800,
-				progress: { status: "pending" } as never,
-			},
-			{
-				id: "waiting",
-				kind: "subagent",
-				label: "Waiting task",
-				status: "active",
-				lastUpdate: 900,
-				progress: {
-					status: "running",
-					activity: {
-						phase: "waiting-user",
-						label: "Waiting for a decision",
-						phaseStartedAtMs: 900,
-						lastActivityAtMs: 900,
-					},
-				} as never,
-			},
-			{
-				id: "finished",
-				kind: "subagent",
-				label: "Finished task",
-				status: "completed",
-				lastUpdate: 1_000,
-				progress: { status: "completed" } as never,
-			},
-		]);
+		for (const [id, index, startedAtMs] of [
+			["first", 0, 1_000],
+			["second", 1, 2_000],
+		] as const) {
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id,
+				index,
+				agent: "task",
+				agentSource: "bundled",
+				status: "started",
+				startedAtMs,
+				detached: true,
+			});
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+				index,
+				agent: "task",
+				agentSource: "bundled",
+				task: "",
+				detached: true,
+				progress: { id, status: "running" } as never,
+			});
+		}
 
 		const hub = makeHub(agents, observers);
 		try {
-			expect(
-				renderedAgentLabels(hub, [
-					"Older running",
-					"Fresh running",
-					"Queued task",
-					"Waiting task",
-					"Finished task",
-				]),
-			).toEqual(["Fresh running", "Older running", "Waiting task", "Queued task", "Finished task"]);
+			const labels = ["First observed", "Second observed"] as const;
+			expect(renderedAgentLabels(hub, labels)).toEqual([...labels]);
+			const initialRows = hub.render(120).map(Bun.stripANSI);
+			expect(initialRows.find(line => line.includes("First observed"))).toContain("Running");
+			expect(initialRows.find(line => line.includes("Second observed"))).toContain("Running");
+
+			setSystemTime(5_000);
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: "first",
+				index: 0,
+				agent: "task",
+				agentSource: "bundled",
+				status: "completed",
+				startedAtMs: 1_000,
+				completedAtMs: 5_000,
+				detached: true,
+			});
+			const waitingActivity = {
+				phase: "waiting-user" as const,
+				label: "Waiting for review",
+				phaseStartedAtMs: 5_000,
+				lastActivityAtMs: 5_000,
+			};
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+				index: 1,
+				agent: "task",
+				agentSource: "bundled",
+				task: "",
+				detached: true,
+				progress: { id: "second", status: "running", activity: waitingActivity } as never,
+			});
+			agents.setActivityState("second", waitingActivity);
+			vi.advanceTimersByTime(100);
+
+			expect(renderedAgentLabels(hub, labels)).toEqual([...labels]);
+			const refreshedRows = hub.render(120).map(Bun.stripANSI);
+			expect(refreshedRows.find(line => line.includes("First observed"))).toContain("Completed");
+			expect(refreshedRows.find(line => line.includes("Second observed"))).toContain("Waiting for user");
 		} finally {
 			hub.dispose();
 		}

@@ -315,7 +315,7 @@ export class UiHelpers {
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
-		const hiddenHubPeerToolCallIds = new Set<string>();
+		const hiddenHubToolCallIds = new Set<string>();
 		// Defer per-turn metrics until the turn's tool results have materialized.
 		// Read-only invisible turns attach the metrics to their shared compact
 		// group; every other turn keeps the standalone row below its tool blocks.
@@ -466,8 +466,13 @@ export class UiHelpers {
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
+					if (content.name === "hub" && !this.ctx.settings.get("display.showHubProcessActivity")) {
+						hiddenHubToolCallIds.add(content.id);
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
 					if (content.name === "hub" && isHubPeerCommunicationArgs(content.arguments)) {
-						hiddenHubPeerToolCallIds.add(content.id);
+						hiddenHubToolCallIds.add(content.id);
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
@@ -608,7 +613,7 @@ export class UiHelpers {
 				pendingReadUsageCallIds = pendingUsage ? groupedReadUsageCallIds(message) : undefined;
 			} else if (message.role === "toolResult") {
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
-				if (hiddenHubPeerToolCallIds.delete(message.toolCallId)) continue;
+				if (hiddenHubToolCallIds.delete(message.toolCallId)) continue;
 				const pendingHubComponent = this.ctx.pendingTools.get(message.toolCallId);
 				if (
 					message.toolName === "hub" &&

@@ -133,6 +133,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"grep",
 	"glob",
 	"web_search",
+	"codegraph",
 	"ast_grep",
 	"yield",
 	"hub",

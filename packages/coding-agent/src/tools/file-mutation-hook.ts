@@ -47,8 +47,8 @@
  */
 import * as path from "node:path";
 import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
-import { invalidateCodeGraphCoverage } from "./codegraph-coverage-ledger";
 import type { ToolSession } from "./";
+import { invalidateCodeGraphCoverage } from "./codegraph-coverage-ledger";
 import { localSandboxRoot } from "./plan-mode-guard";
 
 export type FileMutationKind = "create" | "update" | "delete" | "rename";

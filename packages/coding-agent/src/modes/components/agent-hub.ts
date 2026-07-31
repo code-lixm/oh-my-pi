@@ -81,15 +81,6 @@ function fixedCell(text: string, width: number): string {
 
 type HubTaskStatus = "not-started" | "running" | "waiting-user" | "completed" | "failed" | "stopped";
 
-const HUB_TASK_STATUS_PRIORITY: Record<HubTaskStatus, number> = {
-	running: 0,
-	"waiting-user": 1,
-	"not-started": 2,
-	completed: 3,
-	failed: 3,
-	stopped: 3,
-};
-
 type HubRow = { ref: AgentRef };
 
 interface RenderedHubEntry {
@@ -423,18 +414,7 @@ export class AgentHubOverlayComponent extends Container {
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
 		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
-		const observedById = new Map<string, ObservableSession>();
-		for (const observed of this.#observers.getSessions()) observedById.set(observed.id, observed);
-		const ordered = [...refs].sort((a, b) => {
-			const statusDelta =
-				HUB_TASK_STATUS_PRIORITY[this.#taskStatus(a, observedById.get(a.id))] -
-				HUB_TASK_STATUS_PRIORITY[this.#taskStatus(b, observedById.get(b.id))];
-			if (statusDelta !== 0) return statusDelta;
-			const activityDelta = b.lastActivity - a.lastActivity;
-			if (activityDelta !== 0) return activityDelta;
-			return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-		});
-		this.#rows = ordered.map(ref => ({ ref }));
+		this.#rows = refs.map(ref => ({ ref }));
 
 		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));

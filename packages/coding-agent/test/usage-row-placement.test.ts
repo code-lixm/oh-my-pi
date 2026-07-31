@@ -205,4 +205,121 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			builder.container.children.filter(component => component.render(120).join("\n").includes(USAGE_LABEL)),
 		).toEqual([groups[0]!]);
 	});
+
+	it("hides persisted hub process cards until process activity is explicitly enabled", () => {
+		const startCard = "HUB_REBUILD_START_CARD";
+		const waitCard = "HUB_REBUILD_WAIT_CARD";
+		const afterStart = "VISIBLE_AFTER_HUB_START";
+		const afterWait = "VISIBLE_AFTER_HUB_WAIT";
+		const startResult = "HUB_REBUILD_START_RESULT";
+		const waitResult = "HUB_REBUILD_WAIT_RESULT";
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "hub-start",
+						name: "hub",
+						arguments: { op: "start", name: startCard, application: "bun", args: ["run", "work"] },
+					},
+					{ type: "text", text: afterStart },
+					{ type: "toolCall", id: "hub-wait", name: "hub", arguments: { op: "wait", name: waitCard } },
+					{ type: "text", text: afterWait },
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				timestamp: USAGE_TS,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "hub-start",
+				toolName: "hub",
+				content: [{ type: "text", text: startResult }],
+				isError: false,
+				details: {
+					op: "start",
+					daemon: {
+						name: startCard,
+						id: "hub-start-process",
+						state: "ready",
+						createdAt: USAGE_TS,
+						startedAt: USAGE_TS,
+						readyAt: USAGE_TS + 1,
+						restartCount: 0,
+						outputBytes: 0,
+						persist: false,
+						detached: false,
+						readyMatch: startResult,
+					},
+					timedOut: false,
+				},
+				timestamp: USAGE_TS,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "hub-wait",
+				toolName: "hub",
+				content: [{ type: "text", text: waitResult }],
+				isError: false,
+				details: {
+					op: "wait",
+					daemon: {
+						name: waitCard,
+						id: "hub-wait-process",
+						state: "exited",
+						createdAt: USAGE_TS,
+						startedAt: USAGE_TS,
+						exitedAt: USAGE_TS + 1,
+						exitCode: 0,
+						restartCount: 0,
+						outputBytes: 0,
+						persist: false,
+						detached: false,
+					},
+					matched: waitResult,
+					timedOut: false,
+				},
+				timestamp: USAGE_TS,
+			},
+		] as unknown as AgentMessage[];
+
+		const renderRebuiltHistory = (showHubProcessActivity: boolean): string => {
+			settings.set("display.showHubProcessActivity", showHubProcessActivity);
+			const builder = new ChatTranscriptBuilder({
+				ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
+				cwd: process.cwd(),
+				requestRender: () => {},
+			});
+			try {
+				builder.rebuild(
+					messages.map((message, index) => ({
+						type: "message",
+						id: `hub-${index}`,
+						parentId: index === 0 ? null : `hub-${index - 1}`,
+						timestamp: new Date(USAGE_TS + index).toISOString(),
+						message,
+					})),
+				);
+				return Bun.stripANSI(builder.container.render(120).join("\n"));
+			} finally {
+				builder.dispose();
+			}
+		};
+
+		const hidden = renderRebuiltHistory(false);
+		for (const hiddenText of [startCard, waitCard, startResult, waitResult]) {
+			expect(hidden).not.toContain(hiddenText);
+		}
+		expect(hidden).toContain(afterStart);
+		expect(hidden).toContain(afterWait);
+
+		const visible = renderRebuiltHistory(true);
+		for (const visibleText of [startCard, waitCard, startResult, waitResult, afterStart, afterWait]) {
+			expect(visible).toContain(visibleText);
+		}
+	});
 });

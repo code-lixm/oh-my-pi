@@ -482,29 +482,15 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /** Build the anchored HUD for active detached subagents. */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
-	const rows = sessions
-		.filter(
-			session =>
-				session.kind === "subagent" &&
-				session.status === "active" &&
-				session.detached === true &&
-				session.progress?.status !== "completed" &&
-				session.progress?.status !== "failed" &&
-				session.progress?.status !== "aborted",
-		)
-		.sort((left, right) => {
-			const leftLastActivity = left.progress?.activity?.lastActivityAtMs;
-			const rightLastActivity = right.progress?.activity?.lastActivityAtMs;
-			const leftRecency = Math.max(
-				Number.isFinite(left.lastUpdate) ? left.lastUpdate : 0,
-				typeof leftLastActivity === "number" && Number.isFinite(leftLastActivity) ? leftLastActivity : 0,
-			);
-			const rightRecency = Math.max(
-				Number.isFinite(right.lastUpdate) ? right.lastUpdate : 0,
-				typeof rightLastActivity === "number" && Number.isFinite(rightLastActivity) ? rightLastActivity : 0,
-			);
-			return rightRecency - leftRecency;
-		});
+	const rows = sessions.filter(
+		session =>
+			session.kind === "subagent" &&
+			session.status === "active" &&
+			session.detached === true &&
+			session.progress?.status !== "completed" &&
+			session.progress?.status !== "failed" &&
+			session.progress?.status !== "aborted",
+	);
 	if (rows.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");

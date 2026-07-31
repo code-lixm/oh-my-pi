@@ -1226,6 +1226,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.showHubProcessActivity": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Hub Process Activity"),
+			description: tSettingsUi("Show long-running process lifecycle activity in the transcript"),
+		},
+	},
+
 	"display.cacheMissMarker": {
 		type: "boolean",
 		default: false,
@@ -4542,6 +4553,18 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Available Tools"),
 			label: tSettingsUi("Web Search"),
 			description: tSettingsUi("Enable the web_search tool for live web results"),
+		},
+	},
+
+	"security.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Security",
+			description:
+				"Enable OMP-native security scan planning, execution, and the read-only security:// resource namespace",
 		},
 	},
 

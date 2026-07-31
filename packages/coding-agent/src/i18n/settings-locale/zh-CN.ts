@@ -4400,6 +4400,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Show background jobs": "显示后台任务",
 	"Show provider usage and limits": "显示提供方用量和限制",
 	"Show token usage": "显示 token 用量",
+	"Show Hub Process Activity": "显示后台进程活动",
+	"Show long-running process lifecycle activity in the transcript": "在对话记录中显示长期运行进程的生命周期活动",
 	"[show|reset [account|active]]": "[show|reset [account|active]]",
 	"Launch the local stats dashboard": "启动本地统计仪表板",
 	"[--port <port>]": "[--port <port>]",

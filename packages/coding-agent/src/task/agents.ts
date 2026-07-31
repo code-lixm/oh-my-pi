@@ -17,6 +17,8 @@ import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import reviewerMdZh from "../prompts/agents/reviewer.zh-CN.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import scoutMdZh from "../prompts/agents/scout.zh-CN.md" with { type: "text" };
+import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
+import securityReviewerMdZh from "../prompts/agents/security-reviewer.zh-CN.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import taskMdZh from "../prompts/agents/task.zh-CN.md" with { type: "text" };
 import { selectPrompt } from "../prompts/prompt-locale";
@@ -54,6 +56,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "scout.md", template: () => selectPrompt(scoutMd, scoutMdZh) },
 	{ fileName: "designer.md", template: () => selectPrompt(designerMd, designerMdZh) },
 	{ fileName: "reviewer.md", template: () => selectPrompt(reviewerMd, reviewerMdZh) },
+	{ fileName: "security-reviewer.md", template: () => selectPrompt(securityReviewerMd, securityReviewerMdZh) },
 	{ fileName: "librarian.md", template: () => selectPrompt(librarianMd, librarianMdZh) },
 	{
 		fileName: "task.md",

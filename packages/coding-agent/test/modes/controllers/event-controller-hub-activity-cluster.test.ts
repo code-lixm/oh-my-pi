@@ -11,7 +11,10 @@ import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
-import type { ToolExecutionHandle } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import {
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+} from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -156,8 +159,50 @@ function makeMessageEntry(id: string, timestamp: number, message: SessionMessage
 }
 
 describe("EventController hub activity cluster", () => {
-	it("routes wait(from) replies to showSubagentFeedback and never renders a pending card", async () => {
-		const { controller, chatContainer, showSubagentFeedback } = createLiveFixture();
+	it("hides named hub process cards unless process activity is enabled", async () => {
+		const defaultFixture = createLiveFixture();
+		await defaultFixture.controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-start-hidden-by-default",
+			toolName: "hub",
+			args: { op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(defaultFixture.chatContainer.children).toHaveLength(0);
+		expect(defaultFixture.pendingTools.has("hub-start-hidden-by-default")).toBe(false);
+
+		settings.set("display.showHubProcessActivity", false);
+		const disabledFixture = createLiveFixture();
+		await disabledFixture.controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-wait-hidden-when-disabled",
+			toolName: "hub",
+			args: { op: "wait", name: "web" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(disabledFixture.chatContainer.children).toHaveLength(0);
+		expect(disabledFixture.pendingTools.has("hub-wait-hidden-when-disabled")).toBe(false);
+
+		settings.set("display.showHubProcessActivity", true);
+		const visibleFixture = createLiveFixture();
+		await visibleFixture.controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-start-visible-when-enabled",
+			toolName: "hub",
+			args: { op: "start", name: "web", application: "bun", args: ["run", "dev"] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(visibleFixture.chatContainer.children).toHaveLength(1);
+		const [visibleCard] = visibleFixture.chatContainer.children;
+		if (!(visibleCard instanceof ToolExecutionComponent)) {
+			throw new Error("expected a visible named Hub process tool card");
+		}
+		expect(visibleFixture.pendingTools.get("hub-start-visible-when-enabled")).toBe(visibleCard);
+		expect(hubGroups(visibleFixture.chatContainer)).toHaveLength(0);
+	});
+	it("routes wait(from) replies to showSubagentFeedback without a card when process activity is enabled", async () => {
+		settings.set("display.showHubProcessActivity", true);
+		const { controller, chatContainer, pendingTools, showSubagentFeedback } = createLiveFixture();
 
 		await controller.handleEvent({
 			type: "tool_execution_start",
@@ -166,7 +211,8 @@ describe("EventController hub activity cluster", () => {
 			args: { op: "wait", from: "AuthLoader" },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 
-		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(chatContainer.children).toHaveLength(0);
+		expect(pendingTools.has(HUB_WAIT_ID)).toBe(false);
 		expect(renderText(chatContainer)).not.toContain("pending");
 
 		await controller.handleEvent({
@@ -194,7 +240,8 @@ describe("EventController hub activity cluster", () => {
 			text: "ready now",
 			timestamp: 1_700_000_000_100,
 		});
-		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(chatContainer.children).toHaveLength(0);
+		expect(pendingTools.has(HUB_WAIT_ID)).toBe(false);
 		expect(renderText(chatContainer)).not.toContain("ready now");
 	});
 

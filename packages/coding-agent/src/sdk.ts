@@ -21,6 +21,7 @@ import type {
 	ProviderSessionState,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
+import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai/auth-retry";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
 import {
 	getOpenAICodexTransportDetails,
@@ -364,6 +365,13 @@ export interface CreateAgentSessionOptions {
 	authStorage?: AuthStorage;
 	/** Model registry. Default: discoverModels(authStorage, agentDir) */
 	modelRegistry?: ModelRegistry;
+	/**
+	 * Request credential resolver. Defaults to the model registry's normal
+	 * session-affine resolver. Security scans use this narrow seam to keep one
+	 * durable OAuth row pinned for the operation without changing ordinary
+	 * provider routing.
+	 */
+	getApiKey?: AgentOptions["getApiKey"];
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model;
@@ -484,6 +492,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Enable LSP integration (tool, formatting, diagnostics, warmup). Default: true */
 	enableLsp?: boolean;
+	/** Restrict LSP to navigation and diagnostics even when enabled. Defaults to true for restricted sessions. */
+	lspReadOnly?: boolean;
 	/** Whether this invocation may expose IRC. `false` removes it even for subagents. */
 	enableIrc?: boolean;
 	/** Skip subprocess-kernel availability checks and prelude warmup */
@@ -492,6 +502,12 @@ export interface CreateAgentSessionOptions {
 	toolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
 	restrictToolNames?: boolean;
+	/**
+	 * Permit only caller-supplied SDK custom tools inside a restricted session.
+	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
+	 * and ambient custom tools remain disabled. Default: false.
+	 */
+	allowRestrictedCustomTools?: boolean;
 
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
@@ -859,6 +875,8 @@ export interface BuildSystemPromptOptions {
 	appendPrompt?: string;
 	inlineToolDescriptors?: boolean;
 	includeWorkspaceTree?: boolean;
+	/** Include the read-only security:// resource inventory entry. Default: false. */
+	securityEnabled?: boolean;
 }
 
 /**
@@ -884,6 +902,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		appendSystemPrompt: options.appendPrompt,
 		inlineToolDescriptors: options.inlineToolDescriptors,
 		includeWorkspaceTree: options.includeWorkspaceTree,
+		securityEnabled: options.securityEnabled,
 		toolNames,
 		tools: promptTools,
 	});
@@ -1619,7 +1638,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let hasSession = false;
 	let hasRegistered = false;
 	const restrictToolNames = options.restrictToolNames === true;
-	const enableLsp = !restrictToolNames && (options.enableLsp ?? true);
+	const enableLsp = options.enableLsp ?? !restrictToolNames;
+	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 	// The first top-level session owns the process AsyncJobManager. Descendants and
 	// explicitly identified secondary top-level sessions share it: every session
@@ -1686,10 +1706,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			setActiveToolNames,
 			toolRegistry,
 			hasUI: options.hasUI ?? false,
+			getApiKey: options.getApiKey,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
 			enableLsp,
+			lspReadOnly,
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			restrictToolNames,
 			get hasEditTool() {
@@ -2591,9 +2613,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const toolContextStore = new ToolContextStore(getSessionContext);
 
 		const registeredTools = restrictToolNames ? [] : extensionRunner.getAllRegisteredTools();
-		const sdkCustomTools = restrictToolNames
-			? []
-			: (options.customTools?.filter(tool => !isLegacyBuiltinToolDefinition(tool)) ?? []);
+		const sdkCustomTools =
+			restrictToolNames && options.allowRestrictedCustomTools !== true
+				? []
+				: (options.customTools?.filter(tool => !isLegacyBuiltinToolDefinition(tool)) ?? []);
 		const allCustomTools = [
 			...registeredTools,
 			...sdkCustomTools.map(tool => {
@@ -2874,6 +2897,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				workspaceTree: workspaceTreePromise,
 				includeWorkspaceTree,
 				memoryRootEnabled: memoryBackend?.id === "local",
+				securityEnabled: settings.get("security.enabled"),
 				model: getActiveModelString(),
 				includeModelInPrompt: settings.get("includeModelInPrompt"),
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
@@ -3179,7 +3203,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			kimiApiFormat,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),
-			getApiKey: requestModel => modelRegistry.resolver(requestModel, agent.sessionId),
+			getApiKey: options.getApiKey ?? (requestModel => modelRegistry.resolver(requestModel, agent.sessionId)),
 			streamFn: (streamModel, context, streamOptions) => {
 				if (notifyFirstChatDispatch) {
 					const cb = notifyFirstChatDispatch;
@@ -3546,7 +3570,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (codexTransport.websocketPreferred) {
 				void (async () => {
 					try {
-						const codexPrewarmApiKey = await modelRegistry.getApiKey(codexModel, providerSessionId);
+						const codexPrewarmApiKey = options.getApiKey
+							? // `getApiKey` returns a value-or-promise union; unwrap the promise,
+								// then resolve the result if it is itself an ApiKeyResolver.
+								await resolveApiKeyOnce(await options.getApiKey(codexModel))
+							: await modelRegistry.getApiKey(codexModel, providerSessionId);
 						if (!codexPrewarmApiKey) return;
 						await logger.time("prewarmOpenAICodexResponses", prewarmOpenAICodexResponses, codexModel, {
 							apiKey: codexPrewarmApiKey,

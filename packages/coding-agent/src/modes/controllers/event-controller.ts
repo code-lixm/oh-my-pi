@@ -910,6 +910,10 @@ export class EventController {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
 				}
+				if (content.name === "hub" && !settings.get("display.showHubProcessActivity")) {
+					this.#toolArgsReveal.finish(content.id);
+					continue;
+				}
 				if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
 				if (content.name === "hub" && isHubPeerCommunicationArgs(renderArgs)) {
 					this.#toolArgsReveal.finish(content.id);
@@ -1161,6 +1165,11 @@ export class EventController {
 		if (event.toolName === "todo") {
 			this.#resetReadGroup();
 			this.#suppressLiveTodoComponent(event.toolCallId);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		if (event.toolName === "hub" && !settings.get("display.showHubProcessActivity")) {
+			this.#toolArgsReveal.finish(event.toolCallId);
 			this.ctx.ui.requestRender();
 			return;
 		}

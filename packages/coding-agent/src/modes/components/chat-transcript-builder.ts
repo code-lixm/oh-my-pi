@@ -373,6 +373,10 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
+			if (content.name === "hub" && !settings.get("display.showHubProcessActivity")) {
+				appendAssistantSegment(afterToolSegment);
+				continue;
+			}
 			if (content.name === "hub" && isHubGroupedActivityArgs(content.arguments)) {
 				// Peer coordination is internal to the task. The actual `ask` tool remains
 				// a normal transcript component, so a child waiting for user input stays visible.

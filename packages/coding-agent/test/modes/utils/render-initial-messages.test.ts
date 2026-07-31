@@ -139,6 +139,7 @@ function hasImageComponent(component: Component): boolean {
 function makeRenderCtx(
 	transcript: SessionContext,
 	showImages = true,
+	showHubProcessActivity = false,
 ): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
 	let helpers: UiHelpers;
@@ -156,7 +157,11 @@ function makeRenderCtx(
 		resetTranscript: () => chatContainer.clear(),
 		// Rebuild paths honor terminal.showImages since the native-image work;
 		// keep it on so the image-replay contracts below stay meaningful.
-		settings: { get: (key: string) => key === "terminal.showImages" && showImages },
+		settings: {
+			get: (key: string) =>
+				(key === "terminal.showImages" && showImages) ||
+				(key === "display.showHubProcessActivity" && showHubProcessActivity),
+		},
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
 		focusedAgentId: undefined,
@@ -345,6 +350,74 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 		expect(countImageComponents(chatContainer)).toBe(2);
 		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read: reopened.png");
 		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+	});
+});
+
+describe("UiHelpers.renderInitialMessages — persisted hub process activity", () => {
+	const PROCESS_NAME = "history-web";
+	const AFTER_TOOL_TEXT = "assistant text after the hub process call";
+
+	async function reopenPersistedHubProcessTranscript(): Promise<SessionContext> {
+		using tempDir = TempDir.createSync("@pi-render-initial-hub-process-");
+		const session = SessionManager.create(tempDir.path(), tempDir.path());
+		const hubCall = assistantToolCall("hub-start-history", "hub", {
+			op: "start",
+			name: PROCESS_NAME,
+			application: "bun",
+			args: ["run", "dev"],
+		});
+		session.appendMessage({
+			...hubCall,
+			content: [...hubCall.content, { type: "text", text: AFTER_TOOL_TEXT }],
+		});
+		session.appendMessage({
+			role: "toolResult",
+			toolCallId: "hub-start-history",
+			toolName: "hub",
+			content: [{ type: "text", text: "Process history-web started" }],
+			details: {
+				op: "start",
+				daemon: {
+					name: PROCESS_NAME,
+					id: "history-web-1",
+					state: "running",
+					pid: 12345,
+					createdAt: 1,
+					startedAt: 1,
+					restartCount: 0,
+					outputBytes: 0,
+					persist: false,
+					detached: false,
+				},
+			},
+			isError: false,
+			timestamp: 2,
+		});
+		await session.flush();
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted session file");
+		const reloaded = await SessionManager.open(sessionFile);
+		return reloaded.buildSessionContext({ transcript: true });
+	}
+
+	it("hides persisted hub process cards by default while retaining after-tool assistant text", async () => {
+		const { ctx, chatContainer } = makeRenderCtx(await reopenPersistedHubProcessTranscript());
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(rendered).toContain(AFTER_TOOL_TEXT);
+		expect(rendered).not.toContain(PROCESS_NAME);
+	});
+
+	it("renders persisted hub process cards when enabled", async () => {
+		const { ctx, chatContainer } = makeRenderCtx(await reopenPersistedHubProcessTranscript(), true, true);
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(rendered).toContain(AFTER_TOOL_TEXT);
+		expect(rendered).toContain(PROCESS_NAME);
 	});
 });
 

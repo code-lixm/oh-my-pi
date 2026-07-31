@@ -548,6 +548,8 @@ export interface BuildSystemPromptOptions {
 	workspaceTree?: WorkspaceTree | Promise<WorkspaceTree>;
 	/** Whether the local memory://root summary is active. */
 	memoryRootEnabled?: boolean;
+	/** Whether the read-only security:// resource namespace is active. */
+	securityEnabled?: boolean;
 	/** Active model identifier (e.g. "anthropic/claude-opus-4") used by prompt policy and optionally surfaced. */
 	model?: string;
 	/** Whether to surface `model` in the workstation block. Model-specific prompt policy still uses it. Default: true. */
@@ -605,6 +607,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
 		memoryRootEnabled = false,
+		securityEnabled = false,
 		model,
 		includeModelInPrompt = true,
 		personality = "default",
@@ -886,6 +889,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		taskIrcEnabled,
 		secretsEnabled,
 		hasMemoryRoot: memoryRootEnabled,
+		securityEnabled,
 		hasObsidian: hasObsidian(),
 		includeWorkspaceTree,
 		renderMermaid,

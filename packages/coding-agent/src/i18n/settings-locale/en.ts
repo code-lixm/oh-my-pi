@@ -4540,6 +4540,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Show background jobs": "Show background jobs",
 	"Show provider usage and limits": "Show provider usage and limits",
 	"Show token usage": "Show token usage",
+	"Show Hub Process Activity": "Show Hub Process Activity",
+	"Show long-running process lifecycle activity in the transcript":
+		"Show long-running process lifecycle activity in the transcript",
 	"Spend a saved Codex rate-limit reset": "Spend a saved Codex rate-limit reset",
 	"Launch the local stats dashboard": "Launch the local stats dashboard",
 	"Show changelog entries": "Show changelog entries",
