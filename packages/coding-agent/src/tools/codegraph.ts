@@ -16,11 +16,13 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import {
+	type CodeGraphExploreMode,
 	type CodeGraphExploreOptions,
 	type CodeGraphExploreResult,
 	type CodeGraphIndexLocation,
@@ -32,13 +34,20 @@ import { readProgress } from "../codegraph/progress";
 import type { CodeGraphProgress } from "../codegraph/runtime-types";
 import type { SupervisorProgressView } from "../codegraph/supervisor";
 import { probeSlot, scheduleIndex } from "../codegraph/supervisor";
+import { formatHashlineSourceSection } from "../edit/file-snapshot-store";
 import { selectPrompt } from "../prompts/prompt-locale";
 import codegraphDescription from "../prompts/tools/codegraph.md" with { type: "text" };
 import codegraphDescriptionZh from "../prompts/tools/codegraph.zh-CN.md" with { type: "text" };
+import {
+	type CodeGraphCoverageLedgerOwner,
+	type CodeGraphCoverageLedgerSnapshot,
+	getCodeGraphCoverageLedger,
+	invalidateCodeGraphCoverage,
+} from "./codegraph-coverage-ledger";
 import { drainPendingFileMutations, type FileMutationCollectorHost } from "./file-mutation-hook";
 import type { OutputMeta } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { PREVIEW_LIMITS, replaceTabs, shortenPath, truncateToWidth } from "./render-utils";
+import { replaceTabs, truncateToWidth } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -48,15 +57,18 @@ import { toolResult } from "./tool-result";
  * module edge (`./index.ts` re-exports `./codegraph`). Real sessions satisfy
  * this duck-typed contract.
  */
-export interface CodeGraphToolSession extends FileMutationCollectorHost {
+export interface CodeGraphToolSession extends FileMutationCollectorHost, CodeGraphCoverageLedgerOwner {
 	cwd: string;
+	fileSnapshotStore?: InMemorySnapshotStore;
 }
 
 const codegraphSchema = type({
 	query: type("string").describe("Natural-language question or topic for the semantic explorer."),
-	"path?": type("string").describe(
-		"Optional file or directory to resolve location from and scope sync to. Must stay inside the active source root.",
+	"mode?": type("'auto' | 'locate' | 'understand' | 'flow' | 'impact' | 'edit'").describe(
+		"Explore intent; auto infers from query.",
 	),
+	"projectPath?": type("string").describe("Project path whose Git-root CodeGraph index should be queried."),
+	"path?": type("string").describe("Optional file or directory inside the selected project; limits scoped sync."),
 	"maxFiles?": type("number > 0").describe("Cap on entry-point file count returned by explore."),
 });
 
@@ -64,6 +76,8 @@ export type CodeGraphToolInput = typeof codegraphSchema.infer;
 
 export interface CodeGraphToolDetails {
 	query: string;
+	mode?: CodeGraphExploreMode;
+	projectPath?: string;
 	sourceRoot?: string;
 	indexDir?: string;
 	maxFiles: number;
@@ -76,17 +90,24 @@ export interface CodeGraphToolDetails {
 	truncated: boolean;
 	files: CodeGraphExploreResult["files"];
 	entries: CodeGraphExploreResult["entries"];
+	sourceSections?: CodeGraphExploreResult["sourceSections"];
+	edges?: CodeGraphExploreResult["edges"];
+	flow?: CodeGraphExploreResult["flow"];
+	blastRadius?: CodeGraphExploreResult["blastRadius"];
+	testCandidates?: CodeGraphExploreResult["testCandidates"];
+	coverage?: CodeGraphExploreResult["coverage"];
+	freshness?: CodeGraphExploreResult["freshness"];
+	budget?: CodeGraphExploreResult["budget"];
+	coverageLedger?: CodeGraphCoverageLedgerSnapshot;
 	fallback?: string;
 	meta?: OutputMeta;
 	indexState?: CodeGraphProgress["state"];
 	progress?: CodeGraphProgress;
 }
 
-const DEFAULT_MAX_FILES = 25;
+const DEFAULT_MAX_FILES = 8;
 const ABSOLUTE_MAX_FILES = 200;
-const PREVIEW_ENTRY_LINE_LEN = 80;
-const PREVIEW_ENTRY_LINES = 3;
-const PREVIEW_FILE_LINES = 4;
+const MODEL_OUTPUT_HARD_CEILING = 25_000;
 
 type FallbackContext = {
 	sourceRoot: string;
@@ -145,23 +166,21 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 		},
 	];
 
-	/**
-	 * Cold probe — only awaits the cheap location/Git detection. We do NOT
-	 * open the runtime or trigger a sync here. The supervisor takes over as
-	 * soon as the tool runs `execute`.
-	 */
-	static async createIf(session: CodeGraphToolSession): Promise<CodeGraphTool | null> {
+	static async createIf(session: CodeGraphToolSession): Promise<CodeGraphTool> {
 		try {
 			const location = await resolveCodeGraphIndexLocation(path.resolve(session.cwd));
 			if (location.available) return new CodeGraphTool(session, location);
-			logger.debug("CodeGraph tool unavailable for workspace", { cwd: session.cwd, reason: location.reason });
+			logger.debug("CodeGraph workspace will use fallback until a projectPath is supplied", {
+				cwd: session.cwd,
+				reason: location.reason,
+			});
 		} catch (error) {
 			logger.debug("CodeGraph tool availability check failed", {
 				cwd: session.cwd,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
-		return null;
+		return new CodeGraphTool(session);
 	}
 
 	readonly #scheduledKeys = new Set<string>();
@@ -198,23 +217,17 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 	): Promise<AgentToolResult<CodeGraphToolDetails>> {
 		return untilAborted(signal, async () => {
 			const query = params.query.trim();
-			if (query.length === 0) {
-				throw new ToolError("`query` is required.");
-			}
+			if (query.length === 0) throw new ToolError("`query` is required.");
 
 			const maxFiles = Math.min(ABSOLUTE_MAX_FILES, Math.max(1, params.maxFiles ?? DEFAULT_MAX_FILES));
 			const sessionCwd = path.resolve(this.session.cwd);
-			const resolved = await this.#resolveLocationAndScope(sessionCwd, params.path);
-			if (resolved.kind === "fallback") {
-				return this.#fallbackResult(params, maxFiles, resolved.fallback);
-			}
+			const resolved = await this.#resolveLocationAndScope(sessionCwd, params.projectPath, params.path);
+			if (resolved.kind === "fallback") return this.#fallbackResult(params, maxFiles, resolved.fallback);
 
 			const { location, runtimeSourceRoot, syncPaths } = resolved;
-
-			// Build the explicit + mutation-derived scoped path list up
-			// front so the indexing-fallback path can echo it back.
 			const effectiveSyncPaths = new Set<string>(syncPaths);
 			for (const event of drainPendingFileMutations(this.session)) {
+				invalidateCodeGraphCoverage(this.session, [event.previousPath, event.path]);
 				for (const absolutePath of [event.previousPath, event.path]) {
 					if (!absolutePath) continue;
 					const relative = path.relative(runtimeSourceRoot, absolutePath);
@@ -224,17 +237,8 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			}
 			const paths = [...effectiveSyncPaths];
 
-			// Cold path: ensure the supervisor has at least spawned the
-			// worker, then check `progress.json`. If the slot is not
-			// `ready` we return the indexing fallback immediately rather
-			// than blocking on warm initialization.
 			this.#scheduleIndex(location);
-			let supervisor = await probeSlot(location);
-			if (!supervisor.active && supervisor.progress.state === "failed") {
-				this.#scheduledKeys.delete(location.identity.key);
-				this.#scheduleIndex(location, true);
-				supervisor = await probeSlot(location);
-			}
+			const supervisor = await probeSlot(location);
 			if (supervisor.active || supervisor.progress.state !== "ready") {
 				const persisted = await this.#readProgressFor(location);
 				const progress = supervisor.active && persisted?.state === "ready" ? undefined : persisted;
@@ -244,16 +248,48 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			let runtime: CodeGraphRuntime | null = null;
 			try {
 				runtime = await openCodeGraphRuntime({ sourceRoot: runtimeSourceRoot, location });
-				// Worker already performed the warm full sync. Only honour
-				// explicit scoped paths (the user-supplied `path` argument
-				// + drainPendingFileMutations). No scoped paths → just
-				// explore against the worker's warm state.
-				if (paths.length > 0) {
-					await runtime.sync({ paths });
+				let pendingSyncFailed = false;
+				const syncTargets = new Set(paths);
+				try {
+					const freshness = await runtime.inspectFreshness();
+					for (const stalePath of freshness.stalePaths) syncTargets.add(stalePath);
+				} catch (error) {
+					logger.debug("CodeGraph freshness inspection failed", {
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
-				const exploreOpts: CodeGraphExploreOptions = { maxFiles };
-				const exploreResult = await runtime.explore(query, exploreOpts);
-				return this.#shapeResult(params, maxFiles, runtimeSourceRoot, location, paths, exploreResult, {
+				if (syncTargets.size > 0) {
+					try {
+						await runtime.sync({ paths: [...syncTargets] });
+					} catch (error) {
+						pendingSyncFailed = true;
+						logger.debug("CodeGraph scoped mutation sync failed", {
+							paths: [...syncTargets],
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+				const exploreOpts: CodeGraphExploreOptions = { maxFiles, mode: params.mode };
+				let exploreResult = await runtime.explore(query, exploreOpts);
+				if (exploreResult.freshness.stalePaths.length > 0) {
+					try {
+						await runtime.sync({ paths: exploreResult.freshness.stalePaths });
+						exploreResult = await runtime.explore(query, exploreOpts);
+					} catch (error) {
+						logger.debug("CodeGraph candidate freshness sync failed", {
+							paths: exploreResult.freshness.stalePaths,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
+				if (pendingSyncFailed) {
+					exploreResult.freshness.state = "partial-stale";
+					exploreResult.freshness.stalePaths = [
+						...new Set([...exploreResult.freshness.stalePaths, ...syncTargets]),
+					];
+					exploreResult.freshness.sync = { state: "required", paths: exploreResult.freshness.stalePaths };
+				}
+				return await this.#shapeResult(params, runtimeSourceRoot, location, paths, exploreResult, {
 					state: "ready",
 					phase: "ready",
 					current: 0,
@@ -262,12 +298,12 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 					workerId: supervisor.progress.workerId,
 					attempt: supervisor.progress.attempt,
 				});
-			} catch (err) {
-				const message = (err as Error).message || String(err);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
 				return this.#fallbackResult(params, maxFiles, {
 					sourceRoot: runtimeSourceRoot,
 					indexDir: location.indexDir,
-					reason: `CodeGraph runtime error — ${message}. Fallback: use \`grep\`/\`glob\`/\`read\`.`,
+					reason: this.#standardFallback(`CodeGraph runtime error — ${message}`),
 				});
 			} finally {
 				try {
@@ -287,97 +323,127 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 		}
 	}
 
-	async #resolveLocationAndScope(sessionCwd: string, rawPath: string | undefined): Promise<ResolvedLocationState> {
-		let syncTargetRealpath: string | undefined;
+	#standardFallback(reason: string): string {
+		return `${reason}. Fallback: use \`grep\`/\`glob\`/\`read\`. Use \`lsp\` for symbol intelligence. Do not wait for or retry CodeGraph for this project in this task.`;
+	}
 
-		if (rawPath && rawPath.length > 0) {
-			const absolute = resolveToCwd(rawPath, sessionCwd);
-			const realpath = await realpathOrUndefined(absolute);
-			if (!realpath) {
-				return {
-					kind: "fallback",
-					fallback: {
-						sourceRoot: sessionCwd,
-						reason: `Path does not exist on disk: ${rawPath}`,
-						isError: true,
-					},
-				};
-			}
-			const stat = await fs.stat(realpath).catch(() => undefined);
-			if (!stat) {
-				return {
-					kind: "fallback",
-					fallback: {
-						sourceRoot: sessionCwd,
-						reason: `Path does not exist on disk: ${rawPath}`,
-						isError: true,
-					},
-				};
-			}
-			syncTargetRealpath = realpath;
-		}
-
-		let location: CodeGraphIndexLocation;
-		try {
-			location = await resolveCodeGraphIndexLocation(sessionCwd);
-		} catch (err) {
-			const message = (err as Error).message || String(err);
+	async #resolveLocationAndScope(
+		sessionCwd: string,
+		rawProjectPath: string | undefined,
+		rawPath: string | undefined,
+	): Promise<ResolvedLocationState> {
+		const requestedProjectPath =
+			rawProjectPath && rawProjectPath.length > 0 ? resolveToCwd(rawProjectPath, sessionCwd) : sessionCwd;
+		const projectRealpath = await realpathOrUndefined(requestedProjectPath);
+		if (!projectRealpath) {
 			return {
 				kind: "fallback",
 				fallback: {
 					sourceRoot: sessionCwd,
-					reason: `CodeGraph location resolution failed: ${message}`,
+					reason: `Project path does not exist on disk: ${rawProjectPath ?? sessionCwd}`,
+					isError: rawProjectPath !== undefined,
+				},
+			};
+		}
+		const projectStat = await fs.stat(projectRealpath).catch(() => undefined);
+		if (!projectStat) {
+			return {
+				kind: "fallback",
+				fallback: {
+					sourceRoot: sessionCwd,
+					reason: `Project path is not readable: ${rawProjectPath ?? sessionCwd}`,
+					isError: rawProjectPath !== undefined,
+				},
+			};
+		}
+		const projectBase = projectStat.isDirectory() ? projectRealpath : path.dirname(projectRealpath);
+		let location: CodeGraphIndexLocation;
+		try {
+			location = await resolveCodeGraphIndexLocation(projectBase);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				kind: "fallback",
+				fallback: {
+					sourceRoot: projectBase,
+					reason: this.#standardFallback(`CodeGraph location resolution failed — ${message}`),
 				},
 			};
 		}
 		if (!location.available) {
-			const reason = location.reason ?? "location unavailable";
 			return {
 				kind: "fallback",
 				fallback: {
-					sourceRoot: sessionCwd,
+					sourceRoot: projectBase,
 					indexDir: location.indexDir,
-					reason: `CodeGraph unavailable — ${reason}. Fallback: use \`grep\`/\`glob\`/\`read\`.`,
+					reason: this.#standardFallback(`CodeGraph unavailable — ${location.reason ?? "location unavailable"}`),
 				},
 			};
 		}
 
-		const runtimeSourceRoot = location.identity.sourceRoot || sessionCwd;
-		if (!syncTargetRealpath) {
-			return { kind: "ready", location, runtimeSourceRoot, syncPaths: [] };
-		}
-		if (!(await isInsideSourceRoot(syncTargetRealpath, runtimeSourceRoot))) {
+		const runtimeSourceRoot = location.identity.sourceRoot || projectBase;
+		if (!rawPath || rawPath.length === 0) return { kind: "ready", location, runtimeSourceRoot, syncPaths: [] };
+		const requestedScope = resolveToCwd(rawPath, runtimeSourceRoot);
+		const scopeRealpath = await realpathOrUndefined(requestedScope);
+		if (!scopeRealpath) {
 			return {
 				kind: "fallback",
 				fallback: {
 					sourceRoot: runtimeSourceRoot,
 					indexDir: location.indexDir,
-					reason: `Path is outside the active source root: ${rawPath}`,
+					reason: `Path does not exist on disk: ${rawPath}`,
 					isError: true,
 				},
 			};
 		}
-		const relative = path.relative(runtimeSourceRoot, syncTargetRealpath) || ".";
+		if (!(await isInsideSourceRoot(scopeRealpath, runtimeSourceRoot))) {
+			return {
+				kind: "fallback",
+				fallback: {
+					sourceRoot: runtimeSourceRoot,
+					indexDir: location.indexDir,
+					reason: `Path is outside the active source root selected by projectPath: ${rawPath}`,
+					isError: true,
+				},
+			};
+		}
+		const relative = path.relative(runtimeSourceRoot, scopeRealpath) || ".";
 		return {
 			kind: "ready",
 			location,
 			runtimeSourceRoot,
-			syncPaths: [relative.replaceAll(path.win32.sep, path.posix.sep)],
+			syncPaths: [relative.split(path.sep).join("/")],
 		};
 	}
 
-	#shapeResult(
+	async #shapeResult(
 		params: typeof codegraphSchema.infer,
-		_maxFiles: number,
 		sourceRoot: string,
 		location: CodeGraphIndexLocation,
 		syncPaths: string[],
 		explore: CodeGraphExploreResult,
 		progress: CodeGraphProgress,
-	): AgentToolResult<CodeGraphToolDetails> {
-		const truncated = explore.files.length + explore.entries.length > PREVIEW_LIMITS.COLLAPSED_ITEMS;
+	): Promise<AgentToolResult<CodeGraphToolDetails>> {
+		const formatted = await formatCodeGraphText(this.session, sourceRoot, explore, params, syncPaths);
+		const ledger = getCodeGraphCoverageLedger(this.session);
+		ledger.beginTurn();
+		const included = new Set(formatted.includedSectionIds);
+		ledger.record(
+			explore.sourceSections
+				.filter(section => included.has(section.id))
+				.map(section => ({
+					absolutePath: path.resolve(sourceRoot, section.filePath),
+					displayPath: section.filePath,
+					completeness: explore.freshness.stalePaths.includes(section.filePath) ? "partial" : section.completeness,
+					symbol: section.symbol?.qualifiedName || section.symbol?.name,
+					startLine: section.startLine,
+					endLine: section.endLine,
+				})),
+		);
 		const details: CodeGraphToolDetails = {
 			query: explore.query,
+			mode: explore.mode,
+			projectPath: params.projectPath,
 			sourceRoot,
 			indexDir: location.indexDir,
 			maxFiles: explore.maxFiles,
@@ -386,15 +452,22 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			fileCount: explore.files.length,
 			entryCount: explore.entries.length,
 			confidence: explore.confidence,
-			truncated,
+			truncated: explore.budget.exhausted || formatted.omittedSections > 0,
 			files: explore.files,
 			entries: explore.entries,
+			sourceSections: explore.sourceSections,
+			edges: explore.edges,
+			flow: explore.flow,
+			blastRadius: explore.blastRadius,
+			testCandidates: explore.testCandidates,
+			coverage: explore.coverage,
+			freshness: explore.freshness,
+			budget: explore.budget,
+			coverageLedger: ledger.snapshot(),
 			indexState: progress.state,
 			progress,
 		};
-		return toolResult<CodeGraphToolDetails>(details)
-			.text(formatCodeGraphText(explore, params, syncPaths))
-			.done();
+		return toolResult<CodeGraphToolDetails>(details).text(formatted.text).done();
 	}
 
 	#indexingFallback(
@@ -414,13 +487,16 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			attempt: view.attempt,
 		};
 		const stateLabel = progress.state;
-		const reason =
+		const reason = this.#standardFallback(
 			progress.state === "failed"
-				? `CodeGraph indexing failed: ${progress.error ?? progress.phase}. Fallback: use \`grep\`/\`glob\`/\`read\`.`
-				: `CodeGraph is ${stateLabel} (${progress.phase}, ${progress.current}/${progress.total}); the worker is still preparing the index. Fallback: use \`grep\`/\`glob\`/\`read\`.`;
+				? `CodeGraph indexing failed — ${progress.error ?? progress.phase}`
+				: `CodeGraph is ${stateLabel} (${progress.phase}, ${progress.current}/${progress.total}); the worker is still preparing the index`,
+		);
 		const details: CodeGraphToolDetails = {
 			query: params.query,
 			sourceRoot: location.identity.sourceRoot || location.identity.worktreeRoot,
+			mode: params.mode,
+			projectPath: params.projectPath,
 			indexDir: location.indexDir,
 			maxFiles,
 			pathScope: params.path,
@@ -447,6 +523,8 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			sourceRoot: opts.sourceRoot,
 			indexDir: opts.indexDir,
 			maxFiles,
+			mode: params.mode,
+			projectPath: params.projectPath,
 			pathScope: params.path,
 			scopeApplied: false,
 			fileCount: 0,
@@ -463,65 +541,121 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 	}
 }
 
-function formatCodeGraphText(
+interface FormattedCodeGraphText {
+	text: string;
+	includedSectionIds: string[];
+	omittedSections: number;
+}
+
+async function formatCodeGraphText(
+	session: CodeGraphToolSession,
+	sourceRoot: string,
 	result: CodeGraphExploreResult,
 	params: typeof codegraphSchema.infer,
 	syncPaths: string[],
-): string {
-	const lines: string[] = [];
-	lines.push("CodeGraph exploration");
-	lines.push(`Query: ${truncateToWidth(replaceTabs(params.query), 200)}`);
-	if (syncPaths.length > 0) {
-		lines.push(`Sync scope: ${truncateToWidth(replaceTabs(syncPaths[0] ?? ""), 200)}`);
+): Promise<FormattedCodeGraphText> {
+	const lines: string[] = [
+		"CodeGraph exploration",
+		`Query: ${truncateToWidth(replaceTabs(params.query), 200)}`,
+		`Mode: ${result.mode} · Confidence: ${result.confidence ?? "low"}`,
+		`Coverage: ${result.coverage.complete.length} complete · ${result.coverage.partial.length} partial · ${result.coverage.omitted.length} omitted`,
+		`Budget: ${result.budget.charactersUsed}/${result.budget.maxCharacters} source chars · ${result.budget.filesUsed}/${result.budget.effectiveMaxFiles} files`,
+	];
+	if (syncPaths.length > 0) lines.push(`Sync scope: ${syncPaths.map(value => replaceTabs(value)).join(", ")}`);
+	if (result.freshness.state === "partial-stale") {
+		lines.push(`Freshness: partial-stale — ${result.freshness.stalePaths.slice(0, 10).join(", ")}`);
+		lines.push("Current-disk source below is authoritative; relationships involving those paths may be stale.");
+	} else {
+		lines.push("Freshness: fresh");
 	}
-	lines.push(`Max files: ${result.maxFiles}`);
-	const confidence = result.confidence ?? (result.entries.length > 0 ? "high" : "low");
-	lines.push(`Confidence: ${confidence}`);
-	lines.push(`Files: ${result.files.length} · Entries: ${result.entries.length}`);
-	if (result.entries.length === 0 && result.files.length === 0) {
+	if (result.entries.length === 0) {
 		lines.push("No semantic matches found.");
-		return lines.join("\n");
+		return { text: lines.join("\n"), includedSectionIds: [], omittedSections: 0 };
 	}
 
-	if (result.entries.length > 0) {
-		lines.push("");
-		lines.push("Entries:");
-		const entryLimit = Math.min(result.entries.length, PREVIEW_LIMITS.COLLAPSED_ITEMS);
-		for (const entry of result.entries.slice(0, entryLimit)) {
-			const node = entry.node;
-			const pathLabel = shortenPath(node.filePath);
-			const header = `• ${node.qualifiedName || node.name} [${node.kind}] — ${pathLabel}:${node.startLine}`;
-			lines.push(truncateToWidth(replaceTabs(header), 240));
-			const previewLines = entry.lines
-				.slice(node.startLine - 1, node.startLine - 1 + PREVIEW_ENTRY_LINES)
-				.filter((line): line is string => typeof line === "string")
-				.map(line => truncateToWidth(replaceTabs(line), PREVIEW_ENTRY_LINE_LEN));
-			for (const preview of previewLines) lines.push(`    ${preview}`);
-		}
-		if (result.entries.length > entryLimit) {
-			lines.push(
-				`…${result.entries.length - entryLimit} more entries; refine \`query\` or lower \`maxFiles\` to narrow.`,
-			);
+	const names = new Map<string, string>();
+	for (const entry of result.entries) names.set(entry.node.id, entry.node.qualifiedName || entry.node.name);
+	for (const relevant of result.relevance)
+		names.set(relevant.node.id, relevant.node.qualifiedName || relevant.node.name);
+	for (const impact of result.blastRadius?.entries ?? [])
+		names.set(impact.node.id, impact.node.qualifiedName || impact.node.name);
+	for (const test of result.testCandidates) names.set(test.id, test.qualifiedName || test.name);
+	const displayName = (id: string): string => names.get(id) ?? id;
+
+	if ((result.mode === "flow" || result.mode === "understand" || result.mode === "edit") && result.flow.length > 0) {
+		lines.push("", "Flow:");
+		for (const chain of result.flow.slice(0, 5)) {
+			const pathText = chain.hops
+				.map(hop => `${displayName(hop.from)} -[${hop.edgeKind}]-> ${displayName(hop.to)}`)
+				.join(" · ");
+			lines.push(`- ${pathText}`);
 		}
 	}
+	if ((result.mode === "understand" || result.mode === "edit") && result.edges.length > 0) {
+		lines.push("", "Relationships:");
+		for (const edge of result.edges.slice(0, 12)) {
+			lines.push(`- ${displayName(edge.source)} -[${edge.kind}]-> ${displayName(edge.target)}`);
+		}
+		if (result.edges.length > 12) lines.push(`- +${result.edges.length - 12} more relationships`);
+	}
+	if ((result.mode === "impact" || result.mode === "edit") && result.blastRadius) {
+		lines.push("", `Impact from ${result.blastRadius.focal.qualifiedName || result.blastRadius.focal.name}:`);
+		for (const impact of result.blastRadius.entries.slice(0, 20)) {
+			lines.push(`- depth ${impact.depth}: ${impact.node.qualifiedName || impact.node.name} via ${impact.via.kind}`);
+		}
+		if (result.blastRadius.entries.length > 20)
+			lines.push(`- +${result.blastRadius.entries.length - 20} more dependents`);
+	}
+	if ((result.mode === "impact" || result.mode === "edit") && result.testCandidates.length > 0) {
+		lines.push("", "Test candidates:");
+		for (const test of result.testCandidates.slice(0, 10))
+			lines.push(`- ${test.filePath}:${test.startLine} · ${test.qualifiedName || test.name}`);
+		if (result.testCandidates.length > 10) lines.push(`- +${result.testCandidates.length - 10} more tests`);
+	}
 
-	if (result.files.length > 0) {
-		lines.push("");
-		lines.push("File coverage:");
-		const fileLimit = Math.min(result.files.length, PREVIEW_LIMITS.COLLAPSED_ITEMS);
-		for (const file of result.files.slice(0, fileLimit)) {
-			const pathLabel = shortenPath(file.filePath);
-			lines.push(truncateToWidth(replaceTabs(`• ${pathLabel} (${file.language}, ${file.nodeCount} nodes)`), 240));
-			if (file.lines) {
-				for (const line of file.lines.slice(0, PREVIEW_FILE_LINES)) {
-					lines.push(`    ${truncateToWidth(replaceTabs(line), PREVIEW_ENTRY_LINE_LEN)}`);
-				}
+	lines.push("", "Source sections:");
+	const includedSectionIds: string[] = [];
+	const fullTextByPath = new Map<string, string | undefined>();
+	let omittedSections = 0;
+	for (const section of result.sourceSections) {
+		const absolutePath = path.resolve(sourceRoot, section.filePath);
+		let fullText = fullTextByPath.get(section.filePath);
+		if (!fullTextByPath.has(section.filePath)) {
+			try {
+				fullText = await Bun.file(absolutePath).text();
+			} catch {
+				fullText = undefined;
 			}
+			fullTextByPath.set(section.filePath, fullText);
 		}
-		if (result.files.length > fileLimit) {
-			lines.push(`…${result.files.length - fileLimit} more files.`);
+		if (fullText === undefined) {
+			omittedSections++;
+			continue;
 		}
+		const formatted = formatHashlineSourceSection(session, {
+			absolutePath,
+			anchor: section.filePath,
+			fullText,
+			startLine: section.startLine,
+			endLine: section.endLine,
+			lineNumbers: section.lineNumbers,
+		});
+		const label = section.symbol?.qualifiedName || section.symbol?.name || section.role;
+		const sectionText = [
+			`## ${replaceTabs(section.filePath)} · ${replaceTabs(label)} [${section.role}/${section.completeness}]`,
+			formatted.text,
+		].join("\n");
+		const candidate = [...lines, sectionText].join("\n");
+		if (candidate.length > MODEL_OUTPUT_HARD_CEILING) {
+			omittedSections++;
+			continue;
+		}
+		lines.push(sectionText);
+		includedSectionIds.push(section.id);
 	}
-
-	return lines.join("\n");
+	if (omittedSections > 0) {
+		const note = `Omitted ${omittedSections} source section(s) at the 25,000-character boundary; query the named missing symbol or use an exact system-tool range.`;
+		if ([...lines, note].join("\n").length <= MODEL_OUTPUT_HARD_CEILING) lines.push(note);
+	}
+	return { text: lines.join("\n"), includedSectionIds, omittedSections };
 }

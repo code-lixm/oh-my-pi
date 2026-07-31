@@ -51,34 +51,26 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(options?.apiKey).toBe("k");
 	});
 
-	it("keeps assistant prose loop scanning at its configured default", () => {
-		const settings = Settings.isolated({});
-		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(settings, base);
+	it("forwards the provider summary policy for each explicit thinking display", () => {
+		const cases = [
+			{ thinkingDisplay: "full", omitThinking: true, expected: false },
+			{ thinkingDisplay: "prose", omitThinking: true, expected: false },
+			{ thinkingDisplay: "hidden", omitThinking: false, expected: false },
+			{ thinkingDisplay: "hidden", omitThinking: true, expected: true },
+		] as const;
 
-		wrapped(stubModel, stubContext, undefined);
+		for (const testCase of cases) {
+			const settings = Settings.isolated({
+				thinkingDisplay: testCase.thinkingDisplay,
+				omitThinking: testCase.omitThinking,
+			});
+			const { fn: base, calls } = captureBase();
+			const wrapped = createSettingsAwareStreamFn(settings, base);
 
-		expect(calls[0]?.options?.loopGuard).toEqual({ enabled: true, checkAssistantContent: true });
-	});
+			wrapped(stubModel, stubContext, undefined);
 
-	it("keeps thinking summaries visible unless configured otherwise", () => {
-		const settings = Settings.isolated({});
-		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(settings, base);
-
-		wrapped(stubModel, stubContext, undefined);
-
-		expect(calls[0]?.options?.hideThinkingSummary).toBe(false);
-	});
-
-	it("forwards configured hidden thinking summaries", () => {
-		const settings = Settings.isolated({ hideThinkingBlock: true, omitThinking: true });
-		const { fn: base, calls } = captureBase();
-		const wrapped = createSettingsAwareStreamFn(settings, base);
-
-		wrapped(stubModel, stubContext, undefined);
-
-		expect(calls[0]?.options?.hideThinkingSummary).toBe(true);
+			expect(calls[0]?.options?.hideThinkingSummary).toBe(testCase.expected);
+		}
 	});
 
 	it("applies Responses-family text verbosity from settings while preserving caller overrides", () => {
@@ -115,6 +107,18 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(calls[1]?.options?.streamIdleTimeoutMs).toBe(10_000);
 	});
 
+	it("forwards retry.maxDelayMs while preserving caller overrides", () => {
+		const settings = Settings.isolated({ "retry.maxDelayMs": 300_000 });
+		const { fn: base, calls } = captureBase();
+		const wrapped = createSettingsAwareStreamFn(settings, base);
+
+		wrapped(stubModel, stubContext, undefined);
+		wrapped(stubModel, stubContext, { maxRetryDelayMs: 5_000 });
+
+		expect(calls[0]?.options?.maxRetryDelayMs).toBe(300_000);
+		expect(calls[1]?.options?.maxRetryDelayMs).toBe(5_000);
+	});
+
 	it("treats the default openrouterVariant as absent so the base call carries no variant", () => {
 		const settings = Settings.isolated({ "providers.openrouterVariant": "default" });
 		const { fn: base, calls } = captureBase();
@@ -131,6 +135,8 @@ describe("createSettingsAwareStreamFn", () => {
 			"providers.antigravityEndpoint": "sandbox",
 			"providers.maxInFlightRequests": { openrouter: 4 },
 			"model.loopGuard.enabled": true,
+			thinkingDisplay: "hidden",
+			omitThinking: true,
 		});
 		const { fn: base, calls } = captureBase();
 		const wrapped = createSettingsAwareStreamFn(settings, base);

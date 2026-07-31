@@ -12,6 +12,8 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { LspStartupServerInfo } from "@oh-my-pi/pi-coding-agent/tools";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
+import type { StartupChangelogSelection } from "../src/utils/changelog";
 
 describe("InteractiveMode LSP startup welcome banner", () => {
 	let authStorage: AuthStorage;
@@ -118,6 +120,38 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		expect(showStatusSpy).not.toHaveBeenCalled();
 		expect(findServerLine()).toContain(theme.status.enabled);
 		expect(findServerLine()).not.toContain(theme.status.pending);
+	});
+
+	it("renders a configured startup summary in zh-CN while preserving its /changelog command", async () => {
+		const previousLocale = getSettingsUiLocale();
+		let summaryMode: InteractiveMode | undefined;
+		try {
+			session.settings.set("startup.changelogMode", "summary");
+			setSettingsUiLocale("zh-CN");
+			const selection: StartupChangelogSelection = {
+				markdown: "## [2.0.0] - 2026-07-30\n\n### Added\n\n- New behavior.",
+				persistCurrentVersion: false,
+				truncated: false,
+				selectedEntries: 2,
+				totalUnseenEntries: 2,
+				latestVersion: "2.0.0",
+				changeCount: 3,
+				categoryCounts: { Added: 2, Fixed: 1 },
+			};
+			summaryMode = new InteractiveMode(session, "test", selection, () => {}, [], undefined, new EventBus());
+			vi.spyOn(summaryMode.statusLine, "watchBranch").mockImplementation(() => {});
+
+			await summaryMode.init();
+
+			const output = Bun.stripANSI(summaryMode.ui.render(120).join("\n"));
+			expect(output).toContain("已更新到 v2.0.0");
+			expect(output).toContain("新增 2 项 · 修复 1 项");
+			expect(output).toContain("使用 /changelog 查看详情。");
+			expect(output).not.toContain("Updated to v2.0.0");
+		} finally {
+			summaryMode?.stop();
+			setSettingsUiLocale(previousLocale);
+		}
 	});
 
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {

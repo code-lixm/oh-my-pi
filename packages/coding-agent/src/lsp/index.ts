@@ -19,6 +19,7 @@ import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
 import {
+	clearInitializationFailure,
 	ensureFileOpen,
 	FileChangeType,
 	getActiveClients,
@@ -2347,6 +2348,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const outputs: string[] = [];
 			for (const [workspaceServerName, workspaceServerConfig] of servers) {
 				throwIfAborted(signal);
+				clearInitializationFailure(workspaceServerConfig, this.session.cwd);
 				try {
 					const workspaceClient = await getOrCreateClient(
 						workspaceServerConfig,
@@ -2378,6 +2380,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		const [serverName, serverConfig] = serverInfo;
+
+		if (action === "reload") clearInitializationFailure(serverConfig, this.session.cwd);
 
 		try {
 			const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);

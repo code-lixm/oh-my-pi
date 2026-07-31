@@ -108,7 +108,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Whether a hub call belongs to the compact transcript activity stream. */
+/** Whether a hub call is peer coordination rather than named-process control. */
 export function isHubGroupedActivityArgs(value: unknown): value is HubRenderArgs {
 	if (!isRecord(value)) return false;
 	if (value.op === "inbox" || value.op === "list") return true;
@@ -116,10 +116,11 @@ export function isHubGroupedActivityArgs(value: unknown): value is HubRenderArgs
 	return value.op === "wait" && typeof value.name !== "string";
 }
 
-/** Message-only Hub calls whose payload is surfaced by the anchored subagent HUD. */
-export function isHubMessageFeedbackArgs(value: unknown): value is HubRenderArgs {
+/** Peer communication is internal; the anchored subagent HUD surfaces useful feedback. */
+export function isHubPeerCommunicationArgs(value: unknown): value is HubRenderArgs {
 	if (!isRecord(value) || typeof value.name === "string") return false;
-	return value.op === "inbox" || (value.op === "wait" && !Array.isArray(value.ids));
+	if (value.op === "inbox" || value.op === "list" || value.op === "send") return true;
+	return value.op === "wait";
 }
 
 /** True while streamed Hub args do not yet carry enough discriminators to choose a renderer. */

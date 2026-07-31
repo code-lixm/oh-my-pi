@@ -15,6 +15,8 @@ const PROVIDER = "openai";
 
 const TS1 = "2026-06-24T10:00:00.000Z";
 const TS2 = "2026-06-24T10:05:00.000Z";
+const TS1_RESULT = "2026-06-24T10:00:00.250Z";
+const TS2_RESULT = "2026-06-24T10:05:00.120Z";
 
 // Turn 1: two toolCall blocks (grep + read) sharing one provider request.
 const TURN1_TOTAL_TOKENS = 100;
@@ -153,7 +155,7 @@ function buildStandardEntries(): unknown[] {
 		buildToolResultEntry({
 			entryId: "tr-1",
 			parentId: "asst-1",
-			timestamp: TS1,
+			timestamp: TS1_RESULT,
 			toolCallId: "call-1",
 			toolName: "grep",
 			text: GREP_RESULT_1,
@@ -161,7 +163,7 @@ function buildStandardEntries(): unknown[] {
 		buildToolResultEntry({
 			entryId: "tr-2",
 			parentId: "asst-1",
-			timestamp: TS1,
+			timestamp: TS1_RESULT,
 			toolCallId: "call-2",
 			toolName: "read",
 			text: READ_ERROR_RESULT,
@@ -179,7 +181,7 @@ function buildStandardEntries(): unknown[] {
 		buildToolResultEntry({
 			entryId: "tr-3",
 			parentId: "asst-2",
-			timestamp: TS2,
+			timestamp: TS2_RESULT,
 			toolCallId: "call-3",
 			toolName: "grep",
 			text: GREP_RESULT_2,
@@ -211,6 +213,7 @@ describe("tool usage stats pipeline", () => {
 		expect(grep.totalTokensShare).toBeCloseTo(90, 6);
 		expect(grep.outputTokensShare).toBeCloseTo(18, 6);
 		expect(grep.costShare).toBeCloseTo(0.009, 8);
+		expect(grep.avgDurationMs).toBeCloseTo(185, 6);
 		expect(grep.lastUsed).toBe(Date.parse(TS2));
 
 		const read = toolRow(stats, "read");
@@ -221,6 +224,7 @@ describe("tool usage stats pipeline", () => {
 		expect(read.totalTokensShare).toBeCloseTo(50, 6);
 		expect(read.outputTokensShare).toBeCloseTo(10, 6);
 		expect(read.costShare).toBeCloseTo(0.005, 8);
+		expect(read.avgDurationMs).toBeCloseTo(250, 6);
 		expect(read.lastUsed).toBe(Date.parse(TS1));
 
 		// Per-model breakdown carries the fixture model/provider with the same split.

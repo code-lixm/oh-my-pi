@@ -2,6 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { logger } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
@@ -47,7 +48,7 @@ export interface AdvisorRuntimeHost {
 	 * recovery path must never replay the full primary transcript.
 	 * Optional: hosts that omit it get no proactive maintenance.
 	 */
-	maintainContext?(incomingTokens: number): Promise<boolean>;
+	maintainContext?(incomingTokens: number, signal: AbortSignal): Promise<boolean>;
 	/**
 	 * Called immediately before each `agent.prompt(batch)` cycle. Lets the host
 	 * clear per-update advisor state — currently the one-advise-per-update gate
@@ -56,17 +57,17 @@ export interface AdvisorRuntimeHost {
 	 */
 	beginAdvisorUpdate?(): void;
 	/**
-	 * Called with the error of every failed advisor turn, before the retry sleep
-	 * or the dropped-after-3 path. Lets the host apply credential-level remedies
-	 * and configured model fallback that the advisor loop cannot perform itself.
-	 * Return `true` after switching models so the same clean batch is retried
-	 * immediately with a fresh failure budget. `failedMessages` contains the
-	 * failed prompt's appended turns before rollback. Errors thrown here are
-	 * logged and swallowed.
+	 * Called with every failed advisor turn before generic retry/drop handling.
+	 * The host can own a configured retry budget, rotate credentials, or switch
+	 * the fallback model. Return `true` when the same clean batch should run again;
+	 * host-owned model switches and retry accounting then remain independent from
+	 * this runtime's last-resort consecutive-failure guard. `failedMessages` contains
+	 * the failed prompt's appended turns before rollback. Errors thrown here are logged.
 	 */
 	onTurnError?(
 		error: unknown,
 		failedMessages: readonly AgentMessage[],
+		signal: AbortSignal,
 	): Promise<boolean | undefined> | boolean | undefined;
 	/** Called after a successful advisor turn so the host can finish fallback lifecycle reporting. */
 	onTurnSuccess?(): Promise<void> | void;
@@ -76,6 +77,8 @@ export interface AdvisorRuntimeHost {
 	 *  recovery (credential switch, fallback chain) declined. Cleared only by
 	 *  an explicit reset (`/new`, config rebuild, session restart). */
 	notifyQuotaExhausted?(): void;
+	/** Stable identity for the live advisor model. Used to restore full transcript rendering after a model switch. */
+	getModelIdentity?(): string;
 }
 
 /**
@@ -228,7 +231,6 @@ const MAX_COALESCE_ROUNDS = 3;
 const MAX_QUARANTINE_RETRIES = 2;
 
 const ADVISOR_RENDER_OPTIONS = {
-	includeThinking: true,
 	includeToolIntent: true,
 	watchedRoles: true,
 	expandPrimaryContext: true,
@@ -258,7 +260,16 @@ interface DeliveredMessage {
 
 function fingerprintMessage(message: AgentMessage): bigint | undefined {
 	try {
-		const serialized = JSON.stringify(message);
+		const stableMessage =
+			message.role === "assistant"
+				? {
+						...message,
+						content: message.content.map(part =>
+							part.type === "thinking" ? { ...part, durationMs: undefined } : part,
+						),
+					}
+				: message;
+		const serialized = JSON.stringify(stableMessage);
 		if (serialized === undefined) return undefined;
 		return Bun.hash.wyhash(serialized);
 	} catch {
@@ -273,11 +284,12 @@ export class AdvisorRuntime {
 	 * allocation-free; fingerprints preserve identity across equivalent clones.
 	 */
 	#deliveredPrefix: DeliveredMessage[] = [];
-	/** Last-shown body, keyed by primary-context customType (plan/goal mode rules,
-	 *  approved plan). These prompts are re-injected verbatim every primary turn;
-	 *  this lets {@link #renderDelta} collapse an unchanged copy to a one-line
-	 *  marker so the advisor isn't re-fed the full ~1k-token rules each turn.
-	 *  Cleared on every re-prime/seed and when a failed batch is dropped. */
+	/**
+	 * Last-shown body, keyed by primary-context customType (plan/goal mode rules,
+	 * approved plan). These prompts are re-injected verbatim every primary turn;
+	 * this lets {@link #renderDelta} collapse an unchanged copy to a one-line
+	 * marker so the advisor isn't re-fed the full ~1k-token rules each turn.
+	 */
 	#seenContext = new Map<string, string>();
 	/** Incremented whenever the advisor loses context so queued raw deltas are re-rendered against fresh dedupe state. */
 	#renderRevision = 0;
@@ -285,11 +297,18 @@ export class AdvisorRuntime {
 	#advisorRegexSecretValues = new Set<string>();
 	#pending: PendingDelta[] = [];
 	#busy = false;
+	#sessionTransitionPaused = false;
+	#promptInFlight: Promise<void> | undefined;
+	#maintenanceInFlight = false;
+	#iterationAbort: AbortController | undefined;
 	#backlog = 0;
 	#consecutiveFailures = 0;
 	#failureNotified = false;
 	/** Consecutive quarantined turns since the last success/reset (issue #6661). */
 	#consecutiveQuarantines = 0;
+	/** Whether primary reasoning is included in advisor deltas for the current model. */
+	#includeThinking = true;
+	#modelIdentity: string | undefined;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
 	/**
@@ -324,6 +343,7 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
+		private readonly maxConsecutiveFailures = 3,
 	) {}
 
 	get backlog(): number {
@@ -338,6 +358,10 @@ export class AdvisorRuntime {
 	/** True after the runtime hard-stopped on repeated or permanent failures. */
 	get halted(): boolean {
 		return this.#halted;
+	}
+	/** True while a prompt or its failed-turn recovery owns the advisor model. */
+	get modelSwitchUnsafe(): boolean {
+		return this.#promptInFlight !== undefined || this.#maintenanceInFlight || this.#failing;
 	}
 
 	/**
@@ -385,6 +409,24 @@ export class AdvisorRuntime {
 		}
 	}
 
+	/** Consume a primary transcript boundary without scheduling an advisor review. */
+	skipTurn(messages?: AgentMessage[]): void {
+		if (this.disposed) return;
+		const all = messages ?? this.host.snapshotMessages();
+		this.#latestMessages = all;
+		this.#seedCursor(all);
+	}
+
+	/** Refresh fingerprints after AgentSession applies post-turn assistant metadata. */
+	finalizeTurn(messages: AgentMessage[]): void {
+		if (this.disposed || messages.length < this.#lastCount) return;
+		this.#latestMessages = messages;
+		this.#deliveredPrefix = messages.slice(0, this.#lastCount).map(message => ({
+			message,
+			fingerprint: fingerprintMessage(message),
+		}));
+	}
+
 	/**
 	 * Wait until the advisor backlog falls below `threshold`.
 	 *
@@ -428,6 +470,7 @@ export class AdvisorRuntime {
 	}
 
 	dispose(): void {
+		this.#iterationAbort?.abort("advisor disposed");
 		this.disposed = true;
 		this.#epoch++;
 		this.#pending = [];
@@ -490,6 +533,31 @@ export class AdvisorRuntime {
 		});
 	}
 
+	/** Stop new advisor work and wait only for the active prompt's recorder-visible events. */
+	pauseForSessionTransition(): Promise<void> {
+		if (!this.#sessionTransitionPaused) {
+			this.#sessionTransitionPaused = true;
+			this.#wakeAllWaiters();
+			this.#iterationAbort?.abort("advisor session transition");
+			try {
+				this.agent.abort("advisor session transition");
+			} catch {}
+		}
+		return (
+			this.#promptInFlight?.then(
+				() => {},
+				() => {},
+			) ?? Promise.resolve()
+		);
+	}
+
+	/** Continue queued work after a session transition rolls back or preserves the conversation. */
+	resumeAfterSessionTransition(): void {
+		if (!this.#sessionTransitionPaused) return;
+		this.#sessionTransitionPaused = false;
+		if (!this.#quotaExhausted && !this.#halted) void this.#drain();
+	}
+
 	/**
 	 * Re-prime the advisor after a history rewrite (compaction, session
 	 * switch/resume, branch). Clears the advisor's own (non-persisted) context
@@ -498,7 +566,9 @@ export class AdvisorRuntime {
 	 * leaving it blind to everything before the rewrite.
 	 */
 	reset(): void {
+		this.#iterationAbort?.abort("advisor reset");
 		this.#epoch++;
+		this.#sessionTransitionPaused = false;
 		this.#quotaExhausted = false;
 		this.#halted = false;
 		this.#failing = false;
@@ -526,8 +596,12 @@ export class AdvisorRuntime {
 		this.#failing = false;
 		this.#droppedBacklogs = 0;
 		this.#failureNotified = false;
-		this.#clearSeenContext();
-		this.#wakeAllWaiters();
+	}
+	#syncModelIdentity(): void {
+		const identity = this.host.getModelIdentity?.();
+		if (identity === undefined || identity === this.#modelIdentity) return;
+		this.#modelIdentity = identity;
+		this.#includeThinking = true;
 	}
 
 	#formatRawDelta(rawMessages: AgentMessage[], wip = false): string | null {
@@ -536,7 +610,10 @@ export class AdvisorRuntime {
 			.map(message => this.#dedupContextMessage(message));
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
-		let md = formatSessionHistoryMarkdown(delta, ADVISOR_RENDER_OPTIONS);
+		let md = formatSessionHistoryMarkdown(delta, {
+			...ADVISOR_RENDER_OPTIONS,
+			includeThinking: this.#includeThinking,
+		});
 		if (!md.trim()) return null;
 		if (obfuscator?.hasSecrets()) {
 			let discoveredNewRegexSecretValue = false;
@@ -570,7 +647,7 @@ export class AdvisorRuntime {
 						? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
 						: message,
 				),
-				ADVISOR_RENDER_OPTIONS,
+				{ ...ADVISOR_RENDER_OPTIONS, includeThinking: this.#includeThinking },
 			);
 			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
 		}
@@ -578,8 +655,15 @@ export class AdvisorRuntime {
 		return `${heading}\n\n${md}`;
 	}
 
-	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
-		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
+	#seedCursor(messages: AgentMessage[]): void {
+		this.#lastCount = messages.length;
+		this.#deliveredPrefix = messages.map(message => ({
+			message,
+			fingerprint: fingerprintMessage(message),
+		}));
+	}
+
+	#advanceCursor(all: AgentMessage[]): AgentMessage[] {
 		let prefixChanged = all.length < this.#lastCount;
 		for (let i = 0; !prefixChanged && i < this.#lastCount; i++) {
 			const delivered = this.#deliveredPrefix[i];
@@ -611,6 +695,12 @@ export class AdvisorRuntime {
 			this.#deliveredPrefix.push({ message, fingerprint: fingerprintMessage(message) });
 		}
 		this.#lastCount = all.length;
+		return rawMessages;
+	}
+
+	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
+		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
+		const rawMessages = this.#advanceCursor(all);
 		const text = this.#formatRawDelta(rawMessages, wip);
 		return text ? { text, rawMessages, renderRevision: this.#renderRevision, wip } : null;
 	}
@@ -696,6 +786,7 @@ export class AdvisorRuntime {
 		epoch: number,
 		initial: PendingDelta[],
 		recoveringOverflow: boolean,
+		signal: AbortSignal,
 	): Promise<{
 		batch: string | null;
 		rawMessages: AgentMessage[];
@@ -712,13 +803,17 @@ export class AdvisorRuntime {
 		let wip = initial.at(-1)?.wip ?? false;
 
 		for (let round = 0; round < MAX_COALESCE_ROUNDS; round++) {
+			if (this.#sessionTransitionPaused) break;
 			if (this.host.maintainContext) {
 				const incomingTokens = estimateTokens({ role: "user", content: batchText, timestamp: Date.now() });
 				let shouldResetContext = false;
+				this.#maintenanceInFlight = true;
 				try {
-					shouldResetContext = await this.host.maintainContext(incomingTokens);
+					shouldResetContext = await this.host.maintainContext(incomingTokens, signal);
 				} catch (err) {
 					logger.debug("advisor context maintenance failed", { err: String(err) });
+				} finally {
+					this.#maintenanceInFlight = false;
 				}
 				// Epoch guard — a reset/dispose during the maintainContext await
 				// invalidates this batch.
@@ -733,6 +828,7 @@ export class AdvisorRuntime {
 					// remain queued and ship as their own subsequent batch.
 					if (round > 0) {
 						const lateItems = this.#pending.splice(0);
+						initial.push(...lateItems);
 						turns += lateItems.reduce((sum, b) => sum + b.turns, 0);
 						if (lateItems.length > 0) {
 							wip = lateItems.at(-1)!.wip;
@@ -769,6 +865,7 @@ export class AdvisorRuntime {
 			// update WIP state, and re-check the maintenance budget.
 			const late = this.#pending.splice(0);
 			if (late.length === 0) break;
+			initial.push(...late);
 			batchText = [batchText, ...late.map(b => b.text)].join("\n\n");
 			rawMessages = rawMessages.concat(late.flatMap(b => b.rawMessages));
 			turns += late.reduce((sum, b) => sum + b.turns, 0);
@@ -802,10 +899,12 @@ export class AdvisorRuntime {
 	}
 
 	async #drain(): Promise<void> {
-		if (this.#busy) return;
+		if (this.#busy || this.#sessionTransitionPaused) return;
 		this.#busy = true;
 		try {
-			while (!this.disposed && this.#pending.length) {
+			this.#syncModelIdentity();
+			while (!this.disposed && !this.#sessionTransitionPaused && this.#pending.length) {
+				this.#syncModelIdentity();
 				let popped: PendingDelta[];
 				if (this.#pending[0]?.overflowRecovery) {
 					const recovery = this.#pending.shift();
@@ -814,6 +913,8 @@ export class AdvisorRuntime {
 				} else {
 					popped = this.#pending.splice(0);
 				}
+				const iterationAbort = new AbortController();
+				this.#iterationAbort = iterationAbort;
 				const epoch = this.#epoch;
 				for (const delta of popped) {
 					if (delta.renderRevision === this.#renderRevision) continue;
@@ -822,10 +923,19 @@ export class AdvisorRuntime {
 					delta.renderRevision = this.#renderRevision;
 				}
 				const recoveringOverflow = popped.some(delta => delta.overflowRecovery === true);
-				const result = await this.#collectAndMaintainBatch(epoch, popped, recoveringOverflow);
+				const result = await this.#collectAndMaintainBatch(
+					epoch,
+					popped,
+					recoveringOverflow,
+					iterationAbort.signal,
+				);
 
 				// Epoch was invalidated during batch collection; restart the loop.
 				if (result === null) continue;
+				if (this.#sessionTransitionPaused) {
+					this.#pending.unshift(...popped);
+					continue;
+				}
 
 				const { batch, rawMessages, finalTurns, wip, resetContext } = result;
 
@@ -847,7 +957,13 @@ export class AdvisorRuntime {
 					// Reset the host's per-update advisor state (one-advise-per-update
 					// gate) before each model cycle so the new batch starts fresh.
 					this.host.beginAdvisorUpdate?.();
-					await this.agent.prompt(batch);
+					const prompt = this.agent.prompt(batch);
+					this.#promptInFlight = prompt;
+					try {
+						await prompt;
+					} finally {
+						if (this.#promptInFlight === prompt) this.#promptInFlight = undefined;
+					}
 					// Agent.#runLoop catches provider/stream failures internally and
 					// resolves prompt() cleanly with stopReason: "error". Treat that
 					// as a failed turn so endpoint rejections trip the retry path.
@@ -868,12 +984,17 @@ export class AdvisorRuntime {
 					this.#consecutiveQuarantines = 0;
 					if (this.host.onTurnSuccess) {
 						try {
-							await this.host.onTurnSuccess();
+							await raceWithSignal(Promise.resolve(this.host.onTurnSuccess()), iterationAbort.signal);
 						} catch (hookErr) {
 							logger.debug("advisor onTurnSuccess hook failed", { err: String(hookErr) });
 						}
 					}
 				} catch (err) {
+					if (this.#sessionTransitionPaused) {
+						this.#rollbackFailedTurn(messageSnapshot);
+						this.#pending.unshift(...popped);
+						continue;
+					}
 					// reset()/dispose() aborts the in-flight prompt; treat it as a
 					// reset, not a transient failure — drop the stale batch.
 					if (this.#epoch !== epoch) continue;
@@ -885,6 +1006,9 @@ export class AdvisorRuntime {
 					this.#wakeAllWaiters();
 					const failedMessages = this.agent.state.messages.slice(messageSnapshot);
 					const terminalFailure = this.#terminalAssistantFailure(messageSnapshot);
+					const classifierRefusal =
+						(terminalFailure !== undefined && isClassifierRefusal(terminalFailure)) ||
+						AIError.is(AIError.classify(err), AIError.Flag.ContentBlocked);
 					const terminalFailureId =
 						terminalFailure === undefined ? undefined : AIError.classifyMessage(terminalFailure);
 					const contextOverflow =
@@ -900,11 +1024,42 @@ export class AdvisorRuntime {
 						AIError.is(terminalFailureId, AIError.Flag.ContextOverflow);
 					this.#rollbackFailedTurn(messageSnapshot);
 					logger.debug("advisor turn failed", { err: String(err) });
+					if (classifierRefusal) {
+						if (this.#includeThinking) {
+							this.#includeThinking = false;
+							const strippedBatch = this.#formatRawDelta(rawMessages, wip);
+							if (strippedBatch) {
+								this.#pending.unshift({
+									text: strippedBatch,
+									rawMessages,
+									renderRevision: this.#renderRevision,
+									turns: finalTurns,
+									wip,
+									overflowRecovery: recoveringOverflow || undefined,
+								});
+								logger.debug("advisor refusal recovered by stripping primary reasoning");
+								continue;
+							}
+						}
+						this.#notifyFailureOnce(err);
+						this.#clearSeenContext();
+						this.#backlog = Math.max(0, this.#backlog - finalTurns);
+						this.#notifyWaiters();
+						continue;
+					}
 					let recovered = false;
 					try {
-						recovered = (await this.host.onTurnError?.(err, failedMessages)) === true;
+						recovered =
+							(await raceWithSignal(
+								Promise.resolve(this.host.onTurnError?.(err, failedMessages, iterationAbort.signal)),
+								iterationAbort.signal,
+							)) === true;
 					} catch (hookErr) {
 						logger.debug("advisor onTurnError hook failed", { err: String(hookErr) });
+					}
+					if (this.#sessionTransitionPaused) {
+						this.#pending.unshift(...popped);
+						continue;
 					}
 					if (err instanceof AdvisorOutputQuarantinedError) {
 						// A quarantine discards the advisor's whole turn before dispatch, so
@@ -1002,8 +1157,10 @@ export class AdvisorRuntime {
 						}
 					} else {
 						this.#consecutiveFailures++;
-						if (this.#consecutiveFailures >= 3) {
-							logger.warn("advisor failed consecutively 3 times; dropping backlog to prevent stall");
+						if (this.#consecutiveFailures >= this.maxConsecutiveFailures) {
+							logger.warn("advisor failed repeatedly; dropping backlog to prevent stall", {
+								attempts: this.#consecutiveFailures,
+							});
 							this.#notifyFailureOnce(err);
 							this.#consecutiveFailures = 0;
 							// The dropped batch may carry primary-context we never delivered; drop
@@ -1020,7 +1177,15 @@ export class AdvisorRuntime {
 								wip,
 								overflowRecovery: recoveringOverflow || undefined,
 							});
-							await Bun.sleep(this.retryDelayMs);
+							if (this.retryDelayMs <= 0) {
+								await Bun.sleep(0);
+							} else {
+								try {
+									await raceWithSignal(Bun.sleep(this.retryDelayMs), iterationAbort.signal);
+								} catch (sleepError) {
+									if (!iterationAbort.signal.aborted) throw sleepError;
+								}
+							}
 						}
 					}
 				}
@@ -1031,9 +1196,18 @@ export class AdvisorRuntime {
 				}
 			}
 		} finally {
+			this.#iterationAbort = undefined;
 			this.#busy = false;
 		}
 	}
+}
+
+/** Mirrors turn recovery's refusal classification and retains AIError's provider-neutral content-block fallback. */
+function isClassifierRefusal(message: AssistantMessage): boolean {
+	if (message.stopReason !== "error") return false;
+	const stopType = message.stopDetails?.type;
+	if (stopType === "refusal" || stopType === "sensitive") return true;
+	return AIError.is(AIError.classifyMessage(message), AIError.Flag.ContentBlocked);
 }
 
 /**

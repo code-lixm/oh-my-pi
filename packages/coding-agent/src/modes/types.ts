@@ -18,8 +18,10 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
+import type { AgentActivityState } from "../registry/agent-activity";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
@@ -312,8 +314,8 @@ export interface InteractiveModeContext {
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;
 	ensureLoadingAnimation(): void;
-	/** Reconcile the loading row with visible live activity cards, when this UI supports it. */
-	refreshWorkingActivitySummary?(): void;
+	/** Reconcile the loading row with the latest event-backed activity snapshot and visible live cards. */
+	refreshWorkingActivitySummary?(activity?: AgentActivityState): void;
 	startPendingSubmission(input: {
 		text: string;
 		images?: ImageContent[];
@@ -423,7 +425,7 @@ export interface InteractiveModeContext {
 	showUserMessageSelector(): void;
 	showCopySelector(): void;
 	showTreeSelector(): void;
-	showSessionSelector(): void;
+	showSessionSelector(source?: ForeignSessionSource): void;
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
@@ -441,6 +443,7 @@ export interface InteractiveModeContext {
 	handleCtrlD(): void;
 	handleCtrlZ(): void;
 	handleDequeue(): void;
+	handleRetry(): Promise<void>;
 	handleImagePaste(): Promise<boolean>;
 	/** Queue a message for delivery only after the active agent turn would stop. */
 	handleQueueCommand(message: string): Promise<void>;

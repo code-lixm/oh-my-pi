@@ -192,15 +192,24 @@ describe("AskTool hard deadline", () => {
 		expect(abort).not.toHaveBeenCalled();
 	});
 
-	it("shares one deadline from the first presented question and defaults only unanswered recommended questions", async () => {
+	it("gives the second question a fresh timeout after a quick manual first answer", async () => {
 		vi.useFakeTimers();
+		const firstPresented = Promise.withResolvers<void>();
+		const secondPresented = Promise.withResolvers<void>();
+		const firstAnswer = Promise.withResolvers<string | undefined>();
 		const select = vi.fn<AskSelect>((title, _options, dialogOptions) => {
-			if (title.includes("First?")) return Promise.resolve("keep-first");
-			if (title.includes("Second?")) return waitForAbort(dialogOptions?.signal);
-			if (title.includes("Third?")) return Promise.resolve("keep-third");
+			if (title.includes("First?")) {
+				firstPresented.resolve();
+				return firstAnswer.promise;
+			}
+			if (title.includes("Second?")) {
+				secondPresented.resolve();
+				return waitForAbort(dialogOptions?.signal);
+			}
 			throw new Error(`unexpected question: ${title}`);
 		});
 		const { context, abort } = createContext(select);
+		let settled: AskExecutionResult | undefined;
 		const execution = ask(createAskTool({ timeout: 0.01 }), context, [
 			{
 				id: "first",
@@ -213,21 +222,26 @@ describe("AskTool hard deadline", () => {
 				options: [{ label: "manual-second" }, { label: "default-second" }],
 				recommended: 1,
 			},
-			{
-				id: "third",
-				question: "Third?",
-				options: [{ label: "keep-third" }, { label: "discard-third" }],
-			},
-		]);
+		]).then(result => {
+			settled = result;
+			return result;
+		});
 
+		await firstPresented.promise;
+		vi.advanceTimersByTime(1);
+		firstAnswer.resolve("keep-first");
+		await secondPresented.promise;
+
+		vi.advanceTimersByTime(9);
 		await drainMicrotasks();
-		vi.advanceTimersByTime(10);
+		expect(settled).toBeUndefined();
+
+		vi.advanceTimersByTime(1);
 		const result = await execution;
 
 		expect(result.details?.results).toEqual([
 			expect.objectContaining({ id: "first", selectedOptions: ["keep-first"], timedOut: undefined }),
 			expect.objectContaining({ id: "second", selectedOptions: ["default-second"], timedOut: true }),
-			expect.objectContaining({ id: "third", selectedOptions: ["keep-third"], timedOut: undefined }),
 		]);
 		expect(abort).not.toHaveBeenCalled();
 	});

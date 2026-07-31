@@ -166,6 +166,7 @@ export async function initDb(): Promise<Database> {
 			calls_in_turn INTEGER NOT NULL DEFAULT 1,
 			args_chars INTEGER NOT NULL DEFAULT 0,
 			result_chars INTEGER,
+			duration_ms INTEGER,
 			is_error INTEGER,
 			UNIQUE(session_file, tool_call_id)
 		);
@@ -178,6 +179,10 @@ export async function initDb(): Promise<Database> {
 			value TEXT NOT NULL
 		);
 	`);
+	const toolCallColumns = db.prepare("PRAGMA table_info(tool_calls)").all() as { name: string }[];
+	if (!toolCallColumns.some(column => column.name === "duration_ms")) {
+		db.run("ALTER TABLE tool_calls ADD COLUMN duration_ms INTEGER");
+	}
 
 	const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
 	if (!messageColumns.some(column => column.name === "premium_requests")) {
@@ -1563,14 +1568,22 @@ export function updateToolResults(links: ToolResultLink[]): number {
 
 	const stmt = db.prepare(`
 		UPDATE tool_calls
-		SET result_chars = ?, is_error = ?
-		WHERE session_file = ? AND tool_call_id = ? AND result_chars IS NULL
+		SET result_chars = ?, is_error = ?,
+			duration_ms = CASE WHEN ? >= timestamp THEN ? - timestamp ELSE 0 END
+		WHERE session_file = ? AND tool_call_id = ? AND (result_chars IS NULL OR duration_ms IS NULL)
 	`);
 
 	let updated = 0;
 	const apply = db.transaction(() => {
 		for (const link of links) {
-			const result = stmt.run(link.resultChars, link.isError ? 1 : 0, link.sessionFile, link.toolCallId);
+			const result = stmt.run(
+				link.resultChars,
+				link.isError ? 1 : 0,
+				link.timestamp,
+				link.timestamp,
+				link.sessionFile,
+				link.toolCallId,
+			);
 			updated += result.changes;
 		}
 	});
@@ -1588,6 +1601,7 @@ const TOOL_AGGREGATE_COLUMNS = `
 	SUM(CASE WHEN t.is_error = 1 THEN 1 ELSE 0 END) as errors,
 	SUM(t.args_chars) as args_chars,
 	SUM(COALESCE(t.result_chars, 0)) as result_chars,
+	AVG(t.duration_ms) as avg_duration_ms,
 	SUM(COALESCE(m.total_tokens, 0) * 1.0 / t.calls_in_turn) as total_tokens_share,
 	SUM(COALESCE(m.output_tokens, 0) * 1.0 / t.calls_in_turn) as output_tokens_share,
 	SUM(COALESCE(m.cost_total, 0) / t.calls_in_turn) as cost_share,
@@ -1602,6 +1616,7 @@ interface ToolAggregateRow {
 	errors: number;
 	args_chars: number | null;
 	result_chars: number | null;
+	avg_duration_ms: number | null;
 	total_tokens_share: number | null;
 	output_tokens_share: number | null;
 	cost_share: number | null;
@@ -1615,6 +1630,7 @@ function rowToToolUsage(row: ToolAggregateRow): ToolUsageStats {
 		errors: row.errors,
 		argsChars: row.args_chars ?? 0,
 		resultChars: row.result_chars ?? 0,
+		avgDurationMs: row.avg_duration_ms,
 		totalTokensShare: row.total_tokens_share ?? 0,
 		outputTokensShare: row.output_tokens_share ?? 0,
 		costShare: row.cost_share ?? 0,

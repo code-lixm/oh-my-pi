@@ -231,7 +231,7 @@ export class IrcBus {
 		if (waiter) {
 			if (message.expectsReply) this.#beginPendingReply(message);
 			waiter.resolve(message);
-			this.#resolvePendingReply(message);
+			this.#resolvePendingReply(message, true);
 			if (!opts?.suppressRelay) this.#relayToRootUi(message);
 			return { to: message.to, outcome: revived ? "revived" : "injected" };
 		}
@@ -274,7 +274,10 @@ export class IrcBus {
 		filter: { from?: string },
 		timeoutMs: number,
 		signal?: AbortSignal,
-		options?: { drainPending?: boolean; liveness?: { registry: AgentRegistry; senderId: string } },
+		options?: {
+			drainPending?: boolean;
+			liveness?: { registry: AgentRegistry; senderId: string; isActive?: () => boolean };
+		},
 	): Promise<IrcMessage | null> {
 		if (signal?.aborted) {
 			throw signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted");
@@ -350,11 +353,12 @@ export class IrcBus {
 					.some(ref => (ref.status === "running" || ref.status === "waiting") && (!from || ref.id === from));
 			const check = filter.from ? () => hasRunningSender(filter.from) : () => hasRunningSender();
 			unsubscribeLiveness = registry.onChange(() => {
+				if (liveness.isActive?.() === false) return;
 				if (!check()) {
 					settle({ kind: "abort", error: new Error(livenessReason) });
 				}
 			});
-			if (!check()) {
+			if (liveness.isActive?.() !== false && !check()) {
 				settle({ kind: "abort", error: new Error(livenessReason) });
 			}
 		}
@@ -388,9 +392,13 @@ export class IrcBus {
 		this.#emitPendingReplyChange({ type: "opened", message });
 	}
 
-	#resolvePendingReply(reply: IrcMessage): void {
-		if (!reply.replyTo) return;
-		const message = this.#pendingReplies.get(reply.replyTo);
+	#resolvePendingReply(reply: IrcMessage, allowRouteMatch = false): void {
+		let message = reply.replyTo ? this.#pendingReplies.get(reply.replyTo) : undefined;
+		if (!message && !reply.replyTo && allowRouteMatch) {
+			message = [...this.#pendingReplies.values()].find(
+				pending => pending.from === reply.to && pending.to === reply.from,
+			);
+		}
 		if (!message || message.to !== reply.from || message.from !== reply.to) return;
 		this.#pendingReplies.delete(message.id);
 		this.#emitPendingReplyChange({ type: "resolved", message, reply });

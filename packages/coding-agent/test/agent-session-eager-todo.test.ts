@@ -257,7 +257,10 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(observedCalls[0]?.messageTexts.filter(text => text.includes("list all work trees"))).toHaveLength(1);
 		expect(observedCalls[0]?.messageTexts[0]).not.toContain("list all work trees");
 		// `always` renders the hard, forced reminder.
-		expect(observedCalls[0]?.messageTexts[0]).toContain("You MUST call");
+		expect(observedCalls[0]?.messageTexts[0]).toContain(
+			"You MUST include the `todo` `init` op in your first tool-call message.",
+		);
+		expect(observedCalls[0]?.messageTexts[0]).toContain("NEVER make the `todo` call your turn's only tool call.");
 		expect(session.formatSessionAsText()).not.toContain("<user-request>");
 	});
 

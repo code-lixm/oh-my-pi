@@ -97,6 +97,8 @@ function inlineArgsFor(name: string): unknown {
 			};
 		case "bash":
 			return { command: "git status --short" };
+		case "yield":
+			return {};
 		default:
 			throw new Error(`No inline args for tool: ${name}`);
 	}
@@ -199,6 +201,11 @@ function inlineResultFor(name: string): ToolResult {
 			return {
 				content: [{ type: "text", text: "M src/cli/gallery-cli.ts\n?? src/new.ts" }],
 				details: { exitCode: 0, wallTimeMs: 120 },
+			};
+		case "yield":
+			return {
+				content: [{ type: "text", text: "Result submitted." }],
+				details: { status: "success" },
 			};
 		default:
 			throw new Error(`No inline result for tool: ${name}`);
@@ -383,6 +390,37 @@ describe("tool execution left-edge alignment", () => {
 				uiTheme!.boxRound.bottomLeft,
 			);
 			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+
+	it("renders a final yield result as one accent card with only the standard internal spacing", () => {
+		const { previous } = withBorderStyle("accent", () => {
+			const { success } = renderToolLifecycle("yield");
+			const resultIndex = success.findIndex(line =>
+				["Result submitted.", "结果已提交"].some(copy => line.includes(copy)),
+			);
+			expect(resultIndex, `yield result missing: ${JSON.stringify(success)}`).toBeGreaterThan(-1);
+
+			const titleIndex = success.findIndex((line, index) => index < resultIndex && line.trim() !== "▌");
+			expect(titleIndex, `yield title missing: ${JSON.stringify(success)}`).toBeGreaterThan(-1);
+			expect(
+				success.every(line => line.startsWith("▌")),
+				`yield rail missing: ${JSON.stringify(success)}`,
+			).toBe(true);
+			expect(
+				success.slice(0, titleIndex).filter(line => line.trim() === "▌"),
+				"yield top edge spacing",
+			).toHaveLength(1);
+			expect(
+				success.slice(titleIndex + 1, resultIndex).filter(line => line.trim() === "▌"),
+				"yield title/result spacing",
+			).toHaveLength(1);
+			expect(
+				success.slice(resultIndex + 1).filter(line => line.trim() === "▌"),
+				"yield bottom edge spacing",
+			).toHaveLength(1);
 		});
 
 		expect(getOutputBlockBorderStyle()).toBe(previous);

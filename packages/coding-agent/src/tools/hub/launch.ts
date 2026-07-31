@@ -13,7 +13,7 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
-import type { TerminalOutputOptions } from "../../launch/terminal-output";
+import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../../tui";
 import type { ToolSession } from "..";
@@ -270,15 +270,14 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	}
 }
 
-interface TerminalOutputRuntime {
-	renderTerminalOutput(output: string, options: TerminalOutputOptions): Promise<string[] | undefined>;
-}
-
-async function renderLegacyTerminalOutput(terminalText: string, params: LaunchParams): Promise<string[] | undefined> {
-	// `require` keeps xterm out of normal main/Hub startup while retaining display
-	// compatibility with a legacy broker that was already running during upgrade.
-	const runtime = require("../../launch/terminal-output") as TerminalOutputRuntime;
-	return runtime.renderTerminalOutput(terminalText, {
+/** Resolve display rows while keeping legacy raw replay outside the client process. */
+export async function renderLaunchLogTerminalRows(
+	result: Extract<DaemonRpcResult, { op: "logs" }>,
+	params: Pick<LaunchParams, "head" | "lines">,
+): Promise<string[] | undefined> {
+	if (result.terminalRows !== undefined) return result.terminalRows;
+	if (result.terminalText === undefined) return undefined;
+	return renderTerminalOutputIsolated(result.terminalText, {
 		head: params.head ?? false,
 		maxRows: Math.min(1_000, Math.floor(params.lines ?? 100)),
 	});
@@ -296,11 +295,7 @@ async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promi
 				cursor: result.cursor,
 				timedOut: result.timedOut,
 				state: result.state,
-				terminalRows:
-					result.terminalRows ??
-					(result.terminalText === undefined
-						? undefined
-						: await renderLegacyTerminalOutput(result.terminalText, params)),
+				terminalRows: await renderLaunchLogTerminalRows(result, params).catch(() => undefined),
 			};
 		case "wait":
 			return { op: "wait", daemon: result.daemon, timedOut: result.timedOut, matched: result.matched };

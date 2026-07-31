@@ -448,6 +448,23 @@ describe("Settings", () => {
 			expect(settings.get("compaction.strategy")).toBe("context-full");
 			expect(getDefault("compaction.strategy")).toBe("context-full");
 		});
+		it("uses the current task execution defaults without overrides", () => {
+			const settings = Settings.isolated();
+
+			expect({
+				maxConcurrency: settings.get("task.maxConcurrency"),
+				maxRequestConcurrency: settings.get("task.maxRequestConcurrency"),
+				maxRecursionDepth: settings.get("task.maxRecursionDepth"),
+				maxRuntimeMs: settings.get("task.maxRuntimeMs"),
+				softRequestBudget: settings.get("task.softRequestBudget"),
+			}).toEqual({
+				maxConcurrency: 8,
+				maxRequestConcurrency: 8,
+				maxRecursionDepth: 1,
+				maxRuntimeMs: 900_000,
+				softRequestBudget: 90,
+			});
+		});
 	});
 
 	describe("get()", () => {

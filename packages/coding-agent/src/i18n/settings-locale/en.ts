@@ -170,6 +170,24 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Collab: "Collab",
 	"Magic Keywords": "Magic Keywords",
 	"Startup & Updates": "Startup & Updates",
+	"Startup Changelog": "Startup Changelog",
+	"Choose whether update notes start as a summary, full details, or stay hidden":
+		"Choose whether update notes start as a summary, full details, or stay hidden",
+	Expanded: "Expanded",
+	Hidden: "Hidden",
+	"Thinking Display": "Thinking Display",
+	"Full Stream": "Full Stream",
+	"Prose Only": "Prose Only",
+	"Choose how provider-exposed thinking streams appear live in Main and subagent transcripts":
+		"Choose how provider-exposed thinking streams appear live in Main and subagent transcripts",
+	"Show every thinking delta exposed by the provider, including code blocks":
+		"Show every thinking delta exposed by the provider, including code blocks",
+	"Show thinking live but replace fenced code blocks with an ellipsis":
+		"Show thinking live but replace fenced code blocks with an ellipsis",
+	"Hide thinking streams from transcripts": "Hide thinking streams from transcripts",
+	"Show release and change counts with a /changelog hint": "Show release and change counts with a /changelog hint",
+	"Show the recent release notes in full": "Show the recent release notes in full",
+	"Do not show release notes on startup": "Do not show release notes on startup",
 	"Static commit message": "Static commit message",
 	"Power (macOS)": "Power (macOS)",
 	Powerline: "Powerline",
@@ -550,6 +568,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Failed to {verb} server: {error}": "Failed to {verb} server: {error}",
 	"Fallback succeeded on {model}": "Fallback succeeded on {model}",
 	"Fallback: {from} -> {to}": "Fallback: {from} -> {to}",
+	"Primary endpoint recovered: {from} -> {to}": "Primary endpoint recovered: {from} -> {to}",
 	"Fallback: {url}": "Fallback: {url}",
 	"Free space: {freeTokens} {percent}": "Free space: {freeTokens} {percent}",
 	"Handoff context": "Handoff context",
@@ -658,7 +677,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"System prompt ({scope}): {detail}": "System prompt ({scope}): {detail}",
 	"System tools": "System tools",
 	"Thinking blocks: {state}": "Thinking blocks: {state}",
-	"Thinking time: {duration}": "Thinking time: {duration}",
 	"Tool results: saves {savedTokens}": "Tool results: saves {savedTokens}",
 	"Uninstall failed: {error}": "Uninstall failed: {error}",
 	"Uninstalled {pluginId}": "Uninstalled {pluginId}",
@@ -1776,8 +1794,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Headless? Paste the redirect URL or code with /login <value>.":
 		"Headless? Paste the redirect URL or code with /login <value>.",
 	"Hide Secrets": "Hide Secrets",
-	"Hide Thinking Blocks": "Hide Thinking Blocks",
-	"Hide thinking blocks in assistant responses": "Hide thinking blocks in assistant responses",
 	"Hindsight API URL": "Hindsight API URL",
 	"Hindsight Auto Recall": "Hindsight Auto Recall",
 	"Hindsight Auto Retain": "Hindsight Auto Retain",
@@ -2041,8 +2057,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory",
 	"Ollama Cloud Max Concurrency": "Ollama Cloud Max Concurrency",
 	"Omit Thinking summaries": "Omit Thinking summaries",
-	"Omit code blocks from thinking summaries and replace them with an ellipsis":
-		"Omit code blocks from thinking summaries and replace them with an ellipsis",
 	"Omit the personality block entirely": "Omit the personality block entirely",
 	"On-device neural TTS model (Kokoro-82M) used by the local TTS backend":
 		"On-device neural TTS model (Kokoro-82M) used by the local TTS backend",
@@ -2130,7 +2144,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Prompt to summarize when leaving a branch": "Prompt to summarize when leaving a branch",
 	Prompts: "Prompts",
 	"Prompts changed:": "Prompts changed:",
-	"Prose Only Thinking": "Prose Only Thinking",
 	"Prose Summaries": "Prose Summaries",
 	Protocol: "Protocol",
 	"Providers that web_search should never use, even as fallbacks":
@@ -2829,8 +2842,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"zh-CN": "zh-CN",
 	"Advanced: explicit embedding model id that overrides the variant. Leave empty to use mnemopi.embeddingVariant.":
 		"Advanced: explicit embedding model id that overrides the variant. Leave empty to use mnemopi.embeddingVariant.",
-	"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.":
-		"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.",
+	"After an advisor blocker interrupts, route further blockers non-interruptingly for this many primary turns.":
+		"After an advisor blocker interrupts, route further blockers non-interruptingly for this many primary turns.",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":
 		"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills",
 	"Allow subagents spawned via the task tool to use the lsp tool. Off by default to keep subagents cheap; enable when LSP-aware delegation is worth the extra tokens.":
@@ -2985,6 +2998,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Show the full animated setup splash on normal interactive startup without rerunning setup. Quiet Startup still suppresses it.",
 	"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.":
 		"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
+	"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents cap out at a lower built-in budget, so a value below that cap still applies to them.":
+		"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents cap out at a lower built-in budget, so a value below that cap still applies to them.",
 	"Solid blocks": "Solid blocks",
 	"Solid arrows (Nerd Font)": "Solid arrows (Nerd Font)",
 	"Some servers failed to connect:": "Some servers failed to connect:",
@@ -3155,6 +3170,20 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"r:revive": "r:revive",
 	"x:kill": "x:kill",
 	"no subagents yet — task spawns appear here": "no subagents yet — task spawns appear here",
+	"Not started": "Not started",
+	Running: "Running",
+	Completed: "Completed",
+	"No tasks yet": "No tasks yet",
+	'"{label}" is not live; open its transcript or revive it first.':
+		'"{label}" is not live; open its transcript or revive it first.',
+	"Live subagent focus is unavailable in this Agent Hub.": "Live subagent focus is unavailable in this Agent Hub.",
+	'Switching to "{label}" is unavailable in this Agent Hub.':
+		'Switching to "{label}" is unavailable in this Agent Hub.',
+	'"{label}" cannot be resumed.': '"{label}" cannot be resumed.',
+	"open transcript": "open transcript",
+	focus: "focus",
+	revive: "revive",
+	kill: "kill",
 	"rendering sample…": "rendering sample…",
 	"unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.":
 		"unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.",
@@ -3748,7 +3777,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"0.1": "0.1",
 	"0.05": "0.05",
 	"0.01": "0.01",
-	"Allow every concern/blocker to interrupt.": "Allow every concern/blocker to interrupt.",
+	"Allow every blocker to interrupt.": "Allow every blocker to interrupt.",
 	"Allow repetition": "Allow repetition",
 	"1 turn": "1 turn",
 	1024: "1024",
@@ -5064,4 +5093,45 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Blocked: "Blocked",
 	"phase {elapsed}": "phase {elapsed}",
 	"quiet {elapsed}": "quiet {elapsed}",
+	"Updated omp. Use /changelog for recent changes.": "Updated omp. Use /changelog for recent changes.",
+	"Updated to v{latestVersion} · {changeCount} {changeWord} in 1 release":
+		"Updated to v{latestVersion} · {changeCount} {changeWord} in 1 release",
+	"Updated to v{latestVersion} · {changeCount} {changeWord} across {releaseCount} {releaseWord}":
+		"Updated to v{latestVersion} · {changeCount} {changeWord} across {releaseCount} {releaseWord}",
+	"{count} added": "{count} added",
+	"{count} changed": "{count} changed",
+	"{count} deprecated": "{count} deprecated",
+	"{count} removed": "{count} removed",
+	"{count} fixed": "{count} fixed",
+	"{count} security": "{count} security",
+	"{count} breaking change": "{count} breaking change",
+	"{count} breaking changes": "{count} breaking changes",
+	"{count} {category}": "{count} {category}",
+	"+{omittedReleases} earlier {releaseWord}": "+{omittedReleases} earlier {releaseWord}",
+	"Use /changelog full for history.": "Use /changelog full for history.",
+	"Use /changelog for details.": "Use /changelog for details.",
+	"Codex Reset Fireworks": "Codex Reset Fireworks",
+	"Celebrate unscheduled Codex weekly usage resets and newly banked saved resets with a top-third fireworks overlay that remains until Escape":
+		"Celebrate unscheduled Codex weekly usage resets and newly banked saved resets with a top-third fireworks overlay that remains until Escape",
+	"Browser CDP URL": "Browser CDP URL",
+	"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.":
+		"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.",
+	"Auto Thinking Ceiling": "Auto Thinking Ceiling",
+	"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.":
+		"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.",
+	"Classifier stops at xhigh (default)": "Classifier stops at xhigh (default)",
+	"Classifier may resolve max where the model supports it": "Classifier may resolve max where the model supports it",
+	"Import {sourceName} Session": "Import {sourceName} Session",
+	"[Del/⌫ delete · Enter select · Esc cancel]": "[Del/⌫ delete · Enter select · Esc cancel]",
+	"Auto-detect per prompt": "Auto-detect per prompt",
+	"In YOLO mode, each question gets a fresh countdown before its explicit recommended option is selected automatically (0 disables)":
+		"In YOLO mode, each question gets a fresh countdown before its explicit recommended option is selected automatically (0 disables)",
+	"API via /login exa or EXA_API_KEY; explicit keyless fallback via MCP":
+		"API via /login exa or EXA_API_KEY; explicit keyless fallback via MCP",
+	"Submit Result": "Submit Result",
+	"Result submitted.": "Result submitted.",
+	"Result submitted (schema validation overridden after {count} failed attempt(s)).":
+		"Result submitted (schema validation overridden after {count} failed attempt(s)).",
+	"Result submitted (schema validation overridden).": "Result submitted (schema validation overridden).",
+	"Task aborted: {error}": "Task aborted: {error}",
 };

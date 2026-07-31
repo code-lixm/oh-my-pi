@@ -234,25 +234,30 @@ describe("AgentTranscriptViewer", () => {
 		});
 	});
 
-	it("keeps a six-row detail header and one footer controls row outside the transcript", () => {
+	it("keeps one compact header row and a controls-only footer outside the transcript", () => {
 		withViewer(viewer => {
-			viewer.render(80);
+			viewer.render(160);
 			viewer.handleInput("g");
-			const lines = viewer.render(80).map(line => Bun.stripANSI(line));
+			const lines = viewer.render(160).map(line => Bun.stripANSI(line));
 			const bodyIndex = lines.findIndex(line => line.includes("PROMPTMARKER"));
-			const headerLines = lines.slice(1, bodyIndex);
-			const footer = lines.at(-2);
+			const headerRows = lines.slice(1, bodyIndex);
+			const header = headerRows[0] ?? "";
+			const footer = lines.at(-2) ?? "";
 
 			expect(bodyIndex).toBeGreaterThanOrEqual(0);
-			expect(headerLines).toHaveLength(6);
-			expect(headerLines.join("\n")).toContain("advisor");
-			expect(headerLines.join("\n")).toContain("Status:");
-			expect(headerLines.join("\n")).toContain("Duration:");
-			expect(headerLines.join("\n")).toContain("parked");
+			expect(headerRows).toHaveLength(1);
+			expect(header).toContain("advisor");
+			expect(header).toContain("Alt+K");
+			expect(header).toContain("Alt+J");
+			expect(header).toContain("Model:");
+			expect(header).toContain("Status:");
+			expect(header).toContain("parked");
 			expect(footer).toContain("Esc");
 			expect(footer).toContain("Alt+K");
 			expect(footer).toContain("Alt+J");
 			expect(footer).toContain("j/k/g/G");
+			expect(footer).not.toContain("Status:");
+			expect(footer).not.toContain("parked");
 			expect(lines.slice(bodyIndex, -2).join("\n")).not.toContain("Alt+K");
 			expect(lines.join("\n")).not.toContain("Parent:");
 		});

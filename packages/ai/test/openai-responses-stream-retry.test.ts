@@ -478,7 +478,7 @@ describe("OpenAI Responses transient stream retry", () => {
 		expect(result.stopReason).toBe("error");
 	});
 
-	it("does not retry after a reasoning summary part completion emitted thinking", async () => {
+	it("does not retry after an empty reasoning summary part completion without emitting a fake thinking delta", async () => {
 		const fetchMock = vi.fn(async () => createTruncatedReasoningPartDoneResponse()) as FetchImpl;
 		const responseStream = streamOpenAIResponses(model, context, {
 			apiKey: "test-key",
@@ -490,7 +490,7 @@ describe("OpenAI Responses transient stream retry", () => {
 		const result = await responseStream.result();
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(events.map(event => event.type)).toEqual(["start", "thinking_start", "thinking_delta", "error"]);
+		expect(events.map(event => event.type)).toEqual(["start", "thinking_start", "error"]);
 		expect(result.stopReason).toBe("error");
 	});
 

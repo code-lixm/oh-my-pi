@@ -1,7 +1,10 @@
+import { scheduler } from "node:timers/promises";
 import {
 	Agent,
 	type AgentMessage,
 	type AgentTool,
+	type AgentToolContext,
+	type AgentTurnEndContext,
 	AppendOnlyContextManager,
 	type CompactionSummaryMessage,
 	countTokens,
@@ -16,9 +19,11 @@ import {
 	compactionContextTokens,
 	createCompactionSummaryMessage,
 	estimateTokens,
+	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
 	shouldCompact,
+	shouldUseProviderNativeCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	AssistantMessage,
@@ -67,7 +72,8 @@ import {
 import { MODEL_ROLES } from "../config/model-roles";
 import { serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import type { Settings } from "../config/settings";
-import { CursorExecHandlers } from "../cursor";
+import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
+import { bridgeToolMap } from "../cursor-bridge-tools";
 import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
@@ -83,6 +89,9 @@ import type { ClientBridge } from "./client-bridge";
 import type { CustomMessage, CustomMessagePayload } from "./messages";
 import { isAdvisorCard, isTerminalTextAssistantAnswer } from "./queued-messages";
 import {
+	calculateRetryBackoffDelayMs,
+	FALLBACK_RECOVERY_PROBE_INTERVAL_MS,
+	FALLBACK_RECOVERY_PROBE_TIMEOUT_MS,
 	formatRetryFallbackSelector,
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
@@ -137,7 +146,7 @@ interface AdvisorRetryFallbackState {
 	role: string;
 	originalSelector: string;
 	originalThinkingLevel: ThinkingLevel;
-	userTurnEpoch: number;
+	lastAppliedThinkingLevel: ThinkingLevel;
 }
 
 interface ActiveAdvisor {
@@ -155,6 +164,10 @@ interface ActiveAdvisor {
 	providerSessionId: string | undefined;
 	retryFallback?: AdvisorRetryFallbackState;
 	retryFallbackPendingSuccess: boolean;
+	retryAttempt: number;
+	fallbackRecoveryTimer?: NodeJS.Timeout;
+	fallbackProbeAbortController?: AbortController;
+	fallbackRecoveryReady: boolean;
 	signature: string;
 }
 
@@ -176,12 +189,44 @@ interface AdvisorRuntimeDescriptor {
 export interface SessionAdvisorsOptions {
 	enabled: boolean;
 	tools?: AgentTool[];
+	/**
+	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
+	 * match cap. The advisor's tools are fixed instances carrying session
+	 * defaults, so without this an advisor running against Cursor silently
+	 * drops both fields — the same gap the primary bridge closes.
+	 */
+	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): AgentTool | undefined;
+	/**
+	 * Build the `replace`-mode `edit` a Cursor `pi_edit` frame needs. The
+	 * advisor's own instance follows the configured `edit.mode` (`hashline` by
+	 * default), whose schema the frame's `old_text`/`new_text` pairs do not
+	 * match, so without this every native advisor edit fails validation.
+	 */
+	createEditTool?(): AgentTool | undefined;
+	/**
+	 * The execute-time context the bridge's tools resolve approval from.
+	 *
+	 * `ExtensionToolWrapper` reads the approval mode, per-tool policies and
+	 * `autoApprove` only from here; with none it falls back to `yolo` and empty
+	 * policies, so a native frame would run past a configured `ask` or `deny`.
+	 */
+	getToolContext?: () => AgentToolContext | undefined;
+	/**
+	 * The live MCP connections Cursor's resource frames answer from.
+	 *
+	 * Advisors share the session's connections and may hold tools from those
+	 * same servers, so without this their frames report that every server
+	 * advertises nothing.
+	 */
+	mcpResources?: CursorMcpResourceAdapter;
 	watchdogPrompt?: string;
 	sharedInstructions?: string;
 	contextPrompt?: string;
 	configs?: AdvisorConfig[];
 	streamFn?: StreamFn;
 	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
+	/** Advisor spend already persisted for this session, restored on resume. */
+	initialCosts?: ReadonlyMap<string, number>;
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
@@ -212,6 +257,7 @@ export interface SessionAdvisorsHost {
 	planModeState(): PlanModeState | undefined;
 	clientBridge(): ClientBridge | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
+	probeModelConnectivity(model: Model, signal: AbortSignal, credentialSessionId?: string): Promise<boolean>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	sendCustomMessage(message: CustomMessagePayload, options?: AdvisorMessageDeliveryOptions): Promise<boolean>;
 	extractQueuedAdvisorCards(): CustomMessage[];
@@ -220,7 +266,11 @@ export interface SessionAdvisorsHost {
 	hasPendingNextTurnMessages(): boolean;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
 	effectiveServiceTier(model: Model): ServiceTier | undefined;
-	resolveContextPromotionTarget(currentModel: Model, contextWindow: number): Promise<Model | undefined>;
+	resolveContextPromotionTarget(
+		currentModel: Model,
+		contextWindow: number,
+		signal: AbortSignal,
+	): Promise<Model | undefined>;
 	resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[];
 	resolveRetryFallbackRole(currentSelector: string, currentModel?: Model | null): string | undefined;
 	findRetryFallbackCandidates(
@@ -243,6 +293,10 @@ export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorEnabled: boolean;
 	#advisorTools: AgentTool[] | undefined;
+	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
+	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
+	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
+	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
 	#advisorWatchdogPrompt: string | undefined;
 	#advisorSharedInstructions: string | undefined;
 	#advisorContextPrompt: string | undefined;
@@ -257,40 +311,51 @@ export class SessionAdvisors {
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
 	#advisorPrimaryTurnsCompleted = 0;
+	#skipPrimaryTurnAtAgentEnd = false;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
-	#userTurnEpoch = 0;
 	#advisorYieldQueueUnsubscribe: (() => void) | undefined;
 
 	constructor(host: SessionAdvisorsHost, options: SessionAdvisorsOptions) {
 		this.#host = host;
 		this.#advisorEnabled = options.enabled;
 		this.#advisorTools = options.tools;
+		this.#advisorCreateGrepTool = options.createGrepTool;
+		this.#advisorCreateEditTool = options.createEditTool;
+		this.#advisorGetToolContext = options.getToolContext;
+		this.#advisorMcpResources = options.mcpResources;
 		this.#advisorWatchdogPrompt = options.watchdogPrompt;
 		this.#advisorSharedInstructions = options.sharedInstructions;
 		this.#advisorContextPrompt = options.contextPrompt;
 		this.#advisorConfigs = options.configs;
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
+		if (options.initialCosts) this.#advisorCosts = new Map(options.initialCosts);
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 	}
-
-	/** Marks a user-input process so stale advisor fallback state resets before its next batch. */
+	/** Applies a ready advisor-primary restoration without interrupting advisor work. */
 	beginUserTurn(): void {
-		this.#userTurnEpoch++;
+		for (const advisor of this.#advisors) void this.#restoreReadyAdvisorFallback(advisor);
 	}
 
-	/** Delivers one completed primary turn to every live advisor. */
-	async onPrimaryTurnEnd(
-		messages: AgentMessage[],
-		willContinue: boolean | undefined,
-		signal?: AbortSignal,
-	): Promise<void> {
+	/** Delivers fresh completed primary work to every live advisor. */
+	async onPrimaryTurnEnd(messages: AgentMessage[], context: AgentTurnEndContext, signal?: AbortSignal): Promise<void> {
 		this.#advisorPrimaryTurnsCompleted++;
+		const inputMessages = context.inputMessages;
+		const advisorOnlyTerminalTurn =
+			!context.willContinue &&
+			context.toolResults.length === 0 &&
+			inputMessages.length > 0 &&
+			inputMessages.every(isAdvisorCard);
+		if (advisorOnlyTerminalTurn) {
+			this.#skipPrimaryTurnAtAgentEnd = true;
+			return;
+		}
+		this.#skipPrimaryTurnAtAgentEnd = false;
 		for (const advisor of this.#advisors) {
 			if (advisor.runtime.disposed) continue;
 			try {
-				advisor.runtime.onTurnEnd(messages, { willContinue });
+				advisor.runtime.onTurnEnd(messages, { willContinue: context.willContinue });
 			} catch (error) {
 				logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
 			}
@@ -299,6 +364,16 @@ export class SessionAdvisors {
 		if (this.#advisors.length === 0 || syncBacklog === "off") return;
 		const threshold = Number.parseInt(syncBacklog, 10);
 		await Promise.all(this.#advisors.map(advisor => advisor.runtime.waitForCatchup(30_000, threshold, signal)));
+	}
+
+	/** Reconciles advisor cursors after AgentSession finalizes assistant metadata. */
+	onPrimaryAgentEnd(messages: AgentMessage[]): void {
+		const skipTurn = this.#skipPrimaryTurnAtAgentEnd;
+		this.#skipPrimaryTurnAtAgentEnd = false;
+		for (const advisor of this.#advisors) {
+			if (skipTurn) advisor.runtime.skipTurn(messages);
+			else advisor.runtime.finalizeTurn(messages);
+		}
 	}
 
 	/** Rebuilds live advisors when role assignments alter their resolved runtime inputs. */
@@ -318,6 +393,15 @@ export class SessionAdvisors {
 		this.#stopAdvisorRuntime();
 	}
 
+	/**
+	 * Pause advisor work while old-session recorder feeds remain attached, then
+	 * detach only after any active prompt has settled.
+	 */
+	async drainAndDetachRecorders(): Promise<void> {
+		await Promise.all(this.#advisors.map(advisor => advisor.runtime.pauseForSessionTransition()));
+		await this.detachAndCloseRecorders();
+	}
+
 	/** Detaches and drains recorder feeds before transcript artifacts are removed. */
 	async detachAndCloseRecorders(): Promise<void> {
 		const closes: Promise<void>[] = [];
@@ -330,6 +414,14 @@ export class SessionAdvisors {
 		await Promise.all(closes);
 	}
 
+	/** Reattach recorder feeds and resume work after a rolled-back or preserving transition. */
+	reattachRecorderFeeds(): void {
+		for (const advisor of this.#advisors) {
+			if (!advisor.agentUnsubscribe) this.#attachAdvisorRecorderFeed(advisor);
+			advisor.runtime.resumeAfterSessionTransition();
+		}
+	}
+
 	/** Re-primes advisor transcript views across a conversation boundary. */
 	resetSessionState(options: { preserveCost?: boolean } = {}): void {
 		this.#resetAdvisorSessionState(options.preserveCost === true);
@@ -338,6 +430,11 @@ export class SessionAdvisors {
 	/** Drop the recorded spend once a conversation boundary has committed. */
 	clearCost(): void {
 		this.#advisorCosts.clear();
+	}
+
+	/** Replace the ledger with the spend recorded for the session becoming active. */
+	restoreCost(costs: ReadonlyMap<string, number>): void {
+		this.#advisorCosts = new Map(costs);
 	}
 
 	/**
@@ -450,11 +547,10 @@ export class SessionAdvisors {
 	 * Re-prime the advisor across a conversation boundary: `/new`, `/branch`,
 	 * `/btw`, `/tree`, and session switch/resume. Beyond {@link AdvisorRuntime.reset}
 	 * (which only re-primes the advisor's transcript view and is also fired by
-	 * within-conversation rewrites like compaction/shake/rewind), this restores a
-	 * transient fallback before clearing session-level interrupt latches: the
-	 * post-interrupt immune-turn window (`#advisorPrimaryTurnsCompleted`,
-	 * `#advisorInterruptImmuneTurnStart`) and the user-interrupt auto-resume
-	 * suppression flag. It also drops advisor deliveries
+	 * within-conversation rewrites like compaction/shake/rewind), this clears
+	 * session-level interrupt latches: the post-interrupt immune-turn window
+	 * (`#advisorPrimaryTurnsCompleted`, `#advisorInterruptImmuneTurnStart`) and the
+	 * user-interrupt auto-resume suppression flag. It also drops advisor deliveries
 	 * still queued against the prior conversation — pending asides in the yield
 	 * queue (advisor entries use `skipIdleFlush`, so they linger until the next
 	 * `drainLazy` rather than self-flushing), interrupting cards parked in the
@@ -469,7 +565,7 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			a.agentUnsubscribe?.();
 			a.agentUnsubscribe = undefined;
-			this.#restoreAdvisorUserModelAfterFallback(a, true);
+			this.#restoreAdvisorPrimaryAtSessionBoundary(a);
 			a.runtime.reset();
 			a.adviseTool.resetDeliveredNotes();
 			a.emissionGuard.reset();
@@ -695,11 +791,29 @@ export class SessionAdvisors {
 			// to delete workspace files it was never granted (issue #5680 review).
 			const advisorCanMutateFiles = advisorToolMap.has("write") || advisorToolMap.has("edit");
 			if (advisorCanMutateFiles) availableAdvisorToolNames.add("delete");
+			// `pi_edit` speaks `replace`'s `old_text`/`new_text` schema, which the
+			// advisor's ordinary `EditTool` (built at the session's configured
+			// `edit.mode`, `hashline` by default) does not accept. The bridge map
+			// swaps in a `replace` instance for the exec channel only — the
+			// advisor's own loop keeps the tool it was given — and only when
+			// `edit` was actually granted.
 			const advisorCursorExecHandlers = new CursorExecHandlers({
 				cwd: this.#host.sessionManager.getCwd(),
 				getCwd: () => this.#host.sessionManager.getCwd(),
-				tools: advisorToolMap,
-				allowNativeDelete: advisorCanMutateFiles,
+				tools: bridgeToolMap(advisorToolMap, this.#advisorCreateEditTool),
+				// Approval mode, per-tool policies and `autoApprove` live only on
+				// this context; without it every bridge tool resolves as `yolo`.
+				getToolContext: this.#advisorGetToolContext,
+				allowDirectFileMutation: advisorCanMutateFiles,
+				// Gated on the advisor's own grant: the factory builds a fresh
+				// tool, so handing it over unconditionally would give a roster
+				// without `grep` a search tool it was denied.
+				createGrepTool: advisorToolMap.has("grep") ? this.#advisorCreateGrepTool : undefined,
+				// Advisors share the session's live MCP connections, so their
+				// resource frames answer from the same catalog the primary sees.
+				// Not gated on a tool grant: reading what a server advertises is
+				// not the same permission as calling one of its tools.
+				mcpResources: this.#advisorMcpResources,
 			});
 			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
 			const advisorStreamFn: StreamFn = (requestModel, context, options) =>
@@ -787,41 +901,53 @@ export class SessionAdvisors {
 				// so two SessionManagers never hold the same file at once.
 				this.#advisorRecorderClosed,
 			);
-			const runtime = new AdvisorRuntime(advisorAgentFacade, {
-				snapshotMessages: () => this.#host.agent.state.messages,
-				enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
-				maintainContext: incomingTokens => this.#maintainAdvisorContext(advisorRef, incomingTokens),
-				obfuscator: this.#host.obfuscator,
-				beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
-				onTurnError: (error, failedMessages) => this.#recoverAdvisorTurn(advisorRef, error, failedMessages),
-				onTurnSuccess: async () => {
-					const fallback = advisorRef.retryFallback;
-					if (!advisorRef.retryFallbackPendingSuccess || !fallback) return;
-					advisorRef.retryFallbackPendingSuccess = false;
-					await this.#host.emitSessionEvent({
-						type: "retry_fallback_succeeded",
-						model: formatRetryFallbackSelector(advisorRef.agent.state.model, advisorRef.thinkingLevel),
-						role: fallback.role,
-					});
+			const runtime = new AdvisorRuntime(
+				advisorAgentFacade,
+				{
+					snapshotMessages: () => this.#host.agent.state.messages,
+					enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
+					maintainContext: (incomingTokens, signal) =>
+						this.#maintainAdvisorContext(advisorRef, incomingTokens, signal),
+					obfuscator: this.#host.obfuscator,
+					getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
+					beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
+					onTurnError: (error, failedMessages, signal) =>
+						this.#recoverAdvisorTurn(advisorRef, error, failedMessages, signal),
+					onTurnSuccess: async () => {
+						advisorRef.retryAttempt = 0;
+						const fallback = advisorRef.retryFallback;
+						if (advisorRef.retryFallbackPendingSuccess && fallback) {
+							advisorRef.retryFallbackPendingSuccess = false;
+							await this.#host.emitSessionEvent({
+								type: "retry_fallback_succeeded",
+								model: formatRetryFallbackSelector(advisorRef.agent.state.model, advisorRef.thinkingLevel),
+								role: fallback.role,
+							});
+						}
+						await this.#restoreReadyAdvisorFallback(advisorRef);
+					},
+					notifyFailure: error => {
+						advisorRef.retryAttempt = 0;
+						this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
+						const message = error instanceof Error ? error.message : String(error);
+						this.#host.emitNotice(
+							"warning",
+							`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorAgent.state.model)}: ${message}`,
+							"advisor",
+						);
+					},
+					notifyQuotaExhausted: () => {
+						this.#advisorStatuses.set(slug, { name: advisorName, status: "quota_exhausted" });
+						this.#host.emitNotice(
+							"warning",
+							`Advisor "${advisorName}" quota exhausted — pausing until reset.`,
+							"advisor",
+						);
+					},
 				},
-				notifyFailure: error => {
-					this.#advisorStatuses.set(slug, { name: advisorName, status: "error" });
-					const message = error instanceof Error ? error.message : String(error);
-					this.#host.emitNotice(
-						"warning",
-						`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorAgent.state.model)}: ${message}`,
-						"advisor",
-					);
-				},
-				notifyQuotaExhausted: () => {
-					this.#advisorStatuses.set(slug, { name: advisorName, status: "quota_exhausted" });
-					this.#host.emitNotice(
-						"warning",
-						`Advisor "${advisorName}" quota exhausted — pausing until reset.`,
-						"advisor",
-					);
-				},
-			});
+				1000,
+				1,
+			);
 
 			const advisorRef: ActiveAdvisor = {
 				name: advisorName,
@@ -836,6 +962,8 @@ export class SessionAdvisors {
 				thinkingLevel: advisorThinkingLevel,
 				providerSessionId: advisorProviderSessionId,
 				retryFallbackPendingSuccess: false,
+				retryAttempt: 0,
+				fallbackRecoveryReady: false,
 				signature,
 			};
 			this.#refreshAdvisorProviderIdentity(advisorRef);
@@ -870,17 +998,13 @@ export class SessionAdvisors {
 	}
 
 	/**
-	 * Route one accepted advice note from `advisor` to the primary. Concern and
-	 * blocker interrupt the running agent through the steering channel; once the
-	 * loop has yielded, `triggerTurn` resumes it. After a terminal text answer with
-	 * no queued work, a concern is preserved as a visible advisor card, while a
-	 * blocker wakes the primary to acknowledge work it handed off incorrectly.
-	 * After a deliberate user interrupt auto-resume is suppressed while idle/unwinding
-	 * (the note becomes a preserved card re-entering on resume); a live-streaming turn is
-	 * steered in directly. A plain nit always rides the non-interrupting YieldQueue
-	 * aside. Suppression by the per-advisor emission guard drops the note silently —
-	 * the model still saw `Recorded.`, so it isn't tempted to rephrase the same note
-	 * past the dedupe.
+	 * Route one accepted advice note from `advisor` to the primary. Blockers steer
+	 * through the agent channel; once the loop yields, `triggerTurn` resumes it.
+	 * After a terminal text answer with no queued work, a concern is preserved as
+	 * an aside/card, while a blocker wakes the primary to acknowledge incomplete
+	 * work. A plain nit also rides the non-interrupting YieldQueue aside.
+	 * Deliberate user interruption, immune turns, and headless drains preserve
+	 * their existing safeguards; only an active blocker may interrupt execution.
 	 */
 	#hasTerminalTextAnswerWithoutQueuedWork(): boolean {
 		if (this.#host.agent.hasQueuedMessages() || this.#host.hasPendingNextTurnMessages()) return false;
@@ -980,6 +1104,7 @@ export class SessionAdvisors {
 		for (const a of this.#advisors) {
 			a.agentUnsubscribe?.();
 			a.agentUnsubscribe = undefined;
+			this.#clearAdvisorRetryFallback(a);
 			a.runtime.dispose();
 			// Capture each close so dispose()/`/drop` can await the queued open+append+close —
 			// the last advisor turn would otherwise be lost on a fast process exit.
@@ -1020,80 +1145,173 @@ export class SessionAdvisors {
 		return nextThinkingLevel;
 	}
 
-	/** Restore an advisor's configured primary before its next advisor turn. */
-	#restoreAdvisorUserModelAfterFallback(advisor: ActiveAdvisor, force = false): void {
+	#resolveAdvisorFallbackPrimary(
+		advisor: ActiveAdvisor,
+	): { selector: RetryFallbackSelector; model: Model } | undefined {
 		const fallback = advisor.retryFallback;
-		if (!fallback || (!force && fallback.userTurnEpoch === this.#userTurnEpoch)) return;
+		if (!fallback) return undefined;
+		const selector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
+		if (!selector) return undefined;
+		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+		const model = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+		return model ? { selector, model } : undefined;
+	}
+
+	#restoreAdvisorPrimaryAtSessionBoundary(advisor: ActiveAdvisor): void {
+		const fallback = advisor.retryFallback;
+		const primary = this.#resolveAdvisorFallbackPrimary(advisor);
+		if (fallback && primary) {
+			const thinkingToApply =
+				advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
+					? fallback.originalThinkingLevel
+					: advisor.thinkingLevel;
+			this.#setAdvisorModel(advisor, primary.model, thinkingToApply);
+		}
+		this.#clearAdvisorRetryFallback(advisor);
+	}
+
+	#clearAdvisorRetryFallback(advisor: ActiveAdvisor): void {
+		clearTimeout(advisor.fallbackRecoveryTimer);
+		advisor.fallbackRecoveryTimer = undefined;
+		advisor.fallbackProbeAbortController?.abort();
+		advisor.fallbackProbeAbortController = undefined;
+		advisor.fallbackRecoveryReady = false;
 		advisor.retryFallback = undefined;
 		advisor.retryFallbackPendingSuccess = false;
+		advisor.retryAttempt = 0;
+	}
 
-		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
-		if (!originalSelector) return;
-		const resolvedPrimary = resolveModelOverride(
-			[originalSelector.raw],
-			this.#host.modelRegistry,
-			this.#host.settings,
-		);
-		const primaryModel =
-			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
-		if (!primaryModel) return;
-		this.#setAdvisorModel(advisor, primaryModel, fallback.originalThinkingLevel);
+	#scheduleAdvisorFallbackProbe(advisor: ActiveAdvisor): void {
+		if (
+			!advisor.retryFallback ||
+			advisor.runtime.disposed ||
+			advisor.fallbackRecoveryTimer ||
+			advisor.fallbackProbeAbortController ||
+			advisor.fallbackRecoveryReady
+		) {
+			return;
+		}
+		advisor.fallbackRecoveryTimer = setTimeout(() => {
+			advisor.fallbackRecoveryTimer = undefined;
+			void this.#runAdvisorFallbackProbe(advisor);
+		}, FALLBACK_RECOVERY_PROBE_INTERVAL_MS);
+		advisor.fallbackRecoveryTimer.unref?.();
+	}
+
+	async #runAdvisorFallbackProbe(advisor: ActiveAdvisor): Promise<void> {
+		const fallback = advisor.retryFallback;
+		if (!fallback || advisor.runtime.disposed || this.#host.isDisposed()) return;
+		const primary = this.#resolveAdvisorFallbackPrimary(advisor);
+		if (!primary) {
+			this.#scheduleAdvisorFallbackProbe(advisor);
+			return;
+		}
+		const controller = new AbortController();
+		advisor.fallbackProbeAbortController = controller;
+		const timeout = setTimeout(() => controller.abort(), FALLBACK_RECOVERY_PROBE_TIMEOUT_MS);
+		try {
+			const healthy = await this.#host.probeModelConnectivity(
+				primary.model,
+				controller.signal,
+				advisor.providerSessionId,
+			);
+			if (!healthy || advisor.retryFallback !== fallback || advisor.runtime.disposed || this.#host.isDisposed())
+				return;
+			advisor.fallbackRecoveryReady = true;
+			if (!advisor.agent.state.isStreaming) await this.#restoreReadyAdvisorFallback(advisor);
+		} catch (error) {
+			if (!controller.signal.aborted) {
+				logger.debug("Advisor fallback primary connectivity probe failed", {
+					advisor: advisor.name,
+					model: fallback.originalSelector,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		} finally {
+			clearTimeout(timeout);
+			if (advisor.fallbackProbeAbortController === controller) advisor.fallbackProbeAbortController = undefined;
+			if (advisor.retryFallback === fallback && !advisor.fallbackRecoveryReady) {
+				this.#scheduleAdvisorFallbackProbe(advisor);
+			}
+		}
+	}
+
+	async #restoreReadyAdvisorFallback(advisor: ActiveAdvisor): Promise<void> {
+		const fallback = advisor.retryFallback;
+		if (
+			!fallback ||
+			!advisor.fallbackRecoveryReady ||
+			advisor.agent.state.isStreaming ||
+			advisor.runtime.modelSwitchUnsafe ||
+			advisor.runtime.disposed ||
+			this.#host.isDisposed()
+		) {
+			return;
+		}
+		const primary = this.#resolveAdvisorFallbackPrimary(advisor);
+		if (!primary) {
+			this.#clearAdvisorRetryFallback(advisor);
+			return;
+		}
+		const currentSelector = formatRetryFallbackSelector(advisor.agent.state.model, advisor.thinkingLevel);
+		const thinkingToApply =
+			advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
+				? fallback.originalThinkingLevel
+				: advisor.thinkingLevel;
+		this.#setAdvisorModel(advisor, primary.model, thinkingToApply);
+		this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(primary.model));
+		this.#clearAdvisorRetryFallback(advisor);
+		await this.#host.emitSessionEvent({
+			type: "retry_fallback_restored",
+			from: currentSelector,
+			to: primary.selector.raw,
+			role: fallback.role,
+		});
 	}
 
 	/**
-	 * Apply the advisor's configured provider-failure fallback chain after
-	 * same-provider credential rotation has no usable sibling.
+	 * Exhaust the configured endpoint retry budget, then apply the advisor's
+	 * provider-failure fallback chain with a fresh budget for each model.
 	 */
 	async #recoverAdvisorTurn(
 		advisor: ActiveAdvisor,
 		error: unknown,
 		failedMessages: readonly AgentMessage[],
+		signal: AbortSignal,
 	): Promise<boolean> {
 		if (error instanceof AdvisorOutputQuarantinedError) return false;
-
+		const currentModel = advisor.agent.state.model;
 		const failedMessage = failedMessages.findLast(
 			(message): message is AssistantMessage => message.role === "assistant",
 		);
-		if (failedMessage?.stopReason !== "error") {
-			// Stream setup can reject before any assistant turn is recorded (e.g.
-			// an HTTP 429 thrown from prompt()); classify the raw error so a
-			// structural usage limit still marks the exhausted credential.
-			const message = error instanceof Error ? error.message : String(error);
-			if (!AIError.isUsageLimit(error) && !isUsageLimitOutcome(extractHttpStatusFromError(error), message)) {
-				return false;
-			}
-			const currentModel = advisor.agent.state.model;
-			const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
-				currentModel.provider,
-				advisor.providerSessionId,
-				{
-					retryAfterMs: extractRetryHint(undefined, message),
-					baseUrl: currentModel.baseUrl,
-					modelId: currentModel.id,
-				},
-			);
-			return outcome.switched;
-		}
-		if (failedMessage.content.some(block => block.type === "toolCall")) return false;
+		if (failedMessage?.content.some(block => block.type === "toolCall")) return false;
 
-		const currentModel = advisor.agent.state.model;
-		const message = failedMessage.errorMessage ?? (error instanceof Error ? error.message : String(error));
-		const errorId = AIError.classifyMessage({
-			api: currentModel.api,
-			errorId: failedMessage.errorId,
-			errorMessage: message,
-			errorStatus: failedMessage.errorStatus,
-		});
+		const message = failedMessage?.errorMessage ?? (error instanceof Error ? error.message : String(error));
+		const errorId = failedMessage
+			? AIError.classifyMessage({
+					api: currentModel.api,
+					errorId: failedMessage.errorId,
+					errorMessage: message,
+					errorStatus: failedMessage.errorStatus,
+				})
+			: AIError.classify(error);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (AIError.isContextOverflow(failedMessage, currentModel.contextWindow ?? 0)) return false;
-
-		const currentSelector = formatRetryFallbackSelector(currentModel, advisor.thinkingLevel);
+		if (failedMessage && AIError.isContextOverflow(failedMessage, currentModel.contextWindow ?? 0)) return false;
+		const usageLimit =
+			AIError.is(errorId, AIError.Flag.UsageLimit) ||
+			AIError.isUsageLimit(error) ||
+			isUsageLimitOutcome(extractHttpStatusFromError(error), message);
+		if (
+			!failedMessage &&
+			!usageLimit &&
+			!AIError.retriable(errorId) &&
+			extractHttpStatusFromError(error) === undefined
+		) {
+			return false;
+		}
 
 		const retryAfterMs = extractRetryHint(undefined, message);
-		if (
-			AIError.is(errorId, AIError.Flag.UsageLimit) ||
-			isUsageLimitOutcome(extractHttpStatusFromError(error), message)
-		) {
+		if (usageLimit) {
 			const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
 				currentModel.provider,
 				advisor.providerSessionId,
@@ -1101,38 +1319,54 @@ export class SessionAdvisors {
 					retryAfterMs,
 					baseUrl: currentModel.baseUrl,
 					modelId: currentModel.id,
+					signal,
 				},
 			);
 			if (outcome.switched) return true;
 		}
-
 		const retrySettings = this.#host.settings.getGroup("retry");
-		if (!retrySettings.enabled || !retrySettings.modelFallback) return false;
-		const role = advisor.retryFallback?.role ?? this.#host.resolveRetryFallbackRole(currentSelector, currentModel);
-		if (!role || this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length === 0)
-			return false;
+		if (!retrySettings.enabled) return false;
+		advisor.retryAttempt++;
+		const retryBudgetExhausted = advisor.retryAttempt > retrySettings.maxRetries;
+		if (!retryBudgetExhausted) {
+			const delayMs = calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, advisor.retryAttempt);
+			if (delayMs > 0) await scheduler.wait(delayMs, { signal });
+			return true;
+		}
+		if (!retrySettings.modelFallback) return false;
 
+		const currentSelector = formatRetryFallbackSelector(currentModel, advisor.thinkingLevel);
+		const role = advisor.retryFallback?.role ?? this.#host.resolveRetryFallbackRole(currentSelector, currentModel);
+		if (!role || this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length === 0) {
+			return false;
+		}
 		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
 		for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 			if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
 			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 			if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId);
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
 			if (!apiKey) continue;
+			signal.throwIfAborted();
 
 			const originalThinkingLevel = advisor.thinkingLevel;
 			const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-			this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-			if (!advisor.retryFallback) {
+			const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
+			if (advisor.retryFallback) {
+				advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
+			} else {
 				advisor.retryFallback = {
 					role,
 					originalSelector: currentSelector,
 					originalThinkingLevel,
-					userTurnEpoch: this.#userTurnEpoch,
+					lastAppliedThinkingLevel: nextThinkingLevel,
 				};
 			}
+			advisor.retryAttempt = 0;
 			advisor.retryFallbackPendingSuccess = true;
+			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
+			this.#scheduleAdvisorFallbackProbe(advisor);
 			await this.#host.emitSessionEvent({
 				type: "retry_fallback_applied",
 				from: currentSelector,
@@ -1144,13 +1378,18 @@ export class SessionAdvisors {
 		return false;
 	}
 
-	async #promoteAdvisorContextModel(advisor: ActiveAdvisor, currentModel: Model): Promise<boolean> {
+	async #promoteAdvisorContextModel(
+		advisor: ActiveAdvisor,
+		currentModel: Model,
+		signal: AbortSignal,
+	): Promise<boolean> {
 		const promotionSettings = this.#host.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
 		const contextWindow = currentModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
-		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow);
+		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);
 		if (!targetModel) return false;
+		signal.throwIfAborted();
 
 		// Preserve this advisor's own thinking level (a configured `model:...:high`
 		// keeps its suffix across a promotion); only the model changes.
@@ -1173,8 +1412,12 @@ export class SessionAdvisors {
 		}
 	}
 
-	async #maintainAdvisorContext(advisor: ActiveAdvisor, incomingTokens: number): Promise<boolean> {
-		this.#restoreAdvisorUserModelAfterFallback(advisor);
+	async #maintainAdvisorContext(
+		advisor: ActiveAdvisor,
+		incomingTokens: number,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		await this.#restoreReadyAdvisorFallback(advisor);
 		const agent = advisor.agent;
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");
@@ -1209,7 +1452,7 @@ export class SessionAdvisors {
 		}
 
 		// 1. Try promotion first
-		if (await this.#promoteAdvisorContextModel(advisor, advisorModel)) {
+		if (await this.#promoteAdvisorContextModel(advisor, advisorModel, signal)) {
 			// Promotion succeeded, check if new model has enough space
 			const newModel = agent.state.model;
 			const newWindow = newModel.contextWindow ?? 0;
@@ -1276,6 +1519,7 @@ export class SessionAdvisors {
 
 		let compactResult: CompactionResult | undefined;
 		let lastError: unknown;
+		let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
 		// Instrument the advisor's overflow-compaction one-shot like the primary
 		// compaction path so the advisor model's maintenance call also emits spans.
 		const telemetry = resolveTelemetry(agent.telemetry, advisorProviderSessionId);
@@ -1287,8 +1531,16 @@ export class SessionAdvisors {
 		});
 
 		for (const candidate of candidates) {
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisorProviderSessionId);
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisorProviderSessionId, { signal });
 			if (!apiKey) continue;
+			if (
+				nativeCompactionFailure &&
+				(candidate.provider !== nativeCompactionFailure.provider ||
+					!shouldUseProviderNativeCompaction(candidate, compactionSettings))
+			) {
+				throw nativeCompactionFailure.error;
+			}
+
 			// The advisor overflow-compaction one-shot bypasses the advisor `Agent`,
 			// so its installed metadata resolver never runs. Emit the same
 			// `metadata.user_id` identity here (resolved per candidate provider,
@@ -1304,7 +1556,7 @@ export class SessionAdvisors {
 					candidate,
 					this.#host.modelRegistry.resolver(candidate, advisorProviderSessionId),
 					undefined,
-					undefined,
+					signal,
 					{
 						thinkingLevel: advisorCompactionThinkingLevel,
 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
@@ -1319,9 +1571,18 @@ export class SessionAdvisors {
 				);
 				break;
 			} catch (error) {
+				if (signal.aborted) throw error;
+				const id = AIError.classify(error, candidate.api);
+				if (error instanceof NativeCompactionError && !AIError.is(id, AIError.Flag.AuthFailed)) {
+					nativeCompactionFailure ??= { error, provider: candidate.provider };
+					lastError = nativeCompactionFailure.error;
+					continue;
+				}
 				lastError = error;
 			}
 		}
+
+		if (!compactResult && nativeCompactionFailure) throw nativeCompactionFailure.error;
 
 		if (!compactResult) {
 			logger.warn("Advisor compaction failed, falling back to re-prime", { error: String(lastError) });

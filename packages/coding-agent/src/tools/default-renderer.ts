@@ -1,6 +1,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine, WidthAwareText } from "../tui";
 import {
@@ -68,7 +69,7 @@ export function formatDefaultToolExecution(
 
 	if (options.expanded && input.args !== undefined) {
 		lines.push("");
-		lines.push(uiTheme.fg("dim", "Args"));
+		lines.push(uiTheme.fg("dim", tSettingsUi("Args")));
 		const tree = renderJsonTreeLines(
 			input.args,
 			uiTheme,

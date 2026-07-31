@@ -253,11 +253,10 @@ describe("EventController paces streamed tool args", () => {
 /**
  * Regression: a streaming `hub` call whose `partialJson` is still open carries only raw
  * stream bytes — `content.arguments` is empty/stale (the JSON hasn't closed, the projector
- * never decoded a real `op`). While unclosed the controller must NOT create a
- * `ToolExecutionComponent`. Once `partialJson` closes into a known `op` the call enters
- * `HubActivityGroupComponent` and subsequent events update the SAME cluster.
+ * never decoded a real `op`). The controller must not create a transcript card while the
+ * route is unresolved; after it closes into peer coordination, it must remain silent.
  */
-describe("HubActivityGroup partial-args pending route", () => {
+describe("Hub peer partial-args routing", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		resetSettingsForTest();
@@ -284,39 +283,32 @@ describe("HubActivityGroup partial-args pending route", () => {
 		expect(pendingTools.size).toBe(0);
 	});
 
-	it("routes to HubActivityGroup once partialJson closes with op:send and updates the same cluster through start/end", async () => {
+	it("keeps peer sends silent when partial JSON closes before lifecycle events", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		settings.set("display.smoothStreaming", false);
 
 		const chatContainer = new TranscriptContainer();
-		const addChildSpy = vi.spyOn(chatContainer, "addChild");
 		const partialJson1 = `{"op":"sen`;
 		const msg1 = makeStreamingMessage([
 			{ type: "toolCall", id: "tc-hub-1", name: "hub", arguments: {}, [kStreamingPartialJson]: partialJson1 },
 		]);
 		const fullArgs = { op: "send", to: "Worker", message: "ping pong" };
 		const msg2 = makeStreamingMessage([{ type: "toolCall", id: "tc-hub-1", name: "hub", arguments: fullArgs }]);
-		const { controller, pendingTools } = createFixture(msg1, { chatContainer });
+		const { controller } = createFixture(msg1, { chatContainer });
 
 		await dispatch(controller, msg1);
-		expect(chatContainer.children.filter(c => c instanceof HubActivityGroupComponent)).toHaveLength(0);
-
 		await dispatch(controller, msg2);
-		const groups = chatContainer.children.filter(
-			(c): c is HubActivityGroupComponent => c instanceof HubActivityGroupComponent,
-		);
-		expect(groups).toHaveLength(1);
-		expect(addChildSpy.mock.calls.some(([component]) => component instanceof HubActivityGroupComponent)).toBe(true);
-		const group = groups[0]!;
-		expect(pendingTools.get("tc-hub-1")).toBe(group);
+
+		const afterArgs = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(chatContainer.children).toHaveLength(0);
+		expect(afterArgs).not.toContain("Worker");
+		expect(afterArgs).not.toContain("ping pong");
 
 		await dispatchToolStart(controller, {
 			toolCallId: "tc-hub-1",
 			toolName: "hub",
 			args: fullArgs,
 		});
-		expect(pendingTools.get("tc-hub-1")).toBe(group);
-
 		await dispatchToolEnd(controller, {
 			toolCallId: "tc-hub-1",
 			toolName: "hub",
@@ -326,42 +318,34 @@ describe("HubActivityGroup partial-args pending route", () => {
 			},
 		});
 
-		expect(pendingTools.has("tc-hub-1")).toBe(false);
-		const rendered = Bun.stripANSI(group.render(80).join("\n"));
-		expect(rendered).toContain("Worker");
-		expect(rendered).toContain("woken");
+		const rendered = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(chatContainer.children).toHaveLength(0);
+		expect(rendered).not.toContain("Worker");
+		expect(rendered).not.toContain("ping pong");
+		expect(rendered).not.toContain("Delivered to Worker");
+		expect(rendered).not.toContain("woken");
 	});
 
-	it("tool_execution_start creates the HubActivityGroup when the closing message_update never lands", async () => {
+	it("keeps wait(from) silent when tool_execution_start follows an unclosed partial JSON", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		settings.set("display.smoothStreaming", false);
 
 		const chatContainer = new TranscriptContainer();
-		const addChildSpy = vi.spyOn(chatContainer, "addChild");
 		const partialJson = `{"op":"wai`;
 		const streaming = makeStreamingMessage([
 			{ type: "toolCall", id: "tc-hub-2", name: "hub", arguments: {}, [kStreamingPartialJson]: partialJson },
 		]);
-		const { controller, pendingTools } = createFixture(streaming, { chatContainer });
+		const { controller } = createFixture(streaming, { chatContainer });
 
 		await dispatch(controller, streaming);
-		expect(chatContainer.children.filter(c => c instanceof HubActivityGroupComponent)).toHaveLength(0);
-
 		await dispatchToolStart(controller, {
 			toolCallId: "tc-hub-2",
 			toolName: "hub",
 			args: { op: "wait", from: "Worker", timeoutMs: 30_000 },
 		});
 
-		const groups = chatContainer.children.filter(
-			(c): c is HubActivityGroupComponent => c instanceof HubActivityGroupComponent,
-		);
-		expect(groups).toHaveLength(1);
-		expect(addChildSpy.mock.calls.some(([component]) => component instanceof HubActivityGroupComponent)).toBe(true);
-		const group = groups[0]!;
-		expect(pendingTools.get("tc-hub-2")).toBe(group);
-		expect(group.render(80)).toEqual([]);
-		const rendered = Bun.stripANSI(group.render(80).join("\n"));
+		const rendered = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(chatContainer.children).toHaveLength(0);
 		expect(rendered).not.toContain("Worker");
 		expect(rendered).not.toContain("pending");
 	});

@@ -51,13 +51,11 @@ export function formatAgentClockTime(ms: number): string {
 	return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-/** Fixed-width wall-clock duration used by Agent Hub metadata columns. */
+/** Compact human duration used by agent surfaces (`42s`, `2m15s`, `1h3m`). */
 export function formatAgentDuration(durationMs: number): string {
-	const totalSeconds = Math.floor(Math.max(0, durationMs) / 1_000);
-	const hours = Math.floor(totalSeconds / 3_600);
-	const minutes = Math.floor((totalSeconds % 3_600) / 60);
-	const seconds = totalSeconds % 60;
-	return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+	const wholeSecondsMs = Math.floor(Math.max(0, durationMs) / 1_000) * 1_000;
+	if (wholeSecondsMs === 0) return "0s";
+	return formatDuration(wholeSecondsMs).replace(/\.0s$/, "s");
 }
 
 function formatTaskTiming(

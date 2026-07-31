@@ -1,17 +1,14 @@
 /**
  * Contracts:
- * 1. Live Hub `wait(from)` / `inbox` feedback goes to `showSubagentFeedback`
- *    instead of rendering IRC transcript rows, and pure message waits never show
- *    a visible pending card.
- * 2. Useful Hub transcript rows still render: awaited `send`, job-id `wait`, and
- *    Hub errors remain visible.
- * 3. Transcript rebuild skips historical IRC custom messages while preserving the
- *    useful Hub rows from the same turn.
+ * 1. Live Hub peer coordination routes useful inbound feedback to
+ *    `showSubagentFeedback`, never to transcript process cards.
+ * 2. Live and rebuilt peer `send`/`wait`/`list`/`inbox`, job-id waits, and
+ *    historical IRC custom rows remain absent from the transcript.
+ * 3. The user-facing `ask` tool remains visible after transcript rebuild.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import type { ToolExecutionHandle } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
@@ -124,12 +121,6 @@ function hubGroups(container: TranscriptContainer): HubActivityGroupComponent[] 
 	);
 }
 
-function visibleAssistantComponents(container: TranscriptContainer): AssistantMessageComponent[] {
-	return container.children.filter(
-		(child): child is AssistantMessageComponent =>
-			child instanceof AssistantMessageComponent && child.render(120).length > 0,
-	);
-}
 function renderText(renderable: Component): string {
 	return Bun.stripANSI(renderable.render(120).join("\n"));
 }
@@ -175,8 +166,7 @@ describe("EventController hub activity cluster", () => {
 			args: { op: "wait", from: "AuthLoader" },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 
-		const pendingGroup = hubGroups(chatContainer)[0]!;
-		expect(pendingGroup.render(120)).toEqual([]);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
 		expect(renderText(chatContainer)).not.toContain("pending");
 
 		await controller.handleEvent({
@@ -247,7 +237,7 @@ describe("EventController hub activity cluster", () => {
 		expect(renderText(chatContainer)).not.toContain("ready");
 	});
 
-	it("collapses consecutive identical list snapshots while retaining the original roster", async () => {
+	it("keeps peer roster snapshots out of the transcript", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 		const peers = [
 			{
@@ -281,9 +271,10 @@ describe("EventController hub activity cluster", () => {
 			} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 		}
 
-		const rendered = renderText(hubGroups(chatContainer)[0]!);
-		expect(rendered).toContain("checking routes");
-		expect(rendered.match(/Worker/g)).toHaveLength(1);
+		const rendered = renderText(chatContainer);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(rendered).not.toContain("checking routes");
+		expect(rendered).not.toContain("Worker");
 	});
 
 	it("drops a successful empty inbox result instead of leaving a transcript card", async () => {
@@ -311,7 +302,7 @@ describe("EventController hub activity cluster", () => {
 		expect(renderText(chatContainer)).not.toContain("Inbox empty.");
 	});
 
-	it("keeps awaited send receipts and outbound body visible without no-reply text", async () => {
+	it("keeps awaited peer sends out of the transcript", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -336,15 +327,16 @@ describe("EventController hub activity cluster", () => {
 			isError: false,
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 
-		const rendered = renderText(hubGroups(chatContainer)[0]!);
-		expect(rendered).toContain("Worker");
-		expect(rendered).toContain("woken");
-		expect(rendered).toContain("ping");
+		const rendered = renderText(chatContainer);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(rendered).not.toContain("Worker");
+		expect(rendered).not.toContain("woken");
+		expect(rendered).not.toContain("ping");
 		expect(rendered).not.toContain("no reply");
 		expect(rendered).not.toContain("No reply yet");
 	});
 
-	it("keeps job-id waits visible from pending through running output", async () => {
+	it("keeps job-id waits out of the transcript from pending through running updates", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -354,9 +346,9 @@ describe("EventController hub activity cluster", () => {
 			args: { op: "wait", ids: ["job-1"] },
 		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 
-		const pendingRendered = renderText(hubGroups(chatContainer)[0]!);
-		expect(pendingRendered).toContain("job-1");
-		expect(pendingRendered).toContain("pending");
+		const pendingRendered = renderText(chatContainer);
+		expect(pendingRendered).not.toContain("job-1");
+		expect(pendingRendered).not.toContain("pending");
 
 		await controller.handleEvent({
 			type: "tool_execution_end",
@@ -372,12 +364,12 @@ describe("EventController hub activity cluster", () => {
 			isError: false,
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 
-		const rendered = renderText(hubGroups(chatContainer)[0]!);
-		expect(rendered).toContain("Build job");
-		expect(rendered).toContain("running");
+		const rendered = renderText(chatContainer);
+		expect(rendered).not.toContain("Build job");
+		expect(rendered).not.toContain("running");
 	});
 
-	it("keeps Hub errors visible in the activity group", async () => {
+	it("keeps peer inbox failures out of activity cards", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -397,12 +389,13 @@ describe("EventController hub activity cluster", () => {
 			isError: true,
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 
-		expect(renderText(hubGroups(chatContainer)[0]!)).toContain("hub broker unavailable");
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		expect(renderText(chatContainer)).not.toContain("hub broker unavailable");
 	});
 });
 
 describe("ChatTranscriptBuilder hub activity cluster", () => {
-	it("rebuild skips historical IRC custom rows while keeping same-turn send and job wait rows", () => {
+	it("rebuild keeps peer hub coordination and IRC rows silent while rendering ask content", () => {
 		const { builder } = createRebuildFixture();
 
 		try {
@@ -415,48 +408,170 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 							type: "toolCall",
 							id: HUB_SEND_ID,
 							name: "hub",
-							arguments: { op: "send", to: "Worker", message: "ping", await: true },
+							arguments: { op: "send", to: "SEND_PEER_MARKER", message: "SEND_BODY_MARKER", await: true },
 						},
-						{ type: "toolCall", id: "hub-job-wait", name: "hub", arguments: { op: "wait", ids: ["job-1"] } },
+						{
+							type: "toolCall",
+							id: "hub-wait",
+							name: "hub",
+							arguments: { op: "wait", from: "WAIT_PEER_MARKER" },
+						},
+						{ type: "toolCall", id: "hub-list", name: "hub", arguments: { op: "list" } },
+						{ type: "toolCall", id: "hub-inbox", name: "hub", arguments: { op: "inbox" } },
+						{
+							type: "toolCall",
+							id: "ask-visible",
+							name: "ask",
+							arguments: {
+								questions: [
+									{
+										id: "question-1",
+										question: "ASK_QUESTION_MARKER",
+										options: [{ label: "Use option" }],
+									},
+								],
+							},
+						},
 					]),
 				),
 				makeMessageEntry("entry-2", 1_700_000_000_050, {
 					role: "toolResult",
 					toolCallId: HUB_SEND_ID,
 					toolName: "hub",
-					content: [{ type: "text", text: "" }],
+					content: [{ type: "text", text: "SEND_RESULT_MARKER" }],
 					details: {
 						op: "send",
-						to: "Worker",
-						receipts: [{ to: "Worker", outcome: "woken" }],
-						waited: null,
+						to: "SEND_PEER_MARKER",
+						receipts: [{ to: "SEND_PEER_MARKER", outcome: "woken" }],
 					},
 					isError: false,
 					timestamp: 1_700_000_000_050,
 				}),
 				makeMessageEntry("entry-3", 1_700_000_000_100, {
 					role: "toolResult",
-					toolCallId: "hub-job-wait",
+					toolCallId: "hub-wait",
 					toolName: "hub",
-					content: [{ type: "text", text: "still running" }],
+					content: [{ type: "text", text: "WAIT_RESULT_MARKER" }],
 					details: {
 						op: "wait",
-						jobs: [{ id: "job-1", type: "task", status: "running", label: "Build job", durationMs: 12 }],
+						waited: { id: "wait-1", from: "WAIT_PEER_MARKER", to: "Main", body: "WAIT_BODY_MARKER", ts: 1 },
 					},
 					isError: false,
 					timestamp: 1_700_000_000_100,
 				}),
-				makeMessageEntry("entry-4", 1_700_000_000_500, makeIrcMessage("viewer cluster hello")),
+				makeMessageEntry("entry-4", 1_700_000_000_150, {
+					role: "toolResult",
+					toolCallId: "hub-list",
+					toolName: "hub",
+					content: [{ type: "text", text: "LIST_RESULT_MARKER" }],
+					details: {
+						op: "list",
+						peers: [
+							{
+								id: "LIST_PEER_MARKER",
+								displayName: "LIST_PEER_MARKER",
+								kind: "sub",
+								status: "running",
+								unread: 0,
+								lastActivity: 1,
+							},
+						],
+					},
+					isError: false,
+					timestamp: 1_700_000_000_150,
+				}),
+				makeMessageEntry("entry-5", 1_700_000_000_200, {
+					role: "toolResult",
+					toolCallId: "hub-inbox",
+					toolName: "hub",
+					content: [{ type: "text", text: "INBOX_RESULT_MARKER" }],
+					details: {
+						op: "inbox",
+						inbox: [{ id: "inbox-1", from: "INBOX_PEER_MARKER", to: "Main", body: "INBOX_BODY_MARKER", ts: 1 }],
+					},
+					isError: false,
+					timestamp: 1_700_000_000_200,
+				}),
+				makeMessageEntry("entry-6", 1_700_000_000_250, {
+					role: "toolResult",
+					toolCallId: "ask-visible",
+					toolName: "ask",
+					content: [{ type: "text", text: "ASK_RESULT_MARKER" }],
+					details: { question: "ASK_QUESTION_MARKER", answer: "Use option" },
+					isError: false,
+					timestamp: 1_700_000_000_250,
+				}),
+				makeMessageEntry("entry-7", 1_700_000_000_500, makeIrcMessage("IRC_BODY_MARKER")),
 			]);
 
-			const groups = hubGroups(builder.container);
-			expect(groups).toHaveLength(1);
-			expect(visibleAssistantComponents(builder.container)).toHaveLength(0);
-			const rendered = renderText(groups[0]!);
-			expect(rendered).toContain("Worker");
-			expect(rendered).toContain("ping");
-			expect(rendered).toContain("Build job");
-			expect(rendered).not.toContain("viewer cluster hello");
+			const rendered = renderText(builder.container);
+			expect(hubGroups(builder.container)).toHaveLength(0);
+			for (const text of [
+				"SEND_PEER_MARKER",
+				"SEND_BODY_MARKER",
+				"SEND_RESULT_MARKER",
+				"WAIT_PEER_MARKER",
+				"WAIT_BODY_MARKER",
+				"WAIT_RESULT_MARKER",
+				"LIST_PEER_MARKER",
+				"LIST_RESULT_MARKER",
+				"INBOX_PEER_MARKER",
+				"INBOX_BODY_MARKER",
+				"INBOX_RESULT_MARKER",
+				"IRC_BODY_MARKER",
+			]) {
+				expect(rendered).not.toContain(text);
+			}
+			expect(rendered).toContain("ASK_QUESTION_MARKER");
+		} finally {
+			builder.dispose();
+		}
+	});
+
+	it("rebuild keeps a job-id wait out of the transcript", () => {
+		const { builder } = createRebuildFixture();
+
+		try {
+			builder.rebuild([
+				makeMessageEntry(
+					"entry-1",
+					1_700_000_000_000,
+					makeAssistantMessage([
+						{
+							type: "toolCall",
+							id: "hub-job-wait",
+							name: "hub",
+							arguments: { op: "wait", ids: ["JOB_WAIT_ID_MARKER"] },
+						},
+					]),
+				),
+				makeMessageEntry("entry-2", 1_700_000_000_100, {
+					role: "toolResult",
+					toolCallId: "hub-job-wait",
+					toolName: "hub",
+					content: [{ type: "text", text: "JOB_WAIT_RESULT_MARKER" }],
+					details: {
+						op: "wait",
+						jobs: [
+							{
+								id: "JOB_WAIT_ID_MARKER",
+								type: "task",
+								status: "running",
+								label: "JOB_LABEL_MARKER",
+								durationMs: 12,
+							},
+						],
+					},
+					isError: false,
+					timestamp: 1_700_000_000_100,
+				}),
+			]);
+
+			const rendered = renderText(builder.container);
+			expect(hubGroups(builder.container)).toHaveLength(0);
+			expect(rendered).not.toContain("JOB_WAIT_ID_MARKER");
+			expect(rendered).not.toContain("JOB_LABEL_MARKER");
+			expect(rendered).not.toContain("JOB_WAIT_RESULT_MARKER");
 		} finally {
 			builder.dispose();
 		}
@@ -494,7 +609,7 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 		}
 	});
 
-	it("rebuild keeps Hub errors visible", () => {
+	it("rebuild keeps peer inbox failures out of the transcript", () => {
 		const { builder } = createRebuildFixture();
 
 		try {
@@ -510,14 +625,15 @@ describe("ChatTranscriptBuilder hub activity cluster", () => {
 					role: "toolResult",
 					toolCallId: "hub-inbox-error",
 					toolName: "hub",
-					content: [{ type: "text", text: "hub broker unavailable" }],
+					content: [{ type: "text", text: "HUB_INBOX_ERROR_MARKER" }],
 					details: { op: "inbox" },
 					isError: true,
 					timestamp: 1_700_000_001_100,
 				}),
 			]);
 
-			expect(renderText(hubGroups(builder.container)[0]!)).toContain("hub broker unavailable");
+			expect(hubGroups(builder.container)).toHaveLength(0);
+			expect(renderText(builder.container)).not.toContain("HUB_INBOX_ERROR_MARKER");
 		} finally {
 			builder.dispose();
 		}

@@ -133,11 +133,15 @@ export class SessionProviderBoundary {
 	}
 
 	/** Applies session-level stream hooks and provider defaults to a side request. */
-	prepareSimpleStreamOptions(options: SimpleStreamOptions, provider = "anthropic"): SimpleStreamOptions {
-		const sessionOnPayload = this.#host.onPayload;
-		const sessionOnResponse = this.#host.onResponse;
+	prepareSimpleStreamOptions(
+		options: SimpleStreamOptions,
+		provider = "anthropic",
+		includeSessionHooks = true,
+	): SimpleStreamOptions {
+		const sessionOnPayload = includeSessionHooks ? this.#host.onPayload : undefined;
+		const sessionOnResponse = includeSessionHooks ? this.#host.onResponse : undefined;
 		const sessionMetadata = this.#host.agent.metadataForProvider(provider);
-		const sessionOnSseEvent = this.#host.onSseEvent;
+		const sessionOnSseEvent = includeSessionHooks ? this.#host.onSseEvent : undefined;
 		const openrouterRoutingPreset =
 			provider === "openrouter" ? this.#host.settings.get("providers.openrouterVariant") : "default";
 		const openrouterVariant =

@@ -2,44 +2,37 @@ import { describe, expect, it, vi } from "bun:test";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 
-function createRuntime(didRetry: boolean) {
-	const retry = vi.fn(async () => didRetry);
-	const showStatus = vi.fn();
-	const setText = vi.fn();
+function createRuntime(handler: () => Promise<void>) {
+	const handleRetry = vi.fn(handler);
 	return {
-		retry,
-		showStatus,
-		setText,
+		handleRetry,
 		runtime: {
 			ctx: {
-				session: { retry } as unknown as InteractiveModeContext["session"],
-				editor: { setText } as unknown as InteractiveModeContext["editor"],
-				showStatus,
+				handleRetry,
 			} as unknown as InteractiveModeContext,
 		},
 	};
 }
 
 describe("/retry slash command", () => {
-	it("clears the editor after starting a retry", async () => {
-		const harness = createRuntime(true);
+	it("awaits the context-owned view-session retry lifecycle", async () => {
+		const deferred = Promise.withResolvers<void>();
+		const harness = createRuntime(() => deferred.promise);
 
-		const handled = await executeBuiltinSlashCommand("/retry", harness.runtime);
+		let settled = false;
+		const execution = executeBuiltinSlashCommand("/retry", harness.runtime).then(result => {
+			settled = true;
+			return result;
+		});
 
-		expect(handled).toBe(true);
-		expect(harness.retry).toHaveBeenCalledTimes(1);
-		expect(harness.showStatus).not.toHaveBeenCalled();
-		expect(harness.setText).toHaveBeenCalledWith("");
-	});
+		await Promise.resolve();
 
-	it("reports when there is no failed turn to retry", async () => {
-		const harness = createRuntime(false);
+		expect(harness.handleRetry).toHaveBeenCalledTimes(1);
+		expect(settled).toBe(false);
 
-		const handled = await executeBuiltinSlashCommand("/retry", harness.runtime);
+		deferred.resolve();
 
-		expect(handled).toBe(true);
-		expect(harness.retry).toHaveBeenCalledTimes(1);
-		expect(harness.showStatus).toHaveBeenCalledWith("Nothing to retry");
-		expect(harness.setText).toHaveBeenCalledWith("");
+		expect(await execution).toBe(true);
+		expect(settled).toBe(true);
 	});
 });

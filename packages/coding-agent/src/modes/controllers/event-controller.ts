@@ -10,6 +10,7 @@ import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
+import { getEditClipboard } from "../../edit/edit-clipboard";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { IrcBus } from "../../irc/bus";
@@ -20,8 +21,10 @@ import {
 	HubActivityGroupComponent,
 	isHubActivityRoutePending,
 	isHubGroupedActivityArgs,
+	isHubPeerCommunicationArgs,
 } from "../../modes/components/hub-activity-group";
 import {
+	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
@@ -36,6 +39,7 @@ import { selectPrompt } from "../../prompts/prompt-locale";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import idleRecapPromptZh from "../../prompts/system/recap-user.zh-CN.md" with { type: "text" };
 import type { AgentActivityState } from "../../registry/agent-activity";
+import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { AgentSessionActivityEvent, AgentSessionEvent } from "../../session/agent-session";
 import { type CustomMessage, isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
@@ -219,11 +223,16 @@ export class EventController {
 			auto_retry_end: e => this.#handleAutoRetryEnd(e),
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
 			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
+			retry_fallback_restored: e => this.#handleRetryFallbackRestored(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
+			model_changed: async () => {
+				this.ctx.statusLine.invalidate();
+				this.ctx.ui.requestRender();
+			},
 			thinking_level_changed: async () => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
@@ -383,10 +392,11 @@ export class EventController {
 
 	#syncTerminalTitleState(activity?: AgentActivityState): void {
 		const currentActivity = activity ?? this.ctx.viewSession.activity;
+		const replyRecipient = this.ctx.session.getAgentId?.() ?? MAIN_AGENT_ID;
 		if (
 			this.#approvalAttentionToolCallIds.size > 0 ||
 			currentActivity?.phase === "waiting-user" ||
-			IrcBus.global().getPendingReplySnapshot().messages.length > 0
+			IrcBus.global().getPendingReplySnapshot(replyRecipient).messages.length > 0
 		) {
 			setTerminalTitleState("attention");
 			return;
@@ -394,11 +404,18 @@ export class EventController {
 		setTerminalTitleState(this.ctx.viewSession.isStreaming ? "working" : "idle");
 	}
 
-	#syncWorkingMessageFromActivity(event: AgentSessionEvent): void {
-		const activity = (event as Partial<AgentSessionActivityEvent>).activity ?? this.ctx.viewSession.activity;
+	#syncWorkingMessageFromActivity(
+		event: AgentSessionEvent,
+		sourceSession: InteractiveModeContext["viewSession"],
+	): void {
+		const currentSession = this.ctx.viewSession;
+		const activity =
+			sourceSession === currentSession
+				? ((event as Partial<AgentSessionActivityEvent>).activity ?? currentSession.activity)
+				: currentSession.activity;
 		this.#syncTerminalTitleState(activity);
 		if (this.ctx.refreshWorkingActivitySummary) {
-			this.ctx.refreshWorkingActivitySummary();
+			this.ctx.refreshWorkingActivitySummary(activity);
 			return;
 		}
 		if (!activity) return;
@@ -466,9 +483,10 @@ export class EventController {
 		// is awaiting, then the handler's own final requestRender schedules a
 		// second identical frame. Removing it lets the render cadence follow real
 		// state changes rather than event volume (issue #4353).
+		const sourceSession = this.ctx.viewSession;
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
 		await run(event);
-		this.#syncWorkingMessageFromActivity(event);
+		this.#syncWorkingMessageFromActivity(event, sourceSession);
 	}
 
 	#setTerminalProgress(active: boolean): void {
@@ -893,6 +911,10 @@ export class EventController {
 					renderArgs = content.arguments;
 				}
 				if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
+				if (content.name === "hub" && isHubPeerCommunicationArgs(renderArgs)) {
+					this.#toolArgsReveal.finish(content.id);
+					continue;
+				}
 				if (content.name === "hub" && isHubGroupedActivityArgs(renderArgs)) {
 					this.#resolveDisplaceablePoll(content.name);
 					this.#resetReadGroup();
@@ -922,6 +944,7 @@ export class EventController {
 						renderArgs,
 						{
 							snapshots: getFileSnapshotStore(this.ctx.viewSession),
+							clipboard: getEditClipboard(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
@@ -1080,14 +1103,28 @@ export class EventController {
 				(target, repeatCount, suppressed) => target.setErrorAggregation(repeatCount, suppressed),
 			);
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
-				this.ctx.chatContainer.addChild(
-					createUsageRowBlock(
+				const readCallIds = groupedReadUsageCallIds(event.message);
+				const usageAttached =
+					readCallIds !== undefined &&
+					(this.#lastReadGroup?.attachUsage(
+						readCallIds,
 						event.message.usage,
 						event.message.duration,
 						event.message.ttft,
 						event.message.timestamp,
-					),
-				);
+					) ??
+						false);
+				if (!usageAttached) {
+					this.#resetReadGroup();
+					this.ctx.chatContainer.addChild(
+						createUsageRowBlock(
+							event.message.usage,
+							event.message.duration,
+							event.message.ttft,
+							event.message.timestamp,
+						),
+					);
+				}
 			}
 			if (displayMessage === event.message) {
 				this.ctx.transcriptMessageComponents.set(event.message, this.ctx.streamingComponent);
@@ -1143,6 +1180,11 @@ export class EventController {
 				return;
 			}
 
+			if (event.toolName === "hub" && isHubPeerCommunicationArgs(event.args)) {
+				this.#toolArgsReveal.finish(event.toolCallId);
+				this.ctx.ui.requestRender();
+				return;
+			}
 			if (event.toolName === "hub" && isHubGroupedActivityArgs(event.args)) {
 				const group =
 					this.ctx.pendingTools.get(event.toolCallId) instanceof HubActivityGroupComponent
@@ -1165,6 +1207,7 @@ export class EventController {
 				event.args,
 				{
 					snapshots: getFileSnapshotStore(this.ctx.viewSession),
+					clipboard: getEditClipboard(this.ctx.viewSession),
 					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
@@ -1747,6 +1790,14 @@ export class EventController {
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>,
 	): Promise<void> {
 		this.ctx.showStatus(tSettingsUi("Fallback succeeded on {model}", { model: event.model }));
+	}
+
+	async #handleRetryFallbackRestored(
+		event: Extract<AgentSessionEvent, { type: "retry_fallback_restored" }>,
+	): Promise<void> {
+		this.ctx.showStatus(
+			tSettingsUi("Primary endpoint recovered: {from} -> {to}", { from: event.from, to: event.to }),
+		);
 	}
 
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {

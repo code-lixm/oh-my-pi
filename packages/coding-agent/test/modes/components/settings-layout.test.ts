@@ -257,4 +257,22 @@ describe("settings layout", () => {
 			group: "Available Tools",
 		});
 	});
+	it("exposes fixed localized Ask timeout choices", () => {
+		expect(SETTINGS_SCHEMA["ask.timeout"].default).toBe(30);
+
+		setSettingsUiLocale("zh-CN");
+		const def = getSettingsForTab("interaction").find(def => def.path === "ask.timeout");
+		if (def?.type !== "submenu") throw new Error("ask.timeout should render as a submenu");
+
+		expect(def).toMatchObject({
+			label: "Ask 超时",
+			description:
+				"在 YOLO 模式下，每个问题都会获得独立的新倒计时；倒计时结束后会自动选择该问题明确标记的推荐选项（0 表示关闭）",
+		});
+		expect(def.options).toEqual([
+			{ value: "0", label: "已禁用" },
+			{ value: "30", label: "30 秒" },
+			{ value: "60", label: "60 秒" },
+		]);
+	});
 });

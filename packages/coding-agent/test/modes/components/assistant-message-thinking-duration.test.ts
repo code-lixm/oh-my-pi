@@ -4,15 +4,16 @@ import type { AssistantMessage, ThinkingContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { AgentActivityState } from "@oh-my-pi/pi-coding-agent/registry/agent-activity";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 const RENDER_WIDTH = 120;
 const THINKING_STARTED_AT = 1_700_000_000_000;
-const THINKING_DURATION_MS = 3_723_000;
+const THINKING_DURATION_MS = 8_000;
 const THOUGHT = "Inspect the parser boundary before changing the route.";
-const initialLocale = getSettingsUiLocale();
+let previousLocale = getSettingsUiLocale();
 
 function thinkingMessage(thinking = THOUGHT): AssistantMessage {
 	return {
@@ -78,6 +79,7 @@ describe("AssistantMessageComponent thinking duration rendering", () => {
 	});
 
 	beforeEach(async () => {
+		previousLocale = getSettingsUiLocale();
 		setSettingsUiLocale("en");
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
@@ -90,11 +92,11 @@ describe("AssistantMessageComponent thinking duration rendering", () => {
 		}
 		vi.useRealTimers();
 		setSystemTime();
-		setSettingsUiLocale(initialLocale);
+		setSettingsUiLocale(previousLocale);
 		resetSettingsForTest();
 	});
 
-	it("renders one frozen duration row after a completed visible thought and none when hidden", async () => {
+	it("renders one frozen duration suffix beside a completed visible thought and none when hidden", async () => {
 		vi.useFakeTimers();
 		setSystemTime(THINKING_STARTED_AT);
 
@@ -136,18 +138,36 @@ describe("AssistantMessageComponent thinking duration rendering", () => {
 		expect(getThinkingBlock(persistedMessage).durationMs).toBe(THINKING_DURATION_MS);
 
 		const visibleLines = renderLines(persistedMessage, false, false);
-		const thoughtRow = visibleLines.findIndex(line => line.includes(THOUGHT));
-		const durationRows = visibleLines.filter(line => line.trim() === "Thinking time: 01:02:03");
-		expect(thoughtRow).toBeGreaterThanOrEqual(0);
-		expect(durationRows).toHaveLength(1);
-		expect(visibleLines.findIndex(line => line.trim() === "Thinking time: 01:02:03")).toBeGreaterThan(thoughtRow);
+		const thoughtRows = visibleLines.filter(line => line.includes(THOUGHT));
+		expect(thoughtRows).toHaveLength(1);
+		expect(thoughtRows[0]?.trim()).toBe(`${THOUGHT} · 8s`);
+		expect(visibleLines.some(line => line.trim() === "8s")).toBe(false);
+		expect(visibleLines.some(line => line.includes("Thinking time:"))).toBe(false);
 
 		const hiddenLines = renderLines(persistedMessage, true, false);
 		expect(hiddenLines.some(line => line.includes(THOUGHT))).toBe(false);
-		expect(hiddenLines.some(line => line.includes("Thinking time: 01:02:03"))).toBe(false);
+		expect(hiddenLines.some(line => line.includes("8s"))).toBe(false);
 	});
 
-	it("starts a thought at its first delta and freezes an unfinished block at assistant end", async () => {
+	it("suppresses sub-second suffixes and renders one second inline", () => {
+		const noDurationLines = renderLines(thinkingMessage(), false, false);
+
+		for (const durationMs of [0, 999]) {
+			const message = thinkingMessage();
+			getThinkingBlock(message).durationMs = durationMs;
+			expect(renderLines(message, false, false)).toEqual(noDurationLines);
+		}
+
+		const oneSecondMessage = thinkingMessage();
+		getThinkingBlock(oneSecondMessage).durationMs = 1_000;
+		const oneSecondLines = renderLines(oneSecondMessage, false, false);
+		const oneSecondRows = oneSecondLines.map(line => line.trim());
+		expect(oneSecondRows).toContain(`${THOUGHT} · 1s`);
+		expect(oneSecondRows).not.toContain("1s");
+		expect(oneSecondLines.some(line => line.includes("Thinking time:"))).toBe(false);
+	});
+
+	it("keeps request activity until the first thinking delta and freezes an unfinished block at assistant end", async () => {
 		vi.useFakeTimers();
 		setSystemTime(THINKING_STARTED_AT);
 
@@ -160,8 +180,32 @@ describe("AssistantMessageComponent thinking duration rendering", () => {
 		});
 		const message = thinkingMessage("Recover from a provider that skipped thinking_start.");
 		const persisted = waitForPersistedAssistant(sessionManager);
+		const activitySnapshots: Array<{
+			signal: "assistant envelope" | "thinking delta";
+			phase: string;
+			label: string;
+		}> = [];
+		const requestObserved = Promise.withResolvers<void>();
+		const thinkingObserved = Promise.withResolvers<void>();
+		const unsubscribe = session.subscribe(event => {
+			const activity = (event as { activity?: AgentActivityState }).activity;
+			if (event.type === "message_start" && event.message === message) {
+				if (!activity) throw new Error("Expected assistant envelope activity snapshot");
+				activitySnapshots.push({ signal: "assistant envelope", phase: activity.phase, label: activity.label });
+				requestObserved.resolve();
+			} else if (
+				event.type === "message_update" &&
+				event.message === message &&
+				event.assistantMessageEvent.type === "thinking_delta"
+			) {
+				if (!activity) throw new Error("Expected thinking-delta activity snapshot");
+				activitySnapshots.push({ signal: "thinking delta", phase: activity.phase, label: activity.label });
+				thinkingObserved.resolve();
+			}
+		});
 
 		session.agent.emitExternalEvent({ type: "message_start", message });
+		await requestObserved.promise;
 		session.agent.emitExternalEvent({
 			type: "message_update",
 			message,
@@ -172,11 +216,17 @@ describe("AssistantMessageComponent thinking duration rendering", () => {
 				partial: message,
 			},
 		});
+		await thinkingObserved.promise;
 
 		setSystemTime(THINKING_STARTED_AT + 5_000);
 		session.agent.emitExternalEvent({ type: "message_end", message });
 		const persistedMessage = await persisted;
 		expect(getThinkingBlock(persistedMessage).durationMs).toBe(5_000);
+		unsubscribe();
+		expect(activitySnapshots).toEqual([
+			{ signal: "assistant envelope", phase: "requesting", label: "Requesting model" },
+			{ signal: "thinking delta", phase: "thinking", label: "Thinking" },
+		]);
 	});
 
 	it("renders fenced source only under the configured full-thinking policy", () => {

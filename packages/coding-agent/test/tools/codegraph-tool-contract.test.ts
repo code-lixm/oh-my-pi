@@ -21,6 +21,8 @@ import * as path from "node:path";
 
 import { resolveCodeGraphIndexLocation } from "../../src/codegraph/location";
 import { disposeAllWorkersForTests, probeSlot } from "../../src/codegraph/supervisor";
+import { EditTool } from "../../src/edit";
+import type { ToolSession } from "../../src/tools";
 import { CodeGraphTool } from "../../src/tools/codegraph";
 
 function makeSession(cwd: string) {
@@ -137,8 +139,31 @@ describe("CodeGraphTool contract", () => {
 		expect(tool.approval).toBe("read");
 	});
 
-	test("createIf() returns null outside a Git workspace", async () => {
-		expect(await CodeGraphTool.createIf(makeSession(tmp))).toBeNull();
+	test("createIf() keeps CodeGraph available for a normal non-Git fallback", async () => {
+		const tool = await CodeGraphTool.createIf(makeSession(tmp));
+		expect(tool).toBeInstanceOf(CodeGraphTool);
+		const result = await tool.execute("call-create-if-non-git", { query: "anything" });
+		expect(result.isError).not.toBe(true);
+		const details = result.details as { fallback?: string };
+		expect(details.fallback).toContain("Do not wait for or retry CodeGraph");
+	});
+
+	test("projectPath selects an indexed Git project from a non-Git session", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "project-path-repo"));
+		const tool = await CodeGraphTool.createIf(makeSession(tmp));
+		const cold = await tool.execute("call-project-path-cold", { query: "greet", projectPath: repoRoot });
+		expect(cold.isError).not.toBe(true);
+		expectIndexingFallback(cold.details as { fallback?: string });
+		await waitForSlotReady(repoRoot, "projectPath warmup");
+		const warm = await tool.execute("call-project-path-warm", {
+			query: "greet",
+			projectPath: repoRoot,
+			mode: "locate",
+		});
+		expect(warm.isError).not.toBe(true);
+		const details = warm.details as { sourceRoot?: string; entries?: Array<{ node: { name: string } }> };
+		expect(details.sourceRoot).toBe(await fs.realpath(repoRoot));
+		expect(details.entries?.some(entry => entry.node.name === "greet")).toBe(true);
 	});
 
 	test("createIf() returns a tool for a Git repo with HEAD", async () => {
@@ -218,7 +243,8 @@ describe("CodeGraphTool contract", () => {
 
 	test("happy path: first call falls back while indexing, second call returns the symbol", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-happy"));
-		const tool = new CodeGraphTool(makeSession(repoRoot));
+		const session = makeSession(repoRoot);
+		const tool = new CodeGraphTool(session);
 
 		const coldResult = await withTimeout(
 			tool.execute("call-happy-cold", { query: "greet" }),
@@ -237,6 +263,16 @@ describe("CodeGraphTool contract", () => {
 		expect(details.fallback).toBeUndefined();
 		expect(details.entries).toBeDefined();
 		expect(details.entries!.some(e => e.node.name === "greet")).toBe(true);
+		const text = result.content.find(block => block.type === "text")?.text ?? "";
+		expect(text).toContain("Mode: understand");
+		const header = /^\[greeter\.ts#[0-9A-F]{4}\]$/mu.exec(text)?.[0];
+		expect(header).toBeDefined();
+		const editSession = session as unknown as ToolSession;
+		const editResult = await new EditTool(editSession).execute("edit-from-codegraph", {
+			input: `${header}\nSWAP 2.=2:\n+  return \`Hi, \${name}!\`;`,
+		});
+		expect(editResult.isError).not.toBe(true);
+		expect(await Bun.file(path.join(repoRoot, "greeter.ts")).text()).toMatch(/return `Hi, \$\{name\}!`;/u);
 	});
 
 	test("nested cwd + scoped path + same-index reuse: each first call falls back, warm retries reuse the same Git-root index", async () => {

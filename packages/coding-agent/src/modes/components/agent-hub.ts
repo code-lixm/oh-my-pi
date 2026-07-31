@@ -1,20 +1,18 @@
 /**
  * Agent Hub overlay component.
  *
- * - Main remains an internal routing node and never appears as a selectable row.
- * - Hub rows are the stable, Hub-visible order for subagents and read-only advisors.
- * - Enter opens a fullscreen transcript; `f` focuses a live subagent, `m` sends
- *   it a message, `p` returns to its owning Main, and `r`/`x` revive/kill it.
+ * - Main and advisors are internal routing/observability nodes, never selectable rows.
+ * - Rows are task subagents sorted by user-facing activity and recent updates.
+ * - Enter opens a fullscreen transcript; `f` focuses a live subagent, and
+ *   `r`/`x` resume/terminate a task.
  * - The transcript viewer cycles the same rows in place and tails persisted/local
  *   or collab-host history without changing the ambient runtime.
- *
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
  */
 import { type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	Container,
 	Ellipsis,
-	Input,
 	matchesKey,
 	type OverlayHandle,
 	padding,
@@ -24,34 +22,26 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatAge, getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { AsyncJobManager } from "../../async/job-manager";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { IrcBus } from "../../irc/bus";
+import type { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import {
 	type AgentRef,
 	AgentRegistry,
-	type AgentStatus,
 	agentDisplayLabel,
 	MAIN_AGENT_ID,
 	resolveTopLevelAgent,
 } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import type { AgentProgress, AsyncJobDeliveryStatus } from "../../task/types";
 import { parseThinkingLevel } from "../../thinking";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import {
-	formatAgentClockTime,
-	formatAgentDuration,
-	renderAgentStatusBadge,
-	selectAgentActivity,
-} from "./agent-activity-display";
+import { formatAgentClockTime, formatAgentDuration, selectAgentActivity } from "./agent-activity-display";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
@@ -78,54 +68,34 @@ function clampHubLine(line: string, width: number): string {
 }
 
 const HUB_WIDE_MIN_WIDTH = 120;
-const HUB_STATUS_WIDTH = 12;
-const HUB_PROGRESS_WIDTH = 22;
+const HUB_STATUS_WIDTH = 26;
 const HUB_DURATION_WIDTH = 8;
 const HUB_MODEL_WIDTH = 28;
 const HUB_ACTIVITY_WIDTH = 8;
 const HUB_COLUMN_GAP = "  ";
-const HUB_DETAIL_LABEL_WIDTH = 16;
 
 function fixedCell(text: string, width: number): string {
 	const clipped = truncateToWidth(text, Math.max(1, width));
 	return `${clipped}${padding(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-function progressBar(completed: number, total: number, width = 11): string {
-	const safeTotal = Math.max(1, total);
-	const safeCompleted = Math.max(0, Math.min(completed, safeTotal));
-	const filled = Math.min(width, Math.floor((safeCompleted / safeTotal) * width));
-	return `[${"=".repeat(filled)}${".".repeat(width - filled)}]`;
-}
+type HubTaskStatus = "not-started" | "running" | "waiting-user" | "completed" | "failed" | "stopped";
 
-const STATUS_ORDER: Record<AgentStatus, number> = { running: 0, waiting: 1, idle: 2, parked: 3, aborted: 4 };
+const HUB_TASK_STATUS_PRIORITY: Record<HubTaskStatus, number> = {
+	running: 0,
+	"waiting-user": 1,
+	"not-started": 2,
+	completed: 3,
+	failed: 3,
+	stopped: 3,
+};
 
 type HubRow = { ref: AgentRef };
 
-interface RenderedHubBlock {
+interface RenderedHubEntry {
 	lines: string[];
 	rowIndex?: number;
 }
-
-type HubSection = "running" | "attention" | "queued" | "parked" | "completed" | "stopped";
-
-const HUB_SECTION_ORDER: Record<HubSection, number> = {
-	running: 0,
-	attention: 1,
-	queued: 2,
-	parked: 3,
-	completed: 4,
-	stopped: 5,
-};
-
-const HUB_SECTION_LABEL: Record<HubSection, string> = {
-	running: "Running tasks",
-	attention: "Needs attention",
-	queued: "Queued",
-	parked: "Parked agents",
-	completed: "Recently completed",
-	stopped: "Stopped",
-};
 
 const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -158,22 +128,22 @@ function formatResolvedModelBadge(resolved: string, preserveProvider = false): s
  */
 function modelBadge(ref: AgentRef, observed: ObservableSession | undefined): string | undefined {
 	const progress = observed?.progress;
+	const resolved = progress?.resolvedModel ?? observed?.resolvedModel;
+	const resolvedIsFallback = progress?.resolvedModelIsFallback ?? observed?.resolvedModelIsFallback;
 	// Prefer the live session's own resolved fallback selector; else honor the
 	// executor-reported fallback flag. The latter covers observer-only rows (no
 	// live session) AND live rows whose fallback armed no session retry state —
 	// e.g. the Fireworks Fast → base degrade, which emits `retry_fallback_applied`
 	// without populating `#activeRetryFallback`, so `retryFallbackModel` is undefined.
-	const fallbackSelector =
-		ref.session?.retryFallbackModel ?? (progress?.resolvedModelIsFallback ? progress.resolvedModel : undefined);
+	const fallbackSelector = ref.session?.retryFallbackModel ?? (resolvedIsFallback ? resolved : undefined);
 	if (fallbackSelector) {
-		return `${theme.fg("warning", "fallback →")} ${formatResolvedModelBadge(fallbackSelector, true)}`;
+		return `${theme.fg("warning", `${tSettingsUi("fallback")} →`)} ${formatResolvedModelBadge(fallbackSelector, true)}`;
 	}
 	const model = ref.session?.model;
 	if (model) {
 		const level = model.thinking ? ref.session?.thinkingLevel : undefined;
 		return formatModelBadge(model.id, level);
 	}
-	const resolved = progress?.resolvedModel;
 	return resolved ? formatResolvedModelBadge(resolved) : undefined;
 }
 
@@ -237,7 +207,6 @@ export interface AgentHubDeps {
 export class AgentHubOverlayComponent extends Container {
 	#registry: AgentRegistry;
 	#observers: SessionObserverRegistry;
-	#irc: IrcBus;
 	#lifecycle: () => AgentLifecycleManager;
 	#onDone: () => void;
 	#requestRender: () => void;
@@ -254,10 +223,6 @@ export class AgentHubOverlayComponent extends Container {
 	#rows: HubRow[] = [];
 	#selectedRow = 0;
 	#notice: string | undefined;
-	#messageAgentId: string | undefined;
-	#messageInput: Input | undefined;
-	/** Captured row order from the first refresh; keeps the hub stable while open. */
-	#rowOrder: Map<string, number> | undefined;
 	/** Screen rows from the latest render that activate a concrete hub row. */
 	#rowAtScreenLine = new Map<number, number>();
 	/** Double-tap window state for the table's left-left "close hub" gesture. */
@@ -283,7 +248,6 @@ export class AgentHubOverlayComponent extends Container {
 		super();
 		this.#registry = deps.registry ?? AgentRegistry.global();
 		this.#observers = deps.observers;
-		this.#irc = deps.irc ?? IrcBus.global();
 		// Lazy: the lifecycle global self-constructs against the global
 		// registry, so only touch it when revive/kill actually needs it.
 		this.#lifecycle = () => deps.lifecycle ?? AgentLifecycleManager.global();
@@ -399,7 +363,6 @@ export class AgentHubOverlayComponent extends Container {
 				const rowIndex = this.#rows.findIndex(row => row.ref.id === agentId);
 				if (rowIndex >= 0) this.#selectedRow = rowIndex;
 			},
-			getTaskOutcome: agentId => this.#taskOutcome(agentId, this.#observableFor(agentId)?.progress),
 			registry: this.#registry,
 			remote: this.#remote,
 			observers: this.#observers,
@@ -459,23 +422,17 @@ export class AgentHubOverlayComponent extends Container {
 
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
-		const refs = this.#registry.list().filter(ref => ref.kind !== "main");
-
-		if (!this.#rowOrder) {
-			const initial = [...refs].sort(
-				(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || b.lastActivity - a.lastActivity,
-			);
-			this.#rowOrder = new Map(initial.map((ref, index) => [ref.id, index]));
-		}
-
-		const rowOrder = this.#rowOrder ?? new Map<string, number>();
-		this.#rowOrder = rowOrder;
-		for (const ref of refs) {
-			if (!rowOrder.has(ref.id)) rowOrder.set(ref.id, rowOrder.size);
-		}
+		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
+		const observedById = new Map<string, ObservableSession>();
+		for (const observed of this.#observers.getSessions()) observedById.set(observed.id, observed);
 		const ordered = [...refs].sort((a, b) => {
-			const statusDelta = HUB_SECTION_ORDER[this.#sectionFor(a)] - HUB_SECTION_ORDER[this.#sectionFor(b)];
-			return statusDelta || (rowOrder.get(a.id) ?? 0) - (rowOrder.get(b.id) ?? 0);
+			const statusDelta =
+				HUB_TASK_STATUS_PRIORITY[this.#taskStatus(a, observedById.get(a.id))] -
+				HUB_TASK_STATUS_PRIORITY[this.#taskStatus(b, observedById.get(b.id))];
+			if (statusDelta !== 0) return statusDelta;
+			const activityDelta = b.lastActivity - a.lastActivity;
+			if (activityDelta !== 0) return activityDelta;
+			return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 		});
 		this.#rows = ordered.map(ref => ({ ref }));
 
@@ -483,14 +440,40 @@ export class AgentHubOverlayComponent extends Container {
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
 	}
 
-	#sectionFor(ref: AgentRef): HubSection {
-		const progress = this.#observableFor(ref.id)?.progress;
-		if (progress?.status === "pending" || ref.activityState?.phase === "queued") return "queued";
-		if (ref.status === "waiting" || ref.activityState?.phase === "waiting-peer") return "attention";
-		if (ref.status === "running") return "running";
-		if (ref.status === "parked") return "parked";
-		if (progress?.status === "failed" || progress?.status === "aborted" || ref.status === "aborted") return "stopped";
+	#taskStatus(ref: AgentRef, observed: ObservableSession | undefined): HubTaskStatus {
+		const progress = observed?.progress;
+		const activity = selectAgentActivity(ref.activityState, progress);
+		if (progress?.status === "failed") return "failed";
+		if (progress?.status === "aborted" || ref.status === "aborted") return "stopped";
+		if (progress?.status === "completed") return "completed";
+		if (progress?.status === "pending" || activity?.phase === "queued") return "not-started";
+		if (activity?.phase === "waiting-user") return "waiting-user";
+		if (
+			progress?.status === "running" ||
+			ref.status === "running" ||
+			ref.status === "waiting" ||
+			(activity !== undefined && activity.phase !== "idle")
+		) {
+			return "running";
+		}
 		return "completed";
+	}
+
+	#renderTaskStatus(status: HubTaskStatus): string {
+		switch (status) {
+			case "not-started":
+				return theme.fg("warning", tSettingsUi("Not started"));
+			case "running":
+				return theme.fg("success", tSettingsUi("Running"));
+			case "waiting-user":
+				return theme.fg("warning", tSettingsUi("Waiting for user"));
+			case "completed":
+				return theme.fg("success", tSettingsUi("Completed"));
+			case "failed":
+				return theme.fg("error", tSettingsUi("Failed"));
+			case "stopped":
+				return theme.fg("muted", tSettingsUi("Stopped"));
+		}
 	}
 
 	#displayLabel(ref: AgentRef): string {
@@ -503,25 +486,6 @@ export class AgentHubOverlayComponent extends Container {
 		return this.#observers.getSessions().find(session => session.id === id);
 	}
 
-	#taskOutcome(
-		agentId: string,
-		progress?: AgentProgress,
-	): { resultText?: string; deliveryStatus?: AsyncJobDeliveryStatus } | undefined {
-		const job = AsyncJobManager.instance()?.getLatestJobForAgent(agentId);
-		let resultText = progress?.resultText;
-		if (!resultText && job) {
-			const detailProgress = job.latestDetails?.progress;
-			const firstProgress = Array.isArray(detailProgress) ? detailProgress[0] : undefined;
-			const candidate =
-				firstProgress && typeof firstProgress === "object" && "resultText" in firstProgress
-					? firstProgress.resultText
-					: undefined;
-			if (typeof candidate === "string") resultText = candidate;
-		}
-		const deliveryStatus = job?.deliveryStatus ?? progress?.deliveryStatus;
-		return resultText || deliveryStatus ? { resultText, deliveryStatus } : undefined;
-	}
-
 	// ========================================================================
 	// Table view
 	// ========================================================================
@@ -531,78 +495,68 @@ export class AgentHubOverlayComponent extends Container {
 		const innerWidth = Math.max(1, width - 2);
 		this.#rowAtScreenLine.clear();
 		const hintLines = this.#hintLines(width);
-		let messageLine: string | undefined;
-		if (this.#messageInput && this.#messageAgentId) {
-			const target = this.#registry.get(this.#messageAgentId);
-			const label = target ? this.#displayLabel(target) : tSettingsUi("Subagent");
-			const prefix = ` ${theme.fg("muted", `m → ${label}: `)}`;
-			const input = this.#messageInput.render(Math.max(1, innerWidth - visibleWidth(prefix)))[0] ?? "";
-			messageLine = truncateToWidth(`${prefix}${input}`, innerWidth);
-		}
 
 		lines.push(...new DynamicBorder().render(width));
-		const counts = width >= 100 ? this.#statusSummary() : "";
-		const title = `${theme.fg("accent", tSettingsUi("Agent Hub"))}${counts ? theme.fg("dim", `${theme.sep.dot}${counts}`) : ""}`;
+		const title = theme.fg("accent", tSettingsUi("Agent Hub"));
 		lines.push(` ${truncateToWidth(title, innerWidth)}`);
 		for (const hintLine of hintLines) lines.push(` ${truncateToWidth(hintLine, innerWidth)}`);
-		if (messageLine) lines.push(messageLine);
 
 		if (this.#rows.length === 0) {
-			lines.push(` ${theme.fg("dim", tSettingsUi("no subagents yet — task spawns appear here"))}`);
+			lines.push(` ${theme.fg("dim", tSettingsUi("No tasks yet"))}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
-			const chromeRows = 3 + hintLines.length + (messageLine ? 1 : 0) + (this.#notice ? 1 : 0);
+			const chromeRows = 3 + hintLines.length + (this.#notice ? 1 : 0);
 			const budget = Math.max(3, termHeight - chromeRows);
-			const blocks = this.#renderBlocks(width);
-			const selectedBlock = Math.max(
+			const entries = this.#renderEntries(width);
+			const selectedEntry = Math.max(
 				0,
-				blocks.findIndex(block => block.rowIndex === this.#selectedRow),
+				entries.findIndex(entry => entry.rowIndex === this.#selectedRow),
 			);
-			const fitBlocks = (blockBudget: number): { start: number; end: number; used: number } => {
-				let start = selectedBlock;
-				let end = Math.min(blocks.length, start + 1);
-				let used = blocks[start]?.lines.length ?? 0;
+			const fitEntries = (entryBudget: number): { start: number; end: number; used: number } => {
+				let start = selectedEntry;
+				let end = Math.min(entries.length, start + 1);
+				let used = entries[start]?.lines.length ?? 0;
 				for (let grew = true; grew; ) {
 					grew = false;
-					if (end < blocks.length && used + blocks[end]!.lines.length <= blockBudget) {
-						used += blocks[end]!.lines.length;
+					if (end < entries.length && used + entries[end]!.lines.length <= entryBudget) {
+						used += entries[end]!.lines.length;
 						end++;
 						grew = true;
 					}
-					if (start > 0 && used + blocks[start - 1]!.lines.length <= blockBudget) {
+					if (start > 0 && used + entries[start - 1]!.lines.length <= entryBudget) {
 						start--;
-						used += blocks[start]!.lines.length;
+						used += entries[start]!.lines.length;
 						grew = true;
 					}
 				}
 				return { start, end, used };
 			};
-			let blockBudget = budget;
-			let { start, end, used } = fitBlocks(blockBudget);
+			let entryBudget = budget;
+			let { start, end, used } = fitEntries(entryBudget);
 			for (let pass = 0; pass < 3; pass++) {
-				const markerRows = (start > 0 ? 1 : 0) + (end < blocks.length ? 1 : 0);
+				const markerRows = (start > 0 ? 1 : 0) + (end < entries.length ? 1 : 0);
 				const nextBudget = Math.max(1, budget - markerRows);
-				if (nextBudget === blockBudget) break;
-				blockBudget = nextBudget;
-				({ start, end, used } = fitBlocks(blockBudget));
+				if (nextBudget === entryBudget) break;
+				entryBudget = nextBudget;
+				({ start, end, used } = fitEntries(entryBudget));
 			}
 			const markerCapacity = Math.max(0, budget - used);
 			const showStartMarker = start > 0 && markerCapacity > 0;
-			const showEndMarker = end < blocks.length && markerCapacity > (showStartMarker ? 1 : 0);
+			const showEndMarker = end < entries.length && markerCapacity > (showStartMarker ? 1 : 0);
 			if (showStartMarker) {
 				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
 			}
-			for (const block of blocks.slice(start, end)) {
+			for (const entry of entries.slice(start, end)) {
 				const lineStart = lines.length;
-				lines.push(...block.lines);
-				if (block.rowIndex !== undefined) {
-					for (let offset = 0; offset < block.lines.length; offset++) {
-						this.#rowAtScreenLine.set(lineStart + offset, block.rowIndex);
+				lines.push(...entry.lines);
+				if (entry.rowIndex !== undefined) {
+					for (let offset = 0; offset < entry.lines.length; offset++) {
+						this.#rowAtScreenLine.set(lineStart + offset, entry.rowIndex);
 					}
 				}
 			}
 			if (showEndMarker) {
-				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: blocks.length - end })}`)}`);
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: entries.length - end })}`)}`);
 			}
 		}
 
@@ -613,38 +567,19 @@ export class AgentHubOverlayComponent extends Container {
 		return lines;
 	}
 
-	#renderBlocks(width: number): RenderedHubBlock[] {
-		const blocks: RenderedHubBlock[] = [];
+	#renderEntries(width: number): RenderedHubEntry[] {
+		const entries: RenderedHubEntry[] = [];
 		if (width >= HUB_WIDE_MIN_WIDTH && this.#rows.length > 0) {
-			blocks.push({ lines: [this.#columnHeader(width)] });
+			entries.push({ lines: [this.#columnHeader(width)] });
 		}
-		const counts: Record<HubSection, number> = {
-			running: 0,
-			attention: 0,
-			queued: 0,
-			parked: 0,
-			completed: 0,
-			stopped: 0,
-		};
-		for (const row of this.#rows) counts[this.#sectionFor(row.ref)]++;
-		let section: HubSection | undefined;
 		for (let rowIndex = 0; rowIndex < this.#rows.length; rowIndex++) {
 			const row = this.#rows[rowIndex]!;
-			const nextSection = this.#sectionFor(row.ref);
-			if (nextSection !== section) {
-				section = nextSection;
-				blocks.push({
-					lines: [
-						theme.bold(theme.fg("accent", `${tSettingsUi(HUB_SECTION_LABEL[section])} (${counts[section]})`)),
-					],
-				});
-			}
-			blocks.push({
+			entries.push({
 				lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width),
 				rowIndex,
 			});
 		}
-		return blocks;
+		return entries;
 	}
 
 	#columnHeader(width: number): string {
@@ -654,19 +589,17 @@ export class AgentHubOverlayComponent extends Container {
 			max -
 				3 -
 				HUB_STATUS_WIDTH -
-				HUB_PROGRESS_WIDTH -
 				HUB_DURATION_WIDTH -
 				HUB_MODEL_WIDTH -
 				HUB_ACTIVITY_WIDTH -
-				HUB_COLUMN_GAP.length * 5,
+				HUB_COLUMN_GAP.length * 4,
 		);
 		const cells = [
 			fixedCell(tSettingsUi("Agent"), nameWidth),
 			fixedCell(tSettingsUi("Status"), HUB_STATUS_WIDTH),
-			fixedCell(tSettingsUi("Progress"), HUB_PROGRESS_WIDTH),
 			fixedCell(tSettingsUi("Duration"), HUB_DURATION_WIDTH),
 			fixedCell(tSettingsUi("Model"), HUB_MODEL_WIDTH),
-			fixedCell(tSettingsUi("Activity"), HUB_ACTIVITY_WIDTH),
+			fixedCell(tSettingsUi("Last update"), HUB_ACTIVITY_WIDTH),
 		];
 		return theme.fg("dim", `   ${cells.join(HUB_COLUMN_GAP)}`);
 	}
@@ -675,16 +608,6 @@ export class AgentHubOverlayComponent extends Container {
 		const maxWidth = Math.max(1, width - 2);
 		const separator = theme.fg("dim", theme.sep.dot);
 		const clamp = (line: string): string => truncateToWidth(line, maxWidth);
-		if (this.#messageInput) {
-			return [
-				clamp(
-					[
-						rawKeyHint("Enter", tSettingsUi("send message")),
-						rawKeyHint("Esc", tSettingsUi("cancel message")),
-					].join(separator),
-				),
-			];
-		}
 		const selected = this.#rows[this.#selectedRow];
 		const primary = [
 			rawKeyHint("j/k", tSettingsUi("select")),
@@ -695,28 +618,15 @@ export class AgentHubOverlayComponent extends Container {
 
 		const actions: string[] = [];
 		const ref = selected.ref;
-		const live = ref.status === "running" || ref.status === "waiting" || ref.status === "idle";
-		if (live && ref.kind !== "advisor") actions.push(rawKeyHint("f", tSettingsUi("focus")));
-		if (ref.status !== "aborted" && ref.kind !== "advisor") actions.push(rawKeyHint("m", tSettingsUi("message")));
-		actions.push(rawKeyHint("p", tSettingsUi("Main")));
+		const live =
+			ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
+		if (live) actions.push(rawKeyHint("f", tSettingsUi("focus")));
 		if (ref.status === "parked") actions.push(rawKeyHint("r", tSettingsUi("revive")));
-		if (ref.status !== "aborted" && ref.kind !== "advisor") actions.push(rawKeyHint("x", tSettingsUi("kill")));
+		if (ref.status !== "aborted") actions.push(rawKeyHint("x", tSettingsUi("kill")));
+		if (actions.length === 0) return [clamp(primary)];
 		const secondary = actions.join(separator);
 		const combined = `${primary}${separator}${secondary}`;
 		return visibleWidth(combined) <= maxWidth ? [combined] : [clamp(primary), clamp(secondary)];
-	}
-
-	#statusSummary(): string {
-		const counts: Record<AgentStatus, number> = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
-		for (const row of this.#rows) {
-			counts[row.ref.status]++;
-		}
-		const parts: string[] = [];
-		for (const status of ["running", "waiting", "idle", "parked", "aborted"] as const) {
-			const count = counts[status];
-			if (count > 0) parts.push(`${count} ${tSettingsUi(status)}`);
-		}
-		return parts.join(theme.sep.dot);
 	}
 
 	#renderEntry(row: HubRow, selected: boolean, width: number): string[] {
@@ -724,31 +634,12 @@ export class AgentHubOverlayComponent extends Container {
 		const max = Math.max(1, width - 2);
 		const observed = this.#observableFor(ref.id);
 		const progress = observed?.progress;
-		const activity = selectAgentActivity(ref.activityState, progress);
-		const status =
-			ref.kind === "advisor" ? theme.fg("warning", tSettingsUi("read-only")) : renderAgentStatusBadge(ref.status);
-		const unread = this.#irc.unreadCount(ref.id);
-		const label = `${this.#displayLabel(ref)}${unread > 0 ? `  ⧉ ${unread}` : ""}`;
+		const taskStatus = this.#taskStatus(ref, observed);
+		const status = this.#renderTaskStatus(taskStatus);
+		const label = this.#displayLabel(ref);
 		const model = modelBadge(ref, observed) ?? "—";
-		const summary = sanitizeLine(
-			progress?.lastIntent ??
-				activity?.detail ??
-				progress?.currentToolArgs ??
-				observed?.description ??
-				progress?.task ??
-				ref.activity ??
-				"—",
-			Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH),
-		);
-		const duration = this.#taskDuration(ref, observed);
-		const progressText = this.#progressCell(ref, observed);
-		const terminal =
-			progress?.status === "completed" ||
-			progress?.status === "failed" ||
-			progress?.status === "aborted" ||
-			ref.status === "idle" ||
-			ref.status === "parked" ||
-			ref.status === "aborted";
+		const terminal = this.#isTerminal(taskStatus);
+		const duration = this.#taskDuration(ref, observed, terminal);
 		const activityTime = terminal
 			? formatAgentClockTime(progress?.completedAtMs ?? observed?.completedAtMs ?? ref.lastActivity)
 			: formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)));
@@ -761,17 +652,15 @@ export class AgentHubOverlayComponent extends Container {
 				max -
 					3 -
 					HUB_STATUS_WIDTH -
-					HUB_PROGRESS_WIDTH -
 					HUB_DURATION_WIDTH -
 					HUB_MODEL_WIDTH -
 					HUB_ACTIVITY_WIDTH -
-					HUB_COLUMN_GAP.length * 5,
+					HUB_COLUMN_GAP.length * 4,
 			);
 			entry.push(
 				` ${cursor} ${[
 					fixedCell(theme.bold(label), nameWidth),
 					fixedCell(status, HUB_STATUS_WIDTH),
-					fixedCell(progressText, HUB_PROGRESS_WIDTH),
 					fixedCell(theme.fg("dim", duration), HUB_DURATION_WIDTH),
 					fixedCell(model, HUB_MODEL_WIDTH),
 					fixedCell(theme.fg("dim", activityTime), HUB_ACTIVITY_WIDTH),
@@ -781,34 +670,7 @@ export class AgentHubOverlayComponent extends Container {
 			const suffix = status ? `  ${status}` : "";
 			const labelWidth = Math.max(8, max - 3 - visibleWidth(suffix));
 			entry.push(` ${cursor} ${fixedCell(theme.bold(label), labelWidth)}${suffix}`);
-			entry.push(
-				`   ${fixedCell(progressText, Math.max(18, max - HUB_DURATION_WIDTH - 5))}${HUB_COLUMN_GAP}${theme.fg("dim", duration)}`,
-			);
-			entry.push(
-				`   ${fixedCell(theme.fg("dim", tSettingsUi("Model")), HUB_DETAIL_LABEL_WIDTH)}${truncateToWidth(model, Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH))}`,
-			);
-		}
-
-		entry.push(`   ${fixedCell(theme.fg("dim", tSettingsUi("Dynamic summary")), HUB_DETAIL_LABEL_WIDTH)}${summary}`);
-		const outcome = terminal ? this.#taskOutcome(ref.id, progress) : undefined;
-		if (outcome?.resultText) {
-			entry.push(
-				`   ${fixedCell(theme.fg("dim", tSettingsUi("Task result")), HUB_DETAIL_LABEL_WIDTH)}${sanitizeLine(outcome.resultText, Math.max(1, max - 3 - HUB_DETAIL_LABEL_WIDTH))}`,
-			);
-		}
-		const reportStatus = terminal
-			? this.#deliveryLabel(outcome?.deliveryStatus, Boolean(outcome?.resultText))
-			: undefined;
-		if (reportStatus) {
-			entry.push(
-				`   ${fixedCell(theme.fg("dim", tSettingsUi("Report status")), HUB_DETAIL_LABEL_WIDTH)}${reportStatus}`,
-			);
-		}
-		if (activity?.phase === "waiting-peer") {
-			const waiting = formatAgentDuration(Date.now() - activity.phaseStartedAtMs);
-			entry.push(
-				`   ${fixedCell(theme.fg("dim", tSettingsUi("Waiting for Main")), HUB_DETAIL_LABEL_WIDTH)}${waiting}${theme.fg("dim", `${theme.sep.dot}${tSettingsUi("Duration {duration}", { duration })}`)}`,
-			);
+			entry.push(`   ${truncateToWidth([model, duration, activityTime].join(theme.sep.dot), Math.max(1, max - 3))}`);
 		}
 
 		if (!selected) return entry;
@@ -818,32 +680,14 @@ export class AgentHubOverlayComponent extends Container {
 		});
 	}
 
-	#deliveryLabel(status: AsyncJobDeliveryStatus | undefined, hasResult: boolean): string | undefined {
-		switch (status) {
-			case "pending":
-				return theme.fg("warning", tSettingsUi("Delivery pending"));
-			case "delivering":
-				return theme.fg("accent", tSettingsUi("Delivering to Main"));
-			case "delivered":
-				return theme.fg("success", tSettingsUi("Delivered to Main"));
-			case "dead-letter":
-				return theme.fg("error", tSettingsUi("Main unavailable"));
-			default:
-				return hasResult ? theme.fg("success", tSettingsUi("Delivered to Main")) : undefined;
-		}
+	#isTerminal(status: HubTaskStatus): boolean {
+		return status === "completed" || status === "failed" || status === "stopped";
 	}
 
-	#taskDuration(ref: AgentRef, observed: ObservableSession | undefined): string {
+	#taskDuration(ref: AgentRef, observed: ObservableSession | undefined, terminal: boolean): string {
 		const progress = observed?.progress;
 		const startedAtMs = progress?.startedAtMs ?? observed?.startedAtMs;
 		const completedAtMs = progress?.completedAtMs ?? observed?.completedAtMs;
-		const terminal =
-			progress?.status === "completed" ||
-			progress?.status === "failed" ||
-			progress?.status === "aborted" ||
-			ref.status === "idle" ||
-			ref.status === "parked" ||
-			ref.status === "aborted";
 		if (startedAtMs !== undefined) {
 			const end = terminal
 				? (completedAtMs ??
@@ -851,32 +695,10 @@ export class AgentHubOverlayComponent extends Container {
 				: Date.now();
 			return formatAgentDuration(Math.max(0, end - startedAtMs));
 		}
-		return progress?.durationMs !== undefined ? formatAgentDuration(progress.durationMs) : "--:--:--";
-	}
-
-	#progressCell(ref: AgentRef, observed: ObservableSession | undefined): string {
-		const progress = observed?.progress;
-		const activity = selectAgentActivity(ref.activityState, progress);
-		const determinate = activity?.progress;
-		if (determinate && Number.isFinite(determinate.total) && determinate.total > 0) {
-			const completed = Math.max(0, Math.min(determinate.completed, determinate.total));
-			return `${progressBar(completed, determinate.total)} ${completed}/${determinate.total}`;
-		}
-		if (progress?.status === "completed" || ref.status === "idle" || ref.status === "parked") {
-			return `${progressBar(1, 1)} ${tSettingsUi("completed")}`;
-		}
-		if (progress?.status === "failed" || progress?.status === "aborted" || ref.status === "aborted") {
-			return `${progressBar(1, 1)} ${tSettingsUi(progress?.status ?? "aborted")}`;
-		}
-		const phase = activity?.label ? tSettingsUi(activity.label) : tSettingsUi(ref.status);
-		return `${progressBar(0, 1)} ${phase}`;
+		return progress?.durationMs !== undefined ? formatAgentDuration(progress.durationMs) : "—";
 	}
 
 	#handleTableInput(keyData: string): void {
-		if (this.#messageInput) {
-			this.#handleMessageInput(keyData);
-			return;
-		}
 		if (matchesKey(keyData, "escape")) {
 			this.#onDone();
 			return;
@@ -907,14 +729,6 @@ export class AgentHubOverlayComponent extends Container {
 			this.#focusSelected();
 			return;
 		}
-		if (keyData === "m") {
-			this.#startMessage();
-			return;
-		}
-		if (keyData === "p") {
-			this.#switchToMain();
-			return;
-		}
 		if (keyData === "r") {
 			this.#reviveSelected();
 			return;
@@ -930,93 +744,7 @@ export class AgentHubOverlayComponent extends Container {
 		this.#requestRender();
 	}
 
-	#handleMessageInput(keyData: string): void {
-		const input = this.#messageInput;
-		const agentId = this.#messageAgentId;
-		if (!input || !agentId) {
-			this.#messageInput = undefined;
-			this.#messageAgentId = undefined;
-			return;
-		}
-		if (matchesKey(keyData, "escape")) {
-			this.#messageInput = undefined;
-			this.#messageAgentId = undefined;
-			this.#notice = undefined;
-			this.#requestRender();
-			return;
-		}
-		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
-			this.#submitMessage(agentId, input.getValue());
-			return;
-		}
-		input.handleInput(keyData);
-		this.#requestRender();
-	}
-
-	#startMessage(): void {
-		const row = this.#rows[this.#selectedRow];
-		if (!row) return;
-		const ref = row.ref;
-		if (ref.kind === "advisor") {
-			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript and cannot be messaged.`;
-			this.#requestRender();
-			return;
-		}
-		if (ref.status === "aborted") {
-			this.#notice = `"${this.#displayLabel(ref)}" was aborted and cannot be messaged.`;
-			this.#requestRender();
-			return;
-		}
-		this.#notice = undefined;
-		this.#messageAgentId = ref.id;
-		this.#messageInput = new Input();
-		this.#requestRender();
-	}
-
-	#submitMessage(agentId: string, body: string): void {
-		const text = body.trim();
-		if (!text) {
-			this.#notice = "Type a message before sending.";
-			this.#requestRender();
-			return;
-		}
-		const target = this.#registry.get(agentId);
-		if (!target || target.kind === "advisor" || target.status === "aborted") {
-			this.#messageInput = undefined;
-			this.#messageAgentId = undefined;
-			this.#notice = target
-				? `"${this.#displayLabel(target)}" cannot receive a message.`
-				: "The selected subagent is no longer available.";
-			this.#requestRender();
-			return;
-		}
-		this.#messageInput = undefined;
-		this.#messageAgentId = undefined;
-		this.#notice = undefined;
-		if (this.#remote) {
-			try {
-				this.#remote.chat(agentId, text);
-			} catch (error) {
-				this.#notice = error instanceof Error ? error.message : String(error);
-			}
-			this.#requestRender();
-			return;
-		}
-		void this.#irc
-			.send({ from: this.#activeTopLevelId, to: agentId, body: text })
-			.then(receipt => {
-				if (receipt.outcome === "failed") this.#notice = receipt.error ?? "Message delivery failed.";
-				this.#requestRender();
-			})
-			.catch((error: unknown) => {
-				this.#notice = error instanceof Error ? error.message : String(error);
-				this.#requestRender();
-			});
-		this.#requestRender();
-	}
-
 	#handleMouseInput(keyData: string): void {
-		if (this.#messageInput) return;
 		routeSgrMouseInput(keyData, (event: SgrMouseEvent) => {
 			if (event.wheel !== null) {
 				this.#moveSelection(event.wheel);
@@ -1039,40 +767,22 @@ export class AgentHubOverlayComponent extends Container {
 		this.openChat(selected.ref.id);
 	}
 
-	#switchSelectedMain(ref: AgentRef): void {
-		const switchTopLevel = this.#switchTopLevel;
-		if (!switchTopLevel) {
-			this.#notice = `Cannot switch to "${this.#displayLabel(ref)}" from this Agent Hub.`;
-			this.#requestRender();
-			return;
-		}
-		void switchTopLevel(ref.id)
-			.then(() => this.#onDone())
-			.catch((error: unknown) => {
-				this.#notice = error instanceof Error ? error.message : String(error);
-				this.#requestRender();
-			});
-	}
-
 	#focusSelected(): void {
 		const row = this.#rows[this.#selectedRow];
 		if (!row) return;
 		const ref = row.ref;
 		const isLive =
 			ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
-		if (ref.kind === "advisor") {
-			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript.`;
-			this.#requestRender();
-			return;
-		}
 		if (!isLive) {
-			this.#notice = `"${this.#displayLabel(ref)}" is not live; open its transcript or revive it first.`;
+			this.#notice = tSettingsUi('"{label}" is not live; open its transcript or revive it first.', {
+				label: this.#displayLabel(ref),
+			});
 			this.#requestRender();
 			return;
 		}
 		const focusAgent = this.#focusAgent;
 		if (!focusAgent) {
-			this.#notice = "Live subagent focus is unavailable in this Agent Hub.";
+			this.#notice = tSettingsUi("Live subagent focus is unavailable in this Agent Hub.");
 			this.#requestRender();
 			return;
 		}
@@ -1080,7 +790,9 @@ export class AgentHubOverlayComponent extends Container {
 		const needsSwitch = root !== undefined && root.id !== this.#activeTopLevelId;
 		const switchTopLevel = needsSwitch ? this.#switchTopLevel : undefined;
 		if (root && needsSwitch && !switchTopLevel) {
-			this.#notice = `Switching to "${this.#displayLabel(root)}" is unavailable in this Agent Hub.`;
+			this.#notice = tSettingsUi('Switching to "{label}" is unavailable in this Agent Hub.', {
+				label: this.#displayLabel(root),
+			});
 			this.#requestRender();
 			return;
 		}
@@ -1097,34 +809,12 @@ export class AgentHubOverlayComponent extends Container {
 		})();
 	}
 
-	#switchToMain(): void {
-		const row = this.#rows[this.#selectedRow];
-		if (!row) return;
-		const parent = resolveTopLevelAgent(this.#registry, row.ref.id);
-		if (!parent) {
-			this.#notice = `The Main for "${this.#displayLabel(row.ref)}" is unavailable.`;
-			this.#requestRender();
-			return;
-		}
-		this.#notice = undefined;
-		if (parent.id === this.#activeTopLevelId) {
-			this.#onDone();
-			return;
-		}
-		this.#switchSelectedMain(parent);
-	}
-
 	#reviveSelected(): void {
 		const row = this.#rows[this.#selectedRow];
 		if (!row) return;
 		const ref = row.ref;
-		if (ref.kind === "advisor") {
-			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — nothing to revive.`;
-			this.#requestRender();
-			return;
-		}
 		if (ref.status !== "parked") {
-			this.#notice = `"${this.#displayLabel(ref)}" is ${ref.status} — only parked agents can be revived.`;
+			this.#notice = tSettingsUi('"{label}" cannot be resumed.', { label: this.#displayLabel(ref) });
 			this.#requestRender();
 			return;
 		}
@@ -1147,11 +837,6 @@ export class AgentHubOverlayComponent extends Container {
 		const row = this.#rows[this.#selectedRow];
 		if (!row) return;
 		const ref = row.ref;
-		if (ref.kind === "advisor") {
-			this.#notice = `"${this.#displayLabel(ref)}" is a read-only advisor transcript — cannot be killed.`;
-			this.#requestRender();
-			return;
-		}
 		this.#notice = undefined;
 		if (this.#remote) {
 			this.#remote.kill(ref.id);

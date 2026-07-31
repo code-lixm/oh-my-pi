@@ -33,7 +33,7 @@ describe("InputController thinking visibility", () => {
 		new InputController(ctx).toggleThinkingBlockVisibility();
 
 		expect(ctx.hideThinkingBlock).toBe(true);
-		expect(set).toHaveBeenCalledWith("hideThinkingBlock", true);
+		expect(set).toHaveBeenCalledWith("thinkingDisplay", "hidden");
 		expect(ctx.session.agent.hideThinkingSummary).toBe(false);
 		expect(chatContainer.children).toEqual([pendingUserMessage, assistant, loadingIndicator]);
 		expect(clear).not.toHaveBeenCalled();
@@ -97,7 +97,7 @@ describe("InputController thinking visibility", () => {
 		new InputController(ctx).toggleThinkingBlockVisibility();
 
 		expect(ctx.hideThinkingBlock).toBe(true);
-		expect(set).toHaveBeenCalledWith("hideThinkingBlock", true);
+		expect(set).toHaveBeenCalledWith("thinkingDisplay", "hidden");
 		expect(setHideThinkingBlock).toHaveBeenCalledWith(true);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		expect(showStatus).toHaveBeenCalledWith("Thinking blocks: hidden");

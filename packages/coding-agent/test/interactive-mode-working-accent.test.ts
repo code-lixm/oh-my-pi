@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import * as shimmerModule from "@oh-my-pi/pi-coding-agent/modes/theme/shimmer";
@@ -9,6 +9,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import * as sessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
 import { type Container, type NativeScrollbackLiveRegion, Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 type Harness = {
 	mode: InteractiveMode;
@@ -246,23 +247,57 @@ describe("InteractiveMode working-message session accent cache", () => {
 });
 
 describe("InteractiveMode loading activity summary", () => {
-	it("shows Main activity detail only while no visible activity card already owns it", async () => {
+	it("keeps event-backed Main activity visible beside a subagent card", async () => {
 		const { mode } = await createHarness("Working activity summary");
 		const marker = "UNIQUE_MAIN_ACTIVITY_DETAIL";
-		(mode.viewSession as unknown as { activity: unknown }).activity = {
-			phase: "tool",
+		const now = Date.now();
+		const mainActivity = {
+			phase: "tool" as const,
 			label: "Read",
 			detail: marker,
-			phaseStartedAtMs: Date.now(),
-			lastActivityAtMs: Date.now(),
+			phaseStartedAtMs: now,
+			lastActivityAtMs: now,
 		};
 		startStableLoader(mode);
+		mode.refreshWorkingActivitySummary(mainActivity);
 		expect(Bun.stripANSI(renderLoader(mode))).toContain(marker);
+
 		mode.subagentContainer.addChild(new Text("visible activity card"));
-		mode.refreshWorkingActivitySummary();
-		expect(Bun.stripANSI(renderLoader(mode))).not.toContain(marker);
-		mode.subagentContainer.clear();
-		mode.refreshWorkingActivitySummary();
-		expect(Bun.stripANSI(renderLoader(mode))).toContain(marker);
+		mode.refreshWorkingActivitySummary(mainActivity);
+		const alongsideCard = Bun.stripANSI(renderLoader(mode));
+		expect(alongsideCard).toContain(marker);
+		expect(alongsideCard).not.toContain("Working…");
+	});
+
+	it("renders a real thinking snapshot as active, then quiet after 15 seconds without a new event", async () => {
+		const { mode } = await createHarness("Thinking activity summary");
+		const previousLocale = getSettingsUiLocale();
+		const phaseStartedAtMs = 1_700_000_000_000;
+		const thinkingActivity = {
+			phase: "thinking" as const,
+			label: "Thinking",
+			phaseStartedAtMs,
+			lastActivityAtMs: phaseStartedAtMs + 135_000,
+		};
+
+		setSettingsUiLocale("en");
+		vi.useFakeTimers();
+		try {
+			setSystemTime(thinkingActivity.lastActivityAtMs);
+			startStableLoader(mode);
+			mode.refreshWorkingActivitySummary(thinkingActivity);
+			const active = Bun.stripANSI(renderLoader(mode));
+			expect(active).toContain("Thinking · Active · phase 2m15s");
+
+			setSystemTime(thinkingActivity.lastActivityAtMs + 15_000);
+			mode.refreshWorkingActivitySummary(thinkingActivity);
+			const quiet = Bun.stripANSI(renderLoader(mode));
+			expect(quiet).toContain("Quiet · Thinking · phase 2m30s");
+			expect(quiet).not.toContain("Thinking · Active");
+		} finally {
+			vi.useRealTimers();
+			setSystemTime();
+			setSettingsUiLocale(previousLocale);
+		}
 	});
 });

@@ -79,9 +79,9 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
-import { tSettingsUi } from "../i18n/settings-locale";
+import { getSettingsUiLocale, tSettingsUi } from "../i18n/settings-locale";
 import { resolveLocalUrlToPath } from "../internal-urls";
-import { IrcBus, type IrcMessage } from "../irc/bus";
+import { IrcBus } from "../irc/bus";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -112,6 +112,7 @@ import {
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import type { SessionMessageEntry } from "../session/session-entries";
@@ -140,6 +141,7 @@ import { vocalizer } from "../tts/vocalizer";
 import { setBasicToolDetailsVisible } from "../tui";
 import { resolveMarkdownTableBorderStyle, setOutputBlockBorderStyle } from "../tui/output-block";
 import { renderTreeList } from "../tui/tree-list";
+import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
@@ -159,14 +161,11 @@ import {
 	VibeSessionRegistry,
 } from "../vibe/runtime";
 import { formatAgentActivity } from "./components/agent-activity";
-import {
-	renderAgentActivityDisplay,
-	renderAgentStatusBadge,
-	truncateAgentActivityLine,
-} from "./components/agent-activity-display";
+import { truncateAgentActivityLine } from "./components/agent-activity-display";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
+import { CodexResetFireworksController } from "./components/codex-reset-fireworks";
 import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
@@ -226,6 +225,7 @@ import {
 	setMarkdownHeadingStyle,
 	setMarkdownMermaidRendering,
 	setMarkdownTableBorderStyle,
+	startMacOSAppearanceReprobeFallback,
 	theme,
 } from "./theme/theme";
 import type {
@@ -236,7 +236,6 @@ import type {
 	InteractiveRuntimeFactory,
 	InteractiveSelectorDialogOptions,
 	RenderSessionContextOptions,
-	SubagentFeedback,
 	SubmittedUserInput,
 	TodoItem,
 	TodoPhase,
@@ -347,7 +346,12 @@ function formatWorkingActivityMessage(
 	});
 	const phase = tSettingsUi(formatted.phaseLabel);
 	const health = tSettingsUi(formatted.healthLabel);
-	const state = formatted.health === "active" || phase === health ? phase : `${health}${theme.sep.dot}${phase}`;
+	const state =
+		activity.phase === "thinking" && formatted.health === "active"
+			? `${phase}${theme.sep.dot}${health}`
+			: formatted.health === "active" || phase === health
+				? phase
+				: `${health}${theme.sep.dot}${phase}`;
 	const elapsed = [
 		formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
 		formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
@@ -475,96 +479,80 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
-const SUBAGENT_FEEDBACK_VISIBLE_MS = 10_000;
 
-/**
- * Build the anchored subagent HUD. Live rows share the activity formatter used
- * by agent views; feedback remains transient, while reply obligations come
- * directly from IrcBus and stay present until the bus resolves or dismisses them.
- */
-export function renderSubagentHudLines(
-	sessions: ObservableSession[],
-	columns: number,
-	feedback: readonly SubagentFeedback[] = [],
-	pendingReplies: readonly IrcMessage[] = [],
-): string[] {
-	const feedbackById = new Map(feedback.map(item => [item.agentId, item]));
+/** Build the anchored HUD for active detached subagents. */
+export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
 	const rows = sessions
 		.filter(
 			session =>
 				session.kind === "subagent" &&
-				((session.status === "active" && session.detached === true) || feedbackById.has(session.id)),
+				session.status === "active" &&
+				session.detached === true &&
+				session.progress?.status !== "completed" &&
+				session.progress?.status !== "failed" &&
+				session.progress?.status !== "aborted",
 		)
-		.map(session => ({ session, feedback: feedbackById.get(session.id) }));
-	const knownIds = new Set(rows.map(row => row.session.id));
-	for (const item of feedback) {
-		if (knownIds.has(item.agentId)) continue;
-		rows.push({
-			session: {
-				id: item.agentId,
-				kind: "subagent",
-				label: item.agentId,
-				status: "active",
-				detached: true,
-				lastUpdate: item.timestamp ?? Date.now(),
-			},
-			feedback: item,
+		.sort((left, right) => {
+			const leftLastActivity = left.progress?.activity?.lastActivityAtMs;
+			const rightLastActivity = right.progress?.activity?.lastActivityAtMs;
+			const leftRecency = Math.max(
+				Number.isFinite(left.lastUpdate) ? left.lastUpdate : 0,
+				typeof leftLastActivity === "number" && Number.isFinite(leftLastActivity) ? leftLastActivity : 0,
+			);
+			const rightRecency = Math.max(
+				Number.isFinite(right.lastUpdate) ? right.lastUpdate : 0,
+				typeof rightLastActivity === "number" && Number.isFinite(rightLastActivity) ? rightLastActivity : 0,
+			);
+			return rightRecency - leftRecency;
 		});
-	}
-	if (rows.length === 0 && pendingReplies.length === 0) return [];
+	if (rows.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");
-	const visible = rows.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
-	const hiddenCount = rows.length - visible.length;
 	const rowWidth = Math.max(1, columns - 2);
-	const renderedRows = visible.map(row => {
-		const displayId = formatTaskId(row.session.id);
-		const sessionStatus =
-			row.session.status === "active" ? (row.session.progress?.status ?? "running") : row.session.status;
-		const showStatus = sessionStatus !== "running" && sessionStatus !== "completed";
-		const status = showStatus ? renderAgentStatusBadge(sessionStatus) : "";
-		const feedbackText = row.feedback?.text.trim();
-		const description = row.session.description?.trim() || row.session.progress?.description?.trim();
-		const taskPreview = description || row.session.progress?.task?.trim();
-		const activity = renderAgentActivityDisplay({
-			activity: row.session.progress?.activity,
-			progress: row.session.progress,
-			width: rowWidth,
-		});
-		const detail = feedbackText
-			? theme.fg("toolOutput", feedbackText)
-			: taskPreview
-				? theme.fg("muted", taskPreview)
-				: activity.activityLine;
-		let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
-		if (status) line += theme.sep.dot + status;
-		if (detail) line += theme.sep.dot + detail;
-		return truncateAgentActivityLine(line, rowWidth);
-	});
-	const replyRows = pendingReplies.map(message => {
-		const route = `${formatTaskId(message.from)} → ${formatTaskId(message.to)}`;
-		const heading = `${theme.fg("warning", tSettingsUi("needs reply"))}${theme.fg("dim", `${theme.sep.dot}${route}`)}`;
-		const body = message.body.trim();
+	const renderedRows = rows.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT).map(session => {
+		const status =
+			session.progress?.activity?.phase === "waiting-user"
+				? theme.fg("warning", tSettingsUi("Waiting for user"))
+				: theme.fg("success", tSettingsUi("running"));
+		const resolvedModel = session.progress?.resolvedModel ?? session.resolvedModel;
+		const modelOverride = session.progress?.modelOverride;
+		const model =
+			resolvedModel?.trim() ||
+			(typeof modelOverride === "string"
+				? modelOverride.trim() || undefined
+				: modelOverride?.length === 1
+					? modelOverride[0]?.trim() || undefined
+					: undefined);
+		const contextTokens = session.progress?.contextTokens;
+		const contextWindow = session.progress?.contextWindow;
+		const context =
+			typeof contextTokens === "number" &&
+			Number.isFinite(contextTokens) &&
+			contextTokens >= 0 &&
+			typeof contextWindow === "number" &&
+			Number.isFinite(contextWindow) &&
+			contextWindow > 0
+				? `${formatContextTokenCount(contextTokens)}/${formatContextTokenCount(contextWindow)}`
+				: undefined;
+		const cost = session.progress?.cost;
 		return truncateAgentActivityLine(
-			body ? `${heading}${theme.sep.dot}${theme.fg("toolOutput", body)}` : heading,
+			[
+				`${dot} ${theme.fg("accent", theme.bold(formatTaskId(session.id)))}`,
+				status,
+				model ? theme.fg("muted", model) : "",
+				context ? theme.fg("statusLineContext", context) : "",
+				typeof cost === "number" && Number.isFinite(cost) && cost >= 0
+					? theme.fg("statusLineCost", `$${cost.toFixed(2)}`)
+					: "",
+			]
+				.filter(Boolean)
+				.join(theme.sep.dot),
 			rowWidth,
 		);
 	});
-	const lines = [
-		"",
-		theme.bold(theme.fg("accent", tSettingsUi("Subagents"))),
-		...replyRows.map(line => ` ${line}`),
-		...renderedRows.map(line => ` ${line}`),
-		...(hiddenCount > 0
-			? [
-					theme.fg(
-						"dim",
-						tSettingsUi("… {hiddenCount} more running — open Agent Hub for full list", { hiddenCount }),
-					),
-				]
-			: []),
-	];
-	return lines.map(line => truncateAgentActivityLine(line, Math.max(1, columns)));
+	return ["", theme.bold(theme.fg("accent", tSettingsUi("Subagents"))), ...renderedRows.map(line => ` ${line}`)].map(
+		line => truncateAgentActivityLine(line, Math.max(1, columns)),
+	);
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -697,7 +685,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
 	readonly #version: string;
-	readonly #changelogMarkdown: string | undefined;
+	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	#planModePreviousTools: string[] | undefined;
 	#goalModePreviousTools: string[] | undefined;
 	#vibeModePreviousTools: string[] | undefined;
@@ -725,6 +713,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	mcpManager?: MCPManager;
 	#toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
+	readonly #codexResetFireworksController: CodexResetFireworksController;
 	readonly #btwController: BtwController;
 	readonly #tanCommandController: TanCommandController;
 	readonly #omfgController: OmfgController;
@@ -1024,9 +1013,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
-	#subagentFeedback = new Map<string, SubagentFeedback>();
-	#subagentFeedbackTimers = new Map<string, NodeJS.Timeout>();
-	#subagentActivityRefreshTimer?: NodeJS.Timeout;
 	#ircPendingReplyUnsubscribe?: () => void;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
@@ -1045,7 +1031,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	constructor(
 		session: AgentSession,
 		version: string,
-		changelogMarkdown: string | undefined = undefined,
+		startupChangelog: StartupChangelogSelection | undefined = undefined,
 		setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void = () => {},
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
@@ -1062,7 +1048,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#primaryRuntime = this.#activeRuntime;
 		this.#registerRuntime(this.#activeRuntime);
 		this.#version = version;
-		this.#changelogMarkdown = changelogMarkdown;
+		this.#startupChangelog = startupChangelog;
 		this.#toolUiContextSetter = setToolUIContext;
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
@@ -1127,6 +1113,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine = new StatusLineComponent(session, () => this.ui.requestRender());
 		this.#syncStatusLineSettings();
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
+		this.#codexResetFireworksController = new CodexResetFireworksController(this);
+		this.statusLine.setCodexResetFireworksHandler(event => {
+			this.#codexResetFireworksController.show(event);
+		});
 		// Vibe worker tok/s aggregator — keeps the status-line render layer off
 		// the heavy vibe/task dependency graph. The director is often idle while
 		// workers stream, so without this the tok/s badge would show a stale
@@ -1141,8 +1131,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// hot path where the render never gets to paint the result.
 		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
-		this.hideThinkingBlock = settings.get("hideThinkingBlock");
-		this.proseOnlyThinking = settings.get("proseOnlyThinking");
+		const thinkingDisplay = settings.get("thinkingDisplay");
+		this.hideThinkingBlock = thinkingDisplay === "hidden";
+		this.proseOnlyThinking = thinkingDisplay === "prose";
 
 		const hookCommands: SlashCommand[] = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
@@ -1317,22 +1308,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 
 			// Add changelog if provided
-			if (this.#changelogMarkdown) {
+			if (this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
 				this.ui.addChild(new DynamicBorder());
-				if (settings.get("collapseChangelog")) {
-					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
-					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
-					const condensedText = tSettingsUi("Updated to v{latestVersion}. Use {command} to view full changelog.", {
-						latestVersion,
-						command: theme.bold("/changelog"),
-					});
-					this.ui.addChild(new Text(condensedText, 1, 0));
+				this.ui.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("What's New"))), 1, 0));
+				this.ui.addChild(new Spacer(1));
+				if (settings.get("startup.changelogMode") === "summary") {
+					const summary = formatStartupChangelogSummary(this.#startupChangelog, getSettingsUiLocale()).replace(
+						/\/changelog(?: full)?/g,
+						command => theme.bold(command),
+					);
+					this.ui.addChild(new Text(summary, 1, 0));
 				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("What's New"))), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
+					this.ui.addChild(new Markdown(this.#startupChangelog.markdown?.trim() ?? "", 1, 0, getMarkdownTheme()));
 				}
+				this.ui.addChild(new Spacer(1));
 				this.ui.addChild(new DynamicBorder());
 			}
 		}
@@ -1377,7 +1366,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#scheduleObserverUiSync(kind);
 		});
 		this.#ircPendingReplyUnsubscribe = IrcBus.global().onPendingReplyChange(() => {
-			this.#renderSubagentList();
 			this.#eventController.syncTerminalTitleState();
 			this.ui.requestRender();
 		});
@@ -1414,6 +1402,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.terminal.onAppearanceChange(mode => {
 			onTerminalAppearanceChange(mode);
 		});
+		if (process.platform === "darwin" && TERMINAL.id === "wezterm" && !isInsideTerminalMultiplexer()) {
+			this.#eventBusUnsubscribers.push(startMacOSAppearanceReprobeFallback(this.ui.terminal));
+		}
 
 		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
 		// the initial welcome frame does not append over the previous run's scrollback.
@@ -1650,8 +1641,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.refreshSkillState();
 		await this.refreshSlashCommandState(newCwd);
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-		this.statusLine.invalidate();
-		this.ui.requestRender();
+		this.statusLine.applyCwdChange();
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
@@ -2529,77 +2519,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
-	#syncSubagentActivityRefresh(sessions: readonly ObservableSession[]): void {
-		const hasLiveActivity = sessions.some(session => {
-			const activity = session.progress?.activity;
-			return (
-				session.kind === "subagent" &&
-				session.status === "active" &&
-				session.detached === true &&
-				activity !== undefined &&
-				activity.phase !== "idle"
-			);
-		});
-		if (!hasLiveActivity) {
-			this.#stopSubagentActivityRefresh();
-			return;
-		}
-		if (this.#subagentActivityRefreshTimer) return;
-		this.#subagentActivityRefreshTimer = setInterval(() => {
-			this.#renderSubagentList();
-			this.ui.requestRender();
-		}, WORKING_ACTIVITY_REFRESH_MS);
-		this.#subagentActivityRefreshTimer.unref?.();
-	}
-
-	#stopSubagentActivityRefresh(): void {
-		if (!this.#subagentActivityRefreshTimer) return;
-		clearInterval(this.#subagentActivityRefreshTimer);
-		this.#subagentActivityRefreshTimer = undefined;
-	}
-
-	/** Anchored HUD for detached work and transient subagent feedback. */
+	/** Anchored HUD for active detached work. */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
 		const sessions = this.#observerRegistry.getSessions();
-		this.#syncSubagentActivityRefresh(sessions);
 		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
-		const lines = renderSubagentHudLines(
-			sessions,
-			columns,
-			[...this.#subagentFeedback.values()],
-			IrcBus.global().getPendingReplySnapshot().messages,
-		);
+		const lines = renderSubagentHudLines(sessions, columns);
 		if (lines.length > 0) {
 			this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 		}
 		this.#refreshWorkingActivityMessage();
-	}
-
-	showSubagentFeedback(feedback: SubagentFeedback): void {
-		const agentId = feedback.agentId.trim();
-		const text = feedback.text.trim();
-		if (!agentId || !text) return;
-		const item = { ...feedback, agentId, text };
-		this.#subagentFeedback.set(agentId, item);
-		clearTimeout(this.#subagentFeedbackTimers.get(agentId));
-		const timer = setTimeout(() => {
-			this.#subagentFeedbackTimers.delete(agentId);
-			if (this.#subagentFeedback.get(agentId) !== item) return;
-			this.#subagentFeedback.delete(agentId);
-			this.#renderSubagentList();
-			this.ui.requestRender();
-		}, SUBAGENT_FEEDBACK_VISIBLE_MS);
-		timer.unref?.();
-		this.#subagentFeedbackTimers.set(agentId, timer);
-		this.#renderSubagentList();
-		this.ui.requestRender();
-	}
-
-	#clearSubagentFeedback(): void {
-		for (const timer of this.#subagentFeedbackTimers.values()) clearTimeout(timer);
-		this.#subagentFeedbackTimers.clear();
-		this.#subagentFeedback.clear();
 	}
 
 	async #loadTodoList(): Promise<void> {
@@ -4504,8 +4433,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
-		this.#clearSubagentFeedback();
-		this.#stopSubagentActivityRefresh();
 		this.#ircPendingReplyUnsubscribe?.();
 		this.#ircPendingReplyUnsubscribe = undefined;
 		this.#cancelGoalContinuation();
@@ -4528,6 +4455,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#agentRegistryUnsubscribe = undefined;
 		this.#agentRegistrySubscriptionTarget = undefined;
 		this.#eventController.dispose();
+		this.#codexResetFireworksController.dispose();
 		this.statusLine.dispose();
 		if (this.#resizeHandler) {
 			process.stdout.removeListener("resize", this.#resizeHandler);
@@ -4843,35 +4771,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#cacheWorkingMessageAccent(key, main && dim ? { main, dim } : undefined);
 	}
 
-	/** Activity cards already explain the work; keep the loading row compact beside them. */
-	#hasVisibleActivityCard(): boolean {
-		return (
-			this.subagentContainer.children.length > 0 ||
-			this.pendingTools.size > 0 ||
-			this.bashComponent !== undefined ||
-			this.pythonComponent !== undefined ||
-			this.pendingBashComponents.length > 0 ||
-			this.pendingPythonComponents.length > 0
-		);
+	/** Reconcile the bottom loader with the latest Main activity snapshot. */
+	refreshWorkingActivitySummary(activity?: AgentActivityState): void {
+		this.#refreshWorkingActivityMessage(activity);
 	}
 
-	/** Reconcile the bottom loader after an activity card appears or disappears. */
-	refreshWorkingActivitySummary(): void {
-		this.#refreshWorkingActivityMessage();
-	}
-
-	#refreshWorkingActivityMessage(): void {
+	#refreshWorkingActivityMessage(activity: AgentActivityState = this.viewSession.activity): void {
 		const loader = this.loadingAnimation;
 		if (!loader) {
 			this.#stopWorkingActivityRefresh();
 			return;
 		}
-		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
+		if (this.#pendingWorkingMessage !== undefined) return;
+		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);
 		const hint = interruptHint();
-		const summary = this.#hasVisibleActivityCard()
-			? undefined
-			: formatWorkingActivityMessage(this.viewSession.activity, Math.max(1, maxWidth - visibleWidth(hint)));
+		const summary = formatWorkingActivityMessage(activity, Math.max(1, maxWidth - visibleWidth(hint)));
 		loader.setMessage(summary ? `${summary}${hint}` : this.#defaultWorkingMessage);
 	}
 
@@ -5244,8 +5159,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetObserverRegistry(): void {
-		this.#clearSubagentFeedback();
-		this.#stopSubagentActivityRefresh();
 		this.#observerRegistry.resetSessions();
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 	}
@@ -5341,8 +5254,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showTreeSelector();
 	}
 
-	showSessionSelector(): void {
-		this.#selectorController.showSessionSelector();
+	showSessionSelector(source?: ForeignSessionSource): void {
+		void this.#selectorController.showSessionSelector(source);
 	}
 
 	async handleResumeSession(sessionPath: string): Promise<void> {
@@ -5404,6 +5317,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleDequeue(): void {
 		this.#inputController.handleDequeue();
+	}
+
+	handleRetry(): Promise<void> {
+		return this.#inputController.handleRetry();
 	}
 
 	handleImagePaste(): Promise<boolean> {

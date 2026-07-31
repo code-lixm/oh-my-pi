@@ -861,6 +861,63 @@ describe("IRC", () => {
 			expect(text).toContain("pong");
 		});
 
+		it("op=send await=true keeps its pre-armed waiter through parked revival", async () => {
+			const main = makeFakeSession();
+			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+			const parked = makeFakeSession();
+			parked.setOutcome("woken");
+			registry.register({ id: "0-Parked", displayName: "task", kind: "sub", session: null, status: "parked" });
+			AgentLifecycleManager.global().adopt("0-Parked", {
+				idleTtlMs: 60_000,
+				revive: async () => parked.session,
+			});
+			const delivered = Promise.withResolvers<IrcMessage>();
+			parked.onDeliver(message => delivered.resolve(message));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
+			vi.useFakeTimers();
+			const pending = tool.execute("call-1", {
+				op: "send",
+				to: "0-Parked",
+				message: "please resume",
+				await: true,
+				timeoutMs: 60_000,
+			});
+
+			try {
+				const request = await delivered.promise;
+				for (let index = 0; index < 6; index++) await Promise.resolve();
+				await bus.send({
+					from: "0-Parked",
+					to: "0-Main",
+					body: "reply after revival",
+					replyTo: request.id,
+				});
+				for (let index = 0; index < 6; index++) await Promise.resolve();
+				let settled = false;
+				void pending.then(
+					() => {
+						settled = true;
+					},
+					() => {
+						settled = true;
+					},
+				);
+				for (let index = 0; index < 6; index++) await Promise.resolve();
+				expect(settled).toBe(true);
+
+				const result = await pending;
+				expect(result.isError).toBeFalsy();
+				const details = result.details as CoordinationDetails | undefined;
+				expect(details?.receipts).toEqual([{ to: "0-Parked", outcome: "revived" }]);
+				expect(details?.waited?.body).toBe("reply after revival");
+				expect(parked.delivered.map(message => message.body)).toEqual(["please resume"]);
+			} finally {
+				vi.runAllTimers();
+				await pending.catch(() => undefined);
+				vi.useRealTimers();
+			}
+		});
+
 		it("op=send await=true ignores buffered stale mail and waits for a future reply", async () => {
 			const main = makeFakeSession();
 			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
@@ -898,6 +955,57 @@ describe("IRC", () => {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("No reply from 0-Sub");
 		});
+
+		it.each(["idle", "parked", "aborted"] as const)(
+			"op=send await=true finishes before its timeout when the recipient becomes $status after delivery",
+			async status => {
+				const main = makeFakeSession();
+				registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+				const sub = makeFakeSession();
+				registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
+				const delivered = Promise.withResolvers<void>();
+				sub.onDeliver(() => delivered.resolve());
+				const tool = new HubTool(makeToolSession(registry, "0-Main"));
+				vi.useFakeTimers();
+				const pending = tool.execute("call-1", {
+					op: "send",
+					to: "0-Sub",
+					message: "ping",
+					await: true,
+					timeoutMs: 60_000,
+				});
+
+				try {
+					await delivered.promise;
+					for (let index = 0; index < 6; index++) await Promise.resolve();
+					registry.setStatus("0-Sub", status);
+
+					let settled = false;
+					void pending.then(
+						() => {
+							settled = true;
+						},
+						() => {
+							settled = true;
+						},
+					);
+					for (let index = 0; index < 6; index++) await Promise.resolve();
+					expect(settled).toBe(true);
+
+					const result = await pending;
+					expect(result.isError).toBeFalsy();
+					const details = result.details as CoordinationDetails | undefined;
+					expect(details?.receipts).toEqual([{ to: "0-Sub", outcome: "injected" }]);
+					const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+					expect(text).toContain("Send delivered; 0-Sub finished without replying.");
+					expect(text).not.toContain("within");
+				} finally {
+					vi.runAllTimers();
+					await pending.catch(() => undefined);
+					vi.useRealTimers();
+				}
+			},
+		);
 
 		it("op=send await=true preserves the delivery receipt when the wait is interrupted", async () => {
 			// Regression: the tool is marked interruptible so `job poll` / `irc wait` return

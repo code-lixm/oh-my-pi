@@ -46,6 +46,12 @@ describe("AdvisorEmissionGuard", () => {
 		expect(guard.accept("不要等待汇总；先读取最新错误日志并给出导致重试风暴的具体调用栈。")).toBe(true);
 	});
 
+	it("suppresses a whole standby status but keeps a concrete risk prefixed by that status", () => {
+		const guard = new AdvisorEmissionGuard();
+		expect(guard.accept("Still standing by. Correct. No action.")).toBe(false);
+		expect(guard.accept("Still standing by, but the retry path can deadlock; inspect queue ownership.")).toBe(true);
+	});
+
 	it("dedupes by normalized text across the session, ignoring casing and trailing punctuation", () => {
 		const guard = new AdvisorEmissionGuard();
 		expect(guard.accept("Move retries into the queue, not the request path.")).toBe(true);

@@ -5,7 +5,7 @@ import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { type ConfigAction, type ConfigCommandArgs, runConfigCommand } from "../cli/config-cli";
 import { initTheme } from "../modes/theme/theme";
 
-const ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg"];
+const ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg", "export", "import"];
 
 export default class Config extends Command {
 	static description = "Manage configuration settings";
@@ -17,7 +17,7 @@ export default class Config extends Command {
 			options: ACTIONS,
 		}),
 		key: Args.string({
-			description: "Setting key",
+			description: "Setting key or configuration bundle path",
 			required: false,
 		}),
 		value: Args.string({
@@ -29,6 +29,9 @@ export default class Config extends Command {
 
 	static flags = {
 		json: Flags.boolean({ description: "Output JSON" }),
+		"passphrase-env": Flags.string({ description: "Environment variable containing the bundle passphrase" }),
+		"dry-run": Flags.boolean({ description: "Validate and preview an import without applying it" }),
+		replace: Flags.boolean({ description: "Replace synchronized files and credentials missing from the bundle" }),
 	};
 
 	async run(): Promise<void> {
@@ -42,6 +45,9 @@ export default class Config extends Command {
 			value,
 			flags: {
 				json: flags.json,
+				passphraseEnv: flags["passphrase-env"],
+				dryRun: flags["dry-run"],
+				replace: flags.replace,
 			},
 		};
 

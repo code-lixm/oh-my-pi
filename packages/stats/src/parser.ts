@@ -289,6 +289,7 @@ function extractToolResultLink(sessionFile: string, entry: SessionMessageEntry):
 	return {
 		sessionFile,
 		toolCallId: msg.toolCallId,
+		timestamp: coerceEntryTimestamp(msg.timestamp, entry),
 		resultChars,
 		isError: msg.isError === true,
 	};

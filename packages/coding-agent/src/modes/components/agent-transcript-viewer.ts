@@ -28,7 +28,6 @@ import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { AgentActivityState } from "../../registry/agent-activity";
 import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
@@ -36,16 +35,12 @@ import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-ut
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import {
-	formatAgentDuration,
-	renderAgentActivityDisplay,
-	renderAgentStatusBadge,
-	selectAgentActivity,
-} from "./agent-activity-display";
+import { formatAgentDuration, renderAgentStatusBadge } from "./agent-activity-display";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
+import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./status-line/context-thresholds";
 
 export interface AgentTranscriptViewerDeps {
 	agentId: string;
@@ -53,12 +48,12 @@ export interface AgentTranscriptViewerDeps {
 	getVisibleAgentIds?: () => readonly string[];
 	/** Keeps the Hub selection synchronized after an in-place viewer retarget. */
 	onAgentChange?: (agentId: string) => void;
-	/** Latest async result-delivery state retained by the job manager. */
+	/** Accepted from existing Hub callers; compact transcripts intentionally omit delivery state. */
 	getTaskOutcome?: (agentId: string) => Pick<TranscriptProgressSnapshot, "resultText" | "deliveryStatus"> | undefined;
 	registry: AgentRegistry;
 	/** Collab guest: read transcript from the host instead of a local file. */
 	remote?: AgentHubRemote;
-	/** Progress/cost snapshot source for the stats line. */
+	/** Progress snapshot source for compact header metadata. */
 	observers?: SessionObserverRegistry;
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
@@ -80,8 +75,9 @@ export interface AgentTranscriptViewerDeps {
 const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
-const FIXED_HEADER_ROWS = 6;
+const FIXED_HEADER_ROWS = 1;
 const FIXED_FOOTER_ROWS = 1;
+const MIN_NAVIGATION_TITLE_WIDTH = 12;
 
 /** Sanitize wire-delivered error text for a single TUI row: tabs/newlines → spaces, strip controls,
  *  absolute paths shortened, truncated to `maxWidth`.
@@ -95,17 +91,13 @@ function sanitizeErrorLine(text: string, maxWidth: number): string {
 	return truncateToWidth(singleLine, Math.max(1, maxWidth));
 }
 
-/** Optional durable completion data supplied by task-progress owners. */
+/** Task timing/status plus legacy result fields retained for the Hub dependency boundary. */
 interface TranscriptProgressSnapshot {
 	status?: string;
 	startedAtMs?: number;
 	completedAtMs?: number;
 	durationMs?: number;
 	resolvedModel?: string;
-	lastIntent?: string;
-	currentToolArgs?: string;
-	description?: string;
-	task?: string;
 	resultText?: string;
 	deliveryStatus?: "pending" | "delivering" | "delivered" | "dead-letter";
 }
@@ -611,117 +603,81 @@ export class AgentTranscriptViewer implements Component {
 		const contentWidth = Math.max(1, width - 1);
 		const ref = this.deps.registry.get(this.#agentId);
 		const observed = this.#observed();
-		const activity = selectAgentActivity(
-			ref?.activityState,
-			observed?.progress,
-			Boolean(this.deps.remote || ref?.status === "parked"),
-		);
-		const activityDisplay = renderAgentActivityDisplay({
-			activity,
-			progress: observed?.progress,
-			registryStatus: ref?.status,
-			frozenAtMs: ref?.lastActivity,
-			width: innerWidth,
-		});
-		const headerLines = this.#headerLines(
-			ref,
-			observed,
-			activity,
-			activityDisplay.activityLine,
-			activityDisplay.statsLine,
-			innerWidth,
-		);
+		const headerLine = this.#headerLine(ref, observed, innerWidth);
 		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - FIXED_FOOTER_ROWS - 2);
-		const contentLines = this.#builder.isEmpty
+		const transcriptLines = this.#builder.isEmpty
 			? [` ${theme.fg("dim", this.#placeholder(Math.max(1, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
+		// A terminal remote-read error must remain visible after earlier transcript rows,
+		// without restoring the removed multi-row status panel.
+		const contentLines =
+			this.#remoteError && !this.#builder.isEmpty
+				? [
+						...transcriptLines,
+						` ${theme.fg("error", sanitizeErrorLine(this.#remoteError, Math.max(1, contentWidth - 1)))}`,
+					]
+				: transcriptLines;
 		this.#scrollView.setLines(contentLines);
 		this.#scrollView.setHeight(viewportHeight);
 		if (this.#followBottom) this.#scrollView.scrollToBottom();
 
 		const lines: string[] = [];
 		lines.push(...new DynamicBorder().render(width));
-		for (const headerLine of headerLines) lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
+		lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
 		for (const row of this.#scrollView.render(width)) lines.push(row);
 		lines.push(` ${truncateToWidth(this.#hint(), innerWidth)}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
 
-	#headerLines(
-		ref: AgentRef | undefined,
-		observed: ObservableSession | undefined,
-		activity: AgentActivityState | undefined,
-		activityLine: string | undefined,
-		statsLine: string | undefined,
-		width: number,
-	): string[] {
-		const observedProgress: TranscriptProgressSnapshot | undefined = observed?.progress;
-		const outcome = this.deps.getTaskOutcome?.(this.#agentId);
-		const progress: TranscriptProgressSnapshot | undefined =
-			observedProgress || outcome
-				? {
-						...observedProgress,
-						resultText: observedProgress?.resultText ?? outcome?.resultText,
-						deliveryStatus: outcome?.deliveryStatus ?? observedProgress?.deliveryStatus,
-					}
-				: undefined;
+	#headerLine(ref: AgentRef | undefined, observed: ObservableSession | undefined, width: number): string {
+		const progress: TranscriptProgressSnapshot | undefined = observed?.progress;
 		const terminal = this.#isTerminal(ref, progress);
-		const taskResult = this.#taskResultLine(progress, terminal, width);
-		const reportStatus = this.#reportStatusLine(progress, terminal, width);
-		const remoteError =
-			this.#remoteError && !this.#builder.isEmpty
-				? theme.fg("error", sanitizeErrorLine(this.#remoteError, width))
-				: undefined;
-		const dynamicSummary =
-			activityLine ??
-			sanitizeViewerText(
-				progress?.lastIntent ?? progress?.currentToolArgs ?? progress?.description ?? progress?.task,
-				width,
-			);
-		const [summary, secondary, tertiary] = this.#summaryRows(
-			dynamicSummary,
-			statsLine,
-			taskResult,
-			reportStatus,
-			remoteError,
-			width,
-		);
+		const previous = rawKeyHint("Alt+K", tSettingsUi("previous"));
+		const next = rawKeyHint("Alt+J", tSettingsUi("next"));
+		const metadata = [
+			this.#metadataValue("Model", this.#modelValue(observed)),
+			this.#metadataValue("Context", this.#contextValue(observed)),
+			this.#metadataValue("Duration", this.#runtimeValue(ref, progress, terminal)),
+			this.#metadataValue("Status", this.#statusValue(ref, progress)),
+		].filter((value): value is string => value !== undefined);
+		const separator = theme.fg("dim", theme.sep.dot);
+		const minimumNavigationWidth = visibleWidth(previous) + visibleWidth(next) + 2 + MIN_NAVIGATION_TITLE_WIDTH;
 
-		return [
-			this.#navigationLine(ref, width),
-			this.#metadataLine(
-				"Status",
-				this.#statusValue(ref, progress),
-				"Progress",
-				this.#progressValue(ref, activity),
-				width,
-			),
-			this.#metadataLine(
-				"Duration",
-				this.#runtimeValue(ref, progress, terminal),
-				"Model",
-				this.#modelValue(observed),
-				width,
-			),
-			summary,
-			secondary,
-			tertiary,
-		];
+		// Keep task identity, both cycle controls, and current status while dropping
+		// progressively less essential metadata for narrow terminal widths.
+		while (metadata.length > 1) {
+			const metadataText = metadata.join(separator);
+			const reservedWidth = visibleWidth(metadataText) + visibleWidth(separator);
+			if (width - reservedWidth >= minimumNavigationWidth) break;
+			metadata.shift();
+		}
+
+		const metadataText = metadata.join(separator);
+		const metadataWidth = metadataText ? visibleWidth(metadataText) + visibleWidth(separator) : 0;
+		const navigation = this.#navigationLine(ref, observed, Math.max(1, width - metadataWidth), previous, next);
+		return metadataText
+			? truncateToWidth(`${navigation}${separator}${metadataText}`, Math.max(1, width))
+			: navigation;
 	}
 
-	#navigationLine(ref: AgentRef | undefined, width: number): string {
+	#navigationLine(
+		ref: AgentRef | undefined,
+		observed: ObservableSession | undefined,
+		width: number,
+		previous: string,
+		next: string,
+	): string {
 		const ids = this.#visibleAgentIds();
 		const index = ids.indexOf(this.#agentId);
 		const ordinal = `${index >= 0 ? index + 1 : 1}/${Math.max(1, ids.length)}`;
-		const name = sanitizeViewerText(ref?.displayName ?? this.#agentId, Math.max(1, width)) || "—";
+		const name =
+			sanitizeViewerText(
+				observed?.description ?? observed?.label ?? ref?.displayName ?? this.#agentId,
+				Math.max(1, width),
+			) || "—";
 		const title = [theme.fg("dim", ordinal), theme.bold(name)].join(theme.fg("dim", theme.sep.dot));
-		return this.#centerWithControls(
-			rawKeyHint("Alt+K", tSettingsUi("previous")),
-			title,
-			rawKeyHint("Alt+J", tSettingsUi("next")),
-			width,
-		);
+		return this.#centerWithControls(previous, title, next, width);
 	}
 
 	#centerWithControls(left: string, title: string, right: string, width: number): string {
@@ -738,27 +694,9 @@ export class AgentTranscriptViewer implements Component {
 		return `${left}${padding(start - leftWidth)}${clippedTitle}${padding(rightStart - start - clippedWidth)}${right}`;
 	}
 
-	#metadataLine(
-		leftLabel: string,
-		leftValue: string | undefined,
-		rightLabel: string,
-		rightValue: string | undefined,
-		width: number,
-	): string {
-		const maxWidth = Math.max(1, width);
-		if (maxWidth < 4) return this.#metadataCell(leftLabel, leftValue, maxWidth);
-		const gap = 1;
-		const leftWidth = Math.floor((maxWidth - gap) / 2);
-		const rightWidth = maxWidth - gap - leftWidth;
-		const left = this.#metadataCell(leftLabel, leftValue, leftWidth);
-		const right = this.#metadataCell(rightLabel, rightValue, rightWidth);
-		return `${left}${padding(leftWidth - visibleWidth(left))}${padding(gap)}${right}${padding(rightWidth - visibleWidth(right))}`;
-	}
-
-	#metadataCell(label: string, value: string | undefined, width: number): string {
-		const labelText = theme.fg("dim", `${tSettingsUi(label)}:`);
-		const valueText = value || theme.fg("muted", "—");
-		return truncateToWidth(`${labelText} ${valueText}`, Math.max(1, width));
+	#metadataValue(label: string, value: string | undefined): string | undefined {
+		if (!value) return undefined;
+		return `${theme.fg("dim", `${tSettingsUi(label)}:`)} ${value}`;
 	}
 
 	#statusValue(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): string | undefined {
@@ -776,19 +714,15 @@ export class AgentTranscriptViewer implements Component {
 		}
 	}
 
-	#progressValue(ref: AgentRef | undefined, activity: AgentActivityState | undefined): string | undefined {
-		const progress = activity?.progress;
-		if (progress && isFiniteNumber(progress.completed) && isFiniteNumber(progress.total) && progress.total > 0) {
-			const unit = sanitizeViewerText(progress.unit, 32);
-			return theme.fg(
-				"muted",
-				`${Math.max(0, Math.floor(progress.completed))}/${Math.floor(progress.total)}${unit ? ` ${unit}` : ""}`,
-			);
-		}
-		if (ref?.status === "waiting" || activity?.phase === "waiting-peer") {
-			return theme.fg("warning", tSettingsUi("Waiting for Main"));
-		}
-		return undefined;
+	#contextValue(observed: ObservableSession | undefined): string | undefined {
+		const tokens = observed?.progress?.contextTokens;
+		if (!isFiniteNumber(tokens) || tokens < 0) return undefined;
+		const window = observed?.progress?.contextWindow;
+		const contextWindow = isFiniteNumber(window) && window > 0 ? window : 0;
+		const percent = contextWindow > 0 ? (tokens / contextWindow) * 100 : undefined;
+		const usage = formatContextUsage(percent, contextWindow, tokens).replace(/\.0%(?=\/)/, "%");
+		if (percent === undefined) return theme.fg("dim", usage);
+		return theme.fg(getContextUsageThemeColor(getContextUsageLevel(percent, contextWindow)), usage);
 	}
 
 	#runtimeValue(
@@ -816,7 +750,10 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#modelValue(observed: ObservableSession | undefined): string | undefined {
-		return sanitizeViewerText(observed?.progress?.resolvedModel ?? this.#model, 160) || undefined;
+		return (
+			sanitizeViewerText(observed?.progress?.resolvedModel ?? observed?.resolvedModel ?? this.#model, 48) ||
+			undefined
+		);
 	}
 
 	#isTerminal(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): boolean {
@@ -828,63 +765,6 @@ export class AgentTranscriptViewer implements Component {
 			ref?.status === "parked" ||
 			ref?.status === "aborted"
 		);
-	}
-
-	#labeledLine(label: string, value: string, width: number): string {
-		const maxWidth = Math.max(1, width);
-		const prefix = theme.fg("dim", `${tSettingsUi(label)}:`);
-		if (visibleWidth(prefix) >= maxWidth) return truncateToWidth(prefix, maxWidth);
-		return `${prefix} ${truncateToWidth(value, Math.max(1, maxWidth - visibleWidth(prefix) - 1))}`;
-	}
-
-	#taskResultLine(
-		progress: TranscriptProgressSnapshot | undefined,
-		terminal: boolean,
-		width: number,
-	): string | undefined {
-		if (!terminal) return undefined;
-		const result = sanitizeViewerText(progress?.resultText, Math.max(1, width));
-		return result ? this.#labeledLine("Task result", result, width) : undefined;
-	}
-
-	#reportStatusLine(
-		progress: TranscriptProgressSnapshot | undefined,
-		terminal: boolean,
-		width: number,
-	): string | undefined {
-		let status: string | undefined;
-		switch (progress?.deliveryStatus) {
-			case "pending":
-				status = theme.fg("warning", tSettingsUi("Delivery pending"));
-				break;
-			case "delivering":
-				status = theme.fg("accent", tSettingsUi("Delivering to Main"));
-				break;
-			case "delivered":
-				status = theme.fg("success", tSettingsUi("Delivered to Main"));
-				break;
-			case "dead-letter":
-				status = theme.fg("error", tSettingsUi("Main unavailable"));
-				break;
-			default:
-				if (terminal && progress?.resultText) status = theme.fg("success", tSettingsUi("Delivered to Main"));
-		}
-		return status ? this.#labeledLine("Report status", status, width) : undefined;
-	}
-
-	#summaryRows(
-		activityLine: string | undefined,
-		statsLine: string | undefined,
-		taskResult: string | undefined,
-		reportStatus: string | undefined,
-		remoteError: string | undefined,
-		width: number,
-	): [string, string, string] {
-		const activity = activityLine ? this.#labeledLine("Dynamic summary", activityLine, width) : undefined;
-		const error = remoteError ? this.#labeledLine("Dynamic summary", remoteError, width) : undefined;
-		const summary = activity ?? error ?? "";
-		if (taskResult || reportStatus) return [summary, taskResult ?? "", reportStatus ?? ""];
-		return [summary, statsLine ?? "", ""];
 	}
 
 	#hint(): string {

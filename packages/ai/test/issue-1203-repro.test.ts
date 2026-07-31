@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import type { Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessageEvent, Context, FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 function createSseResponse(events: unknown[]): Response {
@@ -181,10 +181,27 @@ describe("issue #1203 - MiniMax Coding Plan CN think tags", () => {
 			"[DONE]",
 		]);
 
-		const result = await streamOpenAICompletions(model, baseContext(), {
+		const stream = streamOpenAICompletions(model, baseContext(), {
 			apiKey: "test-key",
 			fetch: fetchMock,
-		}).result();
+		});
+		const events: AssistantMessageEvent[] = [];
+		for await (const event of stream) events.push(event);
+		const result = await stream.result();
+
+		const thinkingDeltas = events.filter(
+			(event): event is Extract<AssistantMessageEvent, { type: "thinking_delta" }> =>
+				event.type === "thinking_delta",
+		);
+		const doneIndex = events.findIndex(event => event.type === "done" || event.type === "error");
+		const thinkingDeltaIndices = events.flatMap((event, index) => (event.type === "thinking_delta" ? [index] : []));
+		expect(thinkingDeltas.map(event => event.delta)).toEqual(["The user just", " said hi."]);
+		expect(doneIndex).toBeGreaterThan(0);
+		expect(thinkingDeltaIndices.every(index => index < doneIndex)).toBe(true);
+		expect(events.filter(event => event.type === "thinking_end")).toHaveLength(1);
+		const thinkingBlocks = result.content.filter(block => block.type === "thinking");
+		expect(thinkingBlocks).toHaveLength(1);
+		expect(thinkingBlocks[0]?.thinking).toBe(thinkingDeltas.map(event => event.delta).join(""));
 
 		expect(result.content).toEqual([
 			{ type: "thinking", thinking: "The user just said hi.", thinkingSignature: "reasoning_content" },

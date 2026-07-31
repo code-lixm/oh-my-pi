@@ -49,6 +49,13 @@ interface TaskRenderContext {
 	 * commit-eligible rows do not repaint after entering native scrollback.
 	 */
 	frozen?: boolean;
+	/**
+	 * Wall clock for time-derived rows (current-tool elapsed, retry countdown).
+	 * The component freezes it once the block settles or any of its rows enter
+	 * native scrollback, so identical-input rebuilds stay byte-identical with
+	 * committed history. Absent: render with the live clock.
+	 */
+	nowMs?: number;
 }
 type TaskRenderOptions = RenderResultOptions & { renderContext?: TaskRenderContext };
 
@@ -920,6 +927,7 @@ function renderAgentProgress(
 	frozen = false,
 	seenNestedTasks?: WeakSet<object>,
 	nestedDepth = 0,
+	nowMs = Date.now(),
 ): string[] {
 	const lines: string[] = [];
 
@@ -996,7 +1004,7 @@ function renderAgentProgress(
 				toolLine += `: ${theme.fg("dim", previewLine(sanitizeText(toolDetail), 40))}`;
 			}
 			if (progress.currentToolStartMs) {
-				const elapsed = Date.now() - progress.currentToolStartMs;
+				const elapsed = nowMs - progress.currentToolStartMs;
 				if (elapsed > 5000) {
 					toolLine += `${theme.sep.dot}${theme.fg("warning", formatDuration(elapsed))}`;
 				}
@@ -1017,7 +1025,7 @@ function renderAgentProgress(
 	// Retry detail line: surface why the subagent is paused and roughly how
 	// long until the next attempt. Without this, the parent UI would just
 	if (progress.retryState && progress.status === "running") {
-		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - Date.now());
+		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
 		const waitLabel =
 			remainingMs > 0 ? tSettingsUi("in {duration}", { duration: formatDuration(remainingMs) }) : tSettingsUi("now");
 		const summary =
@@ -1115,6 +1123,7 @@ function renderAgentProgress(
 			frozen,
 			seenNestedTasks,
 			nestedDepth,
+			nowMs,
 		);
 		for (const line of nestedLines) {
 			lines.push(`${continuePrefix}${line}`);
@@ -1611,6 +1620,7 @@ export function renderResult(
 	return framedBlock(theme, width => {
 		const { expanded, isPartial, spinnerFrame } = options;
 		const frozen = options.renderContext?.frozen === true;
+		const nowMs = options.renderContext?.nowMs ?? Date.now();
 		const lines: string[] = [];
 
 		// Result rows win once any exist; progress rows for spawns without a
@@ -1628,7 +1638,9 @@ export function renderResult(
 				lines.push(formatHiddenProgressLine(ordered.slice(0, ordered.length - visible.length), theme));
 			}
 			for (const progress of visible) {
-				lines.push(...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen));
+				lines.push(
+					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+				);
 			}
 		} else if (details.results && details.results.length > 0) {
 			const ordered = orderResultsForDisplay(details.results);
@@ -1656,7 +1668,9 @@ export function renderResult(
 					)
 				: [];
 			for (const progress of supplementalProgress) {
-				lines.push(...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen));
+				lines.push(
+					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+				);
 			}
 
 			const summaryParts: string[] = [];
@@ -1828,6 +1842,7 @@ function renderNestedTaskTree(
 	frozen = false,
 	seen: WeakSet<object> = new WeakSet<object>(),
 	depth = 0,
+	nowMs = Date.now(),
 ): string[] {
 	const lines: string[] = [];
 	for (const details of detailsList) {
@@ -1878,6 +1893,7 @@ function renderNestedTaskTree(
 						frozen,
 						seen,
 						depth + 1,
+						nowMs,
 					),
 				);
 			});

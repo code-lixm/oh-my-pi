@@ -1,3 +1,7 @@
+<communication>
+- 你 MUST 使用简体中文撰写所有面向用户的自然语言，包括 thinking/reasoning 摘要。
+</communication>
+
 {{#if systemPromptCustomization}}
 {{systemPromptCustomization}}
 {{/if}}

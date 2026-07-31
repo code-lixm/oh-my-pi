@@ -775,9 +775,9 @@ describe("advisor", () => {
 	});
 
 	describe("advice delivery policy", () => {
-		it("interrupts on concern and blocker, queues a plain nit", () => {
+		it("only blocker is interrupting", () => {
 			expect(isInterruptingSeverity("blocker")).toBe(true);
-			expect(isInterruptingSeverity("concern")).toBe(true);
+			expect(isInterruptingSeverity("concern")).toBe(false);
 			expect(isInterruptingSeverity("nit")).toBe(false);
 			expect(isInterruptingSeverity(undefined)).toBe(false);
 		});
@@ -3514,6 +3514,193 @@ describe("advisor", () => {
 			expect(runtime.backlog).toBe(0);
 		});
 
+		it("strips echoed thinking after a classifier refusal and succeeds without a notice", async () => {
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let promptCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					if (promptCalls === 1) {
+						state.error = "Refusal (reasoning_extraction): reasoning may not be echoed";
+						state.messages.push({
+							role: "assistant",
+							content: [],
+							stopReason: "error",
+							stopDetails: { type: "refusal", category: "reasoning_extraction" },
+							errorMessage: state.error,
+							timestamp: 2,
+						} as unknown as AgentMessage);
+						return;
+					}
+					state.error = undefined;
+					state.messages.push({
+						role: "assistant",
+						content: [],
+						stopReason: "stop",
+						timestamp: 3,
+					} as unknown as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {},
+				rollbackTo: count => {
+					state.messages.length = count;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "private reasoning" },
+						{ type: "text", text: "answer" },
+					],
+					timestamp: 1,
+				} as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					snapshotMessages: () => messages,
+					enqueueAdvice: () => {},
+					notifyFailure: error => failures.push(error),
+				},
+				0,
+			);
+
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[0]).toContain("private reasoning");
+			expect(promptInputs[1]).not.toContain("private reasoning");
+			expect(promptInputs[1]).toContain("answer");
+			expect(failures).toEqual([]);
+		});
+
+		it("surfaces a persistent classifier refusal after one stripped resend", async () => {
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					state.error = "Refusal (reasoning_extraction): reasoning may not be echoed";
+					state.messages.push({
+						role: "assistant",
+						content: [],
+						stopReason: "error",
+						stopDetails: { type: "refusal", category: "reasoning_extraction" },
+						errorMessage: state.error,
+						timestamp: promptInputs.length + 1,
+					} as unknown as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {},
+				rollbackTo: count => {
+					state.messages.length = count;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "private reasoning" },
+						{ type: "text", text: "answer" },
+					],
+					timestamp: 1,
+				} as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					snapshotMessages: () => messages,
+					enqueueAdvice: () => {},
+					notifyFailure: error => failures.push(error),
+				},
+				0,
+			);
+
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => failures.length === 1 && runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[0]).toContain("private reasoning");
+			expect(promptInputs[1]).not.toContain("private reasoning");
+			expect(failures).toHaveLength(1);
+		});
+
+		it("degrades on a category-less refusal", async () => {
+			const promptInputs: string[] = [];
+			const failures: unknown[] = [];
+			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
+			let promptCalls = 0;
+			const agent: AdvisorAgent = {
+				prompt: async input => {
+					promptInputs.push(input);
+					promptCalls++;
+					if (promptCalls === 1) {
+						state.error = "Refusal: reasoning may not be echoed";
+						state.messages.push({
+							role: "assistant",
+							content: [],
+							stopReason: "error",
+							stopDetails: { type: "refusal" },
+							errorMessage: state.error,
+							timestamp: 2,
+						} as unknown as AgentMessage);
+						return;
+					}
+					state.error = undefined;
+					state.messages.push({
+						role: "assistant",
+						content: [],
+						stopReason: "stop",
+						timestamp: 3,
+					} as unknown as AgentMessage);
+				},
+				abort: () => {},
+				reset: () => {},
+				rollbackTo: count => {
+					state.messages.length = count;
+					state.error = undefined;
+				},
+				state,
+			};
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "private reasoning" },
+						{ type: "text", text: "answer" },
+					],
+					timestamp: 1,
+				} as AgentMessage,
+			];
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					snapshotMessages: () => messages,
+					enqueueAdvice: () => {},
+					notifyFailure: error => failures.push(error),
+				},
+				0,
+			);
+
+			runtime.onTurnEnd(messages);
+			await settleUntil(() => runtime.backlog === 0);
+
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[0]).toContain("private reasoning");
+			expect(promptInputs[1]).not.toContain("private reasoning");
+			expect(failures).toEqual([]);
+		});
+
 		it("calls onTurnError with state.error before retrying the batch", async () => {
 			const promptInputs: string[] = [];
 			const turnErrors: unknown[] = [];
@@ -4039,6 +4226,128 @@ describe("advisor", () => {
 			expect(promptInputs[1]).toContain("new-conversation");
 			expect(promptInputs[1]).not.toContain("old-conversation");
 		});
+
+		it("retries the interrupted batch after a session transition rolls back", async () => {
+			const promptInputs: string[] = [];
+			const firstPromptStarted = Promise.withResolvers<void>();
+			let rejectInFlight: ((reason?: unknown) => void) | undefined;
+			const agent: AdvisorAgent = {
+				prompt: input => {
+					promptInputs.push(input);
+					if (promptInputs.length > 1) return Promise.resolve();
+					const gate = Promise.withResolvers<void>();
+					rejectInFlight = gate.reject;
+					firstPromptStarted.resolve();
+					return gate.promise;
+				},
+				abort: () => rejectInFlight?.(new Error("session transition")),
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const messages: AgentMessage[] = [{ role: "user", content: "keep me", timestamp: 1 } as AgentMessage];
+			const runtime = new AdvisorRuntime(agent, {
+				snapshotMessages: () => messages,
+				enqueueAdvice: () => {},
+			});
+
+			runtime.onTurnEnd(messages);
+			await firstPromptStarted.promise;
+			await runtime.pauseForSessionTransition();
+			expect(promptInputs).toHaveLength(1);
+
+			runtime.resumeAfterSessionTransition();
+			await settleUntil(() => runtime.backlog === 0);
+			expect(promptInputs).toHaveLength(2);
+			expect(promptInputs[1]).toContain("keep me");
+		});
+
+		it.each(["success", "error"] as const)(
+			"releases blocked %s hooks so reset can run replacement work",
+			async hookKind => {
+				const hookStarted = Promise.withResolvers<void>();
+				const releaseHook = Promise.withResolvers<void>();
+				const replacementPromptStarted = Promise.withResolvers<void>();
+				let promptCalls = 0;
+				let hookCalls = 0;
+				const blockHook = async () => {
+					if (++hookCalls !== 1) return;
+					hookStarted.resolve();
+					await releaseHook.promise;
+				};
+				const agent: AdvisorAgent = {
+					prompt: async () => {
+						promptCalls++;
+						if (promptCalls === 1 && hookKind === "error") throw new Error("provider failure");
+						if (promptCalls === 2) replacementPromptStarted.resolve();
+					},
+					abort: () => {},
+					reset: () => {},
+					state: { messages: [] },
+				};
+				const runtime = new AdvisorRuntime(agent, {
+					snapshotMessages: () => [],
+					enqueueAdvice: () => {},
+					...(hookKind === "success"
+						? { onTurnSuccess: blockHook }
+						: {
+								onTurnError: async () => {
+									await blockHook();
+									return false;
+								},
+							}),
+				});
+
+				runtime.onTurnEnd([{ role: "user", content: "old session", timestamp: 1 } as AgentMessage]);
+				await hookStarted.promise;
+				const pause = runtime.pauseForSessionTransition();
+				const pausedQuickly = await Promise.race([pause.then(() => true), Bun.sleep(50).then(() => false)]);
+				runtime.reset();
+				runtime.onTurnEnd([{ role: "user", content: "replacement session", timestamp: 2 } as AgentMessage]);
+				const replacementRan = await Promise.race([
+					replacementPromptStarted.promise.then(() => true),
+					Bun.sleep(50).then(() => false),
+				]);
+				releaseHook.resolve();
+				await pause;
+				runtime.dispose();
+
+				expect(pausedQuickly).toBe(true);
+				expect(replacementRan).toBe(true);
+			},
+		);
+		it("aborts retry backoff before pausing for a session transition", async () => {
+			const recoveryStarted = Promise.withResolvers<void>();
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					throw new Error("provider failure");
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const runtime = new AdvisorRuntime(
+				agent,
+				{
+					snapshotMessages: () => [],
+					enqueueAdvice: () => {},
+					onTurnError: () => {
+						recoveryStarted.resolve();
+						return false;
+					},
+				},
+				250,
+			);
+
+			runtime.onTurnEnd([{ role: "user", content: "retry me", timestamp: 1 } as AgentMessage]);
+			await recoveryStarted.promise;
+			await Bun.sleep(0);
+			const pause = runtime.pauseForSessionTransition();
+			const pausedQuickly = await Promise.race([pause.then(() => true), Bun.sleep(50).then(() => false)]);
+			if (!pausedQuickly) await pause;
+			runtime.dispose();
+
+			expect(pausedQuickly).toBe(true);
+		});
 	});
 
 	describe("AdvisorRuntime quota classification", () => {
@@ -4144,6 +4453,11 @@ describe("advisor", () => {
 			expect(runtime.backlog).toBeGreaterThan(0);
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("quota-turn");
+
+			await runtime.pauseForSessionTransition();
+			runtime.resumeAfterSessionTransition();
+			await Promise.resolve();
+			expect(promptInputs).toHaveLength(1);
 
 			// After reset() clears the quota pause, the next onTurnEnd drains the
 			// retained batch — proving it was never lost.
@@ -4307,15 +4621,22 @@ describe("advisor", () => {
 			};
 			let quotaNotified = 0;
 			let hookInvocations = 0;
+			const maintenanceSignals: AbortSignal[] = [];
 			const { promise: hookEntered, resolve: allowHook } = Promise.withResolvers<void>();
-			const { promise: hookProceed, resolve: proceedHook } = Promise.withResolvers<void>();
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => [],
 				enqueueAdvice: () => {},
-				onTurnError: async () => {
+				maintainContext: async (_incomingTokens, signal) => {
+					maintenanceSignals.push(signal);
+					return false;
+				},
+				onTurnError: async (_error, _failedMessages, signal) => {
 					hookInvocations++;
 					allowHook();
-					await hookProceed;
+					const hookAborted = Promise.withResolvers<void>();
+					signal.addEventListener("abort", () => hookAborted.resolve(), { once: true });
+					await hookAborted.promise;
+					signal.throwIfAborted();
 					return false;
 				},
 				notifyQuotaExhausted: () => {
@@ -4328,16 +4649,48 @@ describe("advisor", () => {
 			await hookEntered;
 			runtime.reset();
 			runtime.onTurnEnd([{ role: "user", content: "fresh-turn", timestamp: 2 } as AgentMessage]);
-			proceedHook();
 			await runtime.waitForCatchup(1000, 1);
 
 			expect(hookInvocations).toBe(1);
 			expect(promptInputs).toHaveLength(2);
 			expect(promptInputs[0]).toContain("stale-turn");
 			expect(promptInputs[1]).toContain("fresh-turn");
+			expect(maintenanceSignals).toHaveLength(2);
+			expect(maintenanceSignals[0]?.aborted).toBe(true);
+			expect(maintenanceSignals[1]?.aborted).toBe(false);
 			expect(runtime.quotaExhausted).toBe(false);
 			expect(runtime.backlog).toBe(0);
 			expect(quotaNotified).toBe(0);
+		});
+		it("aborts the active recovery hook when disposed", async () => {
+			const hookEntered = Promise.withResolvers<void>();
+			let recoverySignal!: AbortSignal;
+			const agent: AdvisorAgent = {
+				prompt: async () => {
+					throw new Error("provider failure");
+				},
+				abort: () => {},
+				reset: () => {},
+				state: { messages: [] },
+			};
+			const runtime = new AdvisorRuntime(agent, {
+				snapshotMessages: () => [],
+				enqueueAdvice: () => {},
+				onTurnError: async (_error, _failedMessages, signal) => {
+					recoverySignal = signal;
+					hookEntered.resolve();
+					const hookAborted = Promise.withResolvers<void>();
+					signal.addEventListener("abort", () => hookAborted.resolve(), { once: true });
+					await hookAborted.promise;
+					signal.throwIfAborted();
+				},
+			});
+
+			runtime.onTurnEnd([{ role: "user", content: "stale-turn", timestamp: 1 } as AgentMessage]);
+			await hookEntered.promise;
+			runtime.dispose();
+
+			expect(recoverySignal.aborted).toBe(true);
 		});
 		it("uses generic failure path when switched retry hits a non-quota error", async () => {
 			const promptInputs: string[] = [];
@@ -4620,18 +4973,17 @@ describe("advisor", () => {
 		});
 	});
 
-	// Regression: the advisor must not withhold interrupting advice from a turn
-	// that is actively streaming again after a user interrupt. The latch only
-	// guards auto-resume of a stopped/idle run; parking a note mid-stream stranded
-	// it (the agent never heard it) and dumped the backlog as one burst at the next
-	// user prompt. See the 7-concern same-instant burst in session 019ed1dd.
+	// Regression: a blocker must not be withheld from a turn that is actively
+	// streaming again after a user interrupt. The latch only guards auto-resume of a
+	// stopped/idle run; parking a blocker mid-stream stranded it (the agent never
+	// heard it) and dumped the backlog as one burst at the next user prompt.
 	//
 	// `streaming` here means the live agent-CORE loop (agent.state.isStreaming) —
 	// NOT session `isStreaming`, which also counts `#promptInFlightCount` during
 	// post-turn unwind. Only a running core loop consumes a steer; in the unwind
-	// window (`streaming: false`) a suppressed note must `preserve`, never `steer`,
-	// or it strands and #drainStrandedQueuedMessages auto-resumes it. Do not swap
-	// the call site back to session `isStreaming`.
+	// window (`streaming: false`) a suppressed blocker must `preserve`, never
+	// `steer`, or it strands and #drainStrandedQueuedMessages auto-resumes it. Do
+	// not swap the call site back to session `isStreaming`.
 	describe("resolveAdvisorDeliveryChannel", () => {
 		it("preserves every severity when a headless drain forbids primary turns", () => {
 			for (const severity of [undefined, "nit", "concern", "blocker"] as const) {
@@ -4649,26 +5001,18 @@ describe("advisor", () => {
 		});
 
 		it("keeps live headless advice on normal delivery channels until the primary finishes", () => {
-			expect(
-				resolveAdvisorDeliveryChannel({
-					severity: "nit",
-					autoResumeSuppressed: false,
-					streaming: true,
-					aborting: false,
-					preserveOnly: true,
-				}),
-			).toBe("aside");
-			for (const severity of ["concern", "blocker"] as const) {
-				expect(
-					resolveAdvisorDeliveryChannel({
-						severity,
-						autoResumeSuppressed: false,
-						streaming: true,
-						aborting: false,
-						preserveOnly: true,
-					}),
-				).toBe("steer");
-			}
+			const liveHeadless = {
+				autoResumeSuppressed: false,
+				streaming: true,
+				aborting: false,
+				terminalAnswerNoQueuedWork: false,
+				interruptImmuneTurnActive: false,
+				preserveOnly: true,
+			};
+
+			expect(resolveAdvisorDeliveryChannel({ ...liveHeadless, severity: "nit" })).toBe("aside");
+			expect(resolveAdvisorDeliveryChannel({ ...liveHeadless, severity: "concern" })).toBe("aside");
+			expect(resolveAdvisorDeliveryChannel({ ...liveHeadless, severity: "blocker" })).toBe("steer");
 		});
 
 		it("routes a non-interrupting nit to the aside queue regardless of state", () => {
@@ -4690,22 +5034,22 @@ describe("advisor", () => {
 			).toBe("aside");
 		});
 
-		it("steers concern/blocker when no user interrupt is in effect", () => {
-			for (const severity of ["concern", "blocker"] as const) {
-				for (const streaming of [true, false]) {
-					expect(
-						resolveAdvisorDeliveryChannel({
-							severity,
-							autoResumeSuppressed: false,
-							streaming,
-							aborting: false,
-						}),
-					).toBe("steer");
-				}
+		it("defers concern through aside whether the primary is streaming or idle, while blocker steers", () => {
+			const noException = {
+				autoResumeSuppressed: false,
+				aborting: false,
+				terminalAnswerNoQueuedWork: false,
+				interruptImmuneTurnActive: false,
+				preserveOnly: false,
+			};
+
+			for (const streaming of [true, false]) {
+				expect(resolveAdvisorDeliveryChannel({ ...noException, severity: "concern", streaming })).toBe("aside");
+				expect(resolveAdvisorDeliveryChannel({ ...noException, severity: "blocker", streaming })).toBe("steer");
 			}
 		});
 
-		it("preserves a late concern when the primary already ended with a terminal answer", () => {
+		it("defers a late concern through aside after a terminal primary answer", () => {
 			expect(
 				resolveAdvisorDeliveryChannel({
 					severity: "concern",
@@ -4713,8 +5057,10 @@ describe("advisor", () => {
 					streaming: false,
 					aborting: false,
 					terminalAnswerNoQueuedWork: true,
+					interruptImmuneTurnActive: false,
+					preserveOnly: false,
 				}),
-			).toBe("preserve");
+			).toBe("aside");
 		});
 
 		it("steers a late blocker after a terminal answer so the primary continues and acknowledges it (#5628)", () => {
@@ -4725,11 +5071,13 @@ describe("advisor", () => {
 					streaming: false,
 					aborting: false,
 					terminalAnswerNoQueuedWork: true,
+					interruptImmuneTurnActive: false,
+					preserveOnly: false,
 				}),
 			).toBe("steer");
 		});
 
-		it("routes interrupting notes to the aside queue during immune turns without overriding preservation", () => {
+		it("routes concern to aside during immune turns without overriding blocker preservation", () => {
 			expect(
 				resolveAdvisorDeliveryChannel({
 					severity: "concern",
@@ -4749,17 +5097,18 @@ describe("advisor", () => {
 				}),
 			).toBe("preserve");
 		});
-		it("preserves an interrupting note while suppressed AND idle (no auto-resume of a stopped run)", () => {
-			for (const severity of ["concern", "blocker"] as const) {
-				expect(
-					resolveAdvisorDeliveryChannel({
-						severity,
-						autoResumeSuppressed: true,
-						streaming: false,
-						aborting: false,
-					}),
-				).toBe("preserve");
-			}
+		it("defers concern through aside while a suppressed idle blocker is preserved", () => {
+			const suppressedIdle = {
+				autoResumeSuppressed: true,
+				streaming: false,
+				aborting: false,
+				terminalAnswerNoQueuedWork: false,
+				interruptImmuneTurnActive: false,
+				preserveOnly: false,
+			};
+
+			expect(resolveAdvisorDeliveryChannel({ ...suppressedIdle, severity: "concern" })).toBe("aside");
+			expect(resolveAdvisorDeliveryChannel({ ...suppressedIdle, severity: "blocker" })).toBe("preserve");
 		});
 
 		it("preserves an interrupting note while suppressed AND aborting, even though the turn still reports streaming", () => {
@@ -4775,17 +5124,18 @@ describe("advisor", () => {
 			).toBe("preserve");
 		});
 
-		it("steers an interrupting note while suppressed once a turn is streaming again and not aborting (the fix)", () => {
-			for (const severity of ["concern", "blocker"] as const) {
-				expect(
-					resolveAdvisorDeliveryChannel({
-						severity,
-						autoResumeSuppressed: true,
-						streaming: true,
-						aborting: false,
-					}),
-				).toBe("steer");
-			}
+		it("defers concern while a resumed streaming blocker may steer after suppression", () => {
+			const resumedStreaming = {
+				autoResumeSuppressed: true,
+				streaming: true,
+				aborting: false,
+				terminalAnswerNoQueuedWork: false,
+				interruptImmuneTurnActive: false,
+				preserveOnly: false,
+			};
+
+			expect(resolveAdvisorDeliveryChannel({ ...resumedStreaming, severity: "concern" })).toBe("aside");
+			expect(resolveAdvisorDeliveryChannel({ ...resumedStreaming, severity: "blocker" })).toBe("steer");
 		});
 	});
 	describe("advisor transcript filenames", () => {

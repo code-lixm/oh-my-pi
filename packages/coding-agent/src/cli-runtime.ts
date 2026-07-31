@@ -3,3 +3,4 @@
 
 export * from "./cli/help-locale";
 export * from "./cli-commands";
+export * from "./config-sync/auto-push";

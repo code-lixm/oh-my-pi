@@ -118,16 +118,15 @@ export function isGeminiThinkingModel(model: Model<Api>): boolean {
 }
 
 /**
- * True when `model` should be guarded for thinking/response loops (Gemini & DeepSeek).
+ * True when `model` should be guarded for thinking/response loops (Gemini, DeepSeek & MiniMax).
  *
- * OpenAI-compat transports can serve Gemini or DeepSeek under an arbitrary provider/id.
- * Direct Gemini/DeepSeek transports carry a clearly shaped id/provider, so a string match
- * is sufficient.
+ * OpenAI-compat transports can serve these models under an arbitrary provider/id.
+ * Direct transports carry a clearly shaped id/provider, so a string match is sufficient.
  */
 export function isLoopGuardedModel(model: Model<Api>, options?: StreamOptions): boolean {
 	if (options?.loopGuard?.enabled === false) return false;
-	const isDeepseek = /deepseek/i.test(`${model.provider}/${model.id}`);
-	return isGeminiThinkingModel(model) || isDeepseek;
+	const modelIdentity = `${model.provider}/${model.id}`;
+	return isGeminiThinkingModel(model) || /deepseek|minimax/i.test(modelIdentity);
 }
 
 /** @deprecated Use isLoopGuardedModel instead. */

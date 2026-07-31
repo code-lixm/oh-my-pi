@@ -129,6 +129,12 @@ describe("CodeGraphTool pending mutation contract", () => {
 		expect(warm.isError).not.toBe(true);
 		const warmDetails = warm.details as { entries?: Array<{ node: { name: string } }> };
 		expect(warmDetails.entries?.some(e => e.node.name === oldSymbol)).toBe(true);
+		const externalSymbol = "resolveOutOfBandSymbol";
+		await fs.writeFile(updatePath, `export function ${externalSymbol}(): string { return "external"; }\n`, "utf8");
+		const external = await tool.execute("call-out-of-band", { query: externalSymbol });
+		expect(external.isError).not.toBe(true);
+		const externalDetails = external.details as { entries?: Array<{ node: { name: string } }> };
+		expect(externalDetails.entries?.some(entry => entry.node.name === externalSymbol)).toBe(true);
 
 		await fs.writeFile(
 			updatePath,

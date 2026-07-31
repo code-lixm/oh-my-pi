@@ -15,6 +15,13 @@ const TOOL_RESULT_A_MARKER = "TOOL RESULT FROM FIRST TOOL";
 const MIDDLE_MARKER = "MIDDLE TEXT BETWEEN TOOL CALLS";
 const TOOL_RESULT_B_MARKER = "TOOL RESULT FROM SECOND TOOL";
 const FINAL_MARKER = "FINAL ANSWER AFTER SECOND TOOL";
+const THINKING_TOOL_ID = "toolu_thinking_visibility";
+const THINKING_TOOL_NAME = "thinking_visibility_probe";
+const TOOL_BOUNDARY_RESULT = "TOOL BOUNDARY RESULT";
+const FIRST_THINKING_CODE = "```ts\nconst beforeToolReasoning = true;\n```";
+const FIRST_THINKING_MARKER = "const beforeToolReasoning = true;";
+const SECOND_THINKING_CODE = "```ts\nconst afterToolReasoning = true;\n```";
+const SECOND_THINKING_MARKER = "const afterToolReasoning = true;";
 
 function zeroUsage(): Usage {
 	return {
@@ -91,9 +98,9 @@ function createFixture() {
 		showPinnedError: vi.fn(),
 		clearTransientSessionUi: vi.fn(),
 		lastAssistantUsage: zeroUsage(),
-	} as unknown as InteractiveModeContext;
+	};
 
-	return { controller: new EventController(ctx), chatContainer };
+	return { controller: new EventController(ctx as unknown as InteractiveModeContext), chatContainer, ctx };
 }
 
 describe("EventController mixed assistant text/tool rendering", () => {
@@ -211,4 +218,120 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		expect(middleLine).toBeLessThan(toolResultBLine);
 		expect(toolResultBLine).toBeLessThan(finalLine);
 	});
+
+	for (const display of [
+		{ name: "full", hidden: false, proseOnly: false },
+		{ name: "prose", hidden: false, proseOnly: true },
+		{ name: "hidden", hidden: true, proseOnly: false },
+	] as const) {
+		it(`renders ${display.name} thinking deltas before a tool boundary without waiting for message_end`, async () => {
+			const { controller, chatContainer, ctx } = createFixture();
+			ctx.effectiveHideThinkingBlock = display.hidden;
+			ctx.proseOnlyThinking = display.proseOnly;
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: THINKING_TOOL_ID,
+				name: THINKING_TOOL_NAME,
+				arguments: { target: "thinking visibility" },
+			};
+			const started = assistantMessage([]);
+			const beforeTool = assistantMessage([{ type: "thinking", thinking: FIRST_THINKING_CODE }]);
+			const atToolBoundary = assistantMessage([{ type: "thinking", thinking: FIRST_THINKING_CODE }, toolCall]);
+			const afterTool = assistantMessage([
+				{ type: "thinking", thinking: FIRST_THINKING_CODE },
+				toolCall,
+				{ type: "thinking", thinking: SECOND_THINKING_CODE },
+			]);
+			const renderLines = () => chatContainer.render(120).map(line => Bun.stripANSI(line));
+			const assertFirstThinking = (lines: string[]) => {
+				if (display.name === "full") {
+					expect(lines.join("\n")).toContain(FIRST_THINKING_MARKER);
+					return;
+				}
+				if (display.name === "prose") {
+					expect(lines.some(line => line.trim() === "...")).toBe(true);
+					expect(lines.join("\n")).not.toContain(FIRST_THINKING_MARKER);
+					return;
+				}
+				expect(lines.join("\n")).not.toContain(FIRST_THINKING_MARKER);
+				expect(lines.some(line => line.trim() === "...")).toBe(false);
+			};
+
+			await controller.handleEvent({ type: "message_start", message: started } as Extract<
+				AgentSessionEvent,
+				{ type: "message_start" }
+			>);
+			await controller.handleEvent({
+				type: "message_update",
+				message: beforeTool,
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					contentIndex: 0,
+					delta: FIRST_THINKING_CODE,
+					partial: beforeTool,
+				},
+			} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+			// No message_end has occurred: this is the live transcript before any tool card exists.
+			assertFirstThinking(renderLines());
+
+			await controller.handleEvent({
+				type: "message_update",
+				message: atToolBoundary,
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 1,
+					toolCall,
+					partial: atToolBoundary,
+				},
+			} as Extract<AgentSessionEvent, { type: "message_update" }>);
+			assertFirstThinking(renderLines());
+
+			await controller.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: THINKING_TOOL_ID,
+				toolName: THINKING_TOOL_NAME,
+				args: toolCall.arguments,
+			} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: THINKING_TOOL_ID,
+				toolName: THINKING_TOOL_NAME,
+				result: { content: [{ type: "text", text: TOOL_BOUNDARY_RESULT }] },
+				isError: false,
+			} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+			await controller.handleEvent({
+				type: "message_update",
+				message: afterTool,
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					contentIndex: 2,
+					delta: SECOND_THINKING_CODE,
+					partial: afterTool,
+				},
+			} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+			const lines = renderLines();
+			const toolResultLine = lineContaining(lines, TOOL_BOUNDARY_RESULT);
+			if (display.name === "full") {
+				const firstLine = lineContaining(lines, FIRST_THINKING_MARKER);
+				const secondLine = lineContaining(lines, SECOND_THINKING_MARKER);
+				expect(lines.filter(line => line.includes(FIRST_THINKING_MARKER))).toHaveLength(1);
+				expect(lines.filter(line => line.includes(SECOND_THINKING_MARKER))).toHaveLength(1);
+				expect(firstLine).toBeLessThan(toolResultLine);
+				expect(toolResultLine).toBeLessThan(secondLine);
+			} else if (display.name === "prose") {
+				const ellipsisLines = lines.flatMap((line, index) => (line.trim() === "..." ? [index] : []));
+				expect(ellipsisLines).toHaveLength(2);
+				expect(lines.join("\n")).not.toContain(FIRST_THINKING_MARKER);
+				expect(lines.join("\n")).not.toContain(SECOND_THINKING_MARKER);
+				expect(ellipsisLines[0]).toBeLessThan(toolResultLine);
+				expect(toolResultLine).toBeLessThan(ellipsisLines[1]!);
+			} else {
+				expect(lines.join("\n")).not.toContain(FIRST_THINKING_MARKER);
+				expect(lines.join("\n")).not.toContain(SECOND_THINKING_MARKER);
+				expect(lines.some(line => line.trim() === "...")).toBe(false);
+			}
+		});
+	}
 });

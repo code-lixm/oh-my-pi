@@ -44,6 +44,8 @@ export interface AgentTurnEndContext {
 	message: AgentMessage;
 	/** Tool results produced by this turn, already paired with `message` in the live context. */
 	toolResults: ToolResultMessage[];
+	/** External user/custom messages that triggered this logical turn. Internal assistant/tool messages are excluded. */
+	inputMessages: readonly AgentMessage[];
 	/** True when the current tool-loop batch is continuing without yielding to post-turn steering. */
 	willContinue: boolean;
 }
@@ -485,7 +487,11 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * is true when the current tool-loop batch is continuing without yielding to
 	 * post-turn steering.
 	 */
-	onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal, context?: AgentTurnEndContext) => Promise<void> | void;
+	onTurnEnd?: (
+		messages: AgentMessage[],
+		signal: AbortSignal | undefined,
+		context: AgentTurnEndContext,
+	) => Promise<void> | void;
 
 	/**
 	 * Called once an assistant message is finalized from the model stream, before

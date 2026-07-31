@@ -1,18 +1,36 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { LateDiagnosticsMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/late-diagnostics-message";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 const darkTheme = await getThemeByName("dark");
 
+let previousLocale = getSettingsUiLocale();
+let previousBorderStyle = getOutputBlockBorderStyle();
+
+function plainLines(component: LateDiagnosticsMessageComponent): string[] {
+	return component.render(120).map(line => stripVTControlCharacters(line));
+}
+
 function plain(component: LateDiagnosticsMessageComponent): string {
-	return stripVTControlCharacters(component.render(120).join("\n"));
+	return plainLines(component).join("\n");
 }
 
 describe("LateDiagnosticsMessageComponent", () => {
 	beforeEach(() => {
+		previousLocale = getSettingsUiLocale();
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setSettingsUiLocale("en");
 		if (!darkTheme) throw new Error("Failed to load dark theme");
 		setThemeInstance(darkTheme);
+		setOutputBlockBorderStyle("none");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
+		setSettingsUiLocale(previousLocale);
 	});
 
 	it("renders late diagnostics through the shared tree renderer", () => {
@@ -39,6 +57,45 @@ describe("LateDiagnosticsMessageComponent", () => {
 		// `[error]`/`[typescript]` markers of the old flat format must be gone.
 		expect(text).not.toContain("[error]");
 		expect(text).not.toContain("[typescript]");
+	});
+
+	it("renders accent-railed diagnostics with breathing rows at both edges", () => {
+		setOutputBlockBorderStyle("accent");
+		const lines = plainLines(
+			new LateDiagnosticsMessageComponent([
+				{
+					summary: "1 error(s)",
+					errored: true,
+					messages: ["src/foo.ts:8:4 [error] [typescript] cannot assign number (2322)"],
+				},
+			]),
+		);
+
+		expect(lines[0]?.trim()).toBe("▌");
+		expect(lines.at(-1)?.trim()).toBe("▌");
+		const contentLines = lines.slice(1, -1);
+		expect(contentLines).not.toHaveLength(0);
+		expect(contentLines.every(line => line.startsWith("▌"))).toBe(true);
+		expect(contentLines.join("\n")).toContain("Late diagnostics");
+		expect(contentLines.join("\n")).toContain("cannot assign number");
+	});
+
+	it("keeps late diagnostics unrailed under none output style", () => {
+		setOutputBlockBorderStyle("none");
+		const lines = plainLines(
+			new LateDiagnosticsMessageComponent([
+				{
+					summary: "1 warning(s)",
+					errored: false,
+					messages: ["src/foo.ts:8:4 [warning] [typescript] unused local (6133)"],
+				},
+			]),
+		);
+
+		const text = lines.join("\n");
+		expect(text).toContain("Late diagnostics");
+		expect(text).toContain("unused local");
+		expect(text).not.toContain("▌");
 	});
 
 	it("caps collapsed output and reveals the rest when expanded", () => {

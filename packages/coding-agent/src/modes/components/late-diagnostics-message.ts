@@ -1,6 +1,13 @@
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { formatDiagnostics } from "../../tools/render-utils";
+import {
+	getOutputBlockBorderStyle,
+	OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH,
+	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
+	renderOutputAccentLine,
+	renderOutputAccentPadLine,
+} from "../../tui";
 import { getLanguageFromPath, theme } from "../theme/theme";
 
 /** One file's worth of late LSP diagnostics, as carried on the transcript message. */
@@ -33,6 +40,22 @@ export class LateDiagnosticsMessageComponent extends Container {
 	override invalidate(): void {
 		super.invalidate();
 		this.#rebuild();
+	}
+
+	override render(width: number): readonly string[] {
+		if (getOutputBlockBorderStyle() !== "accent") return super.render(width);
+
+		const safeWidth = Math.max(1, width);
+		const innerWidth = Math.max(1, safeWidth - OUTPUT_BLOCK_ACCENT_GUTTER_WIDTH - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
+		const body = super.render(innerWidth);
+		if (body.length === 0) return body;
+
+		const color = this.files.some(file => file.errored) ? "error" : "warning";
+		return [
+			renderOutputAccentPadLine(safeWidth, theme, color),
+			...body.map(line => renderOutputAccentLine(line, safeWidth, theme, color)),
+			renderOutputAccentPadLine(safeWidth, theme, color),
+		];
 	}
 
 	#rebuild(): void {

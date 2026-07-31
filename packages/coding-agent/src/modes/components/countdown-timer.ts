@@ -76,13 +76,13 @@ export class CountdownTimer {
 		}, 1000);
 	}
 
-	/** Reset the countdown to its initial value. */
-	reset(): void {
+	/** Reset the countdown to its initial value or a supplied absolute deadline. */
+	reset(deadlineMs?: number): void {
 		if (!this.#started) {
-			this.start();
+			this.start(deadlineMs);
 			return;
 		}
-		this.#arm(Date.now() + this.#initialMs);
+		this.#arm(deadlineMs ?? Date.now() + this.#initialMs);
 	}
 
 	dispose(): void {

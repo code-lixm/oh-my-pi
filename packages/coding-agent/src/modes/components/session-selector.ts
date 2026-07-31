@@ -736,6 +736,14 @@ export interface SessionSelectorOptions {
 	loadAllSessions?: () => Promise<SessionInfo[]>;
 	/** Preloaded all-projects list; cached so the first Tab toggle is instant. */
 	allSessions?: SessionInfo[];
+	/** Picker heading; defaults to "Resume Session". */
+	title?: string;
+	/** Parameters interpolated after localizing the picker heading. */
+	titleParams?: Record<string, string | number>;
+	/** Fixed scope label, or false to omit the scope suffix. */
+	scopeLabel?: string | false;
+	/** Show each session's working directory in the list. */
+	showCwd?: boolean;
 	/**
 	 * Reads the live terminal height so the visible window fits the viewport.
 	 * Omitted only in tests; defaults to a conservative 24 rows.
@@ -770,6 +778,7 @@ export class SessionSelectorComponent extends Container {
 	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
 	#folderSessions: SessionInfo[];
 	#globalSessions: SessionInfo[] | null = null;
+	readonly #canToggleScope: boolean;
 	#scope: "folder" | "all" = "folder";
 	#toggling = false;
 	#inputLocked = false;
@@ -785,6 +794,9 @@ export class SessionSelectorComponent extends Container {
 	readonly #getTerminalRows: () => number;
 	readonly #fillHeight: boolean;
 	readonly #bottomBorder = new DynamicBorder();
+	readonly #title: string;
+	readonly #titleParams: Record<string, string | number> | undefined;
+	readonly #scopeLabel: string | false | undefined;
 
 	constructor(
 		sessions: SessionInfo[],
@@ -800,8 +812,12 @@ export class SessionSelectorComponent extends Container {
 		this.#loadAllSessions = options.loadAllSessions;
 		this.#folderSessions = sessions;
 		this.#globalSessions = options.allSessions ?? null;
+		this.#canToggleScope = Boolean(this.#loadAllSessions || this.#globalSessions);
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
+		this.#title = options.title ?? "Resume Session";
+		this.#titleParams = options.titleParams;
+		this.#scopeLabel = options.scopeLabel;
 		// Add header
 		this.addChild(new Spacer(1));
 		this.#headerText = new Text(this.#headerLabel(), 1, 0);
@@ -813,7 +829,12 @@ export class SessionSelectorComponent extends Container {
 		// Create session list in folder scope; the empty-state hint invites the
 		// user to Tab into all-projects rather than silently surfacing other
 		// projects' history (issue #3099).
-		this.#sessionList = new SessionList(sessions, false, options.historyMatcher, options.getTerminalRows);
+		this.#sessionList = new SessionList(
+			sessions,
+			options.showCwd ?? false,
+			options.historyMatcher,
+			options.getTerminalRows,
+		);
 		// Every exit path cancels the list's pending history merge, so a stale
 		// debounce timer can never run its SQLite lookup after the picker closed.
 		this.#sessionList.onSelect = session => {
@@ -832,7 +853,7 @@ export class SessionSelectorComponent extends Container {
 		this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
 			this.#showDeleteConfirmation(session);
 		};
-		if (this.#loadAllSessions || this.#globalSessions) {
+		if (this.#canToggleScope) {
 			this.#sessionList.onToggleScope = () => {
 				void this.#toggleScope();
 			};
@@ -843,8 +864,9 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	#headerLabel(): string {
-		const scopeLabel = this.#scope === "all" ? tSettingsUi("all projects") : tSettingsUi("current folder");
-		return `${theme.bold(tSettingsUi("Resume Session"))} ${theme.fg("muted", `(${scopeLabel})`)}`;
+		if (this.#scopeLabel === false) return theme.bold(tSettingsUi(this.#title, this.#titleParams));
+		const scopeLabel = this.#scopeLabel ?? (this.#scope === "all" ? "all projects" : "current folder");
+		return `${theme.bold(tSettingsUi(this.#title, this.#titleParams))} ${theme.fg("muted", `(${tSettingsUi(scopeLabel)})`)}`;
 	}
 
 	/**
@@ -991,12 +1013,12 @@ export class SessionSelectorComponent extends Container {
 
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
-		const scopeHint = this.#scope === "all" ? tSettingsUi("current folder") : tSettingsUi("all projects");
-		const hint = theme.fg(
-			"muted",
-			`  ${tSettingsUi("[Del/⌫ delete · Enter select · Tab {scopeHint} · Esc cancel]", { scopeHint })}`,
-		);
-		return ["", hint, "", ...this.#bottomBorder.render(width)];
+		const hint = this.#canToggleScope
+			? tSettingsUi("[Del/⌫ delete · Enter select · Tab {scopeHint} · Esc cancel]", {
+					scopeHint: this.#scope === "all" ? tSettingsUi("current folder") : tSettingsUi("all projects"),
+				})
+			: tSettingsUi("[Del/⌫ delete · Enter select · Esc cancel]");
+		return ["", theme.fg("muted", `  ${hint}`), "", ...this.#bottomBorder.render(width)];
 	}
 
 	handleInput(keyData: string): void {

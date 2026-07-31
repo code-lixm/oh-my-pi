@@ -1368,6 +1368,47 @@ export class Settings {
 		}
 		delete raw.lastChangelogVersion;
 
+		// collapseChangelog (boolean) -> startup.changelogMode (enum). Preserve
+		// every explicit legacy choice while giving new installs the schema's
+		// "summary" default: true -> summary, false -> expanded. A separately
+		// configured new mode always wins.
+		const startupObj = isRecord(raw.startup) ? (raw.startup as Record<string, unknown>) : undefined;
+		const legacyCollapseChangelog = typeof raw.collapseChangelog === "boolean" ? raw.collapseChangelog : undefined;
+		const flatChangelogMode = raw["startup.changelogMode"];
+		const normalizedFlatChangelogMode =
+			flatChangelogMode === "summary" || flatChangelogMode === "expanded" || flatChangelogMode === "hidden"
+				? flatChangelogMode
+				: undefined;
+		if (legacyCollapseChangelog !== undefined || normalizedFlatChangelogMode !== undefined) {
+			if (!startupObj) {
+				raw.startup = {};
+			}
+			const target = raw.startup as Record<string, unknown>;
+			if (target.changelogMode === undefined) {
+				target.changelogMode =
+					normalizedFlatChangelogMode ??
+					(legacyCollapseChangelog !== undefined ? (legacyCollapseChangelog ? "summary" : "expanded") : undefined);
+			}
+		}
+		delete raw.collapseChangelog;
+		delete raw["startup.changelogMode"];
+
+		// hideThinkingBlock + proseOnlyThinking -> thinkingDisplay. One positive
+		// enum now controls the live transcript policy; an explicit new mode wins.
+		const configuredThinkingDisplay = raw.thinkingDisplay;
+		const legacyHideThinking = typeof raw.hideThinkingBlock === "boolean" ? raw.hideThinkingBlock : undefined;
+		const legacyProseOnly = typeof raw.proseOnlyThinking === "boolean" ? raw.proseOnlyThinking : undefined;
+		if (
+			configuredThinkingDisplay !== "full" &&
+			configuredThinkingDisplay !== "prose" &&
+			configuredThinkingDisplay !== "hidden" &&
+			(legacyHideThinking !== undefined || legacyProseOnly !== undefined)
+		) {
+			raw.thinkingDisplay = legacyHideThinking ? "hidden" : legacyProseOnly ? "prose" : "full";
+		}
+		delete raw.hideThinkingBlock;
+		delete raw.proseOnlyThinking;
+
 		// ask.timeout: ms -> seconds (if value > 1000, it's old ms format)
 		if (raw.ask && typeof (raw.ask as Record<string, unknown>).timeout === "number") {
 			const oldValue = (raw.ask as Record<string, unknown>).timeout as number;
@@ -2073,6 +2114,7 @@ export class Settings {
 		}
 
 		this.#rebuildMerged();
+		globalSettingsPersistedSignal.fire(this.#agentDir);
 	}
 	#queueProjectSave(): void {
 		if (!this.#persist) return;
@@ -2312,6 +2354,12 @@ const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccen
  * Returns an unsubscribe function. Callers should re-read settings in the callback.
  */
 export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
+
+/** Fires after the global config file has been atomically persisted. */
+const globalSettingsPersistedSignal = new SettingSignal<[agentDir: string]>("global settings persisted");
+
+/** Subscribe to successful global config persistence. */
+export const onGlobalSettingsPersisted = (cb: (agentDir: string) => void) => globalSettingsPersistedSignal.on(cb);
 
 /** Fires when any `hindsight.bankId` / `bankIdPrefix` / `scoping` value changes. */
 const hindsightScopeSignal = new SettingSignal("hindsight scope");

@@ -163,9 +163,13 @@ export interface ToolCallStats {
  * later incremental sync pass than the call that produced them.
  */
 export interface ToolResultLink {
+	/** Session transcript path. */
 	sessionFile: string;
+	/** Provider-assigned tool call ID. */
 	toolCallId: string;
-	/** Text characters fed back into context */
+	/** Result-entry timestamp used to derive elapsed tool time. */
+	timestamp: number;
+	/** Text characters fed back into context. */
 	resultChars: number;
 	isError: boolean;
 }

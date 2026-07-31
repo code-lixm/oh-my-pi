@@ -39,16 +39,19 @@ export interface RetryFallbackResolutionContext {
 	modelLookup: RetryFallbackModelLookup;
 }
 
-/** Runtime fallback state scoped to the user-initiated turn that selected it. */
+/** Runtime fallback state retained until primary health recovery or an explicit model/session boundary. */
 export interface ActiveRetryFallbackState {
 	/** Chain key that owns subsequent retries; absent for an intrinsic provider fallback. */
 	role?: string;
-	/** User-selected primary selector restored before the next user turn. */
+	/** User-selected primary selector restored after a successful private probe. */
 	originalSelector: string;
 	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
 	/** Last temporary fallback selector, used to preserve an intervening user change. */
 	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
 }
+
+export const FALLBACK_RECOVERY_PROBE_INTERVAL_MS = 60_000;
+export const FALLBACK_RECOVERY_PROBE_TIMEOUT_MS = 10_000;
 
 const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
 const RETRY_BACKOFF_JITTER_RATIO = 0.25;

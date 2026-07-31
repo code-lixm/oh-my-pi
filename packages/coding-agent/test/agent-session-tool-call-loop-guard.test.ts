@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Context, Message } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -21,6 +21,15 @@ const zeroUsage = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 } satisfies AssistantMessage["usage"];
+
+function messageText(message: Message): string {
+	if (typeof message.content === "string") return message.content;
+	let text = "";
+	for (const content of message.content) {
+		if (content.type === "text") text += content.text;
+	}
+	return text;
+}
 
 describe("AgentSession tool-call loop guard", () => {
 	let tempDir: TempDir;
@@ -117,5 +126,116 @@ describe("AgentSession tool-call loop guard", () => {
 		);
 		expect(redirects).toHaveLength(1);
 		expect(redirects[0]!.display).toBe(false);
+	});
+
+	it("soft-restarts once after ten semantically identical bash calls, then stops on a second threshold", async () => {
+		const model = createMockModel({ provider: "openai", id: "gpt-test" }).model;
+		const modelRegistry = new ModelRegistry(authStorage);
+		const contexts: Context[] = [];
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Mock bash tool",
+			parameters: type({ command: "string", "timeout?": "number" }),
+			execute: async () => ({ content: [{ type: "text" as const, text: "No files changed." }] }),
+		};
+		let callCount = 0;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [bashTool], messages: [] },
+			convertToLlm,
+			streamFn: (_model, context) => {
+				contexts.push(context);
+				const callIndex = callCount++;
+				const toolCallTurn = callIndex < 20;
+				const argumentsForCall =
+					callIndex % 2 === 0
+						? { command: "git status --short", timeout: 30 }
+						: { timeout: 30, command: "git status --short" };
+				const message: AssistantMessage = toolCallTurn
+					? {
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: `tc-${callIndex}`,
+									name: "bash",
+									arguments: argumentsForCall,
+								},
+							],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: zeroUsage,
+							stopReason: "toolUse",
+							timestamp: Date.now(),
+						}
+					: {
+							role: "assistant",
+							content: [{ type: "text", text: "Safety stop after an unexpected extra provider call." }],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: zeroUsage,
+							stopReason: "stop",
+							timestamp: Date.now(),
+						};
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: message });
+					stream.push({ type: "done", reason: toolCallTurn ? "toolUse" : "stop", message });
+				});
+				return stream;
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			"advisor.enabled": false,
+			"model.loopGuard.enabled": true,
+			"model.loopGuard.maxNoProgressTurns": 10,
+			"model.toolCallLoopGuard.enabled": false,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings,
+			modelRegistry,
+			toolRegistry: new Map([[bashTool.name, bashTool]]),
+		});
+
+		await session.prompt("Run the same check until it changes.");
+		await session.waitForIdle();
+
+		// Ten no-progress turns cause one continuation; the second threshold is terminal.
+		expect(contexts).toHaveLength(20);
+		const recoveryContext = contexts[10]!;
+		expect(
+			recoveryContext.messages.some(
+				message =>
+					message.role === "developer" &&
+					messageText(message).includes('<system-interrupt reason="no_progress_loop_detected">'),
+			),
+		).toBe(true);
+
+		// Completed tool turns stay in session history; only the next model turn is redirected.
+		const completedBashTurns = session.agent.state.messages.filter(
+			(message): message is AssistantMessage =>
+				message.role === "assistant" &&
+				message.content.some(content => content.type === "toolCall" && content.name === "bash"),
+		);
+		expect(completedBashTurns).toHaveLength(20);
+		const completedBashResults = session.agent.state.messages.filter(
+			message => message.role === "toolResult" && message.toolName === "bash",
+		);
+		expect(completedBashResults).toHaveLength(20);
+		const recoveryMessages = session.agent.state.messages.filter(
+			(message): message is CustomMessage =>
+				message.role === "custom" && message.customType === "no-progress-loop-redirect",
+		);
+		expect(recoveryMessages).toHaveLength(1);
+		expect(recoveryMessages[0]!.display).toBe(false);
 	});
 });

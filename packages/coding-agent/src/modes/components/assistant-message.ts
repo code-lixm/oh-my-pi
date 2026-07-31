@@ -761,7 +761,7 @@ export class AssistantMessageComponent extends Container {
 				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
 				if (!display.visible) parts.push("K0");
 				else if (this.hideThinkingBlock) parts.push("KH");
-				else parts.push(content.durationMs === undefined ? "KV0" : "KV1");
+				else parts.push(content.durationMs !== undefined && content.durationMs >= 1_000 ? "KV1" : "KV0");
 				// Non-rendered blocks (toolCall, redactedThinking, …) still occupy a
 				// content index. Encode their position so an inserted/removed one shifts
 				// the key and forces the teardown path instead of mis-indexing children.
@@ -957,6 +957,10 @@ export class AssistantMessageComponent extends Container {
 				hasRenderedContent = true;
 			} else if (content.type === "thinking" && resolveThinkingDisplay(content, this.proseOnlyThinking).visible) {
 				const thinkingText = resolveThinkingDisplay(content, this.proseOnlyThinking).text;
+				const durationSuffix =
+					content.durationMs !== undefined && content.durationMs >= 1_000
+						? `${theme.sep.dot}${formatAgentDuration(content.durationMs)}`
+						: "";
 				if (this.hideThinkingBlock) {
 					thinkingIndex += 1;
 					continue;
@@ -975,7 +979,7 @@ export class AssistantMessageComponent extends Container {
 				// Thinking traces in thinkingText color, italic. paddingX=1
 				// keeps the visible thinking line aligned with sibling transcript
 				// rows (text prose, UserMessage, tool cards) — see the text branch.
-				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {
+				const md = new Markdown(`${thinkingText}${durationSuffix}`, 1, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 				});
 				const codeBlockOptions = buildAssistantCodeBlockOptions();
@@ -986,18 +990,6 @@ export class AssistantMessageComponent extends Container {
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
 				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
-				if (content.durationMs !== undefined) {
-					this.#contentContainer.addChild(
-						new Text(
-							theme.fg(
-								"dim",
-								tSettingsUi("Thinking time: {duration}", { duration: formatAgentDuration(content.durationMs) }),
-							),
-							1,
-							0,
-						),
-					);
-				}
 				hasRenderedContent = true;
 				thinkingIndex += 1;
 				if (hasVisibleContentAfter) {

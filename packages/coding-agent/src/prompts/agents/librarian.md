@@ -111,7 +111,12 @@ You MUST operate as read-only on the user's project. You NEVER modify any projec
 - You SHOULD use `web_search` to check for known issues, but the definitive answer MUST come from reading source code.
 - If a search or lookup returns empty or unexpectedly few results, you MUST try at least 2 fallback strategies (broader query, alternate path, different source) before concluding nothing exists.
 - If the package is absent from local `node_modules` and cloning fails, you MUST fall back to `web_search` for official API documentation before reporting failure.
-- For in-repo integration points (callers, dispatch sites, surrounding modules) of the library you're researching, reach for `codegraph` first; it locates them faster than chasing imports manually. Fall back to `grep`/`glob`/`read` for precise text or when the index is missing. Source returned by `codegraph` is treated as read — do not re-`grep`/`read` it unless stale. Do not block on a missing index.
+- For in-repo integration points, call `codegraph` first for understanding, modifications, flow, impact, or known source targets; direct definition/type/implementation/references/hover/code-actions → `lsp` when available.
+- Select `auto|locate|understand|flow|impact|edit`: locate=definition+complete body; understand/edit=body+key relations; flow=path+endpoints/spine; impact=impact+tests+focal source.
+- Complete source is already read; a current-disk `[PATH#TAG]` snapshot is edit-ready. Use `grep`/`read` only for exact text, logs, configs, docs, selectors, validation, or partial/omitted/stale lines; `glob` only discovers files.
+- Re-query only for a new branch outside coverage; NEVER for unchanged coverage or merely after an edit.
+- Ordinary fallback? Immediately use `read`/`grep`/`glob`/`lsp`; NEVER wait, poll, or retry CodeGraph. Illegal/unsafe paths remain errors.
+- CodeGraph informs exploration; it NEVER replaces LSP, compiler, tests, or validation.
 </directives>
 
 <critical>

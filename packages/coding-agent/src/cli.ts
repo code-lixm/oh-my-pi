@@ -35,6 +35,7 @@ import { CODEGRAPH_WORKER_ARG, startCodeGraphWorker } from "./codegraph/worker-e
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
+import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
@@ -100,6 +101,7 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
 	// Other smoke dependencies stay lazy so normal CLI startup does not load their worker clients.
 	const { smokeTestDaemonBroker } = await import("./launch/client");
+	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	await smokeTestSyncWorker();
 
 	const statsServer = await startServer(0);
@@ -122,6 +124,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
+	await smokeTestTerminalOutputWorker();
 	process.stdout.write("smoke-test: ok\n");
 }
 
@@ -206,6 +209,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === MNEMOPI_EMBED_WORKER_ARG) {
 		const { startMnemopiEmbedWorker } = await import("./mnemopi/embed-worker");
 		await runIpcSubprocessWorker(startMnemopiEmbedWorker);
+		return true;
+	}
+	if (arg === TERMINAL_OUTPUT_WORKER_ARG) {
+		if (parentPort) installWorkerInbox(parentPort);
+		// This selector is the isolation boundary; a static import would evaluate xterm in normal CLI startup.
+		await import("./launch/terminal-output-worker");
 		return true;
 	}
 	if (arg === DAEMON_BROKER_WORKER_ARG) {
@@ -399,8 +408,16 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 	const [
 		{ run },
-		{ commands, ensureCliHelpLocale, localizeCliHelpMetadata, localizeCommandEntryHelp, resolveCliArgv },
+		{
+			commands,
+			ensureCliHelpLocale,
+			localizeCliHelpMetadata,
+			localizeCommandEntryHelp,
+			registerConfigSyncAutoPush,
+			resolveCliArgv,
+		},
 	] = await Promise.all([import("@oh-my-pi/pi-utils/cli"), import("./cli-runtime")]);
+	registerConfigSyncAutoPush();
 	// --help and --version are handled by run() directly, don't rewrite those.
 	// Everything else that isn't a known subcommand routes to "launch".
 	const resolved = resolveCliArgv(resolvedArgv);

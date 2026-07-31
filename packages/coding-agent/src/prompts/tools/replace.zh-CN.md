@@ -11,7 +11,8 @@
 </output>
 
 <critical>
-- 你 MUST 在编辑前至少在对话中读取该文件一次。若未先读取文件就尝试编辑，该工具会报错。
+- 你 MUST 在编辑前通过最新的 `read`/`grep` 或当前磁盘 `codegraph` 源码 section 检查目标；CodeGraph `[PATH#TAG]` snapshot 是有效的当前依据。
+- stale 或匹配失败？用 `read`/`grep` 刷新精确当前文本；NEVER 只为刷新 snapshot 重跑 CodeGraph。
 </critical>
 
 <bash-alternatives>

@@ -16,6 +16,7 @@ import { ErrorBannerComponent } from "@oh-my-pi/pi-coding-agent/modes/components
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { AgentActivityState } from "@oh-my-pi/pi-coding-agent/registry/agent-activity";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
@@ -305,6 +306,105 @@ describe("EventController thinking visibility", () => {
 });
 
 describe("EventController working loader reconciliation", () => {
+	it("passes the event-backed thinking snapshot to the interactive loader refresh", async () => {
+		const initial = makeAssistantMessage({ content: [] });
+		const message = makeAssistantMessage({ content: [{ type: "thinking", thinking: "server-side reasoning" }] });
+		const staleActivity: AgentActivityState = {
+			phase: "streaming",
+			label: "Streaming response",
+			phaseStartedAtMs: 1_000,
+			lastActivityAtMs: 1_000,
+		};
+		const thinkingActivity: AgentActivityState = {
+			phase: "thinking",
+			label: "Thinking",
+			phaseStartedAtMs: 2_000,
+			lastActivityAtMs: 2_000,
+		};
+		const { controller, ctx } = createFixture();
+		const refreshWorkingActivitySummary = vi.fn();
+		ctx.refreshWorkingActivitySummary = refreshWorkingActivitySummary;
+		(ctx.viewSession as unknown as { activity: AgentActivityState }).activity = staleActivity;
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: initial,
+		} as Extract<AgentSessionEvent, { type: "message_start" }>);
+		refreshWorkingActivitySummary.mockClear();
+
+		await controller.handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: {
+				type: "thinking_delta",
+				delta: "server-side reasoning",
+				contentIndex: 0,
+			},
+			activity: thinkingActivity,
+		} as Extract<AgentSessionEvent, { type: "message_update" }> & { activity: AgentActivityState });
+
+		expect(refreshWorkingActivitySummary).toHaveBeenCalledTimes(1);
+		expect(refreshWorkingActivitySummary).toHaveBeenCalledWith(thinkingActivity);
+	});
+
+	it("refreshes the newly focused session activity after an awaited stale event", async () => {
+		const sourceActivity: AgentActivityState = {
+			phase: "thinking",
+			label: "Thinking",
+			phaseStartedAtMs: 1_000,
+			lastActivityAtMs: 1_000,
+		};
+		const focusedActivity: AgentActivityState = {
+			phase: "tool",
+			label: "Using tool",
+			phaseStartedAtMs: 2_000,
+			lastActivityAtMs: 2_000,
+		};
+		const { controller, ctx } = createFixture();
+		const refreshWorkingActivitySummary = vi.fn();
+		const sourceSession = {
+			isStreaming: false,
+			isTtsrAbortPending: false,
+			retryAttempt: 0,
+			activity: sourceActivity,
+		} as unknown as InteractiveModeContext["viewSession"];
+		const focusedSession = {
+			isStreaming: false,
+			isTtsrAbortPending: false,
+			retryAttempt: 0,
+			activity: focusedActivity,
+		} as unknown as InteractiveModeContext["viewSession"];
+		let currentViewSession = sourceSession;
+		Object.defineProperty(ctx, "viewSession", {
+			configurable: true,
+			get: () => currentViewSession,
+		});
+		ctx.refreshWorkingActivitySummary = refreshWorkingActivitySummary;
+		const compactionQueueEntered = Promise.withResolvers<void>();
+		const releaseCompactionQueue = Promise.withResolvers<void>();
+		ctx.flushCompactionQueue = vi.fn(() => {
+			compactionQueueEntered.resolve();
+			return releaseCompactionQueue.promise;
+		});
+
+		const handling = controller.handleEvent({
+			type: "auto_compaction_end",
+			action: "context-full",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+			skipped: true,
+			activity: sourceActivity,
+		} as Extract<AgentSessionEvent, { type: "auto_compaction_end" }> & { activity: AgentActivityState });
+		await compactionQueueEntered.promise;
+		currentViewSession = focusedSession;
+		releaseCompactionQueue.resolve();
+		await handling;
+
+		expect(refreshWorkingActivitySummary).toHaveBeenCalledTimes(1);
+		expect(refreshWorkingActivitySummary).toHaveBeenCalledWith(focusedActivity);
+	});
+
 	it("restores the working loader after compaction clears status while the focused session streams", async () => {
 		const { controller, ctx } = createFixture();
 		const loader = { stop: vi.fn() } as unknown as InteractiveModeContext["autoCompactionLoader"];

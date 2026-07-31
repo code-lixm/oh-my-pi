@@ -17,7 +17,6 @@ import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -350,7 +349,7 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
-	it("does not rebuild historical IRC or successful message-wait output into transcript cards", async () => {
+	it("rebuilds peer hub coordination and historical IRC rows silently", async () => {
 		await Settings.init({ inMemory: true });
 		const hubTurn: AssistantMessage = {
 			...assistantToolCall("hub-send", "hub", { op: "send", to: "Worker", message: "ping", await: true }),
@@ -411,11 +410,10 @@ describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
 
 		new UiHelpers(ctx).renderInitialMessages();
 
-		const groups = chatContainer.children.filter(
-			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
-		);
-		expect(groups).toHaveLength(0);
 		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(transcriptText).not.toContain("Worker");
+		expect(transcriptText).not.toContain("ping");
+		expect(transcriptText).not.toContain("woken");
 		expect(transcriptText).not.toContain("ready now");
 		expect(transcriptText).not.toContain("peer ready");
 		expect(transcriptText).not.toContain("pending");

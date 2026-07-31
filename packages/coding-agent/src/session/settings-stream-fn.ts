@@ -59,6 +59,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			textVerbosity: streamOptions?.textVerbosity ?? textVerbosity,
 			streamFirstEventTimeoutMs: streamOptions?.streamFirstEventTimeoutMs ?? streamFirstEventTimeoutMs,
 			streamIdleTimeoutMs: streamOptions?.streamIdleTimeoutMs ?? streamIdleTimeoutMs,
+			maxRetryDelayMs: streamOptions?.maxRetryDelayMs ?? settings.get("retry.maxDelayMs"),
 			maxInFlightRequests: validateProviderMaxInFlightRequests(
 				streamOptions?.maxInFlightRequests ?? settings.get("providers.maxInFlightRequests"),
 			),
@@ -69,7 +70,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			},
 			hideThinkingSummary:
 				streamOptions?.hideThinkingSummary ??
-				resolveHideThinkingSummary(settings.get("hideThinkingBlock"), settings.get("omitThinking")),
+				resolveHideThinkingSummary(settings.get("thinkingDisplay") === "hidden", settings.get("omitThinking")),
 			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
 		return base(model, context, merged);

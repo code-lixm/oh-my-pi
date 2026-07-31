@@ -76,6 +76,12 @@ export const codegraphToolRenderer = {
 				`${details.fileCount} file${details.fileCount === 1 ? "" : "s"}`,
 				`${details.entryCount} entr${details.entryCount === 1 ? "y" : "ies"}`,
 			);
+			if (details.mode) meta.push(details.mode);
+			if (details.flow && details.flow.length > 0) meta.push(`${details.flow.length} flow`);
+			if (details.blastRadius && details.blastRadius.entries.length > 0) {
+				meta.push(`${details.blastRadius.entries.length} impact`);
+			}
+			if (details.freshness?.state === "partial-stale") meta.push(theme.fg("warning", "partial-stale"));
 			if (details.pathScope) meta.push(`sync: ${shortenPath(details.pathScope)}`);
 			if (details.truncated) meta.push(theme.fg("warning", "truncated"));
 			if (details.confidence) meta.push(`confidence: ${details.confidence}`);

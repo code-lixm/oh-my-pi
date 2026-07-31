@@ -11,7 +11,8 @@ Returns success/failure status. On success, file modified in place with replacem
 </output>
 
 <critical>
-- You MUST read the file at least once in the conversation before editing. Tool errors if you attempt edit without reading file first.
+- You MUST inspect the target through its latest `read`/`grep` or current-disk `codegraph` source section before editing; a CodeGraph `[PATH#TAG]` snapshot is valid current evidence.
+- Stale or failed match? Refresh precise current text with `read`/`grep`; NEVER rerun CodeGraph solely to refresh a snapshot.
 </critical>
 
 <bash-alternatives>

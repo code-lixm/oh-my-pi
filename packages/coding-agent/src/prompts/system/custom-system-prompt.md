@@ -1,3 +1,7 @@
+<communication>
+- You MUST write all user-facing natural language in English, including thinking/reasoning summaries.
+</communication>
+
 {{#if systemPromptCustomization}}
 {{systemPromptCustomization}}
 {{/if}}

@@ -63,3 +63,4 @@ HunkLine := (" " | "-" | "+") text NEWLINE
 - 你必须包含一个 header 来表明你打算执行的操作（Add/Delete/Update）
 - 即使在创建新文件时，你也必须用 `+` 作为新行的前缀
 - 文件引用只能是相对路径，NEVER ABSOLUTE。
+- 在 `Update` 或 `Delete` 前，你 MUST 以最新 `read`/`grep` 或当前磁盘 `codegraph` 源码 section 为目标依据；CodeGraph `[PATH#TAG]` snapshot 是有效的当前依据。上下文 stale？用 `read`/`grep` 刷新精确文本，NEVER 只为刷新 snapshot 重跑 CodeGraph。

@@ -111,7 +111,12 @@ output:
 - 你 SHOULD 使用 `web_search` 检查已知问题，但最终答案 MUST 来自阅读源代码。
 - 如果一次搜索或查找返回空结果或少得异常，你 MUST 在得出不存在的结论之前至少尝试 2 种后备策略（更宽泛的查询、替代路径、不同来源）。
 - 如果本地 `node_modules` 中不存在该包且克隆失败，你 MUST 回退到 `web_search` 查阅官方 API 文档，然后再报告失败。
-- 对于所研究库的仓库内集成点（调用者、分发点、相关模块）：优先使用 `codegraph`；它比手动追踪 import 更快。精确文本、索引缺失时退回 `grep`/`glob`/`read`。`codegraph` 已返回的源码视为已读，不要重复 `grep`/`read`，除非过期。不要因为索引缺失而卡住。
+- 对仓库内集成点，理解、修改、flow、impact 或已知源码目标时先调用 `codegraph`；直接 definition/type/implementation/references/hover/code actions → 可用时使用 `lsp`。
+- 选择 `auto|locate|understand|flow|impact|edit`：locate=定义+完整 body；understand/edit=body+关键关系；flow=路径+端点／脊柱；impact=影响+tests+焦点源码。
+- 完整源码已视为已读；当前磁盘 `[PATH#TAG]` snapshot 可直接用于 edit。仅对精确文本、日志、配置、文档、selector、验证或 partial/omitted/stale 行使用 `grep`/`read`；`glob` 仅发现文件。
+- 仅 coverage 外新分支才重调；NEVER 因 coverage 未变或刚完成 edit 而重调。
+- 普通 fallback 后？立即使用 `read`/`grep`/`glob`/`lsp`；NEVER 等待、轮询或重试 CodeGraph。非法／不安全路径仍是错误。
+- CodeGraph 只提供探索依据；NEVER 替代 LSP、compiler、tests 或验证。
 </directives>
 
 <critical>

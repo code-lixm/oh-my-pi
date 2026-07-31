@@ -1,6 +1,13 @@
 import * as fs from "node:fs";
-import type { Agent, AgentEvent, AgentMessage, AgentTurnEndContext } from "@oh-my-pi/pi-agent-core";
+import {
+	type Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentTurnEndContext,
+	TERMINAL_TOOL_RESULT_ABORT_REASON,
+} from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
+import { type NoProgressLoopDetection, NoProgressLoopGuard } from "@oh-my-pi/pi-ai/utils/no-progress-loop-guard";
 import { GeminiHeaderRunDetector, isGeminiThinkingModel } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
@@ -8,6 +15,7 @@ import type { Settings } from "../config/settings";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
+import noProgressLoopRedirectTemplate from "../prompts/system/no-progress-loop-redirect.md" with { type: "text" };
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { assertEditableFile } from "../tools/auto-generated-guard";
@@ -19,6 +27,8 @@ import type { SessionManager } from "./session-manager";
 const GEMINI_HEADER_INTERRUPT_REASON = "Interrupted: emit a tool call instead of more planning";
 const GEMINI_TOOL_REMINDER_TYPE = "gemini-tool-call-reminder";
 const TOOL_CALL_LOOP_REDIRECT_TYPE = "tool-call-loop-redirect";
+const NO_PROGRESS_LOOP_REDIRECT_TYPE = "no-progress-loop-redirect";
+const NO_PROGRESS_LOOP_HALTED_TYPE = "no-progress-loop-halted";
 
 /** Capabilities borrowed by the session's streaming and loop guards. */
 export interface StreamGuardsHost {
@@ -30,6 +40,7 @@ export interface StreamGuardsHost {
 	isDisposed(): boolean;
 	promptGeneration(): number;
 	localProtocolOptions(): LocalProtocolOptions;
+	restartAgent?(messages: AgentMessage[], signal?: AbortSignal): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	schedulePostPromptTask(task: (signal: AbortSignal) => Promise<void>): void;
 	discardAssistantTurn(message: AssistantMessage): void;
@@ -274,19 +285,27 @@ export class LoopGuards {
 	#geminiHeaderDetector: GeminiHeaderRunDetector | undefined;
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
 	#toolCallLoopGuardSettingsKey: string | undefined;
-
+	#noProgressLoopGuard: NoProgressLoopGuard | undefined;
+	#noProgressLoopGuardThreshold: number | undefined;
+	#noProgressRecoveryGeneration: number | undefined;
 	constructor(host: StreamGuardsHost) {
 		this.#host = host;
 	}
 
-	/** Records a completed turn and injects a redirect when calls repeat. */
+	/** Records a completed turn and interrupts a repeated no-progress run. */
 	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): void {
 		if (context?.message.role !== "assistant") return;
-		const detection = this.#activeToolCallLoopGuard()?.recordTurn({
+		const toolCallDetection = this.#activeToolCallLoopGuard()?.recordTurn({
 			message: context.message,
 			toolResults: context.toolResults,
 		});
-		if (detection) this.#injectToolCallLoopRedirect(messages, detection);
+		if (toolCallDetection) this.#injectToolCallLoopRedirect(messages, toolCallDetection);
+
+		const noProgressDetection = this.#activeNoProgressLoopGuard()?.recordTurn({
+			message: context.message,
+			toolResults: context.toolResults,
+		});
+		if (noProgressDetection) this.#interruptNoProgressLoop(messages, noProgressDetection);
 	}
 
 	/** Feeds a streamed assistant event to the Gemini header-runaway detector. */
@@ -322,6 +341,20 @@ export class LoopGuards {
 		return this.#toolCallLoopGuard;
 	}
 
+	#activeNoProgressLoopGuard(): NoProgressLoopGuard | undefined {
+		if (this.#host.settings.get("model.loopGuard.enabled") !== true) {
+			this.#noProgressLoopGuard = undefined;
+			this.#noProgressLoopGuardThreshold = undefined;
+			return undefined;
+		}
+		const threshold = this.#host.settings.get("model.loopGuard.maxNoProgressTurns");
+		if (!this.#noProgressLoopGuard || this.#noProgressLoopGuardThreshold !== threshold) {
+			this.#noProgressLoopGuard = new NoProgressLoopGuard({ threshold });
+			this.#noProgressLoopGuardThreshold = threshold;
+		}
+		return this.#noProgressLoopGuard;
+	}
+
 	#injectToolCallLoopRedirect(messages: AgentMessage[], detection: RepeatedToolCallDetection): void {
 		const content = prompt.render(toolCallLoopRedirectTemplate, {
 			tool_name: detection.toolName,
@@ -354,6 +387,69 @@ export class LoopGuards {
 			details,
 			"agent",
 		);
+	}
+
+	#interruptNoProgressLoop(messages: AgentMessage[], detection: NoProgressLoopDetection): void {
+		const generation = this.#host.promptGeneration();
+		const canRecover = this.#noProgressRecoveryGeneration !== generation;
+		const content = prompt.render(noProgressLoopRedirectTemplate, {
+			count: detection.count,
+			summary: detection.summary,
+		});
+		const customType = canRecover ? NO_PROGRESS_LOOP_REDIRECT_TYPE : NO_PROGRESS_LOOP_HALTED_TYPE;
+		const details = {
+			count: detection.count,
+			signature: detection.signature,
+			recovery: canRecover ? "restart" : "halted",
+		};
+		const redirectMessage: CustomMessage = {
+			role: "custom",
+			customType,
+			content,
+			display: false,
+			details,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		messages.push(redirectMessage);
+		if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(redirectMessage);
+		this.#host.sessionManager.appendCustomMessageEntry(customType, content, false, details, "agent");
+		this.#host.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+
+		if (!canRecover) {
+			logger.warn("no-progress loop recurred after automatic recovery; stopping", {
+				count: detection.count,
+				model: this.#host.model()?.id,
+				provider: this.#host.model()?.provider,
+			});
+			this.#host.emitNotice(
+				"error",
+				`Stopped after ${detection.count} repeated no-progress turns following automatic recovery; change the approach or submit a new prompt.`,
+				"loop-guard",
+			);
+			return;
+		}
+
+		this.#noProgressRecoveryGeneration = generation;
+		logger.warn("no-progress loop detected; restarting once with a recovery instruction", {
+			count: detection.count,
+			model: this.#host.model()?.id,
+			provider: this.#host.model()?.provider,
+		});
+		this.#host.emitNotice(
+			"warning",
+			`Stopped ${detection.count} repeated no-progress turns; restarting once with a recovery instruction.`,
+			"loop-guard",
+		);
+		this.#host.schedulePostPromptTask(async signal => {
+			await this.#host.agent.waitForIdle();
+			if (this.#host.isDisposed() || this.#host.promptGeneration() !== generation) return;
+			try {
+				await (this.#host.restartAgent?.([], signal) ?? this.#host.continueAgent(signal));
+			} catch (error) {
+				logger.warn("no-progress loop recovery continue failed", { error: String(error) });
+			}
+		});
 	}
 
 	#geminiHeaderGuardActive(): boolean {

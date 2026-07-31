@@ -255,7 +255,7 @@ describe("Agent Hub redesign", () => {
 			setSystemTime(completedAtMs + 7_200_000);
 			const later = renderHub(hub);
 
-			expect(first).toContain("01:02:03");
+			expect(first).toContain("1h2m");
 			expect(later).toBe(first);
 		} finally {
 			hub.dispose();
@@ -312,7 +312,7 @@ describe("Agent Hub redesign", () => {
 		try {
 			await hub.persistedSubagentsReady;
 			setSystemTime(startedAtMs + 3_723_000);
-			const first = positions(renderHub(hub), "running", "01:02:03", "short-model");
+			const first = positions(renderHub(hub), "running", "1h2m", "short-model");
 			expect(first.row).toEqual(first.header);
 
 			progress = {
@@ -320,7 +320,7 @@ describe("Agent Hub redesign", () => {
 				resolvedModel: "provider/intentionally-much-longer-model-identifier",
 			};
 			registry.setStatus(METADATA_AGENT, "parked");
-			const later = positions(renderHub(hub), "parked", "99:59:59", "intentionally");
+			const later = positions(renderHub(hub), "parked", "4d3h", "intentionally");
 			expect(later.row).toEqual(later.header);
 			expect(later.row).toEqual(first.row);
 		} finally {
@@ -445,12 +445,12 @@ describe("Agent Hub redesign", () => {
 				.flatMap(line => allIds.filter(id => line.includes(id)))
 				.filter((id, index, ids) => ids.indexOf(id) === index);
 
-			expect(hubOrder).toEqual([RUNNING, WAITING, ADVISOR, COMPLETED]);
+			expect(hubOrder).toEqual([RUNNING, WAITING, COMPLETED, ADVISOR]);
 			for (const [heading, id] of [
 				["Running tasks (1)", RUNNING],
 				["Needs attention (1)", WAITING],
-				["Parked agents (1)", ADVISOR],
 				["Recently completed (1)", COMPLETED],
+				["read-only (1)", ADVISOR],
 			] as const) {
 				expect(roster.indexOf(heading)).toBeGreaterThanOrEqual(0);
 				expect(roster.indexOf(heading)).toBeLessThan(roster.indexOf(id));

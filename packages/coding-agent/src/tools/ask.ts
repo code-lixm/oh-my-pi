@@ -441,7 +441,7 @@ interface AskSingleQuestionOptions {
 	navigation?: NavigationControls;
 }
 
-/** One Ask invocation shares one hard deadline across its fallback selectors. */
+/** A per-question hard deadline for fallback selectors. */
 class AskDeadline {
 	#deadlineMs: number | undefined;
 	#timeoutId: NodeJS.Timeout | undefined;
@@ -1029,13 +1029,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			}
 		}
 
-		const fallbackDeadline =
-			timeout !== undefined &&
-			params.questions.some(
-				question => getValidRecommendedIndex(question.options, question.recommended) !== undefined,
-			)
-				? new AskDeadline(timeout)
-				: undefined;
 		const askQuestion = async (
 			q: AskParams["questions"][number],
 			options?: { previous?: QuestionResult; navigation?: NavigationControls },
@@ -1046,6 +1039,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			}));
 			const optionLabels = questionOptions.map(getAskOptionLabel);
 			const recommended = getValidRecommendedIndex(questionOptions, q.recommended);
+			const questionDeadline =
+				timeout !== undefined && recommended !== undefined ? new AskDeadline(timeout) : undefined;
 			try {
 				const { selectedOptions, customInput, note, navigation, cancelled, timedOut } = await askSingleQuestion(
 					ui,
@@ -1054,7 +1049,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 					q.multi ?? false,
 					{
 						recommended,
-						deadline: fallbackDeadline,
+						deadline: questionDeadline,
 						signal,
 						initialSelection: options?.previous,
 						navigation: options?.navigation,
@@ -1062,11 +1057,12 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				);
 				return { optionLabels, selectedOptions, customInput, note, navigation, cancelled, timedOut };
 			} catch (error) {
-				fallbackDeadline?.dispose();
 				if (error instanceof Error && error.name === "AbortError") {
 					throw new ToolAbortError("Ask input was cancelled");
 				}
 				throw error;
+			} finally {
+				questionDeadline?.dispose();
 			}
 		};
 
@@ -1075,7 +1071,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			const { optionLabels, selectedOptions, customInput, note, cancelled, timedOut } = await askQuestion(q);
 
 			if (!timedOut && (cancelled || (selectedOptions.length === 0 && customInput === undefined))) {
-				fallbackDeadline?.dispose();
 				context.abort();
 				throw new ToolAbortError("Ask tool was cancelled by the user");
 			}
@@ -1097,7 +1092,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				multi: q.multi ?? false,
 			});
 
-			fallbackDeadline?.dispose();
 			return { content: [{ type: "text" as const, text: responseText }], details };
 		}
 
@@ -1106,7 +1100,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		while (questionIndex < params.questions.length) {
 			const q = params.questions[questionIndex];
 			if (!q) {
-				fallbackDeadline?.dispose();
 				throw new Error("Ask question index exceeded the requested question list");
 			}
 			const previous = resultsByIndex[questionIndex];
@@ -1126,7 +1119,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			} = await askQuestion(q, { previous, navigation });
 
 			if (cancelled && !timedOut) {
-				fallbackDeadline?.dispose();
 				context.abort();
 				throw new ToolAbortError("Ask tool was cancelled by the user");
 			}
@@ -1158,12 +1150,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				multi: q.multi ?? false,
 				selectedOptions: [],
 			};
-			if (fallbackDeadline?.expired && result.selectedOptions.length === 0 && result.customInput === undefined) {
-				const automaticSelection = getAutoSelectionOnTimeout(q.options, q.recommended);
-				if (automaticSelection.length > 0) {
-					return { ...result, selectedOptions: automaticSelection, timedOut: true };
-				}
-			}
 			return result;
 		});
 
@@ -1171,7 +1157,6 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		const responseLines = results.map(formatQuestionResult);
 		const responseText = `User answers:\n${responseLines.join("\n")}`;
 
-		fallbackDeadline?.dispose();
 		return { content: [{ type: "text" as const, text: responseText }], details };
 	}
 }

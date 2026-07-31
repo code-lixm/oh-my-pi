@@ -47,6 +47,7 @@
  */
 import * as path from "node:path";
 import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
+import { invalidateCodeGraphCoverage } from "./codegraph-coverage-ledger";
 import type { ToolSession } from "./";
 import { localSandboxRoot } from "./plan-mode-guard";
 
@@ -273,6 +274,7 @@ export function notifyFileMutation(
 ): boolean {
 	const event = buildFileMutationEvent(session, absolutePath, kind, options);
 	if (!event) return false;
+	invalidateCodeGraphCoverage(session, [event.previousPath, event.path]);
 	if (session.onFileMutation) {
 		try {
 			session.onFileMutation(event);

@@ -152,6 +152,34 @@ describe("IRC expected-reply lifecycle", () => {
 		}
 	});
 
+	it("clears the outbound obligation when a matching waiter consumes a reply without replyTo", async () => {
+		const fixture = await openOutstandingReply("running", "running");
+		try {
+			const waiting = fixture.bus.wait(fixture.ids.sender, { from: fixture.ids.recipient }, 1_000);
+			const receipt = await fixture.bus.send({
+				from: fixture.ids.recipient,
+				to: fixture.ids.sender,
+				body: "Approved without an explicit reply id",
+			});
+
+			expect(receipt).toEqual({ to: fixture.ids.sender, outcome: "injected" });
+			const reply = await waiting;
+			if (!reply) throw new Error("Expected the matching waiter to consume the reply");
+			expect(reply).toMatchObject({
+				from: fixture.ids.recipient,
+				to: fixture.ids.sender,
+				body: "Approved without an explicit reply id",
+			});
+			expect(reply.replyTo).toBeUndefined();
+			expect(fixture.bus.inbox(fixture.ids.sender)).toEqual([]);
+			expect(fixture.bus.getPendingReplySnapshot(fixture.ids.recipient).messages).toEqual([]);
+			expect(fixture.events.map(event => event.type)).toEqual(["opened", "resolved"]);
+			expect(fixture.events.at(-1)?.snapshot.messages).toEqual([]);
+		} finally {
+			await fixture.lifecycle.dispose();
+		}
+	});
+
 	it.each(terminalReplyTransitions)(
 		"clears an outstanding reply when the $endpoint moves from $fromStatus to $toStatus",
 		async ({ endpoint, fromStatus, toStatus }) => {

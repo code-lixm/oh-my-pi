@@ -3,7 +3,14 @@ import { Line } from "react-chartjs-2";
 import { getToolDashboardStats } from "../api";
 import { CHART_THEMES, MODEL_COLORS } from "../components/chart-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
-import { formatCompact, formatCost, formatInteger, formatPercent, formatRelativeTime } from "../data/formatters";
+import {
+	formatCompact,
+	formatCost,
+	formatDurationMs,
+	formatInteger,
+	formatPercent,
+	formatRelativeTime,
+} from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildToolRows, type ToolRowView } from "../data/view-models";
 import { t } from "../locale/catalog";
@@ -272,6 +279,16 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 				),
 			},
 			{
+				key: "avgDurationMs",
+				header: t("tools.table.column.avgDuration"),
+				numeric: true,
+				render: (item: ToolRowView) => (
+					<span className="font-mono" title={t("tools.table.avgDurationTitle")}>
+						{formatDurationMs(item.avgDurationMs)}
+					</span>
+				),
+			},
+			{
 				key: "tokens",
 				header: t("tools.table.column.attributedTokens"),
 				numeric: true,
@@ -329,6 +346,10 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 				<div>
 					<div className="stats-mobile-card-label">{t("tools.table.column.attributedCost")}</div>
 					<div className="stats-mobile-card-value font-mono">{formatCost(item.costShare)}</div>
+				</div>
+				<div>
+					<div className="stats-mobile-card-label">{t("tools.table.column.avgDuration")}</div>
+					<div className="stats-mobile-card-value font-mono">{formatDurationMs(item.avgDurationMs)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("tools.table.column.resultText")}</div>

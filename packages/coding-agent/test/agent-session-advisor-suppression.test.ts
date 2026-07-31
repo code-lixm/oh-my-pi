@@ -19,8 +19,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { ToolCall } from "@oh-my-pi/pi-ai";
-import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import type { Message, ToolCall } from "@oh-my-pi/pi-ai";
+import { createMockModel, type MockHandler, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -38,10 +38,16 @@ interface MockYieldDetails {
 	type?: string | string[];
 }
 
+interface MockProbeDetails {
+	status: "success";
+}
+
 const mockYieldParameters = type({
 	result: "unknown",
 	"type?": "unknown",
 });
+
+const mockProbeParameters = type({});
 
 const ADVISOR_TYPE = "advisor";
 
@@ -59,6 +65,12 @@ interface CompletedAdvisorHarness {
 	sessionManager: SessionManager;
 	mock: MockModel;
 	advisorMock: MockModel;
+}
+
+interface CompletedAdvisorSessionOptions {
+	primaryResponses?: MockHandler[];
+	advisorResponses?: MockHandler[];
+	tools?: AgentTool[];
 }
 
 interface AdvisorTestExtensionRunner {
@@ -149,6 +161,19 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		};
 	}
 
+	function createMockProbeTool(): AgentTool<typeof mockProbeParameters, MockProbeDetails> {
+		return {
+			name: "probe",
+			label: "Probe",
+			description: "Mock non-terminal tool",
+			parameters: mockProbeParameters,
+			execute: async () => ({
+				content: [{ type: "text", text: "Probe complete." }],
+				details: { status: "success" },
+			}),
+		};
+	}
+
 	function createYieldMockResponse(args: { result: { data: unknown }; type?: string | string[] }): MockResponse {
 		const toolCall: ToolCall = {
 			type: "toolCall",
@@ -173,20 +198,20 @@ describe("AgentSession advisor auto-resume suppression", () => {
 	async function createCompletedAdvisorSession(
 		severity: "nit" | "concern" | "blocker" | undefined = "concern",
 		extensionRunner?: AdvisorTestExtensionRunner,
+		advisorNote = "Fixture verdict confirmed",
+		followUpAnswer = "CHANGED VERDICT",
+		options: CompletedAdvisorSessionOptions = {},
 	): Promise<CompletedAdvisorHarness> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
-			responses: [
+			responses: options.primaryResponses ?? [
 				{ content: ["EXACT VERDICT"], stopReason: "stop" },
-				{ content: ["CHANGED VERDICT"], stopReason: "stop" },
+				{ content: [followUpAnswer], stopReason: "stop" },
 			],
 		});
-		const adviceArguments =
-			severity === undefined
-				? { note: "Fixture verdict confirmed" }
-				: { note: "Fixture verdict confirmed", severity };
+		const adviceArguments = severity === undefined ? { note: advisorNote } : { note: advisorNote, severity };
 		const advisorMock = createMockModel({
-			responses: [
+			responses: options.advisorResponses ?? [
 				{
 					content: [
 						{
@@ -196,11 +221,12 @@ describe("AgentSession advisor auto-resume suppression", () => {
 						},
 					],
 				},
+				{ content: [], stopReason: "stop" },
 			],
 		});
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			initialState: { model, systemPrompt: ["Test"], tools: options.tools ?? [] },
 			streamFn: mock.stream,
 		});
 		const sessionManager = SessionManager.inMemory();
@@ -261,6 +287,28 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		return undefined;
 	}
 
+	function messagesContainText(messages: readonly Message[], text: string): boolean {
+		return messages.some(message => {
+			const content = message.content;
+			return typeof content === "string"
+				? content.includes(text)
+				: content.some(block => block.type === "text" && block.text.includes(text));
+		});
+	}
+
+	function lastUserContextText(messages: readonly Message[]): string | undefined {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (message?.role !== "user") continue;
+			if (typeof message.content === "string") return message.content;
+			return message.content
+				.filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
+				.map(part => part.text)
+				.join("\n");
+		}
+		return undefined;
+	}
+
 	function capturePersistedAdvice(sessionManager: SessionManager): string[] {
 		const persisted: string[] = [];
 		sessionManager.onEntryAppended = entry => {
@@ -309,32 +357,255 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(mock.calls).toHaveLength(1);
 	});
 
-	it("wakes a new primary turn for late terminal advisor advice of every severity", async () => {
-		for (const testCase of [
-			{ name: "omitted severity", severity: undefined },
-			{ name: "nit severity", severity: "nit" },
-			{ name: "concern severity", severity: "concern" },
-			{ name: "blocker severity", severity: "blocker" },
-		] as const) {
-			const { session, mock, advisorMock } = await createCompletedAdvisorSession(testCase.severity);
+	const standbyAdvice = "Still standing by. Correct. No action.";
+	it.each([
+		{ name: "omitted severity", severity: undefined },
+		{ name: "misclassified blocker severity", severity: "blocker" },
+	] as const)(
+		"drops $name standby advice after a terminal main answer instead of re-opening or tainting a later user turn",
+		async ({ name, severity }) => {
+			const { session, mock, advisorMock } = await createCompletedAdvisorSession(severity, undefined, standbyAdvice);
 
-			await session.prompt(`answer with exactly one line for ${testCase.name}`);
+			await session.prompt("answer with exactly one line");
 			await session.waitForIdle();
 			expect(lastAssistantText(session.agent.state.messages)).toBe("EXACT VERDICT");
-			expect(mock.calls.length).toBe(1);
+			expect(mock.calls).toHaveLength(1);
 
 			expect(session.setAdvisorEnabled(true)).toBe(true);
 			const advisor = session.getAdvisorAgent();
 			if (!advisor) throw new Error("Expected advisor agent to be live");
 
-			await advisor.prompt(`inspect the completed turn for ${testCase.name}`);
+			await advisor.prompt(`inspect the completed terminal answer for ${name}`);
 			await session.waitForIdle();
 
 			expect(advisorMock.calls.length).toBeGreaterThanOrEqual(1);
-			expect(mock.calls.length).toBe(2);
+			expect(mock.calls).toHaveLength(1);
+
+			// The second primary call is explicitly user-driven. Deferred advisor-aside
+			// delivery must not smuggle this non-advice into that fresh context.
+			await session.prompt("start a fresh user-driven turn");
+			await session.waitForIdle();
+
+			expect(mock.calls).toHaveLength(2);
 			expect(lastAssistantText(session.agent.state.messages)).toBe("CHANGED VERDICT");
-			await session.dispose();
-		}
+			const nextContext = mock.calls[1]?.context.messages;
+			if (!nextContext) throw new Error("Expected the explicit user turn to call the primary model");
+			expect(messagesContainText(nextContext, standbyAdvice)).toBe(false);
+		},
+	);
+
+	it("wakes a new primary turn for a concrete blocker after a terminal answer", async () => {
+		const blockerAdvice = "The answer omits the required validation; add it before completing.";
+		const { session, mock, advisorMock } = await createCompletedAdvisorSession("blocker", undefined, blockerAdvice);
+
+		await session.prompt("answer with exactly one line");
+		await session.waitForIdle();
+		expect(lastAssistantText(session.agent.state.messages)).toBe("EXACT VERDICT");
+		expect(mock.calls).toHaveLength(1);
+
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+
+		await advisor.prompt("inspect the completed terminal answer");
+		await session.waitForIdle();
+
+		expect(advisorMock.calls.length).toBeGreaterThanOrEqual(1);
+		expect(mock.calls).toHaveLength(2);
+		expect(lastAssistantText(session.agent.state.messages)).toBe("CHANGED VERDICT");
+	});
+
+	it("skips an advisor-only terminal steer and omits its reply from the next user review", async () => {
+		const advisorOnlyReply = "ADVISOR-ONLY TERMINAL";
+		const { session, mock, advisorMock } = await createCompletedAdvisorSession(
+			"concern",
+			undefined,
+			"unused",
+			advisorOnlyReply,
+			{ advisorResponses: [{ content: [], stopReason: "stop" }] },
+		);
+
+		await session.prompt("answer with exactly one line");
+		await session.waitForIdle();
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+
+		await session.sendCustomMessage(advisorCard("check the terminal answer"), {
+			deliverAs: "steer",
+			triggerTurn: true,
+		});
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(lastAssistantText(session.agent.state.messages)).toBe(advisorOnlyReply);
+		expect(advisorMock.calls).toHaveLength(0);
+
+		const nextUserRequest = "Now explain the result to the user.";
+		mock.push({ content: ["USER TURN VERDICT"], stopReason: "stop" });
+		await session.prompt(nextUserRequest);
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+
+		expect(mock.calls).toHaveLength(3);
+		expect(advisorMock.calls).toHaveLength(1);
+		const nextReviewContext = advisorMock.calls[0]?.context.messages;
+		if (!nextReviewContext) throw new Error("Expected the next user turn to reach the advisor");
+		expect(messagesContainText(nextReviewContext, nextUserRequest)).toBe(true);
+		expect(messagesContainText(nextReviewContext, advisorOnlyReply)).toBe(false);
+	});
+
+	it("reviews an advisor-only steer that continues through a tool", async () => {
+		const probeCall: ToolCall = {
+			type: "toolCall",
+			id: `call_probe_${Snowflake.next()}`,
+			name: "probe",
+			arguments: {},
+		};
+		const { session, mock, advisorMock } = await createCompletedAdvisorSession(
+			"concern",
+			undefined,
+			"unused",
+			"TOOL FOLLOW-UP VERDICT",
+			{
+				primaryResponses: [
+					{ content: ["EXACT VERDICT"], stopReason: "stop" },
+					{ content: [probeCall], stopReason: "toolUse" },
+					{ content: ["TOOL FOLLOW-UP VERDICT"], stopReason: "stop" },
+				],
+				advisorResponses: [{ content: [], stopReason: "stop" }],
+				tools: [createMockProbeTool()],
+			},
+		);
+
+		await session.prompt("answer with exactly one line");
+		await session.waitForIdle();
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+
+		await session.sendCustomMessage(advisorCard("verify the pending tool work"), {
+			deliverAs: "steer",
+			triggerTurn: true,
+		});
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+
+		expect(mock.calls).toHaveLength(3);
+		expect(lastAssistantText(session.agent.state.messages)).toBe("TOOL FOLLOW-UP VERDICT");
+		expect(advisorMock.calls).toHaveLength(1);
+		const toolReviewContext = advisorMock.calls[0]?.context.messages;
+		if (!toolReviewContext) throw new Error("Expected the continuing tool turn to reach the advisor");
+		expect(messagesContainText(toolReviewContext, "TOOL FOLLOW-UP VERDICT")).toBe(false);
+	});
+
+	it("reviews a mixed advisor and queued-user steer", async () => {
+		const firstTurnStarted = Promise.withResolvers<void>();
+		const releaseFirstTurn = Promise.withResolvers<void>();
+		const mixedUserRequest = "Also explain the result to the user.";
+		const { session, mock, advisorMock } = await createCompletedAdvisorSession(
+			"concern",
+			undefined,
+			"unused",
+			"MIXED TURN VERDICT",
+			{
+				primaryResponses: [
+					async () => {
+						firstTurnStarted.resolve();
+						await releaseFirstTurn.promise;
+						return { content: ["INITIAL TURN VERDICT"], stopReason: "stop" };
+					},
+					{ content: ["MIXED TURN VERDICT"], stopReason: "stop" },
+					{ content: ["MIXED USER TURN VERDICT"], stopReason: "stop" },
+				],
+				advisorResponses: [
+					{ content: [], stopReason: "stop" },
+					{ content: [], stopReason: "stop" },
+				],
+			},
+		);
+
+		const running = session.prompt("start the initial turn");
+		await firstTurnStarted.promise;
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+
+		await session.sendCustomMessage(advisorCard("review the queued work"), {
+			deliverAs: "steer",
+			triggerTurn: true,
+		});
+		await session.prompt(mixedUserRequest, { streamingBehavior: "steer" });
+		releaseFirstTurn.resolve();
+		await running;
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+
+		expect(mock.calls.length).toBeGreaterThanOrEqual(2);
+		const mixedUserReviewCalls = advisorMock.calls.filter(
+			call => lastUserContextText(call.context.messages)?.includes(mixedUserRequest) === true,
+		);
+		expect(mixedUserReviewCalls).toHaveLength(1);
+		const mixedReviewContext = mixedUserReviewCalls[0]?.context.messages;
+		if (!mixedReviewContext) throw new Error("Expected the mixed steer to reach the advisor");
+	});
+
+	it("does not replay advisor history after thinking duration post-processing", async () => {
+		const initialAnswer = "INITIAL ANSWER";
+		const nextUserRequest = "Give the user the final explanation.";
+		const { session, mock, advisorMock } = await createCompletedAdvisorSession(
+			"concern",
+			undefined,
+			"unused",
+			"NEXT ANSWER",
+			{
+				primaryResponses: [
+					{ content: [{ type: "thinking", thinking: "internal" }, initialAnswer], stopReason: "stop" },
+					{ content: ["NEXT ANSWER"], stopReason: "stop" },
+				],
+				advisorResponses: [
+					{ content: [], stopReason: "stop" },
+					{ content: [], stopReason: "stop" },
+				],
+			},
+		);
+
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+		await session.prompt("produce the initial answer");
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+		expect(advisorMock.calls).toHaveLength(1);
+
+		const initialAssistant = session.agent.state.messages.find(message => message.role === "assistant");
+		if (initialAssistant?.role !== "assistant") throw new Error("Expected initial assistant answer");
+		const thinking = initialAssistant.content.find(
+			(part): part is Extract<(typeof initialAssistant.content)[number], { type: "thinking" }> =>
+				part.type === "thinking",
+		);
+		if (!thinking) throw new Error("Expected initial assistant thinking block");
+		thinking.durationMs = (thinking.durationMs ?? 0) + 1;
+
+		await session.prompt(nextUserRequest);
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(1_000)).toBe(true);
+		await advisor.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(advisorMock.calls).toHaveLength(2);
+		const nextReviewContext = advisorMock.calls[1]?.context.messages;
+		if (!nextReviewContext) throw new Error("Expected the next user turn to reach the advisor");
+		const latestReviewBatch = lastUserContextText(nextReviewContext);
+		if (!latestReviewBatch) throw new Error("Expected a rendered advisor update");
+		expect(latestReviewBatch).toContain(nextUserRequest);
+		expect(latestReviewBatch).not.toContain(initialAnswer);
 	});
 
 	it("auto-resumes a late advisor steer queued during post-turn unwind after a terminal answer", async () => {

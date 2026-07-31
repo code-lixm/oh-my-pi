@@ -110,7 +110,7 @@ describe("agent activity display contracts", () => {
 			.join(":");
 
 		expect(text).toContain(`Started ${clock}`);
-		expect(text).toContain("Duration 01:02:03");
+		expect(text).toContain("Duration 1h2m");
 		expect(text).not.toContain("Ended");
 	});
 
@@ -150,7 +150,7 @@ describe("agent activity display contracts", () => {
 			expect(later).toBe(first);
 			expect(first).toContain(`Started ${clock(started)}`);
 			expect(first).toContain(`Ended ${clock(ended)}`);
-			expect(first).toContain("Duration 01:02:03");
+			expect(first).toContain("Duration 1h2m");
 		} finally {
 			vi.useRealTimers();
 			setSystemTime();
@@ -193,7 +193,7 @@ describe("agent activity display contracts", () => {
 				expect(first).toContain("phase");
 				expect(first).toContain("quiet");
 				expect(first).toContain("Ended");
-				expect(first).toContain("Duration 01:02:03");
+				expect(first).toContain("Duration 1h2m");
 			}
 		} finally {
 			vi.useRealTimers();

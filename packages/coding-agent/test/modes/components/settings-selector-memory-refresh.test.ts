@@ -96,6 +96,10 @@ function openAppearanceStatusLinePresetSubmenu(comp: SettingsSelectorComponent):
 	comp.handleInput("\n");
 }
 
+function searchSettings(comp: SettingsSelectorComponent, query: string): void {
+	for (const character of query) comp.handleInput(character);
+}
+
 describe("SettingsSelectorComponent memory tab", () => {
 	it("reveals condition-gated Hindsight rows the moment memory.backend changes via the submenu", () => {
 		settings.set("memory.backend", "off");
@@ -304,6 +308,55 @@ describe("SettingsSelectorComponent memory tab", () => {
 
 		comp.handleInput("\x1b");
 		expect(cancelCount).toBe(1);
+	});
+});
+
+describe("SettingsSelectorComponent zh-CN setting metadata", () => {
+	it("renders Codex reset fireworks metadata in zh-CN", () => {
+		settings.set("displayLanguage", "zh-CN");
+		const comp = createSelector();
+		searchSettings(comp, "Codex 重置烟花");
+
+		const rendered = comp.render(120).join("\n");
+		expect(rendered).toContain("Codex 重置烟花");
+		expect(rendered).toContain("在屏幕上方三分之一区域显示烟花");
+		expect(rendered).not.toContain("Codex Reset Fireworks");
+		expect(rendered).not.toContain("Celebrate unscheduled Codex weekly usage resets");
+	});
+
+	it("renders browser CDP URL metadata in zh-CN", () => {
+		settings.set("displayLanguage", "zh-CN");
+		const comp = createSelector();
+		searchSettings(comp, "浏览器 CDP URL");
+
+		const rendered = comp.render(120).join("\n");
+		expect(rendered).toContain("浏览器 CDP URL");
+		expect(rendered).toContain("默认用于附加浏览器的 HTTP CDP 发现端点");
+		expect(rendered).not.toContain("Browser CDP URL");
+		expect(rendered).not.toContain("Default HTTP CDP discovery endpoint");
+	});
+
+	it("renders the auto thinking ceiling and its choices in zh-CN", () => {
+		settings.set("defaultThinkingLevel", "auto");
+		settings.set("providers.autoThinkingMaxEffort", "max");
+		settings.set("displayLanguage", "zh-CN");
+		const comp = createSelector();
+		searchSettings(comp, "自动思考上限");
+
+		const selectedSetting = comp.render(120).join("\n");
+		expect(selectedSetting).toContain("自动思考上限");
+		expect(selectedSetting).toContain("`auto` 分类器可选择的最高推理档位");
+		expect(selectedSetting).not.toContain("Auto Thinking Ceiling");
+		expect(selectedSetting).not.toContain("Highest effort the `auto` classifier may resolve");
+
+		comp.handleInput("\n");
+		const choices = comp.render(120).join("\n");
+		expect(choices).toContain("xhigh");
+		expect(choices).toContain("max");
+		expect(choices).toContain("分类器最高选择 xhigh（默认）");
+		expect(choices).toContain("模型支持时，分类器可以选择 max");
+		expect(choices).not.toContain("Classifier stops at xhigh (default)");
+		expect(choices).not.toContain("Classifier may resolve max where the model supports it");
 	});
 });
 

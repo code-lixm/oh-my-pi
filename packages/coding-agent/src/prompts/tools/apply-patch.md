@@ -63,3 +63,4 @@ It is important to remember:
 - You must include a header with your intended action (Add/Delete/Update)
 - You must prefix new lines with `+` even when creating a new file
 - File references can only be relative, NEVER ABSOLUTE.
+- Before `Update` or `Delete`, you MUST ground the target in its latest `read`/`grep` or current-disk `codegraph` source section; a CodeGraph `[PATH#TAG]` snapshot is valid current evidence. Stale context? Refresh precise text with `read`/`grep`, NEVER rerun CodeGraph solely to refresh a snapshot.

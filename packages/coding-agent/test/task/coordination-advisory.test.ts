@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { buildCoordinationAdvisory, composeSpawnAdvisory } from "@oh-my-pi/pi-coding-agent/task";
 import type { TaskItem } from "@oh-my-pi/pi-coding-agent/task/types";
 import { prompt } from "@oh-my-pi/pi-utils";
@@ -10,12 +10,17 @@ import subagentSystemPromptTemplateZh from "../../src/prompts/system/subagent-sy
 };
 
 const item = (): TaskItem => ({ task: "do the thing" });
-const initialSettingsUiLocale = getSettingsUiLocale();
-const initialPromptLocale = getPromptLocale();
+let previousSettingsUiLocale = getSettingsUiLocale();
+let previousPromptLocale = getPromptLocale();
+
+beforeEach(() => {
+	previousSettingsUiLocale = getSettingsUiLocale();
+	previousPromptLocale = getPromptLocale();
+});
 
 afterEach(() => {
-	setSettingsUiLocale(initialSettingsUiLocale);
-	setPromptLocale(initialPromptLocale);
+	setSettingsUiLocale(previousSettingsUiLocale);
+	setPromptLocale(previousPromptLocale);
 });
 
 // Mutates the process-wide prompt locale for one render; afterEach restores it.
@@ -86,6 +91,20 @@ describe("subagent Current collaborators guidance", () => {
 		expect(out).toContain("回复协作消息时设置 `replyTo`；只有缺少回复就无法继续时，才设置 `await: true`。");
 		expect(out).not.toContain("Current collaborators");
 		expect(out).not.toMatch(/\bpeer\b|\bsibling\b|IRC/i);
+	});
+
+	it("requires localized user-visible language for subagent thinking summaries", () => {
+		const english = renderCurrentCollaborators("en");
+		const chinese = renderCurrentCollaborators("zh-CN");
+
+		expect(english).toContain(
+			"You MUST write all user-facing natural language in English, including thinking/reasoning summaries.",
+		);
+		expect(english).not.toContain("你 MUST 使用简体中文撰写所有面向用户的自然语言，包括 thinking/reasoning 摘要。");
+		expect(chinese).toContain("你 MUST 使用简体中文撰写所有面向用户的自然语言，包括 thinking/reasoning 摘要。");
+		expect(chinese).not.toContain(
+			"You MUST write all user-facing natural language in English, including thinking/reasoning summaries.",
+		);
 	});
 });
 

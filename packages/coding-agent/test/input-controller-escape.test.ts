@@ -557,6 +557,34 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
+	it("keeps double-Esc owned by loop mode during idle compaction", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		const pauseLoop = vi.fn();
+		const viewSession = abortViewSession(ctx);
+		ctx.loopModeEnabled = true;
+		ctx.pauseLoop = pauseLoop;
+		viewSession.isCompacting = true;
+		viewSession.abortCompaction = vi.fn();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(pauseLoop).not.toHaveBeenCalled();
+		expect(viewSession.abortCompaction).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(pauseLoop).toHaveBeenCalledTimes(1);
+		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
 	it("dismisses an active /btw panel before aborting the main stream", () => {
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean }).isStreaming = true;

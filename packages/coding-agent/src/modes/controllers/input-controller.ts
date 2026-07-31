@@ -370,9 +370,11 @@ export class InputController {
 			if (!this.ctx.focusedAgentId) {
 				const viewSession = this.ctx.viewSession;
 				if (viewSession.isCompacting || viewSession.isGeneratingHandoff || viewSession.isRetrying) {
-					const target =
-						`maintenance:${viewSession.isCompacting ? 1 : 0}${viewSession.isGeneratingHandoff ? 1 : 0}${viewSession.isRetrying ? 1 : 0}` as const;
+					const target = this.ctx.loopModeEnabled
+						? "loop"
+						: (`maintenance:${viewSession.isCompacting ? 1 : 0}${viewSession.isGeneratingHandoff ? 1 : 0}${viewSession.isRetrying ? 1 : 0}` as const);
 					if (!this.#confirmEscapeCancellation(target)) return;
+					if (this.ctx.loopModeEnabled) this.ctx.pauseLoop();
 					if (viewSession.isCompacting) {
 						safeAbort("compaction", () => viewSession.abortCompaction());
 					}
@@ -381,6 +383,13 @@ export class InputController {
 					}
 					if (viewSession.isRetrying) {
 						safeAbort("retry", () => viewSession.abortRetry());
+					}
+					if (this.ctx.loopModeEnabled) {
+						if (this.ctx.session.isStreaming) {
+							this.#abortStreamingTurn();
+						} else {
+							this.ctx.cancelPendingSubmission();
+						}
 					}
 					return;
 				}
@@ -1994,7 +2003,7 @@ export class InputController {
 			return;
 		}
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
-		this.ctx.settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
+		this.ctx.settings.set("thinkingDisplay", this.ctx.hideThinkingBlock ? "hidden" : "full");
 		applyThinkingSummaryVisibility(
 			this.ctx.session.agent,
 			AgentRegistry.global().list(),

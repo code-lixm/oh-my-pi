@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { formatHashlineHeader, formatNumberedLine, formatNumberedLines } from "@oh-my-pi/hashline";
+import { formatNumberedLine, formatNumberedLines } from "@oh-my-pi/hashline";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -28,9 +28,9 @@ import {
 import { type } from "arktype";
 import { LRUCache } from "lru-cache/raw";
 import {
-	canonicalSnapshotKey,
-	getFileSnapshotStore,
+	formatHashlineSourceHeader,
 	recordFileSnapshot,
+	recordHashlineSourceSnapshot,
 	recordSeenLines,
 	recordSeenLinesFromBody,
 	SNAPSHOT_MAX_BYTES,
@@ -209,18 +209,8 @@ interface HashlineHeaderContext {
 	fullText?: string;
 }
 
-function formatReadHashlineHeader(displayPath: string, tag: string): string {
-	// In-workspace reads collapse to the bare filename for brevity: the edit
-	// tool's snapshot-tag recovery rebinds a bare `[name#tag]` onto the in-tree
-	// file it uniquely names. Out-of-workspace reads can't lean on that —
-	// recovery refuses to redirect a write outside the cwd/sandbox
-	// (HashlineFilesystem.allowTagPathRecovery) — so an absolute displayPath
-	// must stay directly resolvable, otherwise the basename resolves against
-	// cwd, misses, and the edit fails with "File not found" (e.g. ~/.claude/*).
-	// `shortenPath` keeps `~/.claude/...` (round-trips through resolveToCwd's ~
-	// expansion) instead of leaking the full home path into the read output.
-	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : path.basename(displayPath);
-	return formatHashlineHeader(anchor, tag);
+function readHashlineAnchor(displayPath: string): string {
+	return path.isAbsolute(displayPath) ? shortenPath(displayPath) : path.basename(displayPath);
 }
 
 function recordFullHashlineContext(
@@ -230,13 +220,11 @@ function recordFullHashlineContext(
 	fullText: string,
 ): HashlineHeaderContext | undefined {
 	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
-	const normalized = normalizeToLF(fullText);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
-	return {
-		header: formatReadHashlineHeader(displayPath, tag),
-		tag,
-		fullText: normalized,
-	};
+	return recordHashlineSourceSnapshot(session, {
+		absolutePath,
+		anchor: readHashlineAnchor(displayPath),
+		fullText,
+	});
 }
 
 async function readHashlineHeaderContext(
@@ -256,7 +244,7 @@ async function readHashlineHeaderContext(
 }
 
 function hashlineHeaderContext(displayPath: string, tag: string): HashlineHeaderContext {
-	return { header: formatReadHashlineHeader(displayPath, tag), tag };
+	return { header: formatHashlineSourceHeader(readHashlineAnchor(displayPath), tag), tag };
 }
 
 function prependHashlineHeader(text: string, context: HashlineHeaderContext | undefined): string {
@@ -371,7 +359,12 @@ function recordInMemorySeenLines(
 	seenLines: readonly number[] | undefined,
 ): void {
 	if (!absolutePath || !path.isAbsolute(absolutePath) || !seenLines || seenLines.length === 0) return;
-	getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalizeToLF(fullText), seenLines);
+	recordHashlineSourceSnapshot(session, {
+		absolutePath,
+		anchor: readHashlineAnchor(formatPathRelativeToCwd(absolutePath, session.cwd)),
+		fullText,
+		seenLines,
+	});
 }
 
 function lineNumbersFromEntries(entries: readonly LineEntry[]): number[] {
@@ -746,6 +739,8 @@ export interface ReadToolDetails {
 	method?: string;
 	notes?: string[];
 	meta?: OutputMeta;
+	/** Full on-disk byte size recorded before applying a file range. */
+	fileSize?: number;
 	/** Raw text + start line for user-visible TUI rendering, set when content is text-like.
 	 * Mirrors the same lines the model receives but without hashline/line-number prefixes,
 	 * so the TUI can render the file content with its own gutter without re-parsing the formatted text. */
@@ -1822,7 +1817,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
 				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
-				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
+				outputText = `${
+					hashlineHeaderContext(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag).header
+				}\n${outputText}`;
 			}
 		} else if (rawSelector && visibleSpans.length > 0) {
 			const rawSeenLines = lineNumbersFromSpans(visibleSpans);
@@ -2804,14 +2801,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						// file (bounded by SNAPSHOT_MAX_BYTES) so the tag fingerprints the
 						// full file and any anchor validates while the file is unchanged.
 						const isWholeFile = offset === undefined && limit === undefined && !wasTruncated;
-						const tag = isWholeFile
-							? getFileSnapshotStore(this.session).record(
-									canonicalSnapshotKey(absolutePath),
-									normalizeToLF(collectedLines.join("\n")),
-								)
-							: await recordFileSnapshot(this.session, absolutePath);
-						if (tag) {
-							hashContext = hashlineHeaderContext(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag);
+						const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
+						hashContext = isWholeFile
+							? recordFullHashlineContext(this.session, absolutePath, displayPath, collectedLines.join("\n"))
+							: undefined;
+						if (!hashContext) {
+							const tag = await recordFileSnapshot(this.session, absolutePath);
+							if (tag) hashContext = hashlineHeaderContext(displayPath, tag);
 						}
 					}
 
@@ -2970,6 +2966,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		}
 
+		details.fileSize = fileSize;
 		this.#markMarkdownContentType(details, absolutePath);
 		if (suffixResolution) {
 			details.suffixResolution = suffixResolution;

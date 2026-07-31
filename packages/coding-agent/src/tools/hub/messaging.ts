@@ -182,10 +182,15 @@ export async function executeSend(
 	const awaitAbort = params.await ? new AbortController() : undefined;
 	const awaitCancelled = new Error("IRC await cancelled");
 	let removeAwaitAbortListener: (() => void) | undefined;
+	let awaitLivenessActive = false;
 	const waiting = params.await
 		? bus
 				.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 					drainPending: false,
+					// The waiter is installed before delivery to close the fast-reply race.
+					// Arm liveness only after delivery so an idle/parked recipient can be
+					// woken or revived without its intermediate statuses aborting the wait.
+					liveness: { registry, senderId, isActive: () => awaitLivenessActive },
 				})
 				.then(
 					message => ({ message, error: null as Error | null }),
@@ -231,6 +236,7 @@ export async function executeSend(
 
 		const lines: string[] = [];
 		const delivered = receipts.filter(receipt => receipt.outcome !== "failed");
+		awaitLivenessActive = true;
 		if (targets.length === 0) {
 			lines.push("No live peers to broadcast to.");
 		} else if (delivered.length === 0) {
@@ -260,6 +266,8 @@ export async function executeSend(
 							`Send delivered but the reply wait was interrupted before ${to} answered. ` +
 								"Check `inbox` or `wait` again after handling the interrupt.",
 						);
+					} else if (reply.error.message === `IRC wait aborted: agent "${to}" is not running`) {
+						lines.push(`Send delivered; ${to} finished without replying.`);
 					} else {
 						throw reply.error;
 					}

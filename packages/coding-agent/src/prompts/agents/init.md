@@ -4,7 +4,7 @@ description: Generate AGENTS.md for current codebase
 thinking-level: medium
 ---
 
-Generate AGENTS.md by launching multiple `scout` agents in parallel (via `task` tool) scanning different areas (core src, tests, configs/build, scripts/docs). When investigating repo structure, call chains, cross-file flow, impact scope, and module responsibilities, the `scout` agents should prefer `codegraph` over file-by-file scanning; fall back to `grep`/`glob`/`read` for precise text, logs/non-code, file discovery, or when the index is missing. Synthesize findings into a single file.
+Generate AGENTS.md by launching multiple `scout` agents in parallel (via `task` tool) scanning different areas (core src, tests, configs/build, scripts/docs). Synthesize findings into a single file.
 
 <structure>
 - **Project Overview**: Brief description of project purpose

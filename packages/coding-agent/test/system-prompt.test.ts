@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { getPromptLocale, setPromptLocale } from "../src/prompts/prompt-locale";
 import { buildSystemPrompt } from "../src/system-prompt";
 
-const initialPromptLocale = getPromptLocale();
+let previousPromptLocale = getPromptLocale();
 
 interface ProbeRunResult {
 	elapsedMs: number;
@@ -28,11 +28,12 @@ const PROMPT_LOCALE_SMOKE_OPTIONS = {
 };
 
 beforeEach(() => {
+	previousPromptLocale = getPromptLocale();
 	setPromptLocale("en");
 });
 
 afterEach(() => {
-	setPromptLocale(initialPromptLocale);
+	setPromptLocale(previousPromptLocale);
 });
 
 async function runProbeScenario(options: {
@@ -260,7 +261,7 @@ describe("non-Linux system prompt CPU model", () => {
 });
 
 describe("system prompt locale", () => {
-	it("renders the active prompt locale at build time", async () => {
+	it("renders the active prompt locale and user-visible language contract at build time", async () => {
 		setPromptLocale("en");
 		const english = (await buildSystemPrompt(PROMPT_LOCALE_SMOKE_OPTIONS)).systemPrompt.join("\n");
 
@@ -271,6 +272,14 @@ describe("system prompt locale", () => {
 		expect(english).not.toContain("你是团队信任的");
 		expect(chinese).toContain("你是团队信任的");
 		expect(chinese).not.toContain("You are a helpful assistant the team trusts");
+		expect(english).toContain(
+			"You MUST write all user-facing natural language in English, including thinking/reasoning summaries.",
+		);
+		expect(english).not.toContain("你 MUST 使用简体中文撰写所有面向用户的自然语言，包括 thinking/reasoning 摘要。");
+		expect(chinese).toContain("你 MUST 使用简体中文撰写所有面向用户的自然语言，包括 thinking/reasoning 摘要。");
+		expect(chinese).not.toContain(
+			"You MUST write all user-facing natural language in English, including thinking/reasoning summaries.",
+		);
 	});
 
 	it("uses locale-neutral zh-CN intent guidance instead of the old English style rule", async () => {

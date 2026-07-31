@@ -357,10 +357,11 @@ export class AskDialogComponent implements Component {
 	#remainingSeconds: number | undefined;
 	#countdown: CountdownTimer | undefined;
 	#promptActive = false;
-	#timeoutExpired = false;
+	#timeoutExpiredQuestionIndex: number | undefined;
 	#closed = false;
 	#tabBar: TabBar | undefined;
 	#deadlineMs: number | undefined;
+	#inheritedDeadlineConsumed = false;
 	#stableHeight: { key: string; total: number } | undefined;
 	#previewCache: PreviewRenderCache = new Map();
 	#overflowLayouts = new WeakMap<ExtensionAskDialogQuestion, Set<string>>();
@@ -515,46 +516,41 @@ export class AskDialogComponent implements Component {
 	}
 
 	#startCountdown(): void {
-		if (this.#closed || !this.#countdown || this.#deadlineMs !== undefined) return;
+		if (this.#closed || !this.#countdown || this.#deadlineMs !== undefined || this.#isSubmitTab()) return;
+		const questionIndex = this.#currentQuestionIndex();
+		const question = this.questions[questionIndex];
+		if (!question || getValidRecommendedIndex(question) === undefined) return;
 		const timeout = this.options.timeout;
 		if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) return;
-		const inheritedDeadline = this.options.deadlineMs;
+		const inheritedDeadline = this.#inheritedDeadlineConsumed ? undefined : this.options.deadlineMs;
 		const deadlineMs =
 			typeof inheritedDeadline === "number" && Number.isFinite(inheritedDeadline)
 				? inheritedDeadline
 				: Date.now() + timeout;
+		this.#inheritedDeadlineConsumed = true;
 		this.#deadlineMs = deadlineMs;
 		this.options.onDeadline?.(deadlineMs);
-		this.#countdown.start(deadlineMs);
+		this.#countdown.reset(deadlineMs);
+	}
+
+	#prepareQuestionCountdown(): void {
+		this.#countdown?.dispose();
+		this.#remainingSeconds = undefined;
+		this.#deadlineMs = undefined;
+		this.#timeoutExpiredQuestionIndex = undefined;
 	}
 
 	#titleText(): string {
-		if (this.#remainingSeconds === undefined) return tSettingsUi("Ask");
-		const defaultable = this.questions.flatMap(question => {
-			const recommended = getValidRecommendedIndex(question);
-			const option = recommended === undefined ? undefined : question.options[recommended];
-			return option ? [option.label] : [];
-		});
-		if (this.questions.length === 1) {
-			const [label] = defaultable;
-			return label === undefined
-				? tSettingsUi("Ask")
-				: tSettingsUi("Ask · defaults to {label} in {seconds}s", {
-						label,
-						seconds: this.#remainingSeconds,
-					});
-		}
-		const manual = this.questions.length - defaultable.length;
-		return tSettingsUi(
-			"Ask · defaults {defaultable} answer{defaultablePlural} in {seconds}s · {manual} manual question{manualPlural}",
-			{
-				defaultable: defaultable.length,
-				defaultablePlural: defaultable.length === 1 ? "" : "s",
-				seconds: this.#remainingSeconds,
-				manual,
-				manualPlural: manual === 1 ? "" : "s",
-			},
-		);
+		if (this.#remainingSeconds === undefined || this.#isSubmitTab()) return tSettingsUi("Ask");
+		const question = this.questions[this.#currentQuestionIndex()];
+		const recommended = question ? getValidRecommendedIndex(question) : undefined;
+		const option = recommended === undefined ? undefined : question?.options[recommended];
+		return option
+			? tSettingsUi("Ask · defaults to {label} in {seconds}s", {
+					label: option.label,
+					seconds: this.#remainingSeconds,
+				})
+			: tSettingsUi("Ask");
 	}
 
 	#hasSubmitTab(): boolean {
@@ -731,6 +727,7 @@ export class AskDialogComponent implements Component {
 		const tabCount = this.questions.length + 1;
 		this.#activeTabIndex = (this.#activeTabIndex + direction + tabCount) % tabCount;
 		this.#submitScrollOffset = 0;
+		this.#prepareQuestionCountdown();
 	}
 
 	#advanceAfterQuestion(): void {
@@ -741,6 +738,7 @@ export class AskDialogComponent implements Component {
 		}
 		this.#activeTabIndex = current + 1 < this.questions.length ? current + 1 : this.#submitTabIndex();
 		this.#submitScrollOffset = 0;
+		this.#prepareQuestionCountdown();
 		this.#requestRender();
 	}
 
@@ -966,36 +964,47 @@ export class AskDialogComponent implements Component {
 	#handleTimeout(): void {
 		if (this.#closed) return;
 		if (this.#promptActive) {
-			this.#timeoutExpired = true;
+			this.#timeoutExpiredQuestionIndex = this.#currentQuestionIndex();
 			return;
 		}
 		this.options.onTimeout?.();
-		for (let index = 0; index < this.questions.length; index++) {
-			const question = this.questions[index];
-			const state = this.#states[index];
-			if (!question || !state) continue;
-			if (state.selectedOptions.size > 0 || state.customInput !== undefined) continue;
-			const recommended = getValidRecommendedIndex(question);
-			if (recommended === undefined) continue;
-			const fallback = question.options[recommended];
-			if (!fallback) continue;
-			state.selectedOptions.add(fallback.label);
-			state.timedOut = true;
-		}
-		if (this.#unansweredCount() > 0) {
-			// The timeout is a one-shot default, not permission to invent an
-			// answer. Questions without a valid recommendation remain paused.
-			this.#remainingSeconds = undefined;
-			this.#countdown = undefined;
+		const questionIndex = this.#currentQuestionIndex();
+		const question = this.questions[questionIndex];
+		const state = this.#states[questionIndex];
+		if (!question || !state || state.selectedOptions.size > 0 || state.customInput !== undefined) {
+			this.#prepareQuestionCountdown();
 			this.#requestRender();
 			return;
 		}
-		this.#finishSubmit();
+		const recommended = getValidRecommendedIndex(question);
+		const fallback = recommended === undefined ? undefined : question.options[recommended];
+		if (!fallback) {
+			this.#prepareQuestionCountdown();
+			this.#requestRender();
+			return;
+		}
+		state.selectedOptions.add(fallback.label);
+		state.timedOut = true;
+		if (questionIndex + 1 < this.questions.length) {
+			this.#activeTabIndex = questionIndex + 1;
+			this.#submitScrollOffset = 0;
+			this.#prepareQuestionCountdown();
+			this.#requestRender();
+			return;
+		}
+		if (this.#unansweredCount() === 0) {
+			this.#finishSubmit();
+			return;
+		}
+		this.#activeTabIndex = this.#submitTabIndex();
+		this.#prepareQuestionCountdown();
+		this.#requestRender();
 	}
 
 	#runDeferredTimeout(): void {
-		if (!this.#timeoutExpired) return;
-		this.#timeoutExpired = false;
+		const questionIndex = this.#timeoutExpiredQuestionIndex;
+		this.#timeoutExpiredQuestionIndex = undefined;
+		if (questionIndex === undefined || questionIndex !== this.#currentQuestionIndex()) return;
 		this.#handleTimeout();
 	}
 

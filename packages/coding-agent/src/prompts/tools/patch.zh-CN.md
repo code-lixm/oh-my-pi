@@ -42,11 +42,11 @@ type Entry =
 </output>
 
 <critical>
-- 你 MUST 在编辑前读取目标文件
+- 你 MUST 在编辑前通过最新的 `read`/`grep` 或当前磁盘 `codegraph` 源码 section 检查目标；CodeGraph `[PATH#TAG]` snapshot 是有效的当前依据
 - 你 MUST 逐字复制锚点和上下文行（包括空白字符）
 - 你 NEVER 使用锚点作为注释（不要使用行号、位置标签、像 `@@ @@` 这样的占位符）
 - 你 NEVER 在预期块之外放置新行
-- 如果编辑失败或破坏了结构，你 MUST 重新读取文件，并基于当前内容生成新的补丁——你 NEVER 重试相同的 diff
+- 编辑失败或破坏结构时，你 MUST 用 `read`/`grep` 刷新受影响的当前行并生成新补丁——你 NEVER 重试相同 diff，也 NEVER 只为刷新 snapshot 重跑 CodeGraph
 - NEVER 使用编辑来修复缩进、空白，或重新格式化代码。格式化应作为单个命令在最后运行一次（`bun fmt`、`cargo fmt`、`prettier --write` 等。）——而不是进行 N 次单独编辑。如果你在编辑后看到不一致的缩进，不要处理它；格式化程序会在一次处理中修复所有这些问题。
 </critical>
 

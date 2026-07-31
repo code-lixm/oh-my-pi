@@ -6,7 +6,12 @@ import { tSettingsUi } from "../i18n/settings-locale";
 import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS, LIVE_VOICE_VALUES } from "../live/voices";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
-import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
+import {
+	AUTO_THINKING,
+	getConfiguredThinkingLevelMetadata,
+	getThinkingLevelMetadata,
+	THINKING_DISPLAY_MODES,
+} from "../thinking";
 import {
 	TINY_MODEL_DEVICE_DEFAULT,
 	TINY_MODEL_DEVICE_SETTING_OPTIONS,
@@ -526,13 +531,13 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Advisor"),
 			label: tSettingsUi("Advisor Immune Turns"),
 			description: tSettingsUi(
-				"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.",
+				"After an advisor blocker interrupts, route further blockers non-interruptingly for this many primary turns.",
 			),
 			options: [
 				{
 					value: "0",
 					label: tSettingsUi("0 turns"),
-					description: tSettingsUi("Allow every concern/blocker to interrupt."),
+					description: tSettingsUi("Allow every blocker to interrupt."),
 				},
 				{ value: "1", label: tSettingsUi("1 turn") },
 				{ value: "2", label: tSettingsUi("2 turns") },
@@ -1050,6 +1055,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.codexResetFireworks": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Codex Reset Fireworks",
+			description:
+				"Celebrate unscheduled Codex weekly usage resets and newly banked saved resets with a top-third fireworks overlay that remains until Escape",
+		},
+	},
+
 	"tui.titleState": {
 		type: "boolean",
 		default: true,
@@ -1280,24 +1297,34 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	hideThinkingBlock: {
-		type: "boolean",
-		default: false,
+	thinkingDisplay: {
+		type: "enum",
+		values: THINKING_DISPLAY_MODES,
+		default: "full",
 		ui: {
 			tab: "model",
 			group: tSettingsUi("Thinking"),
-			label: tSettingsUi("Hide Thinking Blocks"),
-			description: tSettingsUi("Hide thinking blocks in assistant responses"),
-		},
-	},
-	proseOnlyThinking: {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "model",
-			group: tSettingsUi("Thinking"),
-			label: tSettingsUi("Prose Only Thinking"),
-			description: tSettingsUi("Omit code blocks from thinking summaries and replace them with an ellipsis"),
+			label: tSettingsUi("Thinking Display"),
+			description: tSettingsUi(
+				"Choose how provider-exposed thinking streams appear live in Main and subagent transcripts",
+			),
+			options: [
+				{
+					value: "full",
+					label: tSettingsUi("Full Stream"),
+					description: tSettingsUi("Show every thinking delta exposed by the provider, including code blocks"),
+				},
+				{
+					value: "prose",
+					label: tSettingsUi("Prose Only"),
+					description: tSettingsUi("Show thinking live but replace fenced code blocks with an ellipsis"),
+				},
+				{
+					value: "hidden",
+					label: tSettingsUi("Hidden"),
+					description: tSettingsUi("Hide thinking streams from transcripts"),
+				},
+			],
 		},
 	},
 
@@ -1333,6 +1360,19 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Thinking"),
 			label: tSettingsUi("Loop Guard Scan Prose"),
 			description: tSettingsUi("Apply loop guard to assistant prose messages in addition to thinking logs"),
+		},
+	},
+
+	"model.loopGuard.maxNoProgressTurns": {
+		type: "number",
+		default: 10,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("Loop Guard No-Progress Threshold"),
+			description: tSettingsUi(
+				"Consecutive identical no-progress turns before the session injects a recovery instruction and restarts once (requires Loop Guard)",
+			),
 		},
 	},
 
@@ -2038,14 +2078,32 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	collapseChangelog: {
-		type: "boolean",
-		default: false,
+	"startup.changelogMode": {
+		type: "enum",
+		values: ["summary", "expanded", "hidden"] as const,
+		default: "summary",
 		ui: {
 			tab: "interaction",
 			group: tSettingsUi("Startup & Updates"),
-			label: tSettingsUi("Collapse Changelog"),
-			description: tSettingsUi("Show condensed changelog after updates"),
+			label: tSettingsUi("Startup Changelog"),
+			description: tSettingsUi("Choose whether update notes start as a summary, full details, or stay hidden"),
+			options: [
+				{
+					value: "summary",
+					label: tSettingsUi("Summary"),
+					description: tSettingsUi("Show release and change counts with a /changelog hint"),
+				},
+				{
+					value: "expanded",
+					label: tSettingsUi("Expanded"),
+					description: tSettingsUi("Show the recent release notes in full"),
+				},
+				{
+					value: "hidden",
+					label: tSettingsUi("Hidden"),
+					description: tSettingsUi("Do not show release notes on startup"),
+				},
+			],
 		},
 	},
 
@@ -2130,14 +2188,12 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Notifications"),
 			label: tSettingsUi("Ask Timeout"),
 			description: tSettingsUi(
-				"In YOLO mode, auto-select explicit recommended ask options after this many seconds from presentation; questions without one keep waiting (0 disables)",
+				"In YOLO mode, each question gets a fresh countdown before its explicit recommended option is selected automatically (0 disables)",
 			),
 			options: [
 				{ value: "0", label: tSettingsUi("Disabled") },
-				{ value: "15", label: tSettingsUi("15 seconds") },
 				{ value: "30", label: tSettingsUi("30 seconds") },
 				{ value: "60", label: tSettingsUi("60 seconds") },
-				{ value: "120", label: tSettingsUi("120 seconds") },
 			],
 		},
 	},
@@ -4511,6 +4567,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.cdpUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Browser CDP URL",
+			description:
+				"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.",
+		},
+	},
+
 	"browser.headless": {
 		type: "boolean",
 		default: true,
@@ -5010,7 +5078,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.maxConcurrency": {
 		type: "number",
-		default: 32,
+		default: 8,
 		ui: {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
@@ -5023,7 +5091,7 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1", label: tSettingsUi("1 task") },
 				{ value: "2", label: tSettingsUi("2 tasks") },
 				{ value: "4", label: tSettingsUi("4 tasks") },
-				{ value: "8", label: tSettingsUi("8 tasks") },
+				{ value: "8", label: tSettingsUi("8 tasks"), description: tSettingsUi("Default") },
 				{ value: "16", label: tSettingsUi("16 tasks") },
 				{ value: "32", label: tSettingsUi("32 tasks") },
 				{ value: "64", label: tSettingsUi("64 tasks") },
@@ -5033,7 +5101,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.maxRequestConcurrency": {
 		type: "number",
-		default: 32,
+		default: 8,
 		ui: {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
@@ -5046,7 +5114,7 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1", label: tSettingsUi("1 task") },
 				{ value: "2", label: tSettingsUi("2 tasks") },
 				{ value: "4", label: tSettingsUi("4 tasks") },
-				{ value: "8", label: tSettingsUi("8 tasks") },
+				{ value: "8", label: tSettingsUi("8 tasks"), description: tSettingsUi("Default") },
 				{ value: "16", label: tSettingsUi("16 tasks") },
 				{ value: "32", label: tSettingsUi("32 tasks") },
 				{ value: "64", label: tSettingsUi("64 tasks") },
@@ -5069,7 +5137,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.maxRecursionDepth": {
 		type: "number",
-		default: 2,
+		default: 1,
 		ui: {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
@@ -5078,7 +5146,7 @@ export const SETTINGS_SCHEMA = {
 			options: [
 				{ value: "-1", label: tSettingsUi("Unlimited") },
 				{ value: "0", label: tSettingsUi("None") },
-				{ value: "1", label: tSettingsUi("Single") },
+				{ value: "1", label: tSettingsUi("Single"), description: tSettingsUi("Default") },
 				{ value: "2", label: tSettingsUi("Double") },
 				{ value: "3", label: tSettingsUi("Triple") },
 			],
@@ -5087,7 +5155,7 @@ export const SETTINGS_SCHEMA = {
 
 	"task.maxRuntimeMs": {
 		type: "number",
-		default: 0,
+		default: 900000,
 		ui: {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
@@ -5096,9 +5164,9 @@ export const SETTINGS_SCHEMA = {
 				"Hard wall-clock limit per subagent (ms). 0 disables it. Defense-in-depth against provider-side stream hangs that escape the inference-layer watchdog; triggers a normal subagent abort with a 'timed out' reason.",
 			),
 			options: [
-				{ value: "0", label: tSettingsUi("Unlimited"), description: tSettingsUi("Default") },
+				{ value: "0", label: tSettingsUi("Unlimited") },
 				{ value: "300000", label: tSettingsUi("5 minutes") },
-				{ value: "900000", label: tSettingsUi("15 minutes") },
+				{ value: "900000", label: tSettingsUi("15 minutes"), description: tSettingsUi("Default") },
 				{ value: "1800000", label: tSettingsUi("30 minutes") },
 				{ value: "3600000", label: tSettingsUi("1 hour") },
 			],
@@ -5120,19 +5188,19 @@ export const SETTINGS_SCHEMA = {
 
 	"task.softRequestBudget": {
 		type: "number",
-		default: 200,
+		default: 90,
 		ui: {
 			tab: "tasks",
 			group: tSettingsUi("Subagents"),
 			label: tSettingsUi("Soft Subagent Request Budget"),
 			description: tSettingsUi(
-				"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.",
+				"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents cap out at a lower built-in budget, so a value below that cap still applies to them.",
 			),
 			options: [
 				{ value: "0", label: tSettingsUi("Disabled") },
-				{ value: "90", label: tSettingsUi("90 requests") },
+				{ value: "90", label: tSettingsUi("90 requests"), description: tSettingsUi("Default") },
 				{ value: "150", label: tSettingsUi("150 requests") },
-				{ value: "200", label: tSettingsUi("200 requests"), description: tSettingsUi("Default") },
+				{ value: "200", label: tSettingsUi("200 requests") },
 			],
 		},
 	},
@@ -5639,6 +5707,23 @@ export const SETTINGS_SCHEMA = {
 			),
 			condition: "autoThinkingActive",
 			options: AUTO_THINKING_MODEL_OPTIONS,
+		},
+	},
+	"providers.autoThinkingMaxEffort": {
+		type: "enum",
+		values: ["xhigh", "max"] as const,
+		default: "xhigh",
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "Auto Thinking Ceiling",
+			description:
+				"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.",
+			condition: "autoThinkingActive",
+			options: [
+				{ value: "xhigh", label: "xhigh", description: "Classifier stops at xhigh (default)" },
+				{ value: "max", label: "max", description: "Classifier may resolve max where the model supports it" },
+			],
 		},
 	},
 	"features.unexpectedStopDetection": {

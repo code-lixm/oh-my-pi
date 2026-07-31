@@ -20,13 +20,16 @@
  *     orchestrator's progress reaches `<indexDir>/progress.json`.
  */
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { DatabaseConnection, ensureIndexDirs, QueryBuilder, removeDatabaseFiles } from "./db";
 import { runExplore } from "./explorer";
+import { hashContent } from "./extraction";
 import { metadataIsStale, readMetadata, writeMetadata } from "./metadata";
 import { describeNative, nativeContractMatches, tryLoadNative } from "./native";
 import { SyncOrchestrator } from "./orchestrator";
 import { readProgress } from "./progress";
 import type {
+	CodeGraphExploreFreshness,
 	CodeGraphExploreOptions,
 	CodeGraphExploreResult,
 	CodeGraphInitializeOptions,
@@ -37,6 +40,7 @@ import type {
 } from "./runtime-types";
 import { CodeGraphFileLock } from "./utils";
 
+export { getCodeGraphExploreBudget } from "./explore-budget";
 export type { CodeGraphIndexLocation } from "./location";
 export * from "./runtime-types";
 
@@ -131,6 +135,51 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 			return statusOut;
 		};
 
+		const inspectFreshness = async (paths?: readonly string[]): Promise<CodeGraphExploreFreshness> => {
+			if (closed) throw new Error("runtime is closed");
+			if (!queryBuilder) throw new Error("runtime is not wired");
+			const candidates = [
+				...new Set((paths ?? queryBuilder.getAllFilePaths()).map(filePath => filePath.split(path.sep).join("/"))),
+			];
+			const files: CodeGraphExploreFreshness["files"] = [];
+			const stalePaths: string[] = [];
+			for (const relativePath of candidates) {
+				const indexed = queryBuilder.getFileByPath(relativePath);
+				const absolutePath = path.resolve(effectiveSourceRoot, relativePath);
+				try {
+					const stat = await fs.stat(absolutePath);
+					if (indexed && indexed.size === stat.size && Math.abs(indexed.modifiedAt - stat.mtimeMs) < 1) {
+						files.push({ path: relativePath, state: "fresh", indexedHash: indexed.contentHash });
+						continue;
+					}
+					const source = await fs.readFile(absolutePath, "utf8");
+					const diskHash = await hashContent(source);
+					const state = !indexed ? "unindexed" : indexed.contentHash === diskHash ? "fresh" : "stale";
+					files.push({
+						path: relativePath,
+						state,
+						...(indexed ? { indexedHash: indexed.contentHash } : {}),
+						diskHash,
+					});
+					if (state !== "fresh") stalePaths.push(relativePath);
+				} catch (error) {
+					const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+					const state = code === "ENOENT" ? "missing" : "unreadable";
+					files.push({ path: relativePath, state, ...(indexed ? { indexedHash: indexed.contentHash } : {}) });
+					stalePaths.push(relativePath);
+				}
+			}
+			return {
+				state: stalePaths.length > 0 ? "partial-stale" : "fresh",
+				checkedAt: Date.now(),
+				candidatePaths: candidates,
+				stalePaths,
+				files,
+				sync:
+					stalePaths.length > 0 ? { state: "required", paths: stalePaths } : { state: "not-required", paths: [] },
+			};
+		};
+
 		const runtime: CodeGraphRuntime = {
 			async initialize(initOpts: CodeGraphInitializeOptions = {}) {
 				if (closed) throw new Error("runtime is closed");
@@ -160,19 +209,24 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 				});
 				return result;
 			},
+			async inspectFreshness(paths?: readonly string[]) {
+				return inspectFreshness(paths);
+			},
 			async explore(query: string, exploreOpts: CodeGraphExploreOptions = {}): Promise<CodeGraphExploreResult> {
 				if (closed) throw new Error("runtime is closed");
 				if (!connection || !queryBuilder) throw new Error("runtime is not wired");
-				const maxFiles = exploreOpts.maxFiles ?? 25;
+				const maxFiles = exploreOpts.maxFiles ?? Number.MAX_SAFE_INTEGER;
 				const result = await runExplore(
 					{
 						sourceRoot: effectiveSourceRoot,
 						connection,
 						queryBuilder,
 						maxFiles,
+						mode: exploreOpts.mode,
 					},
 					query,
 				);
+				result.freshness = await inspectFreshness(result.freshness.candidatePaths);
 				lastUsedAt = Date.now();
 				await writeMetadata(options.location, { nativeContractVersion, lastSyncedAt, lastUsedAt });
 				return result;

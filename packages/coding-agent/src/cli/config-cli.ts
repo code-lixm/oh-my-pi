@@ -5,7 +5,9 @@
  * Uses the settings schema as the source of truth for available settings.
  */
 
-import { APP_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
+import * as fs from "node:fs/promises";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { APP_NAME, getAgentDbPath, getAgentDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import {
 	getDefault,
@@ -20,6 +22,9 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
+import { exportEncryptedBundle, importEncryptedBundle } from "../config-sync/bundle";
+import { assertEncryptedConfigBundle } from "../config-sync/crypto";
+import { DEFAULT_SYNC_PASSPHRASE_ENV } from "../config-sync/profile";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { theme } from "../modes/theme/theme";
 
@@ -29,7 +34,7 @@ import { initXdg } from "./commands/init-xdg";
 // Types
 // =============================================================================
 
-export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg";
+export type ConfigAction = "list" | "get" | "set" | "reset" | "path" | "init-xdg" | "export" | "import";
 
 export interface ConfigCommandArgs {
 	action: ConfigAction;
@@ -37,6 +42,9 @@ export interface ConfigCommandArgs {
 	value?: string;
 	flags: {
 		json?: boolean;
+		passphraseEnv?: string;
+		dryRun?: boolean;
+		replace?: boolean;
 	};
 }
 // =============================================================================
@@ -80,7 +88,7 @@ function getSettingValues(def: CliSettingDef): readonly string[] | undefined {
 // Argument Parser
 // =============================================================================
 
-const VALID_ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg"];
+const VALID_ACTIONS: ConfigAction[] = ["list", "get", "set", "reset", "path", "init-xdg", "export", "import"];
 
 /**
  * Parse config subcommand arguments.
@@ -113,6 +121,12 @@ export function parseConfigArgs(args: string[]): ConfigCommandArgs | undefined {
 		const arg = args[i];
 		if (arg === "--json") {
 			result.flags.json = true;
+		} else if (arg === "--dry-run") {
+			result.flags.dryRun = true;
+		} else if (arg === "--replace") {
+			result.flags.replace = true;
+		} else if (arg === "--passphrase-env") {
+			result.flags.passphraseEnv = args[++i];
 		} else if (!arg.startsWith("-")) {
 			positionalArgs.push(arg);
 		}
@@ -255,8 +269,11 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 // =============================================================================
 
 export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
+	if (cmd.action === "export" || cmd.action === "import") {
+		await withConfigAuthStorage(authStorage => handlePortableBundle(cmd, authStorage));
+		return;
+	}
 	await Settings.init();
-
 	switch (cmd.action) {
 		case "list":
 			await handleList(cmd.flags);
@@ -276,6 +293,45 @@ export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
 		case "init-xdg":
 			await initXdg();
 			break;
+	}
+}
+
+async function handlePortableBundle(cmd: ConfigCommandArgs, authStorage: AuthStorage): Promise<void> {
+	const passphraseEnv = cmd.flags.passphraseEnv ?? DEFAULT_SYNC_PASSPHRASE_ENV;
+	const passphrase = process.env[passphraseEnv];
+	if (!passphrase) throw new Error(`Configuration bundle passphrase environment variable ${passphraseEnv} is not set`);
+	if (cmd.action === "export") {
+		const { bundle } = await exportEncryptedBundle(getAgentDir(), authStorage, passphrase);
+		const serialized = `${JSON.stringify(bundle, null, 2)}\n`;
+		if (cmd.key && cmd.key !== "-") await fs.writeFile(cmd.key, serialized, { encoding: "utf8", mode: 0o600 });
+		else await writeStdout(serialized);
+		return;
+	}
+	if (!cmd.key) throw new Error(`Usage: ${APP_NAME} config import <path|->`);
+	const serialized = cmd.key === "-" ? await new Response(Bun.stdin.stream()).text() : await Bun.file(cmd.key).text();
+	const bundle: unknown = JSON.parse(serialized);
+	assertEncryptedConfigBundle(bundle);
+	const { summary } = await importEncryptedBundle(getAgentDir(), authStorage, bundle, passphrase, {
+		dryRun: cmd.flags.dryRun,
+		replace: cmd.flags.replace,
+	});
+	console.log(
+		JSON.stringify(
+			{ ...summary, applied: !cmd.flags.dryRun, replace: cmd.flags.replace === true },
+			null,
+			cmd.flags.json ? 2 : undefined,
+		),
+	);
+}
+
+async function withConfigAuthStorage<T>(run: (authStorage: AuthStorage) => Promise<T>): Promise<T> {
+	const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
+	const authStorage = new AuthStorage(store);
+	try {
+		await authStorage.reload();
+		return await run(authStorage);
+	} finally {
+		authStorage.close();
 	}
 }
 
@@ -473,9 +529,14 @@ ${chalk.bold(tSettingsUi("Commands:"))}
   ${tSettingsUi("reset <key>        Reset a setting to its default value")}
   ${tSettingsUi("path               Print the config directory path")}
   ${tSettingsUi("init-xdg           Initialize XDG Base Directory structure")}
+  ${tSettingsUi("export [path|-]    Export an encrypted portable configuration bundle")}
+  ${tSettingsUi("import <path|->    Import an encrypted portable configuration bundle")}
 
 ${chalk.bold(tSettingsUi("Options:"))}
   ${tSettingsUi("--json             Output as JSON")}
+  ${tSettingsUi("--passphrase-env   Environment variable containing the bundle passphrase")}
+  ${tSettingsUi("--dry-run          Validate an import without applying it")}
+  ${tSettingsUi("--replace          Remove managed files and auth providers absent from the bundle")}
 
 ${chalk.bold(tSettingsUi("Examples:"))}
   ${APP_NAME} config list
@@ -486,6 +547,8 @@ ${chalk.bold(tSettingsUi("Examples:"))}
   ${APP_NAME} config reset steeringMode
   ${APP_NAME} config list --json
   ${APP_NAME} config init-xdg
+  ${APP_NAME} config export backup.json
+  ${APP_NAME} config import backup.json --replace
 
 ${chalk.bold(tSettingsUi("Boolean Values:"))}
   ${tSettingsUi("true, false, yes, no, on, off, 1, 0")}

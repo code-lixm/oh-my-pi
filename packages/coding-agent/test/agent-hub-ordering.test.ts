@@ -1,9 +1,7 @@
 /**
- * Regression: the agent hub row order must be stable while the hub is open.
- *
- * The hub is sorted by lastActivity on first open, but after that keyboard
- * selection must not jump around as agents heartbeat or update activity. New
- * agents that appear while the hub is open are appended at the end.
+ * Regression coverage for the unified Agent Hub task list: task rows are
+ * activity-prioritized and use localized user-facing statuses, while routing
+ * traffic and status sections never become list entries.
  */
 import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -41,9 +39,9 @@ function stubStdoutGeometry(cols: number): GeometryStub {
 	};
 }
 
-function makeHub(agents: AgentRegistry) {
+function makeHub(agents: AgentRegistry, observers = new SessionObserverRegistry()) {
 	return new AgentHubOverlayComponent({
-		observers: new SessionObserverRegistry(),
+		observers,
 		hubKeys: [],
 		onDone: () => {},
 		requestRender: () => {},
@@ -83,50 +81,72 @@ describe("Agent hub row ordering", () => {
 		setSettingsUiLocale(previousLocale);
 	});
 
-	it("freezes the initial lastActivity order while the hub is open", () => {
+	it("orders active work first and same-status rows by recent activity", () => {
 		vi.useFakeTimers();
-		let hub: AgentHubOverlayComponent | undefined;
+		geometry = stubStdoutGeometry(120);
+		const agents = new AgentRegistry();
+		const observers = new SessionObserverRegistry();
+		const session = {} as AgentSession;
+
+		setSystemTime(100);
+		agents.register({ id: "older", displayName: "Older running", kind: "sub", session, status: "running" });
+		setSystemTime(200);
+		agents.register({ id: "fresh", displayName: "Fresh running", kind: "sub", session, status: "running" });
+		setSystemTime(800);
+		agents.register({ id: "queued", displayName: "Queued task", kind: "sub", session, status: "running" });
+		setSystemTime(900);
+		agents.register({ id: "waiting", displayName: "Waiting task", kind: "sub", session, status: "running" });
+		setSystemTime(1_000);
+		agents.register({ id: "finished", displayName: "Finished task", kind: "sub", session, status: "running" });
+
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id: "queued",
+				kind: "subagent",
+				label: "Queued task",
+				status: "active",
+				lastUpdate: 800,
+				progress: { status: "pending" } as never,
+			},
+			{
+				id: "waiting",
+				kind: "subagent",
+				label: "Waiting task",
+				status: "active",
+				lastUpdate: 900,
+				progress: {
+					status: "running",
+					activity: {
+						phase: "waiting-user",
+						label: "Waiting for a decision",
+						phaseStartedAtMs: 900,
+						lastActivityAtMs: 900,
+					},
+				} as never,
+			},
+			{
+				id: "finished",
+				kind: "subagent",
+				label: "Finished task",
+				status: "completed",
+				lastUpdate: 1_000,
+				progress: { status: "completed" } as never,
+			},
+		]);
+
+		const hub = makeHub(agents, observers);
 		try {
-			geometry = stubStdoutGeometry(120);
-			const agents = new AgentRegistry();
-			setSystemTime(1000);
-			const sessionA = {} as AgentSession;
-			agents.register({ id: "A", displayName: "Alpha", kind: "sub", session: sessionA });
-
-			setSystemTime(2000);
-			const sessionB = {} as AgentSession;
-			agents.register({ id: "B", displayName: "Beta", kind: "sub", session: sessionB });
-
-			setSystemTime(3000);
-			const sessionC = {} as AgentSession;
-			agents.register({ id: "C", displayName: "Gamma", kind: "sub", session: sessionC });
-
-			hub = makeHub(agents);
-			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual(["Gamma", "Beta", "Alpha"]);
-
-			// Bump A's lastActivity far ahead of the others. The hub is already open,
-			// so the captured order must not change.
-			setSystemTime(4000);
-			agents.setActivity("A", "still running");
-
-			// Registering a new agent schedules a coalesced row refresh; the
-			// existing rows must stay put once the scheduled refresh runs.
-			setSystemTime(5000);
-			const sessionD = {} as AgentSession;
-			agents.register({ id: "D", displayName: "Delta", kind: "sub", session: sessionD });
-
-			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual(["Gamma", "Beta", "Alpha"]);
-			vi.advanceTimersByTime(100);
-			expect(renderedAgentLabels(hub, ["Alpha", "Beta", "Gamma", "Delta"])).toEqual([
-				"Gamma",
-				"Beta",
-				"Alpha",
-				"Delta",
-			]);
+			expect(
+				renderedAgentLabels(hub, [
+					"Older running",
+					"Fresh running",
+					"Queued task",
+					"Waiting task",
+					"Finished task",
+				]),
+			).toEqual(["Fresh running", "Older running", "Waiting task", "Queued task", "Finished task"]);
 		} finally {
-			hub?.dispose();
-			vi.useRealTimers();
-			setSystemTime();
+			hub.dispose();
 		}
 	});
 
@@ -136,7 +156,7 @@ describe("Agent hub row ordering", () => {
 		const sessionA = {} as AgentSession;
 		agents.register({
 			id: "RevAgentStream",
-			displayName: "Agent runtime + compaction reviewer",
+			displayName: "CONTROL_MARKER\x1b[2J\treview terminal safety\n- check wrapping\r- check leaks",
 			kind: "sub",
 			session: sessionA,
 		});
@@ -148,7 +168,6 @@ describe("Agent hub row ordering", () => {
 				kind: "subagent",
 				label: "Subagent",
 				status: "active",
-				description: "CONTROL_MARKER\x1b[2J\treview terminal safety\n- check wrapping\r- check leaks",
 				lastUpdate: Date.now(),
 			},
 		]);
@@ -179,46 +198,145 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("switches summary status labels to zh-CN at runtime without localizing user-facing agent labels", () => {
-		geometry = stubStdoutGeometry(120);
+	it("renders one Chinese task list with lifecycle projections and no internal traffic", async () => {
+		geometry = stubStdoutGeometry(160);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
-		for (const [id, displayName, status] of [
-			["job-17", "Alpha", "running"],
-			["job-18", "Beta", "idle"],
-			["job-19", "Gamma", "parked"],
-			["job-20", "Delta", "aborted"],
-		] as const) {
-			agents.register({ id, displayName, kind: "sub", session: {} as AgentSession, status });
-		}
+		const observers = new SessionObserverRegistry();
+		const endpoint = {
+			deliverIrcMessage: async () => "injected" as const,
+			emitIrcRelayObservation: () => {},
+		} as unknown as AgentSession;
+		const registerTask = (id: string, displayName: string) =>
+			agents.register({ id, displayName, kind: "sub", session: endpoint, status: "running" });
+		agents.register({ id: "Main", displayName: "Main", kind: "main", session: endpoint, status: "running" });
+		agents.register({
+			id: "Main/advisor",
+			displayName: "ADVISOR_LEAK_MARKER",
+			kind: "advisor",
+			session: endpoint,
+			status: "running",
+		});
+		registerTask("pending", "Alpha");
+		registerTask("queued", "Bravo");
+		registerTask("running", "Charlie");
+		registerTask("waiting", "Delta");
+		registerTask("completed", "Echo");
+		registerTask("failed", "Foxtrot");
+		registerTask("aborted", "Golf");
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id: "pending",
+				kind: "subagent",
+				label: "Alpha",
+				status: "active",
+				lastUpdate: 1,
+				progress: { status: "pending" } as never,
+			},
+			{
+				id: "queued",
+				kind: "subagent",
+				label: "Bravo",
+				status: "active",
+				lastUpdate: 2,
+				progress: {
+					status: "running",
+					activity: {
+						phase: "queued",
+						label: "Queued by scheduler",
+						phaseStartedAtMs: 2,
+						lastActivityAtMs: 2,
+					},
+				} as never,
+			},
+			{
+				id: "running",
+				kind: "subagent",
+				label: "Charlie",
+				status: "active",
+				lastUpdate: 3,
+				progress: { status: "running" } as never,
+			},
+			{
+				id: "waiting",
+				kind: "subagent",
+				label: "Delta",
+				status: "active",
+				lastUpdate: 4,
+				progress: {
+					status: "running",
+					activity: {
+						phase: "waiting-user",
+						label: "Waiting for user",
+						phaseStartedAtMs: 4,
+						lastActivityAtMs: 4,
+					},
+				} as never,
+			},
+			{
+				id: "completed",
+				kind: "subagent",
+				label: "Echo",
+				status: "completed",
+				lastUpdate: 5,
+				progress: { status: "completed" } as never,
+			},
+			{
+				id: "failed",
+				kind: "subagent",
+				label: "Foxtrot",
+				status: "failed",
+				lastUpdate: 6,
+				progress: { status: "failed" } as never,
+			},
+			{
+				id: "aborted",
+				kind: "subagent",
+				label: "Golf",
+				status: "aborted",
+				lastUpdate: 7,
+				progress: { status: "aborted" } as never,
+			},
+		]);
+		const irc = new IrcBus(agents);
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc,
+			focusAgent: async () => {},
+		});
 
-		const hub = makeHub(agents);
 		try {
-			const english = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(english).toContain("running");
-			expect(english).toContain("idle");
-			expect(english).toContain("parked");
-			expect(english).toContain("aborted");
-			expect(english).not.toContain("运行中");
-			expect(english).not.toContain("空闲");
-			expect(english).not.toContain("已停放");
-			expect(english).not.toContain("已中止");
+			await irc.send({ from: "running", to: "Main", body: "IRC_DELIVERY_LEAK_MARKER" });
+			const english = hub.render(160).map(Bun.stripANSI).join("\n");
+			expect(english).not.toMatch(
+				/^\s*(?:Active(?: agents| tasks)?|Queued|Pending|Running|Waiting for user|Not started|Completed|Failed|Stopped)(?:\s*\(\d+\))?\s*$/mu,
+			);
+			for (const hiddenDetail of [
+				"ADVISOR_LEAK_MARKER",
+				"IRC_DELIVERY_LEAK_MARKER",
+				"Delivered to Main",
+				"m message",
+			]) {
+				expect(english).not.toContain(hiddenDetail);
+			}
 
 			setSettingsUiLocale("zh-CN");
-			const chinese = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(chinese).toContain("运行中");
-			expect(chinese).toContain("空闲");
-			expect(chinese).toContain("已停放");
-			expect(chinese).toContain("已中止");
-			expect(chinese).not.toContain("running");
-			expect(chinese).not.toContain("idle");
-			expect(chinese).not.toContain("parked");
-			expect(chinese).not.toContain("aborted");
-
-			for (const label of ["Alpha", "Beta", "Gamma", "Delta"]) {
-				expect(english).toContain(label);
-				expect(chinese).toContain(label);
-			}
+			const chineseLines = hub.render(160).map(Bun.stripANSI);
+			const rowFor = (label: string) => chineseLines.find(line => line.includes(label));
+			expect(rowFor("Alpha")).toContain("未开始");
+			expect(rowFor("Bravo")).toContain("未开始");
+			expect(rowFor("Charlie")).toContain("运行中");
+			expect(rowFor("Delta")).toContain("等待用户");
+			expect(rowFor("Echo")).toContain("已完成");
+			expect(rowFor("Foxtrot")).toContain("失败");
+			expect(rowFor("Golf")).toContain("已停止");
+			const chinese = chineseLines.join("\n");
+			expect(chinese).not.toContain("pending");
+			expect(chinese).not.toContain("queued");
 		} finally {
 			hub.dispose();
 		}
@@ -264,7 +382,7 @@ describe("Agent hub row ordering", () => {
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width - 2);
 				const rendered = Bun.stripANSI(lines.join("\n"));
 				expect(rendered).toContain("Guest");
-				expect(rendered).toContain("running");
+				expect(rendered).toContain("Running");
 				expect(rendered).toContain("fallback → openai/gpt-4o");
 			}
 		} finally {
@@ -371,125 +489,6 @@ describe("Agent hub row ordering", () => {
 			expect(rendered).not.toContain("Review workspace");
 			expect(rendered).not.toContain("Main:");
 			expect(rendered).not.toContain("Subagents");
-		} finally {
-			hub.dispose();
-		}
-	});
-
-	it("keeps fixed wide columns and an independent narrow model row within the viewport", () => {
-		vi.useFakeTimers();
-		setSettingsUiLocale("en");
-		geometry = stubStdoutGeometry(160);
-		const agents = new AgentRegistry();
-		setSystemTime(1_000);
-		agents.register({
-			id: "Main",
-			displayName: "Primary workspace",
-			kind: "main",
-			session: {} as AgentSession,
-			status: "idle",
-		});
-		const session = { model: { id: "test/model" } } as unknown as AgentSession;
-		agents.register({
-			id: "Telemetry Worker",
-			displayName: "Telemetry Worker",
-			kind: "sub",
-			parentId: "Main",
-			session,
-			status: "running",
-		});
-		setSystemTime(61_000);
-		const observers = new SessionObserverRegistry();
-		vi.spyOn(observers, "getSessions").mockReturnValue([
-			{
-				id: "Telemetry Worker",
-				kind: "subagent",
-				label: "Subagent",
-				status: "active",
-				lastUpdate: Date.now(),
-				progress: {
-					activity: {
-						phase: "streaming",
-						label: "Streaming response",
-						detail: "Reading render contract",
-						phaseStartedAtMs: 60_000,
-						lastActivityAtMs: 60_000,
-					},
-					tokensPerSecond: 12.3,
-					tokensPerSecondLive: true,
-					contextTokens: 4_000,
-					contextWindow: 8_000,
-					toolCount: 2,
-					tokens: 1_234,
-					cost: 0.25,
-					durationMs: 5_000,
-				} as never,
-			},
-		]);
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-		});
-
-		try {
-			const wideLines = hub.render(160).map(Bun.stripANSI);
-			const wideRendered = wideLines.join("\n");
-			const columnHeader = wideLines.find(
-				line => line.includes("Status") && line.includes("Duration") && line.includes("Model"),
-			);
-			const workerRow = wideLines.find(line => line.includes("Telemetry Worker"));
-			const summaryRow = wideLines.find(line => line.includes("Dynamic summary"));
-
-			expect(columnHeader).toBeDefined();
-			expect(workerRow).toBeDefined();
-			expect(summaryRow).toContain("Reading render contract");
-			expect(workerRow!.indexOf("running")).toBe(columnHeader!.indexOf("Status"));
-			expect(workerRow!.indexOf("[")).toBe(columnHeader!.indexOf("Progress"));
-			expect(workerRow!.indexOf("00:00:05")).toBe(columnHeader!.indexOf("Duration"));
-			expect(workerRow!.indexOf("test/model")).toBe(columnHeader!.indexOf("Model"));
-			expect(wideRendered).not.toContain("Primary workspace");
-			expect(wideRendered).not.toContain("Main:");
-			expect(wideRendered).not.toContain("Subagents");
-
-			const columnIndex = wideLines.indexOf(columnHeader!);
-			const topHints = wideLines
-				.slice(0, columnIndex)
-				.filter(
-					line =>
-						line.includes("j/k select") ||
-						line.includes("f focus") ||
-						line.includes("m message") ||
-						line.includes("x kill"),
-				)
-				.join("\n");
-			expect(topHints).toContain("j/k select");
-			expect(topHints).toContain("Enter open transcript");
-			expect(topHints).toContain("f focus");
-			expect(topHints).toContain("m message");
-			expect(topHints).toContain("x kill");
-			expect(topHints).toContain("Esc/←← close");
-			expect(topHints).not.toContain("r revive");
-
-			for (const width of [60, 80]) {
-				geometry?.restore();
-				geometry = stubStdoutGeometry(width);
-				const narrowLines = hub.render(width).map(Bun.stripANSI);
-				const narrowRendered = narrowLines.join("\n");
-				for (const line of narrowLines) expect(visibleWidth(line)).toBeLessThanOrEqual(width - 2);
-				const workerIndex = narrowLines.findIndex(line => line.includes("Telemetry Worker"));
-				const modelIndex = narrowLines.findIndex(line => line.includes("Model") && line.includes("test/model"));
-				expect(workerIndex).toBeGreaterThanOrEqual(0);
-				expect(modelIndex).toBeGreaterThan(workerIndex);
-				expect(narrowRendered).toContain("running");
-				expect(narrowRendered).not.toContain("Primary workspace");
-				expect(narrowRendered).not.toContain("Main:");
-				expect(narrowRendered).not.toContain("Subagents");
-			}
 		} finally {
 			hub.dispose();
 		}

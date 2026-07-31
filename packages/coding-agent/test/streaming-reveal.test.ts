@@ -181,20 +181,33 @@ describe("streaming reveal", () => {
 		expect(textAt(display, 1)).toBe("a");
 	});
 
-	it("keeps pure-code thinking visible as an ascii ellipsis", () => {
+	it("elides pure-code thinking to an ascii ellipsis in prose-only mode", () => {
 		const target = makeMessage([
 			{ type: "thinking", thinking: "```js\nconst x = 1;\n```" },
 			{ type: "text", text: "answer" },
 		]);
 
-		expect(visibleUnits(target, false)).toBe("...answer".length);
-		const display = buildDisplayMessage(target, 3, false);
+		expect(visibleUnits(target, false, true)).toBe("...answer".length);
+		const display = buildDisplayMessage(target, 3, false, true);
 
 		expect(thinkingAt(display, 0)).toBe("...");
 		expect(textAt(display, 1)).toBe("");
 
-		const component = new AssistantMessageComponent(display);
+		const component = new AssistantMessageComponent(display, false, undefined, [], undefined, true);
 		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("...");
+	});
+
+	it("keeps fenced code thinking raw in full mode", () => {
+		const code = "```js\nconst x = 1;\n```";
+		const target = makeMessage([
+			{ type: "thinking", thinking: code },
+			{ type: "text", text: "answer" },
+		]);
+
+		expect(visibleUnits(target, false, false)).toBe(`${code}answer`.length);
+		const display = buildDisplayMessage(target, `${code}answer`.length, false, false);
+		expect(thinkingAt(display, 0)).toBe(code);
+		expect(textAt(display, 1)).toBe("answer");
 	});
 
 	it("refreshes prose-only setting during unsmoothed streaming updates", () => {

@@ -162,6 +162,23 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	Collab: "协作",
 	"Magic Keywords": "触发关键字",
 	"Startup & Updates": "启动与更新",
+	"Startup Changelog": "启动更新日志",
+	"Choose whether update notes start as a summary, full details, or stay hidden":
+		"选择启动时以摘要、完整内容或隐藏方式显示更新说明",
+	Expanded: "完整内容",
+	Hidden: "隐藏",
+	"Thinking Display": "思考显示",
+	"Full Stream": "完整流",
+	"Prose Only": "仅文本",
+	"Choose how provider-exposed thinking streams appear live in Main and subagent transcripts":
+		"选择提供方暴露的思考流如何实时显示在主代理和子代理转录中",
+	"Show every thinking delta exposed by the provider, including code blocks":
+		"实时显示提供方暴露的每个思考增量，包括代码块",
+	"Show thinking live but replace fenced code blocks with an ellipsis": "实时显示思考，但将围栏代码块替换为省略号",
+	"Hide thinking streams from transcripts": "在转录中隐藏思考流",
+	"Show release and change counts with a /changelog hint": "显示发布版本与变更数量，并提示使用 /changelog",
+	"Show the recent release notes in full": "完整显示最近的发布说明",
+	"Do not show release notes on startup": "启动时不显示发布说明",
 	"Static commit message": "静态 commit 信息",
 	"Power (macOS)": "电源（macOS）",
 	Powerline: "Powerline",
@@ -547,6 +564,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Failed to {verb} server: {error}": "{verb} 服务器失败：{error}",
 	"Fallback succeeded on {model}": "已在 {model} 上成功回退",
 	"Fallback: {from} -> {to}": "回退：{from} \u2192 {to}",
+	"Primary endpoint recovered: {from} -> {to}": "主端点已恢复：{from} → {to}",
 	"Fallback: {url}": "备用：{url}",
 	"Free space: {freeTokens} {percent}": "可用空间：{freeTokens} {percent}",
 	"Handoff context": "交接上下文",
@@ -658,7 +676,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"System prompt ({scope}): {detail}": "系统提示（{scope}）：{detail}",
 	"System tools": "系统工具",
 	"Thinking blocks: {state}": "思考块：{state}",
-	"Thinking time: {duration}": "思考耗时：{duration}",
 	"Tip: You can complete pairing with /login <redirect URL>.": "提示：可用 /login <重定向 URL> 完成配对。",
 	"Tool results: saves {savedTokens}": "工具结果：节省 {savedTokens}",
 	"Uninstall failed: {error}": "卸载失败：{error}",
@@ -1552,6 +1569,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"在返回给代理前压缩冗长的 shell 输出（git、npm、cargo 等）",
 	"Consecutive identical tool calls required before the corrective steer is injected":
 		"注入纠正性引导前所需的连续相同工具调用次数",
+	"Consecutive identical no-progress turns before the session injects a recovery instruction and restarts once (requires Loop Guard)":
+		"会话注入恢复指令并执行一次重启前允许的连续相同无进展回合数（需要启用循环守卫）",
 	"Context-full": "就地摘要",
 	"Copied /btw answer to clipboard": "已将 /btw 答案复制到剪贴板",
 	"Create Todos Automatically": "自动创建待办",
@@ -1726,8 +1745,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Headless? Paste the redirect URL or code with /login <value>.":
 		"无头环境？请用 /login <value> 粘贴重定向 URL 或授权码。",
 	"Hide Secrets": "隐藏密钥",
-	"Hide Thinking Blocks": "隐藏思考块",
-	"Hide thinking blocks in assistant responses": "在助手回复中隐藏思考块",
 	"Hindsight API URL": "Hindsight API 地址",
 	"Hindsight Auto Recall": "Hindsight 自动召回",
 	"Hindsight Auto Retain": "Hindsight 自动保留",
@@ -1884,6 +1901,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Loop Guard": "循环守卫",
 	"Loop Guard Scan Prose": "循环守卫扫描正文",
 	"Loop Guard Tool-Call Reminder": "循环守卫工具调用提醒",
+	"Loop Guard No-Progress Threshold": "循环守卫无进展阈值",
 	"Loop Mode": "循环模式",
 	"MCP Notification Debounce": "MCP 通知防抖",
 	"MCP Notifications": "MCP 通知",
@@ -1979,8 +1997,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"关闭、本地摘要流水线、Mnemopi SQLite 或 Hindsight 远程记忆",
 	"Ollama Cloud Max Concurrency": "Ollama Cloud 最大并发数",
 	"Omit Thinking summaries": "省略思考摘要",
-	"Omit code blocks from thinking summaries and replace them with an ellipsis":
-		"从思考摘要中省略代码块，并用省略号替代",
 	"Omit the personality block entirely": "完全省略 personality 块",
 	"On-device neural TTS model (Kokoro-82M) used by the local TTS backend":
 		"本地 TTS 后端使用的设备端神经 TTS 模型（Kokoro-82M）",
@@ -2063,7 +2079,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Prompt to summarize when leaving a branch": "离开分支时触发摘要的提示词",
 	Prompts: "提示词",
 	"Prompts changed:": "Prompts changed：",
-	"Prose Only Thinking": "仅文本思考",
 	"Prose Summaries": "文本摘要",
 	Protocol: "协议",
 	"Providers that web_search should never use, even as fallbacks":
@@ -2738,8 +2753,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"zh-CN": "简体中文（中国）",
 	"Advanced: explicit embedding model id that overrides the variant. Leave empty to use mnemopi.embeddingVariant.":
 		"高级：显式指定嵌入模型 id 以覆盖该 variant。留空则使用 mnemopi.embeddingVariant。",
-	"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.":
-		"审阅助手提出的隐患或阻断问题触发中断后，在接下来的指定主轮次内，后续隐患或阻断问题不再打断主流程。",
+	"After an advisor blocker interrupts, route further blockers non-interruptingly for this many primary turns.":
+		"审阅助手提出阻断问题触发中断后，在接下来的指定主轮次内，后续阻断问题不再打断主流程。",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":
 		"代理停止后，提醒其将经验写入记忆，并创建/增强隔离管理的技能",
 	"Allow subagents spawned via the task tool to use the lsp tool. Off by default to keep subagents cheap; enable when LSP-aware delegation is worth the extra tokens.":
@@ -2891,6 +2906,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"在正常交互式启动时显示完整的动画设置启动画面，而不重新运行设置。Quiet Startup 仍会抑制它。",
 	"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents use a lower built-in budget.":
 		"每个子代理的软请求预算（每次运行的 assistant 请求数）。超出后会注入收尾引导提示（见 task.softRequestBudgetNotice）；达到预算的 1.5 倍时将强制停止运行，代理必须产出部分结果。0 为禁用。内置的 scout/sonic 代理使用更低的默认预算。",
+	"Soft per-subagent request budget (assistant requests per run). Crossing it injects a wrap-up steering notice (see task.softRequestBudgetNotice); at 1.5x the budget the run is force-stopped and the agent must yield its partial findings. 0 disables the guard. Bundled scout/sonic agents cap out at a lower built-in budget, so a value below that cap still applies to them.":
+		"每个子代理的软请求预算（每次运行的 assistant 请求数）。超出后会注入收尾引导提示（见 task.softRequestBudgetNotice）；达到预算的 1.5 倍时将强制停止运行，代理必须产出部分结果。0 为禁用。内置 scout/sonic 代理的预算上限更低，因此低于该上限的配置仍会生效。",
 	"Solid blocks": "实心方块",
 	"Solid arrows (Nerd Font)": "实心箭头（Nerd Font）",
 	"Some servers failed to connect:": "部分服务器连接失败：",
@@ -3053,7 +3070,19 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"p:Main": "p:主代理",
 	"r:revive": "r:恢复",
 	"x:kill": "x:终止",
-	"no subagents yet — task spawns appear here": "还没有 subagent — task 生成的条目会显示在这里",
+	"no subagents yet — task spawns appear here": "尚无子代理；新任务会显示在这里",
+	"Not started": "未开始",
+	Running: "运行中",
+	Completed: "已完成",
+	"No tasks yet": "暂无任务",
+	'"{label}" is not live; open its transcript or revive it first.': "“{label}”当前未运行；请先打开转录或恢复它。",
+	"Live subagent focus is unavailable in this Agent Hub.": "此代理中心无法聚焦正在运行的子代理。",
+	'Switching to "{label}" is unavailable in this Agent Hub.': "此代理中心无法切换到“{label}”。",
+	'"{label}" cannot be resumed.': "“{label}”无法恢复。",
+	"open transcript": "打开转录",
+	focus: "聚焦",
+	revive: "恢复",
+	kill: "终止",
 	"rendering sample…": "正在渲染示例…",
 	"unscii squeezed to 6x6 — densest readable cell, fewest frames — in black ink.":
 		"unscii 压缩为 6x6 —— 最密且可读的单元、帧数最少 —— 使用黑色墨水。",
@@ -3638,7 +3667,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"0.1": "0.1",
 	"0.05": "0.05",
 	"0.01": "0.01",
-	"Allow every concern/blocker to interrupt.": "允许每个隐患或阻断问题触发中断。",
+	"Allow every blocker to interrupt.": "允许每个阻断问题触发中断。",
 	"Allow repetition": "允许重复",
 	"1 turn": "1 轮",
 	1024: "1024",
@@ -4915,4 +4944,45 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	Blocked: "等待中",
 	"phase {elapsed}": "阶段 {elapsed}",
 	"quiet {elapsed}": "无活动 {elapsed}",
+	"Updated omp. Use /changelog for recent changes.": "omp 已更新。使用 /changelog 查看近期变更。",
+	"Updated to v{latestVersion} · {changeCount} {changeWord} in 1 release":
+		"已更新到 v{latestVersion} · 1 个版本中有 {changeCount} 项变更",
+	"Updated to v{latestVersion} · {changeCount} {changeWord} across {releaseCount} {releaseWord}":
+		"已更新到 v{latestVersion} · {changeCount} 项变更，涉及 {releaseCount} 个版本",
+	"{count} added": "新增 {count} 项",
+	"{count} changed": "变更 {count} 项",
+	"{count} deprecated": "弃用 {count} 项",
+	"{count} removed": "移除 {count} 项",
+	"{count} fixed": "修复 {count} 项",
+	"{count} security": "安全修复 {count} 项",
+	"{count} breaking change": "破坏性变更 {count} 项",
+	"{count} breaking changes": "破坏性变更 {count} 项",
+	"{count} {category}": "{category} {count} 项",
+	"+{omittedReleases} earlier {releaseWord}": "另有 {omittedReleases} 个较早版本",
+	"Use /changelog full for history.": "使用 /changelog full 查看历史记录。",
+	"Use /changelog for details.": "使用 /changelog 查看详情。",
+	"Codex Reset Fireworks": "Codex 重置烟花",
+	"Celebrate unscheduled Codex weekly usage resets and newly banked saved resets with a top-third fireworks overlay that remains until Escape":
+		"当 Codex 每周用量意外重置或新增已存重置次数时，在屏幕上方三分之一区域显示烟花，按 Escape 后消失",
+	"Browser CDP URL": "浏览器 CDP URL",
+	"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.":
+		"默认用于附加浏览器的 HTTP CDP 发现端点（例如 http://127.0.0.1:9222），而不是启动新浏览器。工具调用中显式提供的 app.cdp_url 或 app.path 优先。",
+	"Auto Thinking Ceiling": "自动思考上限",
+	"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.":
+		"`auto` 分类器可选择的最高推理档位。`xhigh` 会将分类器限制在最高档以下，因此只有显式 `ultrathink` 能达到 `max`；`max` 允许分类器在支持该档位的模型上，为其判断为极端复杂的回合使用最高计费档位。",
+	"Classifier stops at xhigh (default)": "分类器最高选择 xhigh（默认）",
+	"Classifier may resolve max where the model supports it": "模型支持时，分类器可以选择 max",
+	"Import {sourceName} Session": "导入 {sourceName} 会话",
+	"[Del/⌫ delete · Enter select · Esc cancel]": "[Del/⌫ 删除 · Enter 选择 · Esc 取消]",
+	"Auto-detect per prompt": "按每次提示自动检测",
+	"In YOLO mode, each question gets a fresh countdown before its explicit recommended option is selected automatically (0 disables)":
+		"在 YOLO 模式下，每个问题都会获得独立的新倒计时；倒计时结束后会自动选择该问题明确标记的推荐选项（0 表示关闭）",
+	"API via /login exa or EXA_API_KEY; explicit keyless fallback via MCP":
+		"通过 /login exa 或 EXA_API_KEY 使用 API；通过 MCP 显式使用无密钥回退",
+	"Submit Result": "提交结果",
+	"Result submitted.": "结果已提交。",
+	"Result submitted (schema validation overridden after {count} failed attempt(s)).":
+		"结果已提交（在 {count} 次失败后已跳过结构校验）。",
+	"Result submitted (schema validation overridden).": "结果已提交（已跳过结构校验）。",
+	"Task aborted: {error}": "任务已中止：{error}",
 };

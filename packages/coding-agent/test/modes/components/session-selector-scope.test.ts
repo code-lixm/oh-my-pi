@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 beforeAll(async () => {
 	await initTheme();
@@ -21,6 +22,21 @@ function createSession(id: string, title: string, cwd: string, parentSessionPath
 		allMessagesText: `${title} first message`,
 		...(parentSessionPath ? { parentSessionPath } : {}),
 	};
+}
+
+function createForeignSessionSelector(sourceName: "Claude" | "Codex"): SessionSelectorComponent {
+	return new SessionSelectorComponent(
+		[createSession(`foreign-${sourceName}`, `${sourceName} session`, "/work/foreign")],
+		() => {},
+		() => {},
+		() => {},
+		{
+			title: "Import {sourceName} Session",
+			titleParams: { sourceName },
+			scopeLabel: false,
+			showCwd: true,
+		},
+	);
 }
 
 const TAB = "\t";
@@ -133,5 +149,34 @@ describe("SessionSelectorComponent scope toggle", () => {
 
 		expect(forkLines).toHaveLength(1);
 		expect(forkLines[0]).toContain("fork");
+	});
+
+	it.each([
+		["Claude", "导入 Claude 会话"],
+		["Codex", "导入 Codex 会话"],
+	] as const)("renders the %s import heading through the zh-CN template", (sourceName, expectedTitle) => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("zh-CN");
+			const output = Bun.stripANSI(createForeignSessionSelector(sourceName).render(120).join("\n"));
+
+			expect(output).toContain(expectedTitle);
+			expect(output).not.toContain(`Import ${sourceName} Session`);
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
+	});
+
+	it("omits the Tab hint when an import selector has no all-projects scope", () => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			setSettingsUiLocale("en");
+			const output = Bun.stripANSI(createForeignSessionSelector("Claude").render(120).join("\n"));
+
+			expect(output).toContain("Enter select · Esc cancel");
+			expect(output).not.toContain("Tab");
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
 	});
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Added elapsed tool-call timing to the Tools dashboard, derived from assistant tool-call and tool-result timestamps.
+
 ### Fixed
 
 - Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.

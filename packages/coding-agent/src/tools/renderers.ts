@@ -32,6 +32,7 @@ import { todoToolRenderer } from "./todo";
 import { createVibeToolRenderer } from "./vibe";
 import { writeToolRenderer } from "./write";
 import { setXdevRendererLookup } from "./xdev";
+import { yieldToolRenderer } from "./yield-renderer";
 
 /**
  * Per-renderer opt-in for a full viewport replay when the first result
@@ -136,6 +137,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	vibe_kill: createVibeToolRenderer("kill") as ToolRenderer,
 	vibe_list: createVibeToolRenderer("list") as ToolRenderer,
 	write: writeToolRenderer as ToolRenderer,
+	yield: yieldToolRenderer as ToolRenderer,
 };
 
 // Wire the xd:// render delegation. Injected (instead of the xdev module

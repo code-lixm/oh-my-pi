@@ -39,8 +39,8 @@ function setDisplayLanguage(locale: "en" | "zh-CN") {
 	Settings.instance.override("displayLanguage", locale);
 }
 
-function makeComponent(args: unknown) {
-	const component = new ToolExecutionComponent("demo", args, {}, undefined, uiStub);
+function makeComponent(args: unknown, toolName = "demo") {
+	const component = new ToolExecutionComponent(toolName, args, {}, undefined, uiStub);
 	component.stopAnimation();
 	components.push(component);
 	return component;
@@ -76,5 +76,28 @@ describe("ToolExecutionComponent locale refresh", () => {
 		expect(englishAgain).toContain("Args");
 		expect(englishAgain).not.toContain("参数");
 		expect(englishAgain).toBe(english);
+	});
+
+	it("re-renders a final yield result in zh-CN without leaking its English status copy", () => {
+		const args = {};
+		const component = makeComponent(args, "yield");
+		component.updateArgs(args);
+		component.setArgsComplete();
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Result submitted." }],
+				details: { status: "success" },
+			},
+			false,
+		);
+
+		setDisplayLanguage("en");
+		const english = rerender(component);
+		expect(english).toContain("Result submitted.");
+
+		setDisplayLanguage("zh-CN");
+		const chinese = rerender(component);
+		expect(chinese).toContain("结果已提交");
+		expect(chinese).not.toContain("Result submitted.");
 	});
 });

@@ -485,6 +485,45 @@ describe("withGeminiThinkingLoopGuard (Vertex transport)", () => {
 		expect(isRetryableError(new Error(result.errorMessage))).toBe(true);
 	});
 });
+
+describe("withGeminiThinkingLoopGuard (MiniMax transport)", () => {
+	test("aborts repeated native thinking deltas with a retryable ThinkingLoop error", async () => {
+		const model = {
+			api: "openai-completions",
+			provider: "minimax-code",
+			id: "MiniMax-M3",
+		} as unknown as Model<Api>;
+		const partial = { role: "assistant", content: [] } as unknown as AssistantMessage;
+		const options: { signal?: AbortSignal; loopGuard?: { enabled?: boolean } } = {
+			loopGuard: { enabled: true },
+		};
+		let upstreamSignal: AbortSignal | undefined;
+
+		const guarded = withGeminiThinkingLoopGuard(model, options, forwardedOptions => {
+			upstreamSignal = forwardedOptions?.signal;
+			const inner = new AssistantMessageEventStream();
+			const events: AssistantMessageEvent[] = [
+				{ type: "start", partial },
+				{ type: "thinking_start", contentIndex: 0, partial },
+				...nearDuplicateLoop(12)
+					.split("\n\n\n")
+					.map(delta => ({ type: "thinking_delta" as const, contentIndex: 0, delta: `${delta}\n\n\n`, partial })),
+				{ type: "thinking_end", contentIndex: 0, content: "", partial },
+				{ type: "done", reason: "stop", message: partial },
+			];
+			for (const event of events) inner.push(event);
+			return inner;
+		});
+
+		const result = await guarded.result();
+		expect(upstreamSignal?.aborted).toBe(true);
+		expect(result.stopReason).toBe("error");
+		expect(result.content).toEqual([]);
+		expect(result.errorMessage).toContain(THINKING_LOOP_ERROR_MARKER);
+		expect(AIError.is(result.errorId, AIError.Flag.ThinkingLoop)).toBe(true);
+		expect(isRetryableError(new Error(result.errorMessage))).toBe(true);
+	});
+});
 describe("isLoopGuardedModel", () => {
 	test("guards Gemini and DeepSeek models by default, respects overrides", () => {
 		const gemini = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" }).model;
@@ -501,6 +540,17 @@ describe("isLoopGuardedModel", () => {
 
 		// force enabled for other models — but disabled overall unless it is Gemini/DeepSeek
 		expect(isLoopGuardedModel(other, { loopGuard: { enabled: true } })).toBe(false);
+	});
+
+	test("guards OpenAI-compatible MiniMax-M3 unless explicitly disabled", () => {
+		const minimax = {
+			api: "openai-completions",
+			provider: "minimax-code",
+			id: "MiniMax-M3",
+		} as unknown as Model<Api>;
+
+		expect(isLoopGuardedModel(minimax, { loopGuard: { enabled: true } })).toBe(true);
+		expect(isLoopGuardedModel(minimax, { loopGuard: { enabled: false } })).toBe(false);
 	});
 });
 

@@ -291,6 +291,8 @@ export interface ToolUsageStats {
 	argsChars: number;
 	/** Text characters of tool results fed back into context. */
 	resultChars: number;
+	/** Average elapsed milliseconds from tool call to result. */
+	avgDurationMs: number | null;
 	/** Total provider tokens of invoking turns, attributed per call share. */
 	totalTokensShare: number;
 	/** Output tokens of invoking turns, attributed per call share. */

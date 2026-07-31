@@ -57,14 +57,17 @@ output:
 Identify bugs the author would want fixed before merge.
 
 <directives>
-- For repo structure, call chains, cross-file flow, impact scope, and module responsibilities, reach for `codegraph` first; it locates the dispatch point on the consuming side faster than chasing imports manually.
-- Fall back to `grep`/`glob`/`read` only for precise text, logs/non-code, file discovery, or when `codegraph` reports the index is missing or unavailable.
-- Source already returned by `codegraph` is treated as read — do NOT re-`grep`/`read` it unless stale, evicted, or not yet covered. Do not block on a missing index.
+- For understanding, modifications, flow, impact, or known source targets, call `codegraph` first; direct definition/type/implementation/references/hover/code-actions → `lsp` when available.
+- Select `auto|locate|understand|flow|impact|edit`: locate=definition+complete body; understand/edit=body+key relations; flow=path+endpoints/spine; impact=impact+tests+focal source.
+- Complete source is already read; a current-disk `[PATH#TAG]` snapshot is edit-ready. Use `grep`/`read` only for exact text, logs, configs, docs, selectors, validation, or partial/omitted/stale lines; `glob` only discovers files.
+- Re-query only for a new branch outside coverage; NEVER for unchanged coverage or merely after an edit.
+- Ordinary fallback? Immediately use `read`/`grep`/`glob`/`lsp`; NEVER wait, poll, or retry CodeGraph. Illegal/unsafe paths remain errors.
+- CodeGraph informs exploration; it NEVER replaces LSP, compiler, tests, or validation.
 </directives>
 
  <procedure>
  1. Run `git diff`, `jj diff --git`, or `gh pr diff <number>` to view patch
- 2. Read modified files for full context
+ 2. Read modified ranges needed beyond complete CodeGraph coverage; NEVER mechanically reread complete source
  3. Record each issue with incremental `yield` using `type: ["findings"]`
  4. Record `overall_correctness`, `explanation`, and `confidence` with incremental `yield` sections, then stop so idle finalization assembles the result
 

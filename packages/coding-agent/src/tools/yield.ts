@@ -12,6 +12,7 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { ToolSession } from ".";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
@@ -212,7 +213,7 @@ const MAX_EMPTY_RESULT_RETRIES = 3;
 export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly name = "yield";
 	readonly approval = "read" as const;
-	readonly label = "Submit Result";
+	readonly label = tSettingsUi("Submit Result");
 	readonly description =
 		"Submit subagent output. Omit `type` for the usual final structured result.\n\n" +
 		'Pass `type: ["section"]` to submit an incremental, non-terminal section that accumulates. Pass `type: "result"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.\n' +
@@ -342,7 +343,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 					`yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ` +
 					'Submit success as `{ "result": { "data": <your output> } }` or failure as `{ "result": { "error": "message" } }`.';
 				return {
-					content: [{ type: "text", text: `Task aborted: ${error}` }],
+					content: [{ type: "text", text: tSettingsUi("Task aborted: {error}", { error }) }],
 					details: {
 						data: undefined,
 						status: "aborted",
@@ -403,10 +404,12 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#emptyResultFailures = 0;
 		const responseText =
 			status === "aborted"
-				? `Task aborted: ${errorMessage}`
+				? tSettingsUi("Task aborted: {error}", { error: errorMessage ?? "" })
 				: schemaValidationOverridden
-					? `Result submitted (schema validation overridden after ${this.#schemaValidationFailures} failed attempt(s)).`
-					: "Result submitted.";
+					? tSettingsUi("Result submitted (schema validation overridden after {count} failed attempt(s)).", {
+							count: this.#schemaValidationFailures,
+						})
+					: tSettingsUi("Result submitted.");
 		return {
 			content: [{ type: "text", text: responseText }],
 			details: {

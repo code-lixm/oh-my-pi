@@ -5,7 +5,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { AgentDefinition, AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 
 function model(provider: string, id: string): Model<Api> {
 	return buildModel({
@@ -22,7 +22,7 @@ function model(provider: string, id: string): Model<Api> {
 	});
 }
 
-function createYieldingSession(): AgentSession {
+function createYieldingSession(onFallbackRestored?: () => void): AgentSession {
 	const listeners: Array<(event: { type: string; [key: string]: unknown }) => void> = [];
 	const session = {
 		agent: { state: { systemPrompt: ["test"] } },
@@ -45,6 +45,19 @@ function createYieldingSession(): AgentSession {
 					role: "subagent:issue-2750",
 				});
 				listener({
+					type: "retry_fallback_succeeded",
+					model: "fallback/working-model",
+					role: "subagent:issue-2750",
+				});
+				listener({
+					type: "retry_fallback_restored",
+					from: "fallback/working-model",
+					to: "primary/bad-runtime-model",
+					role: "subagent:issue-2750",
+				});
+				// Capture before yield can emit a terminal snapshot.
+				onFallbackRestored?.();
+				listener({
 					type: "tool_execution_end",
 					toolCallId: "tool-yield",
 					toolName: "yield",
@@ -66,14 +79,22 @@ describe("subagent runtime model resolution", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("passes ordered subagent candidates as a child retry fallback chain", async () => {
+	it("passes ordered subagent candidates and restores primary progress after fallback", async () => {
 		const primary = model("primary", "bad-runtime-model");
 		const fallback = model("fallback", "working-model");
+		const progressSnapshots: AgentProgress[] = [];
+		let progressAfterRestoration: AgentProgress | undefined;
 		let childFallbackChains: Record<string, string[]> | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			if (!options) throw new Error("Expected createAgentSession options");
 			childFallbackChains = options.settings?.get("retry.fallbackChains") as Record<string, string[]> | undefined;
-			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
+			return {
+				session: createYieldingSession(() => {
+					progressAfterRestoration = progressSnapshots.at(-1);
+				}),
+				extensionsResult: {},
+				setToolUIContext: () => {},
+			} as never;
 		});
 
 		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
@@ -97,6 +118,7 @@ describe("subagent runtime model resolution", () => {
 				getApiKey: async () => "test-key",
 			} as never,
 			enableLsp: false,
+			onProgress: progress => progressSnapshots.push(progress),
 		});
 
 		let firstFallbackRole: string | undefined;
@@ -117,8 +139,19 @@ describe("subagent runtime model resolution", () => {
 		expect(firstFallbackRole).toBe("subagent:issue-2750");
 		expect(subagentFallbackChain).toEqual(["fallback/working-model"]);
 		expect(inheritedFallbackChain).toEqual(["global/inherited-model"]);
+		expect(progressSnapshots).toContainEqual(
+			expect.objectContaining({
+				resolvedModel: "fallback/working-model",
+				resolvedModelIsFallback: true,
+			}),
+		);
+		expect(progressAfterRestoration).toMatchObject({
+			resolvedModel: "primary/bad-runtime-model",
+			resolvedModelIsFallback: false,
+		});
 		expect(result.modelOverride).toEqual(["primary/bad-runtime-model", "fallback/working-model"]);
-		expect(result.resolvedModel).toBe("fallback/working-model");
+		expect(result.resolvedModel).toBe("primary/bad-runtime-model");
+		expect(result.resolvedModelIsFallback).toBe(false);
 	});
 
 	it("inherits an explicitly configured default fallback chain for a single subagent model", async () => {

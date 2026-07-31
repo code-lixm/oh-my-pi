@@ -51,9 +51,9 @@ import {
 } from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
-import { HubActivityGroupComponent, isHubGroupedActivityArgs } from "./hub-activity-group";
+import { isHubGroupedActivityArgs } from "./hub-activity-group";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
-import { ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
+import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
@@ -81,14 +81,14 @@ function userMessageText(message: Extract<AgentMessage, { role: "user" }>): stri
 
 export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
-	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent | HubActivityGroupComponent>();
+	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 	#readArgs = new Map<string, Record<string, unknown>>();
 	#readGroup: ReadToolGroupComponent | null = null;
-	#hubActivityGroup: HubActivityGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
 	#pendingUsageTtft: number | undefined;
 	#pendingUsageTimestamp: number | undefined;
+	#pendingReadUsageCallIds: string[] | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
@@ -111,7 +111,6 @@ export class ChatTranscriptBuilder {
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
-		if (this.#pendingTools.size === 0) this.#finalizeHubActivityGroup();
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
@@ -140,12 +139,12 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageDuration = undefined;
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
+		this.#pendingReadUsageCallIds = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
 		this.#errorAggregation = undefined;
 		this.#expandables = [];
-		this.#hubActivityGroup = null;
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -201,46 +200,47 @@ export class ChatTranscriptBuilder {
 		return this.#readGroup;
 	}
 
-	#finalizeHubActivityGroup(): void {
-		this.#hubActivityGroup?.finalize();
-		this.#hubActivityGroup = null;
-	}
-
-	#ensureHubActivityGroup(): HubActivityGroupComponent {
-		if (!this.#hubActivityGroup?.canAppend) {
-			this.#hubActivityGroup = new HubActivityGroupComponent();
-			this.#trackExpandable(this.#hubActivityGroup);
-			this.container.addChild(this.#hubActivityGroup);
-		}
-		return this.#hubActivityGroup;
-	}
-
-	// The per-turn token-usage row must land below the turn's tool blocks, but
-	// normal `read` calls only materialize their group in #appendToolResult. Defer
-	// the row: stash it on the assistant message and flush once the turn's tools
-	// are placed, sealing the read run so the row sits under it.
+	// Defer per-turn metrics until the turn's tool results have materialized.
+	// Read-only invisible turns attach the metrics to their shared compact
+	// group; every other turn keeps the standalone row below its tool blocks.
 	#flushPendingUsage(): void {
 		if (!this.#pendingUsage) return;
-		this.#readGroup?.seal();
-		this.#finalizeHubActivityGroup();
-		this.#readGroup = null;
-		this.container.addChild(
-			createUsageRowBlock(
+		const usageAttached =
+			this.#pendingReadUsageCallIds !== undefined &&
+			(this.#readGroup?.attachUsage(
+				this.#pendingReadUsageCallIds,
 				this.#pendingUsage,
 				this.#pendingUsageDuration,
 				this.#pendingUsageTtft,
 				this.#pendingUsageTimestamp,
-			),
-		);
+			) ??
+				false);
+		if (!usageAttached) {
+			this.#readGroup?.seal();
+			this.#readGroup = null;
+			this.container.addChild(
+				createUsageRowBlock(
+					this.#pendingUsage,
+					this.#pendingUsageDuration,
+					this.#pendingUsageTtft,
+					this.#pendingUsageTimestamp,
+				),
+			);
+		}
 		this.#pendingUsage = undefined;
 		this.#pendingUsageDuration = undefined;
 		this.#pendingUsageTtft = undefined;
 		this.#pendingUsageTimestamp = undefined;
+		this.#pendingReadUsageCallIds = undefined;
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant") this.#errorAggregation = undefined;
+		if (message.role !== "assistant" && message.role !== "toolResult") {
+			this.#readGroup?.seal();
+			this.#readGroup = null;
+		}
 		switch (message.role) {
 			case "assistant":
 				this.#appendAssistantMessage(message);
@@ -254,7 +254,6 @@ export class ChatTranscriptBuilder {
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
-				this.#finalizeHubActivityGroup();
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					// Synthetic (agent-attributed) inputs — chiefly the advisor's `Session
@@ -273,7 +272,6 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "bashExecution": {
-				this.#finalizeHubActivityGroup();
 				const component = new BashExecutionComponent(message.command, this.deps.ui, message.excludeFromContext);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
@@ -281,7 +279,6 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "pythonExecution": {
-				this.#finalizeHubActivityGroup();
 				const component = new EvalExecutionComponent(message.code, this.deps.ui, message.excludeFromContext);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
@@ -293,7 +290,6 @@ export class ChatTranscriptBuilder {
 				this.#appendCustomMessage(message);
 				break;
 			case "compactionSummary": {
-				this.#finalizeHubActivityGroup();
 				const component = new CompactionSummaryMessageComponent(message);
 				this.#trackExpandable(component);
 				this.container.addChild(component);
@@ -302,13 +298,11 @@ export class ChatTranscriptBuilder {
 			case "branchSummary": {
 				const component = new BranchSummaryMessageComponent(message);
 				this.#trackExpandable(component);
-				this.#finalizeHubActivityGroup();
 				this.container.addChild(component);
 				break;
 			}
 			case "fileMention": {
 				// Indent one column to match the transcript's other rows (the viewer renders
-				this.#finalizeHubActivityGroup();
 				// body rows without an outer gutter; rows own their left pad).
 				const block = buildFileMentionBlock(message.files, 1);
 				if (block.children.length > 0) this.container.addChild(block);
@@ -359,10 +353,8 @@ export class ChatTranscriptBuilder {
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasErrorStop = errorPresentation.kind === "full";
 		const errorMessage = hasErrorStop ? errorPresentation.text : null;
-		if (assistantHasVisibleContent(timeline.beforeTools)) this.#finalizeHubActivityGroup();
 		const appendAssistantSegment = (segment: Extract<AgentMessage, { role: "assistant" }> | undefined) => {
 			if (!segment || !assistantHasVisibleContent(segment)) return;
-			this.#finalizeHubActivityGroup();
 			const component = new AssistantMessageComponent(
 				segment,
 				hideThinkingBlock,
@@ -382,25 +374,14 @@ export class ChatTranscriptBuilder {
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			if (content.name === "hub" && isHubGroupedActivityArgs(content.arguments)) {
+				// Peer coordination is internal to the task. The actual `ask` tool remains
+				// a normal transcript component, so a child waiting for user input stays visible.
 				this.#readGroup?.seal();
 				this.#readGroup = null;
-				const group = this.#ensureHubActivityGroup();
-				group.displaceWaitingPoll(content.id);
-				group.updateArgs(content.arguments, content.id);
-				if (hasErrorStop && errorMessage) {
-					group.updateResult(
-						{ content: [{ type: "text", text: errorMessage }], isError: true },
-						false,
-						content.id,
-					);
-				} else {
-					this.#pendingTools.set(content.id, group);
-				}
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
 
-			this.#finalizeHubActivityGroup();
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
@@ -460,6 +441,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageDuration = message.duration;
 		this.#pendingUsageTtft = message.ttft;
 		this.#pendingUsageTimestamp = message.timestamp;
+		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
 	}
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
@@ -479,18 +461,6 @@ export class ChatTranscriptBuilder {
 			return;
 		}
 		if (!pending) return;
-		if (
-			message.toolName === "hub" &&
-			pending instanceof HubActivityGroupComponent &&
-			pending.discardHiddenMessageActivity(message, message.toolCallId)
-		) {
-			this.#pendingTools.delete(message.toolCallId);
-			if (pending.isEmpty) {
-				this.container.removeChild(pending);
-				if (this.#hubActivityGroup === pending) this.#hubActivityGroup = null;
-			}
-			return;
-		}
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
 		if (message.toolName === "hub" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
@@ -517,7 +487,6 @@ export class ChatTranscriptBuilder {
 		) {
 			return;
 		}
-		this.#finalizeHubActivityGroup();
 		if (message.customType === "async-result") {
 			this.container.addChild(buildAsyncResultBlock(message));
 			return;

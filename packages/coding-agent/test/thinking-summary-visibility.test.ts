@@ -24,6 +24,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 const API = "thinking-summary-visibility";
 const MAIN_MODEL_ID = "thinking-visibility-main";
 const SUBAGENT_MODEL_ID = "thinking-visibility-subagent";
+type ThinkingDisplay = "full" | "prose" | "hidden";
 
 type CapturedRequest = {
 	modelId: string;
@@ -76,7 +77,10 @@ function thinkingModel(id: string): Model<Api> {
 	} as ModelSpec<Api>) as Model<Api>;
 }
 
-async function createHarness(initialSettings: { hideThinkingBlock: boolean; omitThinking: boolean }): Promise<Harness> {
+async function createHarness(initialSettings: {
+	thinkingDisplay: ThinkingDisplay;
+	omitThinking: boolean;
+}): Promise<Harness> {
 	AgentRegistry.resetGlobalForTests();
 	tempDir = TempDir.createSync("@pi-thinking-summary-visibility-");
 	authStorage = await AuthStorage.create(tempDir.join("auth.db"));
@@ -96,7 +100,7 @@ async function createHarness(initialSettings: { hideThinkingBlock: boolean; omit
 
 	const settings = Settings.isolated({
 		"compaction.enabled": false,
-		hideThinkingBlock: initialSettings.hideThinkingBlock,
+		thinkingDisplay: initialSettings.thinkingDisplay,
 		omitThinking: initialSettings.omitThinking,
 	});
 	const baseOptions = {
@@ -150,14 +154,15 @@ async function requestSummaryOption(
 function settingsContext(
 	session: AgentSession,
 	settings: Settings,
-	hideThinkingBlock: boolean,
+	thinkingDisplay: ThinkingDisplay,
 ): InteractiveModeContext {
+	const hideThinkingBlock = thinkingDisplay === "hidden";
 	return {
 		session,
 		settings,
 		hideThinkingBlock,
 		effectiveHideThinkingBlock: hideThinkingBlock,
-		proseOnlyThinking: false,
+		proseOnlyThinking: thinkingDisplay === "prose",
 		chatContainer: { children: [] },
 		ui: { resetDisplay: () => {} },
 	} as unknown as InteractiveModeContext;
@@ -177,33 +182,31 @@ afterEach(async () => {
 });
 
 describe("thinking summary visibility policy", () => {
-	it("requests summaries for initially visible Main and subagent sessions despite provider omission", async () => {
-		const { main, subagent, requests } = await createHarness({ hideThinkingBlock: false, omitThinking: true });
-
-		expect(await requestSummaryOption(main, MAIN_MODEL_ID, "main initial visibility", requests)).toBe(false);
-		expect(await requestSummaryOption(subagent, SUBAGENT_MODEL_ID, "subagent initial visibility", requests)).toBe(
-			false,
-		);
-	});
-
-	it("applies live omission and visibility changes to Main and every registered subagent", async () => {
+	it("applies full, prose, and hidden display policy to Main and every registered subagent", async () => {
 		const { settings, main, subagent, requests } = await createHarness({
-			hideThinkingBlock: true,
-			omitThinking: false,
+			thinkingDisplay: "full",
+			omitThinking: true,
 		});
-		const ctx = settingsContext(main, settings, true);
-		const controller = new SelectorController(ctx);
+		const controller = new SelectorController(settingsContext(main, settings, "full"));
 
-		settings.set("omitThinking", true);
-		controller.handleSettingChange("omitThinking", true);
-		expect(await requestSummaryOption(main, MAIN_MODEL_ID, "main hidden omission", requests)).toBe(true);
-		expect(await requestSummaryOption(subagent, SUBAGENT_MODEL_ID, "subagent hidden omission", requests)).toBe(true);
+		const expectPolicy = async (
+			thinkingDisplay: ThinkingDisplay,
+			omitThinking: boolean,
+			expected: boolean,
+			label: string,
+		) => {
+			settings.set("thinkingDisplay", thinkingDisplay);
+			controller.handleSettingChange("thinkingDisplay", thinkingDisplay);
+			settings.set("omitThinking", omitThinking);
+			controller.handleSettingChange("omitThinking", omitThinking);
 
-		settings.set("hideThinkingBlock", false);
-		controller.handleSettingChange("hideThinkingBlock", false);
-		expect(await requestSummaryOption(main, MAIN_MODEL_ID, "main visible override", requests)).toBe(false);
-		expect(await requestSummaryOption(subagent, SUBAGENT_MODEL_ID, "subagent visible override", requests)).toBe(
-			false,
-		);
+			expect(await requestSummaryOption(main, MAIN_MODEL_ID, `${label} main`, requests)).toBe(expected);
+			expect(await requestSummaryOption(subagent, SUBAGENT_MODEL_ID, `${label} subagent`, requests)).toBe(expected);
+		};
+
+		await expectPolicy("full", true, false, "full display");
+		await expectPolicy("prose", true, false, "prose display");
+		await expectPolicy("hidden", false, false, "hidden display with omission disabled");
+		await expectPolicy("hidden", true, true, "hidden display with omission enabled");
 	});
 });

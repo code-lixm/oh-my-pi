@@ -116,6 +116,20 @@ const SUPPRESSED_NORMALIZED_PHRASES: Record<string, true> = {
 	"继续静默 等汇总": true,
 	"继续静默 等待汇总": true,
 };
+
+/**
+ * The advisor sometimes narrates a correct idle state instead of remaining silent:
+ * "Agent is correctly standing by. No action needed." These status reports have
+ * no actionable content, yet each one can wake a terminal primary turn and form
+ * an advisor → primary acknowledgement feedback loop. Match only a whole note
+ * made of status clauses; a concrete finding may legitimately mention waiting or
+ * that no action is needed before identifying a separate risk.
+ */
+function isNonActionableStandbyStatus(key: string): boolean {
+	return /^(?:(?:the )?(?:agent|answer|response|task|work) (?:is )?)?(?:(?:still )?stand(?:ing)? by|stay(?:ing)? silent|remain(?:ing)? silent|ack only|acknowledg(?:ed|ment)|correct|complete|no action(?: needed|required)?)(?: (?:and|or|but|still|correct|complete|no action(?: needed|required)?|stand(?:ing)? by|stay(?:ing)? silent|remain(?:ing)? silent|ack only|acknowledg(?:ed|ment)))*$/.test(
+		key,
+	);
+}
 /**
  * Bounds the dedupe history. Sessions with very long advisor activity could
  * otherwise grow the set without bound. The reporter's pathological session
@@ -181,7 +195,7 @@ export class AdvisorEmissionGuard {
 	accept(note: string): boolean {
 		const key = normalizeAdvisorNote(note);
 		if (!key) return false;
-		if (SUPPRESSED_NORMALIZED_PHRASES[key]) return false;
+		if (SUPPRESSED_NORMALIZED_PHRASES[key] || isNonActionableStandbyStatus(key)) return false;
 		if (this.#seen.has(key)) return false;
 		if (this.#consumedThisUpdate) return false;
 		this.#consumedThisUpdate = true;

@@ -78,6 +78,7 @@ import {
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
 import type { AssistantMessageEventStream } from "../utils/event-stream";
+import { escapeHarmonyControlTokens, isHarmonyDialectModel } from "../utils/harmony-leak";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { getOpenRouterHeaders } from "../utils/openrouter-headers";
 import { isForcedToolChoice } from "../utils/tool-choice";
@@ -1482,16 +1483,24 @@ export function convertResponsesInputContent(
 	content: string | Array<TextContent | ImageContent>,
 	supportsImages: boolean,
 	supportsImageDetailOriginal: boolean,
+	escapeControlTokens = false,
 ): ResponseInputContent[] | undefined {
 	if (typeof content === "string") {
 		if (content.trim().length === 0) return undefined;
-		return [{ type: "input_text", text: content.toWellFormed() } satisfies ResponseInputText];
+		const text = content.toWellFormed();
+		return [
+			{
+				type: "input_text",
+				text: escapeControlTokens ? escapeHarmonyControlTokens(text) : text,
+			} satisfies ResponseInputText,
+		];
 	}
 
 	const { textBlocks, imageBlocks, omittedImages } = partitionVisionContent(content, supportsImages);
 	const normalizedContent: ResponseInputContent[] = [];
 	for (const item of textBlocks) {
-		const text = item.text.toWellFormed();
+		const raw = item.text.toWellFormed();
+		const text = escapeControlTokens ? escapeHarmonyControlTokens(raw) : raw;
 		if (text.trim().length === 0) continue;
 		normalizedContent.push({
 			type: "input_text",
@@ -1601,6 +1610,45 @@ export interface BuildResponsesInputOptions<TApi extends Api> {
 	preserveAssistantMessageIds?: boolean;
 }
 
+/**
+ * Escape reserved Harmony control tokens in the client-boundary text of
+ * replayed Responses input items — user/developer/system message text and
+ * tool-result output. Model-owned items (assistant output, reasoning, tool-call
+ * arguments) carry no client data and are returned untouched.
+ *
+ * Native history replay pushes stored `providerPayload` items straight onto the
+ * wire, bypassing {@link convertResponsesInputContent}; without this a stored
+ * `input_text` carrying `<|channel|>analysis` still reaches gpt-5.x raw (#6913).
+ * Callers gate on {@link isHarmonyDialectModel}. Items are copied, not mutated.
+ */
+export function escapeReplayedClientText(items: ResponseInput): ResponseInput {
+	return items.map(item => {
+		if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
+			return typeof item.output === "string" ? { ...item, output: escapeHarmonyControlTokens(item.output) } : item;
+		}
+		// EasyInputMessage may omit `type` (`{ role, content }`); the responses
+		// server persists it verbatim, so treat missing type as a message too.
+		const isTypedMessage = item.type === "message" || item.type === undefined;
+		if (isTypedMessage && "role" in item && "content" in item) {
+			const role = item.role;
+			if (role !== "user" && role !== "developer" && role !== "system") return item;
+			const content = item.content;
+			if (typeof content === "string") {
+				return { ...item, content: escapeHarmonyControlTokens(content) };
+			}
+			if (Array.isArray(content)) {
+				return {
+					...item,
+					content: content.map(part =>
+						part.type === "input_text" ? { ...part, text: escapeHarmonyControlTokens(part.text) } : part,
+					),
+				};
+			}
+		}
+		return item;
+	});
+}
+
 export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInputOptions<TApi>): ResponseInput {
 	const messages: ResponseInput = [];
 	const systemPrompts = options.systemRole ? normalizeSystemPrompts(options.context.systemPrompt) : [];
@@ -1628,6 +1676,11 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 	const filterReasoning = <T extends { type?: string }>(items: T[]): T[] =>
 		options.nativeHistory?.filterReasoning ? items.filter(item => item?.type !== "reasoning") : items;
 	const includeThinkingSignatures = options.includeThinkingSignatures ?? options.nativeHistory?.replay ?? true;
+	// Harmony-server models (gpt-5.x) reject requests whose input data reproduces
+	// reserved control-token spellings; escape the transport copy of untrusted
+	// user/tool text so ordinary docs, code, or grep results cannot poison the
+	// session (#6913). The persisted transcript is never touched.
+	const escapeControlTokens = isHarmonyDialectModel(options.model);
 
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
@@ -1649,14 +1702,13 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 					supportsImageDetailOriginal,
 					supportsComputerUse: options.model.supportsComputerUse === true,
 				});
-				messages.push(
-					...adaptResponsesReplayItemsForModel(
-						sanitizedItems,
-						supportsCustomToolCalls,
-						customToolWireNameMap,
-						options.model.supportsComputerUse === true,
-					),
+				const replayItems = adaptResponsesReplayItemsForModel(
+					sanitizedItems,
+					supportsCustomToolCalls,
+					customToolWireNameMap,
+					options.model.supportsComputerUse === true,
 				);
+				messages.push(...(escapeControlTokens ? escapeReplayedClientText(replayItems) : replayItems));
 				knownCallIds = collectKnownCallIds(messages);
 				for (const id of collectCustomCallIds(messages)) customCallIds.add(id);
 				for (const id of collectComputerCallIds(messages)) computerCallIds.add(id);
@@ -1667,13 +1719,20 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				msg.content,
 				options.model.input.includes("image"),
 				supportsImageDetailOriginal,
+				escapeControlTokens,
 			);
 			if (!content) continue;
+			const developerText =
+				options.developerStringContent && msg.role === "developer" && typeof msg.content === "string"
+					? msg.content.toWellFormed()
+					: undefined;
 			messages.push({
 				role: "user",
 				content:
-					options.developerStringContent && msg.role === "developer" && typeof msg.content === "string"
-						? msg.content.toWellFormed()
+					developerText !== undefined
+						? escapeControlTokens
+							? escapeHarmonyControlTokens(developerText)
+							: developerText
 						: content,
 			});
 		} else if (msg.role === "assistant") {
@@ -1951,7 +2010,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	// genuinely empty text result (empty file read, silent tool) must stay
 	// empty — the placeholder sent models chasing an attachment that never
 	// existed.
-	const output = (
+	const rawOutput = (
 		omittedImages
 			? joinTextWithImagePlaceholder(textResult, true)
 			: textResult.length > 0
@@ -1960,6 +2019,10 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 					? "(see attached image)"
 					: ""
 	).toWellFormed();
+	// Harmony-server models reject reserved control-token spellings even as tool
+	// data; escape the transport copy so a grep/read result cannot poison the
+	// session (#6913). Covers every downstream branch that consumes `output`.
+	const output = isHarmonyDialectModel(model) ? escapeHarmonyControlTokens(rawOutput) : rawOutput;
 	if (toolResult.providerMetadata?.type === "computer" && model.supportsComputerUse !== true) {
 		messages.push({
 			type: "message",
@@ -2097,17 +2160,21 @@ function foldReasoningSummary(parts: ResponseReasoningItem["summary"] | undefine
 	return canonical;
 }
 
-/** Chooses final reasoning text without making sequential-cutoff results disagree with emitted deltas. */
+/** Chooses final reasoning text without making streamed results disagree with emitted deltas. */
 export function finalizeReasoningThinking(
 	item: ResponseReasoningItem,
 	streamedThinking: string,
 	cutoff?: SequentialCutoffSummaryState,
 ): string {
 	if (cutoff) return finalizeCutoffReasoningThinking(item, streamedThinking, cutoff);
+	// Delta consumers have already rendered this exact text. A finalized summary
+	// may be a different representation (or only a subset of raw reasoning), so
+	// it must not overwrite the live stream at message end.
+	if (streamedThinking) return streamedThinking;
 	const summaryThinking = item.summary?.map(part => part.text).join("\n\n") ?? "";
 	if (summaryThinking) return summaryThinking;
 	const contentThinking = item.content?.[0]?.type === "reasoning_text" ? (item.content[0].text ?? "") : "";
-	return contentThinking || streamedThinking || "";
+	return contentThinking || "";
 }
 
 function finalizeCutoffReasoningThinking(
@@ -2147,24 +2214,35 @@ export function appendReasoningSummaryTextDelta(
 	item.summary = item.summary || [];
 	const lastPart = item.summary[item.summary.length - 1];
 	if (!lastPart) return;
+	// `part.done` is metadata, not visible content. Insert the separator only
+	// when the next part actually emits text; this avoids a trailing blank delta.
+	if (!lastPart.text && block.thinking) {
+		block.thinking += "\n\n";
+		stream.push({ type: "thinking_delta", contentIndex, delta: "\n\n", partial: output });
+	}
 	block.thinking += delta;
 	lastPart.text += delta;
 	stream.push({ type: "thinking_delta", contentIndex, delta, partial: output });
 }
-
-export function appendReasoningSummaryPartDone(
+export function appendReasoningSummaryPartDoneText(
 	item: ResponseReasoningItem,
 	block: ThinkingContent,
+	partText: string,
 	stream: AssistantMessageEventStream,
 	output: AssistantMessage,
 	contentIndex: number,
 ): void {
-	item.summary = item.summary || [];
-	const lastPart = item.summary[item.summary.length - 1];
-	if (!lastPart) return;
-	block.thinking += "\n\n";
-	lastPart.text += "\n\n";
-	stream.push({ type: "thinking_delta", contentIndex, delta: "\n\n", partial: output });
+	const lastPart = item.summary?.[item.summary.length - 1];
+	if (!lastPart || !partText || partText === lastPart.text || lastPart.text.startsWith(partText)) return;
+	if (!partText.startsWith(lastPart.text)) return;
+	const delta = partText.slice(lastPart.text.length);
+	if (!lastPart.text && block.thinking) {
+		block.thinking += "\n\n";
+		stream.push({ type: "thinking_delta", contentIndex, delta: "\n\n", partial: output });
+	}
+	lastPart.text = partText;
+	block.thinking += delta;
+	stream.push({ type: "thinking_delta", contentIndex, delta, partial: output });
 }
 
 /**
@@ -2654,7 +2732,14 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.reasoning_summary_part.done") {
 			const entry = lookupOpenItem(event);
 			if (entry?.item.type === "reasoning" && entry.block.type === "thinking") {
-				appendReasoningSummaryPartDone(entry.item, entry.block, stream, output, contentIndexOf(entry.block));
+				appendReasoningSummaryPartDoneText(
+					entry.item,
+					entry.block,
+					event.part.text,
+					stream,
+					output,
+					contentIndexOf(entry.block),
+				);
 			}
 		} else if (event.type === "response.reasoning_text.delta") {
 			// Raw reasoning text delta from local providers that stream thinking

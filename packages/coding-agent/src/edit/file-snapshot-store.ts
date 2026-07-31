@@ -10,7 +10,12 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { InMemorySnapshotStore } from "@oh-my-pi/hashline";
+import {
+	formatHashlineHeader,
+	formatNumberedLine,
+	formatNumberedLines,
+	InMemorySnapshotStore,
+} from "@oh-my-pi/hashline";
 import { normalizeToLF } from "./normalize";
 
 /**
@@ -94,6 +99,123 @@ export async function recordFileSnapshot(
 	} catch {
 		return undefined;
 	}
+}
+
+/** Format an already-minted snapshot tag for a model-visible source section. */
+export function formatHashlineSourceHeader(anchor: string, tag: string): string {
+	return formatHashlineHeader(anchor, tag);
+}
+
+/** A whole-current-source snapshot and its model-visible hashline header. */
+export interface HashlineSourceSnapshot {
+	tag: string;
+	header: string;
+	/** Normalized current disk text used to mint {@link tag}. */
+	fullText: string;
+}
+
+/** Inputs for minting a hashline snapshot from text the caller already has. */
+export interface RecordHashlineSourceSnapshotOptions {
+	absolutePath: string;
+	/** Exact path text to place in `[PATH#TAG]`; callers choose its resolution semantics. */
+	anchor: string;
+	fullText: string;
+	seenLines?: Iterable<number>;
+}
+
+function recordNormalizedHashlineSourceSnapshot(
+	session: FileSnapshotStoreOwner,
+	options: RecordHashlineSourceSnapshotOptions,
+	fullText: string,
+): HashlineSourceSnapshot | undefined {
+	if (!path.isAbsolute(options.absolutePath) || Buffer.byteLength(fullText) > SNAPSHOT_MAX_BYTES) return undefined;
+	const tag = getFileSnapshotStore(session).record(
+		canonicalSnapshotKey(options.absolutePath),
+		fullText,
+		options.seenLines,
+	);
+	return { tag, header: formatHashlineSourceHeader(options.anchor, tag), fullText };
+}
+
+/**
+ * Mint a hashline snapshot from current full source text already loaded by a
+ * tool. This keeps every producer on the same store/key/normalization path and
+ * records exactly the source lines made visible to the model.
+ */
+export function recordHashlineSourceSnapshot(
+	session: FileSnapshotStoreOwner,
+	options: RecordHashlineSourceSnapshotOptions,
+): HashlineSourceSnapshot | undefined {
+	return recordNormalizedHashlineSourceSnapshot(session, options, normalizeToLF(options.fullText));
+}
+
+/** Inputs for formatting one current-source section for model use. */
+export interface FormatHashlineSourceSectionOptions {
+	absolutePath: string;
+	anchor: string;
+	fullText: string;
+	startLine: number;
+	endLine: number;
+	/** Exact original lines for outline/window sections; omitted means the full contiguous range. */
+	lineNumbers?: readonly number[];
+}
+
+/** Current-source section with raw line numbers and an editable snapshot header when eligible. */
+export interface FormattedHashlineSourceSection {
+	text: string;
+	displayText: string;
+	startLine: number;
+	endLine: number;
+	lineNumbers: number[];
+	snapshot?: HashlineSourceSnapshot;
+}
+
+/**
+ * Render a source section with its original file line numbers. The whole file
+ * is snapshotted once; only the displayed lines are marked seen, so a following
+ * hashline edit needs no extra `read` call.
+ */
+export function formatHashlineSourceSection(
+	session: FileSnapshotStoreOwner,
+	options: FormatHashlineSourceSectionOptions,
+): FormattedHashlineSourceSection {
+	const fullText = normalizeToLF(options.fullText);
+	const allLines = fullText.split("\n");
+	const requestedLines =
+		options.lineNumbers ??
+		Array.from(
+			{ length: Math.max(0, Math.floor(options.endLine) - Math.floor(options.startLine) + 1) },
+			(_, index) => Math.floor(options.startLine) + index,
+		);
+	const lineNumbers: number[] = [];
+	const displayLines: string[] = [];
+	const seen = new Set<number>();
+	for (const requestedLine of requestedLines) {
+		const line = Math.floor(requestedLine);
+		if (!Number.isFinite(line) || line < 1 || line > allLines.length || seen.has(line)) continue;
+		seen.add(line);
+		lineNumbers.push(line);
+		displayLines.push(allLines[line - 1] ?? "");
+	}
+	const startLine = lineNumbers[0] ?? Math.max(1, Math.floor(options.startLine));
+	const endLine = lineNumbers[lineNumbers.length - 1] ?? Math.max(startLine, Math.floor(options.endLine));
+	const displayText = displayLines.join("\n");
+	if (lineNumbers.length === 0) {
+		return { text: "", displayText, startLine, endLine, lineNumbers };
+	}
+	const snapshot = recordNormalizedHashlineSourceSnapshot(session, { ...options, seenLines: lineNumbers }, fullText);
+	const contiguous = lineNumbers.every((line, index) => index === 0 || line === (lineNumbers[index - 1] ?? 0) + 1);
+	const body = contiguous
+		? formatNumberedLines(displayText, startLine)
+		: displayLines.map((line, index) => formatNumberedLine(lineNumbers[index] ?? startLine, line)).join("\n");
+	return {
+		text: snapshot ? `${snapshot.header}\n${body}` : body,
+		displayText,
+		startLine,
+		endLine,
+		lineNumbers,
+		...(snapshot ? { snapshot } : {}),
+	};
 }
 
 /**

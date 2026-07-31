@@ -617,15 +617,15 @@ async function emitTurnEnd(
 	message: AgentMessage,
 	toolResults: ToolResultMessage[],
 	config: AgentLoopConfig,
-	signal?: AbortSignal,
-	context?: Omit<AgentTurnEndContext, "message" | "toolResults">,
+	signal: AbortSignal | undefined,
+	context: Omit<AgentTurnEndContext, "message" | "toolResults">,
 	runHookOnAbortedMessage = false,
 ): Promise<void> {
 	stream.push({ type: "turn_end", message, toolResults });
 	const isAbortedOrError =
 		message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error");
 	if (signal?.aborted || (isAbortedOrError && !runHookOnAbortedMessage)) return;
-	await config.onTurnEnd?.(currentContext.messages, signal, { message, toolResults, willContinue: false, ...context });
+	await config.onTurnEnd?.(currentContext.messages, signal, { message, toolResults, ...context });
 }
 
 function createGateStopMessage(model: Model, reason: string | undefined): AssistantMessage {
@@ -991,6 +991,7 @@ async function runLoopBody(
 
 	try {
 		let messagesToEmit = [...initialMessages];
+		let logicalTurnInputs = initialMessages.filter(message => message.role === "user" || message.role === "custom");
 		if (isDeadlineExceeded(config.deadline)) {
 			emitInputMessages(stream, messagesToEmit);
 			endAgentStream(stream, newMessages, telemetry, stepCounter.count);
@@ -1051,6 +1052,7 @@ async function runLoopBody(
 						currentContext.messages.push(message);
 						newMessages.push(message);
 						turnMessages.push(message);
+						if (message.role === "user" || message.role === "custom") logicalTurnInputs.push(message);
 					}
 					pendingMessages = [];
 				}
@@ -1129,7 +1131,7 @@ async function runLoopBody(
 							[],
 							config,
 							signal,
-							{ willContinue: false },
+							{ willContinue: false, inputMessages: logicalTurnInputs.slice() },
 							true,
 						);
 						turnOpen = false;
@@ -1246,7 +1248,10 @@ async function runLoopBody(
 							status: message.stopReason === "aborted" ? "aborted" : "error",
 						});
 					}
-					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, { willContinue: false });
+					await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, {
+						willContinue: false,
+						inputMessages: logicalTurnInputs.slice(),
+					});
 					turnOpen = false;
 
 					stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count));
@@ -1392,7 +1397,10 @@ async function runLoopBody(
 
 				await emitTurnEnd(stream, currentContext, message, toolResults, config, signal, {
 					willContinue: hasMoreToolCalls && !isDeadlineExceeded(config.deadline),
+					inputMessages: logicalTurnInputs.slice(),
 				});
+				if (!hasMoreToolCalls) logicalTurnInputs = [];
+				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) hasMoreToolCalls = false;
 				turnOpen = false;
 
 				if (isDeadlineExceeded(config.deadline)) {
