@@ -70,6 +70,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed interactive `/rewind` restores with `conversation` or `all` scope leaving the transcript on the abandoned branch until a later session reload; successful restores now clear transient UI state and rebuild the display from the restored conversation immediately.
 - Fixed `omitThinking` being ignored unless `thinkingDisplay` was also `hidden`; provider requests now omit supported thinking summaries independently of transcript visibility.
 - Fixed Advisor `concern` notes being treated as interrupts; only `blocker` notes now steer the primary agent, while concerns arrive at the next natural boundary.
 - Fixed terminal advisor-only turns being reviewed again and forming acknowledgement feedback loops; turn provenance now distinguishes advisor-only work from mixed user input, and finalized transcript cursors prevent skipped replies from replaying later.

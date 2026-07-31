@@ -9,14 +9,20 @@ import type {
 	SessionMessageEntry,
 	WorkspaceCheckpointEntry,
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import type { WorkspaceCheckpointAccessResult } from "@oh-my-pi/pi-coding-agent/session/workspace-checkpoint-coordinator";
 import type {
 	WorkspaceCheckpointCompleteness,
 	WorkspaceCheckpointReason,
 	WorkspaceCheckpointRecord,
+	WorkspaceRestorePlan,
+	WorkspaceRestoreResult,
+	WorkspaceRestoreScope,
 } from "@oh-my-pi/pi-coding-agent/workspace-checkpoints/types";
 import { getSettingsUiLocale, type SettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
 const ENTRY_TIME = "2026-07-28T12:00:00.000Z";
+const DOWN = "\x1b[B";
+const ENTER = "\n";
 let previousLocale: SettingsUiLocale;
 
 beforeAll(async () => {
@@ -125,26 +131,83 @@ function branchableUserMessages(entries: readonly SessionEntry[]): Array<{ entry
 		return [{ entryId: entry.id, text: entry.message.content }];
 	});
 }
+function restorePlan(checkpointId: string, scope: WorkspaceRestoreScope): WorkspaceRestorePlan {
+	return {
+		id: `plan-${scope}`,
+		checkpointId,
+		rootPath: "/workspace",
+		scope,
+		strategy: "preserve",
+		operations: [{ path: "src/restored.ts", kind: "update" }],
+		conflicts: [],
+		conversationEntryId: null,
+		createdAt: ENTRY_TIME,
+	};
+}
+
+function restoreResult(checkpointId: string): WorkspaceRestoreResult {
+	return {
+		transactionId: `transaction-${checkpointId}`,
+		checkpointId,
+		guardCheckpointId: null,
+		restoredPaths: ["src/restored.ts"],
+		skippedPaths: [],
+		conversationEntryId: null,
+		redoAvailable: true,
+	};
+}
 
 interface CheckpointSelectorHarness {
 	show(): Promise<CheckpointSelectorComponent>;
 }
 
-function createHarness(checkpoints: WorkspaceCheckpointRecord[], entries: SessionEntry[]): CheckpointSelectorHarness {
+interface CheckpointSelectorHarnessOptions {
+	getEntries?: () => SessionEntry[];
+	previewWorkspaceRestore?: (request: {
+		checkpointId: string;
+		scope: WorkspaceRestoreScope;
+		strategy: "preserve";
+	}) => Promise<WorkspaceCheckpointAccessResult<WorkspaceRestorePlan>>;
+	applyWorkspaceRestore?: (
+		planId: string,
+		allowConflicts?: boolean,
+	) => Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>>;
+	clearTransientSessionUi?: () => void;
+	rebuildChatFromMessages?: () => void;
+	resetDisplay?: () => void;
+	showStatus?: (message: string) => void;
+}
+
+function createHarness(
+	checkpoints: WorkspaceCheckpointRecord[],
+	entries: SessionEntry[],
+	options: CheckpointSelectorHarnessOptions = {},
+): CheckpointSelectorHarness {
 	let selector: CheckpointSelectorComponent | undefined;
+	const getEntries = () => options.getEntries?.() ?? entries;
 	const ctx = {
 		session: {
 			listWorkspaceCheckpoints: async () => ({ available: true, value: checkpoints }),
-			getUserMessagesForBranching: () => branchableUserMessages(entries),
-			previewWorkspaceRestore: async () => ({ available: false, reason: "not needed by this list test" }),
-			applyWorkspaceRestore: async () => ({ available: false, reason: "not needed by this list test" }),
+			getUserMessagesForBranching: () => branchableUserMessages(getEntries()),
+			previewWorkspaceRestore:
+				options.previewWorkspaceRestore ??
+				(async () => ({ available: false, reason: "not needed by this list test" })),
+			applyWorkspaceRestore:
+				options.applyWorkspaceRestore ??
+				(async () => ({ available: false, reason: "not needed by this list test" })),
 			isBashRunning: false,
 			isEvalRunning: false,
 			isCompacting: false,
 		},
-		sessionManager: { getEntries: () => entries },
+		sessionManager: { getEntries },
+		clearTransientSessionUi: options.clearTransientSessionUi ?? (() => {}),
+		rebuildChatFromMessages: options.rebuildChatFromMessages ?? (() => {}),
 		showError() {},
-		showStatus() {},
+		showStatus(message: string) {
+			options.showStatus?.(message);
+		},
+		editorContainer: { children: [] },
+		editor: {},
 		ui: {
 			showOverlay(component: CheckpointSelectorComponent) {
 				selector = component;
@@ -152,6 +215,7 @@ function createHarness(checkpoints: WorkspaceCheckpointRecord[], entries: Sessio
 			},
 			setFocus() {},
 			requestRender() {},
+			resetDisplay: options.resetDisplay ?? (() => {}),
 		},
 	} as unknown as InteractiveModeContext;
 	const controller = new SelectorController(ctx);
@@ -172,6 +236,114 @@ function typeText(selector: CheckpointSelectorComponent, text: string): void {
 	for (const char of text) selector.handleInput(char);
 }
 
+interface ConversationUiState {
+	transientRows: string[];
+	transcript: string[];
+	display: string[];
+}
+
+interface RestoreHarness {
+	apply(scope: WorkspaceRestoreScope): Promise<void>;
+	previewScopes(): WorkspaceRestoreScope[];
+	uiState(): ConversationUiState;
+}
+
+function createRestoreHarness(): RestoreHarness {
+	const checkpoint = checkpointRecord({
+		id: "ckpt-restore-ui",
+		label: "Before transcript refresh",
+		reason: "manual",
+		completeness: "complete",
+		createdAt: ENTRY_TIME,
+	});
+	const staleEntries = [userEntry("stale-root", "", "Stale session branch")];
+	const restoredEntries = [userEntry("restored-root", "", "Restored session branch")];
+	let activeEntries = staleEntries;
+	const transientRows = ["streaming tool output"];
+	let transcript = ["Rendered stale transcript"];
+	let display = [...transcript];
+	let selectedScope: WorkspaceRestoreScope | undefined;
+	const previewScopes: WorkspaceRestoreScope[] = [];
+	const previewStarted = Promise.withResolvers<void>();
+	const previewGate = Promise.withResolvers<WorkspaceCheckpointAccessResult<WorkspaceRestorePlan>>();
+	const applied = Promise.withResolvers<void>();
+	const picker = createHarness([checkpoint], staleEntries, {
+		getEntries: () => activeEntries,
+		previewWorkspaceRestore: async request => {
+			selectedScope = request.scope;
+			previewScopes.push(request.scope);
+			previewStarted.resolve();
+			return previewGate.promise;
+		},
+		applyWorkspaceRestore: async () => {
+			if (!selectedScope) throw new Error("Expected a selected restore scope");
+			if (selectedScope === "conversation" || selectedScope === "all") activeEntries = restoredEntries;
+			return { available: true, value: restoreResult(checkpoint.id) };
+		},
+		clearTransientSessionUi: () => {
+			transientRows.length = 0;
+		},
+		rebuildChatFromMessages: () => {
+			transcript = branchableUserMessages(activeEntries).map(message => message.text);
+		},
+		resetDisplay: () => {
+			display = [...transcript];
+		},
+		showStatus: () => applied.resolve(),
+	});
+
+	return {
+		async apply(scope) {
+			const selector = await picker.show();
+			selector.handleInput(ENTER);
+			for (let index = 0; index < ["code", "conversation", "all"].indexOf(scope); index += 1) {
+				selector.handleInput(DOWN);
+			}
+			selector.handleInput(ENTER);
+			await previewStarted.promise;
+			if (!selectedScope) throw new Error("Expected a restore preview request");
+			previewGate.resolve({ available: true, value: restorePlan(checkpoint.id, selectedScope) });
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+			selector.handleInput(ENTER);
+			await applied.promise;
+		},
+		previewScopes: () => [...previewScopes],
+		uiState: () => ({ transientRows: [...transientRows], transcript: [...transcript], display: [...display] }),
+	};
+}
+
+describe("SelectorController.showCheckpointSelector applied restores", () => {
+	for (const scope of ["conversation", "all"] as const) {
+		it(`clears transient UI and rebuilds the display from the switched branch after a ${scope} restore`, async () => {
+			const harness = createRestoreHarness();
+
+			await harness.apply(scope);
+
+			expect(harness.previewScopes()).toEqual([scope]);
+			expect(harness.uiState()).toEqual({
+				transientRows: [],
+				transcript: ["Restored session branch"],
+				display: ["Restored session branch"],
+			});
+		});
+	}
+
+	it("keeps the conversation UI intact after a code-only restore", async () => {
+		const harness = createRestoreHarness();
+
+		await harness.apply("code");
+
+		expect(harness.previewScopes()).toEqual(["code"]);
+		expect(harness.uiState()).toEqual({
+			transientRows: ["streaming tool output"],
+			transcript: ["Rendered stale transcript"],
+			display: ["Rendered stale transcript"],
+		});
+	});
+});
 describe("SelectorController.showCheckpointSelector prompt summaries", () => {
 	it("renders and filters an automatic checkpoint by the user prompt reached through bookkeeping entries", async () => {
 		const automatic = checkpointRecord({

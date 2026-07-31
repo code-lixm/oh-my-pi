@@ -481,6 +481,11 @@ export class SelectorController {
 			initialCheckpointId: options?.checkpointId,
 			onPick: async ({ plan, result }) => {
 				done();
+				if (plan.scope === "conversation" || plan.scope === "all") {
+					this.ctx.clearTransientSessionUi();
+					this.ctx.rebuildChatFromMessages();
+					this.ctx.ui.resetDisplay();
+				}
 				const summary = [
 					tSettingsUi("{count} restored", { count: result.restoredPaths.length }),
 					tSettingsUi("{count} skipped", { count: result.skippedPaths.length }),
