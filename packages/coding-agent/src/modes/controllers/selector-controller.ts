@@ -670,7 +670,6 @@ export class SelectorController {
 				applyThinkingSummaryVisibility(
 					this.ctx.session.agent,
 					AgentRegistry.global().list(),
-					this.ctx.hideThinkingBlock,
 					this.ctx.settings.get("omitThinking"),
 				);
 				for (const child of this.ctx.chatContainer.children) {
@@ -689,12 +688,7 @@ export class SelectorController {
 				break;
 			}
 			case "omitThinking":
-				applyThinkingSummaryVisibility(
-					this.ctx.session.agent,
-					AgentRegistry.global().list(),
-					this.ctx.hideThinkingBlock,
-					value as boolean,
-				);
+				applyThinkingSummaryVisibility(this.ctx.session.agent, AgentRegistry.global().list(), value as boolean);
 				break;
 			case "display.cacheMissMarker":
 				// Rebuild re-runs the usage-based detection under the new setting so

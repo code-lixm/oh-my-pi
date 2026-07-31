@@ -182,7 +182,7 @@ afterEach(async () => {
 });
 
 describe("thinking summary visibility policy", () => {
-	it("applies full, prose, and hidden display policy to Main and every registered subagent", async () => {
+	it("applies the omission policy across full, prose, and hidden displays to Main and every registered subagent", async () => {
 		const { settings, main, subagent, requests } = await createHarness({
 			thinkingDisplay: "full",
 			omitThinking: true,
@@ -204,8 +204,10 @@ describe("thinking summary visibility policy", () => {
 			expect(await requestSummaryOption(subagent, SUBAGENT_MODEL_ID, `${label} subagent`, requests)).toBe(expected);
 		};
 
-		await expectPolicy("full", true, false, "full display");
-		await expectPolicy("prose", true, false, "prose display");
+		await expectPolicy("full", false, false, "full display with omission disabled");
+		await expectPolicy("full", true, true, "full display with omission enabled");
+		await expectPolicy("prose", false, false, "prose display with omission disabled");
+		await expectPolicy("prose", true, true, "prose display with omission enabled");
 		await expectPolicy("hidden", false, false, "hidden display with omission disabled");
 		await expectPolicy("hidden", true, true, "hidden display with omission enabled");
 	});

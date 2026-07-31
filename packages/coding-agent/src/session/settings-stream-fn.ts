@@ -14,7 +14,6 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { isAnthropicFableOrMythosModel } from "@oh-my-pi/pi-catalog/identity";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
-import { resolveHideThinkingSummary } from "../thinking";
 
 function timeoutSecondsToMs(value: number): number | undefined {
 	if (!Number.isFinite(value) || value < 0) return undefined;
@@ -68,9 +67,7 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 				checkAssistantContent: settings.get("model.loopGuard.checkAssistantContent"),
 				...streamOptions?.loopGuard,
 			},
-			hideThinkingSummary:
-				streamOptions?.hideThinkingSummary ??
-				resolveHideThinkingSummary(settings.get("thinkingDisplay") === "hidden", settings.get("omitThinking")),
+			hideThinkingSummary: streamOptions?.hideThinkingSummary ?? settings.get("omitThinking"),
 			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
 		return base(model, context, merged);

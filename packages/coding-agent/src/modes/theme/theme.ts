@@ -1129,6 +1129,7 @@ const spinnerFramesSchema = type("unknown").narrow((value): value is SpinnerFram
 const themeJsonSchema = type({
 	"$schema?": "string",
 	name: "string",
+	"terminalPalette?": "boolean",
 	"vars?": "Record<string, string | number>",
 	colors: themeColorsSchema,
 	"export?": {
@@ -1499,6 +1500,8 @@ export class Theme {
 	readonly #hexBgColors: Record<ThemeBg, string>;
 	/** Theme surface used to preblend translucent-looking terminal backgrounds. */
 	readonly #surfaceBgHex: string;
+	/** Whether semantic colors intentionally bind to the terminal ANSI palette. */
+	readonly #terminalPalette: boolean;
 	#symbols: SymbolMap;
 	#spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>>;
 	/**
@@ -1515,11 +1518,13 @@ export class Theme {
 		fgColors: Record<ThemeColor, string | number>,
 		bgColors: Record<ThemeBg, string | number>,
 		surfaceBg: string | number,
+		terminalPalette: boolean,
 		private readonly mode: ColorMode,
 		private readonly symbolPreset: SymbolPreset,
 		symbolOverrides: Partial<Record<SymbolKey, string>>,
 		spinnerFramesOverrides: Partial<Record<SpinnerType, string[]>> = {},
 	) {
+		this.#terminalPalette = terminalPalette;
 		this.statusLineLuminance = colorLuma(bgColors.statusLineBg);
 		this.#statusLineContrastLuminance = relativeLuminance(bgColors.statusLineBg);
 		const slIsLight = this.statusLineLuminance !== undefined && this.statusLineLuminance > 0.5;
@@ -1676,6 +1681,7 @@ export class Theme {
 	 * not support alpha backgrounds, so this emits the equivalent opaque RGB.
 	 */
 	getSurfaceTintBgAnsi(color: ThemeColor, opacity = 0.1): string {
+		if (this.#terminalPalette) return bgAnsi("", this.mode);
 		const base = hexToRgb(this.#surfaceBgHex);
 		const target = hexToRgb(this.getColorHex(color));
 		const ratio = Math.max(0, Math.min(1, opacity));
@@ -1691,6 +1697,7 @@ export class Theme {
 
 	/** Preblend a low-emphasis foreground over the theme page surface. */
 	getSurfaceTintFgAnsi(color: ThemeColor, opacity = 0.58): string {
+		if (this.#terminalPalette) return this.getFgAnsi(color);
 		const base = hexToRgb(this.#surfaceBgHex);
 		const target = hexToRgb(this.getColorHex(color));
 		const ratio = Math.max(0, Math.min(1, opacity));
@@ -1706,19 +1713,27 @@ export class Theme {
 
 	/**
 	 * Foreground ANSI for text drawn **on top of** `fillColor` used as a solid
-	 * background (e.g. a powerline chip). Picks near-black or near-white by the
-	 * fill's perceived luminance (Rec. 601 luma) so the label stays legible on
-	 * both bright and dark fills, across light and dark themes.
+	 * background (e.g. a powerline chip). Picks near-black or near-white so the
+	 * label stays legible on both bright and dark fills.
 	 *
-	 * Reads the RGB out of the already-resolved truecolor escape; when the fill
-	 * is encoded as a 256-palette index (limited terminals) the RGB is
-	 * unavailable, so it falls back to the theme `text` color.
+	 * Truecolor fills use their encoded RGB. Palette fills use the standard
+	 * xterm RGB approximation to choose ANSI black or white, leaving the terminal
+	 * theme in control of those final endpoint colors. Unparseable fills fall
+	 * back to the theme `text` color.
 	 */
 	getContrastFgAnsi(fillColor: ThemeColor): string {
 		const ansi = this.#fgColors[fillColor];
-		const match = ansi ? /38;2;(\d+);(\d+);(\d+)/.exec(ansi) : null;
-		if (!match) return this.#fgColors.text;
-		const luma = 0.299 * Number(match[1]) + 0.587 * Number(match[2]) + 0.114 * Number(match[3]);
+		const paletteMatch = ansi ? /38;5;(\d+)/.exec(ansi) : null;
+		if (paletteMatch) {
+			const luminance = relativeLuminance(Number(paletteMatch[1]));
+			// WCAG black/white contrast ratios cross at relative luminance ≈ 0.179.
+			if (luminance !== undefined) return luminance > 0.179 ? fgAnsi(0, this.mode) : fgAnsi(15, this.mode);
+		}
+
+		const truecolorMatch = ansi ? /38;2;(\d+);(\d+);(\d+)/.exec(ansi) : null;
+		if (!truecolorMatch) return this.#fgColors.text;
+		const luma =
+			0.299 * Number(truecolorMatch[1]) + 0.587 * Number(truecolorMatch[2]) + 0.114 * Number(truecolorMatch[3]);
 		return luma > 140 ? "\x1b[38;2;0;0;0m" : "\x1b[38;2;255;255;255m";
 	}
 
@@ -2128,7 +2143,7 @@ const COLORBLIND_ADJUSTMENT = { h: 60, s: 0.71 };
 
 function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Theme {
 	const { mode, symbolPresetOverride, colorBlindMode } = options;
-	const colorMode = mode ?? detectColorMode();
+	const colorMode = themeJson.terminalPalette ? "256color" : (mode ?? detectColorMode());
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
 
 	if (colorBlindMode) {
@@ -2161,7 +2176,16 @@ function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = {}): Th
 	const symbolOverrides = themeJson.symbols?.overrides ?? {};
 	const spinnerFramesOverrides = normalizeSpinnerFramesOverride(themeJson.symbols?.spinnerFrames);
 	const surfaceBg = resolveThemeExportColors(themeJson).pageBg ?? resolvedColors.statusLineBg;
-	return new Theme(fgColors, bgColors, surfaceBg, colorMode, symbolPreset, symbolOverrides, spinnerFramesOverrides);
+	return new Theme(
+		fgColors,
+		bgColors,
+		surfaceBg,
+		themeJson.terminalPalette ?? false,
+		colorMode,
+		symbolPreset,
+		symbolOverrides,
+		spinnerFramesOverrides,
+	);
 }
 
 async function loadTheme(name: string, options: CreateThemeOptions = {}): Promise<Theme> {

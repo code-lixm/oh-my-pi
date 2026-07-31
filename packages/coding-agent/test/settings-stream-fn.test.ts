@@ -51,10 +51,12 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(options?.apiKey).toBe("k");
 	});
 
-	it("forwards the provider summary policy for each explicit thinking display", () => {
+	it("forwards the provider summary omission policy independently of thinking display", () => {
 		const cases = [
-			{ thinkingDisplay: "full", omitThinking: true, expected: false },
-			{ thinkingDisplay: "prose", omitThinking: true, expected: false },
+			{ thinkingDisplay: "full", omitThinking: false, expected: false },
+			{ thinkingDisplay: "full", omitThinking: true, expected: true },
+			{ thinkingDisplay: "prose", omitThinking: false, expected: false },
+			{ thinkingDisplay: "prose", omitThinking: true, expected: true },
 			{ thinkingDisplay: "hidden", omitThinking: false, expected: false },
 			{ thinkingDisplay: "hidden", omitThinking: true, expected: true },
 		] as const;

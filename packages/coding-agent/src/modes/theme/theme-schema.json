@@ -13,6 +13,10 @@
 			"type": "string",
 			"description": "Theme name"
 		},
+		"terminalPalette": {
+			"type": "boolean",
+			"description": "Bind semantic colors to terminal ANSI palette indices and avoid derived truecolor tints"
+		},
 		"vars": {
 			"type": "object",
 			"description": "Reusable color variables",

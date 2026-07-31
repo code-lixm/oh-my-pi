@@ -9,6 +9,7 @@
 - Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
 - Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
 - Added a fullscreen Jobs Hub, opened with a deliberate double-right-arrow gesture on an empty prompt, showing every retained background task and Bash job with live work/model/runtime metadata, scrollable bounded Bash output tails, agent focus, and cancellation controls.
+- Added `dark-terminal-adaptive` and `light-terminal-adaptive` themes that bind OMP semantic colors to the terminal ANSI palette, inherit terminal surfaces for derived tool-card tints, and let Ghostty-compatible themes remain the base color authority.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -69,6 +70,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed `omitThinking` being ignored unless `thinkingDisplay` was also `hidden`; provider requests now omit supported thinking summaries independently of transcript visibility.
 - Fixed Advisor `concern` notes being treated as interrupts; only `blocker` notes now steer the primary agent, while concerns arrive at the next natural boundary.
 - Fixed terminal advisor-only turns being reviewed again and forming acknowledgement feedback loops; turn provenance now distinguishes advisor-only work from mixed user input, and finalized transcript cursors prevent skipped replies from replaying later.
 - Fixed double-Esc loop cancellation during main-session maintenance so idle compaction pauses the loop and is aborted instead of consuming the gesture alone.

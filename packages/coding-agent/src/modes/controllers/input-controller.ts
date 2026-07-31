@@ -2007,7 +2007,6 @@ export class InputController {
 		applyThinkingSummaryVisibility(
 			this.ctx.session.agent,
 			AgentRegistry.global().list(),
-			this.ctx.hideThinkingBlock,
 			this.ctx.settings.get("omitThinking"),
 		);
 

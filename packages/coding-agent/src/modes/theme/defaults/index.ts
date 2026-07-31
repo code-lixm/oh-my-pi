@@ -42,6 +42,7 @@ import dark_swamp from "./dark-swamp.json" with { type: "json" };
 import dark_synthwave from "./dark-synthwave.json" with { type: "json" };
 import dark_taiga from "./dark-taiga.json" with { type: "json" };
 import dark_terminal from "./dark-terminal.json" with { type: "json" };
+import dark_terminal_adaptive from "./dark-terminal-adaptive.json" with { type: "json" };
 import dark_tokyo_night from "./dark-tokyo-night.json" with { type: "json" };
 import dark_tundra from "./dark-tundra.json" with { type: "json" };
 import dark_twilight from "./dark-twilight.json" with { type: "json" };
@@ -83,6 +84,7 @@ import light_solarized from "./light-solarized.json" with { type: "json" };
 import light_soleil from "./light-soleil.json" with { type: "json" };
 import light_sunset from "./light-sunset.json" with { type: "json" };
 import light_synthwave from "./light-synthwave.json" with { type: "json" };
+import light_terminal_adaptive from "./light-terminal-adaptive.json" with { type: "json" };
 import light_tokyo_night from "./light-tokyo-night.json" with { type: "json" };
 import light_wetland from "./light-wetland.json" with { type: "json" };
 import light_zenith from "./light-zenith.json" with { type: "json" };
@@ -142,6 +144,7 @@ export const defaultThemes = {
 	"dark-synthwave": dark_synthwave,
 	"dark-taiga": dark_taiga,
 	"dark-terminal": dark_terminal,
+	"dark-terminal-adaptive": dark_terminal_adaptive,
 	"dark-tokyo-night": dark_tokyo_night,
 	"dark-tundra": dark_tundra,
 	"dark-twilight": dark_twilight,
@@ -184,6 +187,7 @@ export const defaultThemes = {
 	"light-sunset": light_sunset,
 	"light-synthwave": light_synthwave,
 	"light-tokyo-night": light_tokyo_night,
+	"light-terminal-adaptive": light_terminal_adaptive,
 	"light-wetland": light_wetland,
 	"light-zenith": light_zenith,
 	limestone: limestone,
