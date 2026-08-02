@@ -37,7 +37,7 @@ describe("CommandController /jobs", () => {
 		const id = "job-running";
 		const type = "bash";
 		const status = "running";
-		const present = vi.fn();
+		const presentCommandOutput = vi.fn();
 		const ctx = {
 			session: {
 				getAsyncJobSnapshot: () => ({
@@ -55,15 +55,15 @@ describe("CommandController /jobs", () => {
 				}),
 			},
 			ui: { terminal: { columns: 160 } },
-			present,
+			presentCommandOutput,
 			showWarning: vi.fn(),
 		} as unknown as InteractiveModeContext;
 		const controller = new CommandController(ctx);
 
 		await controller.handleJobsCommand();
 
-		expect(present).toHaveBeenCalledTimes(1);
-		const firstCall = present.mock.calls[0];
+		expect(presentCommandOutput).toHaveBeenCalledTimes(1);
+		const firstCall = presentCommandOutput.mock.calls[0];
 		expect(firstCall).toBeDefined();
 		const output = stripAnsi(renderPresentedBlocks(firstCall?.[0]));
 		expect(output).toContain(` ${label}`);

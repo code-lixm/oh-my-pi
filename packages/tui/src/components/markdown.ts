@@ -841,7 +841,6 @@ const EMPTY_RENDER_LINES: readonly string[] = [];
 
 /** Sentinel inserted into folded code bodies where either display mode renders the omission hint. */
 const OMIT_SENTINEL = "\u0000OMIT\u0000";
-
 interface RenderedLine {
 	text: string;
 	literalCode?: true;
@@ -1015,7 +1014,6 @@ export interface MarkdownLinkHitSpan {
 	endCol: number;
 	href: string;
 }
-
 interface RenderCacheEntry {
 	lines: readonly string[];
 	tables: readonly RenderedTableLayout[];
@@ -2413,7 +2411,6 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 				}
 				line = stripRowLinkMarkers(line, markerEvents);
 			}
-
 			// The first empty row after a scale>1 OSC 66 heading is structural:
 			// it reserves the lower cells occupied by the multicell glyphs. Do
 			// not pad or background-fill it, because real spaces on that row can
@@ -2434,17 +2431,7 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 
 			previousLineWasOsc66 = false;
 			if (literalCodeRow) {
-				// Literal code owns its foreground and wrapping, but it still occupies
-				// the Markdown component's padded row. Reapply the host background
-				// across SGR resets so user-message bubbles remain continuous.
-				const literalLineWithMargins = leftMargin + line + rightMargin;
-				if (bgFn) {
-					contentLines.push(applyBackgroundToLine(literalLineWithMargins, signature.width, bgFn));
-				} else {
-					contentLines.push(
-						literalLineWithMargins + padding(Math.max(0, signature.width - visibleWidth(literalLineWithMargins))),
-					);
-				}
+				contentLines.push(line);
 				continue;
 			}
 			const lineWithMargins = leftMargin + line + rightMargin;

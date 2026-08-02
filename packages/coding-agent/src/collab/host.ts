@@ -635,7 +635,7 @@ export class CollabHost {
 					if ((ref.status === "running" || ref.status === "waiting") && ref.session) {
 						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
 					}
-					await AgentLifecycleManager.global().release(agentId, ref);
+					await AgentLifecycleManager.global().release(agentId, ref, { tombstone: true });
 				};
 				kill().catch(fail);
 				break;

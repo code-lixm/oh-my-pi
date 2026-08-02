@@ -158,7 +158,9 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Retry last failed assistant turn"),
 	},
 	"app.message.dequeue": {
-		defaultKeys: "alt+up",
+		// Shift+Up is listed alongside Alt+Up because macOS Terminal.app consumes Option
+		// for character composition, leaving Alt+Up unreachable there.
+		defaultKeys: ["alt+up", "shift+up"],
 		description: tSettingsUi("Dequeue message"),
 	},
 	"app.clipboard.pasteImage": {
@@ -549,6 +551,7 @@ function migrateKeybindingsConfigFile(agentDir: string): void {
 const USER_CLAIMABLE_DEFAULT_KEYBINDINGS = [
 	"app.editor.clear",
 	"app.message.followUp",
+	"app.message.dequeue",
 	"app.thinking.cycle",
 	"app.model.cycleForward",
 	"app.model.cycleBackward",
@@ -558,6 +561,8 @@ function userClaimableDefaultKey(keybinding: Keybinding): KeyId | undefined {
 	switch (keybinding) {
 		case "app.message.followUp":
 			return "ctrl+q";
+		case "app.message.dequeue":
+			return "shift+up";
 		case "app.editor.clear":
 			return "alt+c";
 		case "app.thinking.cycle":
@@ -654,15 +659,10 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 
 	getKeys(keybinding: Keybinding): KeyId[] {
 		const keys = super.getKeys(keybinding);
-		const claimableDefaultKey = userClaimableDefaultKey(keybinding);
-		if (
-			claimableDefaultKey === undefined ||
-			this.#userBindings[keybinding] !== undefined ||
-			!userBindingClaimsKey(this.#userBindings, claimableDefaultKey, keybinding)
-		) {
-			return keys;
-		}
-		return removeKey(keys, claimableDefaultKey);
+		const fallbackKey = userClaimableDefaultKey(keybinding);
+		if (fallbackKey === undefined || this.#userBindings[keybinding] !== undefined) return keys;
+		if (!userBindingClaimsKey(this.#userBindings, fallbackKey, keybinding)) return keys;
+		return removeKey(keys, fallbackKey);
 	}
 
 	getResolvedBindings(): KeybindingsConfig {

@@ -242,6 +242,17 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#invalidate();
 	}
 
+	/** Re-key a streamed hub call without duplicating its existing activity row. */
+	renameEntry(oldId: string, newId: string): void {
+		if (oldId === newId || !newId) return;
+		const entry = this.#toolEntries.get(oldId);
+		if (!entry || this.#toolEntries.has(newId)) return;
+		this.#toolEntries.delete(oldId);
+		entry.id = newId;
+		this.#toolEntries.set(newId, entry);
+		this.#invalidate();
+	}
+
 	updateResult(result: HubActivityResult, isPartial = false, toolCallId?: string): void {
 		if (!toolCallId) return;
 		const entry = this.#toolEntries.get(toolCallId);

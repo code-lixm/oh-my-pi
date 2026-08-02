@@ -423,6 +423,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"{roleName} fallbacks cleared": "已清空 {roleName} 回退链",
 	"context>{limit}": "上下文>{limit}",
 	"current context {current} exceeds {limit} limit": "当前上下文 {current} 超出 {limit} 限制",
+	"context {current} exceeds {limit} limit · compacts with current model, then switches":
+		"上下文 {current} 超出 {limit} 限制 · 将先使用当前模型压缩，再切换",
 	"No models available in this scope": "此范围内无可用模型",
 	"No notification-capable connected servers.": "没有支持通知的已连接服务器。",
 	"No nucleus filtering": "不进行核采样过滤",
@@ -605,6 +607,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"No messages to dump yet.": "还没有可导出的消息。",
 	"No queued messages to restore": "没有可恢复的排队消息",
 	"No quick roles in the model cycle": "模型轮换中没有快捷角色",
+	"No quick roles in the Ctrl+P cycle": "Ctrl+P 轮换中没有快捷角色",
 	"No raw SSE frames captured yet.": "尚未捕获到原始 SSE 帧。",
 	"No raw SSE frames to copy": "没有可复制的原始 SSE 帧",
 	"No saved rate-limit resets available to spend right now.": "当前没有可用的已保存限速重置。",

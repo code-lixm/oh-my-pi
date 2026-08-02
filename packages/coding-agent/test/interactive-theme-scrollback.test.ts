@@ -251,7 +251,6 @@ describe("InteractiveMode theme scrollback refresh", () => {
 		expectMarkersExactlyOnce(finalRows.join("\n"), markers);
 		expect(terminal.getBufferPosition().baseY).toBe(baseY);
 	});
-
 	it("preserves pane history and repaints with the committed theme inside terminal multiplexers", async () => {
 		await terminal.waitForRender();
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1,0";

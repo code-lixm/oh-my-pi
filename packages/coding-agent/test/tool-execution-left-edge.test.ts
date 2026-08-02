@@ -68,6 +68,61 @@ function expectNoAccentSurface(lines: readonly string[], label: string, uiTheme:
 	}
 }
 
+function expectPaintedAccentEdge(
+	raw: string,
+	label: string,
+	edge: "top" | "bottom",
+	uiTheme: Theme,
+	color: ThemeColor = "borderMuted",
+): void {
+	const tint = uiTheme.getSurfaceTintBgAnsi(color, 0.06);
+	const railFg = color === "borderMuted" ? uiTheme.getSurfaceTintFgAnsi(color) : uiTheme.getFgAnsi(color);
+	const railPrefix = `${tint}${railFg}▌\x1b[39m\x1b[49m${tint} `;
+	const visible = Bun.stripANSI(raw);
+
+	expect(visible.trim(), `${label}: ${edge} edge must be a rail-only row`).toBe("▌");
+	expect(raw.startsWith(railPrefix), `${label}: ${edge} edge must carry the tinted rail`).toBe(true);
+	expect(raw.endsWith("\x1b[49m "), `${label}: ${edge} edge must leave the terminal inset unpainted`).toBe(true);
+	expect(visibleWidth(raw), `${label}: ${edge} edge width`).toBe(WIDTH);
+}
+
+function expectSinglePaintedAccentPadding(
+	lines: readonly string[],
+	label: string,
+	uiTheme: Theme,
+	color: ThemeColor = "borderMuted",
+): void {
+	const plain = plainLines(lines);
+
+	expect(lines.length, `${label}: expected content between accent edges`).toBeGreaterThan(2);
+	expect(
+		plain.filter(line => line.trim() === "▌"),
+		`${label}: expected exactly one blank rail row at each edge`,
+	).toHaveLength(2);
+
+	for (const [edge, raw] of [
+		["top", lines[0]!],
+		["bottom", lines.at(-1)!],
+	] as const) {
+		expectPaintedAccentEdge(raw, label, edge, uiTheme, color);
+	}
+}
+
+function expectSelfFramedAccentEdges(lines: readonly string[], label: string): void {
+	expect(lines.length, `${label}: expected content between accent edges`).toBeGreaterThan(2);
+	for (const [edge, raw] of [
+		["top", lines[0]!],
+		["bottom", lines.at(-1)!],
+	] as const) {
+		const visible = Bun.stripANSI(raw);
+		expect(visible.trim(), `${label}: ${edge} edge must be a rail-only row`).toBe("▌");
+		expect(raw, `${label}: ${edge} edge must paint a background`).toContain("\x1b[48;");
+		expect(raw.endsWith("\x1b[49m "), `${label}: ${edge} edge must leave the terminal inset unpainted`).toBe(true);
+		expect(visibleWidth(raw), `${label}: ${edge} edge width`).toBe(WIDTH);
+	}
+	expect(plainLines(lines).join("\n"), `${label}: nested shared and self-framed rails`).not.toContain("▌ ▌");
+}
+
 // Inline args keep rendering tests independent of the real tool executors.
 function inlineArgsFor(name: string): unknown {
 	switch (name) {
@@ -97,6 +152,8 @@ function inlineArgsFor(name: string): unknown {
 			};
 		case "bash":
 			return { command: "git status --short" };
+		case "retain":
+			return { items: [{ content: "memory accent padding sentinel" }] };
 		case "yield":
 			return {};
 		default:
@@ -202,6 +259,11 @@ function inlineResultFor(name: string): ToolResult {
 				content: [{ type: "text", text: "M src/cli/gallery-cli.ts\n?? src/new.ts" }],
 				details: { exitCode: 0, wallTimeMs: 120 },
 			};
+		case "retain":
+			return {
+				content: [{ type: "text", text: "1 memory stored." }],
+				details: { count: 1 },
+			};
 		case "yield":
 			return {
 				content: [{ type: "text", text: "Result submitted." }],
@@ -275,7 +337,7 @@ describe("tool execution left-edge alignment", () => {
 	it.each([
 		{ toolName: "grep", snippets: ["Grep", "useState"] },
 		{ toolName: "glob", snippets: ["Glob", "a.test.ts", "b.test.ts"] },
-		{ toolName: "ast_grep", snippets: ["AST Grep", "useState", "meta: $A=0"] },
+		{ toolName: "ast_grep", snippets: ["AST Grep", "1 match", "meta: $A=0"] },
 	] as const)("renders bare $toolName wrappers under global accent while preserving status and body", async spec => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
@@ -287,6 +349,33 @@ describe("tool execution left-edge alignment", () => {
 			expectNoAccentSurface(pending, `${spec.toolName} pending`, uiTheme!);
 			expectNoAccentSurface(success, `${spec.toolName} success`, uiTheme!);
 			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+
+	// ─── shared accent-surface edge padding ──────────────────────────────────
+
+	it.each([
+		{
+			path: "built-in Retain renderer",
+			toolName: "retain",
+			snippets: ["memory accent padding sentinel"],
+		},
+	] as const)("gives the $path exactly one painted accent pad row above and below nonempty content", async spec => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("accent", () => {
+			const { pending, success } = renderToolLifecycle(spec.toolName, false);
+
+			for (const [state, lines] of [
+				["pending", pending],
+				["success", success],
+			] as const) {
+				expectSinglePaintedAccentPadding(lines, `${spec.path} ${state}`, uiTheme!);
+			}
+			expectVisibleSnippets(success.slice(1, -1), `${spec.path} content`, spec.snippets);
 		});
 
 		expect(getOutputBlockBorderStyle()).toBe(previous);
@@ -356,11 +445,26 @@ describe("tool execution left-edge alignment", () => {
 	});
 
 	it.each([
-		{ toolName: "read", snippets: ["Read", "export const answer = 42;"] },
-		{ toolName: "lsp", snippets: ["LSP diagnostics", "src/example.ts", "OK"] },
+		{
+			toolName: "read",
+			snippets: ["packages/coding-agent/src/example.ts", "export const answer = 42;"],
+		},
+		{ toolName: "lsp", snippets: ["Diagnostics", "src/example.ts", "OK"] },
+	] as const)("keeps self-framed $toolName results on their own accent surface without a nested rail", async spec => {
+		const { previous } = withBorderStyle("accent", () => {
+			const { success } = renderToolLifecycle(spec.toolName, false);
+			expectNoOuterPadding(plainLines(success), `${spec.toolName} success`);
+			expectSelfFramedAccentEdges(success, `${spec.toolName} success`);
+			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+
+	it.each([
 		{
 			toolName: "inspect_image",
-			snippets: ["Inspect", "Question:", "What is shown?", "A tiny red square.", "gpt-4.1", "image/png"],
+			snippets: ["Inspect", "Question:", "What is shown?", "gpt-4.1", "image/png", "Second observation."],
 		},
 		{
 			toolName: "web_search",
@@ -374,21 +478,16 @@ describe("tool execution left-edge alignment", () => {
 				"Provider:",
 			],
 		},
-	] as const)("maps self-framed $toolName result from accent to bare without dropping sections", async spec => {
+	] as const)("keeps bare $toolName results rail-free under global accent", async spec => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
 
 		const { previous } = withBorderStyle("accent", () => {
-			const { success } = renderToolLifecycle(spec.toolName, false);
-			const text = plainLines(success).join("\n");
+			const { pending, success } = renderToolLifecycle(spec.toolName, false);
+			expectNoOuterPadding(plainLines(pending), `${spec.toolName} pending`);
 			expectNoOuterPadding(plainLines(success), `${spec.toolName} success`);
+			expectNoAccentSurface(pending, `${spec.toolName} pending`, uiTheme!);
 			expectNoAccentSurface(success, `${spec.toolName} success`, uiTheme!);
-			expect(text, `${spec.toolName} should not keep the full frame under accent`).not.toContain(
-				uiTheme!.boxRound.topLeft,
-			);
-			expect(text, `${spec.toolName} should not keep the full frame under accent`).not.toContain(
-				uiTheme!.boxRound.bottomLeft,
-			);
 			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
 		});
 
@@ -452,7 +551,7 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previousNone);
 	});
 
-	it("wraps non-framed custom renderers in a tinted accent rail without reallocating unchanged rows", async () => {
+	it("wraps non-framed custom renderers in a tinted accent rail with painted edge rows", async () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
@@ -477,8 +576,12 @@ describe("tool execution left-edge alignment", () => {
 		try {
 			setOutputBlockBorderStyle("accent");
 			component = new ToolExecutionComponent("custom_plain", {}, {}, tool, uiStub, process.cwd());
-			component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
 
+			const pending = component.render(WIDTH);
+			expectSinglePaintedAccentPadding(pending, "custom renderer pending", uiTheme!);
+			expectVisibleSnippets(pending.slice(1, -1), "custom renderer pending content", ["Custom Plain"]);
+
+			component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
 			const first = component.render(WIDTH);
 			const second = component.render(WIDTH);
 			const plain = plainLines(first);
@@ -489,8 +592,9 @@ describe("tool execution left-edge alignment", () => {
 			expect(childWidths).toEqual([WIDTH - 3, WIDTH - 3]);
 			expect(first.every(line => line.startsWith(errorRail))).toBe(true);
 			expect(first.join("\n")).toContain(errorBg);
-			expect(plain).toEqual(childLines.map(line => `▌ ${line}`));
-			expect(first.map(line => visibleWidth(line))).toEqual(childLines.map(line => 2 + visibleWidth(line)));
+			expectSinglePaintedAccentPadding(first, "custom renderer success", uiTheme!, "error");
+			expect(plain.slice(1, -1).map(line => line.trimEnd())).toEqual(childLines.map(line => `▌ ${line}`));
+			expect(first.map(line => visibleWidth(line))).toEqual(Array(childLines.length + 2).fill(WIDTH));
 			expect(plain.join("\n")).not.toContain("│");
 			expect(plain.join("\n")).not.toContain("╭");
 			expect(plain.join("\n")).not.toContain("╰");

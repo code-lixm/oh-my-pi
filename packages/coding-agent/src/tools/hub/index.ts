@@ -549,13 +549,6 @@ function toLaunchArgs(args: HubRenderArgs | undefined): LaunchRenderArgs {
 export const hubToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
-	accentEdgePadding(_args: unknown, result: { details?: unknown } | undefined): boolean {
-		const details = result?.details;
-		if (typeof details !== "object" || details === null) return false;
-		return (
-			("jobs" in details && Array.isArray(details.jobs)) || ("agents" in details && Array.isArray(details.agents))
-		);
-	},
 	// Only launch pending frames consume the spinner (broker RPC in flight);
 	// messaging/job pending frames are static, exactly as before the merge.
 	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as HubRenderArgs | undefined),

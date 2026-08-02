@@ -282,7 +282,6 @@ class ToolOutputSurfaceComponent implements Component {
 		width: number;
 		childLines: readonly string[];
 		color: ThemeColor;
-		addEdgePadding: boolean;
 		themeEpoch: number;
 		lines: readonly string[];
 	};
@@ -292,7 +291,6 @@ class ToolOutputSurfaceComponent implements Component {
 		private readonly isSelfFramed: () => boolean,
 		private readonly accentColor: () => ThemeColor,
 		private readonly bareSurface = false,
-		private readonly addAccentEdgePadding?: () => boolean,
 	) {
 		this.wantsKeyRelease = child.wantsKeyRelease;
 	}
@@ -306,26 +304,25 @@ class ToolOutputSurfaceComponent implements Component {
 		const innerWidth = Math.max(1, width - 2 - OUTPUT_BLOCK_ACCENT_RIGHT_INSET);
 		const childLines = this.child.render(innerWidth);
 		const color = this.accentColor();
-		const addEdgePadding = this.addAccentEdgePadding?.() === true && childLines.length > 0;
 		const themeEpoch = getThemeEpoch();
 		if (
 			this.#cache?.width === width &&
 			this.#cache.childLines === childLines &&
 			this.#cache.color === color &&
-			this.#cache.addEdgePadding === addEdgePadding &&
 			this.#cache.themeEpoch === themeEpoch
 		) {
 			return this.#cache.lines;
 		}
 		const contentLines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
-		const lines = addEdgePadding
-			? [
-					renderOutputAccentPadLine(width, theme, color),
-					...contentLines,
-					renderOutputAccentPadLine(width, theme, color),
-				]
-			: contentLines;
-		this.#cache = { width, childLines, color, addEdgePadding, themeEpoch, lines };
+		const lines =
+			childLines.length > 0
+				? [
+						renderOutputAccentPadLine(width, theme, color),
+						...contentLines,
+						renderOutputAccentPadLine(width, theme, color),
+					]
+				: contentLines;
+		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}
 
@@ -423,6 +420,9 @@ let toolExecutionInstanceSeq = 0;
 export class ToolExecutionComponent extends Container implements NativeScrollbackLiveRegion {
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
+	// Which container the constructor mounted: bespoke/built-in renderers use
+	// #contentBox, everything else the generic #contentText fallback.
+	#usesContentBox = false;
 	#multiFileBoxes: (Box | Spacer)[] = []; // Extra boxes for multi-file edit results
 	#imageComponents: Image[] = [];
 	#imageSpacers: Spacer[] = [];
@@ -562,17 +562,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const accentMode = getOutputBlockBorderStyle() === "accent";
 		this.#contentBox = new Box(0, accentMode ? 0 : 1);
 		this.#contentText = new WidthAwareText(
-			contentWidth =>
-				formatDefaultToolExecution(
-					{
-						label: this.#toolLabel,
-						args: this.#args,
-						result: this.#result ? { output: this.#getTextOutput(), isError: this.#result.isError } : undefined,
-						options: this.#renderState,
-					},
-					contentWidth,
-					theme,
-				),
+			contentWidth => this.#renderDefaultCard(contentWidth),
 			accentMode ? 0 : 1,
 			accentMode ? 0 : 1,
 		);
@@ -583,15 +573,16 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const hasRenderer = toolName in toolRenderers;
 		const bareSurface = toolRenderers[toolName]?.transcriptSurface === "bare";
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
-		const accentColor = (): ThemeColor => (this.#result?.isError ? "error" : "borderMuted");
-		if (hasCustomRenderer || hasRenderer) {
+		this.#usesContentBox = hasCustomRenderer || hasRenderer;
+		const accentColor = (): ThemeColor =>
+			this.#isBenignSkip() ? "borderMuted" : this.#result?.isError ? "error" : "borderMuted";
+		if (this.#usesContentBox) {
 			const surface = accentMode
 				? new ToolOutputSurfaceComponent(
 						this.#contentBox,
 						() => this.#contentBox.children.some(isFramedBlockComponent),
 						accentColor,
 						bareSurface,
-						() => toolRenderers[toolName]?.accentEdgePadding?.(this.#args, this.#result) === true,
 					)
 				: this.#contentBox;
 			this.addChild(surface);
@@ -1162,14 +1153,24 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#renderState.isPartial = this.#isPartial;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
 
-		// Transcript blocks use semantic foreground and outline colors without
-		// painting the terminal surface. Explicit renderer-level backgrounds remain
-		// independent of the global border-style selection.
-		const borderlessMode = isBorderlessOutputStyle(getOutputBlockBorderStyle());
-		const accentMode = getOutputBlockBorderStyle() === "accent";
+		// Preserve the selected output-block geometry while retaining main's
+		// state-specific styling for non-accent cards. Accent surfaces paint their
+		// own neutral/error rail and background in ToolOutputSurfaceComponent.
+		const borderStyle = getOutputBlockBorderStyle();
+		const borderlessMode = isBorderlessOutputStyle(borderStyle);
+		const accentMode = borderStyle === "accent";
+		const benignSkip = this.#isBenignSkip();
+		const stateBgKey =
+			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
+		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
 
-		// Check for custom tool rendering
-		if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
+		// A benign skip is a synthetic placeholder for a call that never executed,
+		// so bypass any bespoke error frame and draw the neutral generic card —
+		// the per-tool ✘/red-border would misread normal mid-turn steering as a
+		// failure (#7199).
+		if (benignSkip) {
+			this.#renderBenignSkipCard(accentMode ? undefined : stateBgFn);
+		} else if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
 			const tool = this.#tool;
 			const mergeCallAndResult = Boolean((tool as { mergeCallAndResult?: boolean }).mergeCallAndResult);
 			// Custom tools use Box for flexible component rendering
@@ -1273,7 +1274,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			const customFramed = this.#contentBox.children.some(isFramedBlockComponent);
 			this.#contentBox.setPaddingX(customFramed || borderlessMode ? 0 : 1);
 			this.#contentBox.setPaddingY(customFramed || accentMode ? 0 : 1);
-			this.#contentBox.setBgFn(undefined);
+			this.#contentBox.setBgFn(customFramed || accentMode ? undefined : stateBgFn);
 		} else if (this.#toolName in toolRenderers) {
 			// Built-in tools with renderers
 			const renderer = toolRenderers[this.#toolName];
@@ -1426,13 +1427,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			const builtInFramed = this.#contentBox.children.some(isFramedBlockComponent);
 			this.#contentBox.setPaddingX(builtInFramed || borderlessMode ? 0 : 1);
-			const usesAccentEdgePadding = renderer.accentEdgePadding?.(this.#args, this.#result) === true;
-			this.#contentBox.setPaddingY(builtInFramed || accentMode || usesAccentEdgePadding ? 0 : 1);
+			this.#contentBox.setPaddingY(builtInFramed || accentMode ? 0 : 1);
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
 			// instead of a fixed column cap.
-			this.#contentText.setCustomBgFn(undefined);
+			this.#contentText.setCustomBgFn(accentMode ? undefined : stateBgFn);
 			this.#contentText.invalidate();
 		}
 
@@ -1601,5 +1601,63 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		}
 
 		return output;
+	}
+
+	/**
+	 * Format the generic call/result card at `contentWidth`. Shared by the
+	 * #contentText fallback and the benign-skip path so both render identically.
+	 */
+	#renderDefaultCard(contentWidth: number): string {
+		return formatDefaultToolExecution(
+			{
+				label: this.#toolLabel,
+				args: this.#args,
+				result: this.#result
+					? { output: this.#getTextOutput(), isError: this.#result.isError, skipped: this.#isBenignSkip() }
+					: undefined,
+				options: this.#renderState,
+			},
+			contentWidth,
+			theme,
+		);
+	}
+
+	/**
+	 * True for a steering/peer-interrupt placeholder. A synthetic placeholder
+	 * identifies a call that never entered `tool.execute`; an interrupted
+	 * placeholder identifies one that started but threw before returning usable
+	 * output. Both are normal steering control flow and render neutrally (#7199).
+	 */
+	#isBenignSkip(): boolean {
+		if (this.#isPartial || !this.#result) return false;
+		const details = this.#result.details as
+			| { __synthetic?: boolean; __interrupted?: boolean; source?: string; execution?: string }
+			| undefined;
+		if (details?.source !== "interrupt_skipped") return false;
+		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");
+	}
+
+	/**
+	 * Render a benign skip as the neutral generic card, replacing any bespoke
+	 * renderer's error frame. Generic-fallback tools already route through
+	 * {@link #renderDefaultCard} (which emits the info card for a skip); they
+	 * only need the neutral tint. Bespoke-renderer tools get their content box
+	 * swapped for the same neutral card.
+	 */
+	#renderBenignSkipCard(stateBgFn: ((text: string) => string) | undefined): void {
+		if (!this.#usesContentBox) {
+			this.#contentText.setCustomBgFn(stateBgFn);
+			this.#contentText.invalidate();
+			return;
+		}
+		for (const box of this.#multiFileBoxes) {
+			this.removeChild(box);
+		}
+		this.#multiFileBoxes = [];
+		this.#contentBox.setBgFn(undefined);
+		this.#contentBox.clear();
+		this.#contentBox.setPaddingX(1);
+		this.#contentBox.setBgFn(stateBgFn);
+		this.#contentBox.addChild(new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 0, 0));
 	}
 }

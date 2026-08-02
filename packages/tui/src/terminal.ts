@@ -1038,10 +1038,11 @@ export class ProcessTerminal implements Terminal {
 						if (this.#osc11Pending) {
 							// A DA1 sentinel can arrive before an asynchronous OSC 11 reply. Keep
 							// tokenless automatic probes alive through the short grace window, while
-							// explicit queued requests start immediately once their sentinel drains.
-							const queued = this.#osc11QueuedQuery;
-							if (queued?.token !== undefined) this.#completeOsc11Query();
-							else this.#scheduleOsc11SentinelGrace();
+							// explicit active requests complete immediately without arming timers.
+							if (this.#osc11ActiveToken !== undefined) {
+								this.#completeOsc11Query();
+								this.#osc11ActiveToken = undefined;
+							} else this.#scheduleOsc11SentinelGrace();
 						}
 						this.#startQueuedOsc11QueryIfReady();
 						break;
@@ -1114,7 +1115,7 @@ export class ProcessTerminal implements Terminal {
 			// that reply leaves auto-theme on its dark fallback until a manual refresh.
 			// If a new escape sequence arrives (not the ST terminator), abort buffering
 			// and forward it as normal input so user keystrokes are never swallowed.
-			if (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;")) {
+			if (this.#osc11Pending && (this.#osc11ResponseBuffer || sequence.startsWith("\x1b]11;"))) {
 				if (this.#osc11ResponseBuffer && sequence.startsWith("\x1b") && sequence !== "\x1b\\") {
 					// New escape sequence arrived mid-buffer — not an OSC 11 continuation.
 					this.#osc11ResponseBuffer = "";

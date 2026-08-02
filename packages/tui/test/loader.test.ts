@@ -134,6 +134,33 @@ describe("Loader component", () => {
 		loader.stop();
 	});
 
+	it("backs off animated paints when direct writes consume the frame budget", () => {
+		vi.useFakeTimers();
+		let now = 0;
+		const ui = {
+			synchronizedOutput: true,
+			requestDirectWrite: vi.fn(() => {
+				now += 20;
+			}),
+			requestComponentRender: vi.fn(),
+		};
+		const colorMessage = ((text: string) => text) as LoaderMessageColorFn & { animated: true };
+		colorMessage.animated = true;
+		spyOn(performance, "now").mockImplementation(() => now);
+		const loader = new Loader(ui as unknown as TUI, text => text, colorMessage, "Checking", ["0"]);
+
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(34);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(2);
+
+		vi.advanceTimersByTime(170);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(2);
+		vi.advanceTimersByTime(10);
+		expect(ui.requestDirectWrite).toHaveBeenCalledTimes(3);
+
+		loader.stop();
+	});
+
 	it("reuses text layout when only animated ANSI styling changes", () => {
 		vi.useFakeTimers();
 		let colorFrame = 0;
@@ -269,45 +296,33 @@ describe("Loader component", () => {
 		expect(container.children).toEqual([]);
 		tui.stop();
 	});
-
 	it("advances the spinner by exactly one frame after a long event-loop stall with no catch-up across the next few ticks", () => {
 		vi.useFakeTimers();
-		// Bun's `vi.useFakeTimers()` drives setInterval but not `performance.now()`.
-		// Spy the latter so we can pin the wall clock independently.
-		let perfNow = 0;
+		// Bun's `vi.useFakeTimers()` drives timers but not `performance.now()`.
+		let perfNow = 1_000;
 		const perfSpy = spyOn(performance, "now").mockImplementation(() => perfNow);
-		// `start()` reads `performance.now()` immediately for `#lastSpinnerTick`,
-		// so pin the baseline wall BEFORE constructing the loader.
-		perfNow = 1000;
-
 		const colorMessage = ((s: string) => s) as LoaderMessageColorFn & { animated: true };
 		colorMessage.animated = true;
 		const ui = { requestDirectWrite: vi.fn(), requestComponentRender: vi.fn() };
 		const loader = new Loader(ui as unknown as TUI, text => text, colorMessage, "Checking", ["0", "1", "2", "3"]);
 
-		// Baseline: one 33 ms tick at wall 1033. elapsed = 33 < SPINNER_ADVANCE_MS → no advance.
-		perfNow = 1033;
+		perfNow = 1_033;
 		vi.advanceTimersByTime(33);
-		const baseline = loader.render(20).join("\n");
-		expect(baseline).toContain("0 Checking");
+		expect(loader.render(20).join("\n")).toContain("0 Checking");
 
-		// Stall: perfNow jumps 300 ms with no setInterval tick. A naive catch-up
-		// (`floor(elapsed / 80) = 4`) would jump the spinner 4 frames in one tick.
-		perfNow = 1333;
-		vi.advanceTimersByTime(33);
-		const afterStall = loader.render(20).join("\n");
-		expect(afterStall).toContain("1 Checking");
-
-		// The cap must discard the 220 ms surplus — the next two normal ticks
-		// (elapsed 33, 66) must NOT advance, and only one further tick (elapsed 99)
-		// should reach the 80 ms threshold and produce frame 2.
-		perfNow = 1366;
+		// A 300ms stall advances one frame, not floor(300 / 80) frames.
+		perfNow = 1_333;
 		vi.advanceTimersByTime(33);
 		expect(loader.render(20).join("\n")).toContain("1 Checking");
-		perfNow = 1399;
+
+		// The missed-time surplus is discarded; normal 33ms ticks resume from now.
+		perfNow = 1_366;
 		vi.advanceTimersByTime(33);
 		expect(loader.render(20).join("\n")).toContain("1 Checking");
-		perfNow = 1432;
+		perfNow = 1_399;
+		vi.advanceTimersByTime(33);
+		expect(loader.render(20).join("\n")).toContain("1 Checking");
+		perfNow = 1_432;
 		vi.advanceTimersByTime(33);
 		expect(loader.render(20).join("\n")).toContain("2 Checking");
 

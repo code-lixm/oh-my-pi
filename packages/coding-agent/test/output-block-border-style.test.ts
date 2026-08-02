@@ -518,7 +518,7 @@ describe("output-block border style", () => {
 	});
 
 	// This test lives here because renderToolResult exercises the full ToolExecutionComponent path.
-	it("renders complete agent read results with the accent rail when details are visible", () => {
+	it("keeps self-framed detailed read results on their own accent rail", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const previousDetailsVisible = getBasicToolDetailsVisible();
 		try {
@@ -535,19 +535,49 @@ describe("output-block border style", () => {
 			);
 			const rendered = lines.join("\n");
 			const renderedPlain = Bun.stripANSI(rendered);
+			const plainLines = plain(lines);
 
 			expect(renderedPlain).toContain("agent://ExportCommandScout");
 			expect(renderedPlain).toContain("READ_AGENT_RESULT_MARKER");
 			expect(renderedPlain).toContain("second result line");
 			expect(lines.some(line => Bun.stripANSI(line).trimStart().startsWith("▌"))).toBe(true);
 			expect(rendered).toContain(surfaceTintBgAnsi("borderMuted"));
+			expect(plainLines.some(line => line.startsWith("▌ ▌"))).toBe(false);
 		} finally {
 			setOutputBlockBorderStyle(previousStyle);
 			setBasicToolDetailsVisible(previousDetailsVisible);
 		}
 	});
 
-	it("keeps accent generic fallback rows on the full-width surface", () => {
+	it("adds exactly one painted pad above and below ordinary read summaries", () => {
+		const previousStyle = getOutputBlockBorderStyle();
+		const previousDetailsVisible = getBasicToolDetailsVisible();
+		try {
+			setBasicToolDetailsVisible(false);
+			setOutputBlockBorderStyle("accent");
+			const lines = renderToolResult(
+				"read",
+				{ path: "src/summary.ts" },
+				{ content: [{ type: "text", text: "summary" }], details: {} },
+			);
+			const plainLines = plain(lines);
+
+			expect(plainLines).toHaveLength(3);
+			expect(plainLines[0]).toBe(padLine("▌", RENDERER_WIDTH));
+			expect(plainLines[1]).toContain("Read");
+			expect(plainLines[1]).toContain("src/summary.ts");
+			expect(plainLines[2]).toBe(padLine("▌", RENDERER_WIDTH));
+			expectFullWidthAccentSurface(lines, "borderMuted", RENDERER_WIDTH);
+		} finally {
+			setOutputBlockBorderStyle(previousStyle);
+			setBasicToolDetailsVisible(previousDetailsVisible);
+		}
+
+		expect(getOutputBlockBorderStyle()).toBe(previousStyle);
+		expect(getBasicToolDetailsVisible()).toBe(previousDetailsVisible);
+	});
+
+	it("adds exactly one painted pad above and below nonempty generic fallback surfaces", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const width = 18;
 		const body = "ABCDEFGHIJKLMNO";
@@ -555,11 +585,12 @@ describe("output-block border style", () => {
 			setOutputBlockBorderStyle("accent");
 			const lines = renderGenericFallbackResult("mystery", body, width);
 			const plainLines = plain(lines);
-			const bodyLine = plainLines.find(line => line.includes(body));
 
-			expect(bodyLine).toBeDefined();
-			expect(bodyLine).toBe(padLine(`▌ ${body}`, width));
-			expect(bodyLine!.startsWith("▌  ")).toBe(false);
+			expect(plainLines).toHaveLength(4);
+			expect(plainLines[0]).toBe(padLine("▌", width));
+			expect(plainLines[1]).toContain("mystery");
+			expect(plainLines[2]).toBe(padLine(`▌ ${body}`, width));
+			expect(plainLines[3]).toBe(padLine("▌", width));
 			expectFullWidthAccentSurface(lines, "borderMuted", width);
 		} finally {
 			setOutputBlockBorderStyle(previousStyle);

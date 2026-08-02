@@ -19,7 +19,12 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import type { CmuxKind } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
 import { CmuxSocketClient } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/socket-client";
-import { acquireBrowser, getBrowsersMapForTest } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
+import * as launch from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
+import {
+	acquireBrowser,
+	getBrowsersMapForTest,
+	releaseBrowser,
+} from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import {
 	acquireTab,
 	getTabsMapForTest,
@@ -27,6 +32,7 @@ import {
 	releaseTabsForOwner,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import type { Browser } from "puppeteer-core";
 
 function makeKind(socketSuffix: string): CmuxKind {
 	return { kind: "cmux", socketPath: `/tmp/omp-test-${socketSuffix}.sock`, surface: `surface-${socketSuffix}` };
@@ -36,6 +42,20 @@ async function drainAllTabs(): Promise<void> {
 	for (const name of [...getTabsMapForTest().keys()]) {
 		await releaseTab(name, { kill: false }).catch(() => undefined);
 	}
+}
+
+async function drainAllBrowsers(): Promise<void> {
+	for (const browser of [...getBrowsersMapForTest().values()]) {
+		await releaseBrowser(browser, { kill: false }).catch(() => undefined);
+	}
+}
+
+function makeHeadlessBrowser(): Browser {
+	return {
+		connected: true,
+		process: () => null,
+		close: async () => undefined,
+	} as unknown as Browser;
 }
 
 describe("browser lifecycle — aborted open must not leak a browser handle", () => {
@@ -90,6 +110,42 @@ describe("browser lifecycle — aborted open must not leak a browser handle", ()
 		} finally {
 			connectSpy.mockRestore();
 			closeSpy.mockRestore();
+		}
+	});
+});
+
+describe("browser registry — headless acquisitions are project-scoped", () => {
+	afterEach(async () => {
+		await drainAllBrowsers();
+	});
+
+	it("separates pending launches by resolved cwd while sharing one within the same project", async () => {
+		const launchGate = Promise.withResolvers<void>();
+		const launchSpy = spyOn(launch, "launchHeadlessBrowser").mockImplementation(async () => {
+			await launchGate.promise;
+			return { browser: makeHeadlessBrowser(), userDataDir: undefined };
+		});
+		const kind = { kind: "headless", headless: true } as const;
+		const projectA = "/tmp/omp-browser-registry-project-a";
+		const projectB = "/tmp/omp-browser-registry-project-b";
+		const firstA = acquireBrowser(kind, { cwd: projectA });
+		const sameA = acquireBrowser(kind, { cwd: `${projectA}/.` });
+		const firstB = acquireBrowser(kind, { cwd: projectB });
+
+		try {
+			// A and B launch independently, while the normalized duplicate of A
+			// joins A's in-flight acquisition rather than launching a third browser.
+			expect(launchSpy).toHaveBeenCalledTimes(2);
+			launchGate.resolve();
+			const [browserA, sharedA, browserB] = await Promise.all([firstA, sameA, firstB]);
+
+			expect(sharedA).toBe(browserA);
+			expect(browserB).not.toBe(browserA);
+			expect(getBrowsersMapForTest().size).toBe(2);
+		} finally {
+			launchGate.resolve();
+			await Promise.allSettled([firstA, sameA, firstB]);
+			launchSpy.mockRestore();
 		}
 	});
 });

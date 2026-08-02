@@ -9,6 +9,12 @@
 ### Fixed
 
 - Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.
+## [17.2.4] - 2026-08-01
+
+### Fixed
+
+- Fixed provider usage window stats silently showing no data during SQLite contention by installing a five-second busy timeout on read-only agent database connections ([#7300](https://github.com/can1357/oh-my-pi/issues/7300)).
+
 ## [17.1.2] - 2026-07-24
 
 ### Added

@@ -61,8 +61,6 @@ export type ToolRenderer = {
 	inline?: boolean;
 	/** Transcript surface policy. Bare renderers skip the accent rail/tint wrapper. */
 	transcriptSurface?: "default" | "bare";
-	/** Adds one internal accent-surface row above and below matching results. */
-	accentEdgePadding?: (args: unknown, result: { details?: unknown } | undefined) => boolean;
 	/**
 	 * Whether the renderer's pending-call path visibly consumes
 	 * `options.spinnerFrame`. Used to avoid scheduling repaint ticks for live

@@ -991,7 +991,6 @@ export class AgentSession {
 		this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		if (this.#promptInFlightCount !== 0) return;
 		this.#releasePowerAssertion();
-		void this.#recovery.restoreReadyFallbackAtSafeBoundary();
 		this.#flushPendingAgentEnd();
 		const finish = () => {
 			this.#drainStrandedQueuedMessages();
@@ -1777,6 +1776,7 @@ export class AgentSession {
 			extensionRunner: this.#extensionRunner,
 			sideStreamFn: this.#sideStreamFn,
 			providerSessionState: this.#providerSessionState,
+			preferWebsockets: this.#preferWebsockets,
 			model: () => this.model,
 			thinkingLevel: () => this.thinkingLevel,
 			isDisposed: () => this.#isDisposed,
@@ -6975,7 +6975,6 @@ export class AgentSession {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
-			currentContextTokens?: number;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);
@@ -7693,7 +7692,7 @@ export class AgentSession {
 				// shared provider state map is still required so Codex can allocate
 				// websocket state under that side-channel session id.
 				sessionId: `${cacheSessionId}:side:${Snowflake.next()}`,
-				promptCacheKey: cacheSessionId,
+				promptCacheKey: this.agent.promptCacheKey ?? this.agent.sessionId,
 				preferWebsockets: this.#preferWebsockets,
 				providerSessionState: this.#providerSessionState,
 				reasoning: toReasoningEffort(this.thinkingLevel),
@@ -9389,6 +9388,15 @@ export class AgentSession {
 	 */
 	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): number {
 		return this.#advisors.applyAdvisorConfigs(advisors, sharedInstructions);
+	}
+
+	/**
+	 * Refresh the project context prompt advisor sessions run against after
+	 * context files change on `/reload-plugins`. Rebuilds live advisor runtimes so
+	 * they stop evaluating turns against stale `AGENTS.md` instructions.
+	 */
+	setAdvisorContextPrompt(contextPrompt: string | undefined): void {
+		this.#advisors.setContextPrompt(contextPrompt);
 	}
 
 	/**

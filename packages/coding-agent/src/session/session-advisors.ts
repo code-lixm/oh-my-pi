@@ -910,7 +910,10 @@ export class SessionAdvisors {
 						this.#maintainAdvisorContext(advisorRef, incomingTokens, signal),
 					obfuscator: this.#host.obfuscator,
 					getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
-					beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
+					beginAdvisorUpdate: inProgress => {
+						advisorRef.adviseTool.beginUpdate(inProgress);
+						advisorRef.emissionGuard.beginUpdate();
+					},
 					onTurnError: (error, failedMessages, signal) =>
 						this.#recoverAdvisorTurn(advisorRef, error, failedMessages, signal),
 					onTurnSuccess: async () => {
@@ -1694,6 +1697,18 @@ export class SessionAdvisors {
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
 		return this.#advisors.length;
+	}
+
+	/**
+	 * Swap the project context prompt handed to advisor sessions after context
+	 * files change. Rebuilds live runtimes so the next advisor turn sees it.
+	 */
+	setContextPrompt(contextPrompt: string | undefined): void {
+		if (contextPrompt === this.#advisorContextPrompt) return;
+		this.#advisorContextPrompt = contextPrompt;
+		if (!this.#advisorEnabled || this.#advisors.length === 0) return;
+		this.#stopAdvisorRuntime();
+		this.#buildAdvisorRuntime(true);
 	}
 
 	/**

@@ -29,7 +29,7 @@ import {
 	summarizeMentalModel,
 } from "../../hindsight";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { resolveMemoryBackend } from "../../memory-backend";
+import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -705,12 +705,7 @@ export class CommandController {
 			try {
 				const payload = await hook?.(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
 				if (!payload) {
-					this.ctx.showWarning(
-						tSettingsUi("Memory {action} is not available for the {backend} backend.", {
-							action,
-							backend: String(backend.id),
-						}),
-					);
+					this.ctx.showWarning(tSettingsUi(memoryStatsUnavailableMessage(backend.id, action)));
 					return;
 				}
 				showMarkdownPanel(

@@ -435,6 +435,25 @@ describe("advisor", () => {
 			expect(onAdvice).toHaveBeenNthCalledWith(3, note, "blocker");
 		});
 
+		it("withholds non-blockers for in-progress updates without consuming dedupe state", async () => {
+			const onAdvice = vi.fn();
+			const tool = new AdviseTool(onAdvice);
+			const note = "The result still needs a focused regression test.";
+
+			tool.beginUpdate(true);
+			await tool.execute("tc-1", { note, severity: "concern" });
+			await tool.execute("tc-2", { note: "Minor naming cleanup.", severity: "nit" });
+			await tool.execute("tc-3", { note: "A destructive command is running.", severity: "blocker" });
+
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+			expect(onAdvice).toHaveBeenCalledWith("A destructive command is running.", "blocker");
+
+			tool.beginUpdate(false);
+			await tool.execute("tc-4", { note, severity: "concern" });
+			expect(onAdvice).toHaveBeenCalledTimes(2);
+			expect(onAdvice).toHaveBeenLastCalledWith(note, "concern");
+		});
+
 		it("validates parameters using ArkType", () => {
 			const onAdvice = vi.fn();
 			const tool = new AdviseTool(onAdvice);
@@ -1314,6 +1333,7 @@ describe("advisor", () => {
 
 		it("tags in-progress turns with [in progress] heading", async () => {
 			const promptInputs: string[] = [];
+			const updateStates: boolean[] = [];
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -1328,6 +1348,7 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
+				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1336,10 +1357,12 @@ describe("advisor", () => {
 
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("[in progress — more steps follow]");
+			expect(updateStates).toEqual([true]);
 		});
 
 		it("uses plain heading when willContinue is false or absent", async () => {
 			const promptInputs: string[] = [];
+			const updateStates: boolean[] = [];
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -1354,6 +1377,7 @@ describe("advisor", () => {
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
+				beginAdvisorUpdate: inProgress => updateStates.push(inProgress),
 			};
 			const runtime = new AdvisorRuntime(agent, host);
 
@@ -1363,6 +1387,7 @@ describe("advisor", () => {
 			expect(promptInputs).toHaveLength(1);
 			expect(promptInputs[0]).toContain("### Session update\n");
 			expect(promptInputs[0]).not.toContain("[in progress");
+			expect(updateStates).toEqual([false]);
 		});
 
 		it("sends the batch when context maintenance fails", async () => {

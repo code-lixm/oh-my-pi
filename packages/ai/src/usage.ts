@@ -277,7 +277,7 @@ export const usageScopeSchema = type({
 	"accountId?": "string",
 	"projectId?": "string",
 	"orgId?": "string",
-	"modelId?": "string",
+	"modelId?": "string | undefined",
 	"tier?": "string",
 	"windowId?": "string",
 	"shared?": "boolean",

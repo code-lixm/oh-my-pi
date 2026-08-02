@@ -435,6 +435,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"{roleName} fallbacks cleared": "{roleName} fallbacks cleared",
 	"context>{limit}": "context>{limit}",
 	"current context {current} exceeds {limit} limit": "current context {current} exceeds {limit} limit",
+	"context {current} exceeds {limit} limit · compacts with current model, then switches":
+		"context {current} exceeds {limit} limit · compacts with current model, then switches",
 	"No models available in this scope": "No models available in this scope",
 	"No notification-capable connected servers.": "No notification-capable connected servers.",
 	"No nucleus filtering": "No nucleus filtering",
@@ -605,6 +607,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"No messages to dump yet.": "No messages to dump yet.",
 	"No queued messages to restore": "No queued messages to restore",
 	"No quick roles in the model cycle": "No quick roles in the model cycle",
+	"No quick roles in the Ctrl+P cycle": "No quick roles in the Ctrl+P cycle",
 	"No raw SSE frames captured yet.": "No raw SSE frames captured yet.",
 	"No raw SSE frames to copy": "No raw SSE frames to copy",
 	"No session file to delete (in-memory session)": "No session file to delete (in-memory session)",

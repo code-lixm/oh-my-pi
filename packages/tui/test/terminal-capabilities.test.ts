@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
 	detectTerminalId,
 	getTerminalInfo,
@@ -119,51 +122,56 @@ describe("Warp terminal capabilities", () => {
 	});
 
 	it("resolves the process-wide Warp terminal id and image protocol from TERM_PROGRAM", async () => {
-		const env: Record<string, string | undefined> = {
-			...Bun.env,
-			TERM_PROGRAM: "WarpTerminal",
-			COLORTERM: "truecolor",
-		};
-		for (const key of [
-			"PI_FORCE_IMAGE_PROTOCOL",
-			"WSL_DISTRO_NAME",
-			"WSL_INTEROP",
-			"KITTY_WINDOW_ID",
-			"GHOSTTY_RESOURCES_DIR",
-			"WEZTERM_PANE",
-			"ITERM_SESSION_ID",
-			"VSCODE_PID",
-			"ALACRITTY_WINDOW_ID",
-		]) {
-			delete env[key];
+		const probeDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-warp-probe-"));
+		const outputPath = path.join(probeDir, "result.json");
+		try {
+			const env: Record<string, string | undefined> = {
+				...Bun.env,
+				TERM_PROGRAM: "WarpTerminal",
+				COLORTERM: "truecolor",
+				PI_TUI_WARP_PROBE_OUTPUT: outputPath,
+			};
+			for (const key of [
+				"PI_FORCE_IMAGE_PROTOCOL",
+				"WSL_DISTRO_NAME",
+				"WSL_INTEROP",
+				"KITTY_WINDOW_ID",
+				"GHOSTTY_RESOURCES_DIR",
+				"WEZTERM_PANE",
+				"ITERM_SESSION_ID",
+				"VSCODE_PID",
+				"ALACRITTY_WINDOW_ID",
+			]) {
+				delete env[key];
+			}
+
+			const proc = Bun.spawn({
+				cmd: [
+					process.execPath,
+					"--eval",
+					`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+const outputPath = process.env.PI_TUI_WARP_PROBE_OUTPUT;
+if (!outputPath) throw new Error("Missing PI_TUI_WARP_PROBE_OUTPUT");
+await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+				],
+				env,
+				stdout: "ignore",
+				stderr: "pipe",
+			});
+			const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+
+			expect(stderr).toBe("");
+			expect(exitCode).toBe(0);
+			const resolved = (await Bun.file(outputPath).json()) as {
+				id: string;
+				imageProtocol: string | null;
+				expected: string;
+			};
+			expect(resolved.id).toBe("warp");
+			expect(resolved.imageProtocol).toBe(resolved.expected);
+		} finally {
+			await fs.rm(probeDir, { recursive: true, force: true });
 		}
-
-		const proc = Bun.spawn({
-			cmd: [
-				process.execPath,
-				"--eval",
-				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
-process.stdout.write(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
-			],
-			env,
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		const [stdout, stderr, exitCode] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-			proc.exited,
-		]);
-
-		expect(stderr).toBe("");
-		expect(exitCode).toBe(0);
-		expect(
-			stdout.trim(),
-			`Warp capability probe emitted no JSON on stdout (exit ${exitCode}; stderr: ${stderr})`,
-		).not.toBe("");
-		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
-		expect(resolved.id).toBe("warp");
-		expect(resolved.imageProtocol).toBe(resolved.expected);
 	});
 
 	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {

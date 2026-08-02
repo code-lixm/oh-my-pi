@@ -16,7 +16,6 @@ import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import { getGitLabDuoModels } from "@oh-my-pi/pi-ai/providers/gitlab-duo";
 import { $env } from "@oh-my-pi/pi-utils";
 import { ANTIGRAVITY_PRIMARY_ENDPOINT, fetchAntigravityDiscoveryModels } from "../src/discovery/antigravity";
-import { fetchCodexModels } from "../src/discovery/codex";
 import { buildGitLabDuoWorkflowFallbackModel } from "../src/discovery/gitlab-duo-workflow";
 import { createModelManager } from "../src/model-manager";
 import prevModelsJson from "../src/models.json" with { type: "json" };
@@ -29,6 +28,7 @@ import {
 } from "../src/provider-models/descriptor-types";
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import {
+	AIAND_STATIC_MODELS,
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
 	ANTHROPIC_CURATED_FALLBACK_MODELS,
 	buildFireworksFastSeed,
@@ -47,15 +47,18 @@ import {
 	SAKANA_FUGU_STATIC_MODELS,
 	stripFireworksDeepSeekThinkingToggle,
 } from "../src/provider-models/openai-compat";
+import { type OpenAICodexAccount, openaiCodexModelManagerOptions } from "../src/provider-models/special";
 import type { Api, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { collapseEffortVariantsAcrossProviders } from "../src/variant-collapse";
-import { JWT_CLAIM_PATH } from "../src/wire/codex";
 import {
+	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
+	applyOllamaCloudOutputCap,
 	CLOUDFLARE_FALLBACK_MODEL,
 	dropUnsupportedBedrockGeoIds,
+	hasBillableCost,
 	linkOpenAIPromotionTargets,
 } from "./generated-policies";
 
@@ -95,11 +98,12 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		fetched_antigravity: "Fetched {count} models from Antigravity API",
 		antigravity_no_models: "Antigravity API returned no models, will use previous models",
 		failed_antigravity: "Failed to fetch Antigravity models:",
+		codex_account_failed: "Codex account failed to resolve ({error}), keeping previous models.",
+		warn_codex_credentials: "Warning: Failed to retrieve Codex credentials:",
 		no_codex_creds: "No Codex credentials found, will use previous models.",
-		fetching_codex: "Fetching models from Codex API...",
-		codex_failed: "Codex API fetch failed",
+		fetching_codex_accounts: "Fetching models from Codex API for {count} account(s)...",
+		codex_failed_keep_previous: "Codex API fetch failed, keeping previous models.",
 		fetched_codex: "Fetched {count} models from Codex API",
-		failed_codex: "Failed to fetch Codex models:",
 		added_discovery: "Added {count} models from {label} discovery",
 		wrote_models: "Generated src/models.json",
 		stats_header: "Model Statistics:",
@@ -125,11 +129,12 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		fetched_antigravity: "已从 Antigravity API 获取 {count} 个模型",
 		antigravity_no_models: "Antigravity API 未返回模型，将使用既有模型",
 		failed_antigravity: "获取 Antigravity 模型失败：",
+		codex_account_failed: "Codex 帐户无法解析（{error}），将保留既有模型。",
+		warn_codex_credentials: "警告：获取 Codex 凭据失败：",
 		no_codex_creds: "未找到 Codex 凭据，将使用既有模型。",
-		fetching_codex: "正在从 Codex API 获取模型……",
-		codex_failed: "Codex API 获取失败",
+		fetching_codex_accounts: "正在为 {count} 个帐户从 Codex API 获取模型……",
+		codex_failed_keep_previous: "Codex API 获取失败，将保留既有模型。",
 		fetched_codex: "已从 Codex API 获取 {count} 个模型",
-		failed_codex: "获取 Codex 模型失败：",
 		added_discovery: "已从 {label} 发现添加 {count} 个模型",
 		wrote_models: "已生成 src/models.json",
 		stats_header: "模型统计：",
@@ -314,9 +319,6 @@ function applyPremiumMultiplierOverrides(models: readonly ModelSpec[]): ModelSpe
 			premiumMultiplier,
 		};
 	});
-}
-function hasBillableCost(cost: ModelSpec["cost"]): boolean {
-	return cost.input !== 0 || cost.output !== 0 || cost.cacheRead !== 0 || cost.cacheWrite !== 0;
 }
 
 function applyUmansPricingFallback(models: readonly ModelSpec[], modelsDevModels: readonly ModelSpec[]): ModelSpec[] {
@@ -520,49 +522,46 @@ async function fetchAntigravityModels(): Promise<ModelSpec<"google-gemini-cli">[
 }
 
 /**
- * Extract accountId from a Codex JWT access token.
+ * Resolve every stored Codex OAuth account and union their account-scoped
+ * `/models` catalogs through the same manager path the runtime uses (#6265).
+ * Fails closed: any account that cannot resolve or fetch aborts discovery and
+ * returns [] (non-authoritative), so a partial per-account snapshot never
+ * replaces the previous bundle's model set.
  */
-function extractCodexAccountId(accessToken: string): string | null {
-	try {
-		const parts = accessToken.split(".");
-		if (parts.length !== 3) return null;
-		const payload = parts[1] ?? "";
-		const decoded = JSON.parse(Buffer.from(payload, "base64").toString("utf-8"));
-		const accountId = decoded?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
-		return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
-	} catch {
-		return null;
-	}
-}
-
 async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-responses">[]> {
-	const access = await getOAuthAccessFromStorage("openai-codex");
-	if (!access) {
+	const accounts: OpenAICodexAccount[] = [];
+	try {
+		const authStorage = await discoverAuthStorage();
+		try {
+			const accesses = await authStorage.getOAuthAccesses("openai-codex");
+			for (const access of accesses) {
+				if (!access.ok) {
+					console.warn(t("codex_account_failed", { error: String(access.error) }));
+					return [];
+				}
+				accounts.push({ accessToken: access.accessToken, accountId: access.accountId });
+			}
+		} finally {
+			authStorage.close();
+		}
+	} catch (error) {
+		console.warn(t("warn_codex_credentials"), error instanceof Error ? error.message : String(error));
+		return [];
+	}
+	if (accounts.length === 0) {
 		console.log(t("no_codex_creds"));
 		console.log(t("profile_tip"));
 		return [];
 	}
-	try {
-		console.log(t("fetching_codex"));
-		const accessToken = access.accessToken;
-		const accountId = access.accountId ?? extractCodexAccountId(accessToken);
-		const codexDiscovery = await fetchCodexModels({
-			accessToken,
-			accountId: accountId ?? undefined,
-		});
-		if (codexDiscovery === null) {
-			console.warn(t("codex_failed"));
-			return [];
-		}
-		if (codexDiscovery.models.length > 0) {
-			console.log(t("fetched_codex", { count: codexDiscovery.models.length }));
-			return codexDiscovery.models;
-		}
-		return [];
-	} catch (error) {
-		console.error(t("failed_codex"), error);
+	console.log(t("fetching_codex_accounts", { count: accounts.length }));
+	const options = openaiCodexModelManagerOptions({ resolveAccounts: async () => accounts });
+	const models = await options.fetchDynamicModels?.();
+	if (!models) {
+		console.warn(t("codex_failed_keep_previous"));
 		return [];
 	}
+	console.log(t("fetched_codex", { count: models.length }));
+	return [...models];
 }
 
 async function generateModels() {
@@ -636,6 +635,12 @@ async function generateModels() {
 	// Sakana is authoritative and stale seed IDs must stay out.
 	if (!authoritativeCatalogProviders.has("sakana")) {
 		allModels.push(...SAKANA_FUGU_STATIC_MODELS);
+	}
+	// Seed ai&'s documented catalog so the provider is usable when generation
+	// has no AIAND_API_KEY. A live org-scoped `/v1/models` snapshot is
+	// authoritative and replaces the seed.
+	if (!authoritativeCatalogProviders.has("aiand")) {
+		allModels.push(...AIAND_STATIC_MODELS);
 	}
 	// Seed the GMI Cloud default model so a fresh install (and a regen without a
 	// `GMI_API_KEY`) still resolves the descriptor's `defaultModel` synchronously
@@ -721,6 +726,7 @@ async function generateModels() {
 	allModels = applyUmansPricingFallback(allModels, modelsDevModels);
 	allModels = applyPremiumMultiplierOverrides(allModels);
 	allModels = applyCodexPricingFallback(allModels);
+	allModels = applyAntigravityPricingFallback(allModels);
 	allModels = applyKimiMaxTokensCap(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	allModels = dropFireworksWireIds(allModels);
@@ -748,6 +754,9 @@ async function generateModels() {
 	// Fill remaining null endpoint limits from each model's canonical-family
 	// reference. Runs last so canonical ids and explicit policy limits are final.
 	applyCanonicalLimitFallback(allModels);
+	// Pin every Ollama Cloud model's max-output to the enforced ceiling; runs
+	// after canonical fallback so finalized context windows drive the cap.
+	applyOllamaCloudOutputCap(allModels);
 
 	for (const model of allModels) {
 		canonicalizeModelCompat(model);

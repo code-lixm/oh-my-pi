@@ -374,6 +374,38 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		expect(afterStoppedRefresh).toBe(afterStop);
 	});
 
+	it("completes an explicit refresh on its DA1 sentinel without arming the grace timer", () => {
+		vi.useFakeTimers();
+		const { terminal, queryCount, received } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const afterInitial = queryCount();
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport((appearance, token) => reports.push({ appearance, token }));
+
+		const firstToken = terminal.refreshAppearance?.(41);
+		expect(firstToken).toBe(41);
+		expect(queryCount()).toBe(afterInitial + 1);
+		process.stdin.emit("data", "\x1b[?1;2c");
+
+		// The completed explicit probe must neither retain its token nor consume a
+		// late reply after the sentinel. A second explicit refresh starts immediately.
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		expect(reports).toEqual([]);
+		expect(terminal.appearance).toBe("light");
+		expect(terminal.refreshAppearance?.(42)).toBe(42);
+		expect(queryCount()).toBe(afterInitial + 2);
+
+		const receivedBeforeSecondReply = [...received];
+		vi.advanceTimersByTime(100);
+		expect(queryCount()).toBe(afterInitial + 2);
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		expect(reports).toEqual([{ appearance: "dark", token: 42 }]);
+		expect(received).toEqual(receivedBeforeSecondReply);
+		terminal.stop();
+	});
+
 	it("passes an explicit appearance refresh through tmux without changing the startup probe", () => {
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
 		const { terminal, writes } = setupTerminal();
@@ -635,35 +667,6 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		expect(appearances).toEqual(["light"]);
 
 		terminal.stop();
-	});
-
-	it("accepts a complete OSC 11 reply after the post-sentinel grace window expires", () => {
-		vi.useFakeTimers();
-		const { terminal, received } = setupTerminal();
-		const appearances: string[] = [];
-		terminal.onAppearanceChange(a => appearances.push(a));
-		const lightReply = "\x1b]11;rgb:ffff/ffff/ffff\x07";
-
-		try {
-			// Startup sentinels are FIFO-owned: keyboard first, OSC 11 second. Ghostty
-			// can answer both DA1 sentinels before its asynchronous OSC 11 color lookup.
-			process.stdin.emit("data", "\x1b[?1;2c");
-			process.stdin.emit("data", "\x1b[?1;2c");
-			expect(terminal.appearance).toBeUndefined();
-			expect(appearances).toEqual([]);
-
-			vi.advanceTimersByTime(101);
-			expect(terminal.appearance).toBeUndefined();
-			expect(appearances).toEqual([]);
-
-			process.stdin.emit("data", lightReply);
-
-			expect(terminal.appearance).toBe("light");
-			expect(appearances).toEqual(["light"]);
-			expect(received).toEqual([]);
-		} finally {
-			terminal.stop();
-		}
 	});
 
 	it("shutdown balances the single kitty push performed on detection", () => {
