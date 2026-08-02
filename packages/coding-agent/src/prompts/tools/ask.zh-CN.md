@@ -7,7 +7,6 @@
 <instruction>
 - 使用 `recommended: <index>` 标记默认项（从 0 开始计数），自动添加“（推荐）”
 - 对于多个相关问题，使用 `questions`，而不是一次只问一个
-- 在问题上设置 `multi: true` 以允许多选
 - 使用简短的选项标签；将解释性的权衡放在 `description` 中，而不是将其合并到标签里
 </instruction>
 

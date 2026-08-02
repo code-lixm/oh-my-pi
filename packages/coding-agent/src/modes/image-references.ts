@@ -143,3 +143,22 @@ export function materializeImageReferenceLinksSync(
 	const links = images.map((image, index) => materializeImageReferenceLink(image, index + 1, putBlob));
 	return links.some(link => link !== undefined) ? links : undefined;
 }
+
+/** Materialize the original image bytes and open the viewer-safe typed path. */
+export function openImageInSystemViewer(
+	image: ImageContent,
+	putBlob: ImageBlobWriterSync,
+	openTarget: (path: string) => void,
+): void {
+	const target = materializeImageReferenceLink(image, 1, putBlob);
+	if (!target) return;
+	try {
+		openTarget(target);
+	} catch (error) {
+		logger.warn("Failed to open image reference", {
+			path: target,
+			mimeType: image.mimeType,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}

@@ -1,11 +1,9 @@
 /**
  * SGR mouse report parsing (`\x1b[<button;col;rowM` / `…m`).
  *
- * Mouse tracking is enabled only while a fullscreen overlay holds the
- * alternate screen (see tui.ts MOUSE_TRACKING_ON), so consumers are
- * fullscreen components hit-testing against their own rendered frame:
- * the frame paints from screen row 0, hence `row`/`col` are exposed
- * 0-based for direct indexing into rendered lines.
+ * Mouse tracking is opt-in on the normal screen and enabled for fullscreen
+ * alternate-screen overlays (see tui.ts). Reports expose 0-based terminal
+ * cell coordinates; hosts translate them into component-local coordinates.
  */
 
 /** A decoded SGR mouse report. */
@@ -98,8 +96,23 @@ export function routeSelectListMouse(target: SelectListMouseTarget, event: SgrMo
  * Implemented by components that accept routed mouse events at frame-local
  * coordinates. Hosts translate screen coordinates to the component's own
  * rendered lines before forwarding.
+ *
+ * Returning `void` (or implicitly `undefined`) means "consumed" — the host
+ * stops routing. Returning `false` means "not consumed" — the host should
+ * try the next layer (overlay beneath, root child below, etc.).
  */
 export interface MouseRoutable {
-	/** `line`/`col` are 0-based within the component's rendered output. */
-	routeMouse(event: SgrMouseEvent, line: number, col: number): void;
+	/** `line`/`col` are 0-based within the component's rendered output.
+	 *  Returning `false` keeps routing alive; `void` / `true` / `undefined`
+	 *  mark the event as consumed. */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean | void;
+}
+
+/** Structural probe: the value exposes a callable `routeMouse`. The narrow
+ *  type is intentionally generic (not `Component & MouseRoutable`) because
+ *  `mouse.ts` cannot import `Component` from `./tui` without creating a
+ *  cycle — every host that calls this helper already has a typed value and
+ *  needs only the boolean result. */
+export function isMouseRoutable(value: unknown): value is { routeMouse: MouseRoutable["routeMouse"] } {
+	return value !== null && value !== undefined && typeof (value as Partial<MouseRoutable>).routeMouse === "function";
 }

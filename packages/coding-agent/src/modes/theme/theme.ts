@@ -1723,7 +1723,7 @@ export class Theme {
 	 */
 	getContrastFgAnsi(fillColor: ThemeColor): string {
 		const ansi = this.#fgColors[fillColor];
-		const paletteMatch = ansi ? /38;5;(\d+)/.exec(ansi) : null;
+		const paletteMatch = this.#terminalPalette && ansi ? /38;5;(\d+)/.exec(ansi) : null;
 		if (paletteMatch) {
 			const luminance = relativeLuminance(Number(paletteMatch[1]));
 			// WCAG black/white contrast ratios cross at relative luminance ≈ 0.179.
@@ -2239,9 +2239,15 @@ function detectTerminalBackground(): "dark" | "light" {
 	return "dark";
 }
 
+function resolveAutoTheme(appearance: "dark" | "light"): string {
+	if (terminalPaletteOverride) {
+		return appearance === "dark" ? "dark-terminal-adaptive" : "light-terminal-adaptive";
+	}
+	return appearance === "dark" ? autoDarkTheme : autoLightTheme;
+}
+
 function getDefaultTheme(): string {
-	const bg = detectTerminalBackground();
-	return bg === "light" ? autoLightTheme : autoDarkTheme;
+	return resolveAutoTheme(detectTerminalBackground());
 }
 
 // ============================================================================
@@ -2273,6 +2279,7 @@ var sigwinchHandler: (() => void) | undefined;
 var autoDetectedTheme: boolean = false;
 var autoDarkTheme: string = "dark";
 var autoLightTheme: string = "light";
+var terminalPaletteOverride = false;
 var onThemeChangeCallback: ((event: ThemeChangeEvent) => void) | undefined;
 var themeLoadRequestId: number = 0;
 let themeEpoch = 0;
@@ -2290,10 +2297,12 @@ export async function initTheme(
 	colorBlindMode?: boolean,
 	darkTheme?: string,
 	lightTheme?: string,
+	useTerminalPalette: boolean = false,
 ): Promise<void> {
 	autoDetectedTheme = true;
 	autoDarkTheme = darkTheme ?? "dark";
 	autoLightTheme = lightTheme ?? "light";
+	terminalPaletteOverride = useTerminalPalette;
 	const name = getDefaultTheme();
 	currentThemeName = name;
 	currentSymbolPresetOverride = symbolPreset;
@@ -2391,15 +2400,24 @@ export function setAutoThemeMapping(mode: "dark" | "light", themeName: string): 
 	reevaluateAutoTheme("setAutoThemeMapping");
 }
 
+/** Override automatic dark/light mappings with the built-in terminal-adaptive themes. */
+export function setTerminalPaletteOverride(enabled: boolean): void {
+	terminalPaletteOverride = enabled;
+	reevaluateAutoTheme("setTerminalPaletteOverride");
+}
+
 /**
  * Called when the terminal detects a dark/light appearance change.
  * The terminal layer queries OSC 11 (background color) and computes luminance;
  * Mode 2031 notifications trigger re-queries rather than providing the value directly.
  */
-export function onTerminalAppearanceChange(mode: "dark" | "light"): void {
+export function onTerminalAppearanceChange(
+	mode: "dark" | "light",
+	event: ThemeChangeEvent = { ephemeral: true },
+): void {
 	if (terminalReportedAppearance === mode) return;
 	terminalReportedAppearance = mode;
-	reevaluateAutoTheme("terminal appearance");
+	reevaluateAutoTheme("terminal appearance", event);
 }
 
 export function setThemeInstance(themeInstance: Theme): void {
@@ -2598,9 +2616,12 @@ function applyResolvedAutoTheme(resolved: string, debugLabel: string, event: The
  */
 function reevaluateAutoTheme(debugLabel: string, event: ThemeChangeEvent = {}, appearance?: "dark" | "light"): void {
 	if (!autoDetectedTheme) return;
-	const resolved =
-		appearance === undefined ? getDefaultTheme() : appearance === "dark" ? autoDarkTheme : autoLightTheme;
+	const resolved = resolveAutoTheme(appearance ?? detectTerminalBackground());
 	applyResolvedAutoTheme(resolved, debugLabel, event);
+}
+
+function reevaluateAutoThemeForAppearance(debugLabel: string, appearance?: "dark" | "light"): void {
+	reevaluateAutoTheme(debugLabel, { ephemeral: true }, appearance);
 }
 
 // ============================================================================
@@ -2679,7 +2700,7 @@ export function startMacOSAppearanceReprobeFallback(terminal: MacOSAppearanceRep
 			const appearance = probeResponseConfirmed ? terminal.appearance : undefined;
 			cancelProbeSequence();
 			if (!autoDetectedTheme || !appearance) return;
-			reevaluateAutoTheme("macOS appearance reconciliation", {}, appearance);
+			reevaluateAutoThemeForAppearance("macOS appearance reconciliation", appearance);
 		}, MACOS_APPEARANCE_RECONCILE_DELAY_MS);
 		reconciliationTimer.unref?.();
 	};
@@ -2708,7 +2729,7 @@ export function startMacOSAppearanceReprobeFallback(terminal: MacOSAppearanceRep
 					return;
 				}
 				if (appearance === "dark" || appearance === "light") {
-					reevaluateAutoTheme("macOS provisional appearance", {}, appearance);
+					reevaluateAutoThemeForAppearance("macOS provisional appearance", appearance);
 				}
 				scheduleProbeSequence();
 			});
@@ -2743,7 +2764,7 @@ function startMacAppearanceObserver(): void {
 		macObserver = MacAppearanceObserver.start((err, appearance) => {
 			if (!err && (appearance === "dark" || appearance === "light")) {
 				macOSReportedAppearance = appearance;
-				reevaluateAutoTheme("macOS fallback");
+				reevaluateAutoThemeForAppearance("macOS fallback");
 			}
 		});
 	} catch (err) {
@@ -2767,7 +2788,7 @@ function stopMacAppearanceObserver(): void {
 function startSigwinchListener(): void {
 	stopSigwinchListener();
 	sigwinchHandler = () => {
-		reevaluateAutoTheme("SIGWINCH");
+		reevaluateAutoThemeForAppearance("SIGWINCH");
 	};
 	process.on("SIGWINCH", sigwinchHandler);
 	startMacAppearanceObserver();

@@ -53,6 +53,7 @@ changes/
 __pycache__/
 
 # Scratch files
+.slim/deepwork/
 syntax.jsonl
 out.jsonl
 out.html

@@ -177,6 +177,32 @@ describe("settings layout", () => {
 		});
 	});
 
+	it("exposes the terminal palette override as a localized Appearance theme boolean", () => {
+		const english = getSettingsForTab("appearance").find(def => def.path === "theme.terminalPalette");
+
+		expect(english).toMatchObject({
+			path: "theme.terminalPalette",
+			type: "boolean",
+			tab: "appearance",
+			group: "Theme",
+			label: "Use Terminal Palette",
+			description:
+				"Override the selected dark and light themes with adaptive themes that inherit the terminal ANSI palette",
+		});
+
+		setSettingsUiLocale("zh-CN");
+		const chinese = getSettingsForTab("appearance").find(def => def.path === "theme.terminalPalette");
+
+		expect(chinese).toMatchObject({
+			path: "theme.terminalPalette",
+			type: "boolean",
+			tab: "appearance",
+			group: "Theme",
+			label: "使用终端调色板",
+			description: "使用继承终端 ANSI 调色板的自适应主题，覆盖已选择的深色和浅色主题",
+		});
+	});
+
 	it("exposes every accepted snapcompact shape in the settings submenu", () => {
 		const def = getSettingsForTab("context").find(def => def.path === "snapcompact.shape");
 

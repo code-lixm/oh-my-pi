@@ -1,7 +1,8 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
-import type { HindsightApi, MemoryItemInput } from "./client";
+import { type HindsightApi, HindsightError, type MemoryItemInput } from "./client";
 import type { HindsightConfig } from "./config";
 import {
 	composeRecallQuery,
@@ -173,17 +174,8 @@ export class HindsightRetainQueue {
 				items: items.length,
 				error: errorText,
 			});
-			this.#notifyRetainFailure(items.length, errorText);
+			state.reportRequestFailure(err);
 		}
-	}
-
-	#notifyRetainFailure(count: number, errorText: string): void {
-		const noun = count === 1 ? "memory" : "memories";
-		this.#state.session.emitNotice(
-			"warning",
-			`Memory retention failed for ${count} ${noun}: ${errorText}`,
-			"Hindsight",
-		);
 	}
 }
 
@@ -224,6 +216,7 @@ export class HindsightSessionState {
 	// or silently retaining nothing forever. Hashing is orders of magnitude
 	// cheaper than the re-formatting this cache avoids.
 	#lastRetainedPrefixKey: string = "";
+	#reportedFailures = new Set<string>();
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
@@ -238,11 +231,10 @@ export class HindsightSessionState {
 	mentalModelsLoadPromise?: Promise<void>;
 	unsubscribe?: () => void;
 	/**
-	 * Releases the `onHindsightScopeChanged` subscription that drives live
-	 * rebuilds when `hindsight.bankId` / `bankIdPrefix` / `scoping` change.
-	 * Only set on primary states; aliases inherit the parent's subscription.
+	 * Releases the Hindsight runtime-settings subscription. Only primary states
+	 * subscribe; subagent aliases inherit the parent's client and routing.
 	 */
-	unsubscribeScope?: () => void;
+	unsubscribeRuntime?: () => void;
 	/** Alias states delegate persistence config to a primary parent state. */
 	aliasOf?: HindsightSessionState;
 	readonly retainQueue: HindsightRetainQueue;
@@ -290,6 +282,25 @@ export class HindsightSessionState {
 		await this.retainQueue.flush();
 	}
 
+	reportRequestFailure(error: unknown): void {
+		const errorText = error instanceof Error ? error.message : String(error);
+		const authenticationFailure =
+			error instanceof HindsightError && (error.statusCode === 401 || error.statusCode === 403);
+		const fingerprint = authenticationFailure ? "authentication" : errorText;
+		if (this.#reportedFailures.has(fingerprint)) return;
+		this.#reportedFailures.add(fingerprint);
+
+		this.session.emitNotice(
+			authenticationFailure ? "error" : "warning",
+			authenticationFailure
+				? tSettingsUi("Hindsight authentication failed. Update Hindsight API Token in /settings, then retry.")
+				: tSettingsUi("Hindsight request failed: {error}. Check Hindsight settings in /settings.", {
+						error: errorText,
+					}),
+			"Hindsight",
+		);
+	}
+
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
 		try {
 			const response = await this.client.recall(this.bankId, query, {
@@ -309,6 +320,7 @@ export class HindsightSessionState {
 			if (this.config.debug) {
 				logger.debug("Hindsight: recall failed", { bankId: this.bankId, error: String(err) });
 			}
+			this.reportRequestFailure(err);
 			return { context: null, ok: false };
 		}
 	}
@@ -385,6 +397,7 @@ export class HindsightSessionState {
 				bankId: this.bankId,
 				error: String(err),
 			});
+			this.reportRequestFailure(err);
 		}
 	}
 
@@ -408,6 +421,8 @@ export class HindsightSessionState {
 				bankId: this.bankId,
 				error: String(err),
 			});
+			this.reportRequestFailure(err);
+			throw err;
 		}
 	}
 
@@ -479,7 +494,9 @@ export class HindsightSessionState {
 		if (this.config.mentalModelAutoSeed) {
 			const seeds = resolveSeedsForScope(scope, this.config.scoping);
 			if (seeds.length > 0) {
-				await ensureMentalModels(this.client, this.bankId, seeds, this.config.debug);
+				await ensureMentalModels(this.client, this.bankId, seeds, this.config.debug, error => {
+					this.reportRequestFailure(error);
+				});
 			}
 		}
 
@@ -493,6 +510,9 @@ export class HindsightSessionState {
 			this.bankId,
 			this.config.mentalModelMaxRenderChars,
 			this.recallTags,
+			error => {
+				this.reportRequestFailure(error);
+			},
 		);
 		this.mentalModelsSnippet = snippet;
 		this.mentalModelsLoadedAt = Date.now();
@@ -535,8 +555,8 @@ export class HindsightSessionState {
 	dispose(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		this.unsubscribeScope?.();
-		this.unsubscribeScope = undefined;
+		this.unsubscribeRuntime?.();
+		this.unsubscribeRuntime = undefined;
 		this.retainQueue.dispose();
 	}
 

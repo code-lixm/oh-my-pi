@@ -11,8 +11,10 @@
  * entry count, but it cannot duplicate or misorder rows the way incremental
  * component reuse could.
  */
+
+import type { Clipboard, SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { Usage } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
@@ -64,10 +66,29 @@ export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	/** Resolve snapshot state for the transcript currently being rebuilt. */
+	getSnapshots?: () => SnapshotStore | undefined;
+	/** Resolve the edit register for the transcript currently being rebuilt. */
+	getClipboard?: () => Clipboard | undefined;
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
 	requestRender: () => void;
+	/**
+	 * Click handler for Markdown link cells (assistant/user text). Fires with the
+	 * link's raw href — the caller is responsible for opening it (browser, viewer).
+	 * Optional: when omitted, every Markdown link cell stays non-clickable, matching
+	 * the pre-Phase-3B behavior of the historical transcript viewer.
+	 */
+	openLink?: (href: string) => void;
+	/**
+	 * Click handler for tool-result / native assistant images, including the text
+	 * fallback when no image protocol is available. Fires with the source
+	 * `ImageContent` (the bytes that produced the rendered image), so the caller
+	 * materializes and opens them through the system viewer. Optional: omitted
+	 * leaves image cells non-clickable.
+	 */
+	openImage?: (image: ImageContent) => void;
 }
 
 /** Extracts the plain-text content of a user message (string or text blocks). */
@@ -261,12 +282,15 @@ export class ChatTranscriptBuilder {
 					// Rendering their full body on cold open blocked the TUI (issue #6308);
 					// collapse them behind a compact summary that builds Markdown only on
 					// ctrl+o expand. Real user prompts stay fully rendered.
+					//
+					// `openLink` flows through to the synthetic variant so an expanded
+					// advisor dump's hyperlinks stay clickable in the historical viewer.
 					if (isSynthetic) {
-						const collapsed = new CollapsedSyntheticMessageComponent(textContent);
+						const collapsed = new CollapsedSyntheticMessageComponent(textContent, undefined, this.deps.openLink);
 						this.#trackExpandable(collapsed);
 						this.container.addChild(collapsed);
 					} else {
-						this.container.addChild(new UserMessageComponent(textContent, false));
+						this.container.addChild(new UserMessageComponent(textContent, false, undefined, this.deps.openLink));
 					}
 				}
 				break;
@@ -317,6 +341,17 @@ export class ChatTranscriptBuilder {
 		const hideThinkingBlock = this.deps.hideThinkingBlock?.() ?? false;
 		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : false;
 		const timeline = splitAssistantMessageToolTimeline(message);
+		// Historical-transcript assistant messages reuse the live wiring: the host
+		// (AgentTranscriptViewer / LastTurnViewer) forwards its own openLink/openImage
+		// to Markdown children (setLinkHandler) and Image / fallback children (setClickHandler)
+		// via the same richContentHandlers shape the live InteractiveModeContext uses.
+		const richContentHandlers =
+			this.deps.openLink !== undefined || this.deps.openImage !== undefined
+				? {
+						openLink: this.deps.openLink,
+						openImage: this.deps.openImage,
+					}
+				: undefined;
 		const assistantComponent = new AssistantMessageComponent(
 			timeline.beforeTools,
 			hideThinkingBlock,
@@ -324,6 +359,7 @@ export class ChatTranscriptBuilder {
 			this.deps.getMessageRenderer ? undefined : [], // placeholder for thinkingRenderers
 			this.deps.ui.imageBudget,
 			proseOnlyThinking,
+			richContentHandlers,
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
 		this.#trackExpandable(assistantComponent);
@@ -362,6 +398,7 @@ export class ChatTranscriptBuilder {
 				this.deps.getMessageRenderer ? undefined : [],
 				undefined,
 				proseOnlyThinking,
+				richContentHandlers,
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
 			this.#trackExpandable(component);
@@ -373,7 +410,9 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
-			if (content.name === "hub" && !settings.get("display.showHubProcessActivity")) {
+			// This builder backs parked/advisor/subagent viewers, where Hub lifecycle
+			// plumbing is never user-facing even when Main debugging opts into it.
+			if (content.name === "hub") {
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
@@ -398,6 +437,7 @@ export class ChatTranscriptBuilder {
 				} else if (afterToolSegment) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
+					group.setArgsComplete(content.id);
 					this.#pendingTools.set(content.id, group);
 				} else {
 					const normalizedArgs = normalizeToolArgs(content.arguments);
@@ -413,12 +453,18 @@ export class ChatTranscriptBuilder {
 				content.name,
 				content.arguments,
 				{
+					snapshots: this.deps.getSnapshots?.(),
+					clipboard: this.deps.getClipboard?.(),
 					// Stable ids and Kitty placeholder cells keep images anchored
 					// while the transcript viewport scrolls and reflows.
 					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.container,
+					// Forward the host's image-open handler so a click on a tool-result
+					// image (or its text fallback) routes the original bytes/mime back
+					// to the host's materialize-and-open path.
+					openImage: this.deps.openImage,
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,
@@ -435,6 +481,7 @@ export class ChatTranscriptBuilder {
 					content.id,
 				);
 			} else {
+				component.setArgsComplete(content.id);
 				this.#pendingTools.set(content.id, component);
 			}
 			appendAssistantSegment(afterToolSegment);

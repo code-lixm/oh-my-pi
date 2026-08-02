@@ -145,15 +145,19 @@ function restorePlan(checkpointId: string, scope: WorkspaceRestoreScope): Worksp
 	};
 }
 
-function restoreResult(checkpointId: string): WorkspaceRestoreResult {
+function restoreResult(
+	plan: Pick<WorkspaceRestorePlan, "checkpointId" | "scope" | "strategy">,
+): WorkspaceRestoreResult {
 	return {
-		transactionId: `transaction-${checkpointId}`,
-		checkpointId,
+		transactionId: `transaction-${plan.checkpointId}`,
+		checkpointId: plan.checkpointId,
 		guardCheckpointId: null,
 		restoredPaths: ["src/restored.ts"],
 		skippedPaths: [],
 		conversationEntryId: null,
 		redoAvailable: true,
+		scope: plan.scope,
+		strategy: plan.strategy,
 	};
 }
 
@@ -263,6 +267,7 @@ function createRestoreHarness(): RestoreHarness {
 	let transcript = ["Rendered stale transcript"];
 	let display = [...transcript];
 	let selectedScope: WorkspaceRestoreScope | undefined;
+	let previewPlan: WorkspaceRestorePlan | undefined;
 	const previewScopes: WorkspaceRestoreScope[] = [];
 	const previewStarted = Promise.withResolvers<void>();
 	const previewGate = Promise.withResolvers<WorkspaceCheckpointAccessResult<WorkspaceRestorePlan>>();
@@ -276,9 +281,9 @@ function createRestoreHarness(): RestoreHarness {
 			return previewGate.promise;
 		},
 		applyWorkspaceRestore: async () => {
-			if (!selectedScope) throw new Error("Expected a selected restore scope");
-			if (selectedScope === "conversation" || selectedScope === "all") activeEntries = restoredEntries;
-			return { available: true, value: restoreResult(checkpoint.id) };
+			if (!previewPlan) throw new Error("Expected a previewed restore plan");
+			if (previewPlan.scope === "conversation" || previewPlan.scope === "all") activeEntries = restoredEntries;
+			return { available: true, value: restoreResult(previewPlan) };
 		},
 		clearTransientSessionUi: () => {
 			transientRows.length = 0;
@@ -302,7 +307,9 @@ function createRestoreHarness(): RestoreHarness {
 			selector.handleInput(ENTER);
 			await previewStarted.promise;
 			if (!selectedScope) throw new Error("Expected a restore preview request");
-			previewGate.resolve({ available: true, value: restorePlan(checkpoint.id, selectedScope) });
+			const plan = restorePlan(checkpoint.id, selectedScope);
+			previewPlan = plan;
+			previewGate.resolve({ available: true, value: plan });
 			await Promise.resolve();
 			await Promise.resolve();
 			await Promise.resolve();

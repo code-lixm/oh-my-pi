@@ -26,6 +26,7 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { WorkspaceCheckpointAccessResult } from "../../session/workspace-checkpoint-coordinator";
+import { PREVIEW_LIMITS } from "../../tools/render-utils";
 import type {
 	WorkspaceCheckpointCompleteness,
 	WorkspaceCheckpointRecord,
@@ -126,6 +127,7 @@ export interface CheckpointSelectorDeps {
 		options?: { allowConflicts?: boolean },
 	) => Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>>;
 	isMutatorActive: () => boolean;
+	requestRender: () => void;
 }
 
 export class CheckpointSelectorComponent implements Component {
@@ -142,6 +144,9 @@ export class CheckpointSelectorComponent implements Component {
 	#pendingPlan: WorkspaceRestorePlan | null = null;
 	#statusMessage = "";
 	#statusTone: "muted" | "warning" | "error" = "muted";
+	#building = false;
+	#applying = false;
+	#previewGeneration = 0;
 
 	constructor(deps: CheckpointSelectorDeps) {
 		this.#deps = deps;
@@ -181,11 +186,14 @@ export class CheckpointSelectorComponent implements Component {
 	}
 
 	handleInput(data: string): void {
+		if (this.#applying) return;
 		if (matchesAppInterrupt(data)) {
+			this.#cancelPendingPreview();
 			this.#deps.onCancel();
 			return;
 		}
 		if (matchesKey(data, "escape") || matchesKey(data, "esc")) {
+			this.#cancelPendingPreview();
 			if (this.#stage === "list") {
 				this.#deps.onCancel();
 				return;
@@ -199,6 +207,7 @@ export class CheckpointSelectorComponent implements Component {
 			this.#refreshStatus();
 			return;
 		}
+		if (this.#building) return;
 
 		if (this.#stage === "list") {
 			this.#handleListInput(data);
@@ -440,10 +449,39 @@ export class CheckpointSelectorComponent implements Component {
 				),
 			);
 		}
+		if (plan.operations.length > 0) {
+			lines.push(theme.bold(tSettingsUi("Files to restore")));
+			for (const operation of plan.operations.slice(0, PREVIEW_LIMITS.COLLAPSED_ITEMS)) {
+				const marker =
+					operation.kind === "create"
+						? "+"
+						: operation.kind === "delete"
+							? "-"
+							: operation.kind === "update"
+								? "~"
+								: operation.kind === "chmod"
+									? "m"
+									: "l";
+				const tone = operation.kind === "delete" ? "warning" : operation.kind === "create" ? "success" : "muted";
+				const detail = `${marker} ${operation.kind}  ${sanitizeOneLine(operation.path)}`;
+				lines.push(theme.fg(tone, truncateToWidth(detail, width, Ellipsis.Unicode)));
+			}
+			if (plan.operations.length > PREVIEW_LIMITS.COLLAPSED_ITEMS) {
+				lines.push(
+					theme.fg(
+						"muted",
+						tSettingsUi("… {count} more operation(s)", {
+							count: plan.operations.length - PREVIEW_LIMITS.COLLAPSED_ITEMS,
+						}),
+					),
+				);
+			}
+		}
 		if (plan.conflicts.length > 0) {
 			lines.push(theme.fg("warning", `${theme.status.warning} ${tSettingsUi("Conflicts")}:`));
-			for (const conflict of plan.conflicts.slice(0, 3)) {
-				const conflictLine = `${conflict.kind}: ${conflict.message}`;
+			for (const conflict of plan.conflicts.slice(0, PREVIEW_LIMITS.COLLAPSED_LINES)) {
+				const conflictPath = conflict.path ? `${sanitizeOneLine(conflict.path)}: ` : "";
+				const conflictLine = `${conflictPath}${conflict.kind}: ${sanitizeOneLine(conflict.message)}`;
 				lines.push(
 					theme.fg(
 						blockingConflict(conflict) ? "error" : "warning",
@@ -451,9 +489,14 @@ export class CheckpointSelectorComponent implements Component {
 					),
 				);
 			}
-			if (plan.conflicts.length > 3) {
+			if (plan.conflicts.length > PREVIEW_LIMITS.COLLAPSED_LINES) {
 				lines.push(
-					theme.fg("muted", tSettingsUi("… {count} more conflict(s)", { count: plan.conflicts.length - 3 })),
+					theme.fg(
+						"muted",
+						tSettingsUi("… {count} more conflict(s)", {
+							count: plan.conflicts.length - PREVIEW_LIMITS.COLLAPSED_LINES,
+						}),
+					),
 				);
 			}
 		}
@@ -484,6 +527,8 @@ export class CheckpointSelectorComponent implements Component {
 	}
 
 	#defaultStatusText(): string {
+		if (this.#applying) return tSettingsUi("Applying restore…");
+		if (this.#building) return tSettingsUi("Building restore preview…");
 		if (this.#deps.isMutatorActive()) {
 			return tSettingsUi("Active mutator: wait until the current tool finishes.");
 		}
@@ -507,24 +552,50 @@ export class CheckpointSelectorComponent implements Component {
 		this.#statusMessage = message ?? "";
 		this.#statusTone = tone;
 	}
+	#cancelPendingPreview(): void {
+		if (!this.#building) return;
+		this.#previewGeneration += 1;
+		this.#building = false;
+	}
 
 	async #buildPreview(checkpoint: WorkspaceCheckpointRecord, scope: RestoreScope): Promise<void> {
-		const preview = await this.#deps.preview(checkpoint.id, scope);
-		if (!preview.available || !preview.value) {
+		if (this.#building || this.#applying) return;
+		const generation = ++this.#previewGeneration;
+		this.#building = true;
+		this.#refreshStatus();
+		this.#deps.requestRender();
+		try {
+			const preview = await this.#deps.preview(checkpoint.id, scope);
+			if (generation !== this.#previewGeneration) return;
+			if (!preview.available || !preview.value) {
+				this.#refreshStatus(
+					tSettingsUi("Cannot preview restore: {reason}", {
+						reason: preview.reason ?? tSettingsUi("unavailable"),
+					}),
+					"error",
+				);
+				return;
+			}
+			this.#pendingCheckpoint = checkpoint;
+			this.#pendingScope = scope;
+			this.#pendingPlan = preview.value;
+			this.#previewActionIndex = 0;
+			this.#stage = "preview";
+			this.#refreshStatus();
+		} catch (error) {
+			if (generation !== this.#previewGeneration) return;
 			this.#refreshStatus(
 				tSettingsUi("Cannot preview restore: {reason}", {
-					reason: preview.reason ?? tSettingsUi("unavailable"),
+					reason: error instanceof Error ? error.message : String(error),
 				}),
 				"error",
 			);
-			return;
+		} finally {
+			if (generation === this.#previewGeneration) {
+				this.#building = false;
+				this.#deps.requestRender();
+			}
 		}
-		this.#pendingCheckpoint = checkpoint;
-		this.#pendingScope = scope;
-		this.#pendingPlan = preview.value;
-		this.#previewActionIndex = 0;
-		this.#stage = "preview";
-		this.#refreshStatus();
 	}
 
 	async #applyCurrent(): Promise<void> {
@@ -535,17 +606,33 @@ export class CheckpointSelectorComponent implements Component {
 			this.#refreshStatus(tSettingsUi("Restore preview is no longer available."), "error");
 			return;
 		}
-		const allowConflicts = plan.conflicts.length > 0;
-		const resultEnvelope = await this.#deps.apply(plan.id, { allowConflicts });
-		if (!resultEnvelope.available || !resultEnvelope.value) {
+		if (this.#applying) return;
+		this.#applying = true;
+		this.#refreshStatus();
+		this.#deps.requestRender();
+		try {
+			const allowConflicts = plan.conflicts.length > 0;
+			const resultEnvelope = await this.#deps.apply(plan.id, { allowConflicts });
+			if (!resultEnvelope.available || !resultEnvelope.value) {
+				this.#refreshStatus(
+					tSettingsUi("Apply failed: {reason}", {
+						reason: resultEnvelope.reason ?? tSettingsUi("unavailable"),
+					}),
+					"error",
+				);
+				return;
+			}
+			await this.#deps.onPick({ checkpoint, scope, plan, result: resultEnvelope.value });
+		} catch (error) {
 			this.#refreshStatus(
 				tSettingsUi("Apply failed: {reason}", {
-					reason: resultEnvelope.reason ?? tSettingsUi("unavailable"),
+					reason: error instanceof Error ? error.message : String(error),
 				}),
 				"error",
 			);
-			return;
+		} finally {
+			this.#applying = false;
+			this.#deps.requestRender();
 		}
-		await this.#deps.onPick({ checkpoint, scope, plan, result: resultEnvelope.value });
 	}
 }

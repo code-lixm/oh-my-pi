@@ -17,4 +17,9 @@
 {{mergeSummary}}
 </merge-summary>
 {{/if}}
+{{#if failed}}
+<recovery-required>
+此任务已失败，不要将其视为已完成。保留其他已成功子任务的结果，检查上述失败证据，然后采用修正后的方案继续未完成工作，或将其重新分配给合适的代理。只重试尚未完成的工作；如果无法恢复，请明确报告阻塞原因。
+</recovery-required>
+{{/if}}
 </task-result>

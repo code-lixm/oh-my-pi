@@ -2223,6 +2223,7 @@ async function executeToolCalls(
 		transformToolCallArguments,
 		resolveFallbackTool,
 		afterToolCall,
+		formatSkippedToolResult,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 	// Defensive: the outer loop already filters exec-resolved blocks before
@@ -2397,7 +2398,22 @@ async function executeToolCalls(
 		stream.push({ type: "message_end", message: toolResultMessage });
 	};
 
+	const emitTerminalSkippedToolResult = (record: (typeof records)[number]): void => {
+		record.skipped = true;
+		recordSkippedTool(telemetry, {
+			toolCallId: record.toolCall.id,
+			toolName: record.toolCall.name,
+			status: "skipped",
+		});
+		const synthetic = createSyntheticToolResultMessage(record.toolCall, "terminal");
+		emitToolResult(record, { content: synthetic.content, details: synthetic.details }, true);
+	};
+
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
+		if (record.signal.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+			emitTerminalSkippedToolResult(record);
+			return;
+		}
 		if (interruptState.triggered) {
 			// Skip both span emission and the collector orphan record here. The
 			// tail sweep below (after `Promise.allSettled`) is the single path
@@ -2411,6 +2427,10 @@ async function executeToolCalls(
 		// engaged. Tools already executing are unaffected (pausing never aborts);
 		// a batch interrupted mid-pause unwinds via the signal checks below.
 		if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(record.signal);
+		if (record.signal.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+			emitTerminalSkippedToolResult(record);
+			return;
+		}
 
 		const { toolCall, tool } = record;
 		// Validation (and the beforeToolCall hook) ran in the prepare phase; a
@@ -2570,7 +2590,7 @@ async function executeToolCalls(
 			// never returned (it threw on the abort), so it was genuinely cut off before
 			// producing usable output. Report it as skipped.
 			record.skipped = true;
-			emitToolResult(record, createSkippedToolResult(interruptState.source), true);
+			emitToolResult(record, createSkippedToolResult(interruptState.source, formatSkippedToolResult), true);
 		} else {
 			// No interrupt on this signal, or the tool finished before the interrupt landed
 			// (`completedToolExecution`) — even if the signal aborted around completion. Keep
@@ -2711,7 +2731,7 @@ async function executeToolCalls(
 				toolName: record.toolCall.name,
 				status: "skipped",
 			});
-			emitToolResult(record, createSkippedToolResult(interruptState.source), true);
+			emitToolResult(record, createSkippedToolResult(interruptState.source, formatSkippedToolResult), true);
 		}
 	}
 
@@ -2731,13 +2751,17 @@ async function executeToolCalls(
  * (#4321): a provider-side stream error after tool-call emission (e.g. Codex
  * websocket close) was surfaced by the CLI as if the local tool had failed.
  *
- * `source` names the assistant-side termination state that prevented
- * execution; `upstreamError` is the provider-reported message when the turn
- * ended with `stopReason === "error"`.
+ * `source` names the execution boundary that prevented the call; `upstreamError`
+ * is the provider-reported message when the turn ended with `stopReason === "error"`.
  */
 export interface SyntheticToolResultDetails {
 	__synthetic: true;
-	source: "assistant_stop_aborted" | "assistant_stop_error" | "assistant_stop_skipped" | "assistant_stop_length";
+	source:
+		| "assistant_stop_aborted"
+		| "assistant_stop_error"
+		| "assistant_stop_skipped"
+		| "assistant_stop_length"
+		| "terminal_tool_result";
 	executed: false;
 	upstreamError?: string;
 }
@@ -2760,17 +2784,19 @@ export function isSyntheticToolResultMessage(
 }
 
 function syntheticDetailsFor(
-	reason: "aborted" | "error" | "skipped" | "length",
+	reason: "aborted" | "error" | "skipped" | "length" | "terminal",
 	errorMessage: string | undefined,
 ): SyntheticToolResultDetails {
 	const source: SyntheticToolResultDetails["source"] =
-		reason === "aborted"
-			? "assistant_stop_aborted"
-			: reason === "error"
-				? "assistant_stop_error"
-				: reason === "length"
-					? "assistant_stop_length"
-					: "assistant_stop_skipped";
+		reason === "terminal"
+			? "terminal_tool_result"
+			: reason === "aborted"
+				? "assistant_stop_aborted"
+				: reason === "error"
+					? "assistant_stop_error"
+					: reason === "length"
+						? "assistant_stop_length"
+						: "assistant_stop_skipped";
 	return {
 		__synthetic: true,
 		source,
@@ -2785,17 +2811,19 @@ function syntheticDetailsFor(
  */
 export function createSyntheticToolResultMessage(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
-	reason: "aborted" | "error" | "skipped" | "length",
+	reason: "aborted" | "error" | "skipped" | "length" | "terminal",
 	errorMessage?: string,
 ): ToolResultMessage<SyntheticToolResultDetails> {
 	const message =
-		reason === "aborted"
-			? "Tool execution was aborted"
-			: reason === "length"
-				? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
-				: reason === "skipped"
-					? "Tool call was not executed because the assistant ended its turn"
-					: "Tool call was not executed because the provider stream ended with an error before the tool could run";
+		reason === "terminal"
+			? "Tool call was not executed because a completed tool result ended the run"
+			: reason === "aborted"
+				? "Tool execution was aborted"
+				: reason === "length"
+					? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
+					: reason === "skipped"
+						? "Tool call was not executed because the assistant ended its turn"
+						: "Tool call was not executed because the provider stream ended with an error before the tool could run";
 	const details = syntheticDetailsFor(reason, errorMessage);
 	return {
 		role: "toolResult",
@@ -2852,7 +2880,10 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 	};
 }
 
-function createSkippedToolResult(source: SteeringInterruptSource | "irc" | undefined): AgentToolResult<any> {
+function createSkippedToolResult(
+	source: SteeringInterruptSource | "irc" | undefined,
+	formatSkippedToolResult?: AgentLoopConfig["formatSkippedToolResult"],
+): AgentToolResult<unknown> {
 	let reason = "pending steering message";
 	let blocker = "queued message";
 	if (source === "user") {
@@ -2865,11 +2896,14 @@ function createSkippedToolResult(source: SteeringInterruptSource | "irc" | undef
 		reason = "pending peer interrupt";
 		blocker = "interrupt";
 	}
+	const text =
+		formatSkippedToolResult?.(source) ??
+		`Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
 	return {
 		content: [
 			{
 				type: "text",
-				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
+				text,
 			},
 		],
 		details: {},

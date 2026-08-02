@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
 import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import type { SgrMouseEvent } from "@oh-my-pi/pi-tui/mouse";
 import {
 	type CellDimensions,
 	getCellDimensions,
@@ -232,6 +233,202 @@ describe("terminal image rendering", () => {
 		expect(imageLine).not.toContain("\x1b[0A");
 		expect(imageLine).not.toContain("\x1b[0B");
 		expect(imageLine).not.toMatch(/\x1b\[\d+[AB]/);
+	});
+});
+
+describe("Image click routing (MouseRoutable)", () => {
+	const originalProtocol = TERMINAL.imageProtocol;
+	let originalCellDims: CellDimensions;
+	const originalGraphics = { ...getKittyGraphics() };
+
+	beforeEach(() => {
+		delete Bun.env.TMUX;
+		originalCellDims = { ...getCellDimensions() };
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		terminal.imageProtocol = null;
+		setKittyGraphics({ unicodePlaceholders: false });
+	});
+
+	afterEach(() => {
+		setCellDimensions(originalCellDims);
+		terminal.imageProtocol = originalProtocol;
+		setKittyGraphics(originalGraphics);
+	});
+
+	const SQUARE = { widthPx: 100, heightPx: 100 };
+
+	function clickEvent(
+		line: number,
+		col: number,
+		overrides: Partial<Pick<SgrMouseEvent, "leftClick" | "motion" | "release" | "wheel">> = {},
+	): SgrMouseEvent {
+		return {
+			button: 0,
+			col,
+			row: line,
+			release: overrides.release ?? false,
+			wheel: overrides.wheel ?? null,
+			motion: overrides.motion ?? false,
+			leftClick: overrides.leftClick ?? true,
+		};
+	}
+
+	function makeImage(maxWidth = 10, maxHeight = 2): Image {
+		const budget = new ImageBudget(1, () => {});
+		return new Image(
+			BASE64_ONE_PIXEL_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: `click-${maxWidth}-${maxHeight}`, maxWidthCells: maxWidth, maxHeightCells: maxHeight },
+			SQUARE,
+		);
+	}
+
+	it("renders byte-identical output regardless of the click handler's presence (no protocol)", () => {
+		const image = makeImage();
+		const before = image.render(20).join("\n");
+		image.setClickHandler(() => {});
+		const after = image.render(20).join("\n");
+		expect(after).toBe(before);
+	});
+
+	it("falls back to text and only the last row is clickable", () => {
+		const image = makeImage();
+		image.render(20);
+		let calls = 0;
+		image.setClickHandler(() => {
+			calls++;
+		});
+
+		const totalRows = image.render(20).length;
+		// First render with no protocol: single fallback row.
+		expect(totalRows).toBe(1);
+
+		// Click on the fallback text — fires.
+		expect(image.routeMouse(clickEvent(0, 1), 0, 1)).toBe(true);
+		expect(calls).toBe(1);
+
+		// Click outside the visible fallback text cells — rejects.
+		expect(image.routeMouse(clickEvent(0, 200), 0, 200)).toBe(false);
+		expect(calls).toBe(1);
+
+		// Click on a row that doesn't exist — rejects.
+		expect(image.routeMouse(clickEvent(5, 0), 5, 0)).toBe(false);
+		expect(calls).toBe(1);
+	});
+
+	it("routes a protocol encoding failure through fallback text geometry", () => {
+		terminal.imageProtocol = ImageProtocol.Sixel;
+		const image = new Image(
+			"not-an-image",
+			"image/png",
+			{ fallbackColor: text => text },
+			{ maxWidthCells: 10, maxHeightCells: 2 },
+			SQUARE,
+		);
+		const lines = image.render(20);
+		let calls = 0;
+		image.setClickHandler(() => {
+			calls++;
+		});
+
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("[Image:");
+		expect(image.routeMouse(clickEvent(0, 1), 0, 1)).toBe(true);
+		expect(image.routeMouse(clickEvent(0, 200), 0, 200)).toBe(false);
+		expect(calls).toBe(1);
+	});
+
+	it("routes clicks to the actual image bounds for Kitty Unicode placeholders", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		setKittyGraphics({ unicodePlaceholders: true });
+		// Use a tall maxHeight so width is the only fit constraint — gives
+		// fit.columns === 8 (one cell per char in the 100×100 SQUARE / 10x10
+		// cell grid). Otherwise the height cap would shrink columns below the
+		// intended placeholder grid.
+		const image = makeImage(8, 10);
+		image.render(20);
+		let calls = 0;
+		image.setClickHandler(() => {
+			calls++;
+		});
+		const lines = image.render(20);
+		// Placeholders: every row is a real text-cell row; columns
+		// 0..(result.columns-1) are placeholder cells. Fit gave columns=8 so
+		// the row holds 8 placeholders.
+		expect(lines.length).toBe(8);
+		// Click on a placeholder cell on the first row.
+		expect(image.routeMouse(clickEvent(0, 2), 0, 2)).toBe(true);
+		expect(calls).toBe(1);
+		// Click past the image's columns on the same row.
+		expect(image.routeMouse(clickEvent(0, 99), 0, 99)).toBe(false);
+		expect(calls).toBe(1);
+		// Click on the second row.
+		expect(image.routeMouse(clickEvent(1, 0), 1, 0)).toBe(true);
+		expect(calls).toBe(2);
+	});
+
+	it("routes clicks to the actual image bounds for Kitty direct placement", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		setKittyGraphics({ unicodePlaceholders: false });
+		const budget = new ImageBudget(1, () => {});
+		const image = new Image(
+			BASE64_DUMMY,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: "direct-click", maxWidthCells: 6, maxHeightCells: 2 },
+			SQUARE,
+		);
+		image.render(20);
+		let calls = 0;
+		image.setClickHandler(() => {
+			calls++;
+		});
+		const lines = image.render(20);
+		// Direct placement: rows-1 reserved rows + 1 placement row.
+		expect(lines.length).toBe(2);
+		// Click on the reserved (empty) row — still inside image bounds, must fire.
+		expect(image.routeMouse(clickEvent(0, 0), 0, 0)).toBe(true);
+		expect(calls).toBe(1);
+		// Click on the placement row.
+		expect(image.routeMouse(clickEvent(1, 0), 1, 0)).toBe(true);
+		expect(calls).toBe(2);
+		// Click past the image columns — reject.
+		expect(image.routeMouse(clickEvent(0, 99), 0, 99)).toBe(false);
+		expect(calls).toBe(2);
+	});
+
+	it("renders byte-identical output after a click is registered", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		setKittyGraphics({ unicodePlaceholders: true });
+		const image = makeImage(8, 2);
+		const before = image.render(20).join("\n");
+		image.setClickHandler(() => {});
+		image.routeMouse(clickEvent(0, 1), 0, 1);
+		const after = image.render(20).join("\n");
+		expect(after).toBe(before);
+	});
+
+	it("rejects motion, release, wheel, and non-primary events", () => {
+		const image = makeImage();
+		image.render(20);
+		let calls = 0;
+		image.setClickHandler(() => {
+			calls++;
+		});
+		expect(image.routeMouse(clickEvent(0, 1, { motion: true }), 0, 1)).toBe(false);
+		expect(image.routeMouse(clickEvent(0, 1, { release: true }), 0, 1)).toBe(false);
+		expect(image.routeMouse(clickEvent(0, 1, { wheel: 1 }), 0, 1)).toBe(false);
+		expect(image.routeMouse(clickEvent(0, 1, { leftClick: false }), 0, 1)).toBe(false);
+		expect(calls).toBe(0);
+	});
+
+	it("returns false before the first render", () => {
+		const image = makeImage();
+		image.setClickHandler(() => {
+			throw new Error("handler should not fire before first render");
+		});
+		expect(image.routeMouse(clickEvent(0, 0), 0, 0)).toBe(false);
 	});
 });
 

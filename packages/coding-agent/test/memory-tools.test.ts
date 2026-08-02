@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
+import { HindsightApi, HindsightError } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
@@ -31,6 +31,7 @@ import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflec
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
@@ -325,10 +326,12 @@ describe("retain.execute", () => {
 		expect(registeredState?.retainQueue.depth).toBe(0);
 	});
 
-	it("emits a UI-only warning notice when the batch flush fails", async () => {
+	it("emits a UI-only warning notice when queued batch flush receives a non-authentication failure", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		vi.spyOn(HindsightApi.prototype, "retainBatch").mockRejectedValue(new Error("HTTP 503"));
+		vi.spyOn(HindsightApi.prototype, "retainBatch").mockRejectedValue(
+			new HindsightError("Hindsight temporarily unavailable", 503),
+		);
 		const noticeSpy = vi.fn();
 		registerState(client, settings, { sessionOverrides: { emitNotice: noticeSpy } });
 
@@ -340,8 +343,36 @@ describe("retain.execute", () => {
 		const [level, message, source] = noticeSpy.mock.calls[0];
 		expect(level).toBe("warning");
 		expect(source).toBe("Hindsight");
-		expect(message).toContain("HTTP 503");
-		expect(message).toContain("1 memory");
+		expect(message).toContain("Hindsight temporarily unavailable");
+	});
+
+	it("emits one localized actionable error notice for repeated queued authentication failures", async () => {
+		const previousLocale = getSettingsUiLocale();
+		try {
+			const settings = Settings.isolated({ "memory.backend": "hindsight" });
+			setSettingsUiLocale("zh-CN");
+			const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+			vi.spyOn(HindsightApi.prototype, "retainBatch").mockRejectedValue(new HindsightError("invalid token", 401));
+			const noticeSpy = vi.fn();
+			registerState(client, settings, { sessionOverrides: { emitNotice: noticeSpy } });
+
+			const tool = MemoryRetainTool.createIf(makeSession(settings))!;
+			await tool.execute("call-auth", { items: [{ content: "protected fact" }] });
+			await registeredState?.flushRetainQueue();
+
+			expect(noticeSpy).toHaveBeenCalledTimes(1);
+			const [level, message, source] = noticeSpy.mock.calls[0];
+			expect(level).toBe("error");
+			expect(source).toBe("Hindsight");
+			expect(message).toContain("鉴权失败");
+			expect(message).toContain("/settings");
+			expect(message).toContain("Hindsight API Token");
+
+			registeredState!.reportRequestFailure(new HindsightError("forbidden", 403));
+			expect(noticeSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			setSettingsUiLocale(previousLocale);
+		}
 	});
 
 	it("throws when no per-session state is registered", async () => {

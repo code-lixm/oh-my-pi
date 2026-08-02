@@ -1,4 +1,5 @@
 import { getKittyGraphics } from "../kitty-graphics";
+import type { MouseRoutable, SgrMouseEvent } from "../mouse";
 import {
 	getCellDimensions,
 	getImageDimensions,
@@ -8,6 +9,7 @@ import {
 	TERMINAL,
 } from "../terminal-capabilities";
 import type { Component } from "../tui";
+import { visibleWidth } from "../utils";
 
 export interface ImageTheme {
 	fallbackColor: (str: string) => string;
@@ -314,7 +316,7 @@ function normalizeCap(cap: number): number {
 	return Math.max(0, Math.trunc(cap));
 }
 
-export class Image implements Component {
+export class Image implements Component, MouseRoutable {
 	#base64Data: string;
 	#mimeType: string;
 	#dimensions: ImageDimensions;
@@ -334,6 +336,15 @@ export class Image implements Component {
 	// pads itself to this height so a budget demotion never shrinks the block
 	// (its rows may already be committed to native scrollback).
 	#renderedGraphicRows = 0;
+	// Click-handling geometry captured by a fresh render and retained across
+	// cache hits for the same render state. `imageColumns` is the physical
+	// terminal width the image occupies (>=1 for a graphic, 0 for fallback);
+	// `fallbackColumns` is the visible width of the fallback line.
+	#imageColumns = 0;
+	#fallbackColumns = 0;
+	/** Click handler installed by the host. Fired once per primary press on
+	 *  the image's hit area (graphic bounds, or the fallback text row). */
+	#clickHandler?: () => void;
 
 	constructor(
 		base64Data: string,
@@ -354,6 +365,55 @@ export class Image implements Component {
 	invalidate(): void {
 		this.#cachedLines = undefined;
 		this.#cachedWidth = undefined;
+	}
+
+	/**
+	 * Install (or remove) the click handler invoked when a primary-press
+	 * `routeMouse` lands on the image's hit area. Fires once per click on
+	 * the actual graphic cells (Kitty Unicode placeholder, Kitty direct,
+	 * iTerm2, Sixel) or on the fallback text row when no protocol is
+	 * available / the image was budget-demoted. Bytes and dimensions are
+	 * unaffected by the handler's presence — toggling it does not invalidate
+	 * cached output.
+	 */
+	setClickHandler(handler: (() => void) | undefined): this {
+		this.#clickHandler = handler;
+		return this;
+	}
+
+	/**
+	 * Local-coordinate mouse routing. `line` is 0-based within the image's
+	 * rendered output (top row = 0). Fires `#clickHandler` exactly once when
+	 * the click lands inside the image's hit area; motion / release / wheel
+	 * events and clicks before a render all return `false`.
+	 *
+	 * Only primary presses fire the handler. The `leftClick` field alone is
+	 * not a sufficient gate — callers can construct events with conflicting
+	 * fields (`motion && leftClick` or `release && leftClick`), so we
+	 * explicitly reject anything that is not a fresh left-button press.
+	 */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (!event.leftClick) return false;
+		if (event.motion || event.release || event.wheel !== null) return false;
+		const handler = this.#clickHandler;
+		if (handler === undefined) return false;
+		const totalRows = this.#cachedLines?.length ?? 0;
+		if (totalRows <= 0) return false;
+		if (line < 0 || line >= totalRows) return false;
+		// Graphic mode: every row the image occupies, columns 0..imageColumns-1.
+		if (this.#imageColumns > 0) {
+			if (col < 0 || col >= this.#imageColumns) return false;
+			handler();
+			return true;
+		}
+		// Fallback mode (no protocol, or budget-demoted): only the LAST row
+		// carries the fallback text; reserved padding rows above it are not
+		// clickable (they exist only to keep the block tall for scrollback
+		// stability).
+		if (line !== totalRows - 1) return false;
+		if (col < 0 || col >= this.#fallbackColumns) return false;
+		handler();
+		return true;
 	}
 
 	render(width: number): readonly string[] {
@@ -421,9 +481,25 @@ export class Image implements Component {
 			} else {
 				lines = this.#fallbackLines();
 			}
-			this.#renderedGraphicRows = Math.max(this.#renderedGraphicRows, lines.length);
+			if (result) {
+				this.#renderedGraphicRows = Math.max(this.#renderedGraphicRows, lines.length);
+				// Hit area for the live graphic: every row the image occupies, columns
+				// 0..columns-1 of the actually-displayed terminal width. The columns
+				// field on the renderImage result accounts for Sixel band scaling so
+				// we don't falsely extend the click area to the full row.
+				this.#imageColumns = result.columns;
+				this.#fallbackColumns = 0;
+			} else {
+				this.#imageColumns = 0;
+				this.#fallbackColumns = visibleWidth(lines[lines.length - 1] ?? "");
+			}
 		} else {
 			lines = this.#fallbackLines();
+			// Fallback mode: only the last row (the fallback text) is clickable.
+			// Reserved padding rows above it do not participate — they exist only
+			// to keep the block tall for scrollback stability.
+			this.#imageColumns = 0;
+			this.#fallbackColumns = visibleWidth(lines[lines.length - 1] ?? "");
 		}
 
 		this.#cachedLines = lines;

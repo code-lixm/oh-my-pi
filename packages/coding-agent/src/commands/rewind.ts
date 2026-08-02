@@ -211,6 +211,14 @@ function renderPlan(plan: WorkspaceRestorePlan, json: boolean): void {
 		`${chalk.bold(`plan ${plan.id}`)} for checkpoint ${chalk.bold(plan.checkpointId)}\n` +
 			`  operations: ${plan.operations.length} · conflicts: ${plan.conflicts.length}\n`,
 	);
+	for (const operation of plan.operations) {
+		process.stdout.write(`  ${operation.kind.padEnd(7)} ${operation.path}\n`);
+	}
+	for (const conflict of plan.conflicts) {
+		process.stdout.write(
+			`  conflict ${conflict.path ? `${conflict.path}: ` : ""}${conflict.kind}: ${conflict.message}\n`,
+		);
+	}
 }
 
 function renderResult(result: WorkspaceRestoreResult, json: boolean): void {

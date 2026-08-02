@@ -37,6 +37,7 @@ import {
 	type AgentProgress,
 	canSpawnAtDepth,
 	getTaskSchema,
+	isReadOnlyAgent,
 	type SingleResult,
 	type TaskItem,
 	type TaskParams,
@@ -119,38 +120,13 @@ export type {
 	TaskToolDetails,
 } from "./types";
 export {
+	isReadOnlyAgent,
+	READ_ONLY_TOOL_NAMES,
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 	taskSchema,
 } from "./types";
-
-// Built-in tools whose approval tier is "read" (see tool classes' `approval`).
-// An agent is read-only iff its declared tools are a non-empty subset of this set.
-// Fail-safe: any unknown tool makes the agent not read-only.
-export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
-	"read",
-	"grep",
-	"glob",
-	"web_search",
-	"codegraph",
-	"ast_grep",
-	"yield",
-	"hub",
-	"ask",
-	"todo",
-	"recall",
-	"reflect",
-	"retain",
-	"memory_edit",
-	"inspect_image",
-	"checkpoint",
-	"rewind",
-]);
-
-export function isReadOnlyAgent(agent: AgentDefinition): boolean {
-	return !!agent.tools?.length && agent.tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
-}
 
 /**
  * Preview text for a child result. Falls back to "(no output)" — annotated
@@ -739,6 +715,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		);
 		const ircEnabled = isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0);
 
+		// AgentRegistry is process-global while output managers are session-scoped.
+		// Seed the session allocator from every live process address before either
+		// sync or async allocation so a same-named child cannot overwrite Hub state.
+		let outputManager = this.session.agentOutputManager;
+		if (!outputManager) {
+			outputManager = new AgentOutputManager(this.session.getArtifactsDir ?? (() => null));
+			this.session.agentOutputManager = outputManager;
+		}
+		await outputManager.reserve(
+			AgentRegistry.global()
+				.list()
+				.map(ref => ref.id),
+		);
+
 		if (!manager || asyncItems.length === 0) {
 			// Sync fallback: async execution disabled, orphaned host that never
 			// wired a job manager, or every item's agent type declares
@@ -825,13 +815,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		}
 
-		// Async IDs are claimed before job registration, so retain the fallback
-		// manager on the session rather than recreating it for every call.
-		let outputManager = this.session.agentOutputManager;
-		if (!outputManager) {
-			outputManager = new AgentOutputManager(this.session.getArtifactsDir ?? (() => null));
-			this.session.agentOutputManager = outputManager;
-		}
 		const callStartedAt = Date.now();
 		const spawns: Array<{
 			agentId: string;
@@ -1575,12 +1558,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// the parent so it can resume via irc instead of redoing the work.
 		const refStatus = AgentRegistry.global().get(result.id)?.status;
 		const resumable = result.aborted && (refStatus === "idle" || refStatus === "parked");
+		const failed = !result.aborted && (result.exitCode !== 0 || result.error !== undefined);
 		const summary = prompt.render(selectPrompt(taskSummaryTemplate, taskSummaryTemplateZh), {
 			agentName: result.agent,
 			id: result.id,
 			status,
 			duration: formatDuration(totalDurationMs),
 			abortReason: result.aborted ? result.abortReason : undefined,
+			failed,
 			resumable,
 			preview,
 			truncated,

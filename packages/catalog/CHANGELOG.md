@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [17.2.2] - 2026-07-31
+
+### Added
+
+- Added support for the GMI Cloud provider (`gmi-cloud`), an OpenAI-compatible inference gateway with dynamic model discovery and API-key authentication via the `GMI_API_KEY` environment variable.
+- Added optional authoritative context occupancy to usage records for providers with separate checkpoint telemetry and billable token buckets.
+
+### Fixed
+
+- Fixed classification of dynamically discovered Cursor Kimi K3 effort variants as non-reasoning models when `thinkingDetails` is omitted.
+- Fixed Google AI Studio OpenAI-compatible requests failing with HTTP 400 by omitting the unsupported `store` field.
+- Fixed Synthetic models losing capabilities (such as reasoning/thinking selectors, vision input, output limits, and pricing) by correcting how the discovery mapper parses Synthetic's advertised features, effort vocabularies, and pricing structures.
+- Fixed Cursor model discovery to correctly expose the 1M-token context window for supported models (including Claude, GPT, Kimi K3, and GLM 5.2+ families) instead of defaulting to 200k.
+- Fixed GitHub Copilot routing for `grok-4.5` to use the correct Responses endpoint instead of the unsupported Chat Completions endpoint.
+
 ## [17.2.1] - 2026-07-30
 
 ### Fixed

@@ -152,12 +152,13 @@ async function registerPersistedSubagentsFromDir(
 		}
 		const id = entry.name.slice(0, -6);
 		if (vibeOwnedIds.has(id) && registry.get(id)?.sessionFile !== sessionFile) continue;
-		const snapshot = mergePersistedAgentSnapshot(childSnapshot, parentSnapshot.observations.get(id));
+		const parentObservation = parentSnapshot.observations.get(id);
+		const snapshot = mergePersistedAgentSnapshot(childSnapshot, parentObservation);
 		let ref = registry.get(id);
 		if (!ref) {
 			ref = registry.register({
 				id,
-				displayName: id,
+				displayName: snapshot.displayName ?? parentObservation?.displayName ?? id,
 				kind: "sub",
 				parentId,
 				session: null,

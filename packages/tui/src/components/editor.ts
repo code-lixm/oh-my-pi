@@ -9,7 +9,7 @@ import { BracketedPasteHandler, decodeReencodedPasteControls } from "../brackete
 import { canonicalKeyId, getKeybindings, type KeybindingsManager } from "../keybindings";
 import { extractPrintableText, matchesKey, parseKey } from "../keys";
 import { KillRing } from "../kill-ring";
-import type { SgrMouseEvent } from "../mouse";
+import type { MouseRoutable, SgrMouseEvent } from "../mouse";
 import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui";
 import {
@@ -379,6 +379,26 @@ interface WrapEntry {
 	chunks: TextChunk[] | null;
 }
 
+/** Render-time click-positioning descriptor for one visible editor content row.
+ *  Built at the end of `render()` from the same `LayoutLine` slice that produced
+ *  the emitted row, so every grapheme column is mapped back to its code-unit
+ *  boundary without re-deriving wrap/border/gutter geometry. */
+interface HitRow {
+	/** Logical line in `#state.lines` this row maps back to. */
+	logicalLine: number;
+	/** Code-unit offset into the logical line where this row starts. */
+	startCol: number;
+	/** Displayed text (post-wrap-trim) — pass to `offsetAtVisualCol` for clicks.
+	 *  Its length also bounds where a click past the visible graphemes snaps to. */
+	text: string;
+	/** Absolute column where editor content begins within the rendered row. */
+	contentStartCol: number;
+	/** Width of the row's content area, excluding bordered editor chrome. */
+	contentWidth: number;
+	/** True when this row owns the cursor marker. */
+	hasCursor: boolean;
+}
+
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
@@ -406,7 +426,7 @@ interface HistoryStorage {
 
 type HistoryCursorAnchor = "start" | "end";
 
-export class Editor implements Component, Focusable {
+export class Editor implements Component, Focusable, MouseRoutable {
 	#state: EditorState = {
 		lines: [""],
 		cursorLine: 0,
@@ -434,6 +454,15 @@ export class Editor implements Component, Focusable {
 
 	// Store last layout width for cursor navigation
 	#lastLayoutWidth: number = 80;
+	/** Render-time hit map for `handleMouse`. Built at the end of `render()` from
+	 *  the emitted `LayoutLine` slice so click→text mapping is exact. `null`
+	 *  whenever the editor is not focused and mouse tracking is off, or when the
+	 *  cursor isn't currently rendered (e.g. off-screen between renders). */
+	#lastHitMap: HitRow[] | null = null;
+	/** Number of visible content rows captured by `#lastHitMap`; mirrors
+	 *  `hitMap.length` so callers can size the visible window without
+	 *  null-checking the hit map. */
+	#lastVisibleHeight: number = 0;
 	// Line measurement + word-wrap cache shared by #layoutText,
 	// #buildVisualLineMap, and key handlers within a frame. Line text is a
 	// sound key (strings are immutable); cleared on layout-width or
@@ -880,6 +909,9 @@ export class Editor implements Component, Focusable {
 		const visibleContentHeight = this.#getVisibleContentHeight(layoutLines.length);
 		this.#updateScrollOffset(layoutWidth, layoutLines, visibleContentHeight);
 		const visibleLayoutLines = layoutLines.slice(this.#scrollOffset, this.#scrollOffset + visibleContentHeight);
+		// Full visual-line map for the hit map: scrollOffset indexes into it.
+		// Cheap: wrap chunks are cached per `layoutWidth`/width-config epoch.
+		const visualLinesForHit = this.#buildVisualLineMap(layoutWidth);
 
 		const result: string[] = [];
 		// Scrollbar: shown only when content overflows and the caller opted in.
@@ -934,6 +966,20 @@ export class Editor implements Component, Focusable {
 		const inlineHint = this.#getInlineHint();
 		const hintStyle = this.#theme.hintStyle ?? ((t: string) => `\x1b[2m${t}\x1b[0m`);
 
+		// Hit-map build state. Each visible content row's contentStartCol is the
+		// column where editor text begins within the emitted row — accounting for
+		// border, padding, and prompt gutter. Used by `routeMouse` and
+		// `handleMouse` to translate a click column into a grapheme-anchored
+		// code-unit offset. We only retain the map when `mouseTracking` is on;
+		// focused-but-not-tracking editors don't accept clicks anyway, and
+		// keeping stale maps around forces every typed keystroke to rebuild them.
+		const hitMap: HitRow[] = [];
+		const hitMapEligible = this.mouseTracking;
+		// BorderVisible rows place text after `paddingX + 1` cells of left chrome.
+		// Borderless rows place text after the gutter (prompt-gutter width or 0).
+		const borderLeftCells = borderVisible ? paddingX + 1 : 0;
+		const gutterCells = borderVisible || promptGutter === undefined ? 0 : visibleWidth(promptGutter.firstLine);
+
 		for (let visibleIndex = 0; visibleIndex < visibleLayoutLines.length; visibleIndex++) {
 			const layoutLine = visibleLayoutLines[visibleIndex]!;
 			let displayText = layoutLine.text;
@@ -948,6 +994,26 @@ export class Editor implements Component, Focusable {
 			// Add cursor if this line has it
 			const hasCursor = layoutLine.hasCursor && layoutLine.cursorPos !== undefined;
 			const marker = emitCursorMarker ? CURSOR_MARKER : "";
+
+			// Record this visible row's click geometry. `layoutLine.text` is the
+			// trimmed segment actually displayed; using it (instead of
+			// `line.slice(startCol, startCol + length)` from the visual map)
+			// guarantees a click past the last visible grapheme snaps to the
+			// segment's end instead of landing inside trailing whitespace the
+			// wrapper stripped.
+			if (hitMapEligible) {
+				const visualLine = visualLinesForHit[this.#scrollOffset + visibleIndex];
+				if (visualLine !== undefined) {
+					hitMap.push({
+						logicalLine: visualLine.logicalLine,
+						startCol: visualLine.startCol,
+						text: layoutLine.text,
+						contentStartCol: borderLeftCells + (borderVisible ? 0 : gutterCells),
+						contentWidth: lineContentWidth,
+						hasCursor,
+					});
+				}
+			}
 
 			if (!borderVisible && displayWidth > lineContentWidth) {
 				displayText = sliceByColumn(displayText, 0, lineContentWidth, true);
@@ -1136,6 +1202,16 @@ export class Editor implements Component, Focusable {
 		if (this.#autocompleteState && this.#autocompleteList) {
 			const autocompleteResult = this.#autocompleteList.render(width);
 			result.push(...autocompleteResult);
+		}
+
+		// Commit hit map for this render. Only retain when focused or mouse tracking
+		// is opted in — the rest of the time there is no caller to consult it.
+		if (hitMapEligible && hitMap.length > 0) {
+			this.#lastHitMap = hitMap;
+			this.#lastVisibleHeight = hitMap.length;
+		} else {
+			this.#lastHitMap = null;
+			this.#lastVisibleHeight = 0;
 		}
 
 		return result;
@@ -1714,10 +1790,96 @@ export class Editor implements Component, Focusable {
 	 * Move the cursor to a normal-screen left click. The TUI provides the current
 	 * cursor's screen coordinate, letting this component map a click into its
 	 * visible wrapped viewport without exposing terminal-frame geometry.
+	 *
+	 * When a render-time hit map is available, click→text resolution is exact:
+	 * the row that owns the cursor marker fixes the editor's screen origin,
+	 * `event.row` indexes the target row, and `event.col` resolves to a
+	 * grapheme-anchored offset in O(1). Falls back to the cursorScreen-relative
+	 * delta path when the hit map is empty (unfocused, mid-resize, or stale).
 	 */
 	handleMouse(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean {
 		if (!event.leftClick) return false;
 
+		const hitMap = this.#lastHitMap;
+		if (hitMap !== null && this.#lastVisibleHeight > 0) {
+			// Find which hit row owns the cursor marker — that row's screen
+			// position equals `cursorScreen`, giving us the editor's origin.
+			let cursorVisibleIndex = -1;
+			for (let i = 0; i < hitMap.length; i++) {
+				if (hitMap[i]!.hasCursor) {
+					cursorVisibleIndex = i;
+					break;
+				}
+			}
+			if (cursorVisibleIndex >= 0) {
+				const borderTopOffset = this.#borderVisible ? 1 : 0;
+				const editorOriginRow = cursorScreen.row - cursorVisibleIndex - borderTopOffset;
+				const eventVisibleRow = event.row - editorOriginRow - borderTopOffset;
+				if (eventVisibleRow >= 0 && eventVisibleRow < this.#lastVisibleHeight) {
+					const hit = hitMap[eventVisibleRow]!;
+					const adjustedCol = event.col - hit.contentStartCol;
+					if (this.#borderVisible && (adjustedCol < 0 || adjustedCol >= hit.contentWidth)) {
+						return false;
+					}
+					const localEvent: SgrMouseEvent = { ...event, col: adjustedCol };
+					const result = this.#applyHitMapEvent(localEvent, hit);
+					if (result) return true;
+				}
+				// Out-of-range click: fall through to the legacy path, which has
+				// its own visibility bounds and may still decide to handle it.
+			}
+		}
+
+		return this.#handleMouseLegacy(event, cursorScreen);
+	}
+
+	/**
+	 * Local-coordinate routing: `line` is 0-based within this component's
+	 * rendered output (already accounting for the top border if any).
+	 * Translates the click against the render-time hit map and updates the
+	 * cursor. Returns `false` for clicks on the autocomplete tail, padding,
+	 * or borders — the caller should keep routing.
+	 */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (!event.leftClick) return false;
+		const hitMap = this.#lastHitMap;
+		if (hitMap === null) return false;
+		// `line` is local to the editor's rendered rows, which include the top
+		// border when bordered. The hit map only knows about content rows; the
+		// border and any autocomplete rows below live outside it. Subtract the
+		// top border before indexing.
+		const borderTopOffset = this.#borderVisible ? 1 : 0;
+		const contentLine = line - borderTopOffset;
+		if (contentLine < 0 || contentLine >= hitMap.length) return false;
+		const hit = hitMap[contentLine]!;
+		// Horizontal: `contentStartCol` already accounts for the border (left
+		// chrome) + padding, so the click's local col is usable as-is.
+		const adjustedCol = col - hit.contentStartCol;
+		if (adjustedCol < 0 || (this.#borderVisible && adjustedCol >= hit.contentWidth)) return false;
+		// Inject the post-padding col by mutating a shallow event copy so the
+		// shared helper stays free of editor-specific geometry.
+		const localEvent: SgrMouseEvent = { ...event, col: adjustedCol };
+		return this.#applyHitMapEvent(localEvent, hit);
+	}
+
+	/** Apply one hit row + an event whose `col` is already offset by the
+	 *  row's `contentStartCol`. Returns `true` when the click landed on a
+	 *  grapheme boundary and the cursor moved; used by both `handleMouse`
+	 *  and `routeMouse` to avoid duplicating the click→cursor logic. */
+	#applyHitMapEvent(event: SgrMouseEvent, hit: HitRow): boolean {
+		if (!event.leftClick) return false;
+		const targetLine = this.#state.lines[hit.logicalLine] ?? "";
+		const clickedCol = Math.max(0, event.col);
+		const newCol = Math.min(hit.startCol + offsetAtVisualCol(hit.text, clickedCol), targetLine.length);
+		this.#state.cursorLine = hit.logicalLine;
+		this.#setCursorCol(newCol);
+		this.#resetKillSequence();
+		return true;
+	}
+
+	/** CursorScreen-relative click resolution — kept as a fallback for hit map
+	 *  misses (stale render, cursor scrolled off, etc.). Unchanged behavior. */
+	#handleMouseLegacy(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean {
 		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
 		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
 		const targetVisualLine = currentVisualLine + event.row - cursorScreen.row;

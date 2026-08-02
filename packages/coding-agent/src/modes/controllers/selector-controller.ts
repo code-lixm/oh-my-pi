@@ -21,6 +21,8 @@ import {
 import { settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
+import { getEditClipboard } from "../../edit/edit-clipboard";
+import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import {
 	getInstalledPluginsRegistryPath,
 	getMarketplacesCacheDir,
@@ -121,6 +123,7 @@ import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
+import { openRichContentImage, openRichContentLink } from "../utils/interactive-context-helpers";
 
 function isWorkspaceCheckpointRecord(value: unknown): value is WorkspaceCheckpointRecord {
 	if (!value || typeof value !== "object") return false;
@@ -146,6 +149,9 @@ function isWorkspaceRestoreResult(value: unknown): value is WorkspaceRestoreResu
 	if (!("restoredPaths" in value) || !Array.isArray(value.restoredPaths)) return false;
 	if (!("skippedPaths" in value) || !Array.isArray(value.skippedPaths)) return false;
 	if (!("redoAvailable" in value) || typeof value.redoAvailable !== "boolean") return false;
+	if (!("scope" in value) || (value.scope !== "code" && value.scope !== "conversation" && value.scope !== "all"))
+		return false;
+	if (!("strategy" in value) || (value.strategy !== "preserve" && value.strategy !== "exact")) return false;
 	return true;
 }
 
@@ -508,6 +514,7 @@ export class SelectorController {
 					isWorkspaceRestoreResult,
 				),
 			isMutatorActive: () => session.isBashRunning || session.isEvalRunning || session.isCompacting,
+			requestRender: () => this.ctx.ui.requestRender(),
 		});
 
 		overlayHandle = this.ctx.ui.showOverlay(selector, {
@@ -1781,7 +1788,10 @@ export class SelectorController {
 		}
 		// Switch session via AgentSession (emits hook and tool session events). The
 		// SessionManager adopts the resumed session's own cwd when it differs.
-		await this.ctx.session.switchSession(sessionPath);
+		const switched = await this.ctx.session.switchSession(sessionPath);
+		if (!switched) return false;
+		this.ctx.prepareSessionSwitch();
+		this.ctx.resetObserverRegistry();
 		this.ctx.clearTransientSessionUi();
 		const newCwd = this.ctx.sessionManager.getCwd();
 		const movedProject = normalizePathForComparison(newCwd) !== normalizePathForComparison(previousCwd);
@@ -2272,17 +2282,27 @@ export class SelectorController {
 			this.ctx.ui.requestRender();
 		};
 
+		const hubRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
+
 		hub = new AgentHubOverlayComponent({
 			observers,
 			hubKeys,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
 			onDone: done,
 			requestRender: () => this.ctx.ui.requestRender(),
-			registry: this.ctx.collabGuest?.agentRegistry,
+			registry: hubRegistry,
 			remote: this.ctx.collabGuest?.hubRemote,
 			ui: this.ctx.ui,
 			getTool: name => this.ctx.session.getToolByName(name),
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
+			getSnapshots: id => {
+				const session = hubRegistry.get(id)?.session;
+				return session ? getFileSnapshotStore(session) : undefined;
+			},
+			getClipboard: id => {
+				const session = hubRegistry.get(id)?.session;
+				return session ? getEditClipboard(session) : undefined;
+			},
 			cwd: this.ctx.sessionManager.getCwd(),
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
@@ -2291,6 +2311,13 @@ export class SelectorController {
 			focusAgent: this.ctx.collabGuest ? undefined : id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
 			mouseTracking,
+			// Phase 3B: keep fullscreen subagent/advisor transcripts clickable. The
+			// subagent's own blob store is content-addressed, so materializing its
+			// images against the ambient Main sessionManager is safe — same bytes
+			// hash to the same content path, and openInBrowser uses an absolute
+			// path that the OS viewer can open from anywhere.
+			openLink: href => openRichContentLink(this.ctx, href),
+			openImage: image => openRichContentImage(this.ctx, image),
 		});
 
 		const showReadyHub = () => {

@@ -368,4 +368,21 @@ describe("Shift+Tab model cycling", () => {
 		expect(editor.isShowingAutocomplete()).toBe(true);
 		expect(onCustomShiftTab).not.toHaveBeenCalled();
 	});
+
+	it("routes Ctrl+L to a live-toggle custom handler and Alt+L to display reset by default", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onDisplayReset = vi.fn();
+		const onLiveToggle = vi.fn();
+
+		editor.onDisplayReset = onDisplayReset;
+		editor.setCustomKeyHandler("ctrl+l", onLiveToggle);
+
+		editor.handleInput("\x0c"); // Ctrl+L
+		expect(onLiveToggle).toHaveBeenCalledTimes(1);
+		expect(onDisplayReset).not.toHaveBeenCalled();
+
+		editor.handleInput("\x1bl"); // Alt+L
+		expect(onDisplayReset).toHaveBeenCalledTimes(1);
+		expect(onLiveToggle).toHaveBeenCalledTimes(1);
+	});
 });

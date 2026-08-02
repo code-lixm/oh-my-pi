@@ -16,6 +16,7 @@ import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile
 import { expandAtImports } from "./discovery/at-imports";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
+import { selectModelGuidance } from "./prompts/model-guidance";
 import { selectPrompt } from "./prompts/prompt-locale";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import activeRepoContextTemplateZh from "./prompts/system/active-repo-context.zh-CN.md" with { type: "text" };
@@ -574,6 +575,14 @@ export interface BuildSystemPromptOptions {
 export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
+	/**
+	 * Names of `xd://` devices whose catalog/protocol section this prompt renders.
+	 * Empty/undefined when no catalog was emitted (no mounted devices, or a custom
+	 * prompt template that omits the section). Lets the session fold these devices
+	 * into its announced-mount baseline so a same-turn mount notice does not re-list
+	 * a catalog the prompt already carries (issue #7139).
+	 */
+	xdevCatalogNames?: readonly string[];
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -905,6 +914,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		data,
 	);
 	const systemPrompt = [rendered];
+	if (!resolvedCustomPrompt) {
+		const modelGuidance = selectModelGuidance(model);
+		if (modelGuidance) systemPrompt.push(prompt.render(modelGuidance, data).trim());
+	}
 	if (toolNames.includes("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
@@ -923,5 +936,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		systemPrompt.push(activeRepoContextPrompt);
 	}
 
-	return { systemPrompt };
+	// The xd:// protocol section (with its device catalog) is only rendered by the
+	// default template; a resolved custom prompt uses a template that omits it.
+	const xdevCatalogNames =
+		!resolvedCustomPrompt && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
+	return { systemPrompt, xdevCatalogNames };
 }

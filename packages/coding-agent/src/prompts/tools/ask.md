@@ -7,7 +7,6 @@ Asks user when you need clarification or input during task execution.
 <instruction>
 - Use `recommended: <index>` to mark default (0-indexed); " (Recommended)" added automatically
 - Use `questions` for multiple related questions instead of asking one at a time
-- Set `multi: true` on question to allow multiple selections
 - Use short option labels; put explanatory tradeoffs in `description` instead of merging them into the label
 </instruction>
 

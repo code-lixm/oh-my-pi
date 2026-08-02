@@ -953,7 +953,7 @@ export function renderImage(
 	base64Data: string,
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions = {},
-): { sequence?: string; lines?: string[]; rows: number; transmit?: string } | null {
+): { sequence?: string; lines?: string[]; rows: number; columns: number; transmit?: string } | null {
 	if (!TERMINAL.imageProtocol) {
 		return null;
 	}
@@ -982,7 +982,7 @@ export function renderImage(
 					columns: fit.columns,
 					rows: fit.rows,
 				});
-				return { lines, rows: fit.rows, transmit };
+				return { lines, rows: fit.rows, columns: fit.columns, transmit };
 			}
 			// Direct placement: re-emit only the tiny `a=p` on repaints.
 			const sequence = encodeKittyPlacement({
@@ -991,14 +991,14 @@ export function renderImage(
 				columns: fit.columns,
 				rows: fit.rows,
 			});
-			return { sequence, rows: fit.rows, transmit };
+			return { sequence, rows: fit.rows, columns: fit.columns, transmit };
 		}
 		// No stable id (e.g. no budget): self-contained transmit-and-display.
 		const sequence = encodeKitty(base64Data, {
 			columns: fit.columns,
 			rows: fit.rows,
 		});
-		return { sequence, rows: fit.rows };
+		return { sequence, rows: fit.rows, columns: fit.columns };
 	}
 
 	if (TERMINAL.imageProtocol === ImageProtocol.Sixel) {
@@ -1018,10 +1018,16 @@ export function renderImage(
 			const targetHeightPx = Math.max(6, Math.floor(rawHeightPx / 6) * 6);
 			const heightScale = targetHeightPx / rawHeightPx;
 			const targetWidthPx = Math.max(1, Math.round(fit.columns * cellDims.widthPx * heightScale));
+			// Columns actually occupied on the terminal = ceil(pixelWidth / cellWidth).
+			// Wider than fit.columns only when the height band scale pushed the
+			// width up — but the scale can only shrink the height here, so this
+			// never exceeds fit.columns. Round up so a sub-pixel remainder still
+			// claims its terminal cell.
+			const columns = Math.max(1, Math.ceil(targetWidthPx / cellDims.widthPx));
 			const rows = Math.max(1, Math.ceil(targetHeightPx / cellDims.heightPx));
 			const decoded = new Uint8Array(Buffer.from(base64Data, "base64"));
 			const sequence = encodeSixel(decoded, targetWidthPx, targetHeightPx);
-			return { sequence, rows };
+			return { sequence, rows, columns };
 		} catch {
 			return null;
 		}
@@ -1032,7 +1038,7 @@ export function renderImage(
 			height: "auto",
 			preserveAspectRatio: options.preserveAspectRatio ?? true,
 		});
-		return { sequence, rows: fit.rows };
+		return { sequence, rows: fit.rows, columns: fit.columns };
 	}
 
 	return null;

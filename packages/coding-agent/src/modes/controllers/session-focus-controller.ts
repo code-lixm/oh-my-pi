@@ -10,7 +10,12 @@
  */
 
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { AgentRegistry, type RegistryEvent, resolveTopLevelAgent } from "../../registry/agent-registry";
+import {
+	AgentRegistry,
+	compareAgentNavigationOrder,
+	type RegistryEvent,
+	resolveTopLevelAgent,
+} from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import type { InteractiveModeContext } from "../types";
@@ -51,7 +56,7 @@ export class SessionFocusController {
 		this.ctx.showFocusedAgentView(id);
 	}
 
-	/** Cycle through live subagents in stable creation order; the local root is reached only via Esc. */
+	/** Cycle through live subagents in the shared stable navigation order; the local root is reached only via Esc. */
 	async cycleAgent(direction: "next" | "previous"): Promise<void> {
 		const agentIds = this.registry
 			.list()
@@ -61,7 +66,7 @@ export class SessionFocusController {
 					ref.session &&
 					(ref.status === "running" || ref.status === "waiting" || ref.status === "idle"),
 			)
-			.sort((left, right) => left.createdAt - right.createdAt)
+			.sort(compareAgentNavigationOrder)
 			.map(ref => ref.id);
 		if (agentIds.length === 0) {
 			this.ctx.showStatus(tSettingsUi("No live subagents"));

@@ -1473,6 +1473,7 @@ describe("agentLoop with AgentMessage", () => {
 			model: mock.model,
 			convertToLlm: identityConverter,
 			interruptMode: "immediate",
+			formatSkippedToolResult: source => `localized skipped: ${source ?? "unknown"}`,
 			hasSteeringMessages: () => executed.length >= 1 && !queuedDelivered,
 			getSteeringMessages: async () => {
 				// Deliver the steering message at the injection boundary after
@@ -1503,9 +1504,7 @@ describe("agentLoop with AgentMessage", () => {
 		const skippedContent = toolEnds[1].result.content[0];
 		expect(skippedContent?.type).toBe("text");
 		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to queued user message");
-		expect(skippedContent.text).toContain("Do not count this skipped result as completed work");
-		expect(skippedContent.text).toContain("retry the skipped tool if it is still needed");
+		expect(skippedContent.text).toBe("localized skipped: user");
 
 		// Queued message should appear in events after the tool results and before the next model call.
 		const eventSequence = events.flatMap(event => {

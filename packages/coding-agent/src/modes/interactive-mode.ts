@@ -37,6 +37,7 @@ import {
 	TUI,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	$env,
@@ -104,7 +105,7 @@ import planModeCompactInstructionsPromptZh from "../prompts/system/plan-mode-com
 	type: "text",
 };
 import type { AgentActivityState } from "../registry/agent-activity";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, compareAgentNavigationOrder, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -240,6 +241,7 @@ import type {
 	TodoItem,
 	TodoPhase,
 } from "./types";
+import { openRichContentImage, openRichContentLink } from "./utils/interactive-context-helpers";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
@@ -482,15 +484,17 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /** Build the anchored HUD for active detached subagents. */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
-	const rows = sessions.filter(
-		session =>
-			session.kind === "subagent" &&
-			session.status === "active" &&
-			session.detached === true &&
-			session.progress?.status !== "completed" &&
-			session.progress?.status !== "failed" &&
-			session.progress?.status !== "aborted",
-	);
+	const rows = sessions
+		.filter(
+			session =>
+				session.kind === "subagent" &&
+				session.status === "active" &&
+				session.detached === true &&
+				session.progress?.status !== "completed" &&
+				session.progress?.status !== "failed" &&
+				session.progress?.status !== "aborted",
+		)
+		.sort((left, right) => right.lastUpdate - left.lastUpdate);
 	if (rows.length === 0) return [];
 
 	const dot = theme.styledSymbol("status.done", "accent");
@@ -541,6 +545,8 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	);
 }
 
+const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
+
 export class InteractiveMode implements InteractiveModeContext {
 	session: AgentSession;
 	sessionManager: SessionManager;
@@ -583,6 +589,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#loopAutoSubmitTimer: NodeJS.Timeout | undefined;
 	#todoAutoClearTimer: NodeJS.Timeout | undefined;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
+	#nextAppearanceRequestToken = 1;
+	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
 	todoPhases: TodoPhase[] = [];
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
@@ -773,7 +781,7 @@ export class InteractiveMode implements InteractiveModeContext {
 								(Boolean(ref.session) &&
 									(ref.status === "running" || ref.status === "waiting" || ref.status === "idle"))),
 					)
-					.sort((left, right) => left.createdAt - right.createdAt)
+					.sort(compareAgentNavigationOrder)
 					.map(ref => ref.id),
 			mainNeedsInput: () => this.editorContainer.children[0] !== this.editor,
 			nextKeys: this.keybindings.getKeys("app.agents.next"),
@@ -829,13 +837,23 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#runtimeKeys(runtime: InteractiveRuntime): string[] {
 		const sessionManager = runtime.session.sessionManager;
-		return [this.#topLevelId(runtime), sessionManager.getSessionId(), sessionManager.getSessionFile()].filter(
-			(key): key is string => Boolean(key),
-		);
+		const sessionFile = sessionManager.getSessionFile();
+		return [
+			this.#topLevelId(runtime),
+			sessionManager.getSessionId(),
+			sessionFile ? path.resolve(sessionFile) : undefined,
+		].filter((key): key is string => Boolean(key));
+	}
+
+	#reindexRuntime(runtime: InteractiveRuntime): void {
+		for (const [key, indexedRuntime] of this.#runtimes) {
+			if (indexedRuntime === runtime) this.#runtimes.delete(key);
+		}
+		for (const key of this.#runtimeKeys(runtime)) this.#runtimes.set(key, runtime);
 	}
 
 	#registerRuntime(runtime: InteractiveRuntime): void {
-		for (const key of this.#runtimeKeys(runtime)) this.#runtimes.set(key, runtime);
+		this.#reindexRuntime(runtime);
 	}
 
 	#bindMcpManager(mcpManager?: MCPManager): void {
@@ -903,7 +921,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 	async attachLiveTopLevelRuntime(sessionPath: string): Promise<boolean | undefined> {
-		const runtime = this.#runtimes.get(sessionPath);
+		// A cold switch mutates a runtime's SessionManager in place. Rebuild every
+		// live runtime's identity keys before lookup so neither an old path nor a
+		// newly adopted path can resolve to the wrong runtime.
+		for (const runtime of new Set(this.#runtimes.values())) this.#reindexRuntime(runtime);
+		const runtime = this.#runtimes.get(path.resolve(sessionPath));
 		if (!runtime) return undefined;
 		if (this.#hasBlockingSessionDialog()) {
 			this.showWarning(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
@@ -911,10 +933,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		return this.#attachTopLevelRuntime(runtime, tSettingsUi("Resumed live session"));
 	}
-
 	async #attachTopLevelRuntime(runtime: InteractiveRuntime, label: string): Promise<boolean> {
 		if (runtime === this.#activeRuntime) return true;
 		await this.unfocusSession();
+		this.prepareSessionSwitch();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		for (const unsubscribe of this.#runtimeUnsubscribers.splice(0)) unsubscribe();
@@ -1371,23 +1393,58 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#clearWorkingMessageAccentCache();
 				clearRenderCache();
 				clearMermaidCache();
+				this.ui.invalidate();
 				this.updateEditorBorderColor();
-				if (event.ephemeral) {
-					// Theme previews repaint only the active surface so browsing remains
-					// reversible and never destroys native scrollback.
-					this.ui.invalidate();
+				if (event.ephemeral || isInsideTerminalMultiplexer()) {
+					// Theme previews and multiplexer panes cannot safely replace native
+					// scrollback: previews must stay non-destructive, and multiplexers
+					// suppress ED3 so a forced replay would duplicate transcript history.
 					this.ui.requestRender();
 					return;
 				}
-				// A committed theme change must replace the terminal's physical history,
-				// not only the live viewport. resetDisplay invalidates every cached block,
-				// clears native scrollback, and replays the semantic transcript once.
-				this.ui.resetDisplay();
+				// Rows already committed to native scrollback are immutable; replay them
+				// after a theme swap so a reader scrolled up sees the same palette.
+				this.ui.requestRender(true, { clearScrollback: true });
 			}),
 		);
-		this.ui.terminal.onAppearanceChange(mode => {
-			onTerminalAppearanceChange(mode);
+
+		// Subscribe to terminal dark/light appearance changes.
+		// The terminal queries background color via OSC 11 at startup and on
+		// Mode 2031 notifications, computing luminance to detect dark/light.
+		const unsubscribeAppearanceReport = this.ui.terminal.onAppearanceReport?.((_mode, requestToken) => {
+			const request = this.#appearanceRefreshRequest;
+			if (request === undefined || requestToken !== request.token) return;
+			// ProcessTerminal dispatches report callbacks first, then synchronously
+			// dispatches onAppearanceChange when the reported appearance changed.
+			// That change callback consumes the request below before this microtask
+			// runs; an unchanged matching report has no change callback, so it
+			// consumes the one-shot here. Comparing the captured request prevents a
+			// newer Ctrl+L request from being cleared by this report's microtask.
+			queueMicrotask(() => {
+				if (this.#appearanceRefreshRequest === request) {
+					this.#appearanceRefreshRequest = undefined;
+				}
+			});
 		});
+		if (unsubscribeAppearanceReport) {
+			this.#eventBusUnsubscribers.push(unsubscribeAppearanceReport);
+		}
+		this.ui.terminal.onAppearanceChange((mode, requestToken) => {
+			const request = this.#appearanceRefreshRequest;
+			const appearanceRefreshWasRequested =
+				request !== undefined &&
+				Date.now() <= request.deadline &&
+				(requestToken === request.token || requestToken === undefined);
+			if (request !== undefined && requestToken === request.token) {
+				this.#appearanceRefreshRequest = undefined;
+			}
+			// Ctrl+L already replays immediately below. If either its asynchronous
+			// OSC 11 response or an automatic query ahead of it reveals a theme
+			// change, commit that change so theme loading performs a second full
+			// replay with the newly detected palette.
+			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
+		});
+
 		if (process.platform === "darwin" && TERMINAL.id === "wezterm" && !isInsideTerminalMultiplexer()) {
 			this.#eventBusUnsubscribers.push(startMacOSAppearanceReprobeFallback(this.ui.terminal));
 		}
@@ -3206,6 +3263,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			hideThinkingBlock: () => this.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.proseOnlyThinking,
 			requestRender: () => this.ui.requestRender(),
+			// Phase 3B: keep last-turn transcript links / images clickable. The host
+			// is the live InteractiveModeContext itself — routes through openPath
+			// for both URLs and the content-addressed blob store for image bytes.
+			openLink: href => openRichContentLink(this, href),
+			openImage: image => openRichContentImage(this, image),
 			onClose: () => {
 				handle?.hide();
 				viewer.dispose();
@@ -4414,7 +4476,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusedAgentViewOverlay?.hide();
 		this.#focusedAgentViewOverlay = undefined;
 		this.#focusedAgentView = undefined;
-		this.#stopLoadingAnimation(false);
+		this.#appearanceRefreshRequest = undefined;
+		if (this.loadingAnimation) {
+			this.#stopLoadingAnimation(false);
+		}
 		this.#cleanupMicAnimation();
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
@@ -4994,7 +5059,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return true;
 	}
 
-	#prepareSessionSwitch(): void {
+	prepareSessionSwitch(): void {
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
@@ -5004,7 +5069,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async handleClearCommand(): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
-		this.#prepareSessionSwitch();
+		this.prepareSessionSwitch();
 		await this.#commandController.handleClearCommand();
 	}
 
@@ -5014,7 +5079,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async handleDropCommand(): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
-		this.#prepareSessionSwitch();
+		this.prepareSessionSwitch();
 		await this.#commandController.handleDropCommand();
 	}
 
@@ -5258,9 +5323,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			return;
 		}
-		this.#btwController.dispose();
-		this.#omfgController.dispose();
-		this.resetObserverRegistry();
+		const liveAttach = await this.attachLiveTopLevelRuntime(sessionPath);
+		if (liveAttach !== undefined) return;
 		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
 	}
 
@@ -5299,6 +5363,27 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleCtrlZ(): void {
 		this.#inputController.handleCtrlZ();
+	}
+
+	resetDisplayAfterAppearanceRefresh(): void {
+		const refreshAppearance = this.ui.terminal.refreshAppearance;
+		if (refreshAppearance) {
+			const token = this.#nextAppearanceRequestToken++;
+			const request = {
+				token,
+				deadline: Date.now() + CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS,
+			};
+			this.#appearanceRefreshRequest = request;
+			const acceptedToken = refreshAppearance.call(this.ui.terminal, token);
+			if (acceptedToken !== token && this.#appearanceRefreshRequest === request) {
+				this.#appearanceRefreshRequest = undefined;
+			}
+		} else {
+			this.#appearanceRefreshRequest = undefined;
+		}
+		// Preserve Ctrl+L's immediate full replay when the probe is unsupported,
+		// receives no response, or reports an unchanged appearance.
+		this.ui.resetDisplay();
 	}
 
 	handleDequeue(): void {

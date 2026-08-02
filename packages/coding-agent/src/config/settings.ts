@@ -37,7 +37,13 @@ import { type Settings as SettingsCapabilityItem, settingsCapability } from "../
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
 import { setSettingsUiLocale } from "../i18n/settings-locale";
-import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
+import {
+	isLightTheme,
+	setAutoThemeMapping,
+	setColorBlindMode,
+	setSymbolPreset,
+	setTerminalPaletteOverride,
+} from "../modes/theme/theme";
 import { setPromptLocale } from "../prompts/prompt-locale";
 import { AgentStorage } from "../session/agent-storage";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
@@ -2289,6 +2295,11 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 			setAutoThemeMapping("light", value);
 		}
 	},
+	"theme.terminalPalette": value => {
+		if (typeof value === "boolean") {
+			setTerminalPaletteOverride(value);
+		}
+	},
 	symbolPreset: value => {
 		if (typeof value === "string" && (value === "unicode" || value === "nerd" || value === "ascii")) {
 			setSymbolPreset(value).catch(err => {
@@ -2315,9 +2326,11 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 		configureCredentialRedaction(value === true);
 	},
 	"network.proxy": applyConfiguredNetworkProxy,
-	"hindsight.bankId": () => hindsightScopeSignal.fire(),
-	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
-	"hindsight.scoping": () => hindsightScopeSignal.fire(),
+	"hindsight.apiUrl": () => hindsightRuntimeSignal.fire(),
+	"hindsight.apiToken": () => hindsightRuntimeSignal.fire(),
+	"hindsight.bankId": () => hindsightRuntimeSignal.fire(),
+	"hindsight.bankIdPrefix": () => hindsightRuntimeSignal.fire(),
+	"hindsight.scoping": () => hindsightRuntimeSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
 		// Always call so an unset/empty value clears a previously-applied override.
@@ -2361,20 +2374,15 @@ const globalSettingsPersistedSignal = new SettingSignal<[agentDir: string]>("glo
 /** Subscribe to successful global config persistence. */
 export const onGlobalSettingsPersisted = (cb: (agentDir: string) => void) => globalSettingsPersistedSignal.on(cb);
 
-/** Fires when any `hindsight.bankId` / `bankIdPrefix` / `scoping` value changes. */
-const hindsightScopeSignal = new SettingSignal("hindsight scope");
+/** Fires when Hindsight connection or bank-routing settings change. */
+const hindsightRuntimeSignal = new SettingSignal("hindsight runtime");
 
 /**
- * Subscribe to changes in the Hindsight bank-scoping settings. Lets the
- * Hindsight backend rebuild the active `HindsightSessionState` when the
- * operator switches `hindsight.bankId`, `hindsight.bankIdPrefix`, or
- * `hindsight.scoping` mid-session so subsequent retain/recall calls land in
- * the new bank instead of the one selected at session start.
- *
- * Returns an unsubscribe function. The callback receives no arguments — the
- * caller is expected to re-read the relevant settings via `Settings.get`.
+ * Subscribe to changes that require rebuilding the active Hindsight client or
+ * bank scope. The callback re-reads settings so API URL/token edits take effect
+ * immediately instead of leaving the session pinned to stale credentials.
  */
-export const onHindsightScopeChanged = (cb: () => void) => hindsightScopeSignal.on(cb);
+export const onHindsightRuntimeChanged = (cb: () => void) => hindsightRuntimeSignal.on(cb);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Global Singleton

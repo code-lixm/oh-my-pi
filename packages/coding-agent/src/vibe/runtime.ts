@@ -1268,6 +1268,7 @@ export class VibeSessionRegistry {
 		return {
 			cwd: session.cwd,
 			agent: record.agent,
+			displayName: record.id,
 			task: message,
 			assignment: message,
 			description: `vibe ${record.cli} session`,

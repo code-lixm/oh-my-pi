@@ -3,13 +3,18 @@ import * as path from "node:path";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
+import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { TaskRequestConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const tempDirs: TempDir[] = [];
@@ -45,11 +50,19 @@ function createRef(
 	});
 }
 
+type IrcWakeObserver = (records: CustomMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
+
+interface RevivedSessionHandle {
+	session: AgentSession;
+	observer: () => IrcWakeObserver | undefined;
+}
+
 function createRevivedSession(
 	activeToolNames: string[][],
 	onSubscribe?: (listener: (event: AgentSessionEvent) => void) => void,
-): AgentSession {
-	return {
+): RevivedSessionHandle {
+	let observer: IrcWakeObserver | undefined;
+	const session = {
 		getMountedXdevToolNames: () => [],
 		setActiveToolsByName: async (names: string[]) => {
 			activeToolNames.push(names);
@@ -58,7 +71,12 @@ function createRevivedSession(
 			onSubscribe?.(listener);
 			return () => {};
 		},
+		setIrcWakeTurnObserver: (next: IrcWakeObserver | undefined) => {
+			observer = next;
+		},
+		getLastAssistantMessage: () => undefined,
 	} as unknown as AgentSession;
+	return { session, observer: () => observer };
 }
 
 async function createPersistedSession(cwd: string, restrictToolNames?: boolean): Promise<string> {
@@ -92,13 +110,16 @@ async function createPersistedSession(cwd: string, restrictToolNames?: boolean):
 	return sessionFile;
 }
 
-function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurrency) {
+function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurrency, eventBus?: EventBus) {
 	const parentSession = {
 		sessionManager: {
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
 		},
 		taskRequestConcurrency,
+		get sessionFile() {
+			return path.join(cwd, "parent.jsonl");
+		},
 	} as unknown as AgentSession;
 	return createPersistedSubagentReviverFactory({
 		session: parentSession,
@@ -106,6 +127,7 @@ function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurre
 		modelRegistry: { authStorage: {} } as ModelRegistry,
 		settings: Settings.isolated(),
 		enableLsp: true,
+		eventBus,
 	});
 }
 
@@ -136,7 +158,7 @@ describe("persisted subagent revival", () => {
 			if (options?.preloadedCustomToolPaths === undefined) attemptedDiscovery.push("custom:read");
 			if (options?.mcpManager !== undefined || options?.customTools !== undefined)
 				attemptedDiscovery.push("mcp:read");
-			return { session: createRevivedSession(activeToolNames) } as CreateAgentSessionResult;
+			return { session: createRevivedSession(activeToolNames).session } as CreateAgentSessionResult;
 		});
 
 		const ref = createRef(sessionFile);
@@ -168,7 +190,7 @@ describe("persisted subagent revival", () => {
 		let capturedOptions: CreateAgentSessionOptions | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			capturedOptions = options;
-			return { session: createRevivedSession([]) } as CreateAgentSessionResult;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
 		});
 
 		const ref = createRef(sessionFile);
@@ -190,7 +212,7 @@ describe("persisted subagent revival", () => {
 		let capturedOptions: CreateAgentSessionOptions | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			capturedOptions = options;
-			return { session: createRevivedSession([]) } as CreateAgentSessionResult;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
 		});
 
 		const ref = createRef(sessionFile);
@@ -222,7 +244,7 @@ describe("persisted subagent revival", () => {
 			return {
 				session: createRevivedSession([], listener => {
 					onEvent = listener;
-				}),
+				}).session,
 			} as CreateAgentSessionResult;
 		});
 
@@ -260,5 +282,59 @@ describe("persisted subagent revival", () => {
 		const cycle = createRef(sessionFile, { id: "cycle-b", parentId: "cycle-a" });
 
 		expect(await createFactory(cwd)(cycle)).toBeUndefined();
+	});
+
+	it("installs an IRC wake monitor that emits cold-revive lifecycle frames on the shared bus", async () => {
+		AgentRegistry.resetGlobalForTests();
+		registerRoot();
+		AgentLifecycleManager.resetGlobalForTests();
+		const cwd = makeTempDir("@pi-revive-frames-");
+		const sessionFile = await createPersistedSession(cwd);
+		MCPManager.setInstance({ getTools: () => [] } as unknown as MCPManager);
+		let handle: RevivedSessionHandle | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
+			handle = createRevivedSession([]);
+			return { session: handle.session } as CreateAgentSessionResult;
+		});
+		const eventBus = new EventBus();
+		const frames: RpcSubagentFrame[] = [];
+		const terminal = Promise.withResolvers<void>();
+		const rpcRegistry = new RpcSubagentRegistry(eventBus, frame => {
+			frames.push(frame);
+			if (frame.type === "subagent_lifecycle" && frame.payload.status !== "started") terminal.resolve();
+		});
+		rpcRegistry.setSubscriptionLevel("progress");
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd, undefined, eventBus)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		const observer = handle?.observer();
+		expect(observer).toBeDefined();
+		const record: CustomMessage = {
+			role: "custom",
+			customType: "irc:incoming",
+			content: "resume after resume",
+			display: true,
+			details: { id: "irc-1", from: "Main", message: "resume after resume" },
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		const finish = observer?.([record]);
+		await finish?.();
+		await terminal.promise;
+
+		expect(frames[0]).toMatchObject({
+			type: "subagent_lifecycle",
+			payload: { id: ref.id, status: "started" },
+		});
+		const last = frames.at(-1);
+		expect(last?.type).toBe("subagent_lifecycle");
+		if (last?.type !== "subagent_lifecycle") throw new Error("expected terminal lifecycle frame");
+		expect(last.payload.id).toBe(ref.id);
+		expect(last.payload.status).not.toBe("started");
+		rpcRegistry.dispose();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 	});
 });

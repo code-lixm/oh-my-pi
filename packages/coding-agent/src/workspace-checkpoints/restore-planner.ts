@@ -51,7 +51,7 @@ function* sortedEntries(
 
 function isPathSelected(p: string, paths: readonly string[] | undefined): boolean {
 	if (!paths || paths.length === 0) return true;
-	for (const candidate of paths) if (candidate === p || candidate.startsWith(`${p}/`)) return true;
+	for (const candidate of paths) if (candidate === p || p.startsWith(`${candidate}/`)) return true;
 	return false;
 }
 
@@ -107,6 +107,7 @@ function planRestore(input: PlannerInput): PlannerOutput {
 				kind: "create",
 				objectId: targetEntry.objectId,
 				mode: targetEntry.mode,
+				expectedKind: null,
 			};
 			if (targetEntry.kind === "symlink") op.linkTarget = targetEntry.linkTarget;
 			operations.push(op);

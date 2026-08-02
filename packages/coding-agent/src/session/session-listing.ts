@@ -1,15 +1,18 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
-import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, procmgr, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "lru-cache/raw";
 import { tSettingsUi } from "../i18n/settings-locale";
+import { SESSION_RUN_START_CUSTOM_TYPE, SESSION_RUN_STOP_CUSTOM_TYPE } from "./exit-diagnostics";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 
 /**
- * Coarse lifecycle status of a session, derived from its last persisted message.
+ * Coarse lifecycle status of a session, derived from its persisted run marker
+ * and last message.
  *
+ * - `active` — a live process still owns the session.
  * - `complete` — the last assistant turn ended with no unanswered tool calls, i.e.
  *   the agent yielded control back to the user.
  * - `interrupted` — work was cut off mid-flight: a trailing assistant turn with
@@ -21,7 +24,7 @@ import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from
  * - `unknown` — status could not be determined (empty/header-only session, or the
  *   final message was larger than the tail window that was read).
  */
-export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
+export type SessionStatus = "active" | "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
 
 export interface SessionInfo {
 	path: string;
@@ -159,23 +162,42 @@ function extractTextFromContent(content: Message["content"]): string {
 /**
  * Derive a {@link SessionStatus} from a tail window of a session file. Entries are
  * newline-terminated on write, so within the window only the first line can be a
- * partial fragment — it simply fails to parse and is skipped. We walk backwards to
- * the last `message` entry and classify by its role / stop reason.
+ * partial fragment — it simply fails to parse and is skipped. A live run marker
+ * takes precedence over the last message: its process may currently be between a
+ * tool result and the next assistant message, which is not an interruption.
  */
 function deriveSessionStatus(suffix: string): SessionStatus {
 	if (!suffix) return "unknown";
 	const lines = suffix.split("\n");
+	let sawRunMarker = false;
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const line = lines[i];
 		// Every persisted entry is `JSON.stringify(obj)` → starts with `{`. This
 		// cheaply rejects blank lines and the leading partial fragment without
 		// attempting to parse a multi-KB tail of a truncated line.
 		if (line.charCodeAt(0) !== 123) continue;
-		let entry: { type?: string; message?: TailMessage };
+		let entry: { type?: string; customType?: string; data?: unknown; message?: TailMessage };
 		try {
 			entry = JSON.parse(line);
 		} catch {
 			continue;
+		}
+		if (
+			!sawRunMarker &&
+			entry.type === "custom" &&
+			(entry.customType === SESSION_RUN_START_CUSTOM_TYPE || entry.customType === SESSION_RUN_STOP_CUSTOM_TYPE)
+		) {
+			sawRunMarker = true;
+			if (
+				entry.customType === SESSION_RUN_START_CUSTOM_TYPE &&
+				typeof entry.data === "object" &&
+				entry.data !== null &&
+				"pid" in entry.data &&
+				typeof entry.data.pid === "number" &&
+				procmgr.isPidRunning(entry.data.pid)
+			) {
+				return "active";
+			}
 		}
 		if (entry.type === "message" && entry.message) {
 			return statusFromTailMessage(entry.message);
@@ -408,7 +430,7 @@ async function scanSessionFile(
 	// two variants are cached under distinct keys.
 	const cacheKey = withStatus ? `s\0${file}` : `h\0${file}`;
 	const cached = cache.get(cacheKey);
-	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.info?.status !== "active") {
 		return cached.info ? { ...cached.info } : undefined;
 	}
 	try {

@@ -30,6 +30,8 @@ const assistant = (stopReason: string, content: unknown[]) =>
 	msg({ role: "assistant", provider: "anthropic", model: "m", stopReason, content });
 const toolResult = () =>
 	msg({ role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "ok" }] });
+const runMarker = (customType: "session_run_start" | "session_run_stop", pid: number) =>
+	line({ type: "custom", customType, data: { recordedAt: "2024-01-01T00:00:00.000Z", pid } });
 const textBlock = (text: string) => ({ type: "text", text });
 const toolCallBlock = () => ({ type: "toolCall", id: "t1", name: "read", arguments: {} });
 
@@ -72,6 +74,64 @@ describe("SessionManager.list session status (tail derivation)", () => {
 		expect(status.get("pending")).toBe("pending");
 		expect(status.get("stop-with-pending-tool")).toBe("interrupted");
 		expect(status.get("header-only")).toBe("unknown");
+	});
+
+	it("gives a live run marker precedence over tool-result and pending tails", async () => {
+		const storage = seed({
+			"active-after-tool-result":
+				user("go") +
+				assistant("toolUse", [toolCallBlock()]) +
+				toolResult() +
+				runMarker("session_run_start", process.pid),
+			"active-after-pending": user("still waiting for a reply") + runMarker("session_run_start", process.pid),
+		});
+
+		const status = await statusById(storage);
+		expect(status.get("active-after-tool-result")).toBe("active");
+		expect(status.get("active-after-pending")).toBe("active");
+	});
+
+	it("restores tail-derived status after a newer run stop marker", async () => {
+		const storage = seed({
+			"stopped-after-tool-result":
+				user("go") +
+				assistant("toolUse", [toolCallBlock()]) +
+				toolResult() +
+				runMarker("session_run_start", process.pid) +
+				runMarker("session_run_stop", process.pid),
+			"stopped-after-pending":
+				user("still waiting for a reply") +
+				runMarker("session_run_start", process.pid) +
+				runMarker("session_run_stop", process.pid),
+		});
+
+		const status = await statusById(storage);
+		expect(status.get("stopped-after-tool-result")).toBe("interrupted");
+		expect(status.get("stopped-after-pending")).toBe("pending");
+	});
+
+	it("re-derives an unchanged active session after its owning PID exits", async () => {
+		const child = Bun.spawn([process.execPath, "--eval", "process.stdin.resume()"], {
+			stdin: "pipe",
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		try {
+			const storage = seed({
+				"live-then-dead": user("still waiting for a reply") + runMarker("session_run_start", child.pid),
+			});
+
+			expect((await statusById(storage)).get("live-then-dead")).toBe("active");
+
+			child.kill();
+			await child.exited;
+
+			// The file's stat identity is unchanged; only liveness can make this pending.
+			expect((await statusById(storage)).get("live-then-dead")).toBe("pending");
+		} finally {
+			if (child.exitCode === null) child.kill();
+			await child.exited;
+		}
 	});
 
 	it("reports unknown rather than misclassifying when the final message exceeds the tail window", async () => {

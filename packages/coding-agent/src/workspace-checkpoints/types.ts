@@ -115,7 +115,7 @@ export interface WorkspaceRestoreOperation {
 	mode?: number;
 	linkTarget?: string;
 	/** Preview-time live-state guard for stale-plan detection. */
-	expectedKind?: WorkspaceNodeKind;
+	expectedKind?: WorkspaceNodeKind | null;
 	expectedObjectId?: string | null;
 	expectedMode?: number;
 	expectedLinkTarget?: string | null;
@@ -155,6 +155,8 @@ export interface WorkspaceRestoreResult {
 	skippedPaths: string[];
 	conversationEntryId: string | null;
 	redoAvailable: boolean;
+	scope: WorkspaceRestoreScope;
+	strategy: WorkspaceRestoreStrategy;
 }
 
 export interface UndoWorkspaceRequest {

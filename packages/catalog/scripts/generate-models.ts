@@ -35,6 +35,8 @@ import {
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
 	clampKimiK27CodeMaxTokens,
+	fetchWellKnownModels,
+	GMI_CLOUD_STATIC_MODELS,
 	isFireworksKimiK2ModelId,
 	isKimiK27CodeModelId,
 	kimiCodeMaxTokens,
@@ -83,9 +85,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		discovery_no_models: "{label} discovery returned no models",
 		fetched_models: "Fetched {count} models from {label} model manager",
 		failed_fetch: "Failed to fetch {label} models:",
-		fetching_models_dev: "Fetching models from models.dev API...",
-		loaded_models_dev: "Loaded {count} tool-capable models from models.dev",
-		failed_models_dev: "Failed to load models.dev data:",
+		fetching_models_dev: "Fetching stencil.so catalog from catalog.stencil.so...",
+		loaded_models_dev: "Loaded {count} tool-capable models from stencil.so",
+		failed_models_dev: "Failed to load stencil.so data:",
 		no_antigravity_creds: "No Antigravity or Gemini CLI credentials found, will use previous models.",
 		profile_tip: "Tip: If you are logged in under a specific profile, run with OMP_PROFILE=<name>.",
 		fetching_antigravity: "Fetching models from Antigravity API...",
@@ -113,9 +115,9 @@ const MESSAGES: Record<Locale, Record<string, string>> = {
 		discovery_no_models: "{label} 动态发现未返回模型",
 		fetched_models: "已从 {label} 模型管理器获取 {count} 个模型",
 		failed_fetch: "获取 {label} 模型失败：",
-		fetching_models_dev: "正在从 models.dev API 获取模型……",
-		loaded_models_dev: "已从 models.dev 加载 {count} 个支持工具调用的模型",
-		failed_models_dev: "加载 models.dev 数据失败：",
+		fetching_models_dev: "正在从 catalog.stencil.so 获取 stencil.so 模型目录……",
+		loaded_models_dev: "已从 stencil.so 加载 {count} 个支持工具调用的模型",
+		failed_models_dev: "加载 stencil.so 数据失败：",
 		no_antigravity_creds: "未找到 Antigravity 或 Gemini CLI 凭据，将使用既有模型。",
 		profile_tip: "提示：若已登录到指定 profile，请通过 OMP_PROFILE=<name> 运行。",
 		fetching_antigravity: "正在从 Antigravity API 获取模型……",
@@ -234,8 +236,7 @@ async function fetchProviderModelsFromCatalog(
 async function loadModelsDevData(): Promise<ModelSpec[]> {
 	try {
 		console.log(t("fetching_models_dev"));
-		const response = await fetch("https://models.dev/api.json");
-		const data = await response.json();
+		const data = await fetchWellKnownModels();
 		const models = mapModelsDevToModels(data as Record<string, unknown>, MODELS_DEV_PROVIDER_DESCRIPTORS);
 		models.sort((a, b) => a.id.localeCompare(b.id));
 		console.log(t("loaded_models_dev", { count: models.length }));
@@ -291,7 +292,7 @@ function applyGlobalModelsDevFallback(
 			name: reference.name,
 			reasoning: reference.reasoning,
 			input: reference.input,
-			// Fill unknown endpoint limits from same-id models.dev references, but keep
+			// Fill unknown endpoint limits from same-id stencil.so references, but keep
 			// provider-specific values when discovery returned them explicitly.
 			contextWindow: model.contextWindow ?? reference.contextWindow,
 			maxTokens: model.maxTokens ?? reference.maxTokens,
@@ -327,7 +328,7 @@ function applyUmansPricingFallback(models: readonly ModelSpec[], modelsDevModels
 	}
 
 	// The public endpoint exposes this technical alias for Umans Flash, but
-	// models.dev publishes pricing only for the recommended `umans-flash` id.
+	// stencil.so publishes pricing only for the recommended `umans-flash` id.
 	const flashCost = paygCosts.get("umans-flash");
 	if (flashCost) {
 		paygCosts.set("umans-qwen3.6-35b-a3b", flashCost);
@@ -578,7 +579,7 @@ async function generateModels() {
 		})),
 	);
 	// A provider is authoritative once its endpoint snapshot can replace the
-	// models.dev / previous-snapshot rows. Requiring fetched models keeps a
+	// stencil.so / previous-snapshot rows. Requiring fetched models keeps a
 	// flaky empty-but-200 discovery from silently wiping another provider's
 	// bundled catalog; only alibaba-token-plan treats an empty success as
 	// authoritative, because its `/models` allowlist reflects the subscribed
@@ -596,8 +597,8 @@ async function generateModels() {
 	const bundledModelsDevModels = modelsDevModels.filter(model => !authoritativeCatalogProviders.has(model.provider));
 	// getGitLabDuoModels returns built models; project back to spec stage for the bundle.
 	const gitLabDuoModels = getGitLabDuoModels().map(model => toModelSpec(model));
-	// Combine models. models.dev has priority unless a provider's successful endpoint
-	// discovery is authoritative; those endpoint snapshots replace models.dev rows.
+	// Combine models. stencil.so has priority unless a provider's successful endpoint
+	// discovery is authoritative; those endpoint snapshots replace stencil.so rows.
 	let allModels = applyGlobalModelsDevFallback(
 		[...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
 		modelsDevModels,
@@ -607,7 +608,7 @@ async function generateModels() {
 		allModels.push(CLOUDFLARE_FALLBACK_MODEL as ModelSpec<"anthropic-messages">);
 	}
 
-	// xai-oauth is not in models.dev; its descriptor's catalogDiscovery fetch
+	// xai-oauth is not in stencil.so; its descriptor's catalogDiscovery fetch
 	// only succeeds with live SuperGrok OAuth credentials (and on success the
 	// dynamic entries — already overlaid by applyXAIOAuthCuration — win dedup
 	// below). Always push the curated seed so a regen without credentials, or
@@ -623,7 +624,7 @@ async function generateModels() {
 		allModels.push(...ALIBABA_TOKEN_PLAN_STATIC_MODELS);
 	}
 	// Seed Anthropic models that are live on the first-party API or in limited
-	// release but that models.dev has not catalogued yet (e.g. Claude Fable 5 /
+	// release but that stencil.so has not catalogued yet (e.g. Claude Fable 5 /
 	// Mythos 5). Deduped behind upstream entries; metadata is pinned in
 	// applyAnthropicCatalogPolicy.
 	allModels.push(...ANTHROPIC_CURATED_FALLBACK_MODELS);
@@ -635,6 +636,12 @@ async function generateModels() {
 	// Sakana is authoritative and stale seed IDs must stay out.
 	if (!authoritativeCatalogProviders.has("sakana")) {
 		allModels.push(...SAKANA_FUGU_STATIC_MODELS);
+	}
+	// Seed the GMI Cloud default model so a fresh install (and a regen without a
+	// `GMI_API_KEY`) still resolves the descriptor's `defaultModel` synchronously
+	// at boot. If live `/v1/models` discovery succeeds, it is authoritative.
+	if (!authoritativeCatalogProviders.has("gmi-cloud")) {
+		allModels.push(...GMI_CLOUD_STATIC_MODELS);
 	}
 	// Seed the GitLab Duo Agent fallback model so a fresh install (no credentialed
 	// dynamic discovery/cache yet) still surfaces the provider's default model in the
@@ -687,7 +694,7 @@ async function generateModels() {
 	}
 	// Merge previous models.json entries as fallback for provider/model pairs not
 	// fetched dynamically. Providers covered by authoritative endpoint discovery
-	// or authoritative models.dev sources keep that upstream list exactly, so
+	// or authoritative stencil.so sources keep that upstream list exactly, so
 	// retired entries from the previous snapshot do not reappear during regeneration.
 	// Discovery-only providers (local inference servers) — never bundle static models.
 	const fetchedKeys = new Set(allModels.map(model => `${model.provider}/${model.id}`));

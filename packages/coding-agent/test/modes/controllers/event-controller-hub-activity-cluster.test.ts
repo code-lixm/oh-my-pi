@@ -78,7 +78,7 @@ function makeIrcMessage(body: string, from = "Worker", timestamp = 1_700_000_000
 	};
 }
 
-function createLiveFixture() {
+function createLiveFixture(focusedAgentId?: string) {
 	const chatContainer = new TranscriptContainer();
 	const pendingTools = new Map<string, ToolExecutionHandle>();
 	const requestRender = vi.fn(() => {});
@@ -92,6 +92,7 @@ function createLiveFixture() {
 		retryAttempt: 0,
 	};
 	const ctx = {
+		focusedAgentId,
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		ui: { requestRender, requestComponentRender, imageBudget: undefined },
@@ -199,6 +200,59 @@ describe("EventController hub activity cluster", () => {
 		}
 		expect(visibleFixture.pendingTools.get("hub-start-visible-when-enabled")).toBe(visibleCard);
 		expect(hubGroups(visibleFixture.chatContainer)).toHaveLength(0);
+	});
+
+	it("hides Hub process activity in a focused live transcript while retaining ordinary tools", async () => {
+		settings.set("display.showHubProcessActivity", true);
+		const { controller, chatContainer, pendingTools } = createLiveFixture("Worker");
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "focused-hub-start",
+			toolName: "hub",
+			args: { op: "start", name: "FOCUSED_HUB_PROCESS_MARKER", application: "bun", args: ["run", "dev"] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "focused-hub-start",
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "FOCUSED_HUB_RESULT_MARKER" }],
+				details: { op: "start" },
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(chatContainer.children).toHaveLength(0);
+		expect(pendingTools.has("focused-hub-start")).toBe(false);
+		expect(renderText(chatContainer)).not.toContain("FOCUSED_HUB_PROCESS_MARKER");
+		expect(renderText(chatContainer)).not.toContain("FOCUSED_HUB_RESULT_MARKER");
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "focused-write",
+			toolName: "write",
+			args: { path: "FOCUSED_VISIBLE_PATH", content: "ordinary content" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		const [ordinaryCard] = chatContainer.children;
+		if (!(ordinaryCard instanceof ToolExecutionComponent)) {
+			throw new Error("expected a visible ordinary tool card in the focused transcript");
+		}
+		expect(pendingTools.get("focused-write")).toBe(ordinaryCard);
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "focused-write",
+			toolName: "write",
+			result: { content: [{ type: "text", text: "FOCUSED_VISIBLE_RESULT_MARKER" }] },
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(chatContainer.children).toEqual([ordinaryCard]);
+		const rendered = renderText(chatContainer);
+		expect(rendered).toContain("FOCUSED_VISIBLE_PATH");
+		expect(rendered).not.toContain("FOCUSED_HUB_PROCESS_MARKER");
 	});
 	it("routes wait(from) replies to showSubagentFeedback without a card when process activity is enabled", async () => {
 		settings.set("display.showHubProcessActivity", true);

@@ -5,7 +5,14 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
 import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { getEditorTheme, getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+	getCurrentThemeName,
+	getEditorTheme,
+	getThemeByName,
+	initTheme,
+	previewTheme,
+	theme,
+} from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
@@ -51,6 +58,79 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		const raw = render("intro\n```\norchestrate\n```");
 		expect(Bun.stripANSI(raw)).toContain("orchestrate");
 		expect(raw).toContain("orchestrate");
+	});
+
+	it("renders fenced JSON and YAML with syntax colors on an unbroken terminal-adaptive bubble", async () => {
+		const previousThemeName = getCurrentThemeName();
+		if (!previousThemeName) throw new Error("Expected the UserMessage test theme to be initialized");
+		let themeRestored = false;
+
+		try {
+			const preview = await previewTheme("light-terminal-adaptive");
+			expect(preview.success).toBe(true);
+
+			const bubbleBackground = theme.getBgAnsi("userMessageBg");
+			expect(bubbleBackground).toBe("\x1b[48;5;15m");
+
+			const codeLines = [
+				'{"feature":"fenced-code","retries":3,"enabled":true}',
+				"service:",
+				"  retries: 3",
+				"  enabled: false",
+			];
+			const rendered = new UserMessageComponent(
+				["Payloads:", "```json", codeLines[0], "```", "```yaml", ...codeLines.slice(1), "```"].join("\n"),
+			).render(80);
+			const plain = stripUserControls(rendered.join("\n"));
+
+			expect(plain).not.toContain("```");
+			expect(plain).not.toContain("json");
+			expect(plain).not.toContain("yaml");
+
+			const codeRows = codeLines.map(codeLine => {
+				const row = rendered.find(line => stripUserControls(line).includes(codeLine));
+				if (row === undefined) throw new Error(`Expected rendered code row: ${codeLine}`);
+				return row;
+			});
+			expect(codeRows.map(row => codeLines.find(codeLine => stripUserControls(row).includes(codeLine)))).toEqual(
+				codeLines,
+			);
+
+			const syntaxColors = [
+				"syntaxComment",
+				"syntaxKeyword",
+				"syntaxFunction",
+				"syntaxVariable",
+				"syntaxString",
+				"syntaxNumber",
+				"syntaxType",
+				"syntaxOperator",
+				"syntaxPunctuation",
+			] as const;
+			const syntaxForegrounds = new Set(
+				codeRows.flatMap(row =>
+					(row.match(/\x1b\[(?:3[0-7]|38;5;\d+|38;2;\d+;\d+;\d+)m/g) ?? []).filter(ansi =>
+						syntaxColors.some(color => theme.getFgAnsi(color) === ansi),
+					),
+				),
+			);
+			expect(syntaxForegrounds.size).toBeGreaterThanOrEqual(2);
+
+			for (const row of codeRows) {
+				expect(row.startsWith(bubbleBackground)).toBe(true);
+				expect(visibleWidth(row)).toBe(80);
+				expect(row.endsWith("\x1b[49m")).toBe(true);
+
+				for (const reset of row.matchAll(/\x1b\[(?:0|49)m/g)) {
+					const nextOffset = reset.index! + reset[0].length;
+					const isFinalBubbleReset = reset[0] === "\x1b[49m" && nextOffset === row.length;
+					if (!isFinalBubbleReset) expect(row.slice(nextOffset).startsWith(bubbleBackground)).toBe(true);
+				}
+			}
+		} finally {
+			themeRestored = (await previewTheme(previousThemeName)).success;
+		}
+		expect(themeRestored).toBe(true);
 	});
 
 	it("closes OSC 133 prompt zones without opening a command-output zone", () => {

@@ -1,7 +1,8 @@
 /**
- * Contract: the anchored subagent HUD is a terse first-observed task list. It
- * renders only active detached task subagents in first-observed order. Rows
- * show task identity, lifecycle state, model, context use, and cost—not task
+ * Contract: the anchored subagent HUD is a terse task list for active detached
+ * task subagents, ordered by descending observable update while preserving input
+ * order for ties. Re-rendering an unchanged snapshot must not age-sort rows.
+ * Rows show task identity, lifecycle state, model, context use, and cost—not task
  * prose, feedback, IRC content, or tool activity.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -131,72 +132,42 @@ describe("subagent HUD lines", () => {
 		}
 	});
 
-	it("keeps active detached rows in first-observed order while telemetry refreshes", () => {
-		const first = makeSession({
-			id: "FirstObserved",
-			status: "active",
-			detached: true,
-			lastUpdate: 200,
-			progress: makeProgress({
-				id: "FirstObserved",
-				status: "running",
-				contextTokens: 1_000,
-				contextWindow: 8_000,
-				activity: {
-					phase: "streaming",
-					label: "Initial first activity",
-					phaseStartedAtMs: 200,
-					lastActivityAtMs: 200,
-				},
-			}),
-		});
-		const second = makeSession({
-			id: "SecondObserved",
+	it("orders active detached rows by last update and only reorders after snapshot updates", () => {
+		const older = makeSession({
+			id: "OlderUpdate",
 			status: "active",
 			detached: true,
 			lastUpdate: 100,
-			progress: makeProgress({
-				id: "SecondObserved",
-				status: "running",
-				contextTokens: 7_000,
-				contextWindow: 8_000,
-				activity: {
-					phase: "streaming",
-					label: "Initial second activity",
-					phaseStartedAtMs: 100,
-					lastActivityAtMs: 100,
-				},
-			}),
 		});
-		const ids = ["FirstObserved", "SecondObserved"] as const;
+		const newerFirst = makeSession({
+			id: "NewerFirst",
+			status: "active",
+			detached: true,
+			lastUpdate: 200,
+		});
+		const newerSecond = makeSession({
+			id: "NewerSecond",
+			status: "active",
+			detached: true,
+			lastUpdate: 200,
+		});
+		const ids = ["OlderUpdate", "NewerFirst", "NewerSecond"] as const;
+		const initialSnapshot = [older, newerFirst, newerSecond];
+		const initialOrder: Array<(typeof ids)[number] | undefined> = ["NewerFirst", "NewerSecond", "OlderUpdate"];
+		const initialRows = renderedRows(initialSnapshot);
+		const repeatedRows = renderedRows(initialSnapshot);
+		expect(initialRows.map(row => ids.find(id => row.includes(id)))).toEqual(initialOrder);
+		expect(repeatedRows.map(row => ids.find(id => row.includes(id)))).toEqual(initialOrder);
 
-		const initialRows = renderedRows([first, second]);
-		expect(initialRows.map(row => ids.find(id => row.includes(id)))).toEqual([...ids]);
-		expect(initialRows.find(row => row.includes("FirstObserved"))).toContain("1k/8k");
-		expect(initialRows.find(row => row.includes("SecondObserved"))).toContain("7k/8k");
-
-		const refreshedRows = renderedRows([
-			{
-				...first,
-				lastUpdate: 50,
-				progress: {
-					...first.progress!,
-					contextTokens: 7_000,
-					activity: { ...first.progress!.activity!, lastActivityAtMs: 50 },
-				},
-			},
-			{
-				...second,
-				lastUpdate: 900,
-				progress: {
-					...second.progress!,
-					contextTokens: 1_000,
-					activity: { ...second.progress!.activity!, lastActivityAtMs: 900 },
-				},
-			},
+		const refreshedSnapshot = [
+			{ ...older, lastUpdate: 900 },
+			{ ...newerFirst, lastUpdate: 50 },
+			{ ...newerSecond, lastUpdate: 50 },
+		];
+		expect(renderedRows(refreshedSnapshot).map(row => ids.find(id => row.includes(id)))).toEqual([
+			"OlderUpdate",
+			"NewerFirst",
+			"NewerSecond",
 		]);
-		expect(refreshedRows.map(row => ids.find(id => row.includes(id)))).toEqual([...ids]);
-		expect(refreshedRows.find(row => row.includes("FirstObserved"))).toContain("7k/8k");
-		expect(refreshedRows.find(row => row.includes("SecondObserved"))).toContain("1k/8k");
 	});
 });

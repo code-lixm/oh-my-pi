@@ -37,6 +37,7 @@ import {
 	type AgentDefinition,
 	type AgentProgress,
 	canSpawnAtDepth,
+	oneLineLabel,
 	type SingleResult,
 	type StructuredSubagentOutput,
 } from "./types";
@@ -380,6 +381,7 @@ function buildExecutorOptions(
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
 		agent: policy.effectiveAgent,
+		displayName: oneLineLabel(trimToUndefined(request.identity?.label) ?? id),
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
 		context: request.context?.trim() || undefined,

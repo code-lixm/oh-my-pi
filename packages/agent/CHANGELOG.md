@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `AgentOptions.formatSkippedToolResult` and its loop-level equivalent so hosts can localize synthetic skipped-tool results produced by steering or peer interrupts.
+
 ### Changed
 
-- Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema and replay the generated summary directly as continuation context without an additional resume wrapper.
+- Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema, retain constraints, decisions and evidence, command outcomes, active/blocked work, recovery references, and next actions, then replay the summary directly so execution continues without repeating completed work or reopening settled decisions without new evidence.
+
+### Fixed
+
+- Fixed terminal tool results allowing later calls from the same assistant message to start; not-yet-started calls now receive explicit synthetic results without executing.
+
+## [17.2.2] - 2026-07-31
+
+### Fixed
+
+- Fixed an issue where response-only usage records were incorrectly treated as authoritative context anchors, while ensuring prompt and total-only provider telemetry remains preserved.
+- Fixed context compaction summaries growing excessively with large context windows by capping the summary output budget to 16,384 tokens, ensuring conversations are properly compressed rather than duplicated.
+
 ## [17.2.0] - 2026-07-30
 
 ### Fixed

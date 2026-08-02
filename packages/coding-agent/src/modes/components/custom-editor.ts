@@ -47,7 +47,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.clear": ["ctrl+c"],
 	"app.exit": [],
 	"app.suspend": ["ctrl+z"],
-	"app.display.reset": ["ctrl+l"],
+	"app.display.reset": ["alt+l"],
 	"app.thinking.cycle": ["ctrl+p"],
 	"app.model.cycleForward": ["tab"],
 	"app.model.cycleBackward": ["shift+tab"],

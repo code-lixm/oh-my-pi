@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [17.2.2] - 2026-07-31
+
+### Added
+
+- Added support for the `gmi-cloud` provider registry, including API-key paste login validation and integration with `@oh-my-pi/pi-catalog`.
+
+### Changed
+
+- Updated `AuthStorage.redeemResetCredit` to prioritize spending the soonest-expiring available saved reset credit, and improved error handling to distinguish between transport failures (`credit_list_failed`) and a genuine lack of credits.
+- Exported `SENSITIVE_TOKEN_RE` from `providers/transform-messages` to allow hosts to route credential shapes through reversible obfuscation instead of irreversible redaction.
+
+### Fixed
+
+- Fixed an issue where Cursor conversation checkpoints were incorrectly recorded as billable output tokens, ensuring accurate usage totals.
+- Fixed an issue in `AuthStorage.refreshStoredOAuthCredential` where expired OAuth credentials were returned without being refreshed when a credential mismatch occurred, which previously resulted in misleading "No API key found" errors.
+- Fixed Cursor history replay issues by preserving structured message order for assistant tool calls/results, retaining Kimi K3 thinking blocks, and preventing unsafe mid-session switches to K3.
+
 ## [17.2.1] - 2026-07-30
 
 ### Added

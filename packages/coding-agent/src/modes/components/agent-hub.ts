@@ -2,13 +2,14 @@
  * Agent Hub overlay component.
  *
  * - Main and advisors are internal routing/observability nodes, never selectable rows.
- * - Rows are task subagents sorted by user-facing activity and recent updates.
+ * - Rows use shared status priority and newest creation first; activity heartbeats never reorder a group.
  * - Enter opens a fullscreen transcript; `f` focuses a live subagent, and
  *   `r`/`x` resume/terminate a task.
  * - The transcript viewer cycles the same rows in place and tails persisted/local
  *   or collab-host history without changing the ambient runtime.
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
  */
+import type { Clipboard, SnapshotStore } from "@oh-my-pi/hashline";
 import { type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	Container,
@@ -30,12 +31,15 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import {
 	type AgentRef,
 	AgentRegistry,
+	type AgentStatus,
 	agentDisplayLabel,
+	compareAgentNavigationOrder,
 	MAIN_AGENT_ID,
 	resolveTopLevelAgent,
 } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { AgentProgress } from "../../task";
 import { parseThinkingLevel } from "../../thinking";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
@@ -82,6 +86,16 @@ function fixedCell(text: string, width: number): string {
 type HubTaskStatus = "not-started" | "running" | "waiting-user" | "completed" | "failed" | "stopped";
 
 type HubRow = { ref: AgentRef };
+
+/** Maps existing Hub presentation statuses to the shared navigation comparator's status model. */
+const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["status"]> = {
+	"not-started": "pending",
+	running: "running",
+	"waiting-user": "waiting",
+	completed: "completed",
+	failed: "failed",
+	stopped: "aborted",
+};
 
 interface RenderedHubEntry {
 	lines: string[];
@@ -174,6 +188,10 @@ export interface AgentHubDeps {
 	getTool?: (name: string) => AgentTool | undefined;
 	/** Extension message renderers for custom messages in the transcript. */
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	/** Resolve snapshot state for the selected live local agent. */
+	getSnapshots?: (agentId: string) => SnapshotStore | undefined;
+	/** Resolve the edit register for the selected live local agent. */
+	getClipboard?: (agentId: string) => Clipboard | undefined;
 	/** Cwd used by tool renderers for path shortening; defaults to the project dir. */
 	cwd?: string;
 	/** Mirrors the main transcript's thinking-block visibility. */
@@ -193,6 +211,20 @@ export interface AgentHubDeps {
 	remote?: AgentHubRemote;
 	/** Whether the hub and nested transcript capture terminal pointer events. Defaults off for native selection. */
 	mouseTracking?: boolean;
+	/**
+	 * Click handler for Markdown link cells inside the fullscreen transcript
+	 * viewer. The host typically derives this from the ambient
+	 * InteractiveModeContext.openInBrowser; omit to leave Markdown link cells
+	 * non-clickable in the viewer.
+	 */
+	openLink?: (href: string) => void;
+	/**
+	 * Click handler for tool-result / native assistant images (and the
+	 * no-protocol text fallback) inside the fullscreen transcript viewer. The
+	 * host materializes original bytes via its session blob store and routes
+	 * through openInBrowser; omit to leave image cells non-clickable.
+	 */
+	openImage?: (image: import("@oh-my-pi/pi-ai").ImageContent) => void;
 }
 
 export class AgentHubOverlayComponent extends Container {
@@ -205,12 +237,14 @@ export class AgentHubOverlayComponent extends Container {
 	#unsubscribers: Array<() => void> = [];
 	#ageTimer: NodeJS.Timeout | undefined;
 	#dataChangeTimer?: NodeJS.Timeout;
+	#dataChangeUrgent = false;
 	#remote: AgentHubRemote | undefined;
 	#mouseTracking: boolean;
 	/** Resolves after persisted historical subagents have been registered and rows refreshed. */
 	readonly persistedSubagentsReady: Promise<void>;
 
 	// Table state
+	#observedById = new Map<string, ObservableSession>();
 	#rows: HubRow[] = [];
 	#selectedRow = 0;
 	#notice: string | undefined;
@@ -223,6 +257,8 @@ export class AgentHubOverlayComponent extends Container {
 	#ui: TUI;
 	#getTool: ((name: string) => AgentTool | undefined) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
+	#getSnapshots: ((agentId: string) => SnapshotStore | undefined) | undefined;
+	#getClipboard: ((agentId: string) => Clipboard | undefined) | undefined;
 	#cwd: string;
 	#hideThinkingBlock: (() => boolean) | undefined;
 	#proseOnlyThinking: (() => boolean) | undefined;
@@ -230,6 +266,10 @@ export class AgentHubOverlayComponent extends Container {
 	#focusAgent: ((id: string) => Promise<void>) | undefined;
 	#activeTopLevelId: string;
 	#switchTopLevel: ((id: string) => Promise<void>) | undefined;
+	// Rich-content click handlers the hub forwards into AgentTranscriptViewer so the
+	// fullscreen transcript stays clickable for Markdown links / images.
+	#openLink: ((href: string) => void) | undefined;
+	#openImage: ((image: import("@oh-my-pi/pi-ai").ImageContent) => void) | undefined;
 
 	// Fullscreen transcript overlay opened by openChat(), if any.
 	#transcriptOverlay: OverlayHandle | undefined;
@@ -255,6 +295,8 @@ export class AgentHubOverlayComponent extends Container {
 			} as unknown as TUI);
 		this.#getTool = deps.getTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
+		this.#getSnapshots = deps.getSnapshots;
+		this.#getClipboard = deps.getClipboard;
 		this.#cwd = deps.cwd ?? getProjectDir();
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
 		this.#proseOnlyThinking = deps.proseOnlyThinking;
@@ -262,9 +304,11 @@ export class AgentHubOverlayComponent extends Container {
 		this.#focusAgent = deps.focusAgent;
 		this.#activeTopLevelId = deps.activeTopLevelId ?? MAIN_AGENT_ID;
 		this.#switchTopLevel = deps.switchTopLevel;
+		this.#openLink = deps.openLink;
+		this.#openImage = deps.openImage;
 
-		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange()));
-		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
+		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange(true)));
+		this.#unsubscribers.push(this.#observers.onChange(kind => this.#scheduleDataChange(kind !== "progress")));
 		this.#ageTimer = setInterval(() => this.#requestRender(), HUB_TICK_MS);
 		this.#ageTimer.unref?.();
 
@@ -280,11 +324,11 @@ export class AgentHubOverlayComponent extends Container {
 					.finally(() => this.#requestRender());
 		this.#refreshRows();
 	}
-
 	/**
-	 * Whether the current table view has no agents to show (every registered agent
-	 * except Main). Persisted historical rows may arrive later; callers that need
-	 * those included must wait for {@link persistedSubagentsReady} first.
+	 * Hub rows are task subagents only. Main, advisors, and other internal
+	 * registry nodes remain routing targets but never occupy dashboard rows.
+	 * Because persisted rows register asynchronously, callers that need a
+	 * settled empty-state decision must await {@link persistedSubagentsReady}.
 	 */
 	get isEmpty(): boolean {
 		return this.#rows.length === 0;
@@ -301,6 +345,7 @@ export class AgentHubOverlayComponent extends Container {
 			clearTimeout(this.#dataChangeTimer);
 			this.#dataChangeTimer = undefined;
 		}
+		this.#dataChangeUrgent = false;
 		this.#closeTranscriptOverlay();
 	}
 
@@ -360,6 +405,8 @@ export class AgentHubOverlayComponent extends Container {
 			ui: this.#ui,
 			getTool: this.#getTool,
 			getMessageRenderer: this.#getMessageRenderer,
+			getSnapshots: this.#getSnapshots,
+			getClipboard: this.#getClipboard,
 			cwd: this.#cwd,
 			hideThinkingBlock: this.#hideThinkingBlock,
 			proseOnlyThinking: this.#proseOnlyThinking,
@@ -371,6 +418,8 @@ export class AgentHubOverlayComponent extends Container {
 				this.#closeTranscriptOverlay();
 				this.#onDone();
 			},
+			openLink: this.#openLink,
+			openImage: this.#openImage,
 		});
 		this.#transcriptViewer = viewer;
 		this.#transcriptOverlay = this.#ui.showOverlay(viewer, {
@@ -397,12 +446,20 @@ export class AgentHubOverlayComponent extends Container {
 	// Live data plumbing
 	// ========================================================================
 
-	#scheduleDataChange(): void {
-		if (this.#dataChangeTimer) return;
-		this.#dataChangeTimer = setTimeout(() => {
-			this.#dataChangeTimer = undefined;
-			this.#onDataChange();
-		}, DATA_CHANGE_RENDER_COALESCE_MS);
+	#scheduleDataChange(urgent = false): void {
+		if (this.#dataChangeTimer) {
+			if (!urgent || this.#dataChangeUrgent) return;
+			clearTimeout(this.#dataChangeTimer);
+		}
+		this.#dataChangeUrgent = urgent;
+		this.#dataChangeTimer = setTimeout(
+			() => {
+				this.#dataChangeTimer = undefined;
+				this.#dataChangeUrgent = false;
+				this.#onDataChange();
+			},
+			urgent ? 0 : DATA_CHANGE_RENDER_COALESCE_MS,
+		);
 		this.#dataChangeTimer.unref?.();
 	}
 
@@ -413,8 +470,21 @@ export class AgentHubOverlayComponent extends Container {
 
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
-		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
-		this.#rows = refs.map(ref => ({ ref }));
+		this.#observedById = new Map(this.#observers.getSessions().map(observed => [observed.id, observed]));
+		const rows = this.#registry
+			.list()
+			.filter(ref => ref.kind === "sub")
+			.map(ref => ({ ref, status: this.#taskStatus(ref, this.#observedById.get(ref.id)) }))
+			.sort((left, right) =>
+				compareAgentNavigationOrder(
+					left.ref,
+					right.ref,
+					HUB_NAVIGATION_STATUS[left.status],
+					HUB_NAVIGATION_STATUS[right.status],
+				),
+			)
+			.map(({ ref }) => ({ ref }));
+		this.#rows = rows;
 
 		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
@@ -423,15 +493,17 @@ export class AgentHubOverlayComponent extends Container {
 	#taskStatus(ref: AgentRef, observed: ObservableSession | undefined): HubTaskStatus {
 		const progress = observed?.progress;
 		const activity = selectAgentActivity(ref.activityState, progress);
-		if (progress?.status === "failed") return "failed";
-		if (progress?.status === "aborted" || ref.status === "aborted") return "stopped";
-		if (progress?.status === "completed") return "completed";
+		if (progress?.status === "failed" || observed?.status === "failed") return "failed";
+		if (progress?.status === "aborted" || observed?.status === "aborted" || ref.status === "aborted")
+			return "stopped";
+		if (progress?.status === "completed" || observed?.status === "completed") return "completed";
 		if (progress?.status === "pending" || activity?.phase === "queued") return "not-started";
-		if (activity?.phase === "waiting-user") return "waiting-user";
+		if (ref.status === "waiting" || activity?.phase === "waiting-user" || activity?.phase === "waiting-peer")
+			return "waiting-user";
 		if (
 			progress?.status === "running" ||
+			observed?.status === "active" ||
 			ref.status === "running" ||
-			ref.status === "waiting" ||
 			(activity !== undefined && activity.phase !== "idle")
 		) {
 			return "running";
@@ -463,7 +535,7 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#observableFor(id: string): ObservableSession | undefined {
-		return this.#observers.getSessions().find(session => session.id === id);
+		return this.#observedById.get(id);
 	}
 
 	// ========================================================================
@@ -471,6 +543,7 @@ export class AgentHubOverlayComponent extends Container {
 	// ========================================================================
 
 	#renderTable(width: number): string[] {
+		this.#observedById = new Map(this.#observers.getSessions().map(observed => [observed.id, observed]));
 		const lines: string[] = [];
 		const innerWidth = Math.max(1, width - 2);
 		this.#rowAtScreenLine.clear();

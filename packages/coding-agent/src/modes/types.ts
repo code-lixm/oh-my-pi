@@ -170,6 +170,8 @@ export interface InteractiveModeContext {
 	hideFocusedAgentView(): void;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
 	clearTransientSessionUi(): void;
+	/** Clear session-scoped panels and extension terminal input before committing a switch. */
+	prepareSessionSwitch(): void;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: AgentSession["agent"];
@@ -442,6 +444,8 @@ export interface InteractiveModeContext {
 	handleCtrlC(): void;
 	handleCtrlD(): void;
 	handleCtrlZ(): void;
+	/** Re-query terminal appearance for an explicit display reset, then immediately replay the display. */
+	resetDisplayAfterAppearanceRefresh(): void;
 	handleDequeue(): void;
 	handleRetry(): Promise<void>;
 	handleImagePaste(): Promise<boolean>;

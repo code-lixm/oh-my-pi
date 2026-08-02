@@ -93,6 +93,78 @@ describe("InteractiveMode live top-level sessions", () => {
 		expect(foregroundSwitchSession).not.toHaveBeenCalled();
 	});
 
+	it("resolves a relative path to its existing live runtime without cold-switching", async () => {
+		await mode.handleClearCommand();
+		const originalPath = original.sessionManager.getSessionFile();
+		if (!originalPath) throw new Error("Expected persisted original session path");
+		const originalSwitchSession = vi.spyOn(original, "switchSession");
+		const liveSwitchSession = vi.spyOn(live, "switchSession");
+		const prepareSessionSwitch = vi.spyOn(mode, "prepareSessionSwitch");
+
+		await mode.handleResumeSession(path.relative(process.cwd(), originalPath));
+
+		expect(mode.session).toBe(original);
+		expect(originalSwitchSession).not.toHaveBeenCalled();
+		expect(liveSwitchSession).not.toHaveBeenCalled();
+		expect(prepareSessionSwitch).toHaveBeenCalledTimes(1);
+	});
+
+	it("cold-restores a previously indexed path after the active runtime switches to a third on-disk session", async () => {
+		const originalPath = original.sessionManager.getSessionFile();
+		const thirdPath = SessionManager.create(tempDir.path(), tempDir.path()).getSessionFile();
+		if (!originalPath || !thirdPath) throw new Error("Expected persisted session paths");
+		const switchSession = vi.spyOn(original, "switchSession");
+
+		await mode.handleResumeSession(thirdPath);
+		expect(original.sessionManager.getSessionFile()).toBe(thirdPath);
+
+		await mode.handleResumeSession(originalPath);
+		expect(original.sessionManager.getSessionFile()).toBe(originalPath);
+
+		await mode.handleResumeSession(thirdPath);
+		expect(original.sessionManager.getSessionFile()).toBe(thirdPath);
+		expect(switchSession).toHaveBeenNthCalledWith(1, thirdPath);
+		expect(switchSession).toHaveBeenNthCalledWith(2, originalPath);
+		expect(switchSession).toHaveBeenNthCalledWith(3, thirdPath);
+	});
+
+	it("reattaches a background runtime after its SessionManager adopts a new session file", async () => {
+		await mode.handleClearCommand();
+		const adoptedPath = path.join(tempDir.path(), "background-adopted.jsonl");
+		await original.sessionManager.setSessionFile(adoptedPath);
+		const originalSwitchSession = vi.spyOn(original, "switchSession");
+		const liveSwitchSession = vi.spyOn(live, "switchSession");
+		const prepareSessionSwitch = vi.spyOn(mode, "prepareSessionSwitch");
+
+		await mode.handleResumeSession(adoptedPath);
+
+		expect(mode.session).toBe(original);
+		expect(originalSwitchSession).not.toHaveBeenCalled();
+		expect(liveSwitchSession).not.toHaveBeenCalled();
+		expect(prepareSessionSwitch).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps live runtime bindings intact when resuming its current session path", async () => {
+		await mode.handleClearCommand();
+		const originalPath = original.sessionManager.getSessionFile();
+		const livePath = live.sessionManager.getSessionFile();
+		if (!originalPath || !livePath) throw new Error("Expected persisted session paths");
+		const resetObservers = vi.spyOn(mode, "resetObserverRegistry");
+		const prepareSessionSwitch = vi.spyOn(mode, "prepareSessionSwitch");
+		const liveSwitchSession = vi.spyOn(live, "switchSession");
+
+		await mode.handleResumeSession(livePath);
+
+		expect(mode.session).toBe(live);
+		expect(resetObservers).not.toHaveBeenCalled();
+		expect(liveSwitchSession).not.toHaveBeenCalled();
+		expect(prepareSessionSwitch).not.toHaveBeenCalled();
+
+		await mode.handleResumeSession(originalPath);
+		expect(mode.session).toBe(original);
+		expect(prepareSessionSwitch).toHaveBeenCalledTimes(1);
+	});
+
 	it("refuses /new while a dialog owns input without replacing the foreground session", async () => {
 		mode.hookSelector = {} as never;
 

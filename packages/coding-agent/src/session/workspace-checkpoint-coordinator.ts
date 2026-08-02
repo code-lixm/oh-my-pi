@@ -393,8 +393,6 @@ export function createWorkspaceCheckpointCoordinator(
 		op: "restore" | "undo" | "redo",
 		planId: string,
 		result: WorkspaceRestoreResult,
-		scope: "code" | "conversation" | "all",
-		strategy: "preserve" | "exact",
 	): string {
 		return host.appendRestoreEntry({
 			type: "workspace_restore",
@@ -405,8 +403,8 @@ export function createWorkspaceCheckpointCoordinator(
 			skippedPaths: result.skippedPaths,
 			conversationEntryId: result.conversationEntryId,
 			redoAvailable: op === "redo" ? false : result.redoAvailable,
-			scope,
-			strategy,
+			scope: result.scope,
+			strategy: result.strategy,
 			createdAt: nowIso(),
 		});
 	}
@@ -416,7 +414,7 @@ export function createWorkspaceCheckpointCoordinator(
 		rootPath: string,
 		planId: string,
 		allowConflicts: boolean,
-		scope: WorkspaceRestoreScope = "all",
+		undoScope?: WorkspaceRestoreScope,
 	): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
 		const guard = host.getMutatorGuard();
 		if (guard?.isMutatorActive()) {
@@ -434,7 +432,7 @@ export function createWorkspaceCheckpointCoordinator(
 					svc.service.undo({
 						rootPath,
 						sessionId: svc.sessionId ?? undefined,
-						scope,
+						scope: undoScope ?? "all",
 					}),
 				);
 			} else {
@@ -445,7 +443,7 @@ export function createWorkspaceCheckpointCoordinator(
 		} catch (error) {
 			return { available: false, reason: classifyAccessFailure(error), error };
 		}
-		appendRestoreForOperation(op, planId, result, scope, "preserve");
+		appendRestoreForOperation(op, planId, result);
 		lastCursor = {
 			undoHeadCheckpointId: result.checkpointId,
 			redoHeadCheckpointId:
@@ -598,7 +596,7 @@ export function createWorkspaceCheckpointCoordinator(
 		async undoWorkspace(scope) {
 			const svc = tryResolveService();
 			if (!svc) return unavailableResult("service_unavailable");
-			return performRestore("undo", svc.rootPath, "", false, scope ?? "all");
+			return performRestore("undo", svc.rootPath, "", false, scope);
 		},
 		async redoWorkspace() {
 			const svc = tryResolveService();
@@ -649,8 +647,8 @@ export function createWorkspaceCheckpointCoordinator(
 				skippedPaths: result.skippedPaths,
 				conversationEntryId: result.conversationEntryId,
 				redoAvailable: result.redoAvailable,
-				scope: preview.scope,
-				strategy: preview.strategy,
+				scope: result.scope,
+				strategy: result.strategy,
 				createdAt: nowIso(),
 			});
 			lastCursor = {
@@ -682,8 +680,8 @@ export function createWorkspaceCheckpointCoordinator(
 						skippedPaths: result.skippedPaths,
 						conversationEntryId: result.conversationEntryId,
 						redoAvailable: result.redoAvailable,
-						scope: preview.scope,
-						strategy: preview.strategy,
+						scope: result.scope,
+						strategy: result.strategy,
 						createdAt: nowIso(),
 					},
 				},

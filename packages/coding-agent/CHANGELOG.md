@@ -10,6 +10,8 @@
 - Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
 - Added a fullscreen Jobs Hub, opened with a deliberate double-right-arrow gesture on an empty prompt, showing every retained background task and Bash job with live work/model/runtime metadata, scrollable bounded Bash output tails, agent focus, and cancellation controls.
 - Added `dark-terminal-adaptive` and `light-terminal-adaptive` themes that bind OMP semantic colors to the terminal ANSI palette, inherit terminal surfaces for derived tool-card tints, and let Ghostty-compatible themes remain the base color authority.
+- Added `theme.terminalPalette` under `/settings → Appearance`; enabling it temporarily overrides the configured dark and light themes with terminal-adaptive variants, while disabling it restores the saved theme selections.
+- Added `Alt+N` to atomically send the current text-and-image draft to a separate live top-level session, return focus to the original session, and let both tasks continue concurrently in the same workspace.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -24,12 +26,17 @@
 - Added compact battery-style status-line usage rendering with remaining-quota blocks, deterministic latest-window selection, and configurable battery width.
 
 - Added opt-in `tui.mouseInput` support for clicking to position the main prompt cursor; it remains disabled by default to preserve terminal-native transcript selection.
+- Added mouse opening for transcript Markdown links and displayed images through the system browser or image viewer when `tui.mouseInput` is enabled.
 - Added a configurable `app.editor.clear` shortcut (default `Alt+C`) that clears the complete prompt draft, including pending images, without overloading interrupt or exit behavior.
 - Added a bounded no-progress loop guard that detects repeated semantically identical tool/thinking turns, performs one hidden recovery restart, and halts on recurrence.
 
 - Added the `thinkingDisplay` setting with `full`, `prose`, and `hidden` modes for live Main and subagent thinking streams; legacy `hideThinkingBlock` and `proseOnlyThinking` settings migrate automatically.
 
 ### Changed
+- Changed the main coding-agent prompt to default to in-scope action, persist through verification, defer questions until repository context cannot safely resolve material ambiguity, and correct task-relevant faulty premises with evidence.
+- Changed system and tool prompts to add short Codex/Claude model-family guidance overlays, preserve full custom-prompt overrides, deduplicate schema-carried mechanics, and keep English/Chinese execution semantics aligned.
+- Changed Agent Hub and focused-agent cycling to use one stable navigation order: running, waiting or queued, failed, then completed and other terminal agents, with newest-created agents first inside each group.
+- Changed failed subagent task summaries to require evidence-based recovery: preserve successful sibling results, inspect the failure, repair or reassign only unfinished work, and report blockers instead of blindly replaying side-effecting tasks.
 - Changed Hub process lifecycle cards to stay hidden in transcripts by default; set `display.showHubProcessActivity` to show them for debugging.
 - Changed visible thinking blocks to request provider summaries for Main and subagents, instruct the AI to use the active display language for user-visible text including reasoning summaries, show complete content by default, and append non-zero frozen durations inline as `Summary · 8s`.
 - Changed the default subagent concurrency from 32 to 8 for runnable tasks and provider requests.
@@ -40,7 +47,7 @@
 - Changed Bash tool cards to omit the redundant standalone icon/title row, leaving the `$ …` command preview as the first content line.
 - Changed Agent Hub into a compact subagent-only runtime dashboard: Main remains an internal routing target; wide rows stay single-line (narrow rows use at most two), real determinate counts and Main-delivery state live in the status column, terminal progress bars and verbose summary/result rows are omitted, persisted completed models remain visible, and runtime uses compact human labels such as `42s` or `2m15s`.
 - Changed Main's live working indicator to distinguish provider request setup from evidence-backed thinking: only real thinking stream events claim `Thinking`, active thoughts show explicit activity and elapsed time, and quiet periods stop appearing continuously active.
-- Changed the Agent Hub transcript viewer to keep a fixed metadata/summary header and persistent controls, cycle every Hub-visible advisor/live/parked row in place with `Alt+K`/`Alt+J`, and reserve `j/k/g/G` for transcript scrolling.
+- Changed the Agent Hub transcript viewer to keep a fixed metadata/summary header and persistent controls, cycle every Hub-visible live, parked, and persisted subagent row in place with `Alt+K`/`Alt+J`, and reserve `j/k/g/G` for transcript scrolling.
 - Changed the anchored Subagents HUD to render one scan-friendly status/activity line per agent when space permits, fall back to two lines on narrow terminals, and leave detailed throughput, context, token, tool, and cost telemetry to the Agent Hub and focused views.
 - Added structured main/subagent activity reporting across Working indicators, Hub rows, focused transcripts, remote snapshots, persisted agents, provider streams, and queued jobs without inventing percentage progress or treating ordinary model silence as a stall.
 - Added durable needs-reply communication state, explicit sender/recipient routing and delivery receipts, and root-aware relay behavior for concurrent top-level sessions.
@@ -70,7 +77,20 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed the zh-CN main system prompt omitting conditional Computer Use and dynamic `xd://` guidance and lagging behind the English risk-proportional verification and cleanup contract.
+- Fixed the `hindsight` memory-backend choice being mistranslated as the generic Chinese phrase “事后回顾”; the zh-CN settings UI now preserves the Hindsight product name.
+- Fixed Hindsight authentication and request failures being hidden in logs during automatic recall, retention, and mental-model loading; sessions now show an actionable `/settings` notice, explicit forced retains propagate failures, and API URL/token edits rebuild the live client immediately.
+- Fixed skipped-tool interrupt results remaining in English after switching `displayLanguage` to `zh-CN`; the synthetic result now uses localized prompt templates.
+- Fixed successful subagent `yield` submissions allowing later tool calls from the same assistant message to execute; `yield` now forms an exclusive transaction boundary while preserving earlier completed results.
+- Fixed subagent transcript edit and read cards rendering with incomplete arguments or Main-session state instead of the selected agent's snapshot and clipboard context.
+- Fixed Agent Hub task rows showing agent profile types instead of durable task names, mixing active and completed status colors, reordering continuously active peers on every update, and reserving a redundant footer inside subagent transcripts.
+- Fixed Agent Hub lifecycle and registry changes lagging behind progress updates, late running progress overwriting terminal states, large tables repeatedly scanning observer state, and same-named children from concurrent top-level sessions colliding in the process-global registry.
+- Fixed repeated `/resume` switches retaining stale live-runtime identities, losing session-scoped input and observer state on no-op or cancelled transitions, and mislabeling sessions owned by a live process as interrupted in other terminals.
+- Fixed single-file delete and move status rows inheriting the global accent rail, tint, and extra gutter; destructive Delete actions now render as compact bare rows with red action labels and delete glyphs.
+- Fixed fenced code in user-message bubbles rendering raw Markdown fences and dropping the bubble background on syntax-highlighted rows, and scoped terminal-palette contrast selection to terminal-adaptive themes so ordinary palette-index themes retain their prior text fallback.
+- Fixed explicitly read-only subagents inheriting Hub process supervision, which let scouts bypass their declared tool boundary with one-shot commands, and permanently hid Hub lifecycle plumbing from live and persisted subagent transcript views.
 - Fixed interactive `/rewind` restores with `conversation` or `all` scope leaving the transcript on the abandoned branch until a later session reload; successful restores now clear transient UI state and rebuild the display from the restored conversation immediately.
+- Fixed checkpoint rewind previews to list affected paths and conflicts, repaint after asynchronous work, reject duplicate or stale plan application, protect files created after preview, honor subtree path filters, and preserve the selected scope and strategy in session history.
 - Fixed `omitThinking` being ignored unless `thinkingDisplay` was also `hidden`; provider requests now omit supported thinking summaries independently of transcript visibility.
 - Fixed Advisor `concern` notes being treated as interrupts; only `blocker` notes now steer the primary agent, while concerns arrive at the next natural boundary.
 - Fixed terminal advisor-only turns being reviewed again and forming acknowledgement feedback loops; turn provenance now distinguishes advisor-only work from mixed user input, and finalized transcript cursors prevent skipped replies from replaying later.
@@ -150,6 +170,53 @@
 - Fixed ordinary user messages losing their configured `userMessageBg` after the initial turn, and accent tool cards painting their tint through the rightmost terminal column.
 - Fixed the working-loader shimmer band jumping several cells in a single render after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): the per-loader capped clock now caps the per-render wall delta to one normal render cycle (default 80 ms), discards the surplus, and tracks animation time separately from the wall clock so subsequent renders do not pay back the stall.
 - Fixed the advisor staleness caveat appended to notes when newer primary turns arrived after the reviewed transcript window being hard-coded in English: the markdown wrapper now goes through `tSettingsUi(...)` with a `zh-CN` translation, so the advisory and transcript reflect the active `displayLanguage` like the rest of the advisor chrome.
+## [17.2.2] - 2026-07-31
+
+### Added
+
+- Added an app.live.toggle keybinding (default Ctrl+L) to start or stop live voice mode.
+- Added ctx.invokeTool(params, options?) to extension contexts, allowing wrappers to run native tools while inheriting context, abort signals, and progress updates.
+
+### Changed
+
+- Moved the display-reset default keybinding (app.display.reset) from Ctrl+L to Alt+L to accommodate the new live-mode toggle.
+- Updated the hashline edit tool, streaming preview, and plan-mode guidance to support the unified PUT/CUT grammar, .= ranges, and named registers.
+- Improved startup performance by moving subagent model-registry refresh and session-file opening off the launch critical path.
+- Optimized session file writing performance by batching same-turn file-session appends.
+- Rewrote the Codex saved-reset auto-redeem algorithm to be pool-wide, window-exact, and expiry-aware, ensuring banked resets are automatically and reliably redeemed across multi-account setups before they expire.
+
+### Fixed
+
+- Fixed a crash in Kitty terminals when rendering non-PNG tool-result images if PNG conversion fails.
+- Fixed subagent evaluation resets (reset: true) wiping the shared kernel inherited from the parent session; resets from non-exclusive owners now fork into a private per-owner kernel.
+- Fixed the copy selector and ask dialog rendering raw key IDs instead of human-readable keybinding labels.
+- Fixed CLI positional initial messages bypassing automatic session-title generation.
+- Fixed the environment-variable reference omitting Kitty Unicode placeholder controls and tmux placement caveats.
+- Fixed extension validation failures during omp plugin install for extensions importing compact from @earendil-works/pi-coding-agent by adding the missing re-export.
+- Fixed Bash interceptor rules to inspect unquoted/unescaped compound command fragments (e.g., &&, ||, ;, |, &, and newlines) instead of only matching the complete command input.
+- Fixed ExtensionContext.cwd staying pinned to the initial session directory; it now dynamically tracks the active session's current working directory.
+- Fixed the web-search provider picker description for xAI/Grok to clarify that it supports SuperGrok/X Premium+ OAuth sign-ins.
+- Fixed /reload-plugins failing to reconnect MCP servers or refresh MCP tool and prompt-command registries.
+- Enforced the centralized artifact spill threshold on oversized read results, persisting them as recoverable session artifacts.
+- Fixed DuckDuckGo web search under-returning results above the first-page limit by automatically submitting continuation forms.
+- Fixed DuckDuckGo web search ignoring after: and before: date bounds by correctly parsing and filtering result timestamps.
+- Fixed env-driven OTLP trace export ignoring OTEL_RESOURCE_ATTRIBUTES.
+- Fixed a fresh session with deferred MCP discovery injecting the newly mounted xd:// tool catalog twice into the first model request.
+- Fixed the bash tool failing with EACCES permission errors on multi-user machines by scoping the snapshot directory per user ID.
+- Fixed LSP write batching replaying stale whole-file snapshots over newer external changes made before the batch flushed.
+- Fixed ctx.ui.editor() in ACP mode always resolving to undefined by routing it through the elicitation bridge.
+- Fixed omp commit failing to resolve extension-provided models in both agentic and legacy pipelines.
+- Fixed RPC hosts receiving no subagent lifecycle or progress frames when an IRC message revives an idle or parked keep-alive subagent.
+- Fixed copied fenced-code body rows in assistant messages retaining component and container margins.
+- Fixed mid-turn auto-compaction repeating dead-end rescue work and warnings at every tool boundary within a single oversized turn.
+- Fixed automatic terminal appearance changes clearing native scrollback and snapping readers away from their current scroll position.
+- Fixed exact-match edits failing on files containing credential-shaped tokens when secrets.enabled is active by using reversible placeholders instead of irreversible redactions.
+- Fixed context usage collapsing to the latest response size for Cursor models that omit prompt-token usage.
+- Fixed the browser tool crashing with EBUSY errors on Windows when a headless Chromium profile is locked during cleanup.
+- Fixed the Python RPC client dropping context, compaction, OAuth URL, and terminal-settlement fields.
+- Fixed the browser tool ignoring the url parameter when opening a new tab on an attached browser.
+- Fixed browser automation disrupting attached browsers by adopting the active foreground tab and avoiding raising new tabs during screenshots.
+
 ## [17.2.1] - 2026-07-30
 
 ### Added

@@ -23,7 +23,7 @@ Completing tasks out of phase order can move this pointer **back** to an earlier
 - **Phase name**: short noun phrase (e.g. `Foundation`, `Auth`, `Verification`). Unique identifier. NEVER prefix `1.`, `A)`, `Phase 1:`.
 
 ## Rules
-- Mark each task done immediately after finishing; NEVER batch-close a phase.
+- Mark each task done immediately; start the next open task in the same turn. NEVER batch-close a phase.
 - A subagent result is a ledger boundary: reconcile completed tasks before the next action.
 - Implementation evidence closes implementation tasks only; verification stays open until its command succeeds.
 - NEVER make a todo call your turn's only tool call — batch it with the next real action.

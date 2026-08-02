@@ -163,6 +163,8 @@ class RecordingCheckpointService implements WorkspaceCheckpointService {
 			skippedPaths: [],
 			conversationEntryId: plan?.conversationEntryId ?? null,
 			redoAvailable: true,
+			scope: plan?.scope ?? "code",
+			strategy: plan?.strategy ?? "preserve",
 		};
 	}
 
@@ -181,6 +183,8 @@ class RecordingCheckpointService implements WorkspaceCheckpointService {
 			skippedPaths: [],
 			conversationEntryId: null,
 			redoAvailable: true,
+			scope: request.scope ?? "code",
+			strategy: "preserve",
 		};
 	}
 
@@ -199,6 +203,8 @@ class RecordingCheckpointService implements WorkspaceCheckpointService {
 			skippedPaths: [],
 			conversationEntryId: null,
 			redoAvailable: false,
+			scope: "code",
+			strategy: "preserve",
 		};
 	}
 
@@ -587,6 +593,8 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 			skippedPaths: ["src/b.ts"],
 			conversationEntryId: "conv-restore",
 			redoAvailable: true,
+			scope: "conversation",
+			strategy: "exact",
 		};
 		harness.service.nextUndoResult = {
 			transactionId: "tx-undo-explicit",
@@ -596,6 +604,8 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 			skippedPaths: [],
 			conversationEntryId: "conv-undo",
 			redoAvailable: true,
+			scope: "code",
+			strategy: "preserve",
 		};
 		harness.service.nextRedoResult = {
 			transactionId: "tx-redo-explicit",
@@ -605,6 +615,8 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 			skippedPaths: [],
 			conversationEntryId: "conv-redo",
 			redoAvailable: false,
+			scope: "code",
+			strategy: "preserve",
 		};
 
 		expect(harness.session.hasWorkspaceCheckpoint()).toBe(true);
@@ -693,7 +705,69 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 		});
 	});
 
-	it("persists checkpoint and restore entries and rebuilds the cursor after reopen", async () => {
+	it("preserves previewed restore scope and strategy in persistent restore entries", async () => {
+		const harness = await createHarness({ persist: true });
+		const scenarios = [
+			{
+				planId: "plan-code-exact",
+				checkpointId: "cp-code-exact",
+				scope: "code" as const,
+				strategy: "exact" as const,
+			},
+			{ planId: "plan-all-exact", checkpointId: "cp-all-exact", scope: "all" as const, strategy: "exact" as const },
+		];
+
+		for (const scenario of scenarios) {
+			const plan: PreviewPlan = {
+				id: scenario.planId,
+				checkpointId: scenario.checkpointId,
+				rootPath: harness.tempDir.path(),
+				scope: scenario.scope,
+				strategy: scenario.strategy,
+				operations: [{ path: "src/app.ts", kind: "update", objectId: `object-${scenario.planId}` }],
+				conflicts: [],
+				conversationEntryId: null,
+				createdAt: "2026-01-04T00:00:00.000Z",
+			};
+			harness.service.nextPreviewPlan = plan;
+
+			const preview = await harness.session.previewWorkspaceRestore({
+				checkpointId: scenario.checkpointId,
+				scope: scenario.scope,
+				strategy: scenario.strategy,
+			});
+			expect(preview).toEqual({ available: true, value: plan });
+
+			const applied = await harness.session.applyWorkspaceRestore(scenario.planId);
+			expect(applied).toMatchObject({
+				available: true,
+				value: expect.objectContaining({ checkpointId: scenario.checkpointId }),
+			});
+		}
+
+		const expectedEntries = scenarios.map(({ planId, scope, strategy }) => ({ planId, scope, strategy }));
+		expect(
+			workspaceRestoreEntries(harness.sessionManager.getEntries()).map(entry => ({
+				planId: entry.planId,
+				scope: entry.scope,
+				strategy: entry.strategy,
+			})),
+		).toEqual(expectedEntries);
+
+		await harness.sessionManager.flush();
+		const sessionFile = harness.session.sessionFile;
+		if (!sessionFile) throw new Error("expected persisted session file");
+		const reopened = await SessionManager.open(sessionFile, path.join(harness.tempDir.path(), "sessions"));
+		expect(
+			workspaceRestoreEntries(reopened.getEntries()).map(entry => ({
+				planId: entry.planId,
+				scope: entry.scope,
+				strategy: entry.strategy,
+			})),
+		).toEqual(expectedEntries);
+	});
+
+	it("persists restore-result metadata without a local preview and rebuilds the cursor after reopen", async () => {
 		const harness = await createHarness({ persist: true });
 		const created = await harness.session.createWorkspaceCheckpoint("persisted checkpoint");
 		if (!created.available) throw new Error(`expected checkpoint create to succeed: ${created.reason}`);
@@ -707,6 +781,8 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 			skippedPaths: [],
 			conversationEntryId: "conv-persisted",
 			redoAvailable: true,
+			scope: "code",
+			strategy: "exact",
 		};
 		await harness.session.applyWorkspaceRestore("plan-persisted", true);
 		await harness.sessionManager.flush();
@@ -720,6 +796,14 @@ describe("AgentSession workspace checkpoint lifecycle", () => {
 		expect(workspaceRestoreEntries(harness.sessionManager.getEntries())).toHaveLength(1);
 		expect(workspaceCheckpointEntries(reopenedEntriesBeforeSession)).toHaveLength(1);
 		expect(workspaceRestoreEntries(reopenedEntriesBeforeSession)).toHaveLength(1);
+		expect(workspaceRestoreEntries(reopenedEntriesBeforeSession)).toEqual([
+			expect.objectContaining({
+				planId: "plan-persisted",
+				checkpointId: createdRecord.id,
+				scope: "code",
+				strategy: "exact",
+			}),
+		]);
 
 		const reopenedAgent = new Agent({
 			getApiKey: () => "test-key",

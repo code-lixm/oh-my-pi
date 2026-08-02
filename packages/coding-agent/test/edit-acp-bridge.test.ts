@@ -318,7 +318,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+    const v0 = 100;`,
+			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+    const v0 = 100;`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -342,7 +342,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 		const nextTag = extractTag(text);
 		const followUp = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${nextTag}]\nSWAP 1.=1:\n+function g() {`,
+			input: `[${relPath}#${nextTag}]\nPUT 1-1:\n+function g() {`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -363,7 +363,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+earth`,
+			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+earth`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -394,7 +394,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 
 		const result = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${realTag}]\nSWAP 2.=2:\n+print('new')`,
+			input: `[${relPath}#${realTag}]\nPUT 2-2:\n+print('new')`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});
@@ -404,7 +404,7 @@ describe("executeHashlineSingle model-visible payload under write-time drift", (
 		const nextTag = extractTag(text);
 		const followUp = await executeHashlineSingle({
 			session,
-			input: `[${relPath}#${nextTag}]\nSWAP 2.=2:\n+print('newer')`,
+			input: `[${relPath}#${nextTag}]\nPUT 2-2:\n+print('newer')`,
 			writethrough,
 			beginDeferredDiagnosticsForPath: noopBeginDeferred,
 		});

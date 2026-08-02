@@ -144,6 +144,7 @@ export async function ensureMentalModels(
 	bankId: string,
 	seeds: MentalModelSeed[],
 	debug: boolean,
+	onError?: (error: unknown) => void,
 ): Promise<void> {
 	if (seeds.length === 0) return;
 
@@ -153,6 +154,7 @@ export async function ensureMentalModels(
 		existing = list.items ?? [];
 	} catch (err) {
 		logger.debug("Hindsight: ensureMentalModels list failed", { bankId, error: String(err) });
+		onError?.(err);
 		return;
 	}
 
@@ -170,6 +172,7 @@ export async function ensureMentalModels(
 			}
 		} catch (err) {
 			logger.debug("Hindsight: createMentalModel failed", { bankId, id: seed.id, error: String(err) });
+			onError?.(err);
 		}
 	}
 }
@@ -217,12 +220,14 @@ export async function loadMentalModelsBlock(
 	bankId: string,
 	budgetChars: number = MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT,
 	visibleTags?: readonly string[],
+	onError?: (error: unknown) => void,
 ): Promise<string | undefined> {
 	let response: MentalModelListResponse;
 	try {
 		response = await client.listMentalModels(bankId, { detail: "content" });
 	} catch (err) {
 		logger.debug("Hindsight: loadMentalModelsBlock list failed", { bankId, error: String(err) });
+		onError?.(err);
 		return undefined;
 	}
 

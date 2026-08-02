@@ -22,7 +22,7 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
-import { parseSgrMouse, type SgrMouseEvent } from "./mouse";
+import { isMouseRoutable, type MouseRoutable, parseSgrMouse, type SgrMouseEvent } from "./mouse";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -473,6 +473,16 @@ export interface OverlayOptions {
 	 * when native terminal text selection takes precedence over pointer events.
 	 */
 	mouseTracking?: boolean;
+
+	/**
+	 * Whether the overlay accepts pointer events on the rendered surface.
+	 * `"auto"` (default) routes clicks to the overlay when they land on its
+	 * composited row/col span and the overlay itself implements
+	 * {@link MouseRoutable}. `"none"` makes the overlay transparent to clicks:
+	 * every event falls through to the layer beneath (lower overlay or root
+	 * content). Use `"none"` for purely decorative overlays.
+	 */
+	pointerEvents?: "auto" | "none";
 }
 
 /**
@@ -490,7 +500,7 @@ export interface OverlayHandle {
 /**
  * Container - a component that contains other components
  */
-export class Container implements Component, NativeScrollbackCommittedRows, NativeScrollbackReplay {
+export class Container implements Component, MouseRoutable, NativeScrollbackCommittedRows, NativeScrollbackReplay {
 	children: Component[] = [];
 
 	// Memoized concatenation of the children's latest renders. Children are
@@ -614,6 +624,35 @@ export class Container implements Component, NativeScrollbackCommittedRows, Nati
 		}
 		this.#memoLines = lines;
 		return lines;
+	}
+
+	/**
+	 * Forward a mouse event into the child that owns the given row of this
+	 * container's most recent render. Uses the memoized child row spans from
+	 * the last `render(width)` so a click never re-derives child output. The
+	 * child-local row is `line - childStart`; `col` is passed through
+	 * unmodified — children carry their own horizontal coordinate system.
+	 *
+	 * Returns `false` when the click fell in a gap, past the container's
+	 * last child, or the owning child does not implement `routeMouse`. The
+	 * caller should try the next routing layer.
+	 */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean | void {
+		const refs = this.#memoChildLines;
+		if (refs.length !== this.children.length) return false;
+		if (line < 0) return false;
+		let offset = 0;
+		for (let i = 0; i < refs.length; i++) {
+			const childLines = refs[i]!;
+			if (line < offset + childLines.length) {
+				const child = this.children[i]!;
+				if (!isMouseRoutable(child)) return false;
+				const consumed = child.routeMouse(event, line - offset, col);
+				return consumed !== false;
+			}
+			offset += childLines.length;
+		}
+		return false;
 	}
 }
 
@@ -920,6 +959,21 @@ export function findCommittedPrefixResync(
 /**
  * TUI - Main class for managing terminal UI with differential rendering
  */
+
+/** Cached geometry of one overlay at the moment the last frame was composited.
+ *  Populated only when the overlay actually rendered; mouse routing reads it
+ *  to translate screen coordinates to overlay-local coordinates. */
+interface OverlayRouteEntry {
+	component: Component;
+	lines: readonly string[];
+	/** First source row represented by `lines[0]` after vertical clipping. */
+	sourceRowOffset: number;
+	row: number;
+	col: number;
+	width: number;
+	pointerEvents: "auto" | "none";
+}
+
 export class TUI extends Container {
 	terminal: Terminal;
 	#previousFrameLength = 0;
@@ -1152,6 +1206,10 @@ export class TUI extends Container {
 	#frameCursorMarkers: { row: number; col: number }[] = [];
 	// Leading rows of #composedFrame byte-identical to the previous compose.
 	#renderStablePrefixRows = 0;
+	// Resolved overlay geometry captured during the last #compositeOverlaysIntoWindow
+	// pass. Mouse routing reads it to translate screen coords to overlay-local
+	// coordinates; populated only when at least one overlay rendered.
+	#overlayRoute: OverlayRouteEntry[] = [];
 
 	// Component-scoped render accumulation. Targets are the components handed
 	// to requestComponentRender() since the last frame; the flag stays true
@@ -2530,21 +2588,62 @@ export class TUI extends Container {
 		// Mouse tracking is opt-in on the normal screen: it would otherwise
 		// consume the terminal's native transcript-selection gestures.
 		const mouseTarget = this.#focusedComponent;
-		if (!this.#altActive && mouseTarget?.mouseTracking && data.startsWith("\x1b[<")) {
+		if (!this.#altActive && this.#normalMouseTrackingActive && data.startsWith("\x1b[<")) {
 			const event = parseSgrMouse(data);
-			const marker = this.#frameCursorMarkers.at(-1);
-			if (event && marker) {
-				const handled = mouseTarget.handleMouse?.(event, {
-					row: marker.row - this.#windowTopRow,
-					col: marker.col,
-				});
-				if (handled) {
-					if (this.#focusedComponent === mouseTarget && this.#scopedInputRenderComponents.has(mouseTarget)) {
+			if (event) {
+				// Shared normal-screen routing: walks overlays topmost-first, then
+				// the root segments of the most recent compose. Keyboard focus is
+				// intentionally NOT used to pick a target — the click should
+				// reach whatever component actually owns that screen row.
+				const sharedHandled = this.routeMouse(event, event.row, event.col);
+				if (sharedHandled) {
+					if (
+						mouseTarget !== null &&
+						this.#focusedComponent === mouseTarget &&
+						this.#scopedInputRenderComponents.has(mouseTarget)
+					) {
 						this.requestComponentRender(mouseTarget);
 					} else {
 						this.requestRender();
 					}
+					return;
 				}
+				// Migration fallback: keep the legacy `handleMouse(event,cursorScreen)`
+				// path live for components that have not yet opted into the local
+				// `routeMouse` API. The cursor-screen marker is preferred only when
+				// it belongs to the focused component's root segment — otherwise
+				// fabricating one would mis-locate the cursor for any other
+				// focused-at-target.
+				if (mouseTarget?.handleMouse) {
+					const segments = this.#frameSegments;
+					let markerRow = -1;
+					let markerCol = -1;
+					for (let i = this.#frameCursorMarkers.length - 1; i >= 0; i--) {
+						const marker = this.#frameCursorMarkers[i]!;
+						const ownerSegment = this.#findSegmentAt(segments, marker.row);
+						if (ownerSegment !== undefined && ownerSegment.component === mouseTarget) {
+							markerRow = marker.row;
+							markerCol = marker.col;
+							break;
+						}
+					}
+					if (markerRow >= 0) {
+						const handled = mouseTarget.handleMouse(event, {
+							row: markerRow - this.#windowTopRow,
+							col: markerCol,
+						});
+						if (handled) {
+							if (this.#focusedComponent === mouseTarget && this.#scopedInputRenderComponents.has(mouseTarget)) {
+								this.requestComponentRender(mouseTarget);
+							} else {
+								this.requestRender();
+							}
+						}
+						return;
+					}
+				}
+				// A syntactically valid mouse report is terminal protocol input, not
+				// keyboard data. Swallow it even when no mouse surface consumed it.
 				return;
 			}
 		}
@@ -2759,6 +2858,7 @@ export class TUI extends Container {
 	 */
 	#compositeOverlaysIntoWindow(window: string[], termWidth: number, termHeight: number): string[] {
 		const result = [...window];
+		const routeEntries: OverlayRouteEntry[] = [];
 		for (const entry of this.overlayStack) {
 			if (!this.#isOverlayVisible(entry)) continue;
 			const { component, options } = entry;
@@ -2766,12 +2866,12 @@ export class TUI extends Container {
 			// (width and maxHeight don't depend on overlay height).
 			const { width, maxHeight } = this.#resolveOverlayLayout(options, 0, termWidth, termHeight);
 			let overlayLines = component.render(width);
+			let sourceRowOffset = 0;
 			if (overlayLines.length > maxHeight) {
 				const anchor = options?.anchor ?? "center";
-				overlayLines =
-					anchor === "bottom-left" || anchor === "bottom-center" || anchor === "bottom-right"
-						? overlayLines.slice(overlayLines.length - maxHeight)
-						: overlayLines.slice(0, maxHeight);
+				const clipsFromTop = anchor === "bottom-left" || anchor === "bottom-center" || anchor === "bottom-right";
+				if (clipsFromTop) sourceRowOffset = overlayLines.length - maxHeight;
+				overlayLines = clipsFromTop ? overlayLines.slice(sourceRowOffset) : overlayLines.slice(0, maxHeight);
 			}
 			const { row, col } = this.#resolveOverlayLayout(options, overlayLines.length, termWidth, termHeight);
 			for (let i = 0; i < overlayLines.length; i++) {
@@ -2781,7 +2881,17 @@ export class TUI extends Container {
 					visibleWidth(overlayLines[i]) > width ? sliceByColumn(overlayLines[i], 0, width, true) : overlayLines[i];
 				result[idx] = this.#compositeLineAt(result[idx], truncatedOverlayLine, col, width, termWidth);
 			}
+			routeEntries.push({
+				component,
+				lines: overlayLines,
+				sourceRowOffset,
+				row,
+				col,
+				width,
+				pointerEvents: options?.pointerEvents ?? "auto",
+			});
 		}
+		this.#overlayRoute = routeEntries;
 		return result;
 	}
 
@@ -2924,6 +3034,21 @@ export class TUI extends Container {
 		return coalesced + (line.includes("\x1b]8;") ? LINE_TERMINATOR : SEGMENT_RESET);
 	}
 
+	/** Linear lookup for the root segment that owns `composedFrameRow`. Used by
+	 *  the migration fallback to associate a `#frameCursorMarkers` entry with
+	 *  the focused component without trusting `at(-1)`. Returns `undefined`
+	 *  when the row falls outside every segment (overlay gap, scrollback
+	 *  past the frame). */
+	#findSegmentAt(segments: FrameSegment[], composedFrameRow: number): FrameSegment | undefined {
+		for (let i = 0; i < segments.length; i++) {
+			const segment = segments[i]!;
+			if (composedFrameRow < segment.start) continue;
+			if (composedFrameRow >= segment.start + segment.rowCount) continue;
+			return segment;
+		}
+		return undefined;
+	}
+
 	/**
 	 * Render one frame.
 	 *
@@ -2950,7 +3075,12 @@ export class TUI extends Container {
 		const topOverlay = this.#getTopmostVisibleOverlay();
 		const wantAlt = topOverlay?.options?.fullscreen === true;
 		const wantMouseTracking = wantAlt && topOverlay.options?.mouseTracking !== false;
-		const wantNormalMouseTracking = !wantAlt && this.#focusedComponent?.mouseTracking === true;
+		const wantNormalMouseTracking =
+			!wantAlt &&
+			(topOverlay
+				? (topOverlay.options?.mouseTracking ??
+					(topOverlay.component.mouseTracking === true || topOverlay.preFocus?.mouseTracking === true))
+				: this.#focusedComponent?.mouseTracking === true);
 		if (wantAlt && !this.#altActive) {
 			// Enhanced keyboard modes can be buffer-local: re-push the active
 			// modified-key reporting sequence on the freshly entered alternate
@@ -4422,5 +4552,57 @@ export class TUI extends Container {
 		const cursorControl = this.#cursorControlSequence(cursorPos, totalLines, this.#hardwareCursorRow);
 		this.terminal.write(`${this.#cursorBeginSequence}${cursorControl.seq}${this.#cursorEndSequence}`);
 		this.#recordHardwareCursorUpdate(cursorControl);
+	}
+
+	/**
+	 * Frame-level mouse routing for the normal screen. Walks the overlay stack
+	 * topmost-first, then the root segments of the most recent compose, and
+	 * forwards the event to the first child that consumes it. Coordinates are
+	 * expected in the same 0-based, window-relative system that
+	 * {@link SgrMouseEvent} already exposes (`event.row`/`event.col`).
+	 *
+	 * Order:
+	 *  1. Overlays from top to bottom. `pointerEvents: "none"` overlays are
+	 *     transparent — we skip them and continue searching.
+	 *  2. Root child that owns the row in `#frameSegments`. `col` is forwarded
+	 *     unmodified; each child carries its own horizontal coordinate system.
+	 *
+	 * Returns `true` when something consumes the event. Clicks past the
+	 * bottom of the composed frame, or on root children that don't implement
+	 * `MouseRoutable`, return `false`.
+	 */
+	override routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		// Overlays: topmost first. Reuse the geometry captured during the last
+		// composite pass so we never re-render an overlay at click time.
+		const overlayRoute = this.#overlayRoute;
+		for (let i = overlayRoute.length - 1; i >= 0; i--) {
+			const entry = overlayRoute[i]!;
+			if (entry.pointerEvents === "none") continue;
+			if (!isMouseRoutable(entry.component)) continue;
+			if (line < entry.row || line >= entry.row + entry.lines.length) continue;
+			const adjustedCol = col - entry.col;
+			if (adjustedCol < 0 || adjustedCol >= entry.width) continue;
+			const consumed = entry.component.routeMouse(event, line - entry.row + entry.sourceRowOffset, adjustedCol);
+			if (consumed !== false) return true;
+		}
+
+		// Root segments. Translate the window-relative row back into the
+		// composed frame's coordinate system (#frameSegments stores start in
+		// composed-frame rows). The composed frame is the painted window:
+		// the segment at composed-frame row N sits at terminal row
+		// `N + windowTopRow`, but the event arrived as window-relative, so
+		// add windowTopRow to recover the composed-frame row.
+		const composedFrameRow = line + this.#windowTopRow;
+		const segments = this.#frameSegments;
+		for (let i = 0; i < segments.length; i++) {
+			const segment = segments[i]!;
+			if (composedFrameRow < segment.start) continue;
+			if (composedFrameRow >= segment.start + segment.rowCount) continue;
+			if (!isMouseRoutable(segment.component)) return false;
+			const childLine = composedFrameRow - segment.start;
+			const consumed = segment.component.routeMouse(event, childLine, col);
+			return consumed !== false;
+		}
+		return false;
 	}
 }

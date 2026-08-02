@@ -5,8 +5,11 @@
 ### Added
 
 - Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
+- Added render-time mouse hit routing for editors, Markdown links, images, nested containers, boxes, and overlays without changing rendered terminal output.
+
 ### Fixed
 
+- Fixed literal Markdown code rows dropping component gutters and host backgrounds, which left fenced code narrower than surrounding content and punched unpainted holes through styled message surfaces.
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
 - Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
 ## [17.0.6] - 2026-07-20
@@ -18,6 +21,17 @@
 ### Fixed
 
 - Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
+## [17.2.2] - 2026-07-31
+
+### Added
+
+- Added request tokens to explicit OSC 11 appearance refreshes to allow consumers to correlate responses across queued and coalesced terminal probes.
+
+### Fixed
+
+- Fixed the event-loop watchdog incorrectly reporting system sleep or suspension as a synchronous ui.loop-blocked stall.
+- Fixed terminal copies of fenced-code blocks retaining margins from components, lists, or blockquotes in assistant messages (#7055 by @GratefulDave).
+
 ## [17.2.0] - 2026-07-30
 
 ### Added

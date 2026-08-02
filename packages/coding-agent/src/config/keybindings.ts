@@ -43,6 +43,7 @@ interface AppKeybindings {
 	"app.agents.next": true;
 	"app.agents.previous": true;
 	"app.session.new": true;
+	"app.session.sendToNew": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
 	"app.session.resume": true;
@@ -57,6 +58,7 @@ interface AppKeybindings {
 	"app.plan.toggle": true;
 	"app.history.search": true;
 	"app.stt.toggle": true;
+	"app.live.toggle": true;
 }
 
 export type AppKeybinding = keyof AppKeybindings;
@@ -105,7 +107,7 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Suspend application"),
 	},
 	"app.display.reset": {
-		defaultKeys: "ctrl+l",
+		defaultKeys: "alt+l",
 		description: tSettingsUi("Reset terminal display"),
 	},
 	"app.thinking.cycle": {
@@ -179,6 +181,12 @@ export const KEYBINDINGS = {
 		defaultKeys: [],
 		description: tSettingsUi("Create new session"),
 	},
+	"app.session.sendToNew": {
+		defaultKeys: "alt+n",
+		description: tSettingsUi(
+			"Send current draft to a new session and keep the current session running in the background",
+		),
+	},
 	"app.session.tree": {
 		defaultKeys: [],
 		description: tSettingsUi("Show session tree"),
@@ -246,6 +254,10 @@ export const KEYBINDINGS = {
 	"app.stt.toggle": {
 		defaultKeys: [],
 		description: tSettingsUi("Toggle speech-to-text (default gesture: hold Space)"),
+	},
+	"app.live.toggle": {
+		defaultKeys: "ctrl+l",
+		description: tSettingsUi("Start or stop live voice mode (/live)"),
 	},
 } as const satisfies KeybindingDefinitions;
 

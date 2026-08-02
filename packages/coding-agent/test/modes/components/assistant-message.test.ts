@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { TERMINAL, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../src/config/settings";
 import { createAdvisorMessageCard } from "../../../src/modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../../src/modes/components/assistant-message";
@@ -66,6 +66,38 @@ describe("AssistantMessageComponent", () => {
 			expect(assistantLines.map(line => visibleWidth(line) <= width)).toEqual(
 				Array(assistantLines.length).fill(true),
 			);
+		}
+	});
+
+	it("keeps fallback image bytes stable and opens the original image", () => {
+		const previousProtocol = TERMINAL.imageProtocol;
+		TERMINAL.imageProtocol = null;
+		try {
+			const image = { type: "image" as const, data: "b3JpZ2luYWw=", mimeType: "image/webp" };
+			const message = { role: "assistant", content: [image], timestamp: 1 } as unknown as AssistantMessage;
+			const baseline = new AssistantMessageComponent(message).render(40);
+			const opened: (typeof image)[] = [];
+			const component = new AssistantMessageComponent(message, false, undefined, [], undefined, false, {
+				openImage: value => opened.push(value as typeof image),
+			});
+			const lines = component.render(40);
+			expect(lines).toEqual(baseline);
+
+			const row = lines.findIndex(line => Bun.stripANSI(line).includes("[Image:"));
+			const col = Bun.stripANSI(lines[row]!).indexOf("[Image:");
+			const event = {
+				button: 0,
+				col,
+				row,
+				release: false,
+				wheel: null,
+				motion: false,
+				leftClick: true,
+			};
+			expect(component.routeMouse(event, row, col)).not.toBe(false);
+			expect(opened).toEqual([image]);
+		} finally {
+			TERMINAL.imageProtocol = previousProtocol;
 		}
 	});
 });

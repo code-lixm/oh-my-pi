@@ -30,7 +30,11 @@ function checkpointRecord(id: string, label: string | null): WorkspaceCheckpoint
 	};
 }
 
-function restoreResult(checkpointId: string): WorkspaceRestoreResult {
+function restoreResult(
+	checkpointId: string,
+	scope: WorkspaceRestoreResult["scope"],
+	strategy: WorkspaceRestoreResult["strategy"],
+): WorkspaceRestoreResult {
 	return {
 		transactionId: `transaction-${checkpointId}`,
 		checkpointId,
@@ -39,6 +43,8 @@ function restoreResult(checkpointId: string): WorkspaceRestoreResult {
 		skippedPaths: [],
 		conversationEntryId: null,
 		redoAvailable: true,
+		scope,
+		strategy,
 	};
 }
 
@@ -60,11 +66,11 @@ function createTuiRuntime() {
 	const showCheckpointSelector = vi.fn(async (_options?: { checkpointId?: string }): Promise<void> => {});
 	const undoWorkspace = vi.fn(
 		async (): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> =>
-			available(restoreResult("ckpt-undo")),
+			available(restoreResult("ckpt-undo", "all", "preserve")),
 	);
 	const redoWorkspace = vi.fn(
 		async (): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> =>
-			available(restoreResult("ckpt-redo")),
+			available(restoreResult("ckpt-redo", "code", "preserve")),
 	);
 
 	const runtime = {

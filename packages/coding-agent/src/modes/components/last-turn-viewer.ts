@@ -27,6 +27,20 @@ export interface LastTurnViewerDeps {
 	proseOnlyThinking?: () => boolean;
 	requestRender: () => void;
 	onClose: () => void;
+	/**
+	 * Forwarded to {@link ChatTranscriptBuilder}: click handler for Markdown link
+	 * cells in the rendered last-turn transcript. Host typically derives this
+	 * from the ambient InteractiveModeContext.openInBrowser. Optional: omitted
+	 * leaves Markdown link cells non-clickable.
+	 */
+	openLink?: (href: string) => void;
+	/**
+	 * Forwarded to {@link ChatTranscriptBuilder}: click handler for tool-result
+	 * / native assistant images (and the no-protocol text fallback). Host
+	 * materializes original bytes via its session blob store and routes through
+	 * openInBrowser. Optional: omitted leaves image cells non-clickable.
+	 */
+	openImage?: (image: import("@oh-my-pi/pi-ai").ImageContent) => void;
 }
 
 /** Read-only fullscreen view of the latest user turn in the active session. */
@@ -47,6 +61,8 @@ export class LastTurnViewer implements Component {
 			hideThinkingBlock: deps.hideThinkingBlock,
 			proseOnlyThinking: deps.proseOnlyThinking,
 			requestRender: deps.requestRender,
+			openLink: deps.openLink,
+			openImage: deps.openImage,
 		});
 		this.#builder.rebuild(deps.entries);
 	}

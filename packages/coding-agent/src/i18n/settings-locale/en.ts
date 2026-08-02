@@ -1802,6 +1802,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Hindsight Mental Models": "Hindsight Mental Models",
 	"Hindsight Retain Mode": "Hindsight Retain Mode",
 	"Hindsight Scoping": "Hindsight Scoping",
+	"Hindsight authentication failed. Update Hindsight API Token in /settings, then retry.":
+		"Hindsight authentication failed. Update Hindsight API Token in /settings, then retry.",
+	"Hindsight request failed: {error}. Check Hindsight settings in /settings.":
+		"Hindsight request failed: {error}. Check Hindsight settings in /settings.",
 	"Hindsight server URL (Cloud or self-hosted)": "Hindsight server URL (Cloud or self-hosted)",
 	Hooks: "Hooks",
 	'Host "{name}" not found in {scope} config.': 'Host "{name}" not found in {scope} config.',
@@ -2381,6 +2385,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"The rule condition did not match any earlier assistant output.",
 	"Theme used when the terminal has a dark background": "Theme used when the terminal has a dark background",
 	"Theme used when the terminal has a light background": "Theme used when the terminal has a light background",
+	"Use Terminal Palette": "Use Terminal Palette",
+	"Override the selected dark and light themes with adaptive themes that inherit the terminal ANSI palette":
+		"Override the selected dark and light themes with adaptive themes that inherit the terminal ANSI palette",
 	"Thin chevron": "Thin chevron",
 	"Thin arrows (Nerd Font)": "Thin arrows (Nerd Font)",
 	"Thinking Level": "Thinking Level",

@@ -30,10 +30,14 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string } 
 		if (opts.flushFails) throw new Error("disk full");
 	});
 	const attachLiveTopLevelRuntime = vi.fn(async () => undefined);
+	const prepareSessionSwitch = vi.fn();
+	const resetObserverRegistry = vi.fn();
 	const ctx = {
 		session: { switchSession },
 		sessionManager: { getCwd: () => state.cwd, getSessionDir: () => "/tmp" },
 		settings: { flush },
+		prepareSessionSwitch,
+		resetObserverRegistry,
 		clearTransientSessionUi: vi.fn(),
 		applyCwdChange,
 		updateEditorBorderColor: vi.fn(),
@@ -59,6 +63,8 @@ function createResumeContext(opts: { flushFails?: boolean; sourceCwd?: string } 
 		ctx,
 		attachLiveTopLevelRuntime,
 		switchSession,
+		prepareSessionSwitch,
+		resetObserverRegistry,
 		applyCwdChange,
 		state,
 		editor,
@@ -112,6 +118,55 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 		} finally {
 			await fs.rm(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	it("leaves transition UI intact when a cold switch declines", async () => {
+		const { ctx, switchSession, prepareSessionSwitch, resetObserverRegistry } = createResumeContext();
+		switchSession.mockResolvedValue(false);
+		const controller = new SelectorController(ctx);
+
+		const result = await controller.handleResumeSession("/tmp/declined-session.jsonl");
+
+		expect(result).toBe(false);
+		expect(prepareSessionSwitch).not.toHaveBeenCalled();
+		expect(resetObserverRegistry).not.toHaveBeenCalled();
+		expect(ctx.clearTransientSessionUi).not.toHaveBeenCalled();
+		expect(ctx.renderInitialMessages).not.toHaveBeenCalled();
+		expect(ctx.showStatus).not.toHaveBeenCalled();
+		expect(ctx.ui.requestRender).not.toHaveBeenCalled();
+	});
+
+	it("prepares and resets only after a successful cold switch completes", async () => {
+		const { ctx, attachLiveTopLevelRuntime, switchSession, prepareSessionSwitch, resetObserverRegistry } =
+			createResumeContext();
+		const attachGate = Promise.withResolvers<void>();
+		const switchStarted = Promise.withResolvers<void>();
+		const switchGate = Promise.withResolvers<boolean>();
+		const order: string[] = [];
+		attachLiveTopLevelRuntime.mockImplementation(async () => {
+			await attachGate.promise;
+			return undefined;
+		});
+		switchSession.mockImplementation(async () => {
+			order.push("switch:start");
+			switchStarted.resolve();
+			const switched = await switchGate.promise;
+			order.push("switch:complete");
+			return switched;
+		});
+		prepareSessionSwitch.mockImplementation(() => order.push("prepare"));
+		resetObserverRegistry.mockImplementation(() => order.push("reset"));
+		const controller = new SelectorController(ctx);
+
+		const resume = controller.handleResumeSession("/tmp/gated-session.jsonl");
+		attachGate.resolve();
+		await switchStarted.promise;
+		expect(prepareSessionSwitch).not.toHaveBeenCalled();
+		expect(resetObserverRegistry).not.toHaveBeenCalled();
+
+		switchGate.resolve(true);
+		expect(await resume).toBe(true);
+		expect(order).toEqual(["switch:start", "switch:complete", "prepare", "reset"]);
 	});
 
 	it("skips flush when settingsFlushed option is true", async () => {

@@ -9,7 +9,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { FileDiagnosticsResult } from "../lsp";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
-import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
+import { getLanguageFromPath, type Theme, type ThemeColor } from "../modes/theme/theme";
 import type { OutputMeta } from "../tools/output-meta";
 import {
 	cachedRenderedString,
@@ -141,7 +141,7 @@ interface HashlineInputEntry {
 	path: string;
 	op?: Operation;
 	rename?: string;
-	/** A SWAP/CUT/INS line-editing op precedes the file op — keeps a move framed. */
+	/** A PUT/CUT line edit precedes the file op — keeps a move framed. */
 	hasLineEdits?: boolean;
 }
 
@@ -325,6 +325,7 @@ function renderEditHeader(
 		statsSuffix?: string;
 		extraSuffix?: string;
 		title?: string;
+		titleColor?: ThemeColor;
 	},
 ): string {
 	const title = options.title ?? getOperationTitle(options.op);
@@ -341,6 +342,7 @@ function renderEditHeader(
 				icon: options.icon,
 				iconOverride: options.iconOverride,
 				title,
+				titleColor: options.titleColor,
 				description,
 			},
 			uiTheme,
@@ -370,15 +372,17 @@ function renderInlineEditRow(
 	opts: { op?: Operation; rename?: string; rawPath: string; linkPath?: string; pending: boolean },
 ): Component {
 	const isDelete = opts.op === "delete";
+	const actionColor: ThemeColor = isDelete ? "error" : "accent";
 	return new WidthAwareText(
 		width =>
 			renderEditHeader(width, uiTheme, {
 				icon: opts.pending ? "pending" : undefined,
 				iconOverride: opts.pending
 					? undefined
-					: uiTheme.styledSymbol(isDelete ? "tool.delete" : "tool.move", "accent"),
+					: uiTheme.styledSymbol(isDelete ? "tool.delete" : "tool.move", actionColor),
 				op: opts.op,
 				title: isDelete ? "Delete" : "Move",
+				titleColor: actionColor,
 				rawPath: opts.rawPath,
 				rename: opts.rename,
 				linkPath: opts.linkPath,
@@ -571,9 +575,9 @@ function parseHashlineInputPreviewHeader(line: string): string | null {
 	return previewPath.length > 0 ? previewPath : null;
 }
 
-// Line-editing op headers (SWAP/CUT/INS family), distinct from file-level
+// Line-editing op headers (PUT/CUT family), distinct from file-level
 // REM/MV ops. Body rows are `+TEXT`, so this only matches real headers.
-const HL_LINE_OP_HEADER = /^(?:SWAP|CUT|INS)\b/;
+const HL_LINE_OP_HEADER = /^(?:PUT|CUT)\b/;
 
 /**
  * Walk a (possibly mid-stream) hashline payload into per-section descriptors:
@@ -719,6 +723,7 @@ function wrapEditRendererLine(line: string, width: number): string[] {
 }
 
 export const editToolRenderer = {
+	transcriptSurface: "bare" as const,
 	mergeCallAndResult: true,
 	// The streaming edit preview (apply_patch / hashline diff) commits preview
 	// rows to native scrollback as it streams. The first final result replaces

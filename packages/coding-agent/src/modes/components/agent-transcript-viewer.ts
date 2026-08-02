@@ -14,6 +14,7 @@
  * same append path over the host's byte-capped transcript reads.
  */
 import * as fs from "node:fs";
+import type { Clipboard, SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
 	type Component,
@@ -58,6 +59,10 @@ export interface AgentTranscriptViewerDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	/** Resolve snapshot state for a live local agent transcript. */
+	getSnapshots?: (agentId: string) => SnapshotStore | undefined;
+	/** Resolve the edit register for a live local agent transcript. */
+	getClipboard?: (agentId: string) => Clipboard | undefined;
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
@@ -69,6 +74,20 @@ export interface AgentTranscriptViewerDeps {
 	onClose: () => void;
 	/** Close this viewer AND the hub (hub-toggle keys). */
 	onHubClose: () => void;
+	/**
+	 * Forwarded to {@link ChatTranscriptBuilder}: click handler for Markdown link
+	 * cells. The viewer host (AgentHubOverlayComponent) derives this from the
+	 * ambient InteractiveModeContext.openInBrowser. Optional: omitted leaves
+	 * Markdown link cells non-clickable.
+	 */
+	openLink?: (href: string) => void;
+	/**
+	 * Forwarded to {@link ChatTranscriptBuilder}: click handler for tool-result
+	 * / native assistant images (and the no-protocol text fallback). Host
+	 * materializes the original bytes via its session blob store and routes
+	 * through openInBrowser. Optional: omitted leaves image cells non-clickable.
+	 */
+	openImage?: (image: import("@oh-my-pi/pi-ai").ImageContent) => void;
 }
 
 /** How often to re-stat a file-backed transcript for growth (advisor/live tail). */
@@ -76,7 +95,6 @@ const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
 const FIXED_HEADER_ROWS = 1;
-const FIXED_FOOTER_ROWS = 1;
 const MIN_NAVIGATION_TITLE_WIDTH = 12;
 
 /** Sanitize wire-delivered error text for a single TUI row: tabs/newlines → spaces, strip controls,
@@ -190,10 +208,14 @@ export class AgentTranscriptViewer implements Component {
 			ui: deps.ui,
 			getTool: deps.getTool,
 			getMessageRenderer: deps.getMessageRenderer,
+			getSnapshots: () => deps.getSnapshots?.(this.#agentId),
+			getClipboard: () => deps.getClipboard?.(this.#agentId),
 			cwd: deps.cwd,
 			hideThinkingBlock: deps.hideThinkingBlock,
 			proseOnlyThinking: deps.proseOnlyThinking,
 			requestRender: deps.requestRender,
+			openLink: deps.openLink,
+			openImage: deps.openImage,
 		});
 		this.#scrollView = new ScrollView([], {
 			height: 10,
@@ -597,14 +619,14 @@ export class AgentTranscriptViewer implements Component {
 
 	render(width: number): readonly string[] {
 		const termHeight = process.stdout.rows || 40;
-		// Header/footer rows share the transcript's single-column gutter. ScrollView
-		// keeps the final column for its scrollbar, so the body receives no extra pad.
+		// Header row shares the transcript's single-column gutter. ScrollView keeps
+		// the final column for its scrollbar, so the body receives no extra pad.
 		const innerWidth = Math.max(1, width - 2);
 		const contentWidth = Math.max(1, width - 1);
 		const ref = this.deps.registry.get(this.#agentId);
 		const observed = this.#observed();
 		const headerLine = this.#headerLine(ref, observed, innerWidth);
-		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - FIXED_FOOTER_ROWS - 2);
+		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - 2);
 		const transcriptLines = this.#builder.isEmpty
 			? [` ${theme.fg("dim", this.#placeholder(Math.max(1, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
@@ -625,7 +647,6 @@ export class AgentTranscriptViewer implements Component {
 		lines.push(...new DynamicBorder().render(width));
 		lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
 		for (const row of this.#scrollView.render(width)) lines.push(row);
-		lines.push(` ${truncateToWidth(this.#hint(), innerWidth)}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
 	}
@@ -765,16 +786,6 @@ export class AgentTranscriptViewer implements Component {
 			ref?.status === "parked" ||
 			ref?.status === "aborted"
 		);
-	}
-
-	#hint(): string {
-		return [
-			rawKeyHint("Esc", tSettingsUi("Agent Hub")),
-			rawKeyHint("Alt+K", tSettingsUi("previous")),
-			rawKeyHint("Alt+J", tSettingsUi("next")),
-			rawKeyHint("j/k/g/G", tSettingsUi("scroll")),
-			rawKeyHint(this.deps.expandKeys[0] ?? "ctrl+o", tSettingsUi("expand")),
-		].join(theme.fg("dim", theme.sep.dot));
 	}
 
 	#observed(): ObservableSession | undefined {

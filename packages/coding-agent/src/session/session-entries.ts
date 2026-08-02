@@ -192,6 +192,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	systemPrompt: string;
 	/** Initial task/user message */
 	task: string;
+	/** Human-readable task invocation name for durable parked-subagent recovery. */
+	agentDisplayName?: string;
 	/** Tools available to the agent */
 	tools: string[];
 	/** Output schema if structured output was requested. */

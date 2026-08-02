@@ -60,7 +60,7 @@ async function writeSession(
 	agentDir: string,
 	project: string,
 	id: string,
-	status: "complete" | "pending" | "interrupted",
+	status: "active" | "complete" | "pending" | "interrupted",
 	options: { blobRef?: string; ageDays?: number; filename?: string } = {},
 ): Promise<string> {
 	const sessionDir = path.join(getSessionsDir(agentDir), project);
@@ -76,6 +76,15 @@ async function writeSession(
 		lines.push(JSON.stringify({ type: "message", message: { role: "assistant", content: [] } }));
 	} else if (status === "pending") {
 		lines.push(JSON.stringify({ type: "message", message: { role: "user", content: "waiting" } }));
+	} else if (status === "active") {
+		lines.push(JSON.stringify({ type: "message", message: { role: "user", content: "waiting" } }));
+		lines.push(
+			JSON.stringify({
+				type: "custom",
+				customType: "session_run_start",
+				data: { recordedAt: "2026-01-01T00:00:00.000Z", pid: process.pid },
+			}),
+		);
 	} else {
 		lines.push(
 			JSON.stringify({
@@ -471,6 +480,7 @@ describe("runGcCommand cold-session archive", () => {
 		const keepRecent = await writeSession(root, "project", "keep-recent", "complete", { ageDays: 60 });
 		const pending = await writeSession(root, "project", "pending", "pending", { ageDays: 90 });
 		const interrupted = await writeSession(root, "project", "interrupted", "interrupted", { ageDays: 90 });
+		const active = await writeSession(root, "project", "active", "active", { ageDays: 90 });
 		await fs.mkdir(archiveMe.slice(0, -".jsonl".length), { recursive: true });
 		await Bun.write(path.join(archiveMe.slice(0, -".jsonl".length), "0.bash.log"), "artifact");
 
@@ -487,7 +497,7 @@ describe("runGcCommand cold-session archive", () => {
 		const archived = path.join(root, "archive", "sessions", "project", "archive-me.jsonl.gz");
 
 		expect(result.archive?.archived).toBe(1);
-		expect(result.archive?.skippedActive).toBe(2);
+		expect(result.archive?.skippedActive).toBe(3);
 		expect(await Bun.file(archiveMe).exists()).toBe(false);
 		expect(await Bun.file(archived).exists()).toBe(true);
 		expect(new TextDecoder().decode(gunzipSync(await Bun.file(archived).bytes()))).toContain('"archive-me"');
@@ -495,6 +505,7 @@ describe("runGcCommand cold-session archive", () => {
 		expect(await Bun.file(keepRecent).exists()).toBe(true);
 		expect(await Bun.file(pending).exists()).toBe(true);
 		expect(await Bun.file(interrupted).exists()).toBe(true);
+		expect(await Bun.file(active).exists()).toBe(true);
 	});
 
 	test("skips archiving parent sessions with live nested sessions", async () => {

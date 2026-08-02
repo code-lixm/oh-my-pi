@@ -2,6 +2,7 @@ import { LRUCache } from "lru-cache/raw";
 import { Lexer, Marked, type Token, Tokenizer, type TokenizerAndRendererExtension, type Tokens } from "marked";
 import { latexToBlock } from "../latex-block";
 import { inlineMathSpanEnd, isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
+import type { MouseRoutable, SgrMouseEvent } from "../mouse";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
 import type { Component, NativeScrollbackCommittedRows, NativeScrollbackReplay } from "../tui";
@@ -841,9 +842,187 @@ const EMPTY_RENDER_LINES: readonly string[] = [];
 /** Sentinel inserted into folded code bodies where either display mode renders the omission hint. */
 const OMIT_SENTINEL = "\u0000OMIT\u0000";
 
+interface RenderedLine {
+	text: string;
+	literalCode?: true;
+}
+
+interface RenderedListItemLine extends RenderedLine {
+	nested: boolean;
+}
+
+function renderedLine(text: string, literalCode?: boolean): RenderedLine {
+	return literalCode ? { text, literalCode: true } : { text };
+}
+
+// ---------------------------------------------------------------------------
+// Private link hit-sentinel scheme (mouse-clickable links)
+// ---------------------------------------------------------------------------
+// Private link-click marker scheme
+// ---------------------------------------------------------------------------
+// Each link cell (label + the optional `(href)` tail) is bracketed by a
+// 7-code-unit fixed-length marker pair carrying only C0 controls:
+// every code unit is a zero-width terminal cell — visibleWidth sees them as
+// zero, wrapTextWithAnsi passes them through unchanged, and they never
+// participate in any grapheme cluster. The last code unit is never `\x00` so the
+// FFI `build_utf16_string` helper cannot truncate a closer, and the marker
+// avoids `\x09` / `\x0A` / `\x0D` so it cannot be confused with tab/LF/CR.
+//
+//   opener   = "\x00\x01\x02" + <4 control index units>     (7 code units)
+//   closer   = "\x00\x01\x03" + <4 control index units>     (7 code units)
+//
+// The index is encoded in 4 base-8 digits, each code unit in [0x01, 0x08]:
+//   unit_i = 0x01 + ((index >>> (i * 3)) & 0x07)
+// giving 8^4 = 4096 distinct slots — comfortably above the practical link
+// count. `#registerLinkHref` returns `undefined` once the table fills; in that
+// overflow case the renderer emits no marker at all (the link falls back to
+// being clickable only via user-supplied OSC 8 if `TERMINAL.hyperlinks` is
+// true).
+//
+// Markers ride through every wrap pass (table / list / quote / tree / outer)
+// unchanged and are stripped ONLY in the final `for (renderedLine of wrappedLines)`
+// pass of `#renderContentLines`, where the `wrappedLines` array already
+// holds the post-wrap physical content rows. Stripping there means wrap can
+// never split a marker (markers are 0-cell so wrap never splits AT them) and
+// the user's user-supplied OSC 8 in the link output is never parsed or
+// rewritten — only the private markers are stripped.
+//
+// Hit-span construction uses the live wrap output's visible col positions
+// (via `visibleCellColumn` / `visibleWidth`), not source offsets and not
+// `wi * wrapWidth`. Cross-row sessions (open on row N, close on row M > N)
+// emit one span per row — open row `[openCol, rowVisibleEnd)`, intermediate
+// rows `[0, rowVisibleEnd)`, close row `[0, closeCol)`. Same-row open+close
+// emit one span `[openCol, closeCol)`. The final stored row/col includes the
+// component's padding so padding chrome is never clickable.
+const MARKER_PREFIX = "\x00\x01";
+const MARKER_OPEN_TYPE = "\x02";
+const MARKER_CLOSE_TYPE = "\x03";
+const MARKER_INDEX_BYTES = 4;
+const MARKER_TOTAL_LEN = 2 + 1 + MARKER_INDEX_BYTES; // 7
+/** Largest index encodable in the 4 base-8 digit marker body (8^4 - 1). */
+const MARKER_MAX_INDEX = 0o7777; // 4095
+
+function encodeMarkerIndex(index: number): [number, number, number, number] {
+	return [
+		0x01 + ((index >>> 0) & 0x07),
+		0x01 + ((index >>> 3) & 0x07),
+		0x01 + ((index >>> 6) & 0x07),
+		0x01 + ((index >>> 9) & 0x07),
+	];
+}
+
+function decodeMarkerIndex(b0: number, b1: number, b2: number, b3: number): number | null {
+	if (b0 < 0x01 || b0 > 0x08 || b1 < 0x01 || b1 > 0x08 || b2 < 0x01 || b2 > 0x08 || b3 < 0x01 || b3 > 0x08) {
+		return null;
+	}
+	return (b0 - 0x01) | ((b1 - 0x01) << 3) | ((b2 - 0x01) << 6) | ((b3 - 0x01) << 9);
+}
+
+/** Build the fixed-length 7-code-unit opener or closer for `index`. */
+function linkMarker(index: number, type: "\x02" | "\x03"): string {
+	const [b0, b1, b2, b3] = encodeMarkerIndex(index);
+	return MARKER_PREFIX + type + String.fromCharCode(b0, b1, b2, b3);
+}
+
+function linkOpenMarker(index: number): string {
+	return linkMarker(index, MARKER_OPEN_TYPE);
+}
+
+function linkCloseMarker(index: number): string {
+	return linkMarker(index, MARKER_CLOSE_TYPE);
+}
+
+/** One marker found in a scanned row, in document order. */
+interface LinkMarkerEvent {
+	/** UTF-16 code-unit offset of the marker's first code unit. */
+	start: number;
+	/** UTF-16 code-unit offset just past the marker (== start + 7). */
+	end: number;
+	isOpener: boolean;
+	hrefIndex: number;
+}
+
+/**
+ * Walk `row` left-to-right and emit one event per marker in document order.
+ * Uses fixed-length parsing (every marker is exactly 7 code units), so a single
+ * prefix match unambiguously starts a marker and the rest is determined by
+ * structure. Returns an empty array when no markers are present.
+ */
+function scanRowLinkMarkers(row: string): LinkMarkerEvent[] {
+	const events: LinkMarkerEvent[] = [];
+	let i = 0;
+	while (i + MARKER_TOTAL_LEN <= row.length) {
+		if (row.charCodeAt(i) !== 0x00 || row.charCodeAt(i + 1) !== 0x01) {
+			i++;
+			continue;
+		}
+		const type = row.charCodeAt(i + 2);
+		if (type !== 0x02 && type !== 0x03) {
+			i++;
+			continue;
+		}
+		const b0 = row.charCodeAt(i + 3);
+		const b1 = row.charCodeAt(i + 4);
+		const b2 = row.charCodeAt(i + 5);
+		const b3 = row.charCodeAt(i + 6);
+		const hrefIndex = decodeMarkerIndex(b0, b1, b2, b3);
+		if (hrefIndex === null) {
+			i++;
+			continue;
+		}
+		events.push({
+			start: i,
+			end: i + MARKER_TOTAL_LEN,
+			isOpener: type === 0x02,
+			hrefIndex,
+		});
+		i += MARKER_TOTAL_LEN;
+	}
+	return events;
+}
+
+/**
+ * Strip every marker from `row` in a single right-to-left pass. Markers are
+ * fixed-length and never overlap, so a sorted reverse scan is correct and
+ * O(events). Returns the row with markers removed.
+ */
+function stripRowLinkMarkers(row: string, events: readonly LinkMarkerEvent[]): string {
+	if (events.length === 0) return row;
+	const sorted = [...events].sort((a, b) => b.start - a.start);
+	let result = row;
+	for (const e of sorted) result = result.slice(0, e.start) + result.slice(e.end);
+	return result;
+}
+
+/**
+ * Visible-cell column of `codeUnitOffset` in `row`. Private markers are removed
+ * before delegating to the project's canonical ANSI/OSC-aware width helper, so
+ * CJK glyphs, ZWJ emoji, OSC 66 text sizing, and terminal control sequences all
+ * use the same width semantics as the renderer.
+ */
+function visibleCellColumn(row: string, codeUnitOffset: number): number {
+	const prefix = row.slice(0, Math.min(codeUnitOffset, row.length));
+	return visibleWidth(stripRowLinkMarkers(prefix, scanRowLinkMarkers(prefix)));
+}
+
+/** One clickable link cell on one physical row of the rendered output.
+ *  `startCol` and `endCol` are 0-based visible-cell columns in the row,
+ *  start-inclusive and end-exclusive. A hyperlink wrapped across N rows is
+ *  recorded as N consecutive spans, one per row, all sharing the same href. */
+export interface MarkdownLinkHitSpan {
+	row: number;
+	startCol: number;
+	endCol: number;
+	href: string;
+}
+
 interface RenderCacheEntry {
 	lines: readonly string[];
 	tables: readonly RenderedTableLayout[];
+	/** Click hit spans for every rendered link cell, built from the private
+	 *  sentinel pair the renderer injects around each link segment. Empty when
+	 *  no links exist in the document; independent of handler installation. */
+	linkHitSpans: readonly MarkdownLinkHitSpan[];
 }
 
 const renderCache = new LRUCache<string, RenderCacheEntry>({
@@ -862,6 +1041,10 @@ function renderedLinesCacheSize(lines: readonly string[]): number {
 function renderCacheEntrySize(entry: RenderCacheEntry): number {
 	let size = renderedLinesCacheSize(entry.lines);
 	for (const table of entry.tables) size += table.key.length + table.columnWidths.length + 4;
+	// Account for the click hit-span table. Each span is a tiny object —
+	// approximate its size by counting spans + per-span string length for hrefs.
+	size += entry.linkHitSpans.length;
+	for (const span of entry.linkHitSpans) size += span.href.length + 24;
 	return size;
 }
 
@@ -1415,6 +1598,10 @@ interface StreamPrefixLineCache extends RenderSignature {
 	tokenCount: number;
 	lines: readonly string[];
 	tables: readonly TableRenderSpec[];
+	/** Click hit spans for the cached PREFIX rows only. The volatile tail
+	 *  rebuilds its own spans each render — we never let prefix spans leak
+	 *  past the prefix boundary. */
+	linkHitSpans: readonly MarkdownLinkHitSpan[];
 }
 interface StreamingDiffLineCache extends RenderSignature {
 	lang: string | undefined;
@@ -1440,7 +1627,7 @@ interface RenderedTableLayout extends TableLayoutLock {
 	endRow: number;
 }
 
-export class Markdown implements Component, NativeScrollbackCommittedRows, NativeScrollbackReplay {
+export class Markdown implements Component, MouseRoutable, NativeScrollbackCommittedRows, NativeScrollbackReplay {
 	#text: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
@@ -1500,6 +1687,29 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	#lastRenderedTableLayouts: RenderedTableLayout[] = [];
 	#activeTableRenderSpecs?: TableRenderSpec[];
 
+	/** Optional click handler for link cells. Fires once per click on a link's
+	 *  physical row(s), with the link's target URL (unescaped). The renderer
+	 *  always emits the same bytes regardless of whether a handler is installed,
+	 *  so the host can install/remove handlers at any time without invalidating. */
+	#linkHandler?: (href: string) => void;
+	/** Click hit spans derived from the most recent render. Stored on the
+	 *  instance alongside the L1 cached lines so routeMouse can resolve a
+	 *  click without re-scanning the entire output. Empty until the first
+	 *  render that produced at least one link. */
+	#linkHitSpans: readonly MarkdownLinkHitSpan[] = [];
+	/** Per-render href table indexed by the private sentinel digits. Populated
+	 *  by #registerLinkHref during inline render and consumed by the
+	 *  `#renderContentLines` strip/track pass. Reset to [] at the start of
+	 *  every render. */
+	#activeLinkHrefs: string[] = [];
+	/** Per-render accumulator of hit spans produced from final physical rows in
+	 *  `#renderContentLines`, then copied into `#linkHitSpans`. */
+	#activeLinkHitSpans: MarkdownLinkHitSpan[] = [];
+	/** Per-render accumulator of prefix-only hit spans replayed from the streaming
+	 *  prefix cache. Kept separate from `#activeLinkHitSpans` so the cache
+	 *  snapshot never persists volatile tail spans. */
+	#prefixLinkHitSpans: MarkdownLinkHitSpan[] = [];
+
 	#ignoreTight = false;
 
 	setIgnoreTight(ignore: boolean): this {
@@ -1507,6 +1717,57 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		this.#ignoreTight = ignore;
 		this.invalidate();
 		return this;
+	}
+
+	/**
+	 * Install (or remove) the click handler invoked when a primary-press
+	 * `routeMouse` lands inside a link's rendered cell range. The handler is
+	 * called exactly once per click with the link's target URL. Pass
+	 * `undefined` to disable click handling.
+	 *
+	 * The render output is unaffected — bytes, dimensions, OSC 8 emissions
+	 * all stay byte-identical. Installing a handler only enables `routeMouse`
+	 * to fire it; the host can therefore toggle click handling at any time
+	 * without invalidating cached output.
+	 */
+	setLinkHandler(handler: ((href: string) => void) | undefined): this {
+		this.#linkHandler = handler;
+		return this;
+	}
+
+	/**
+	 * Local-coordinate mouse routing for link cells.
+	 *
+	 * Coordinates are 0-based within the component's own rendered output
+	 * (top padding included — `line` is the absolute row in `render(width)`
+	 * output, `col` is the visible cell column in that row, both accounting
+	 * for any left/right padding).
+	 *
+	 * Fires `#linkHandler` exactly once per click on a link cell. Non-link
+	 * cells, out-of-bounds clicks, motion/release/wheel events, and clicks
+	 * before the component has rendered all return `false`.
+	 *
+	 * Only primary presses fire the handler. The `leftClick` field alone is
+	 * not a sufficient gate — callers can construct events with conflicting
+	 * fields (`motion && leftClick` or `release && leftClick`), so we
+	 * explicitly reject anything that is not a fresh left-button press.
+	 */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (!event.leftClick) return false;
+		if (event.motion || event.release || event.wheel !== null) return false;
+		const handler = this.#linkHandler;
+		if (handler === undefined) return false;
+		const spans = this.#linkHitSpans;
+		// Linear scan: typical markdown emits O(10) link spans; the binary-search
+		// alternative would over-engineer for a hot-path on a single component.
+		for (let i = 0; i < spans.length; i++) {
+			const span = spans[i]!;
+			if (span.row !== line) continue;
+			if (col < span.startCol || col >= span.endCol) continue;
+			handler(span.href);
+			return true;
+		}
+		return false;
 	}
 
 	constructor(
@@ -1538,11 +1799,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
 			// the non-append edit, so drop the frozen stream state here or it
-			// outlives the content it indexed.
+			// outlives the content it indexed. Also clear any stale hit spans from
+			// a previous render — without a re-render, routeMouse must not be
+			// able to fire on a link cell that no longer exists.
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
 			this.#settledExposedText = undefined;
+			this.#linkHitSpans = [];
 		}
 		this.invalidate();
 		return true;
@@ -1552,6 +1816,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
 		this.#cachedLines = undefined;
+		this.#linkHitSpans = [];
 	}
 	get transientRenderCache(): boolean {
 		return this.#transientRenderCache;
@@ -1640,6 +1905,20 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		// prefix lines rendered with the retired locked widths.
 		this.#streamPrefixLineCache = undefined;
 	}
+	/** Allocate an index for `href` in the current render's marker table. Called
+	 *  once per inline link case; the result is embedded in the private
+	 *  7-byte marker pair surrounding the link's rendered text.
+	 *
+	 *  Returns `undefined` when the marker table is full (8^4 = 4096 slots,
+	 *  more than the practical link count). The caller must emit NO marker in
+	 *  that case — the link falls back to OSC 8 clickability when
+	 *  `TERMINAL.hyperlinks` is true, otherwise it stays non-clickable. */
+	#registerLinkHref(href: string): number | undefined {
+		const table = this.#activeLinkHrefs;
+		if (table.length > MARKER_MAX_INDEX) return undefined;
+		table.push(href);
+		return table.length - 1;
+	}
 
 	// Lex `text` into block tokens, reusing the frozen stable prefix when the text
 	// only grew (the streaming path). Falls back to a full lex whenever the prefix
@@ -1705,6 +1984,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		// Returning the cached reference is load-bearing: parents memoize their
 		// concatenation on reference equality.
 		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+			// `#linkHitSpans` is preserved across L1 hits — the most recent full
+			// render populated it from the same source the cached lines came
+			// from, so a click on the cached layout still resolves correctly.
 			return this.#cachedLines;
 		}
 
@@ -1721,6 +2003,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			this.#cachedText = this.#text;
 			this.#cachedWidth = width;
 			this.#cachedLines = EMPTY_RENDER_LINES;
+			this.#linkHitSpans = [];
 			return EMPTY_RENDER_LINES;
 		}
 
@@ -1756,6 +2039,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				this.#cachedText = this.#text;
 				this.#cachedWidth = width;
 				this.#cachedLines = cached.lines;
+				this.#linkHitSpans = cached.linkHitSpans;
 				return cached.lines;
 			}
 		}
@@ -1766,6 +2050,13 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		const tableRenderSpecs: TableRenderSpec[] = [];
 		this.#activeTableRenderSpecs = tableRenderSpecs;
 		this.#activeRenderSignature = signature;
+		// Per-render state for click-routing sentinels. Reset at the start of
+		// every render so a re-render that drops a link never sees a stale
+		// index. The strip + hit-span bookkeeping happens inside
+		// #renderContentLines (sent from this field to that private method).
+		this.#activeLinkHrefs = [];
+		this.#activeLinkHitSpans = [];
+		this.#prefixLinkHitSpans = [];
 		try {
 			contentLines = this.transientRenderCache
 				? this.#renderStreamingContentLines(tokens, normalizedText, signature, contentWidth)
@@ -1774,6 +2065,13 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			this.#activeRenderSignature = undefined;
 			this.#activeTableRenderSpecs = undefined;
 		}
+		// Combine all spans: prefix (from the cache replay) + frozen + tail
+		// (built during the volatile render above). `#activeLinkHitSpans`
+		// holds the latter two; `#prefixLinkHitSpans` holds the prefix replay
+		// (empty for the non-streaming path).
+		this.#linkHitSpans = [...this.#prefixLinkHitSpans, ...this.#activeLinkHitSpans];
+		this.#activeLinkHitSpans = [];
+		this.#prefixLinkHitSpans = [];
 		this.#lastRenderedTableLayouts = this.#resolveRenderedTableLayouts(tableRenderSpecs, signature.paddingY);
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
@@ -1797,6 +2095,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					...table,
 					columnWidths: table.columnWidths.slice(),
 				})),
+				linkHitSpans: this.#linkHitSpans,
 			});
 		}
 
@@ -1842,12 +2141,16 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		}
 
 		const contentLines: string[] = [];
+		// Prefix spans live separately from the active accumulator. Replayed spans
+		// come from the prior cache entry; newly frozen rows add spans to the active
+		// accumulator until both are snapshotted below.
 		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, frozenText, signature);
 		let renderedUntil = 0;
 		let renderedSourceOffset = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= frozenTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
 			this.#activeTableRenderSpecs?.push(...reusablePrefix.tables);
+			this.#prefixLinkHitSpans.push(...reusablePrefix.linkHitSpans);
 			renderedUntil = reusablePrefix.tokenCount;
 			renderedSourceOffset = reusablePrefix.text.length;
 		}
@@ -1874,12 +2177,18 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			renderedUntil = frozenTokenCount;
 		}
 
+		// Cache snapshot: every span accumulated so far belongs to the frozen
+		// prefix represented by `contentLines`. Replayed prefix spans live in
+		// `#prefixLinkHitSpans`; any newly frozen rows rendered above contributed
+		// to `#activeLinkHitSpans`. The volatile tail renders only after this
+		// snapshot, so it cannot leak into the prefix cache.
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: frozenText,
 			tokenCount: frozenTokenCount,
 			lines: contentLines.slice(),
 			tables: this.#activeTableRenderSpecs?.slice() ?? [],
+			linkHitSpans: [...this.#prefixLinkHitSpans, ...this.#activeLinkHitSpans],
 		};
 
 		// Settled exposure (hard-monotone): these rows are declared final to
@@ -1946,7 +2255,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		rowOffset: number,
 		startingSourceOffset: number,
 	): string[] {
-		const wrappedLines: string[] = [];
+		const wrappedLines: RenderedLine[] = [];
 		let sourceOffset = startingSourceOffset;
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
@@ -1956,9 +2265,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				token.type === "heading" &&
 				i > 0 &&
 				tokens[i - 1]?.type !== "space" &&
-				wrappedLines[wrappedLines.length - 1] !== ""
+				wrappedLines[wrappedLines.length - 1]?.text !== ""
 			) {
-				wrappedLines.push("");
+				wrappedLines.push(renderedLine(""));
 			}
 			const tableSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 			const tokenWrappedRowStart = wrappedLines.length;
@@ -1971,14 +2280,29 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				`offset:${sourceOffset}`,
 			);
 			const tokenLineOffsets = [0];
-			for (const line of renderedTokenLines) {
+			for (const renderedRow of renderedTokenLines) {
+				// The private link markers ride THROUGH every wrap pass unchanged
+				// (table / list / quote / tree / outer) because they are 0-cell
+				// control bytes that the wrap helper never splits AT. They are
+				// stripped only in the final post-wrap pass inside the loop
+				// below; stripping here would break the hit-span accounting when
+				// the wrap moves the marker between rows.
+				const lineText = renderedRow.text;
+
 				// Lists wrap while their structural prefixes are still available, so
 				// continuation rows retain the correct hanging indent. Re-wrapping the
 				// flattened rows here would discard that structure.
-				if (token.type === "list" || TERMINAL.isImageLine(line) || isOsc66Line(line)) {
-					wrappedLines.push(line);
+				if (token.type === "list" || TERMINAL.isImageLine(lineText) || isOsc66Line(lineText)) {
+					wrappedLines.push(renderedLine(lineText, renderedRow.literalCode));
 				} else {
-					wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
+					const wrappedRows = wrapTextWithAnsi(lineText, contentWidth);
+					if (wrappedRows.length === 1 && wrappedRows[0] === lineText) {
+						wrappedLines.push(renderedLine(lineText, renderedRow.literalCode));
+					} else {
+						for (const wrappedLine of wrappedRows) {
+							wrappedLines.push(renderedLine(wrappedLine, renderedRow.literalCode));
+						}
+					}
 				}
 				tokenLineOffsets.push(wrappedLines.length - tokenWrappedRowStart);
 			}
@@ -2009,10 +2333,87 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		const leftMargin = padding(signature.paddingX);
 		const rightMargin = padding(signature.paddingX);
 		const bgFn = this.#defaultTextStyle?.bgColor;
+
+		// Strip private link-click markers from every post-wrap row and emit
+		// hit spans (open / middle / close per session, all anchored to the
+		// component-local row / col coords that include padding). This is the
+		// ONLY point in the pipeline that sees markers — every wrap above
+		// (table / list / quote / tree / outer) passes them through unchanged
+		// because they're 0-cell, and we never touch user-supplied OSC 8.
+		const linkSessions = new Map<number, { startAbsoluteRow: number; startCol: number; href: string }>();
+		const buildSpan = (
+			startAbsoluteRow: number,
+			startCol: number,
+			closeAbsoluteRow: number,
+			closeCol: number,
+			href: string,
+		): void => {
+			// Open row: [openCol, rowVisibleEnd)
+			// Close row: [0, closeCol)
+			// Same row: [openCol, closeCol)
+			if (startAbsoluteRow === closeAbsoluteRow) {
+				this.#activeLinkHitSpans.push({
+					row: rowOffset + startAbsoluteRow + signature.paddingY,
+					startCol: startCol + signature.paddingX,
+					endCol: closeCol + signature.paddingX,
+					href,
+				});
+			} else {
+				this.#activeLinkHitSpans.push({
+					row: rowOffset + startAbsoluteRow + signature.paddingY,
+					startCol: startCol + signature.paddingX,
+					endCol:
+						visibleCellColumn(wrappedLines[startAbsoluteRow]!.text, wrappedLines[startAbsoluteRow]!.text.length) +
+						signature.paddingX,
+					href,
+				});
+				for (let midRow = startAbsoluteRow + 1; midRow < closeAbsoluteRow; midRow++) {
+					this.#activeLinkHitSpans.push({
+						row: rowOffset + midRow + signature.paddingY,
+						startCol: signature.paddingX,
+						endCol:
+							visibleCellColumn(wrappedLines[midRow]!.text, wrappedLines[midRow]!.text.length) +
+							signature.paddingX,
+						href,
+					});
+				}
+				this.#activeLinkHitSpans.push({
+					row: rowOffset + closeAbsoluteRow + signature.paddingY,
+					startCol: signature.paddingX,
+					endCol: closeCol + signature.paddingX,
+					href,
+				});
+			}
+		};
+
 		const contentLines: string[] = [];
 		let previousLineWasOsc66 = false;
+		for (let i = 0; i < wrappedLines.length; i++) {
+			const renderedLine = wrappedLines[i]!;
+			const literalCodeRow = renderedLine.literalCode === true;
+			let line = renderedLine.text;
 
-		for (const line of wrappedLines) {
+			// Scan for + strip the private link markers. The visible cols below
+			// are computed from the original (pre-strip) row because the markers
+			// are 0-cell so every other character's byte position is unchanged.
+			const markerEvents = scanRowLinkMarkers(line);
+			if (markerEvents.length > 0) {
+				for (const ev of markerEvents) {
+					const col = visibleCellColumn(line, ev.start);
+					if (ev.isOpener) {
+						const href = this.#activeLinkHrefs[ev.hrefIndex];
+						if (href === undefined) continue; // overflow orphan — defensive
+						linkSessions.set(ev.hrefIndex, { startAbsoluteRow: i, startCol: col, href });
+					} else {
+						const session = linkSessions.get(ev.hrefIndex);
+						if (session === undefined) continue;
+						linkSessions.delete(ev.hrefIndex);
+						buildSpan(session.startAbsoluteRow, session.startCol, i, col, session.href);
+					}
+				}
+				line = stripRowLinkMarkers(line, markerEvents);
+			}
+
 			// The first empty row after a scale>1 OSC 66 heading is structural:
 			// it reserves the lower cells occupied by the multicell glyphs. Do
 			// not pad or background-fill it, because real spaces on that row can
@@ -2032,6 +2433,20 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			}
 
 			previousLineWasOsc66 = false;
+			if (literalCodeRow) {
+				// Literal code owns its foreground and wrapping, but it still occupies
+				// the Markdown component's padded row. Reapply the host background
+				// across SGR resets so user-message bubbles remain continuous.
+				const literalLineWithMargins = leftMargin + line + rightMargin;
+				if (bgFn) {
+					contentLines.push(applyBackgroundToLine(literalLineWithMargins, signature.width, bgFn));
+				} else {
+					contentLines.push(
+						literalLineWithMargins + padding(Math.max(0, signature.width - visibleWidth(literalLineWithMargins))),
+					);
+				}
+				continue;
+			}
 			const lineWithMargins = leftMargin + line + rightMargin;
 
 			if (bgFn) {
@@ -2062,8 +2477,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		return layouts;
 	}
 
-	#renderCodeBodyLines(token: Token, codeIndent: string): string[] {
-		const bodyLines: string[] = [];
+	#renderCodeBodyLines(token: Token, codeIndent: string): RenderedLine[] {
+		const literalCode = this.#codeBlockIndent === 0;
+		const bodyLines: RenderedLine[] = [];
 		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const normalizedLang = lang?.toLowerCase();
@@ -2072,11 +2488,14 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			!this.#renderingFrozenPrefix &&
 			this.#theme.highlightCode &&
 			(normalizedLang === "diff" || normalizedLang === "patch" || normalizedLang === "udiff");
+		const addBodyLine = (line: string): void => {
+			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode));
+		};
 
 		if (this.#theme.highlightCode && (!this.transientRenderCache || this.#renderingFrozenPrefix)) {
 			const highlightedLines = this.#theme.highlightCode(tokenText, lang);
 			for (const hlLine of highlightedLines) {
-				bodyLines.push(`${codeIndent}${hlLine}`);
+				addBodyLine(hlLine);
 			}
 			return bodyLines;
 		}
@@ -2087,11 +2506,11 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			if (closedFence || lineEnd >= 0) {
 				const completedText = closedFence ? tokenText : tokenText.slice(0, lineEnd);
 				for (const hlLine of this.#highlightStreamingDiffLines(completedText, lang)) {
-					bodyLines.push(`${codeIndent}${hlLine}`);
+					addBodyLine(hlLine);
 				}
 				if (!closedFence) {
 					for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
-						bodyLines.push(`${codeIndent}${this.#theme.codeBlock(codeLine)}`);
+						addBodyLine(this.#theme.codeBlock(codeLine));
 					}
 				}
 				return bodyLines;
@@ -2099,7 +2518,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		}
 
 		for (const codeLine of tokenText.split("\n")) {
-			bodyLines.push(`${codeIndent}${this.#theme.codeBlock(codeLine)}`);
+			addBodyLine(this.#theme.codeBlock(codeLine));
 		}
 		return bodyLines;
 	}
@@ -2448,15 +2867,15 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		nextTokenType?: string,
 		styleContext?: InlineStyleContext,
 		tokenKey = "root",
-	): string[] {
-		const lines: string[] = [];
+	): RenderedLine[] {
+		const lines: RenderedLine[] = [];
 		const compactHeadingFollows = this.#theme.headingStyle === "compact" && nextTokenType === "heading";
 
 		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
 		// and keep `\\` row breaks, so fractions and matrices span multiple lines.
 		if (isMathToken(token)) {
-			for (const mathLine of latexToBlock(token.text)) lines.push(this.#applyDefaultStyle(mathLine));
-			if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") lines.push("");
+			for (const mathLine of latexToBlock(token.text)) lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
+			if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") lines.push(renderedLine(""));
 			return lines;
 		}
 
@@ -2467,8 +2886,8 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const headingText = this.#renderInlineTokens(token.tokens || [], styleContext);
 				const headingPlainText = plainInlineTokens(token.tokens || []);
 				if (this.#theme.headingStyle === "compact") {
-					lines.push(this.#theme.heading(headingText));
-					if (nextTokenType && nextTokenType !== "space") lines.push("");
+					lines.push(renderedLine(this.#theme.heading(headingText)));
+					if (nextTokenType && nextTokenType !== "space") lines.push(renderedLine(""));
 					break;
 				}
 				let styledHeading: string;
@@ -2476,10 +2895,10 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					const plainWidth = visibleWidth(headingPlainText);
 					if (plainWidth > 0 && 2 * plainWidth <= width) {
 						const sizedHeading = encodeTextSizedHeading(headingPlainText, 2);
-						lines.push(this.#theme.heading(this.#theme.bold(this.#theme.underline(sizedHeading))));
-						lines.push(""); // reserve the heading's second visual row
+						lines.push(renderedLine(this.#theme.heading(this.#theme.bold(this.#theme.underline(sizedHeading)))));
+						lines.push(renderedLine("")); // reserve the heading's second visual row
 						if (nextTokenType && nextTokenType !== "space") {
-							lines.push(""); // Add spacing after headings (unless space token follows)
+							lines.push(renderedLine("")); // Add spacing after headings (unless space token follows)
 						}
 						break;
 					}
@@ -2491,9 +2910,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				} else {
 					styledHeading = this.#theme.heading(this.#theme.bold(headingPrefix + headingText));
 				}
-				lines.push(styledHeading);
+				lines.push(renderedLine(styledHeading));
 				if (nextTokenType && nextTokenType !== "space") {
-					lines.push(""); // Add spacing after headings (unless space token follows)
+					lines.push(renderedLine("")); // Add spacing after headings (unless space token follows)
 				}
 				break;
 			}
@@ -2501,17 +2920,20 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			case "paragraph": {
 				const displayMath = soleDisplayMath(token.tokens);
 				if (displayMath) {
-					for (const mathLine of latexToBlock(displayMath.text)) lines.push(this.#applyDefaultStyle(mathLine));
+					for (const mathLine of latexToBlock(displayMath.text))
+						lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
 					if (!compactHeadingFollows && nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
-						lines.push("");
+						lines.push(renderedLine(""));
 					}
 					break;
 				}
 				const paragraphText = this.#renderInlineTokens(token.tokens || [], styleContext);
-				lines.push(...(hangWrapTreeGuideLines(paragraphText, width) ?? [paragraphText]));
+				for (const paragraphLine of hangWrapTreeGuideLines(paragraphText, width) ?? [paragraphText]) {
+					lines.push(renderedLine(paragraphLine));
+				}
 				// Don't add spacing if next token is space or list
 				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
-					lines.push("");
+					lines.push(renderedLine(""));
 				}
 				break;
 			}
@@ -2527,11 +2949,15 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					if (ascii) {
 						for (const asciiLine of ascii.split("\n")) {
 							lines.push(
-								visibleWidth(asciiLine) > width ? truncateToWidth(asciiLine, width, Ellipsis.Omit) : asciiLine,
+								renderedLine(
+									visibleWidth(asciiLine) > width
+										? truncateToWidth(asciiLine, width, Ellipsis.Omit)
+										: asciiLine,
+								),
 							);
 						}
 						if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
-							lines.push("");
+							lines.push(renderedLine(""));
 						}
 						break;
 					}
@@ -2542,22 +2968,23 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					lines.push(
 						...(displayOptions.frame
 							? this.#renderFramedCodeBlock(token.text, token.lang, width, displayOptions)
-							: this.#renderPlainCodeBlock(token.text, token.lang, width, displayOptions)),
+							: this.#renderPlainCodeBlock(token.text, token.lang, width, displayOptions)
+						).map(line => renderedLine(line, true)),
 					);
 					if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
-						lines.push("");
+						lines.push(renderedLine(""));
 					}
 					break;
 				}
 
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
+				lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push(bodyLine);
 				}
-				lines.push(this.#theme.codeBlockBorder("```"));
+				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
 				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
-					lines.push(""); // Add spacing after code blocks (unless space token follows)
+					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}
 				break;
 			}
@@ -2572,7 +2999,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 
 			case "table": {
 				const tableLines = this.#renderTable(token as TableToken, width, nextTokenType, styleContext, tokenKey);
-				lines.push(...tableLines);
+				for (const tableLine of tableLines) lines.push(renderedLine(tableLine));
 				break;
 			}
 
@@ -2583,7 +3010,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				};
 				const quoteContentWidth = Math.max(1, width - 2);
 				const quoteTokens = token.tokens || [];
-				const renderedQuoteLines: string[] = [];
+				const renderedQuoteLines: RenderedLine[] = [];
 				const blockquoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
 
 				for (let i = 0; i < quoteTokens.length; i++) {
@@ -2593,9 +3020,9 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 						this.#theme.headingStyle === "compact" &&
 						quoteToken.type === "heading" &&
 						i > 0 &&
-						renderedQuoteLines[renderedQuoteLines.length - 1] !== ""
+						renderedQuoteLines[renderedQuoteLines.length - 1]?.text !== ""
 					) {
-						renderedQuoteLines.push("");
+						renderedQuoteLines.push(renderedLine(""));
 					}
 					const quoteTokenRowStart = renderedQuoteLines.length;
 					const quoteSpecStart = this.#activeTableRenderSpecs?.length ?? 0;
@@ -2627,7 +3054,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					}
 				}
 
-				while (renderedQuoteLines.length > 0 && renderedQuoteLines[renderedQuoteLines.length - 1] === "") {
+				while (renderedQuoteLines.length > 0 && renderedQuoteLines[renderedQuoteLines.length - 1]!.text === "") {
 					renderedQuoteLines.pop();
 				}
 
@@ -2646,16 +3073,16 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				}
 				lines.push(...borderedQuoteLines);
 				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
-					lines.push(""); // Add spacing after blockquotes (unless space token follows)
+					lines.push(renderedLine("")); // Add spacing after blockquotes (unless space token follows)
 				}
 				break;
 			}
 
 			case "hr": {
 				const raw = "raw" in token && typeof token.raw === "string" ? token.raw.trim() : "";
-				lines.push(this.#renderHrLine(width, raw[0] || ""));
+				lines.push(renderedLine(this.#renderHrLine(width, raw[0] || "")));
 				if (!compactHeadingFollows && nextTokenType && nextTokenType !== "space") {
-					lines.push(""); // Add spacing after horizontal rules (unless space token follows)
+					lines.push(renderedLine("")); // Add spacing after horizontal rules (unless space token follows)
 				}
 				break;
 			}
@@ -2668,13 +3095,13 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 
 			case "space":
 				// Space tokens represent blank lines in markdown
-				lines.push("");
+				lines.push(renderedLine(""));
 				break;
 
 			default:
 				// Handle any other token types as plain text
 				if ("text" in token && typeof token.text === "string") {
-					lines.push(token.text);
+					lines.push(renderedLine(token.text));
 				}
 		}
 
@@ -2691,7 +3118,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	 * Wrap already-rendered lines in the blockquote border and quote styling.
 	 * `width` is the full content width; the border reserves two cells.
 	 */
-	#applyQuoteBorder(renderedLines: string[], width: number, sourceRowOffsets?: number[]): string[] {
+	#applyQuoteBorder(renderedLines: RenderedLine[], width: number, sourceRowOffsets?: number[]): RenderedLine[] {
 		const quoteStyle = (text: string) => this.#theme.quote(this.#theme.italic(text));
 		const quoteStylePrefix = this.#getStylePrefix(quoteStyle);
 		const applyQuoteStyle = (line: string): string => {
@@ -2702,12 +3129,23 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			return quoteStyle(lineWithReappliedStyle);
 		};
 		const quoteContentWidth = Math.max(1, width - 2);
-		const lines: string[] = [];
+		const lines: RenderedLine[] = [];
 		sourceRowOffsets?.push(0);
 		for (const quoteLine of renderedLines) {
-			const styledLine = applyQuoteStyle(quoteLine);
-			for (const wrappedLine of wrapTextWithAnsi(styledLine, quoteContentWidth)) {
-				lines.push(this.#theme.quoteBorder(`${this.#theme.symbols.quoteBorder} `) + wrappedLine);
+			if (quoteLine.literalCode) {
+				const wrappedLiteralRows = wrapTextWithAnsi(quoteLine.text, quoteContentWidth);
+				if (wrappedLiteralRows.length === 0) {
+					lines.push(renderedLine("", true));
+				} else {
+					for (const wrappedLine of wrappedLiteralRows) {
+						lines.push(renderedLine(wrappedLine, true));
+					}
+				}
+			} else {
+				const styledLine = applyQuoteStyle(quoteLine.text);
+				for (const wrappedLine of wrapTextWithAnsi(styledLine, quoteContentWidth)) {
+					lines.push(renderedLine(this.#theme.quoteBorder(`${this.#theme.symbols.quoteBorder} `) + wrappedLine));
+				}
 			}
 			sourceRowOffsets?.push(lines.length);
 		}
@@ -2720,8 +3158,8 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	 * quote styling; the remaining markup is normalized to terminal text (entities
 	 * decoded, `<code>` themed, lists/`<br>`/`<p>` laid out).
 	 */
-	#renderHtmlBlock(raw: string, width: number): string[] {
-		const lines: string[] = [];
+	#renderHtmlBlock(raw: string, width: number): RenderedLine[] {
+		const lines: RenderedLine[] = [];
 		const state = createHtmlNormalizationState();
 		const codeHook = (text: string): string => this.#theme.code(text) + this.#getDefaultStylePrefix();
 		const flushText = (chunk: string): void => {
@@ -2729,7 +3167,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			if (cleaned.trim() === "") return;
 			for (const line of splitTerminalLines(cleaned)) {
 				const trimmed = line.trimEnd();
-				lines.push(trimmed.trim() === "" ? "" : this.#applyDefaultStyle(trimmed));
+				lines.push(renderedLine(trimmed.trim() === "" ? "" : this.#applyDefaultStyle(trimmed)));
 			}
 		};
 		let lastIndex = 0;
@@ -2740,7 +3178,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			if (match[1] !== undefined) {
 				lines.push(...this.#renderHtmlBlockquote(match[1], width));
 			} else {
-				lines.push(this.#renderHrLine(width));
+				lines.push(renderedLine(this.#renderHrLine(width)));
 			}
 		}
 		flushText(raw.slice(lastIndex));
@@ -2748,10 +3186,10 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	}
 
 	/** Render the inner content of an HTML `<blockquote>` with quote styling. */
-	#renderHtmlBlockquote(inner: string, width: number): string[] {
+	#renderHtmlBlockquote(inner: string, width: number): RenderedLine[] {
 		const cleaned = normalizeHtmlForTerminal(inner, createHtmlNormalizationState(), text => this.#theme.code(text));
-		const innerLines = splitTerminalLines(cleaned).map(line => line.trimEnd());
-		while (innerLines.length > 0 && innerLines[innerLines.length - 1] === "") innerLines.pop();
+		const innerLines = splitTerminalLines(cleaned).map(line => renderedLine(line.trimEnd()));
+		while (innerLines.length > 0 && innerLines[innerLines.length - 1].text === "") innerLines.pop();
 		return this.#applyQuoteBorder(innerLines, width);
 	}
 
@@ -2828,11 +3266,43 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 					// For mailto: links, strip the prefix before comparing (autolinked emails have
 					// text="foo@bar.com" but href="mailto:foo@bar.com")
 					const hrefForComparison = token.href.startsWith("mailto:") ? token.href.slice(7) : token.href;
-					if (token.text === token.href || token.text === hrefForComparison)
-						result += clickableLinkText + stylePrefix;
-					else {
-						const styledLinkUrl = this.#theme.linkUrl(`(${token.href})`);
-						result += `${clickableLinkText} ${formatHyperlink(styledLinkUrl, token.href)}${stylePrefix}`;
+					// Wrap the link's full cell range (label + the optional URL tail)
+					// in a private 7-code-unit zero-width marker pair so routeMouse can
+					// resolve clicks even when OSC 8 is disabled. The markers ride
+					// alongside the link output (which is wrapped by the outer
+					// `wrapTextWithAnsi` pass), survive every intermediate wrap
+					// (table / list / quote / tree / outer), and are stripped in
+					// the final post-wrap pass inside `#renderContentLines`. The
+					// `#renderContentLines` strip keeps user-supplied OSC 8 in the
+					// link output untouched — only the private markers are removed.
+					//
+					// When the marker table overflows, no markers are emitted at
+					// all and the link stays non-clickable locally (terminal OSC 8
+					// still works when `TERMINAL.hyperlinks` is true).
+					const linkIndex = this.#registerLinkHref(token.href);
+					if (linkIndex !== undefined) {
+						const linkOpen = linkOpenMarker(linkIndex);
+						const linkClose = linkCloseMarker(linkIndex);
+						if (token.text === token.href || token.text === hrefForComparison)
+							result += linkOpen + clickableLinkText + linkClose + stylePrefix;
+						else {
+							const styledLinkUrl = this.#theme.linkUrl(`(${token.href})`);
+							result +=
+								linkOpen +
+								`${clickableLinkText} ${formatHyperlink(styledLinkUrl, token.href)}` +
+								linkClose +
+								stylePrefix;
+						}
+					} else {
+						// No marker available — emit the link output verbatim. The
+						// terminal may still handle OSC 8 when hyperlinks are enabled,
+						// but this overflowed link is not clickable via `routeMouse`.
+						if (token.text === token.href || token.text === hrefForComparison)
+							result += clickableLinkText + stylePrefix;
+						else {
+							const styledLinkUrl = this.#theme.linkUrl(`(${token.href})`);
+							result += `${clickableLinkText} ${formatHyperlink(styledLinkUrl, token.href)}${stylePrefix}`;
+						}
 					}
 					break;
 				}
@@ -2887,27 +3357,41 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 	/**
 	 * Render a list with proper nesting support
 	 */
-	#renderList(token: ListToken, depth: number, width: number, styleContext?: InlineStyleContext): string[] {
-		const lines: string[] = [];
+	#renderList(token: ListToken, depth: number, width: number, styleContext?: InlineStyleContext): RenderedLine[] {
+		const lines: RenderedLine[] = [];
 		const indent = "  ".repeat(depth);
 		// Use the list's start property (defaults to 1 for ordered lists)
 		const startNumber = token.start ?? 1;
-		const pushWrapped = (text: string, firstPrefix: string, continuationPrefix: string): void => {
+		const pushWrapped = (line: RenderedLine, firstPrefix: string, continuationPrefix: string): void => {
+			if (line.literalCode) {
+				const wrappedLiteralRows = wrapTextWithAnsi(line.text, Math.max(1, width));
+				if (wrappedLiteralRows.length === 0) {
+					lines.push(renderedLine("", true));
+				} else {
+					for (const wrappedLine of wrappedLiteralRows) {
+						lines.push(renderedLine(wrappedLine, true));
+					}
+				}
+				return;
+			}
+
 			const prefixWidth = visibleWidth(firstPrefix);
 			if (prefixWidth >= width) {
-				lines.push(truncateToWidth(firstPrefix, width, Ellipsis.Omit));
-				lines.push(...wrapTextWithAnsi(text, Math.max(1, width)));
+				lines.push(renderedLine(truncateToWidth(firstPrefix, width, Ellipsis.Omit)));
+				for (const wrappedLine of wrapTextWithAnsi(line.text, Math.max(1, width))) {
+					lines.push(renderedLine(wrappedLine));
+				}
 				return;
 			}
 			const bodyWidth = width - prefixWidth;
-			const wrapped = wrapTextWithAnsi(text, bodyWidth);
+			const wrapped = wrapTextWithAnsi(line.text, bodyWidth);
 			if (wrapped.length === 0) {
-				lines.push(firstPrefix);
+				lines.push(renderedLine(firstPrefix));
 				return;
 			}
-			lines.push(firstPrefix + wrapped[0]);
+			lines.push(renderedLine(firstPrefix + wrapped[0]));
 			for (let lineIndex = 1; lineIndex < wrapped.length; lineIndex++) {
-				lines.push(continuationPrefix + wrapped[lineIndex]);
+				lines.push(renderedLine(continuationPrefix + wrapped[lineIndex]));
 			}
 		};
 
@@ -2926,21 +3410,21 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
 				if (firstLine.nested) {
-					lines.push(firstLine.text);
+					lines.push(firstLine);
 				} else {
-					pushWrapped(firstLine.text, firstPrefix, continuationIndent);
+					pushWrapped(firstLine, firstPrefix, continuationIndent);
 				}
 
 				for (let j = 1; j < itemLines.length; j++) {
 					const line = itemLines[j]!;
 					if (line.nested) {
-						lines.push(line.text);
+						lines.push(line);
 					} else {
-						pushWrapped(line.text, continuationIndent, continuationIndent);
+						pushWrapped(line, continuationIndent, continuationIndent);
 					}
 				}
 			} else {
-				lines.push(firstPrefix);
+				lines.push(renderedLine(firstPrefix));
 			}
 		}
 
@@ -2958,8 +3442,8 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 		parentDepth: number,
 		width: number,
 		styleContext?: InlineStyleContext,
-	): Array<{ text: string; nested: boolean }> {
-		const lines: Array<{ text: string; nested: boolean }> = [];
+	): RenderedListItemLine[] {
+		const lines: RenderedListItemLine[] = [];
 
 		for (const token of tokens) {
 			if (token.type === "list") {
@@ -2967,7 +3451,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				// These lines carry their own indent, so tag them for pass-through
 				const nestedLines = this.#renderList(token as ListToken, parentDepth + 1, width, styleContext);
 				for (const nestedLine of nestedLines) {
-					lines.push({ text: nestedLine, nested: true });
+					lines.push({ ...nestedLine, nested: true });
 				}
 			} else if (token.type === "text") {
 				// Text content (may have inline tokens, or a sole display-math token)
@@ -2998,7 +3482,7 @@ export class Markdown implements Component, NativeScrollbackCommittedRows, Nativ
 				const codeIndent = padding(this.#codeBlockIndent);
 				lines.push({ text: this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`), nested: false });
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
-					lines.push({ text: bodyLine, nested: false });
+					lines.push({ ...bodyLine, nested: false });
 				}
 				lines.push({ text: this.#theme.codeBlockBorder("```"), nested: false });
 			} else if (isMathToken(token)) {

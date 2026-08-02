@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
-import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
+import { HindsightApi, HindsightError } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
@@ -20,6 +20,10 @@ interface FakeSessionDeps {
 	cwd?: string;
 	entries?: Array<{ role: "user" | "assistant"; text: string }>;
 	settings?: Settings;
+}
+
+interface HindsightStateSession {
+	getHindsightSessionState(): HindsightSessionState | undefined;
 }
 
 function makeFakeSession(deps: FakeSessionDeps) {
@@ -62,6 +66,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			return () => listeners.delete(listener);
 		},
 		refreshBaseSystemPrompt: vi.fn().mockResolvedValue(undefined),
+		emitNotice: vi.fn(),
 		getHindsightSessionState: () => hindsightState,
 		setHindsightSessionState(state: HindsightSessionState | undefined) {
 			const previous = hindsightState;
@@ -74,6 +79,18 @@ function makeFakeSession(deps: FakeSessionDeps) {
 		listenerCount: () => listeners.size,
 	};
 	return session;
+}
+
+async function waitForHindsightStateReplacement(
+	session: HindsightStateSession,
+	previous: HindsightSessionState,
+): Promise<HindsightSessionState> {
+	for (let microtask = 0; microtask < 50; microtask++) {
+		const next = session.getHindsightSessionState();
+		if (next && next !== previous) return next;
+		await Promise.resolve();
+	}
+	throw new Error("Hindsight primary state was not rebuilt.");
 }
 
 describe("hindsightBackend.start", () => {
@@ -481,6 +498,122 @@ describe("hindsightBackend first-turn injection", () => {
 	});
 });
 
+describe("hindsightBackend remote failure notices", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("shows one actionable notice for repeated authentication failure during automatic recall", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.autoRecall": true,
+			"hindsight.mentalModelsEnabled": false,
+		});
+		const session = makeFakeSession({ sessionId: "s-recall-auth" });
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const state = session.getHindsightSessionState();
+		expect(state).toBeDefined();
+
+		const recallSpy = vi
+			.spyOn(HindsightApi.prototype, "recall")
+			.mockRejectedValue(new HindsightError("invalid Hindsight token", 401));
+		await hindsightBackend.beforeAgentStartPrompt!(session as never, "recall this prompt");
+		await hindsightBackend.beforeAgentStartPrompt!(session as never, "retry this prompt");
+
+		expect(recallSpy).toHaveBeenCalledTimes(2);
+		expect(session.getHindsightSessionState()).toBe(state);
+		expect(session.emitNotice).toHaveBeenCalledTimes(1);
+		expect(session.emitNotice).toHaveBeenCalledWith(
+			"error",
+			expect.stringContaining("Hindsight API Token"),
+			"Hindsight",
+		);
+		expect(session.emitNotice.mock.calls[0]?.[1]).toContain("/settings");
+	});
+
+	it("shows an actionable error notice for automatic retain authentication failure", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.autoRetain": true,
+			"hindsight.retainEveryNTurns": 1,
+			"hindsight.mentalModelsEnabled": false,
+		});
+		const entries = [
+			{ role: "user" as const, text: "retain this durable fact" },
+			{ role: "assistant" as const, text: "I will retain it" },
+		];
+		const session = makeFakeSession({ sessionId: "s-retain-auth", entries, settings });
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainSpy = vi
+			.spyOn(HindsightApi.prototype, "retain")
+			.mockRejectedValue(new HindsightError("Hindsight rejected the token", 403));
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const state = session.getHindsightSessionState();
+		expect(state).toBeDefined();
+		await state!.maybeRetainOnAgentEnd();
+
+		expect(retainSpy).toHaveBeenCalledTimes(1);
+		expect(session.emitNotice).toHaveBeenCalledTimes(1);
+		expect(session.emitNotice).toHaveBeenCalledWith(
+			"error",
+			expect.stringContaining("Hindsight API Token"),
+			"Hindsight",
+		);
+		expect(session.emitNotice.mock.calls[0]?.[1]).toContain("/settings");
+	});
+
+	it("reports queued retain failures as warnings with the server error", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		const session = makeFakeSession({ sessionId: "s-queue-failure", settings });
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainBatchSpy = vi
+			.spyOn(HindsightApi.prototype, "retainBatch")
+			.mockRejectedValue(new HindsightError("Hindsight temporarily unavailable", 503));
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const state = session.getHindsightSessionState();
+		expect(state).toBeDefined();
+		state!.enqueueRetain("queued fact", "queue test");
+		await state!.flushRetainQueue();
+
+		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
+		expect(session.emitNotice).toHaveBeenCalledTimes(1);
+		expect(session.emitNotice).toHaveBeenCalledWith(
+			"warning",
+			expect.stringContaining("Hindsight temporarily unavailable"),
+			"Hindsight",
+		);
+	});
+});
+
 describe("hindsightBackend.clear", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
@@ -616,6 +749,63 @@ describe("hindsightBackend live bank routing", () => {
 		expect(next).toBeDefined();
 		expect(next?.bankId).toBe("omp-proj");
 		expect(next).not.toBe(initial);
+	});
+
+	it("rebuilds the primary client when the Hindsight token or URL changes at runtime", async () => {
+		const requests: Array<{ url: string; authorization: string | null }> = [];
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				const request = input instanceof Request ? input : undefined;
+				const headers = request?.headers ?? new Headers(init?.headers);
+				requests.push({
+					url: request?.url ?? String(input),
+					authorization: headers.get("Authorization"),
+				});
+				return new Response(JSON.stringify({ results: [] }), { status: 200 });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.mentalModelsEnabled": false,
+		});
+		settings.set("hindsight.apiUrl", "https://hindsight-old.example/api");
+		settings.set("hindsight.apiToken", "old-token");
+		settings.set("hindsight.scoping", "global");
+		settings.set("hindsight.bankId", "stable-bank");
+		const session = makeFakeSession({ sessionId: "s-client-rebuild", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const initial = session.getHindsightSessionState();
+		expect(initial).toBeDefined();
+
+		settings.set("hindsight.apiToken", "new-token");
+		const afterToken = await waitForHindsightStateReplacement(session, initial!);
+		expect(afterToken.bankId).toBe(initial!.bankId);
+		expect(afterToken.client).not.toBe(initial!.client);
+		await afterToken.recallForContext("verify token rotation");
+		expect(requests[0]).toEqual({
+			url: "https://hindsight-old.example/api/v1/default/banks/stable-bank/memories/recall",
+			authorization: "Bearer new-token",
+		});
+
+		settings.set("hindsight.apiUrl", "https://hindsight-new.example/runtime");
+		const afterUrl = await waitForHindsightStateReplacement(session, afterToken);
+		expect(afterUrl.bankId).toBe(afterToken.bankId);
+		expect(afterUrl.client).not.toBe(afterToken.client);
+		await afterUrl.recallForContext("verify URL rotation");
+		expect(requests[1]).toEqual({
+			url: "https://hindsight-new.example/runtime/v1/default/banks/stable-bank/memories/recall",
+			authorization: "Bearer new-token",
+		});
 	});
 
 	// Same setting written with the same value MUST NOT rebuild — a rebuild

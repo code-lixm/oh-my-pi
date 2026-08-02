@@ -236,6 +236,7 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 		settingsInstance.get("colorBlindMode"),
 		settingsInstance.get("theme.dark"),
 		settingsInstance.get("theme.light"),
+		settingsInstance.get("theme.terminalPalette"),
 	);
 
 	const width = resolveWidth(args.width);

@@ -402,6 +402,131 @@ describe("task.batch spawning", () => {
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
 	});
 
+	it("keeps another live top-level session's child ids unique across async and sync fallback spawns", async () => {
+		mockDiscovery();
+		const registry = AgentRegistry.global();
+		const otherTopLevelSession = {} as never;
+		const currentTopLevelSession = {} as never;
+		registry.register({
+			id: "OtherTopLevel",
+			displayName: "Other top-level session",
+			kind: "main",
+			session: otherTopLevelSession,
+			sessionFile: null,
+			status: "idle",
+		});
+		registry.register({
+			id: "CurrentTopLevel",
+			displayName: "Current top-level session",
+			kind: "main",
+			session: currentTopLevelSession,
+			sessionFile: null,
+			status: "idle",
+		});
+		const existingChildren = {
+			Review: registry.register({
+				id: "Review",
+				displayName: "Review owned by other session",
+				kind: "sub",
+				parentId: "OtherTopLevel",
+				session: { id: "Review" } as never,
+				sessionFile: null,
+				status: "running",
+			}),
+			Build: registry.register({
+				id: "Build",
+				displayName: "Build owned by other session",
+				kind: "sub",
+				parentId: "OtherTopLevel",
+				session: { id: "Build" } as never,
+				sessionFile: null,
+				status: "running",
+			}),
+			SyncReview: registry.register({
+				id: "SyncReview",
+				displayName: "SyncReview owned by other session",
+				kind: "sub",
+				parentId: "OtherTopLevel",
+				session: { id: "SyncReview" } as never,
+				sessionFile: null,
+				status: "running",
+			}),
+		};
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const id = options.id;
+			if (!id) throw new Error("Expected TaskTool to allocate an id");
+			const child = registry.registerIfAvailable(
+				{
+					id,
+					displayName: id,
+					kind: "sub",
+					parentId: "CurrentTopLevel",
+					session: { id } as never,
+					sessionFile: null,
+					status: "idle",
+				},
+				null,
+			);
+			if (!child) throw new Error(`Agent ${id} is already owned by another session`);
+			return makeResult(id);
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({
+				manager,
+				agentId: "CurrentTopLevel",
+				settings: { "async.enabled": true, "task.batch": true },
+			}),
+		);
+		const single = await tool.execute("tc-live-id-single", {
+			context: "Keep independent live sessions addressable.",
+			tasks: [{ name: "Review", task: "Review the change." }],
+		} as TaskParams);
+		const singleIds = single.details?.progress?.map(progress => progress.id) ?? [];
+		expect(singleIds).toEqual(["Review-2"]);
+		const singleJob = manager.getJob("Review-2");
+		expect(singleJob).toBeDefined();
+		await singleJob!.promise;
+
+		const batch = await tool.execute("tc-live-id-batch", {
+			context: "Keep each batch child distinct from existing live peers.",
+			tasks: [
+				{ name: "Review", task: "Review a second change." },
+				{ name: "Build", task: "Build the change." },
+			],
+		} as TaskParams);
+		const batchIds = batch.details?.progress?.map(progress => progress.id) ?? [];
+		expect(batchIds).toEqual(["Review-3", "Build-2"]);
+		const asyncAllocatedIds = [...singleIds, ...batchIds];
+		await Promise.all(asyncAllocatedIds.map(id => manager.getJob(id)!.promise));
+
+		const syncFallbackTool = await TaskTool.create(
+			createSession({
+				agentId: "CurrentTopLevel",
+				settings: { "async.enabled": true, "task.batch": true },
+			}),
+		);
+		const syncFallback = await syncFallbackTool.execute("tc-live-id-sync-fallback", {
+			context: "Keep a synchronous fallback child distinct from live peers.",
+			tasks: [{ name: "SyncReview", task: "Review without an AsyncJobManager." }],
+		} as TaskParams);
+		const syncFallbackIds = syncFallback.details?.results.map(result => result.id) ?? [];
+		expect(syncFallbackIds).toEqual(["SyncReview-2"]);
+
+		const allocatedIds = [...asyncAllocatedIds, ...syncFallbackIds];
+		expect(new Set(allocatedIds).size).toBe(allocatedIds.length);
+
+		for (const [id, existing] of Object.entries(existingChildren)) {
+			expect(registry.get(id)).toBe(existing);
+			expect(registry.get(id)?.parentId).toBe("OtherTopLevel");
+		}
+		expect(registry.get("Review-2")?.parentId).toBe("CurrentTopLevel");
+		expect(registry.get("Review-3")?.parentId).toBe("CurrentTopLevel");
+		expect(registry.get("Build-2")?.parentId).toBe("CurrentTopLevel");
+		expect(registry.get("SyncReview-2")?.parentId).toBe("CurrentTopLevel");
+	});
+
 	it("routes each mixed-agent item through its selected definition while preserving caller overrides", async () => {
 		const scoutSchema = { type: "object", properties: { findings: { type: "array" } } };
 		const reviewerSchema = { type: "object", properties: { verdict: { type: "string" } } };

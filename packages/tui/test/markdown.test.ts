@@ -1222,6 +1222,48 @@ more text`,
 			}
 		});
 
+		it("keeps coding-agent's padded fenced code body at column zero", () => {
+			const markdown = new Markdown("```sh\ncat <<'EOF'\nEOF\n```", 1, 0, defaultMarkdownTheme, undefined, 0);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" ```sh", "cat <<'EOF'", "EOF", " ```"]);
+		});
+
+		it("keeps literal code body rows unprefixed through nested container wrapping", () => {
+			const longCodeLine = "x".repeat(24);
+			const cases = [
+				`- shell:
+
+  \`\`\`sh
+  ${longCodeLine}
+  EOF
+  \`\`\``,
+				`> \`\`\`sh
+> ${longCodeLine}
+> EOF
+> \`\`\``,
+			];
+
+			for (const text of cases) {
+				const markdown = new Markdown(text, 1, 0, defaultMarkdownTheme, undefined, 0);
+				const plainLines = markdown.render(12).map(line => stripVTControlCharacters(line).trimEnd());
+				const literalRows = plainLines.filter(line => line.includes("x") || line === "EOF");
+
+				expect(literalRows.join("")).toBe(`${longCodeLine}EOF`);
+				expect(literalRows.length).toBeGreaterThan(2);
+				expect(literalRows.every(line => line.startsWith("x") || line === "EOF")).toBe(true);
+			}
+		});
+
+		it("keeps ordinary prose NUL bytes as ordinary padded text", () => {
+			const markdown = new Markdown("before\0after", 1, 0, defaultMarkdownTheme);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" before\0after"]);
+		});
+
 		it("should not add a trailing blank line when code block is the last rendered block", () => {
 			const cases = ["```js\nconst hello = 'world';\n```", "hello world\n\n```js\nconst hello = 'world';\n```"];
 
@@ -1255,6 +1297,21 @@ more text`,
 			expect(seenSources).toEqual([mermaidSource]);
 			expect(plainLines).toEqual(["Start", "  |", "Stop"]);
 			expect(plainLines.some(line => line.includes("```mermaid"))).toBeFalsy();
+		});
+
+		it("keeps resolved Mermaid art inside the coding-agent margin", () => {
+			const markdown = new Markdown(
+				"```mermaid\nflowchart TD\n```",
+				1,
+				0,
+				{ ...defaultMarkdownTheme, resolveMermaidAscii: () => "Start\n  |\nStop" },
+				undefined,
+				0,
+			);
+
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines).toEqual([" Start", "   |", " Stop"]);
 		});
 
 		it("falls back to the original fenced code block when mermaid resolution returns null", () => {
@@ -2858,5 +2915,423 @@ describe("windowed lexing (documents past WINDOWED_LEX_MIN_BYTES)", () => {
 		}
 		// A window cut that restarted the list would renumber later items.
 		expect(rendered.filter(line => line.includes(" 1. item 0 ")).length).toBeLessThanOrEqual(1);
+	});
+});
+
+describe("Markdown link click routing (MouseRoutable)", () => {
+	// CI terminals often start with hyperlinks disabled. Toggle the flag on so
+	// the OSC 8 assertions are deterministic; the renderer contract is the
+	// same either way (hit map is independent of hyperlinks). Per-test
+	// `beforeEach` / `afterEach` restore the original value so OSC 8 off-path
+	// tests don't pollute neighbours.
+	const terminalState = TERMINAL as unknown as { hyperlinks: boolean };
+
+	function withHyperlinks<T>(enabled: boolean, fn: () => T): T {
+		const prev = terminalState.hyperlinks;
+		terminalState.hyperlinks = enabled;
+		try {
+			return fn();
+		} finally {
+			terminalState.hyperlinks = prev;
+		}
+	}
+
+	afterEach(() => clearRenderCache());
+
+	function newMarkdown(text: string, paddingX = 0, paddingY = 0, theme = defaultMarkdownTheme): Markdown {
+		return new Markdown(text, paddingX, paddingY, theme);
+	}
+
+	/**
+	 * Build a left-click SGR event the host is expected to fire on a link cell.
+	 * The event's `row` is left at 0 — `Markdown.routeMouse` uses the second
+	 * `line` argument (the component-local row), not `event.row`.
+	 */
+	function clickEvent(col: number, leftClick = true): Parameters<Markdown["routeMouse"]>[0] {
+		return {
+			button: 0,
+			col,
+			row: 0,
+			release: false,
+			wheel: null,
+			motion: false,
+			leftClick,
+		};
+	}
+
+	/**
+	 * Install a recording handler, fire one click at the given row and visible
+	 * column, and report whether the handler fired (with which hrefs).
+	 */
+	function clickAt(
+		md: Markdown,
+		line: number,
+		col: number,
+	): {
+		consumed: boolean;
+		hrefs: string[];
+	} {
+		const hrefs: string[] = [];
+		md.setLinkHandler(href => hrefs.push(href));
+		const consumed = md.routeMouse(clickEvent(col), line, col);
+		return { consumed, hrefs };
+	}
+
+	/**
+	 * Locate a substring in the ANSI-stripped plain text and translate the
+	 * character offset into a visible-cell column via `visibleWidth`. This is
+	 * the ONLY safe way to compute col positions for click routing: the raw
+	 * rendered row contains OSC 8 escapes, ANSI styling, and the private
+	 * zero-width markers, so byte offsets aren't visible cells.
+	 */
+	function colOf(plainLine: string, fragment: string): number {
+		const idx = plainLine.indexOf(fragment);
+		if (idx < 0) throw new Error(`fragment not found: ${JSON.stringify(fragment)}`);
+		return visibleWidth(plainLine.slice(0, idx));
+	}
+
+	it("emits byte-identical output regardless of the link handler's presence (one instance, two renders)", () => {
+		const text = "Visit [our docs](https://example.com/docs) for details.";
+		const md = newMarkdown(text);
+		const before = md.render(80);
+		// Install + remove a handler — the handler path must not perturb the
+		// cached output bytes.
+		md.setLinkHandler(() => undefined);
+		const after = md.render(80);
+		expect(after).toEqual(before);
+		expect(after.join("\n")).toBe(before.join("\n"));
+	});
+
+	it("emits byte-identical output regardless of the link handler's presence (two instances, render miss → fresh)", () => {
+		const text = "Visit [our docs](https://example.com/docs) for details.";
+		clearRenderCache();
+		const a = newMarkdown(text);
+		const beforeA = a.render(80);
+		const b = newMarkdown(text);
+		// Second instance with the SAME text is a render miss for `b` (different
+		// instance, different identity). Its fresh render must produce the same
+		// bytes regardless of whether `a`'s L2 cache fired.
+		b.setLinkHandler(() => undefined);
+		const afterB = b.render(80);
+		expect(afterB).toEqual(beforeA);
+	});
+
+	it("strips every private link marker from the final output (no NUL, no control bytes leak)", () => {
+		// Marker scheme is 7-code-unit zero-width control sequences around each link
+		// segment. The final cached lines must contain no NUL or other
+		// zero-width control bytes from the markers — even when the link sits
+		// inside a table cell that gets wrapped by the outer content wrap
+		// (regression: the original `\0L1;` leak on the table-wrap tests).
+		const md = newMarkdown(
+			`| Col | Link |
+| --- | --- |
+| [a really long link label that wraps](https://example.com/long) | stuff |`,
+			0,
+			0,
+			defaultMarkdownTheme,
+		);
+		const raw = md.render(40).join("\n");
+		expect(raw).not.toContain("\x00");
+		// The marker prefix bytes (0x00, 0x01) must not appear either.
+		expect(raw.includes("\x00\x01")).toBe(false);
+	});
+
+	it("fires the link handler on a click inside the link cell (OSC 8 enabled)", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("Visit [docs](https://example.com/docs) here.");
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+			// Click inside "docs" — one cell past the visible start of the link.
+			const clickCol = colOf(plain[0]!, "docs") + 1;
+			const result = clickAt(md, 0, clickCol);
+			expect(result.consumed).toBe(true);
+			expect(result.hrefs).toEqual(["https://example.com/docs"]);
+		});
+	});
+
+	it("fires the link handler on a click inside the link cell (OSC 8 disabled)", () => {
+		// `TERMINAL.hyperlinks` controls `formatHyperlink`'s OSC 8 output. With
+		// hyperlinks disabled the link is just styled text — the private
+		// markers carry the href independently.
+		withHyperlinks(false, () => {
+			const md = newMarkdown("Visit [docs](https://example.com/docs) here.");
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+			const clickCol = colOf(plain[0]!, "docs") + 1;
+			const result = clickAt(md, 0, clickCol);
+			expect(result.consumed).toBe(true);
+			expect(result.hrefs).toEqual(["https://example.com/docs"]);
+		});
+	});
+
+	it("keeps adjacent links mapped to their distinct hrefs", () => {
+		withHyperlinks(false, () => {
+			const md = newMarkdown("[first](https://example.com/first) [second](https://example.com/second)");
+			const lines = md.render(120);
+			const plain = lines.map(stripVTControlCharacters);
+
+			const firstCol = colOf(plain[0]!, "first") + 1;
+			const secondCol = colOf(plain[0]!, "second") + 1;
+			expect(clickAt(md, 0, firstCol)).toEqual({ consumed: true, hrefs: ["https://example.com/first"] });
+			expect(clickAt(md, 0, secondCol)).toEqual({ consumed: true, hrefs: ["https://example.com/second"] });
+		});
+	});
+
+	it("returns false and does not fire for clicks outside any link cell", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("Plain prose with no [link](https://example.com) at all.");
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+			// Click on "Plain" at the start — nowhere near the link.
+			const clickCol = colOf(plain[0]!, "Plain");
+			const result = clickAt(md, 0, clickCol);
+			expect(result.consumed).toBe(false);
+			expect(result.hrefs).toEqual([]);
+		});
+	});
+
+	it("treats both label and displayed (href) tail as the same link cell", () => {
+		// `[the manual](https://example.com/manual)` renders as
+		// `the manual (https://example.com/manual)` — one private marker pair
+		// wraps both segments. Clicking either fires the same href.
+		withHyperlinks(true, () => {
+			const md = newMarkdown("Read [the manual](https://example.com/manual) now.");
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+
+			// Click in the label.
+			const labelCol = colOf(plain[0]!, "the manual") + 2;
+			expect(clickAt(md, 0, labelCol)).toEqual({
+				consumed: true,
+				hrefs: ["https://example.com/manual"],
+			});
+
+			// Click in the displayed URL tail.
+			const hrefCol = colOf(plain[0]!, "https://example.com/manual") + 4;
+			expect(clickAt(md, 0, hrefCol)).toEqual({
+				consumed: true,
+				hrefs: ["https://example.com/manual"],
+			});
+		});
+	});
+
+	it("routes a wrapped link across multiple physical rows", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("Visit [really/long/path/here](https://example.com/really/long/path/here) ok.");
+			const lines = md.render(12);
+			const plain = lines.map(stripVTControlCharacters);
+
+			// Find the first row containing the link fragment "/long" and click
+			// on that row's link cell.
+			const firstRowIdx = plain.findIndex(line => line.includes("/long"));
+			expect(firstRowIdx).toBeGreaterThanOrEqual(0);
+			const firstRowCol = colOf(plain[firstRowIdx]!, "/long") + 2;
+			const first = clickAt(md, firstRowIdx, firstRowCol);
+			expect(first.consumed).toBe(true);
+			expect(first.hrefs).toEqual(["https://example.com/really/long/path/here"]);
+
+			// Click on a continuation row of the same link — same href.
+			const secondRowIdx = plain.findIndex((line, idx) => idx > firstRowIdx && line.includes("/path"));
+			if (secondRowIdx >= 0) {
+				const secondRowCol = colOf(plain[secondRowIdx]!, "/path") + 1;
+				const second = clickAt(md, secondRowIdx, secondRowCol);
+				expect(second.consumed).toBe(true);
+				expect(second.hrefs).toEqual(["https://example.com/really/long/path/here"]);
+			}
+		});
+	});
+
+	it("respects paddingX so clicks in the left padding chrome are rejected", () => {
+		withHyperlinks(true, () => {
+			const md = new Markdown("[link](https://example.com)", 2, 0, defaultMarkdownTheme);
+			const lines = md.render(20);
+			// Use the visible-cell helper on the stripped plain so the click col
+			// matches the hit-span col (which already accounts for padding).
+			const plain = lines.map(stripVTControlCharacters);
+			const linkCol = colOf(plain[0]!, "link");
+
+			// Click inside the left padding chrome (col < paddingX=2).
+			const onPad = clickAt(md, 0, 1);
+			expect(onPad.consumed).toBe(false);
+			expect(onPad.hrefs).toEqual([]);
+
+			// Click on the link text → fires.
+			const onLink = clickAt(md, 0, linkCol);
+			expect(onLink.consumed).toBe(true);
+			expect(onLink.hrefs).toEqual(["https://example.com"]);
+		});
+	});
+
+	it("rejects motion and release events even when leftClick is set", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("[link](https://example.com)");
+			md.render(20);
+			md.setLinkHandler(() => {
+				throw new Error("handler should not fire on motion/release");
+			});
+			const base = clickEvent(1, true);
+			// Motion + leftClick: must reject.
+			expect(md.routeMouse({ ...base, motion: true }, 0, 1)).toBe(false);
+			// Release + leftClick: must reject.
+			expect(md.routeMouse({ ...base, leftClick: false, release: true }, 0, 1)).toBe(false);
+			// Wheel + leftClick: must reject.
+			expect(md.routeMouse({ ...base, wheel: 1 }, 0, 1)).toBe(false);
+		});
+	});
+
+	it("serves correct hit spans from the L1 instance-cache hit (second render() call)", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("Visit [docs](https://example.com/docs) here.");
+			const firstLines = md.render(80);
+			const plainFirst = firstLines.map(stripVTControlCharacters);
+			const linkCol = colOf(plainFirst[0]!, "docs") + 1;
+
+			// First click populates the hit map.
+			const first = clickAt(md, 0, linkCol);
+			expect(first.hrefs).toEqual(["https://example.com/docs"]);
+
+			// Second render() must hit the L1 cache and still route correctly.
+			// Calling render() a second time is required to exercise the cache
+			// path — the per-instance L1 cache check only fires after the first
+			// render populates `#cachedLines`.
+			const secondLines = md.render(80);
+			expect(secondLines).toBe(firstLines); // L1 cache hit: same reference
+			const plainSecond = secondLines.map(stripVTControlCharacters);
+			const linkColSecond = colOf(plainSecond[0]!, "docs") + 1;
+			const second = clickAt(md, 0, linkColSecond);
+			expect(second.hrefs).toEqual(["https://example.com/docs"]);
+		});
+	});
+
+	it("preserves frozen-prefix link spans across transient append renders", () => {
+		withHyperlinks(false, () => {
+			const href = "https://example.com/frozen";
+			const md = newMarkdown(`[frozen link](${href})\n\nvolatile tail`);
+			md.transientRenderCache = true;
+
+			const firstLines = md.render(80);
+			const firstPlain = firstLines.map(stripVTControlCharacters);
+			const firstLinkCol = colOf(firstPlain[0]!, "frozen link") + 1;
+			expect(clickAt(md, 0, firstLinkCol)).toEqual({ consumed: true, hrefs: [href] });
+
+			// The blank-line-delimited first block is now a frozen prefix. Appending
+			// reuses its cached physical rows, so its cached hit spans must be replayed
+			// along with those rows.
+			md.setText(`[frozen link](${href})\n\nvolatile tail appended`);
+			const appendedLines = md.render(80);
+			const appendedPlain = appendedLines.map(stripVTControlCharacters);
+			const appendedLinkCol = colOf(appendedPlain[0]!, "frozen link") + 1;
+			expect(clickAt(md, 0, appendedLinkCol)).toEqual({ consumed: true, hrefs: [href] });
+		});
+	});
+
+	it("routes a volatile-tail link after frozen-prefix rows", () => {
+		withHyperlinks(false, () => {
+			const href = "https://example.com/tail";
+			const md = newMarkdown(`settled prefix\n\n[tail link](${href})`);
+			md.transientRenderCache = true;
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+			const linkRow = plain.findIndex(line => line.includes("tail link"));
+			expect(linkRow).toBeGreaterThan(0);
+			const linkCol = colOf(plain[linkRow]!, "tail link") + 1;
+			expect(clickAt(md, linkRow, linkCol)).toEqual({ consumed: true, hrefs: [href] });
+		});
+	});
+
+	it("clears stale hit spans on setText without a re-render", () => {
+		withHyperlinks(true, () => {
+			const md = newMarkdown("[a](https://example.com/a)");
+			md.render(80);
+			// First click on the link cell fires.
+			const first = clickAt(md, 0, 1);
+			expect(first.consumed).toBe(true);
+			expect(first.hrefs).toEqual(["https://example.com/a"]);
+			// Change text to a doc without the link. `setText` should reset
+			// `#linkHitSpans`; without a re-render the click must NOT find the
+			// stale span from the previous content.
+			md.setText("plain text with no links");
+			const stale = clickAt(md, 0, 1);
+			expect(stale.consumed).toBe(false);
+			expect(stale.hrefs).toEqual([]);
+		});
+	});
+
+	it("routes a CJK link at the correct grapheme-aware column", () => {
+		// `界` (CJK) is one JS char but TWO terminal cells. A naive per-char
+		// col count would put the link opener at col 4 instead of col 5, so
+		// a click at col 5 would miss the link. visibleWidth must be used.
+		withHyperlinks(true, () => {
+			const md = newMarkdown("CJK界[点这里](https://example.com/cjk) here.");
+			const lines = md.render(40);
+			const plain = lines.map(stripVTControlCharacters);
+
+			// `界` alone measures 2 cells (CJK width per UAX#11).
+			expect(visibleWidth("界")).toBe(2);
+			// "CJK界" = 3 ASCII + 2 = 5 cells. Per-JS-char count would give 4,
+			// and a per-grapheme (non-CJK) count would also give 4. Only the
+			// cluster-aware width puts the link opener at cell 5.
+			const linkStartCol = colOf(plain[0]!, "点这里");
+			expect(linkStartCol).toBe(5);
+			// Confirm per-JS-char count would have given 4 (or even 3 for a
+			// non-CJK-aware per-grapheme count) — assert we are NOT that.
+			expect(linkStartCol).not.toBe(plain[0]!.indexOf("点这里"));
+
+			const linkCol = linkStartCol + 1;
+			const result = clickAt(md, 0, linkCol);
+			expect(result.consumed).toBe(true);
+			expect(result.hrefs).toEqual(["https://example.com/cjk"]);
+		});
+	});
+
+	it("routes a ZWJ emoji link at the correct cluster-width column (👩‍💻 = 1 cluster, 2 cells)", () => {
+		// `👩‍💻` is THREE code points (👩 U+1F469 + ZWJ U+200D + 💻 U+1F4BB)
+		// but ONE terminal cluster taking 2 cells. visibleWidth must report the
+		// cluster as 2 cells, not 3 (which would happen with a naive per-JS-char
+		// count). Per-JS-char count puts "link" at byte-offset 9; cluster-aware
+		// count puts it at cell-offset 6.
+		withHyperlinks(true, () => {
+			const text = "fix 👩‍💻[link](https://example.com/zwj) ok";
+			const md = newMarkdown(text);
+			const lines = md.render(80);
+			const plain = lines.map(stripVTControlCharacters);
+
+			// "fix 👩‍💻" is 6 terminal cells: "fix " = 4, "👩‍💻" cluster = 2.
+			// (Per-JS-char count would be 4 + 5 = 9, naive per-cluster would
+			// be 4 + 1 = 5 — only the grapheme-aware count produces 6.)
+			const linkStartByte = plain[0]!.indexOf("link");
+			const linkStartCol = visibleWidth(plain[0]!.slice(0, linkStartByte));
+			expect(linkStartCol).toBe(6);
+			// Per-JS-char would give 9; assert the implementation does NOT
+			// land on the per-JS-char value.
+			expect(linkStartCol).not.toBe(plain[0]!.indexOf("link"));
+
+			// Click inside the link → fires.
+			const insideLink = clickAt(md, 0, linkStartCol + 1);
+			expect(insideLink.consumed).toBe(true);
+			expect(insideLink.hrefs).toEqual(["https://example.com/zwj"]);
+			// Click before the link (inside the emoji cluster) → rejected.
+			const insideEmoji = clickAt(md, 0, linkStartCol - 1);
+			expect(insideEmoji.consumed).toBe(false);
+		});
+	});
+
+	it("serves hit spans from the L2 module-cache hit (different instance, identical input)", () => {
+		clearRenderCache();
+		const text = "Visit [docs](https://example.com/docs) here.";
+		const a = newMarkdown(text, 0, 0, defaultMarkdownTheme);
+		const b = newMarkdown(text, 0, 0, defaultMarkdownTheme);
+		const linesA = a.render(80);
+		const linesB = b.render(80);
+		// L2 cache: identical (text, width, theme, terminal caps) → shared
+		// output AND shared hit spans.
+		expect(linesB).toBe(linesA);
+
+		const hrefs: string[] = [];
+		b.setLinkHandler(href => hrefs.push(href));
+		const plainB = linesB.map(stripVTControlCharacters);
+		const linkCol = colOf(plainB[0]!, "docs") + 1;
+		expect(b.routeMouse(clickEvent(linkCol), 0, linkCol)).toBe(true);
+		expect(hrefs).toEqual(["https://example.com/docs"]);
 	});
 });

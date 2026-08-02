@@ -55,7 +55,11 @@ import {
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
-import { createAssistantMessageComponent } from "./interactive-context-helpers";
+import {
+	createAssistantMessageComponent,
+	openRichContentImage,
+	openRichContentLink,
+} from "./interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
@@ -259,7 +263,9 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks, href =>
+							openRichContentLink(this.ctx, href),
+						);
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);
@@ -466,7 +472,10 @@ export class UiHelpers {
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
-					if (content.name === "hub" && !this.ctx.settings.get("display.showHubProcessActivity")) {
+					if (
+						content.name === "hub" &&
+						(this.ctx.focusedAgentId !== undefined || !this.ctx.settings.get("display.showHubProcessActivity"))
+					) {
 						hiddenHubToolCallIds.add(content.id);
 						appendAssistantSegment(afterToolSegment);
 						continue;
@@ -563,6 +572,7 @@ export class UiHelpers {
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 							liveRegion: this.ctx.chatContainer,
+							openImage: image => openRichContentImage(this.ctx, image),
 						},
 						tool,
 						this.ctx.ui,

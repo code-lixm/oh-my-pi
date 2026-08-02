@@ -97,6 +97,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				};
 			} catch (err) {
 				logger.warn("recall failed", { bankId: state.bankId, error: String(err) });
+				state.reportRequestFailure(err);
 				throw err instanceof Error ? err : new Error(String(err));
 			}
 		});

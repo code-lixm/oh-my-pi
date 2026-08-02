@@ -10,7 +10,7 @@
  */
 
 import type { AgentSession } from "../session/agent-session";
-import { oneLineLabel } from "../task/types";
+import { type AgentProgress, oneLineLabel } from "../task/types";
 import type { AgentActivityState } from "./agent-activity";
 
 export const MAIN_AGENT_ID = "Main";
@@ -52,6 +52,44 @@ export interface AgentRef {
 	activity?: string;
 	/** Structured current activity shared by local and remote observer surfaces. */
 	activityState?: AgentActivityState;
+}
+/**
+ * Stable navigation order shared by Agent Hub and focused-agent cycling.
+ * Status groups are semantic; creation time orders peers inside a group, so
+ * activity heartbeats can never move the current target under the operator.
+ */
+export function compareAgentNavigationOrder(
+	left: AgentRef,
+	right: AgentRef,
+	leftStatus: AgentStatus | AgentProgress["status"] = left.status,
+	rightStatus: AgentStatus | AgentProgress["status"] = right.status,
+): number {
+	const priorityDifference = navigationStatusPriority(leftStatus) - navigationStatusPriority(rightStatus);
+	if (priorityDifference !== 0) return priorityDifference;
+
+	const leftCreatedAt = Number.isFinite(left.createdAt) ? left.createdAt : undefined;
+	const rightCreatedAt = Number.isFinite(right.createdAt) ? right.createdAt : undefined;
+	if (leftCreatedAt !== undefined || rightCreatedAt !== undefined) {
+		if (leftCreatedAt === undefined) return 1;
+		if (rightCreatedAt === undefined) return -1;
+		if (leftCreatedAt !== rightCreatedAt) return rightCreatedAt - leftCreatedAt;
+	}
+
+	return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function navigationStatusPriority(status: AgentStatus | AgentProgress["status"]): number {
+	switch (status) {
+		case "running":
+			return 0;
+		case "waiting":
+		case "pending":
+			return 1;
+		case "failed":
+			return 2;
+		default:
+			return 3;
+	}
 }
 
 export type AgentRefExpectation = AgentRef | AgentSession;

@@ -140,6 +140,7 @@ function makeRenderCtx(
 	transcript: SessionContext,
 	showImages = true,
 	showHubProcessActivity = false,
+	focusedAgentId?: string,
 ): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
 	let helpers: UiHelpers;
@@ -164,7 +165,7 @@ function makeRenderCtx(
 		},
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
-		focusedAgentId: undefined,
+		focusedAgentId,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
 			buildTranscriptSessionContext: () => transcript,
@@ -418,6 +419,16 @@ describe("UiHelpers.renderInitialMessages — persisted hub process activity", (
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain(AFTER_TOOL_TEXT);
 		expect(rendered).toContain(PROCESS_NAME);
+	});
+
+	it("hides persisted hub process cards in a focused initial replay even when enabled", async () => {
+		const { ctx, chatContainer } = makeRenderCtx(await reopenPersistedHubProcessTranscript(), true, true, "Worker");
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(rendered).toContain(AFTER_TOOL_TEXT);
+		expect(rendered).not.toContain(PROCESS_NAME);
 	});
 });
 

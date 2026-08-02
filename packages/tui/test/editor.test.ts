@@ -367,6 +367,93 @@ describe("Editor component", () => {
 				tui.stop();
 			}
 		});
+
+		it("places a click on a wrapped second segment using the render-time hit map", async () => {
+			// Width 8 forces wrap: "abcdefgh" + "ijklmnop". The cursor sits at end
+			// of the second chunk. A click at SGR (row=2, col=4) lands inside the
+			// second segment — the hit map must derive startCol from the second
+			// visual row, not from the cursor row.
+			const terminal = new VirtualTerminal(8, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor(defaultEditorTheme);
+			editor.mouseTracking = true;
+			editor.setBorderVisible(false);
+			editor.setText("abcdefghijklmnop");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				terminal.sendInput("\x1b[<0;4;2M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("abcdefghijkXlmnop");
+				expect(editor.getCursor()).toEqual({ line: 0, col: 12 });
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("offsets a click past the border chrome to the bordered editor content", async () => {
+			// Width 20 + paddingX 1 reserves `╭─ ... ─╮` chrome (4 cells of borders
+			// + padding) so text wraps to "abcdefghijklmnop" + "qrst". A click on
+			// the second wrapped row at SGR (row=3, col=5) must subtract the
+			// chrome cells before resolving the grapheme boundary — the hit map
+			// records the render-time contentStartCol instead of recomputing it.
+			const terminal = new VirtualTerminal(20, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor({ ...defaultEditorTheme, editorPaddingX: 1 });
+			editor.mouseTracking = true;
+			editor.setText("abcdefghijklmnopqrst");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				terminal.sendInput("\x1b[<0;5;3M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("abcdefghijklmnopqrXst");
+				expect(editor.getCursor()).toEqual({ line: 0, col: 19 });
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("anchors a click on the second wrapped segment to the wrap boundary", async () => {
+			// Text "hello world" wraps to "hello" + "world" at width 8. A click
+			// at the start of the second segment (SGR col=1) must map to col 6
+			// in the original line — the hit map carries startCol=6 for chunk 1
+			// so the offset resolves past "hello" rather than snapping to 0.
+			const terminal = new VirtualTerminal(8, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor(defaultEditorTheme);
+			editor.mouseTracking = true;
+			editor.setBorderVisible(false);
+			editor.setText("hello world");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				terminal.sendInput("\x1b[<0;1;2M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("hello Xworld");
+				expect(editor.getCursor()).toEqual({ line: 0, col: 7 });
+			} finally {
+				tui.stop();
+			}
+		});
 	});
 
 	describe("autocomplete triggers", () => {

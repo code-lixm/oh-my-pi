@@ -17,4 +17,9 @@
 {{mergeSummary}}
 </merge-summary>
 {{/if}}
+{{#if failed}}
+<recovery-required>
+This task failed. Do not treat it as completed. Preserve successful sibling results, inspect the failure evidence above, then continue the unresolved work with a corrected approach or reassign it to an appropriate agent. Retry only work that has not already completed. If recovery is not possible, report the blocker explicitly.
+</recovery-required>
+{{/if}}
 </task-result>

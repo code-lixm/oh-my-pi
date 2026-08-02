@@ -143,6 +143,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 */
 	interruptMode?: "immediate" | "wait";
 
+	/** Host-localized text for synthetic results when a queued message interrupts a tool batch. */
+	formatSkippedToolResult?: (source: SteeringInterruptSource | "irc" | undefined) => string;
+
 	/**
 	 * Optional session identifier forwarded to LLM providers.
 	 * Used by providers that support session-based caching (e.g., OpenAI Codex).

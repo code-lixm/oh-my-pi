@@ -83,6 +83,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 				};
 			} catch (err) {
 				logger.warn("reflect failed", { bankId: state.bankId, error: String(err) });
+				state.reportRequestFailure(err);
 				throw err instanceof Error ? err : new Error(String(err));
 			}
 		});

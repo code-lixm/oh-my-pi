@@ -6,10 +6,13 @@ import {
 	type ImageBudget,
 	ImageProtocol,
 	Markdown,
+	type MouseRoutable,
 	replaceTabs,
+	type SgrMouseEvent,
 	Spacer,
 	TERMINAL,
 	Text,
+	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
@@ -24,6 +27,7 @@ import {
 	TRUNCATE_LENGTHS,
 } from "../../tools/render-utils";
 import { getOutputBlockBorderStyle, isBorderlessOutputStyle } from "../../tui/output-block";
+import { convertImageToPng } from "../../utils/image-loading";
 import { canonicalizeMessage, formatThinkingForDisplay, hasDisplayableThinking } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { formatAgentDuration } from "./agent-activity-display";
@@ -66,6 +70,36 @@ const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
+
+export interface AssistantRichContentHandlers {
+	openLink?: (href: string) => void;
+	openImage?: (image: ImageContent) => void;
+}
+
+class ClickableImageFallback extends Text implements MouseRoutable {
+	#rowWidths: number[] = [];
+
+	constructor(
+		text: string,
+		private readonly onClick: () => void,
+	) {
+		super(text, 1, 0);
+	}
+
+	override render(width: number): readonly string[] {
+		const lines = super.render(width);
+		this.#rowWidths = lines.map(visibleWidth);
+		return lines;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (!event.leftClick || event.motion || event.release || event.wheel !== null) return false;
+		const width = this.#rowWidths[line];
+		if (width === undefined || col < 1 || col >= width) return false;
+		this.onClick();
+		return true;
+	}
+}
 
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
 	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
@@ -317,6 +351,7 @@ export class AssistantMessageComponent extends Container {
 		private readonly thinkingRenderers: readonly AssistantThinkingRenderer[] = [],
 		private readonly imageBudget?: ImageBudget,
 		private proseOnlyThinking = false,
+		private readonly richContentHandlers: AssistantRichContentHandlers = {},
 	) {
 		super();
 		this.#transcriptBlockFinalized = message !== undefined;
@@ -676,16 +711,10 @@ export class AssistantMessageComponent extends Container {
 			if (image.mimeType === "image/png") continue;
 			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
 			this.#kittyConversionsInFlight.add(key);
-			new Bun.Image(Buffer.from(image.data, "base64"))
-				.png()
-				.toBase64()
-				.then(data => {
+			convertImageToPng(image)
+				.then(converted => {
 					this.#kittyConversionsInFlight.delete(key);
-					this.#convertedKittyImages.set(key, {
-						type: "image",
-						data,
-						mimeType: "image/png",
-					});
+					this.#convertedKittyImages.set(key, converted);
 					if (this.#lastMessage) {
 						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 					}
@@ -708,18 +737,23 @@ export class AssistantMessageComponent extends Container {
 					? this.#convertedKittyImages.get(key)
 					: image;
 			if (TERMINAL.imageProtocol && displayImage) {
-				this.#contentContainer.addChild(
-					new Image(
-						displayImage.data,
-						displayImage.mimeType,
-						{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
-						{ ...resolveImageOptions(), budget: this.imageBudget, imageKey: key },
-					),
+				const imageComponent = new Image(
+					displayImage.data,
+					displayImage.mimeType,
+					{ fallbackColor: (text: string) => theme.fg("toolOutput", text) },
+					{ ...resolveImageOptions(), budget: this.imageBudget, imageKey: key },
 				);
+				if (this.richContentHandlers.openImage) {
+					imageComponent.setClickHandler(() => this.richContentHandlers.openImage?.(image));
+				}
+				this.#contentContainer.addChild(imageComponent);
 				continue;
 			}
+			const fallback = theme.fg("toolOutput", tSettingsUi("[Image: {mimeType}]", { mimeType: image.mimeType }));
 			this.#contentContainer.addChild(
-				new Text(theme.fg("toolOutput", tSettingsUi("[Image: {mimeType}]", { mimeType: image.mimeType })), 1, 0),
+				this.richContentHandlers.openImage
+					? new ClickableImageFallback(fallback, () => this.richContentHandlers.openImage?.(image))
+					: new Text(fallback, 1, 0),
 			);
 		}
 	}
@@ -946,7 +980,8 @@ export class AssistantMessageComponent extends Container {
 				// rows (UserMessage, tool cards) that all carry a 1-cell left gutter.
 				// paddingY=0 still avoids extra spacing before tool executions.
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions);
+				const md = new Markdown(trimmed, 1, 0, getMarkdownTheme(), mdOptions, 0);
+				if (this.richContentHandlers.openLink) md.setLinkHandler(this.richContentHandlers.openLink);
 				const codeBlockOptions = buildAssistantCodeBlockOptions();
 				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);
@@ -982,6 +1017,7 @@ export class AssistantMessageComponent extends Container {
 				const md = new Markdown(`${thinkingText}${durationSuffix}`, 1, 0, getMarkdownTheme(), {
 					color: (text: string) => theme.fg("thinkingText", text),
 				});
+				if (this.richContentHandlers.openLink) md.setLinkHandler(this.richContentHandlers.openLink);
 				const codeBlockOptions = buildAssistantCodeBlockOptions();
 				if (codeBlockOptions) md.setCodeBlockDisplayOptions(codeBlockOptions);
 				md.setExpanded(this.#expanded);

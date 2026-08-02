@@ -1,16 +1,25 @@
 /**
- * Regression coverage for the unified Agent Hub task list: task rows keep
- * registration order while live observer snapshots refresh localized
- * user-facing statuses, without exposing routing traffic or status sections.
+ * Regression coverage for the unified Agent Hub task list: rows use the shared
+ * stable navigation order. Status groups come first; creation time and agent
+ * identity make ordering repeatable while activity heartbeats only update display.
  */
 import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
-import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
+import {
+	type ObservableSession,
+	SessionObserverRegistry,
+} from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
+import {
+	type AgentProgress,
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
@@ -41,7 +50,11 @@ function stubStdoutGeometry(cols: number): GeometryStub {
 	};
 }
 
-function makeHub(agents: AgentRegistry, observers = new SessionObserverRegistry()) {
+function makeHub(
+	agents: AgentRegistry,
+	observers = new SessionObserverRegistry(),
+	focusAgent: (id: string) => Promise<void> = async () => {},
+) {
 	return new AgentHubOverlayComponent({
 		observers,
 		hubKeys: [],
@@ -49,8 +62,36 @@ function makeHub(agents: AgentRegistry, observers = new SessionObserverRegistry(
 		requestRender: () => {},
 		registry: agents,
 		irc: new IrcBus(agents),
-		focusAgent: async () => {},
+		focusAgent,
 	});
+}
+
+function lifecyclePayload(id: string, status: SubagentLifecyclePayload["status"]): SubagentLifecyclePayload {
+	return { id, index: 0, agent: "task", agentSource: "bundled", status };
+}
+
+function progressPayload(id: string, status: AgentProgress["status"]): SubagentProgressPayload {
+	return {
+		index: 0,
+		agent: "task",
+		agentSource: "bundled",
+		task: "Refresh timing",
+		progress: {
+			index: 0,
+			id,
+			agent: "task",
+			agentSource: "bundled",
+			status,
+			task: "Refresh timing",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			requests: 0,
+			tokens: 0,
+			cost: 0,
+			durationMs: 0,
+		},
+	};
 }
 
 function renderedAgentLabels(hub: AgentHubOverlayComponent, knownLabels: readonly string[]): string[] {
@@ -83,84 +124,165 @@ describe("Agent hub row ordering", () => {
 		setSettingsUiLocale(previousLocale);
 	});
 
-	it("keeps registered rows fixed while observer status and activity refresh", () => {
+	it("orders rows by lifecycle group, newest creation, then stable identity", () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
 		const observers = new SessionObserverRegistry();
-		const eventBus = new EventBus();
-		observers.subscribeToEventBus(eventBus);
 		const session = {} as AgentSession;
+		const register = (
+			id: string,
+			displayName: string,
+			status: "running" | "waiting" | "idle" | "aborted",
+			createdAt: number,
+		) => {
+			setSystemTime(createdAt);
+			return agents.register({ id, displayName, kind: "sub", session, status });
+		};
 
-		setSystemTime(1_000);
-		agents.register({ id: "first", displayName: "First observed", kind: "sub", session, status: "running" });
-		setSystemTime(2_000);
-		agents.register({ id: "second", displayName: "Second observed", kind: "sub", session, status: "running" });
+		register("run-older", "Running older", "running", 10);
+		register("run-newer", "Running newer", "running", 20);
+		register("run-tie-zulu", "Running tie Zulu", "running", 30);
+		register("run-tie-alpha", "Running tie Alpha", "running", 30);
+		const missingZulu = register("run-missing-zulu", "Running missing Zulu", "running", 40);
+		const missingAlpha = register("run-missing-alpha", "Running missing Alpha", "running", 40);
+		register("waiting", "Waiting worker", "waiting", 100);
+		register("pending", "Queued worker", "running", 200);
+		register("failed", "Failed worker", "running", 300);
+		register("completed", "Completed worker", "idle", 400);
+		register("aborted", "Aborted worker", "aborted", 500);
+		// Historical rows can lack a valid persisted creation time; identity is the
+		// deterministic fallback for that boundary.
+		Reflect.deleteProperty(missingZulu, "createdAt");
+		Reflect.deleteProperty(missingAlpha, "createdAt");
 
-		for (const [id, index, startedAtMs] of [
-			["first", 0, 1_000],
-			["second", 1, 2_000],
-		] as const) {
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
-				id,
-				index,
-				agent: "task",
-				agentSource: "bundled",
-				status: "started",
-				startedAtMs,
-				detached: true,
-			});
-			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
-				index,
-				agent: "task",
-				agentSource: "bundled",
-				task: "",
-				detached: true,
-				progress: { id, status: "running" } as never,
-			});
-		}
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id: "pending",
+				kind: "subagent",
+				label: "Queued worker",
+				status: "active",
+				lastUpdate: 200,
+				progress: { status: "pending" } as never,
+			},
+			{
+				id: "failed",
+				kind: "subagent",
+				label: "Failed worker",
+				status: "failed",
+				lastUpdate: 300,
+				progress: { status: "failed" } as never,
+			},
+			{
+				id: "completed",
+				kind: "subagent",
+				label: "Completed worker",
+				status: "completed",
+				lastUpdate: 400,
+				progress: { status: "completed" } as never,
+			},
+		]);
 
 		const hub = makeHub(agents, observers);
 		try {
-			const labels = ["First observed", "Second observed"] as const;
-			expect(renderedAgentLabels(hub, labels)).toEqual([...labels]);
-			const initialRows = hub.render(120).map(Bun.stripANSI);
-			expect(initialRows.find(line => line.includes("First observed"))).toContain("Running");
-			expect(initialRows.find(line => line.includes("Second observed"))).toContain("Running");
+			const labels = [
+				"Running older",
+				"Running newer",
+				"Running tie Zulu",
+				"Running tie Alpha",
+				"Running missing Zulu",
+				"Running missing Alpha",
+				"Waiting worker",
+				"Queued worker",
+				"Failed worker",
+				"Completed worker",
+				"Aborted worker",
+			] as const;
 
-			setSystemTime(5_000);
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
-				id: "first",
-				index: 0,
-				agent: "task",
-				agentSource: "bundled",
-				status: "completed",
-				startedAtMs: 1_000,
-				completedAtMs: 5_000,
-				detached: true,
+			expect(renderedAgentLabels(hub, labels)).toEqual([
+				"Running tie Alpha",
+				"Running tie Zulu",
+				"Running newer",
+				"Running older",
+				"Running missing Alpha",
+				"Running missing Zulu",
+				"Queued worker",
+				"Waiting worker",
+				"Failed worker",
+				"Aborted worker",
+				"Completed worker",
+			]);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("does not reorder rows when a running agent heartbeats", () => {
+		vi.useFakeTimers();
+		geometry = stubStdoutGeometry(120);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		const session = {} as AgentSession;
+
+		setSystemTime(1_000);
+		agents.register({ id: "oldest", displayName: "Oldest", kind: "sub", session, status: "running" });
+		setSystemTime(2_000);
+		agents.register({ id: "heartbeat", displayName: "Heartbeat", kind: "sub", session, status: "running" });
+		setSystemTime(3_000);
+		agents.register({ id: "newest", displayName: "Newest", kind: "sub", session, status: "running" });
+
+		const hub = makeHub(agents);
+		try {
+			const labels = ["Oldest", "Heartbeat", "Newest"] as const;
+			const expectedOrder = ["Newest", "Heartbeat", "Oldest"];
+			expect(renderedAgentLabels(hub, labels)).toEqual(expectedOrder);
+
+			setSystemTime(10_000);
+			agents.setActivityState("heartbeat", {
+				phase: "tool",
+				label: "Applying patch",
+				phaseStartedAtMs: 10_000,
+				lastActivityAtMs: 10_000,
 			});
-			const waitingActivity = {
-				phase: "waiting-user" as const,
-				label: "Waiting for review",
-				phaseStartedAtMs: 5_000,
-				lastActivityAtMs: 5_000,
-			};
-			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
-				index: 1,
-				agent: "task",
-				agentSource: "bundled",
-				task: "",
-				detached: true,
-				progress: { id: "second", status: "running", activity: waitingActivity } as never,
-			});
-			agents.setActivityState("second", waitingActivity);
 			vi.advanceTimersByTime(100);
 
-			expect(renderedAgentLabels(hub, labels)).toEqual([...labels]);
-			const refreshedRows = hub.render(120).map(Bun.stripANSI);
-			expect(refreshedRows.find(line => line.includes("First observed"))).toContain("Completed");
-			expect(refreshedRows.find(line => line.includes("Second observed"))).toContain("Waiting for user");
+			expect(renderedAgentLabels(hub, labels)).toEqual(expectedOrder);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("keeps the selected agent when a refresh changes its row position", () => {
+		vi.useFakeTimers();
+		geometry = stubStdoutGeometry(120);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		const session = {} as AgentSession;
+		const focused: string[] = [];
+
+		setSystemTime(1_000);
+		agents.register({ id: "oldest", displayName: "Oldest", kind: "sub", session, status: "running" });
+		setSystemTime(2_000);
+		agents.register({ id: "selected", displayName: "Selected", kind: "sub", session, status: "running" });
+		setSystemTime(3_000);
+		agents.register({ id: "newest", displayName: "Newest", kind: "sub", session, status: "running" });
+
+		const hub = makeHub(agents, undefined, id => {
+			focused.push(id);
+			return Promise.resolve();
+		});
+		try {
+			const labels = ["Oldest", "Selected", "Newest"] as const;
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Newest", "Selected", "Oldest"]);
+			hub.handleInput("j");
+
+			agents.setStatus("newest", "waiting");
+			vi.advanceTimersByTime(100);
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Selected", "Oldest", "Newest"]);
+
+			hub.handleInput("f");
+			expect(focused).toEqual(["selected"]);
 		} finally {
 			hub.dispose();
 		}
@@ -553,6 +675,122 @@ describe("Agent hub row ordering", () => {
 			expect(rendered).toMatch(/\bSubagent\b/u);
 		} finally {
 			hub.dispose();
+		}
+	});
+
+	it("refreshes registry, lifecycle, and reset changes urgently while coalescing progress", () => {
+		vi.useFakeTimers();
+		geometry = stubStdoutGeometry(120);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		const observers = new SessionObserverRegistry();
+		const eventBus = new EventBus();
+		const requestRender = vi.fn();
+		const id = "refresh-timing";
+		observers.subscribeToEventBus(eventBus);
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender,
+			registry: agents,
+			irc: new IrcBus(agents),
+			remote: { chat: () => {}, kill: () => {}, revive: () => {}, readTranscript: async () => null },
+			focusAgent: async () => {},
+		});
+
+		try {
+			agents.register({
+				id,
+				displayName: "Refresh timing worker",
+				kind: "sub",
+				session: {} as AgentSession,
+				status: "running",
+			});
+			expect(requestRender).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(0);
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Refresh timing worker");
+
+			requestRender.mockClear();
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, lifecyclePayload(id, "failed"));
+			expect(requestRender).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(0);
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Failed");
+
+			requestRender.mockClear();
+			observers.resetSessions();
+			vi.advanceTimersByTime(0);
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Running");
+
+			requestRender.mockClear();
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running"));
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running"));
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "failed"));
+			expect(requestRender).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(99);
+			expect(requestRender).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(1);
+			expect(requestRender).toHaveBeenCalledTimes(1);
+			expect(observers.getSessions()).toMatchObject([{ id, status: "failed", progress: { status: "failed" } }]);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Failed");
+		} finally {
+			hub.dispose();
+			observers.dispose();
+		}
+	});
+
+	it("takes one fresh observer snapshot for each large-table render", () => {
+		geometry = stubStdoutGeometry(120);
+		geometry.setRows(200);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		const ids = Array.from({ length: 100 }, (_, index) => `render-${String(index).padStart(3, "0")}`);
+		const snapshots: ObservableSession[] = ids.map((id, index) => ({
+			id,
+			kind: "subagent",
+			label: `Worker ${String(index).padStart(3, "0")}`,
+			status: index === 99 ? "failed" : "active",
+			lastUpdate: index,
+		}));
+		for (const [index, id] of ids.entries()) {
+			agents.register({
+				id,
+				displayName: `Worker ${String(index).padStart(3, "0")}`,
+				kind: "sub",
+				session: {} as AgentSession,
+				status: "running",
+			});
+		}
+		const observers = new SessionObserverRegistry();
+		const getSessions = vi.spyOn(observers, "getSessions").mockImplementation(() => snapshots);
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			remote: { chat: () => {}, kill: () => {}, revive: () => {}, readTranscript: async () => null },
+			focusAgent: async () => {},
+		});
+
+		try {
+			getSessions.mockClear();
+			const initial = hub.render(120).map(Bun.stripANSI);
+			expect(getSessions).toHaveBeenCalledTimes(1);
+			expect(initial.find(line => line.includes("Worker 000"))).toContain("Running");
+			expect(initial.find(line => line.includes("Worker 099"))).toContain("Failed");
+
+			snapshots[0] = { ...snapshots[0]!, status: "failed" };
+			const refreshed = hub.render(120).map(Bun.stripANSI);
+			expect(getSessions).toHaveBeenCalledTimes(2);
+			expect(refreshed.find(line => line.includes("Worker 000"))).toContain("Failed");
+		} finally {
+			hub.dispose();
+			observers.dispose();
 		}
 	});
 });

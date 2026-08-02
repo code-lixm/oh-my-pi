@@ -214,6 +214,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly name = "yield";
 	readonly approval = "read" as const;
 	readonly label = tSettingsUi("Submit Result");
+	// A terminal submit must commit before later calls in the same message can start.
+	readonly concurrency = "exclusive" as const;
 	readonly description =
 		"Submit subagent output. Omit `type` for the usual final structured result.\n\n" +
 		'Pass `type: ["section"]` to submit an incremental, non-terminal section that accumulates. Pass `type: "result"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.\n' +

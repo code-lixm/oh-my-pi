@@ -1,5 +1,6 @@
 import type { Clipboard, SnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	Box,
 	type Component,
@@ -42,6 +43,7 @@ import {
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
+import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
 
@@ -374,6 +376,8 @@ export interface ToolExecutionOptions {
 	/** Live-region probe used to settle detached task progress once the block
 	 * leaves the repaintable transcript region. */
 	liveRegion?: TranscriptLiveRegionProbe;
+	/** Open original tool-result image bytes in the host system viewer. */
+	openImage?: (image: ImageContent) => void;
 }
 
 export interface ToolExecutionHandle extends Component {
@@ -491,6 +495,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	// Probe into the owning transcript (absent outside the interactive
 	// transcript, e.g. in tests): whether this block is still repaintable.
 	#liveRegion?: TranscriptLiveRegionProbe;
+	#openImage?: (image: ImageContent) => void;
 	// One-way latch for a detached (`async.state === "running"`) task block
 	// whose rows became native-scrollback history — it left the transcript
 	// live region, or its head rows were committed while it was still the
@@ -543,6 +548,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#snapshots = options.snapshots;
 		this.#clipboard = options.clipboard;
 		this.#liveRegion = options.liveRegion;
+		this.#openImage = options.openImage;
 		this.#tool = tool;
 		this.#ui = ui;
 		this.#cwd = cwd;
@@ -812,11 +818,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 			// Convert async - catch errors from processing
 			const index = i;
-			new Bun.Image(Buffer.from(img.data, "base64"))
-				.png()
-				.toBase64()
-				.then(data => {
-					this.#convertedImages.set(index, { data, mimeType: "image/png" });
+			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
+				.then(converted => {
+					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
@@ -1467,6 +1471,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
 						{ ...resolveImageOptions(), budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
 					);
+					if (this.#openImage) {
+						const sourceImage: ImageContent = { type: "image", data: img.data, mimeType: img.mimeType };
+						imageComponent.setClickHandler(() => this.#openImage?.(sourceImage));
+					}
 					this.#imageComponents.push(imageComponent);
 					this.addChild(imageComponent);
 				}

@@ -9,12 +9,12 @@
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
-import { onHindsightScopeChanged, type Settings } from "../config/settings";
+import { onHindsightRuntimeChanged, type Settings } from "../config/settings";
 import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope } from "./bank";
 import { createHindsightClient } from "./client";
-import { isHindsightConfigured, loadHindsightConfig } from "./config";
+import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
 
@@ -172,9 +172,9 @@ function schedulePrimaryStateRebuild(session: AgentSession): void {
 			while (nextTask.pending) {
 				nextTask.pending = false;
 				try {
-					await rebuildPrimaryStateOnScopeChange(session);
+					await rebuildPrimaryStateOnRuntimeChange(session);
 				} catch (err) {
-					logger.warn("Hindsight: scope rebuild failed", { error: String(err) });
+					logger.warn("Hindsight: runtime rebuild failed", { error: String(err) });
 				}
 			}
 		})
@@ -191,9 +191,8 @@ function schedulePrimaryStateRebuild(session: AgentSession): void {
  * after flushing its retain queue so in-flight tool-initiated retains land in
  * the bank that was selected when they were enqueued, not in the new bank.
  *
- * The created state takes ownership of the `onHindsightScopeChanged`
- * subscription so subsequent `hindsight.bankId` / `bankIdPrefix` / `scoping`
- * edits trigger another rebuild from the same wiring.
+ * The created state owns the `onHindsightRuntimeChanged` subscription so
+ * connection credentials and bank-routing edits rebuild the live client.
  */
 async function installPrimaryState(
 	session: AgentSession,
@@ -242,7 +241,7 @@ async function installPrimaryState(
 
 	// Subscribe BEFORE installing: if the operator manages to flip another
 	// setting between install and subscribe, we'd miss the edge.
-	state.unsubscribeScope = onHindsightScopeChanged(() => {
+	state.unsubscribeRuntime = onHindsightRuntimeChanged(() => {
 		schedulePrimaryStateRebuild(session);
 	});
 
@@ -268,12 +267,10 @@ async function installPrimaryState(
 }
 
 /**
- * `onHindsightScopeChanged` handler: re-evaluate the bank scope from current
- * settings and rebuild the primary state when it has actually drifted. No-op
- * when the scope is unchanged or the session is no longer hosting a primary
- * state (e.g. it was wiped to `undefined`, or this is a subagent alias).
+ * Re-read Hindsight runtime settings and rebuild the primary state when either
+ * its connection credentials or bank routing changed.
  */
-async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<void> {
+async function rebuildPrimaryStateOnRuntimeChange(session: AgentSession): Promise<void> {
 	const current = session.getHindsightSessionState();
 	if (!current || current.aliasOf) return;
 
@@ -289,10 +286,14 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	}
 
 	const next = computeBankScope(config, session.sessionManager.getCwd());
-	if (bankScopesEqual(next, current)) return;
+	if (hindsightRuntimeEqual(config, current.config) && bankScopesEqual(next, current)) return;
 
 	// Preserve the banksSet so we don't re-PUT banks we've already confirmed.
 	await installPrimaryState(session, settings, current.banksSet);
+}
+
+function hindsightRuntimeEqual(left: HindsightConfig, right: HindsightConfig): boolean {
+	return left.hindsightApiUrl === right.hindsightApiUrl && left.hindsightApiToken === right.hindsightApiToken;
 }
 
 /** Tag-array equality: order matters because we never reorder on the way in. */

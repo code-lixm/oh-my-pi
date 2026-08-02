@@ -40,6 +40,8 @@ export interface ObservableSession {
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
 
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
+	pending: "active",
+	running: "active",
 	started: "active",
 	completed: "completed",
 	failed: "failed",
@@ -281,6 +283,12 @@ export class SessionObserverRegistry {
 				const id = progress.id;
 				const existing = this.#sessions.get(id);
 				const snapshot = withSessionTiming(progress, existing);
+				const status = STATUS_MAP[snapshot.status];
+				if (!status) return;
+				// Progress can be coalesced independently from lifecycle events. Once a
+				// lifecycle generation is terminal, only a new `started` lifecycle event
+				// may reopen it; a late progress snapshot must never resurrect or rewrite it.
+				if (existing && existing.status !== "active" && status !== existing.status) return;
 
 				const sortOrder = this.#ensureSortOrder(id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
@@ -292,6 +300,7 @@ export class SessionObserverRegistry {
 					existing.index = payload.index;
 					existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 					existing.detached = payload.detached ?? existing.detached;
+					existing.status = status;
 					existing.progress = snapshot;
 					if (snapshot.description) existing.description = snapshot.description;
 					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
@@ -302,7 +311,7 @@ export class SessionObserverRegistry {
 						label: progress.description ?? `Subagent #${payload.index}`,
 						agent: payload.agent,
 						description: progress.description,
-						status: "active",
+						status,
 						sessionFile: payload.sessionFile,
 						parentToolCallId: payload.parentToolCallId,
 						detached: payload.detached,

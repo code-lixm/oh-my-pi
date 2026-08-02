@@ -10,7 +10,11 @@ import { editToolRenderer } from "@oh-my-pi/pi-coding-agent/edit/renderer";
 import { renderDiff } from "@oh-my-pi/pi-coding-agent/modes/components/diff";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import {
+	getOutputBlockBorderStyle,
+	OUTPUT_BLOCK_ACCENT_GLYPH,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { Text, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
@@ -122,7 +126,7 @@ describe("editToolRenderer", () => {
 		const uiTheme = await getUiTheme();
 		const component = editToolRenderer.renderCall(
 			{
-				input: "[packages/coding-agent/src/edit/renderer.ts]\nINS.TAIL:\n+// preview",
+				input: "[packages/coding-agent/src/edit/renderer.ts]\nPUT >$:\n+// preview",
 			},
 			{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "hashline" } },
 			uiTheme,
@@ -143,7 +147,7 @@ describe("editToolRenderer", () => {
 				input: [
 					"*** Begin Patch",
 					"[crates/pi-natives/src/shell.rs]",
-					"INS.TAIL:",
+					"PUT >$:",
 					"+pub fn streaming_preview() {",
 				].join("\n"),
 			},
@@ -154,7 +158,7 @@ describe("editToolRenderer", () => {
 
 		const rendered = Bun.stripANSI(component.render(160).join("\n"));
 		expect(rendered).toContain("crates/pi-natives/src/shell.rs");
-		expect(rendered).not.toContain("INS.TAIL:");
+		expect(rendered).not.toContain("PUT >$:");
 		expect(rendered).not.toContain("+pub fn streaming_preview() {");
 		expect(rendered).not.toContain("*** Begin Patch");
 	});
@@ -163,7 +167,7 @@ describe("editToolRenderer", () => {
 		const uiTheme = await getUiTheme();
 		const compactComponent = editToolRenderer.renderCall(
 			{
-				input: "[foo bar.ts]\nINS.HEAD:\n+// preview",
+				input: "[foo bar.ts]\nPUT <1:\n+// preview",
 			},
 			{ expanded: true, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "hashline" } },
 			uiTheme,
@@ -171,7 +175,7 @@ describe("editToolRenderer", () => {
 
 		const quotedComponent = editToolRenderer.renderCall(
 			{
-				input: "['baz qux.ts']\nINS.HEAD:\n+// preview",
+				input: "['baz qux.ts']\nPUT <1:\n+// preview",
 			},
 			{ expanded: false, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "hashline" } },
 			uiTheme,
@@ -190,7 +194,7 @@ describe("editToolRenderer", () => {
 		// renderer keeps the title clean.
 		const canonical = editToolRenderer.renderCall(
 			{
-				input: "[packages/coding-agent/src/slash-commands/builtin-registry.ts]\nINS.HEAD:\n+// preview",
+				input: "[packages/coding-agent/src/slash-commands/builtin-registry.ts]\nPUT <1:\n+// preview",
 			},
 			{ expanded: true, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "hashline" } },
 			uiTheme,
@@ -198,7 +202,7 @@ describe("editToolRenderer", () => {
 
 		// While streaming, the closing bracket may not have arrived yet.
 		const partial = editToolRenderer.renderCall(
-			{ input: "[a/b/c.ts\nINS.HEAD:\n+// preview" },
+			{ input: "[a/b/c.ts\nPUT <1:\n+// preview" },
 			{ expanded: true, isPartial: true, spinnerFrame: 0, renderContext: { editMode: "hashline" } },
 			uiTheme,
 		);
@@ -225,7 +229,7 @@ describe("editToolRenderer", () => {
 			{ expanded: false, isPartial: false, renderContext: { editMode: "hashline" } },
 			uiTheme,
 			{
-				input: "[packages/coding-agent/src/edit/renderer.ts]\nINS.TAIL:\n+// preview",
+				input: "[packages/coding-agent/src/edit/renderer.ts]\nPUT >$:\n+// preview",
 			},
 		);
 
@@ -251,11 +255,17 @@ describe("editToolRenderer", () => {
 			{ file_path: "packages/coding-agent/test/modes/components/transcript-container.test.ts" },
 		);
 
-		const wideHeader = Bun.stripANSI(component.render(160)[0]);
+		const wideHeader = component
+			.render(160)
+			.map(line => Bun.stripANSI(line))
+			.find(line => line.includes("transcript-container.test.ts"));
 		expect(wideHeader).toContain("packages/coding-agent/test/modes/components/transcript-container.test.ts");
 		expect(wideHeader).not.toContain(":251");
 
-		const narrowHeader = Bun.stripANSI(component.render(72)[0]);
+		const narrowHeader = component
+			.render(72)
+			.map(line => Bun.stripANSI(line))
+			.find(line => line.includes("container.test.ts"));
 		expect(narrowHeader).toContain("…");
 		expect(narrowHeader).toContain("container.test.ts");
 		expect(narrowHeader).not.toContain(":251");
@@ -312,7 +322,7 @@ describe("editToolRenderer", () => {
 			// The trailing payload line carries no newline — the common shape for a
 			// single-line edit. The streaming pass trims that in-flight line, so the
 			// preview only becomes computable once args are marked complete.
-			const input = `[memory.ts#${tag}]\nSWAP 2.=2:\n+export const b = 22;`;
+			const input = `[memory.ts#${tag}]\nPUT 2-2:\n+export const b = 22;`;
 			const component = new ToolExecutionComponent("edit", { input }, { snapshots }, hashlineTool, uiStub, tmpDir);
 
 			component.setArgsComplete();
@@ -339,7 +349,7 @@ describe("editToolRenderer", () => {
 
 			const snapshots = new InMemorySnapshotStore();
 			const tag = snapshots.record(filePath, content);
-			const input = `[memory.ts#${tag}]\nSWAP 2.=2:\n+export const b = 22;\n`;
+			const input = `[memory.ts#${tag}]\nPUT 2-2:\n+export const b = 22;\n`;
 			const component = new ToolExecutionComponent(
 				"edit",
 				{ __partialJson: input },
@@ -535,14 +545,42 @@ describe("editToolRenderer", () => {
 		expect(rendered).not.toContain("WRONG");
 	});
 
-	it("renders the delete gallery fixture as a Delete card without a no-change body", async () => {
-		await getUiTheme();
-		const text = (await renderGalleryState("edit_delete", resolveFixture("edit_delete"), "success", 160))
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(text).toContain("Delete");
-		expect(text).toContain("scripts/prune-changelogs.ts");
-		expect(text).not.toContain("No changes");
+	it("renders a completed delete as a bare error status under accent while keeping diff edits framed", async () => {
+		const previousBorderStyle = getOutputBlockBorderStyle();
+		try {
+			setOutputBlockBorderStyle("accent");
+			const uiTheme = await getUiTheme();
+			const width = 160;
+			const deleteLines = await renderGalleryState("edit_delete", resolveFixture("edit_delete"), "success", width);
+			const deleteRaw = deleteLines.join("\n");
+			const deleteText = Bun.stripANSI(deleteRaw);
+			const errorFg = uiTheme.getFgAnsi("error");
+			const deleteGlyph = uiTheme.symbol("tool.delete");
+			const accentTint = uiTheme.getSurfaceTintBgAnsi("borderMuted", 0.06);
+
+			// The real gallery routes this fixture through ToolExecutionComponent. A
+			// bare transcript must not grow the outer accent rail/tint or its fill.
+			expect(deleteLines).toHaveLength(1);
+			expect(deleteRaw).toContain(`${errorFg}Delete\x1b[39m`);
+			expect(deleteRaw).toContain(`${errorFg}${deleteGlyph}\x1b[39m`);
+			expect(deleteRaw).not.toContain(OUTPUT_BLOCK_ACCENT_GLYPH);
+			expect(deleteRaw).not.toContain(accentTint);
+			expect(deleteRaw).not.toMatch(/\x1b\[(?:4[0-9]|10[0-7])(?:;[0-9]+)*m/);
+			expect(deleteText).toStartWith(`${deleteGlyph} `);
+			expect(deleteText).toContain("Delete");
+			expect(deleteText).toContain("scripts/prune-changelogs.ts");
+			expect(deleteText).not.toContain("No changes");
+
+			// A diff-bearing edit owns a framedBlock, so making inline deletes bare
+			// must not strip the output block chrome from the normal edit path.
+			const diffLines = await renderGalleryState("edit", resolveFixture("edit"), "success", width);
+			const diffRaw = diffLines.join("\n");
+			expect(diffRaw).toContain(OUTPUT_BLOCK_ACCENT_GLYPH);
+			expect(diffRaw).toContain(accentTint);
+			expect(Bun.stripANSI(diffRaw)).toContain("@@ -88,5 +88,6 @@");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("renders the move gallery fixture as source → destination", async () => {

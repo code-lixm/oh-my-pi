@@ -1753,6 +1753,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Hindsight Mental Models": "Hindsight 心智模型",
 	"Hindsight Retain Mode": "Hindsight 保留模式",
 	"Hindsight Scoping": "Hindsight 作用域",
+	"Hindsight authentication failed. Update Hindsight API Token in /settings, then retry.":
+		"Hindsight 鉴权失败。请在 /settings 中更新 Hindsight API Token，然后重试。",
+	"Hindsight request failed: {error}. Check Hindsight settings in /settings.":
+		"Hindsight 请求失败：{error}。请检查 /settings 中的 Hindsight 设置。",
 	"Hindsight server URL (Cloud or self-hosted)": "Hindsight 服务器 URL（Cloud 或自托管）",
 	Hooks: "Hooks",
 	'Host "{name}" not found in {scope} config.': "在 {scope} 配置中找不到主机“{name}”。",
@@ -2299,6 +2303,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"The rule condition did not match any earlier assistant output.": "该规则条件未匹配到任何更早的 assistant 输出。",
 	"Theme used when the terminal has a dark background": "终端为深色背景时使用的主题",
 	"Theme used when the terminal has a light background": "终端为浅色背景时使用的主题",
+	"Use Terminal Palette": "使用终端调色板",
+	"Override the selected dark and light themes with adaptive themes that inherit the terminal ANSI palette":
+		"使用继承终端 ANSI 调色板的自适应主题，覆盖已选择的深色和浅色主题",
 	"Thin chevron": "细 V 形",
 	"Thin arrows (Nerd Font)": "细箭头（Nerd Font）",
 	"Thinking Level": "思考级别",
@@ -2615,7 +2622,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	hashline: "Hashline 格式",
 	hermes: "Hermes 模型",
 	high: "高",
-	hindsight: "事后回顾",
+	hindsight: "Hindsight",
 	immediate: "立即",
 	inherit: "继承",
 	int8: "INT8 精度",

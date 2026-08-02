@@ -51,7 +51,7 @@ import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import { interruptHint } from "../shared";
-import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
+import { createAssistantMessageComponent, openRichContentImage } from "../utils/interactive-context-helpers";
 import {
 	type AssistantErrorAggregation,
 	assistantHasVisibleContent,
@@ -910,7 +910,10 @@ export class EventController {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
 				}
-				if (content.name === "hub" && !settings.get("display.showHubProcessActivity")) {
+				if (
+					content.name === "hub" &&
+					(this.ctx.focusedAgentId !== undefined || !settings.get("display.showHubProcessActivity"))
+				) {
 					this.#toolArgsReveal.finish(content.id);
 					continue;
 				}
@@ -952,6 +955,7 @@ export class EventController {
 							showImages: settings.get("terminal.showImages"),
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
+							openImage: image => openRichContentImage(this.ctx, image),
 						},
 						tool,
 						this.ctx.ui,
@@ -1168,7 +1172,10 @@ export class EventController {
 			this.ctx.ui.requestRender();
 			return;
 		}
-		if (event.toolName === "hub" && !settings.get("display.showHubProcessActivity")) {
+		if (
+			event.toolName === "hub" &&
+			(this.ctx.focusedAgentId !== undefined || !settings.get("display.showHubProcessActivity"))
+		) {
 			this.#toolArgsReveal.finish(event.toolCallId);
 			this.ctx.ui.requestRender();
 			return;
@@ -1221,6 +1228,7 @@ export class EventController {
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.ctx.chatContainer,
+					openImage: image => openRichContentImage(this.ctx, image),
 				},
 				tool,
 				this.ctx.ui,

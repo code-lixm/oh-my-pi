@@ -133,6 +133,9 @@ export interface AgentOptions {
 	 */
 	interruptMode?: "immediate" | "wait";
 
+	/** Host-localized synthetic result for tool calls skipped by an interrupt. */
+	formatSkippedToolResult?: AgentLoopConfig["formatSkippedToolResult"];
+
 	/**
 	 * API format for Kimi Code provider: "openai" or "anthropic" (default: "anthropic")
 	 */
@@ -408,6 +411,7 @@ export class Agent {
 	#preferWebsockets?: boolean;
 	#transformToolCallArguments?: (args: Record<string, unknown>, toolName: string) => Record<string, unknown>;
 	#resolveFallbackTool?: (name: string) => AgentTool<any> | undefined;
+	#formatSkippedToolResult?: AgentLoopConfig["formatSkippedToolResult"];
 	#intentTracing: boolean;
 	#pruneToolDescriptions: boolean;
 	#dialect?: Dialect;
@@ -504,6 +508,7 @@ export class Agent {
 		this.#preferWebsockets = opts.preferWebsockets;
 		this.#transformToolCallArguments = opts.transformToolCallArguments;
 		this.#resolveFallbackTool = opts.resolveFallbackTool;
+		this.#formatSkippedToolResult = opts.formatSkippedToolResult;
 		this.#intentTracing = opts.intentTracing === true;
 		this.#pruneToolDescriptions = opts.pruneToolDescriptions === true;
 		this.#dialect = opts.dialect;
@@ -1370,6 +1375,7 @@ export class Agent {
 			getCwd: this.#cwdResolver,
 			transformToolCallArguments: this.#transformToolCallArguments,
 			resolveFallbackTool: this.#resolveFallbackTool,
+			formatSkippedToolResult: this.#formatSkippedToolResult,
 			intentTracing: this.#intentTracing,
 			pruneToolDescriptions: this.#pruneToolDescriptions,
 			dialect: this.#dialect,

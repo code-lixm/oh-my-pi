@@ -40,6 +40,7 @@ const PROGRESS_STATUSES = new Set<AgentProgress["status"]>(["pending", "running"
 
 export interface PersistedAgentObservation {
 	id: string;
+	displayName?: string;
 	index?: number;
 	agent?: string;
 	agentSource?: AgentSource;
@@ -61,6 +62,7 @@ export interface PersistedAgentObservation {
 
 export interface PersistedAgentSessionSnapshot {
 	sessionTitle?: string;
+	displayName?: string;
 	sessionId?: string;
 	activityState?: AgentActivityState;
 	resolvedModel?: string;
@@ -87,6 +89,14 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+
+function latestSessionInit(entries: readonly unknown[]): Record<string, unknown> | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = objectRecord(entries[index]);
+		if (entry?.type === "session_init") return entry;
+	}
+	return undefined;
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -358,6 +368,8 @@ function observationFromProgress(
 	const observation: PersistedAgentObservation = { id };
 	const index = finiteNumber(record.index);
 	if (index !== undefined) observation.index = index;
+	const displayName = nonEmptyString(record.displayName);
+	if (displayName) observation.displayName = displayName;
 	const agent = nonEmptyString(record.agent);
 	if (agent) observation.agent = agent;
 	const agentSource = parseAgentSource(record.agentSource);
@@ -390,6 +402,8 @@ function observationFromResult(value: unknown, lastUpdate: number | undefined): 
 	const observation: PersistedAgentObservation = { id };
 	const index = finiteNumber(record.index);
 	if (index !== undefined) observation.index = index;
+	const displayName = nonEmptyString(record.displayName);
+	if (displayName) observation.displayName = displayName;
 	const agent = nonEmptyString(record.agent);
 	if (agent) observation.agent = agent;
 	const agentSource = parseAgentSource(record.agentSource);
@@ -436,7 +450,11 @@ function taskObservations(entries: readonly SessionEntry[]): ReadonlyMap<string,
 	return observations;
 }
 
-function parsePrefix(content: string): { header?: SessionHeader; titleSlot?: SessionTitleSlotEntry } {
+function parsePrefix(content: string): {
+	header?: SessionHeader;
+	titleSlot?: SessionTitleSlotEntry;
+	sessionInit?: Record<string, unknown>;
+} {
 	const newline = content.indexOf("\n");
 	const firstLine = newline >= 0 ? content.slice(0, newline) : content;
 	const titleSlot = parseTitleSlotLine(firstLine.trim());
@@ -445,7 +463,7 @@ function parsePrefix(content: string): { header?: SessionHeader; titleSlot?: Ses
 		const entry = objectRecord(value);
 		return entry?.type === "session" && typeof entry.id === "string";
 	}) as SessionHeader | undefined;
-	return { header, titleSlot };
+	return { header, titleSlot, sessionInit: latestSessionInit(entries) };
 }
 
 function parseTailEntries(content: string): SessionEntry[] {
@@ -468,9 +486,11 @@ export function snapshotPersistedSessionEntries(
 ): PersistedAgentSessionSnapshot {
 	const sessionTitle = nonEmptyString(identity?.sessionTitle);
 	const sessionId = nonEmptyString(identity?.sessionId);
+	const displayName = nonEmptyString(latestSessionInit(entries)?.agentDisplayName);
 	return {
 		...(sessionTitle ? { sessionTitle } : {}),
 		...(sessionId ? { sessionId } : {}),
+		...(displayName ? { displayName } : {}),
 		...ownSessionMetadata(entries),
 		observations: taskObservations(entries),
 		entries,
@@ -491,13 +511,15 @@ export async function readPersistedAgentSessionSnapshot(
 			PERSISTED_AGENT_SNAPSHOT_HEAD_BYTES,
 			PERSISTED_AGENT_SNAPSHOT_TAIL_BYTES,
 		);
-		const { header, titleSlot } = parsePrefix(prefix);
+		const { header, titleSlot, sessionInit } = parsePrefix(prefix);
 		const title = titleSlot ? nonEmptyString(titleSlot.title) : nonEmptyString(header?.title);
 		const sessionId = nonEmptyString(header?.id);
 		const entries = parseTailEntries(suffix);
+		const displayName = nonEmptyString((latestSessionInit(entries) ?? sessionInit)?.agentDisplayName);
 		return {
 			...(title ? { sessionTitle: title } : {}),
 			...(sessionId ? { sessionId } : {}),
+			...(displayName ? { displayName } : {}),
 			...ownSessionMetadata(entries),
 			observations: taskObservations(entries),
 			entries,
@@ -513,6 +535,7 @@ export function mergePersistedAgentSnapshot(
 	parent: PersistedAgentObservation | undefined,
 ): PersistedAgentSessionSnapshot {
 	const activityState = parent?.activityState ?? child.activityState;
+	const displayName = child.displayName ?? parent?.displayName;
 	const resolvedModel = parent?.resolvedModel ?? child.resolvedModel;
 	const resolvedModelIsFallback = parent?.resolvedModelIsFallback ?? child.resolvedModelIsFallback;
 	const terminalStatus =
@@ -522,6 +545,7 @@ export function mergePersistedAgentSnapshot(
 	return {
 		...(child.sessionTitle ? { sessionTitle: child.sessionTitle } : {}),
 		...(child.sessionId ? { sessionId: child.sessionId } : {}),
+		...(displayName ? { displayName } : {}),
 		...(activityState ? { activityState } : {}),
 		...(resolvedModel ? { resolvedModel } : {}),
 		...(resolvedModelIsFallback !== undefined ? { resolvedModelIsFallback } : {}),

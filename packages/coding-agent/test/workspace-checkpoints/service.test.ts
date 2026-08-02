@@ -476,6 +476,83 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		expect(await readText(workspaceRoot, "draft.txt")).toBe("diverged-after-preview\n");
 	});
 
+	it("limits a paths preview and restore to the selected subtree", async () => {
+		const harness = await openHarness("restore-path-subtree");
+		const { workspaceRoot, service } = harness;
+
+		await writeText(workspaceRoot, "src/app.ts", "checkpoint source\n");
+		await writeText(workspaceRoot, "src/nested/removed.ts", "restore this source file\n");
+		await writeText(workspaceRoot, "docs/guide.md", "checkpoint documentation\n");
+		const checkpoint = await service.create({ rootPath: workspaceRoot, reason: "manual" });
+
+		await writeText(workspaceRoot, "src/app.ts", "live source\n");
+		await removePath(workspaceRoot, "src/nested/removed.ts");
+		await writeText(workspaceRoot, "docs/guide.md", "live documentation\n");
+		await writeText(workspaceRoot, "docs/added.md", "keep this documentation\n");
+
+		const plan = await service.previewRestore({
+			checkpointId: checkpoint.id,
+			scope: "code",
+			strategy: "preserve",
+			paths: ["src"],
+		});
+		expect(sortedOperationKeys(plan.operations)).toEqual(["create:src/nested/removed.ts", "update:src/app.ts"]);
+
+		const result = await service.restore({ planId: plan.id });
+		expect(sortedPaths(result.restoredPaths)).toEqual(["src/app.ts", "src/nested/removed.ts"]);
+		expect(await readText(workspaceRoot, "src/app.ts")).toBe("checkpoint source\n");
+		expect(await readText(workspaceRoot, "src/nested/removed.ts")).toBe("restore this source file\n");
+		expect(await readText(workspaceRoot, "docs/guide.md")).toBe("live documentation\n");
+		expect(await readText(workspaceRoot, "docs/added.md")).toBe("keep this documentation\n");
+	});
+
+	it("rejects a create plan when its missing target appears before apply", async () => {
+		const harness = await openHarness("create-target-stale-plan");
+		const { workspaceRoot, service } = harness;
+
+		await writeText(workspaceRoot, "recreated.txt", "checkpoint content\n");
+		const checkpoint = await service.create({ rootPath: workspaceRoot, reason: "manual" });
+		await removePath(workspaceRoot, "recreated.txt");
+
+		const plan = await service.previewRestore({
+			checkpointId: checkpoint.id,
+			scope: "code",
+			strategy: "preserve",
+		});
+		expect(sortedOperationKeys(plan.operations)).toEqual(["create:recreated.txt"]);
+
+		await writeText(workspaceRoot, "recreated.txt", "created after preview\n");
+		const error = await expectRejected<WorkspaceCheckpointError>(service.restore({ planId: plan.id }));
+
+		expect(error).toBeInstanceOf(WorkspaceCheckpointError);
+		expect(error.conflicts).toEqual(
+			expect.arrayContaining([expect.objectContaining({ path: "recreated.txt", kind: "current_state_changed" })]),
+		);
+		expect(await readText(workspaceRoot, "recreated.txt")).toBe("created after preview\n");
+	});
+
+	it("rejects reapplying a successfully applied restore plan", async () => {
+		const harness = await openHarness("applied-plan-single-use");
+		const { workspaceRoot, service } = harness;
+
+		await writeText(workspaceRoot, "note.txt", "checkpoint content\n");
+		const checkpoint = await service.create({ rootPath: workspaceRoot, reason: "manual" });
+		await writeText(workspaceRoot, "note.txt", "working content\n");
+		const plan = await service.previewRestore({
+			checkpointId: checkpoint.id,
+			scope: "code",
+			strategy: "preserve",
+		});
+
+		const firstResult = await service.restore({ planId: plan.id });
+		expect(firstResult.restoredPaths).toEqual(["note.txt"]);
+		expect(await readText(workspaceRoot, "note.txt")).toBe("checkpoint content\n");
+
+		const error = await expectRejected<WorkspaceCheckpointError>(service.restore({ planId: plan.id }));
+		expect(error).toBeInstanceOf(WorkspaceCheckpointError);
+		expect(error.message).toContain("already applied");
+	});
+
 	it("rejects a session-bound preview of another session's checkpoint while offline preview remains available", async () => {
 		const harness = await openHarness("preview-session-boundary");
 		const { workspaceRoot, service } = harness;
@@ -633,9 +710,15 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		const plan = await service.previewRestore({
 			checkpointId: checkpoint.id,
 			scope: "code",
-			strategy: "preserve",
+			strategy: "exact",
 		});
 		const applied = await service.restore({ planId: plan.id });
+		const persistedDirectPlan = await harness.store.getRestorePlan(plan.id);
+		if (!persistedDirectPlan) throw new Error("expected persisted direct restore plan");
+		expect(applied).toMatchObject({
+			scope: persistedDirectPlan.scope,
+			strategy: persistedDirectPlan.strategy,
+		});
 		expect(applied.guardCheckpointId).not.toBeNull();
 		const directGuardId = applied.guardCheckpointId!;
 
@@ -673,6 +756,14 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		expect(await harness.store.getRedoEdge(workspaceRoot)).toBeNull();
 
 		const undone = await harness.service.undo({ rootPath: workspaceRoot, scope: "code" });
+		const undoTransaction = await harness.store.getTransaction(undone.transactionId);
+		if (!undoTransaction?.planId) throw new Error("expected undo transaction to name its restore plan");
+		const persistedUndoPlan = await harness.store.getRestorePlan(undoTransaction.planId);
+		if (!persistedUndoPlan) throw new Error("expected persisted undo restore plan");
+		expect(undone).toMatchObject({
+			scope: persistedUndoPlan.scope,
+			strategy: persistedUndoPlan.strategy,
+		});
 		expect(undone.guardCheckpointId).not.toBeNull();
 		const undoGuardId = undone.guardCheckpointId!;
 
@@ -694,6 +785,7 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 				sourceCheckpointId: directGuardId,
 			}),
 		);
+
 		const rootsAfterUndo = await harness.store.listGcRoots(workspaceRoot);
 		expect(rootsAfterUndo.find(root => root.checkpointId === directGuardId)?.reasons).toContain("redo_edge");
 		expect(rootsAfterUndo.find(root => root.checkpointId === undoGuardId)?.reasons).toEqual(
@@ -705,6 +797,14 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		expect(await harness.store.getRedoEdge(workspaceRoot)).toEqual(redoEdgeAfterUndo);
 
 		const redone = await harness.service.redo({ rootPath: workspaceRoot });
+		const redoTransaction = await harness.store.getTransaction(redone.transactionId);
+		if (!redoTransaction?.planId) throw new Error("expected redo transaction to name its restore plan");
+		const persistedRedoPlan = await harness.store.getRestorePlan(redoTransaction.planId);
+		if (!persistedRedoPlan) throw new Error("expected persisted redo restore plan");
+		expect(redone).toMatchObject({
+			scope: persistedRedoPlan.scope,
+			strategy: persistedRedoPlan.strategy,
+		});
 		expect(redone.guardCheckpointId).not.toBeNull();
 		const redoGuardId = redone.guardCheckpointId!;
 

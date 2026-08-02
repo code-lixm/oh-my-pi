@@ -1269,7 +1269,7 @@ export class MCPCommandController {
 			await addMCPServer(filePath, name, config);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const state =
 				config.enabled === false
 					? "disconnected"
@@ -1559,7 +1559,7 @@ export class MCPCommandController {
 			await removeMCPServer(filePath, name);
 
 			// Reload MCP manager
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(
 				[
@@ -1867,7 +1867,7 @@ export class MCPCommandController {
 					);
 					return;
 				}
-				await this.#reloadMCP();
+				await this.reloadServers();
 				this.#showMessage(
 					[
 						"",
@@ -1883,7 +1883,7 @@ export class MCPCommandController {
 
 			const updated = this.#stripOAuthAuth(found.config);
 			await updateMCPServer(found.filePath, name, updated);
-			await this.#reloadMCP();
+			await this.reloadServers();
 
 			this.#showMessage(
 				[
@@ -1999,7 +1999,7 @@ export class MCPCommandController {
 				await updateMCPServer(found.filePath, name, updatedConfig);
 			}
 			if (options.reload !== false) {
-				await this.#reloadMCP();
+				await this.reloadServers();
 				const state = await this.#waitForServerConnectionWithAnimation(name);
 
 				const lines = [
@@ -2042,7 +2042,7 @@ export class MCPCommandController {
 			this.#showMessage(
 				["", theme.fg("muted", tSettingsUi("Reloading MCP servers and runtime tools...")), ""].join("\n"),
 			);
-			await this.#reloadMCP();
+			await this.reloadServers();
 			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
 			this.#showMessage(
 				[
@@ -2133,15 +2133,34 @@ export class MCPCommandController {
 	}
 
 	/**
-	 * Reload MCP manager with new configs
+	 * Reconnect every configured MCP server and rebind the session's MCP tools.
+	 *
+	 * Disconnects all live connections, rediscovers `.mcp.json` configs, and
+	 * calls `session.refreshMCPTools(...)` so config edits take effect without a
+	 * restart. Public because `/reload-plugins` reuses it alongside `/mcp reload`
+	 * and the config-mutation flows in this controller.
+	 *
+	 * Discovery options are derived from settings so the reload honors the same
+	 * opt-outs as startup — notably `mcp.enableProjectConfig: false`, which must
+	 * keep project `.mcp.json` servers from being started on reload.
 	 */
-	async #reloadMCP(): Promise<void> {
+	async reloadServers(): Promise<void> {
 		if (!this.ctx.mcpManager) {
 			return;
 		}
 
 		await this.ctx.mcpManager.disconnectAll();
-		const result = await this.ctx.mcpManager.discoverAndConnect();
+		// Prompt enrichment is asynchronous. Clear commands before rediscovery so
+		// removed/disabled servers cannot leave stale `/server:prompt` entries;
+		// newly loaded prompts repopulate them through the manager callback.
+		this.ctx.session.setMCPPromptCommands([]);
+
+		// Rediscover and connect, mirroring startup's discovery filters.
+		const result = await this.ctx.mcpManager.discoverAndConnect({
+			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+			filterExa: true,
+			filterBrowser: this.ctx.settings.get("browser.enabled") ?? false,
+		});
 		await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 
 		this.#showMCPConnectionErrors(result.errors);

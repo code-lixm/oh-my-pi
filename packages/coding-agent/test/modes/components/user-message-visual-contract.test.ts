@@ -31,4 +31,26 @@ describe("UserMessageComponent visual contract", () => {
 			" ".repeat(WIDTH),
 		]);
 	});
+
+	it("routes normal and full-frame Markdown links using rendered coordinates", () => {
+		const hrefs: string[] = [];
+		const event = {
+			button: 0,
+			col: 0,
+			row: 0,
+			release: false,
+			wheel: null,
+			motion: false,
+			leftClick: true,
+		};
+		for (const text of ["[open](https://example.com)", "[Image #1]\n\n[open](https://example.com)"]) {
+			const component = new UserMessageComponent(text, false, undefined, href => hrefs.push(href));
+			const lines = component.render(WIDTH);
+			const row = lines.findIndex(line => Bun.stripANSI(line).includes("open"));
+			const col = Bun.stripANSI(lines[row]!).indexOf("open");
+			expect(component.routeMouse(event, row, col)).not.toBe(false);
+		}
+
+		expect(hrefs).toEqual(["https://example.com", "https://example.com"]);
+	});
 });

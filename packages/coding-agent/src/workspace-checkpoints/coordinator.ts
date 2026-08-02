@@ -736,6 +736,9 @@ export class Coordinator {
 		await this.#store.init();
 		const planRecord = await this.#store.getRestorePlan(request.planId);
 		if (!planRecord) throw new WorkspaceCheckpointError(`restore plan not found: ${request.planId}`);
+		if (planRecord.status !== "pending") {
+			throw new WorkspaceCheckpointError(`restore plan ${planRecord.id} is already ${planRecord.status}`);
+		}
 
 		const checkpoint = await this.#store.getCheckpoint(planRecord.checkpointId);
 		if (!checkpoint) {
@@ -753,6 +756,10 @@ export class Coordinator {
 				scope: planRecord.scope,
 				rootPath,
 			});
+			await this.#store.updateRestorePlan(planRecord.id, {
+				status: "applied",
+				appliedAt: this.#now().toISOString(),
+			});
 			return {
 				transactionId: "",
 				checkpointId: planRecord.checkpointId,
@@ -761,6 +768,8 @@ export class Coordinator {
 				skippedPaths: [],
 				conversationEntryId,
 				redoAvailable: false,
+				scope: planRecord.scope,
+				strategy: planRecord.strategy,
 			};
 		}
 
@@ -805,7 +814,7 @@ export class Coordinator {
 				}
 			}
 			const liveEntry = liveIndex.get(op.path);
-			const currentKind = liveEntry?.kind;
+			const currentKind = liveEntry?.kind ?? null;
 			const currentObjectId = liveEntry?.objectId ?? null;
 			const currentMode = liveEntry?.mode;
 			const currentLinkTarget = liveEntry?.linkTarget ?? null;
@@ -959,6 +968,8 @@ export class Coordinator {
 				skippedPaths,
 				conversationEntryId,
 				redoAvailable: transition === "undo",
+				scope: planRecord.scope,
+				strategy: planRecord.strategy,
 			};
 		} catch (error) {
 			await tx.rollback().catch(() => undefined);

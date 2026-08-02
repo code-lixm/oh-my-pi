@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Image, ImageProtocol, TERMINAL, Text } from "@oh-my-pi/pi-tui";
 import { Settings, settings } from "../../../src/config/settings";
 import { renderMCPResult } from "../../../src/mcp/render";
 import type { MCPToolDetails } from "../../../src/mcp/tool-bridge";
@@ -103,6 +103,55 @@ describe("ToolExecutionComponent custom renderer failures", () => {
 			text = visibleText(component.render(80));
 		}).not.toThrow();
 		expect(text).toContain(rawResultText);
+	});
+});
+
+describe("ToolExecutionComponent image routing", () => {
+	const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+
+	it("routes a rendered image click with the original result payload", () => {
+		const previousProtocol = TERMINAL.imageProtocol;
+		TERMINAL.imageProtocol = ImageProtocol.Kitty;
+		try {
+			const opened: Array<{ type: "image"; data: string; mimeType: string }> = [];
+			const ui: ToolExecutionUi = {
+				requestRender() {},
+				requestComponentRender(_component: Component) {},
+				resetDisplay() {},
+			};
+			const component = new ToolExecutionComponent(
+				"image_result",
+				{},
+				{ openImage: image => opened.push(image), showImages: true },
+				undefined,
+				ui,
+			);
+			component.updateResult({
+				content: [{ type: "image", data: onePixelPng, mimeType: "image/png" }],
+			});
+
+			const width = 80;
+			component.render(width);
+			const imageIndex = component.children.findIndex(child => child instanceof Image);
+			expect(imageIndex).toBeGreaterThanOrEqual(0);
+			const imageRow = component.children
+				.slice(0, imageIndex)
+				.reduce((rows, child) => rows + child.render(width).length, 0);
+			const event = {
+				button: 0,
+				col: 0,
+				row: imageRow,
+				release: false,
+				wheel: null,
+				motion: false,
+				leftClick: true,
+			};
+
+			expect(component.routeMouse(event, imageRow, 0)).not.toBe(false);
+			expect(opened).toEqual([{ type: "image", data: onePixelPng, mimeType: "image/png" }]);
+		} finally {
+			TERMINAL.imageProtocol = previousProtocol;
+		}
 	});
 });
 

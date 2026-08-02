@@ -30,6 +30,8 @@ import { HookSelectorComponent } from "./hook-selector";
  */
 function formatSessionStatus(status: SessionStatus | undefined): string | undefined {
 	switch (status) {
+		case "active":
+			return theme.fg("accent", `${theme.status.running} ${tSettingsUi("active")}`);
 		case "complete":
 			return theme.fg("success", `${theme.status.success} ${tSettingsUi("done")}`);
 		case "interrupted":

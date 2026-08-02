@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
+	openImageInSystemViewer,
 	type PlaceholderKind,
 	renderPlaceholders,
 	shiftImageMarkers,
 } from "@oh-my-pi/pi-coding-agent/modes/image-references";
+import type { BlobPutResult } from "../../src/session/blob-store";
 
 function capture(text: string): {
 	out: string;
@@ -62,5 +65,72 @@ describe("shiftImageMarkers", () => {
 
 	it("never touches Paste markers", () => {
 		expect(shiftImageMarkers("[Image #1] [Paste #1, +5 lines]", 2)).toBe("[Image #3] [Paste #1, +5 lines]");
+	});
+});
+
+describe("openImageInSystemViewer", () => {
+	it("materializes the original bytes with a typed extension before opening", () => {
+		const image: ImageContent = {
+			type: "image",
+			data: Buffer.from("original-image-bytes").toString("base64"),
+			mimeType: "image/webp",
+		};
+		let written: Buffer | undefined;
+		let extension: string | undefined;
+		const opened: string[] = [];
+
+		openImageInSystemViewer(
+			image,
+			(data, options) => {
+				written = data;
+				extension = options?.extension;
+				return {
+					hash: "hash",
+					path: "/tmp/hash",
+					displayPath: "/tmp/hash.webp",
+					get ref() {
+						return "blob:sha256:hash";
+					},
+				} satisfies BlobPutResult;
+			},
+			path => opened.push(path),
+		);
+
+		expect(written?.toString()).toBe("original-image-bytes");
+		expect(extension).toBe("webp");
+		expect(opened).toEqual(["/tmp/hash.webp"]);
+	});
+
+	it("does not surface materialization or opener failures", () => {
+		const image: ImageContent = { type: "image", data: "aW1hZ2U=", mimeType: "image/png" };
+		expect(() =>
+			openImageInSystemViewer(
+				image,
+				() => {
+					throw new Error("write failed");
+				},
+				() => {
+					throw new Error("must not open");
+				},
+			),
+		).not.toThrow();
+
+		expect(() =>
+			openImageInSystemViewer(
+				image,
+				() =>
+					({
+						hash: "hash",
+						path: "/tmp/hash",
+						displayPath: "/tmp/hash.png",
+						get ref() {
+							return "blob:sha256:hash";
+						},
+					}) satisfies BlobPutResult,
+				() => {
+					throw new Error("open failed");
+				},
+			),
+		).not.toThrow();
 	});
 });

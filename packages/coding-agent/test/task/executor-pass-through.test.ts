@@ -49,6 +49,7 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
+		setIrcWakeTurnObserver: () => {},
 	};
 	return session as unknown as AgentSession;
 }
@@ -233,6 +234,44 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.enableMCP).toBe(true);
 		expect(forwarded?.mcpManager).toBe(mcpManager);
 		expect(forwarded?.customTools?.map(tool => tool.name)).toEqual(["mcp__private_read"]);
+	});
+
+	it("does not inject hub into ordinary explicit read-only tool lists while preserving yield", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const toolNames = ["read", "grep", "glob", "web_search", "codegraph", "yield"];
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "read-only-child",
+			restrictToolNames: false,
+			agent: { ...baseAgent, tools: toolNames },
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwardedToolNames = spy.mock.calls[0]?.[0]?.toolNames;
+		expect(forwardedToolNames).toEqual(expect.arrayContaining(toolNames));
+		expect(forwardedToolNames).not.toContain("hub");
+	});
+
+	it.each([
+		{ name: "writing", toolNames: ["write", "yield"] },
+		{ name: "executing", toolNames: ["bash", "yield"] },
+	])("injects hub into ordinary explicit $name tool lists", async ({ name, toolNames }) => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: `collaborative-${name}-child`,
+			restrictToolNames: false,
+			agent: { ...baseAgent, tools: [...toolNames] },
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwardedToolNames = spy.mock.calls[0]?.[0]?.toolNames;
+		expect(forwardedToolNames).toEqual(expect.arrayContaining(toolNames));
+		expect(forwardedToolNames).toContain("hub");
 	});
 
 	it("preserves the legacy result shape when no output schema is selected", async () => {

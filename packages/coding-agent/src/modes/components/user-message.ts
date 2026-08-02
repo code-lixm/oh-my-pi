@@ -1,4 +1,4 @@
-import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
+import { type Component, Container, Markdown, type MouseRoutable, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { applyStableBackground, framedBlock, outputBlockContentWidth } from "../../tui";
@@ -23,14 +23,18 @@ export class UserMessageComponent extends Container {
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
 
-	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
+	constructor(
+		text: string,
+		synthetic = false,
+		imageLinks?: readonly (string | undefined)[],
+		onOpenLink?: (href: string) => void,
+	) {
 		super();
 		const framedImageMessage = hasImageMarker(text);
 		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
-		// bubble too — matching the live editor glow. The Markdown component routes code spans and
-		// fenced blocks through its own code styling (never `color`), so those are already excluded;
-		// `highlightMagicKeywords` additionally restores the bubble's own foreground after each
-		// painted keyword so the gradient never bleeds into the rest of the line.
+		// bubble too — matching the live editor glow. Markdown code spans and fenced
+		// blocks own their foreground styling; the bubble background is reapplied
+		// separately so syntax-color resets cannot punch holes through the message.
 		const keywordReset = theme.getFgAnsi("userMessageText") || "\x1b[39m";
 		const baseText = synthetic
 			? (value: string) => theme.fg("dim", value)
@@ -44,30 +48,46 @@ export class UserMessageComponent extends Container {
 						? imageReferenceHyperlink(label, index, imageLinks, imageLabel)
 						: theme.fg("accent", `\x1b[1m${label}\x1b[22m`),
 			});
+		const background =
+			synthetic || framedImageMessage
+				? undefined
+				: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg"));
 		const md = new Markdown(
 			sanitizeText(text),
 			framedImageMessage ? 0 : 1,
 			framedImageMessage ? 0 : 1,
 			getMarkdownTheme(),
-			{
-				color,
-				bgColor:
-					synthetic || framedImageMessage
-						? undefined
-						: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg")),
-			},
+			{ color, bgColor: background },
 		);
+		if (!framedImageMessage) {
+			md.setCodeBlockDisplayOptions({
+				frame: false,
+				cacheKey: "user-message:code-block:v1",
+				getCollapsedBudget: () => Number.MAX_SAFE_INTEGER,
+				expandKeyLabel: "",
+				omitHintTemplate: "",
+				plainPaddingX: 0,
+			});
+		}
 		md.setIgnoreTight(true);
+		if (onOpenLink) md.setLinkHandler(onOpenLink);
 		if (framedImageMessage) {
-			this.addChild(
-				framedBlock(theme, width => ({
-					sections: [{ lines: [...md.render(outputBlockContentWidth(width))] }],
-					borderColor: "borderMuted",
-					borderStyle: "full",
-					applyBg: false,
-					width,
-				})),
-			);
+			const frame = framedBlock(theme, width => ({
+				sections: [{ lines: [...md.render(outputBlockContentWidth(width))] }],
+				borderColor: "borderMuted",
+				borderStyle: "full",
+				applyBg: false,
+				width,
+			}));
+			const framedMarkdown: Component & MouseRoutable = {
+				render: width => frame.render(width),
+				invalidate: () => {
+					md.invalidate();
+					frame.invalidate?.();
+				},
+				routeMouse: (event, line, col) => md.routeMouse(event, line - 1, col - 3),
+			};
+			this.addChild(framedMarkdown);
 		} else {
 			this.addChild(md);
 		}
@@ -103,7 +123,7 @@ export class UserMessageComponent extends Container {
  * viewport never pay layout cost until the reader asks to see them. The raw
  * observability data stays intact in `__advisor.jsonl`.
  */
-export class CollapsedSyntheticMessageComponent implements Component {
+export class CollapsedSyntheticMessageComponent implements Component, MouseRoutable {
 	#expanded = false;
 	#cache?: { width: number; lines: readonly string[] };
 	#body?: UserMessageComponent;
@@ -112,6 +132,7 @@ export class CollapsedSyntheticMessageComponent implements Component {
 	constructor(
 		private readonly text: string,
 		private readonly imageLinks?: readonly (string | undefined)[],
+		private readonly onOpenLink?: (href: string) => void,
 	) {
 		this.#summary = summarizeSyntheticInput(text);
 	}
@@ -140,8 +161,13 @@ export class CollapsedSyntheticMessageComponent implements Component {
 		return lines;
 	}
 
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean | void {
+		if (!this.#expanded || line <= 0 || !this.#body) return false;
+		return this.#body.routeMouse(event, line - 1, col);
+	}
+
 	#renderExpanded(width: number): readonly string[] {
-		if (!this.#body) this.#body = new UserMessageComponent(this.text, true, this.imageLinks);
+		if (!this.#body) this.#body = new UserMessageComponent(this.text, true, this.imageLinks, this.onOpenLink);
 		return [` ${this.#summaryRow(width)}`, ...this.#body.render(width)];
 	}
 

@@ -1,3 +1,4 @@
+import { isMouseRoutable, type MouseRoutable, type SgrMouseEvent } from "../mouse";
 import type { Component } from "../tui";
 import {
 	anchorRightBorder,
@@ -9,6 +10,21 @@ import {
 	visibleWidth,
 } from "../utils";
 
+/** Geometry captured at render time so hit-routing can subtract border +
+ *  padding without guessing the current tight state. Persists across renders
+ *  until the next `render(width)` call overwrites it. */
+interface RouteGeometry {
+	border: boolean;
+	paddingX: number;
+	contentWidth: number;
+	/** Per-child frame: start row within the Box's emitted rows. */
+	childStarts: number[];
+	/** Per-child row count (`childLines[i].length`). */
+	childLengths: number[];
+	/** Total rows the Box actually emitted on this render. */
+	totalRows: number;
+}
+
 type Cache = {
 	width: number;
 	widthEpoch: number;
@@ -18,6 +34,7 @@ type Cache = {
 	childWidths: (readonly number[] | undefined)[];
 	childSnapshots: (readonly string[] | undefined)[];
 	result: string[];
+	route: RouteGeometry;
 };
 
 /** Box-drawing glyphs plus an optional colorizer for an outline drawn around a {@link Box}. */
@@ -36,7 +53,7 @@ export interface BoxBorder {
 /**
  * Box component - a container that applies padding and background to all children
  */
-export class Box implements Component {
+export class Box implements Component, MouseRoutable {
 	children: Component[] = [];
 	#paddingX: number;
 	#paddingY: number;
@@ -222,6 +239,25 @@ export class Box implements Component {
 		const finalWidthEpoch = getWidthConfigEpoch();
 		if (resultWidths !== undefined) publishLineWidths(result, resultWidths);
 		const childSnapshots = childLines.map((lines, i) => (childWidths[i] === undefined ? [...lines] : undefined));
+		// Geometry snapshot for hit routing. Reflects what we actually emitted:
+		// border (when width permits), padding on both sides, child span table
+		// keyed to interior row offsets. `routeMouse` reads this to translate
+		// caller-local row/col back to a child and child-local coords.
+		const hasBorder = border !== undefined;
+		const topOffset = hasBorder ? 1 : 0;
+		const childStarts: number[] = [];
+		const childLengths: number[] = [];
+		let row = topOffset + this.#paddingY;
+		for (const lines of childLines) {
+			childStarts.push(row);
+			childLengths.push(lines.length);
+			row += lines.length;
+		}
+		// Total emitted rows: top border + (paddingY * 2) + content + bottom border.
+		// `interior` was scoped inside the `if (contentRows > 0)` block; compute
+		// the equivalent here without re-deriving content rows.
+		const emittedInteriorRows = 2 * this.#paddingY + childLines.reduce((acc, lines) => acc + lines.length, 0);
+		const totalRows = hasBorder ? emittedInteriorRows + 2 : emittedInteriorRows;
 		this.#cached = {
 			width,
 			widthEpoch: finalWidthEpoch,
@@ -231,7 +267,58 @@ export class Box implements Component {
 			childWidths,
 			childSnapshots,
 			result,
+			route: {
+				border: hasBorder,
+				paddingX,
+				contentWidth,
+				childStarts,
+				childLengths,
+				totalRows,
+			},
 		};
 		return result;
+	}
+
+	/**
+	 * Route a mouse event using the geometry snapshot from the last `render()`.
+	 * Subtracts the border (left + right edges when present) and the horizontal
+	 * padding, then forwards to whichever child occupies the resulting row.
+	 * Children that are not themselves `MouseRoutable` leave the event
+	 * unhandled — we never reach into non-routable components.
+	 *
+	 * Returns `false` when the click landed on padding, border chrome, or
+	 * outside the box's actual rows — the caller can try the next layer.
+	 */
+	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		const cached = this.#cached;
+		if (cached === undefined) return false;
+		const route = cached.route;
+		// Locate the child that owns this row. `childStarts` was populated in
+		// emit order; a row outside [0, totalRows) is padding or chrome.
+		if (line < 0 || line >= route.totalRows) return false;
+		// Horizontal padding: subtract the left padding (or 1 border cell + padding
+		// when bordered). Negative col → click in chrome; bail.
+		const leftChrome = route.border ? 1 + route.paddingX : route.paddingX;
+		const adjustedCol = col - leftChrome;
+		if (adjustedCol < 0 || adjustedCol >= route.contentWidth) return false;
+		// Top padding rows live above the first child: their `paddingY` is
+		// baked into `childStarts[0]`, so a `line < childStarts[0]` is padding
+		// regardless of `paddingX` / border.
+		let childIndex = -1;
+		for (let i = 0; i < route.childStarts.length; i++) {
+			const start = route.childStarts[i]!;
+			const length = route.childLengths[i]!;
+			if (line >= start && line < start + length) {
+				childIndex = i;
+				break;
+			}
+		}
+		if (childIndex < 0) return false;
+		const child = this.children[childIndex];
+		if (!isMouseRoutable(child)) return false;
+		const childLocalLine = line - route.childStarts[childIndex]!;
+		const result = child.routeMouse(event, childLocalLine, adjustedCol);
+		// `void` / `undefined` / `true` from the child counts as consumed.
+		return result !== false;
 	}
 }

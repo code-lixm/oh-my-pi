@@ -193,13 +193,22 @@ describe("SessionFocusController", () => {
 		expect(h.handledEvents.slice(3)).toEqual([{ type: "message_update", message }]);
 	});
 
-	it("cycles only across live subagents in createdAt order, wrapping without visiting Main", async () => {
+	it("cycles focused-agent next and previous commands in stable lifecycle order", async () => {
 		const h = makeHarness();
+		const main = h.registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: "Main",
+			kind: "main",
+			session: h.main.session,
+			status: "running",
+		});
 		const ignoredAdvisor = makeSessionStub();
 		const ignoredParked = makeSessionStub();
 		const ignoredAborted = makeSessionStub();
-		const earlier = makeSessionStub();
-		const later = makeSessionStub();
+		const runningOlder = makeSessionStub();
+		const runningNewer = makeSessionStub();
+		const waiting = makeSessionStub();
+		const idle = makeSessionStub();
 
 		const advisorRef = h.registry.register({
 			id: "Advisor",
@@ -216,22 +225,6 @@ describe("SessionFocusController", () => {
 			session: ignoredParked.session,
 			status: "parked",
 		});
-		const laterRef = h.registry.register({
-			id: "Later",
-			displayName: "Run tests",
-			kind: "sub",
-			parentId: MAIN_AGENT_ID,
-			session: later.session,
-			status: "running",
-		});
-		const earlierRef = h.registry.register({
-			id: "Earlier",
-			displayName: "Build plan",
-			kind: "sub",
-			parentId: MAIN_AGENT_ID,
-			session: earlier.session,
-			status: "idle",
-		});
 		const abortedRef = h.registry.register({
 			id: "Aborted",
 			displayName: "Aborted agent",
@@ -240,41 +233,50 @@ describe("SessionFocusController", () => {
 			session: ignoredAborted.session,
 			status: "aborted",
 		});
+		const runningOlderRef = registerSub(h.registry, "Running older", runningOlder.session, MAIN_AGENT_ID);
+		const runningNewerRef = registerSub(h.registry, "Running newer", runningNewer.session, MAIN_AGENT_ID);
+		const waitingRef = h.registry.register({
+			id: "Waiting",
+			displayName: "Waiting",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: waiting.session,
+			status: "waiting",
+		});
+		const idleRef = h.registry.register({
+			id: "Idle",
+			displayName: "Idle",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: idle.session,
+			status: "idle",
+		});
 
-		advisorRef.createdAt = 1;
-		parkedRef.createdAt = 2;
-		laterRef.createdAt = 30;
-		earlierRef.createdAt = 20;
-		abortedRef.createdAt = 40;
+		main.createdAt = 10_000;
+		advisorRef.createdAt = 9_000;
+		parkedRef.createdAt = 8_000;
+		abortedRef.createdAt = 7_000;
+		runningOlderRef.createdAt = 100;
+		runningNewerRef.createdAt = 200;
+		waitingRef.createdAt = 1_000;
+		idleRef.createdAt = 2_000;
+		main.lastActivity = 10_000;
+		advisorRef.lastActivity = 9_000;
+		parkedRef.lastActivity = 8_000;
+		abortedRef.lastActivity = 7_000;
+		runningOlderRef.lastActivity = 4_000;
+		runningNewerRef.lastActivity = 1;
+		waitingRef.lastActivity = 5_000;
+		idleRef.lastActivity = 6_000;
 
-		await h.controller.cycleAgent("next");
-		expect(h.controller.focusedAgentId).toBe("Earlier");
-
-		await h.controller.cycleAgent("next");
-		expect(h.controller.focusedAgentId).toBe("Later");
-
-		await h.controller.cycleAgent("next");
-		expect(h.controller.focusedAgentId).toBe("Earlier");
-
-		await h.controller.cycleAgent("previous");
-		expect(h.controller.focusedAgentId).toBe("Later");
-
-		await h.controller.cycleAgent("previous");
-		expect(h.controller.focusedAgentId).toBe("Earlier");
-
-		await h.controller.cycleAgent("previous");
-		expect(h.controller.focusedAgentId).toBe("Later");
-
-		expect(h.setSessionCalls).toEqual([
-			[earlier.session, "Earlier", "Build plan"],
-			[later.session, "Later", "Run tests"],
-			[earlier.session, "Earlier", "Build plan"],
-			[later.session, "Later", "Run tests"],
-			[earlier.session, "Earlier", "Build plan"],
-			[later.session, "Later", "Run tests"],
-		]);
-		expect(h.showFocusedAgentViewCalls).toEqual(["Earlier", "Later", "Earlier", "Later", "Earlier", "Later"]);
-		expect(h.hideFocusedAgentViewCalls()).toBe(0);
+		for (const expected of ["Running newer", "Running older", "Waiting", "Idle", "Running newer"]) {
+			await h.controller.cycleAgent("next");
+			expect(h.controller.focusedAgentId).toBe(expected);
+		}
+		for (const expected of ["Idle", "Waiting", "Running older", "Running newer"]) {
+			await h.controller.cycleAgent("previous");
+			expect(h.controller.focusedAgentId).toBe(expected);
+		}
 	});
 
 	it("focusParent walks parentId to a registered non-main agent, then re-attaches the main session", async () => {

@@ -10,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { SettingPath, SettingValue } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentHubRemote } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -73,6 +74,81 @@ function buildJsonl(): string {
 		);
 	}
 	return `${lines.join("\n")}\n`;
+}
+
+function buildHubActivityJsonl(): string {
+	const usage = {
+		input: 1,
+		output: 1,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 2,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const entries = [
+		JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "adv", timestamp: TS, cwd: "/tmp" }),
+		JSON.stringify({
+			type: "message",
+			id: "hub-turn",
+			parentId: null,
+			timestamp: TS,
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "SUB_VISIBLE_TEXT" },
+					{
+						type: "toolCall",
+						id: "hub-start",
+						name: "hub",
+						arguments: { op: "start", name: "SUB_HUB_PROCESS", application: "bun", args: ["run", "dev"] },
+					},
+					{ type: "text", text: "SUB_VISIBLE_AFTER_HUB" },
+					{
+						type: "toolCall",
+						id: "visible-bash",
+						name: "bash",
+						arguments: { command: "printf SUB_VISIBLE_BASH" },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "gpt-5.5",
+				usage,
+				stopReason: "toolUse",
+				timestamp: 1,
+			},
+		}),
+		JSON.stringify({
+			type: "message",
+			id: "hub-result",
+			parentId: "hub-turn",
+			timestamp: TS,
+			message: {
+				role: "toolResult",
+				toolCallId: "hub-start",
+				toolName: "hub",
+				content: [{ type: "text", text: "SUB_HUB_RESULT" }],
+				details: { op: "start" },
+				isError: false,
+				timestamp: 2,
+			},
+		}),
+		JSON.stringify({
+			type: "message",
+			id: "visible-result",
+			parentId: "hub-result",
+			timestamp: TS,
+			message: {
+				role: "toolResult",
+				toolCallId: "visible-bash",
+				toolName: "bash",
+				content: [{ type: "text", text: "SUB_VISIBLE_RESULT" }],
+				isError: false,
+				timestamp: 3,
+			},
+		}),
+	];
+	return `${entries.join("\n")}\n`;
 }
 
 function buildImageJsonl(): string {
@@ -761,6 +837,38 @@ describe("AgentTranscriptViewer", () => {
 			vi.useRealTimers();
 			viewer.dispose();
 			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("hides Hub process cards in a parked subagent transcript even when enabled", () => {
+		const readSetting: Settings["get"] = settings.get.bind(settings);
+		const getSetting = vi
+			.spyOn(settings, "get")
+			.mockImplementation(<P extends SettingPath>(path: P): SettingValue<P> => {
+				if (path === "display.showHubProcessActivity") return true as SettingValue<P>;
+				return readSetting(path);
+			});
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-hub-history-"));
+		const file = path.join(dir, "__advisor.jsonl");
+		let viewer: AgentTranscriptViewer | undefined;
+
+		try {
+			fs.writeFileSync(file, buildHubActivityJsonl());
+			viewer = makeViewer(file);
+			const rendered = viewer
+				.render(100)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+
+			expect(rendered).not.toContain("SUB_HUB_PROCESS");
+			expect(rendered).not.toContain("SUB_HUB_RESULT");
+			expect(rendered).toContain("SUB_VISIBLE_TEXT");
+			expect(rendered).toContain("SUB_VISIBLE_AFTER_HUB");
+			expect(rendered).toContain("SUB_VISIBLE_BASH");
+			expect(rendered).toContain("SUB_VISIBLE_RESULT");
+		} finally {
+			viewer?.dispose();
+			getSetting.mockRestore();
+			removeSyncWithRetries(dir);
 		}
 	});
 });

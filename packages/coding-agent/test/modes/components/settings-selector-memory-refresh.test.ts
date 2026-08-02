@@ -88,9 +88,9 @@ function focusMemoryTab(comp: SettingsSelectorComponent): void {
 
 function openAppearanceStatusLinePresetSubmenu(comp: SettingsSelectorComponent): void {
 	// Appearance is the default tab. Within its group-ordered rows, Status Line
-	// Preset follows the four Theme settings: Dark Theme, Light Theme, Symbol
-	// Preset, and Color-Blind Mode.
-	for (let i = 0; i < 4; i++) {
+	// Preset follows the five Theme settings: Dark Theme, Light Theme, Use
+	// Terminal Palette, Symbol Preset, and Color-Blind Mode.
+	for (let i = 0; i < 5; i++) {
 		comp.handleInput("\x1b[B");
 	}
 	comp.handleInput("\n");

@@ -12,6 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { usesCodexTaskPrompt } from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { getPromptLocale, type PromptLocale, setPromptLocale } from "../src/prompts/prompt-locale";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 const EMPTY_TREE = {
@@ -22,6 +23,21 @@ const EMPTY_TREE = {
 	agentsMdFiles: [],
 };
 
+const MODEL_GUIDANCE = {
+	codex: {
+		englishHeading: "# Codex Model Guidance",
+		englishSemantic: "After compaction, continue retained work; NEVER redo completed work.",
+		chineseHeading: "# Codex 模型指导",
+		chineseSemantic: "compaction 后继续已保留的工作；NEVER 重做已完成工作。",
+	},
+	claude: {
+		englishHeading: "# Claude Model Guidance",
+		englishSemantic: "Parallelize only independent work with explicit boundaries.",
+		chineseHeading: "# Claude 模型指导",
+		chineseSemantic: "仅并行执行边界明确且彼此独立的工作。",
+	},
+} as const;
+
 async function expectPromptDateFromStartupTimezone(options: {
 	tempDir: string;
 	tempHomeDir: string;
@@ -31,6 +47,7 @@ async function expectPromptDateFromStartupTimezone(options: {
 	rejectedDate: string;
 }): Promise<void> {
 	const scenarioPath = path.join(options.tempDir, "prompt-date-timezone.test.ts");
+	const resultPath = path.join(options.tempDir, "prompt-date-timezone-result.txt");
 	await Bun.write(
 		scenarioPath,
 		`import { expect, it, setSystemTime } from "bun:test";
@@ -55,6 +72,7 @@ it("renders the prompt date in the startup timezone", async () => {
 			activeRepoContext: null,
 		});
 		const rendered = systemPrompt.join("\\n\\n");
+		await Bun.write(process.env.OMP_TEST_RESULT!, rendered);
 		expect(rendered).toContain(\`Today is \${process.env.OMP_EXPECTED_DATE}\`);
 		expect(rendered).not.toContain(\`Today is \${process.env.OMP_REJECTED_DATE}\`);
 	} finally {
@@ -72,6 +90,7 @@ it("renders the prompt date in the startup timezone", async () => {
 			OMP_TEST_NOW: options.now,
 			OMP_EXPECTED_DATE: options.expectedDate,
 			OMP_REJECTED_DATE: options.rejectedDate,
+			OMP_TEST_RESULT: resultPath,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -81,23 +100,51 @@ it("renders the prompt date in the startup timezone", async () => {
 		new Response(child.stderr).text(),
 		child.exited,
 	]);
-	expect(`${stdout}\n${stderr}`).toContain("1 pass");
-	expect(exitCode).toBe(0);
+	expect(exitCode, `timezone child output: ${stderr || stdout || "(none)"}`).toBe(0);
+	const rendered = await Bun.file(resultPath).text();
+	expect(rendered).toContain(`Today is ${options.expectedDate}`);
+	expect(rendered).not.toContain(`Today is ${options.rejectedDate}`);
 }
 
 describe("system prompt model identifier", () => {
 	let tempDir = "";
 	let tempHomeDir = "";
 	let originalHome: string | undefined;
+	let previousPromptLocale: PromptLocale;
 
 	beforeEach(() => {
+		previousPromptLocale = getPromptLocale();
+		setPromptLocale("en");
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-prompt-model-"));
 		tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-prompt-model-home-"));
 		originalHome = process.env.HOME;
 		process.env.HOME = tempHomeDir;
 	});
 
-	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
+	afterEach(() => {
+		setPromptLocale(previousPromptLocale);
+		cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome }))();
+	});
+
+	async function renderSystemPrompt(options: {
+		model?: string;
+		customPrompt?: string;
+		includeModelInPrompt?: boolean;
+	}): Promise<string> {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: [],
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			activeRepoContext: null,
+			includeModelInPrompt: options.includeModelInPrompt ?? false,
+			model: options.model,
+			customPrompt: options.customPrompt,
+		});
+		return systemPrompt.join("\n\n");
+	}
 
 	it("renders the model identifier into the workstation block when provided", async () => {
 		const { systemPrompt } = await buildSystemPrompt({
@@ -136,6 +183,72 @@ describe("system prompt model identifier", () => {
 
 		expect(systemPrompt.join("\n\n")).not.toContain("Model:");
 	});
+
+	it("routes representative model identifiers to only their matching guidance overlay", async () => {
+		const cases = [
+			{ name: "Codex provider/id", model: "openai-codex/gpt-5.6-terra", family: "codex" },
+			{ name: "Codex variant", model: "gpt-5.6-codex", family: "codex" },
+			{ name: "Pre-5.6 Codex variant", model: "gpt-5.4-codex", family: "codex" },
+			{ name: "bare Claude", model: "claude-opus-4-8", family: "claude" },
+			{ name: "provider-qualified Claude", model: "anthropic/claude-opus-4.8", family: "claude" },
+			{ name: "OpenRouter Claude", model: "openrouter/anthropic/claude-opus-4-8", family: "claude" },
+			{
+				name: "Bedrock Claude",
+				model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				family: "claude",
+			},
+			{ name: "SAP Claude", model: "anthropic--claude-4.8-opus", family: "claude" },
+		] as const;
+
+		for (const testCase of cases) {
+			const rendered = await renderSystemPrompt({ model: testCase.model });
+			const selected = MODEL_GUIDANCE[testCase.family];
+			const other = MODEL_GUIDANCE[testCase.family === "codex" ? "claude" : "codex"];
+
+			expect(rendered, testCase.name).toContain(selected.englishHeading);
+			expect(rendered, testCase.name).toContain(selected.englishSemantic);
+			expect(rendered, testCase.name).not.toContain(other.englishHeading);
+		}
+
+		const unknown = await renderSystemPrompt({ model: "some-unknown-model" });
+		expect(unknown).not.toContain(MODEL_GUIDANCE.codex.englishHeading);
+		expect(unknown).not.toContain(MODEL_GUIDANCE.claude.englishHeading);
+	});
+
+	it("lets customPrompt replace the default prompt without appending model guidance", async () => {
+		const customPrompt = "CUSTOM OPERATOR CONTRACT: preserve the caller's exact policy.";
+		const rendered = await renderSystemPrompt({
+			model: "openai-codex/gpt-5.6-terra",
+			customPrompt,
+		});
+
+		expect(rendered).toContain(customPrompt);
+		expect(rendered).not.toContain("You are a helpful assistant the team trusts");
+		expect(rendered).not.toContain(MODEL_GUIDANCE.codex.englishHeading);
+		expect(rendered).not.toContain(MODEL_GUIDANCE.claude.englishHeading);
+	});
+
+	it("renders each model guidance overlay in the active prompt locale", async () => {
+		const cases = [
+			{ model: "openai-codex/gpt-5.6-terra", family: "codex" },
+			{ model: "anthropic/claude-opus-4.8", family: "claude" },
+		] as const;
+
+		for (const testCase of cases) {
+			const guidance = MODEL_GUIDANCE[testCase.family];
+			setPromptLocale("en");
+			const english = await renderSystemPrompt({ model: testCase.model });
+			setPromptLocale("zh-CN");
+			const chinese = await renderSystemPrompt({ model: testCase.model });
+
+			expect(english).toContain(guidance.englishHeading);
+			expect(english).toContain(guidance.englishSemantic);
+			expect(english).not.toContain(guidance.chineseHeading);
+			expect(chinese).toContain(guidance.chineseHeading);
+			expect(chinese).toContain(guidance.chineseSemantic);
+			expect(chinese).not.toContain(guidance.englishHeading);
+		}
+	});
 });
 
 describe("AgentSession model-change prompt refresh", () => {
@@ -167,15 +280,10 @@ describe("AgentSession model-change prompt refresh", () => {
 		return [first, second];
 	}
 
-	function pickTwoModelsWithSameTaskPolicy(): [Model, Model] {
-		const all = modelRegistry.getAll();
-		const first = all[0];
-		const second = all.find(
-			model =>
-				(model.provider !== first.provider || model.id !== first.id) &&
-				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id),
-		);
-		if (!first || !second) throw new Error("Expected two distinct models with the same task prompt policy");
+	function pickTwoModelsWithSameGuidanceFamily(): [Model, Model] {
+		const first = modelRegistry.find("openai-codex", "gpt-5.4");
+		const second = modelRegistry.find("openai-codex", "gpt-5.5");
+		if (!first || !second) throw new Error("Expected two non-guidance Codex models in the registry");
 		return [first, second];
 	}
 
@@ -185,6 +293,16 @@ describe("AgentSession model-change prompt refresh", () => {
 		const codexPolicy = all.find(model => usesCodexTaskPrompt(model.id));
 		if (!defaultPolicy || !codexPolicy) throw new Error("Expected default-policy and GPT-5.6 models");
 		return [defaultPolicy, codexPolicy];
+	}
+
+	function pickModelsAcrossGuidanceFamilies(): [Model, Model, Model] {
+		const none = modelRegistry.find("openai-codex", "gpt-5.5");
+		const claude = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		const codex = modelRegistry.find("openai-codex", "gpt-5.6-sol");
+		if (!none || !claude || !codex) {
+			throw new Error("Expected none, Claude, and Codex guidance models in the registry");
+		}
+		return [none, claude, codex];
 	}
 
 	function newSession(
@@ -228,8 +346,8 @@ describe("AgentSession model-change prompt refresh", () => {
 		expect(rebuildCount).toBe(1);
 	});
 
-	it("does not rebuild a hidden-model prompt when the task policy stays the same", async () => {
-		const [modelA, modelB] = pickTwoModelsWithSameTaskPolicy();
+	it("does not rebuild a hidden-model prompt when the model guidance family stays the same", async () => {
+		const [modelA, modelB] = pickTwoModelsWithSameGuidanceFamily();
 		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
 		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
 
@@ -266,5 +384,35 @@ describe("AgentSession model-change prompt refresh", () => {
 		await session.setModel(modelB);
 		expect(rebuildCount).toBe(1);
 		expect(session.agent.state.systemPrompt).toEqual(["policy changed"]);
+	});
+
+	it("rebuilds a hidden-model prompt for every transition across none, Claude, and Codex guidance", async () => {
+		const [none, claude, codex] = pickModelsAcrossGuidanceFamilies();
+		for (const model of [none, claude, codex]) {
+			authStorage.setRuntimeApiKey(model.provider, `key-${model.provider}`);
+		}
+
+		const rebuiltFor: string[] = [];
+		session = newSession(
+			none,
+			Settings.isolated({ "compaction.enabled": false, includeModelInPrompt: false }),
+			async () => {
+				const active = session?.model;
+				const identifier = active ? `${active.provider}/${active.id}` : "";
+				rebuiltFor.push(identifier);
+				return { systemPrompt: [`guidance:${identifier}`] };
+			},
+		);
+
+		await session.setModel(claude);
+		await session.setModel(codex);
+		await session.setModel(none);
+
+		expect(rebuiltFor).toEqual([
+			`${claude.provider}/${claude.id}`,
+			`${codex.provider}/${codex.id}`,
+			`${none.provider}/${none.id}`,
+		]);
+		expect(session.agent.state.systemPrompt).toEqual([`guidance:${none.provider}/${none.id}`]);
 	});
 });

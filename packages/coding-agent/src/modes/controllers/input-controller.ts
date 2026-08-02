@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { resolveLocalRoot } from "../../internal-urls";
@@ -16,7 +16,7 @@ import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/i
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
-import type { InteractiveModeContext } from "../../modes/types";
+import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import { selectPrompt } from "../../prompts/prompt-locale";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import manualContinuePromptZh from "../../prompts/system/manual-continue.zh-CN.md" with { type: "text" };
@@ -25,7 +25,6 @@ import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { applyThinkingSummaryVisibility } from "../../thinking";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
-import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
@@ -502,14 +501,13 @@ export class InputController {
 		this.ctx.editor.setActionKeys("app.exit", this.ctx.keybindings.getKeys("app.exit"));
 		this.ctx.editor.setActionKeys("app.display.reset", this.ctx.keybindings.getKeys("app.display.reset"));
 		this.ctx.editor.onDisplayReset = () => {
-			// Explicit user gesture (Ctrl+L): re-query the terminal background once
-			// so a mid-session light/dark switch is picked up even on terminals
-			// without an end-to-end Mode 2031 notification path (#5352). The
-			// appearance callback re-evaluates the auto theme; the repaint below
-			// then renders the resolved palette. Bounded to one OSC 11 probe per
-			// gesture — no timers, no periodic polling.
-			this.ctx.ui.terminal.refreshAppearance?.();
-			this.ctx.ui.resetDisplay();
+			// Explicit user gesture (display reset, Alt+L by default): re-query the
+			// terminal background once so a mid-session light/dark switch is picked
+			// up even on terminals without an end-to-end Mode 2031 notification
+			// path (#5352). The appearance callback re-evaluates the auto theme; the
+			// repaint below then renders the resolved palette. Bounded to one OSC 11
+			// probe per gesture — no timers, no periodic polling.
+			this.ctx.resetDisplayAfterAppearanceRefresh();
 		};
 		this.ctx.editor.onExit = () => this.handleCtrlD();
 		this.ctx.editor.setActionKeys("app.suspend", this.ctx.keybindings.getKeys("app.suspend"));
@@ -570,6 +568,9 @@ export class InputController {
 		for (const key of this.ctx.keybindings.getKeys("app.session.new")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.handleClearCommand());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.session.sendToNew")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleSendToNewSession());
+		}
 		for (const key of this.ctx.keybindings.getKeys("app.session.tree")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showTreeSelector());
 		}
@@ -584,6 +585,9 @@ export class InputController {
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.live.toggle")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleLiveCommand());
 		}
 		// Hold the space bar to push-to-talk: the editor recognizes the auto-repeat burst, tracks
 		// the spam back out, and toggles STT on hold start / release. Gated on `stt.enabled` so a
@@ -1037,13 +1041,122 @@ export class InputController {
 		};
 	}
 
+	/** Send the current draft to a separate live top-level session without interrupting this one. */
+	async handleSendToNewSession(): Promise<void> {
+		// Capture every mutable draft field before attaching the new runtime: hooks can
+		// replace the shared editor while the session switch is in flight.
+		const editor = this.ctx.editor;
+		const draft = {
+			text: editor.getText(),
+			images: [...editor.pendingImages],
+			imageLinks: [...editor.pendingImageLinks],
+		};
+		if (!draft.text && draft.images.length === 0) return;
+
+		const oldTopLevelId = this.ctx.activeTopLevelId;
+		const restoreDraft = () => {
+			const restoredEditor = this.ctx.editor;
+			restoredEditor.setText(draft.text);
+			restoredEditor.pendingImages = [...draft.images];
+			restoredEditor.pendingImageLinks = [...draft.imageLinks];
+			restoredEditor.imageLinks = draft.imageLinks.length > 0 ? restoredEditor.pendingImageLinks : undefined;
+		};
+
+		let oldRuntimeAttached = false;
+		let switchBack: Promise<void> | undefined;
+		const ensureOldRuntime = async (): Promise<void> => {
+			if (oldRuntimeAttached) return;
+			switchBack ??= this.ctx.switchTopLevel(oldTopLevelId);
+			await switchBack;
+			oldRuntimeAttached = true;
+		};
+
+		let targetSubmission: SubmittedUserInput | undefined;
+		let failureRecovery: Promise<void> | undefined;
+		const recoverFailure = (error: unknown): Promise<void> => {
+			if (failureRecovery) return failureRecovery;
+			failureRecovery = (async () => {
+				try {
+					await ensureOldRuntime();
+				} catch (switchError) {
+					logger.warn("Failed to restore previous top-level session", {
+						error: switchError instanceof Error ? switchError.message : String(switchError),
+					});
+				}
+				if (targetSubmission) this.ctx.cancelPendingSubmission?.();
+				restoreDraft();
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+				this.ctx.ui.requestRender();
+			})();
+			return failureRecovery;
+		};
+
+		try {
+			const attached = await this.ctx.startNewTopLevelRuntime();
+			// `false` means a blocking dialog owns input and `undefined` means live
+			// runtime creation is unavailable. Neither state consumed the old draft.
+			if (attached !== true) return;
+
+			// Capture these after the attach: `ctx` is the shared mode object and now
+			// points at the new runtime.
+			const targetSession = this.ctx.session;
+			const targetSessionManager = this.ctx.sessionManager;
+			const images = draft.images.length > 0 ? draft.images : undefined;
+			const imageLinks = await materializeImageReferenceLinks(
+				images,
+				targetSessionManager.putBlob.bind(targetSessionManager),
+			);
+			targetSubmission = this.ctx.startPendingSubmission({
+				text: draft.text,
+				images,
+				imageLinks,
+				streamingBehavior: "steer",
+			});
+
+			// Do not use onInputCallback: its main-loop consumer reads `mode.session`
+			// after we return to the old runtime. Calling prompt starts the new task
+			// directly; intentionally do not await its full agent turn before switching.
+			let dispatchThrewSynchronously = false;
+			let synchronousDispatchError: unknown;
+			const dispatch = this.ctx.withLocalSubmission(
+				draft.text,
+				() => {
+					try {
+						return targetSession.prompt(draft.text, { images, streamingBehavior: "steer" });
+					} catch (error) {
+						dispatchThrewSynchronously = true;
+						synchronousDispatchError = error;
+						return Promise.reject(error);
+					}
+				},
+				{ imageCount: images?.length ?? 0 },
+			);
+			void dispatch.catch(error => {
+				if (!dispatchThrewSynchronously) void recoverFailure(error);
+			});
+			if (dispatchThrewSynchronously) {
+				await recoverFailure(synchronousDispatchError);
+				return;
+			}
+			switchBack ??= this.ctx.switchTopLevel(oldTopLevelId);
+			await switchBack;
+			oldRuntimeAttached = true;
+			if (failureRecovery) {
+				await failureRecovery;
+				return;
+			}
+			if (targetSubmission) this.ctx.finishPendingSubmission?.(targetSubmission);
+			this.ctx.editor.clearDraft();
+			this.ctx.ui.requestRender();
+		} catch (error) {
+			await recoverFailure(error);
+		}
+	}
+
 	/**
-	 * Kick off session-title generation while the session is still unnamed.
-	 * Invoked AFTER the optimistic user row is painted so the local tiny-title
-	 * worker's subprocess spawn never lands ahead of the first frame (issue #6462).
-	 * Skips slash extension commands (consumed locally by AgentSession.prompt()),
-	 * already-named sessions, PI_NO_TITLE, and low-signal greetings — no model or
-	 * download UI for those.
+	 * Kick off session-title generation after the optimistic user row paints.
+	 * Local extension commands are consumed before reaching the shared session
+	 * title gate and must not name the conversation.
 	 */
 	#maybeStartTitleGeneration(text: string): void {
 		const runner = this.ctx.session.extensionRunner;
@@ -1052,32 +1165,12 @@ export class InputController {
 			text.startsWith("/") &&
 			runner?.getCommand(extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace)) !==
 				undefined;
-		if (
-			isLocalExtensionCommand ||
-			this.ctx.sessionManager.getSessionName() ||
-			$env.PI_NO_TITLE ||
-			isLowSignalTitleInput(text)
-		) {
+		if (isLocalExtensionCommand) {
 			return;
 		}
-		this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
-		this.ctx.session
-			.generateTitle(text)
-			.then(async title => {
-				// Re-check: a concurrent attempt for an earlier message may have
-				// already named the session. Don't clobber it. Terminal title and
-				// accent updates fire from the onSessionNameChanged listener.
-				if (title && !this.ctx.sessionManager.getSessionName()) {
-					await this.ctx.sessionManager.setSessionName(title, "auto");
-				}
-			})
-			.catch(err => {
-				logger.warn("title-generator: uncaught auto-title error", {
-					sessionId: this.ctx.session.sessionId,
-					reason: "uncaught-auto-title-error",
-					error: err instanceof Error ? err.message : String(err),
-				});
-			});
+		this.ctx.session.maybeStartTitleGeneration(text, () => {
+			this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
+		});
 	}
 
 	handleCtrlC(): void {

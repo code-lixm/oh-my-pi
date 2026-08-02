@@ -206,13 +206,15 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 		).toEqual([groups[0]!]);
 	});
 
-	it("hides persisted hub process cards until process activity is explicitly enabled", () => {
+	it("hides Hub process cards in rebuilt subagent history even when process activity is enabled", () => {
 		const startCard = "HUB_REBUILD_START_CARD";
 		const waitCard = "HUB_REBUILD_WAIT_CARD";
 		const afterStart = "VISIBLE_AFTER_HUB_START";
 		const afterWait = "VISIBLE_AFTER_HUB_WAIT";
 		const startResult = "HUB_REBUILD_START_RESULT";
 		const waitResult = "HUB_REBUILD_WAIT_RESULT";
+		const visibleCommand = "printf REBUILD_VISIBLE_NON_HUB_TOOL";
+		const visibleResult = "REBUILD_VISIBLE_NON_HUB_RESULT";
 		const messages = [
 			{
 				role: "assistant",
@@ -226,12 +228,25 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 					{ type: "text", text: afterStart },
 					{ type: "toolCall", id: "hub-wait", name: "hub", arguments: { op: "wait", name: waitCard } },
 					{ type: "text", text: afterWait },
+					{
+						type: "toolCall",
+						id: "visible-bash",
+						name: "bash",
+						arguments: { command: visibleCommand },
+					},
 				],
 				api: "anthropic-messages",
 				provider: "anthropic",
 				model: "claude-sonnet-4-5",
 				stopReason: "toolUse",
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
 				timestamp: USAGE_TS,
 			},
 			{
@@ -285,41 +300,42 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 				},
 				timestamp: USAGE_TS,
 			},
+			{
+				role: "toolResult",
+				toolCallId: "visible-bash",
+				toolName: "bash",
+				content: [{ type: "text", text: visibleResult }],
+				isError: false,
+				timestamp: USAGE_TS,
+			},
 		] as unknown as AgentMessage[];
 
-		const renderRebuiltHistory = (showHubProcessActivity: boolean): string => {
-			settings.set("display.showHubProcessActivity", showHubProcessActivity);
-			const builder = new ChatTranscriptBuilder({
-				ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
-				cwd: process.cwd(),
-				requestRender: () => {},
-			});
-			try {
-				builder.rebuild(
-					messages.map((message, index) => ({
-						type: "message",
-						id: `hub-${index}`,
-						parentId: index === 0 ? null : `hub-${index - 1}`,
-						timestamp: new Date(USAGE_TS + index).toISOString(),
-						message,
-					})),
-				);
-				return Bun.stripANSI(builder.container.render(120).join("\n"));
-			} finally {
-				builder.dispose();
+		settings.set("display.showHubProcessActivity", true);
+		const builder = new ChatTranscriptBuilder({
+			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
+			cwd: process.cwd(),
+			requestRender: () => {},
+		});
+		try {
+			builder.rebuild(
+				messages.map((message, index) => ({
+					type: "message",
+					id: `hub-${index}`,
+					parentId: index === 0 ? null : `hub-${index - 1}`,
+					timestamp: new Date(USAGE_TS + index).toISOString(),
+					message,
+				})),
+			);
+
+			const rendered = Bun.stripANSI(builder.container.render(120).join("\n"));
+			for (const hiddenText of [startCard, waitCard, startResult, waitResult]) {
+				expect(rendered).not.toContain(hiddenText);
 			}
-		};
-
-		const hidden = renderRebuiltHistory(false);
-		for (const hiddenText of [startCard, waitCard, startResult, waitResult]) {
-			expect(hidden).not.toContain(hiddenText);
-		}
-		expect(hidden).toContain(afterStart);
-		expect(hidden).toContain(afterWait);
-
-		const visible = renderRebuiltHistory(true);
-		for (const visibleText of [startCard, waitCard, startResult, waitResult, afterStart, afterWait]) {
-			expect(visible).toContain(visibleText);
+			for (const visibleText of [afterStart, afterWait, visibleCommand, visibleResult]) {
+				expect(rendered).toContain(visibleText);
+			}
+		} finally {
+			builder.dispose();
 		}
 	});
 });

@@ -34,6 +34,24 @@ const REQUIRED_SECTIONS = [
 	"## Relevant Files",
 ] as const;
 
+const P3_CONTINUITY_REQUIREMENTS = [
+	"same execution chain",
+	"user constraints/preferences",
+	"settled decisions with rationale/evidence",
+	"verified facts/assumptions",
+	"### Completed",
+	"completed work or delivered updates",
+	"verified facts/commands with outcomes",
+	"### Active",
+	"current work, partial changes, pending decisions, or investigation state",
+	"### Blocked",
+	"blockers, failing commands with outcomes, essential missing state, or unknowns",
+	"immediate concrete action",
+	"recoverable file, artifact/history URI, or summary reference",
+	"Preserve exact file paths, symbols, commands, command outcomes, error strings, URLs, identifiers, and recoverable URIs when known.",
+	"Essential state missing? State the exact gap in Blocked; make recovery the first Next Move.",
+] as const;
+
 const PREVIOUS_SUMMARY = `## Objective
 - Keep the prior objective current.
 
@@ -102,8 +120,16 @@ function expectAnchoredOpenCodeSchema(promptText: string): void {
 	}
 }
 
+function expectP3ContinuityRequirements(instructions: string): void {
+	for (const requirement of P3_CONTINUITY_REQUIREMENTS) {
+		expect(instructions).toContain(requirement);
+	}
+	expect(instructions).toContain("Continue from recorded state; NEVER redo Completed work.");
+	expect(instructions).toContain("NEVER reopen settled decisions without new contradictory evidence.");
+}
+
 describe("generateSummary prompt contract", () => {
-	test("initial summaries ask the model for the anchored OpenCode section schema", async () => {
+	test("initial summaries require the anchored OpenCode schema and P3 execution continuity", async () => {
 		let capturedPrompt = "";
 		await generateSummary(makeConversation(), MODEL, 4096, "test-api-key", undefined, undefined, undefined, {
 			completeImpl: async (_model, ctx) => {
@@ -116,10 +142,12 @@ describe("generateSummary prompt contract", () => {
 		expect(capturedPrompt).toContain("<conversation>");
 		expect(capturedPrompt).toContain("Protect the OpenCode compaction contract.");
 		expect(capturedPrompt).not.toContain("<previous-summary>");
-		expectAnchoredOpenCodeSchema(promptInstructions(capturedPrompt, "</conversation>\n\n"));
+		const instructions = promptInstructions(capturedPrompt, "</conversation>\n\n");
+		expectAnchoredOpenCodeSchema(instructions);
+		expectP3ContinuityRequirements(instructions);
 	});
 
-	test("update summaries keep the previous summary context and re-ask for the same anchored schema", async () => {
+	test("update summaries retain prior context and require the anchored schema with P3 continuity", async () => {
 		let capturedPrompt = "";
 		await generateSummary(makeConversation(), MODEL, 4096, "test-api-key", undefined, undefined, PREVIOUS_SUMMARY, {
 			completeImpl: async (_model, ctx) => {
@@ -131,6 +159,9 @@ describe("generateSummary prompt contract", () => {
 
 		expect(capturedPrompt).toContain("<previous-summary>");
 		expect(capturedPrompt).toContain(PREVIOUS_SUMMARY);
-		expectAnchoredOpenCodeSchema(promptInstructions(capturedPrompt, "</previous-summary>\n\n"));
+		const instructions = promptInstructions(capturedPrompt, "</previous-summary>\n\n");
+		expectAnchoredOpenCodeSchema(instructions);
+		expectP3ContinuityRequirements(instructions);
+		expect(instructions).toContain("Preserve still-true details, remove stale details, and merge in new facts.");
 	});
 });

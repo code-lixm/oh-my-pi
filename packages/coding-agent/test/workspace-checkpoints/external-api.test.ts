@@ -61,13 +61,16 @@ function makeCheckpointRecord(rootPath: string): WorkspaceCheckpointRecord {
 	};
 }
 
-function makeRestorePlan(rootPath: string): WorkspaceRestorePlan {
+function makeRestorePlan(
+	rootPath: string,
+	metadata: Pick<WorkspaceRestorePlan, "scope" | "strategy">,
+): WorkspaceRestorePlan {
 	return {
 		id: "plan_001",
 		checkpointId: "ckpt_001",
 		rootPath,
-		scope: "code",
-		strategy: "preserve",
+		scope: metadata.scope,
+		strategy: metadata.strategy,
 		operations: [{ path: "note.txt", kind: "update", objectId: "cas:file-001" }],
 		conflicts: [],
 		conversationEntryId: null,
@@ -75,15 +78,19 @@ function makeRestorePlan(rootPath: string): WorkspaceRestorePlan {
 	};
 }
 
-function makeRestoreResult(): WorkspaceRestoreResult {
+function makeRestoreResult(
+	plan: Pick<WorkspaceRestorePlan, "checkpointId" | "scope" | "strategy">,
+): WorkspaceRestoreResult {
 	return {
 		transactionId: "tx_001",
-		checkpointId: "ckpt_001",
+		checkpointId: plan.checkpointId,
 		guardCheckpointId: "ckpt_guard_001",
 		restoredPaths: ["note.txt"],
 		skippedPaths: [],
 		conversationEntryId: null,
 		redoAvailable: true,
+		scope: plan.scope,
+		strategy: plan.strategy,
 	};
 }
 function appendUserMessage(sessionManager: SessionManager, text: string, timestamp: number): string {
@@ -371,8 +378,8 @@ describe("workspace checkpoint external API contracts", () => {
 			rootPath: "/tmp/workspace",
 		} satisfies Extract<RpcCommand, { type: "workspace_restore_preview" }>["request"];
 		const record = makeCheckpointRecord("/tmp/workspace");
-		const plan = makeRestorePlan("/tmp/workspace");
-		const result = makeRestoreResult();
+		const plan = makeRestorePlan("/tmp/workspace", previewRequest);
+		const result = makeRestoreResult(plan);
 
 		const createCommand = {
 			type: "workspace_checkpoint_create",
@@ -467,8 +474,8 @@ describe("workspace checkpoint external API contracts", () => {
 			rootPath: "/tmp/workspace",
 		} satisfies Extract<RpcCommand, { type: "workspace_restore_preview" }>["request"];
 		const record = makeCheckpointRecord("/tmp/workspace");
-		const plan = makeRestorePlan("/tmp/workspace");
-		const result = makeRestoreResult();
+		const plan = makeRestorePlan("/tmp/workspace", previewRequest);
+		const result = makeRestoreResult(plan);
 
 		const cases: Array<{
 			method: WorkspaceRpcMethod;
@@ -725,12 +732,13 @@ describe("workspace checkpoint external API contracts", () => {
 				checkpointTranscript,
 			);
 
-			const previewAccess = await created.session.previewWorkspaceRestore({
+			const previewRequest = {
 				checkpointId: checkpoint.id,
 				scope: testCase.scope,
-				strategy: "preserve",
+				strategy: "preserve" as const,
 				rootPath: cwd,
-			});
+			};
+			const previewAccess = await created.session.previewWorkspaceRestore(previewRequest);
 			expect(previewAccess.available).toBe(true);
 			if (!previewAccess.available || !previewAccess.value) {
 				throw new Error(`expected SDK preview for ${testCase.scope} to succeed`);
@@ -749,6 +757,8 @@ describe("workspace checkpoint external API contracts", () => {
 			}
 			expect(applyAccess.available).toBe(true);
 			expect(applyAccess.value.conversationEntryId).toBe(checkpointLeafId);
+			expect(applyAccess.value.scope).toBe(previewRequest.scope);
+			expect(applyAccess.value.strategy).toBe(previewRequest.strategy);
 			const restoredConversationLeaf = [...created.session.sessionManager.getBranch()]
 				.reverse()
 				.find(entry => entry.type === "message");
@@ -921,6 +931,8 @@ describe("workspace checkpoint external API contracts", () => {
 			expect(applied.exitCode, applied.stderr).toBe(0);
 			expect(applied.stderr).toBe("");
 			const result = JSON.parse(applied.stdout) as WorkspaceRestoreResult;
+			expect(result.scope).toBe("code");
+			expect(result.strategy).toBe("preserve");
 			expect(result.restoredPaths).toContain("restored.txt");
 			expect(await fs.readFile(restoredPath, "utf8")).toBe("checkpoint restore target\n");
 		});
@@ -950,6 +962,8 @@ describe("workspace checkpoint external API contracts", () => {
 			expect(applied.exitCode, applied.stderr).toBe(0);
 			expect(applied.stderr).toBe("");
 			const applyResult = JSON.parse(applied.stdout) as WorkspaceRestoreResult;
+			expect(applyResult.scope).toBe("code");
+			expect(applyResult.strategy).toBe("preserve");
 			expect(applyResult.restoredPaths).toContain("note.txt");
 			expect(await fs.readFile(notePath, "utf8")).toBe("checkpoint content\n");
 
@@ -981,6 +995,8 @@ describe("workspace checkpoint external API contracts", () => {
 			expect(applied.exitCode, applied.stderr).toBe(0);
 			expect(applied.stderr).toBe("");
 			const applyResult = JSON.parse(applied.stdout) as WorkspaceRestoreResult;
+			expect(applyResult.scope).toBe("code");
+			expect(applyResult.strategy).toBe("preserve");
 			expect(applyResult.restoredPaths).toContain("note.txt");
 			expect(await fs.readFile(notePath, "utf8")).toBe("checkpoint content\n");
 
@@ -988,18 +1004,24 @@ describe("workspace checkpoint external API contracts", () => {
 			expect(undone.exitCode, undone.stderr).toBe(0);
 			expect(undone.stderr).toBe("");
 			const undoResult = JSON.parse(undone.stdout) as WorkspaceRestoreResult;
+			expect(undoResult.scope).toBe("code");
+			expect(undoResult.strategy).toBe("preserve");
 			const afterUndo = await fs.readFile(notePath, "utf8");
 
 			const redone = await runCliCapture(["redo", "--json"]);
 			expect(redone.exitCode, redone.stderr).toBe(0);
 			expect(redone.stderr).toBe("");
 			const redoResult = JSON.parse(redone.stdout) as WorkspaceRestoreResult;
+			expect(redoResult.scope).toBe("code");
+			expect(redoResult.strategy).toBe("preserve");
 			const afterRedo = await fs.readFile(notePath, "utf8");
 
 			const undoneAgain = await runCliCapture(["undo", "--scope", "code", "--json"]);
 			expect(undoneAgain.exitCode, undoneAgain.stderr).toBe(0);
 			expect(undoneAgain.stderr).toBe("");
 			const secondUndoResult = JSON.parse(undoneAgain.stdout) as WorkspaceRestoreResult;
+			expect(secondUndoResult.scope).toBe("code");
+			expect(secondUndoResult.strategy).toBe("preserve");
 			const afterSecondUndo = await fs.readFile(notePath, "utf8");
 			expect({ afterUndo, afterRedo, afterSecondUndo }).toEqual({
 				afterUndo: "pre-apply content\n",

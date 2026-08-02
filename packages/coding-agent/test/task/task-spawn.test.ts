@@ -21,6 +21,8 @@ import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, SingleResult, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
+import { getPromptLocale, setPromptLocale } from "../../src/prompts/prompt-locale";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -76,6 +78,8 @@ function deferred(): Deferred {
 
 describe("task spawn routing", () => {
 	const managers: AsyncJobManager[] = [];
+	let settingsUiLocaleBeforeTest = getSettingsUiLocale();
+	let promptLocaleBeforeTest = getPromptLocale();
 
 	function createManager(): AsyncJobManager {
 		const manager = new AsyncJobManager({ onJobComplete: () => {} });
@@ -84,11 +88,15 @@ describe("task spawn routing", () => {
 	}
 
 	beforeEach(() => {
+		settingsUiLocaleBeforeTest = getSettingsUiLocale();
+		promptLocaleBeforeTest = getPromptLocale();
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 	});
 
 	afterEach(async () => {
+		setSettingsUiLocale(settingsUiLocaleBeforeTest);
+		setPromptLocale(promptLocaleBeforeTest);
 		vi.restoreAllMocks();
 		for (const manager of managers.splice(0)) {
 			await manager.dispose({ timeoutMs: 1000 });
@@ -149,6 +157,95 @@ describe("task spawn routing", () => {
 		expect(terminalProgress?.resultText).not.toContain("is now idle");
 		expect(runSpy).toHaveBeenCalledTimes(1);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini"]);
+	});
+
+	it("adds recovery instructions only to failed task summaries in each locale", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		const results: Record<string, SingleResult> = {
+			ExitFailure: makeResult("ExitFailure", {
+				exitCode: 2,
+				output: "exit failure evidence",
+				stderr: "worker exited 2",
+			}),
+			MergeFailure: makeResult("MergeFailure", {
+				exitCode: 0,
+				error: "Merge failed: conflicting changes",
+				output: "merge failure evidence",
+			}),
+			Completed: makeResult("Completed", { output: "completed evidence" }),
+			Aborted: makeResult("Aborted", {
+				exitCode: 1,
+				aborted: true,
+				abortReason: "Cancelled by user",
+				error: "cancelled",
+				output: "cancelled evidence",
+			}),
+		};
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const result = results[options.id ?? ""];
+			if (!result) throw new Error(`Missing result for ${options.id}`);
+			return result;
+		});
+
+		for (const testCase of [
+			{
+				locale: "en",
+				recoveryPhrases: [
+					"Do not treat it as completed.",
+					"Preserve successful sibling results",
+					"inspect the failure evidence above",
+					"Retry only work that has not already completed.",
+					"If recovery is not possible, report the blocker explicitly.",
+				],
+			},
+			{
+				locale: "zh-CN",
+				recoveryPhrases: [
+					"不要将其视为已完成。",
+					"保留其他已成功子任务的结果",
+					"检查上述失败证据",
+					"只重试尚未完成的工作",
+					"如果无法恢复，请明确报告阻塞原因。",
+				],
+			},
+		] as const) {
+			const session = createSession({ settings: { "async.enabled": true, "task.batch": true } });
+			setSettingsUiLocale(testCase.locale);
+			setPromptLocale(testCase.locale);
+			const tool = await TaskTool.create(session);
+			const response = await tool.execute("tc-recovery", {
+				context: "Preserve completed work while resolving failures.",
+				tasks: [
+					{ name: "ExitFailure", task: "Fail by exit code." },
+					{ name: "MergeFailure", task: "Fail during merge." },
+					{ name: "Completed", task: "Complete normally." },
+					{ name: "Aborted", task: "Stop on user cancellation." },
+				],
+			} as TaskParams);
+			const summary = getFirstText(response);
+			const section = (id: string): string => {
+				const start = summary.indexOf(`<task-result id="${id}"`);
+				const end = summary.indexOf("</task-result>", start);
+				if (start === -1 || end === -1) throw new Error(`Missing summary for ${id}`);
+				return summary.slice(start, end + "</task-result>".length);
+			};
+
+			expect(section("ExitFailure")).toContain('status="failed (exit 2)"');
+			expect(section("MergeFailure")).toContain('status="merge failed"');
+			expect(section("Completed")).toContain('status="completed"');
+			expect(section("Aborted")).toContain('status="cancelled"');
+			for (const id of ["ExitFailure", "MergeFailure"]) {
+				const failedSummary = section(id);
+				expect(failedSummary).toContain("<recovery-required>");
+				for (const phrase of testCase.recoveryPhrases) expect(failedSummary).toContain(phrase);
+			}
+			for (const id of ["Completed", "Aborted"]) {
+				expect(section(id)).not.toContain("<recovery-required>");
+			}
+		}
 	});
 
 	it("does not serialize async spawn job bodies when task.maxConcurrency is 1", async () => {

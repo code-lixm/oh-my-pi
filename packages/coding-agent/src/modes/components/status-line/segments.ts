@@ -12,6 +12,7 @@ import {
 	resolveTopLevelAgent,
 } from "../../../registry/agent-registry";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
+import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
@@ -304,7 +305,8 @@ const pathSegment: StatusLineSegment = {
 			const { projectName, worktreeName } = ctx.worktree;
 			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
 			const displayLabel = opts.basenameOnly ? path.basename(label) : label;
-			const content = withIcon(theme.icon.worktree, clampPathLength(displayLabel, opts.maxLength ?? 40));
+			const text = fileHyperlink(getProjectDir(), clampPathLength(displayLabel, opts.maxLength ?? 40));
+			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
@@ -325,13 +327,10 @@ const pathSegment: StatusLineSegment = {
 		}
 
 		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
-		if (repoSuffix) {
-			pwd = `${pwd}${repoSuffix}`;
-		}
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const content = withIcon(icon, pwd);
+		const content = withIcon(icon, `${fileHyperlink(projectDir, pwd)}${repoSuffix}`);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},
 };
