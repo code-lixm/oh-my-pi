@@ -175,9 +175,9 @@ import { FocusedAgentView } from "./components/focused-agent-view";
 import type { HookEditorComponent } from "./components/hook-editor";
 import type { HookInputComponent } from "./components/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "./components/hook-selector";
-import { LastTurnViewer } from "./components/last-turn-viewer";
 import { formatRoleDisplayLabel } from "./components/model-browser";
 import { type PlanReviewAnnotationState, PlanReviewOverlay } from "./components/plan-review-overlay";
+import { SessionHistoryViewer } from "./components/session-history-viewer";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
@@ -3237,25 +3237,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	showLastTurn(): void {
-		const branch = this.sessionManager.getBranch();
-		const messages = branch.filter((entry): entry is SessionMessageEntry => entry.type === "message");
-		let start = -1;
-		for (let index = messages.length - 1; index >= 0; index--) {
-			const message = messages[index]!.message;
-			if (message.role === "user" && message.synthetic !== true) {
-				start = index;
-				break;
-			}
-		}
-		if (start === -1) {
-			this.showStatus(tSettingsUi("No user messages found"));
-			return;
-		}
+	showSessionHistory(): void {
+		const entries = this.sessionManager
+			.getBranch()
+			.filter((entry): entry is SessionMessageEntry => entry.type === "message");
 
 		let handle: OverlayHandle | undefined;
-		const viewer = new LastTurnViewer({
-			entries: messages.slice(start),
+		const viewer = new SessionHistoryViewer({
+			entries,
 			ui: this.ui,
 			getTool: name => this.session.getToolByName(name),
 			getMessageRenderer: type => this.session.extensionRunner?.getMessageRenderer(type),
@@ -3263,7 +3252,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			hideThinkingBlock: () => this.effectiveHideThinkingBlock,
 			proseOnlyThinking: () => this.proseOnlyThinking,
 			requestRender: () => this.ui.requestRender(),
-			// Phase 3B: keep last-turn transcript links / images clickable. The host
+			// Phase 3B: keep session-history transcript links / images clickable. The host
 			// is the live InteractiveModeContext itself — routes through openPath
 			// for both URLs and the content-addressed blob store for image bytes.
 			openLink: href => openRichContentLink(this, href),
@@ -5201,12 +5190,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#selectorController.showDebugSelector();
 	}
 
-	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void {
+	showAgentHub(options?: { armCloseTap?: boolean }): void {
 		this.#selectorController.showAgentHub(this.#observerRegistry, options);
 	}
 
-	showJobsHub(options?: { requireContent?: boolean }): void {
-		this.#selectorController.showJobsHub(options);
+	showJobsHub(): void {
+		this.#selectorController.showJobsHub();
 	}
 
 	resetObserverRegistry(): void {

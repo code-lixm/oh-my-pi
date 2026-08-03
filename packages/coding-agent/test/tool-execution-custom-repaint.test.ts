@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { type Component, Text, TUI } from "@oh-my-pi/pi-tui";
@@ -15,6 +16,16 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 function toolResult(text: string) {
 	return { content: [{ type: "text", text }] };
+}
+
+function resultWithThrowingPerFileResults(text: string) {
+	const details = {};
+	Object.defineProperty(details, "perFileResults", {
+		get() {
+			throw new Error("adversarial perFileResults getter");
+		},
+	});
+	return { content: [{ type: "text", text }], details };
 }
 
 function editArgs() {
@@ -157,6 +168,50 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 		} finally {
 			setOutputBlockBorderStyle(previousBorderStyle);
 		}
+	});
+
+	it("settles a streamed edit when final per-file details throw during display rebuild", () => {
+		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI;
+		const component = new ToolExecutionComponent(
+			"edit",
+			{
+				...editArgs(),
+				previewDiff: "-1|export const alpha = 1;\n+1|export const alpha = 2;",
+			},
+			{},
+			undefined,
+			ui,
+		);
+		components.push(component);
+		const finalResultText = "final result survives a failed display rebuild";
+
+		const pendingOutput = plainRows(component.render(100)).join("\n");
+		expect(pendingOutput).toContain("(preview)");
+
+		expect(() => component.updateResult(resultWithThrowingPerFileResults(finalResultText), false)).not.toThrow();
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+
+		const finalOutput = plainRows(component.render(100)).join("\n");
+		expect(finalOutput).not.toContain("(preview)");
+		expect(
+			finalOutput.includes(finalResultText) ||
+				/(?:result|output|display).*(?:unavailable|failed|unable)|(?:unavailable|failed|unable).*(?:result|output|display)/i.test(
+					finalOutput,
+				),
+		).toBe(true);
+
+		const transcript = new TranscriptContainer();
+		const subsequentBlock = "subsequent transcript block";
+		transcript.addChild(component);
+		transcript.addChild(new Text(subsequentBlock, 0, 0));
+		const transcriptRows = transcript.render(100);
+		const plainTranscriptRows = plainRows(transcriptRows);
+		const subsequentBlockIndex = plainTranscriptRows.indexOf(subsequentBlock);
+
+		expect(subsequentBlockIndex).toBeGreaterThan(0);
+		expect(transcriptRows[subsequentBlockIndex]?.trimEnd()).toBe(subsequentBlock);
+		expect(transcriptRows[subsequentBlockIndex - 1]).toBe("");
+		expect(plainTranscriptRows.slice(0, subsequentBlockIndex).join("\n")).not.toContain("(preview)");
 	});
 
 	it("does not repaint when the provisional multi-file edit result never reaches the terminal", () => {

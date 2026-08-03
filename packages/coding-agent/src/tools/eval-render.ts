@@ -640,7 +640,9 @@ export const evalToolRenderer = {
 						);
 						lines.push(...cellLines);
 						if (agentEvents.length > 0) {
-							lines.push(...renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame));
+							// The progress tree lives outside the accent-framed code cell. Keep an
+							// unpainted row between the two surfaces so they do not visually fuse.
+							lines.push("", ...renderAgentProgressEvents(agentEvents, uiTheme, options.spinnerFrame));
 						}
 						if (i < cellResults.length - 1) {
 							lines.push("");

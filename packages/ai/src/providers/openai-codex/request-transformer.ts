@@ -92,6 +92,20 @@ export interface RequestBody {
 }
 
 /**
+ * Prompt fragments prepended ahead of conversation input. Native fragments are
+ * atomic: when either native field is present, legacy `developerMessages` is
+ * deliberately ignored so a native sidecar cannot mix with its fallback.
+ */
+export interface CodexPromptFragments {
+	/** Legacy canonical-prompt developer messages. */
+	developerMessages?: readonly string[];
+	/** Native OMP developer fragments, in source order. */
+	developerFragments?: readonly string[];
+	/** Native contextual-user fragments, in source order. */
+	contextualUserFragments?: readonly string[];
+}
+
+/**
  * Resolve whether a Codex request uses the Responses Lite transport: an
  * explicit option wins, then the `PI_CODEX_RESPONSES_LITE` env override
  * (`1`/`true` forces Lite, `0`/`false` forces the full Responses body),
@@ -363,7 +377,7 @@ export async function transformRequestBody(
 	body: RequestBody,
 	model: Model<"openai-codex-responses">,
 	options: CodexRequestOptions = {},
-	prompt?: { developerMessages: string[] },
+	prompt?: CodexPromptFragments,
 ): Promise<RequestBody> {
 	body.store = false;
 	body.stream = true;
@@ -375,17 +389,29 @@ export async function transformRequestBody(
 		}
 	}
 
-	if (prompt?.developerMessages && prompt.developerMessages.length > 0) {
-		const developerMessages: InputItem[] = prompt.developerMessages.map(text => ({
+	const hasNativeFragments = prompt?.developerFragments !== undefined || prompt?.contextualUserFragments !== undefined;
+	const developerFragments = hasNativeFragments
+		? (prompt?.developerFragments ?? [])
+		: (prompt?.developerMessages ?? []);
+	const contextualUserFragments = hasNativeFragments ? (prompt?.contextualUserFragments ?? []) : [];
+	const promptMessages: InputItem[] = [
+		...developerFragments.map(text => ({
 			type: "message",
 			role: "developer",
 			content: [{ type: "input_text", text }],
-		}));
+		})),
+		...contextualUserFragments.map(text => ({
+			type: "message",
+			role: "user",
+			content: [{ type: "input_text", text }],
+		})),
+	];
+	if (promptMessages.length > 0) {
 		const input = Array.isArray(body.input) ? body.input : [];
-		body.input = [...developerMessages, ...input];
+		body.input = [...promptMessages, ...input];
 	}
 
-	let finalInstruction = prompt?.developerMessages.findLast(text => text.trim().length > 0);
+	let finalInstruction = developerFragments.findLast(text => text.trim().length > 0);
 	if (finalInstruction === undefined && Array.isArray(body.input)) {
 		for (let itemIndex = body.input.length - 1; itemIndex >= 0; itemIndex -= 1) {
 			const item = body.input[itemIndex];

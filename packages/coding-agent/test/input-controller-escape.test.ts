@@ -935,7 +935,7 @@ describe("InputController escape behavior", () => {
 		expect(first).toEqual({ consume: true });
 		expect(second).toEqual({ consume: true });
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
-		expect(ctx.showAgentHub).toHaveBeenCalledWith({ requireContent: true, armCloseTap: true });
+		expect(ctx.showAgentHub).toHaveBeenCalledWith({ armCloseTap: true });
 		expect(ctx.focusParentSession).not.toHaveBeenCalled();
 	});
 	it("does not open tree or branch or clear the display on default double-Esc", () => {
@@ -1110,7 +1110,7 @@ describe("InputController double-tap ← gesture", () => {
 		tap();
 		now.mockReturnValue(1_200); // 200ms later — a human double-tap
 		tap();
-		expect(showAgentHub).toHaveBeenCalledTimes(1);
+		expect(showAgentHub).toHaveBeenCalledWith({ armCloseTap: true });
 	});
 
 	it("ignores a terminal-synthesized burst of ← arrows arriving together", () => {
@@ -1142,6 +1142,6 @@ describe("InputController double-tap ← gesture", () => {
 		tap();
 		await Promise.resolve();
 		expect(unfocusSession).toHaveBeenCalledTimes(1);
-		expect(showAgentHub).toHaveBeenCalledWith({ requireContent: true, armCloseTap: true });
+		expect(showAgentHub).toHaveBeenCalledWith({ armCloseTap: true });
 	});
 });

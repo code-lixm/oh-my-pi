@@ -7,6 +7,9 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
+import { createCodexFallbackPromptFingerprint, createCodexNativePromptFingerprint } from "@oh-my-pi/pi-ai/types";
+import { renderCodexPromptInstructions } from "@oh-my-pi/pi-catalog/discovery/codex";
+import type { CodexPromptModelMessages, CodexPromptProfile } from "@oh-my-pi/pi-catalog/types";
 import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
@@ -20,6 +23,12 @@ import { selectModelGuidance } from "./prompts/model-guidance";
 import { selectPrompt } from "./prompts/prompt-locale";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import activeRepoContextTemplateZh from "./prompts/system/active-repo-context.zh-CN.md" with { type: "text" };
+import codexNativeAdapterPrompt from "./prompts/system/codex-native-adapter.md" with { type: "text" };
+import codexNativeAdapterPromptZh from "./prompts/system/codex-native-adapter.zh-CN.md" with { type: "text" };
+import codexNativeRuntimePrompt from "./prompts/system/codex-native-runtime.md" with { type: "text" };
+import codexNativeRuntimePromptZh from "./prompts/system/codex-native-runtime.zh-CN.md" with { type: "text" };
+import completionHandoffPrompt from "./prompts/system/completion-handoff.md" with { type: "text" };
+import completionHandoffPromptZh from "./prompts/system/completion-handoff.zh-CN.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import customSystemPromptTemplateZh from "./prompts/system/custom-system-prompt.zh-CN.md" with { type: "text" };
@@ -29,10 +38,14 @@ import friendlyPersonality from "./prompts/system/personalities/friendly.md" wit
 import friendlyPersonalityZh from "./prompts/system/personalities/friendly.zh-CN.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import pragmaticPersonalityZh from "./prompts/system/personalities/pragmatic.zh-CN.md" with { type: "text" };
+import progressCommentaryPrompt from "./prompts/system/progress-commentary.md" with { type: "text" };
+import progressCommentaryPromptZh from "./prompts/system/progress-commentary.zh-CN.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import projectPromptTemplateZh from "./prompts/system/project-prompt.zh-CN.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import systemPromptTemplateZh from "./prompts/system/system-prompt.zh-CN.md" with { type: "text" };
+import taskIntentPrompt from "./prompts/system/task-intent.md" with { type: "text" };
+import taskIntentPromptZh from "./prompts/system/task-intent.zh-CN.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
@@ -58,6 +71,32 @@ const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, { readonly value: 
 		},
 	},
 };
+
+export type CodexNativePromptMode = "off" | "shadow" | "on";
+
+/** Minimal profile surface accepted from trusted catalog discovery. */
+export interface CodexPromptProfileInput {
+	modelId: string;
+	baseInstructions: string;
+	/** Provider provenance is retained verbatim and never interpreted by OMP. */
+	modelMessages: object;
+	compHash: string;
+	etag?: string;
+	source: "openai-codex";
+	vendorDigest: string;
+}
+
+/** Provider-only Codex prompt sidecar. The canonical system prompt remains the fallback. */
+export interface CodexNativePrompt {
+	instructions: string;
+	/** Provenance only; native serializers NEVER inject it as an instruction. */
+	modelMessages: CodexPromptModelMessages;
+	developerFragments: string[];
+	contextualUserFragments: string[];
+	vendorDigest: string;
+	promptFingerprint: string;
+	fallbackFingerprint: string;
+}
 
 interface AlwaysApplyRule {
 	name: string;
@@ -115,6 +154,70 @@ function firstNonEmpty(...values: (string | undefined | null)[]): string | null 
 		if (trimmed) return trimmed;
 	}
 	return null;
+}
+
+function isEligibleCodexPromptProfile(
+	mode: CodexNativePromptMode,
+	model: string | undefined,
+	profile: CodexPromptProfileInput | undefined,
+): profile is CodexPromptProfileInput {
+	return (
+		mode === "on" &&
+		profile !== undefined &&
+		profile.source === "openai-codex" &&
+		profile.modelId.trim().length > 0 &&
+		profile.baseInstructions.trim().length > 0 &&
+		profile.compHash.trim().length > 0 &&
+		profile.vendorDigest.trim().length > 0 &&
+		model === `openai-codex/${profile.modelId}`
+	);
+}
+
+async function buildCodexNativePrompt(options: {
+	mode: CodexNativePromptMode;
+	model: string | undefined;
+	profile: CodexPromptProfileInput | undefined;
+	personality: Personality;
+	canonicalPromptMutated: boolean;
+	fallbackSystemPrompt: string[];
+	developerFragments: string[];
+	contextualUserFragments: string[];
+}): Promise<CodexNativePrompt | undefined> {
+	if (options.canonicalPromptMutated || !isEligibleCodexPromptProfile(options.mode, options.model, options.profile)) {
+		return undefined;
+	}
+
+	let instructions: string;
+	try {
+		instructions = renderCodexPromptInstructions(
+			options.profile as CodexPromptProfile,
+			options.personality === "none" ? "default" : options.personality,
+		);
+	} catch {
+		return undefined;
+	}
+	if (!instructions.trim()) return undefined;
+
+	const [promptFingerprint, fallbackFingerprint] = await Promise.all([
+		createCodexNativePromptFingerprint({
+			vendorDigest: options.profile.vendorDigest,
+			instructions,
+			modelMessages: options.profile.modelMessages,
+			developerFragments: options.developerFragments,
+			contextualUserFragments: options.contextualUserFragments,
+		}),
+		createCodexFallbackPromptFingerprint(options.fallbackSystemPrompt),
+	]);
+
+	return {
+		instructions,
+		modelMessages: options.profile.modelMessages as CodexPromptModelMessages,
+		developerFragments: options.developerFragments,
+		contextualUserFragments: options.contextualUserFragments,
+		vendorDigest: options.profile.vendorDigest,
+		promptFingerprint,
+		fallbackFingerprint,
+	};
 }
 
 function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | null): string {
@@ -574,6 +677,14 @@ export interface BuildSystemPromptOptions {
 	xdevDocs?: string;
 	/** Whether Auto-QA grievance reporting is enabled; renders the `xd://report_issue` note. */
 	autoQaEnabled?: boolean;
+	/** Codex native prompt experiment mode. `shadow` preserves only the canonical fallback. */
+	codexPromptMode?: CodexNativePromptMode;
+	/** Trusted provider profile supplied by the official OpenAI Codex catalog path. */
+	codexPromptProfile?: CodexPromptProfileInput;
+	/** Enables the static progress-commentary policy in a native Codex sidecar. */
+	progressUpdates?: "off" | "auto";
+	/** Enables the static completion-handoff policy in a native Codex sidecar. */
+	nextSteps?: "off" | "auto";
 }
 
 /** Result of building provider-facing system prompt messages. */
@@ -588,6 +699,8 @@ export interface BuildSystemPromptResult {
 	 * a catalog the prompt already carries (issue #7139).
 	 */
 	xdevCatalogNames?: readonly string[];
+	/** Complete native Codex sidecar; omitted unless the entire native path is eligible. */
+	codexNativePrompt?: CodexNativePrompt;
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -631,6 +744,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		xdevDocs = "",
 		autoQaEnabled = false,
 		activeRepoContext: providedActiveRepoContext,
+		codexPromptMode = "off",
+		codexPromptProfile,
+		progressUpdates = "off",
+		nextSteps = "off",
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
 	const resolvedCwd = cwd ?? getProjectDir();
@@ -926,6 +1043,16 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	if (toolNames.includes("computer")) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
+	const behaviorPolicyFragments = !resolvedCustomPrompt
+		? [
+				selectPrompt(taskIntentPrompt, taskIntentPromptZh).trim(),
+				...(progressUpdates === "auto"
+					? [selectPrompt(progressCommentaryPrompt, progressCommentaryPromptZh).trim()]
+					: []),
+				...(nextSteps === "auto" ? [selectPrompt(completionHandoffPrompt, completionHandoffPromptZh).trim()] : []),
+			].filter(fragment => fragment.length > 0)
+		: [];
+	systemPrompt.push(...behaviorPolicyFragments);
 	// Custom prompt templates already render context files and append text; the
 	// project footer still carries environment, cwd, workspace, and dir-context.
 	const projectPrompt = prompt
@@ -945,5 +1072,36 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// default template; a resolved custom prompt uses a template that omits it.
 	const xdevCatalogNames =
 		!resolvedCustomPrompt && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
-	return { systemPrompt, xdevCatalogNames };
+	const nativeProjectPrompt = prompt
+		.render(selectPrompt(projectPromptTemplate, projectPromptTemplateZh), {
+			...data,
+			contextFiles: [],
+			appendPrompt: "",
+		})
+		.trim();
+	const nativeRuntimeFragment = prompt
+		.render(selectPrompt(codexNativeRuntimePrompt, codexNativeRuntimePromptZh), data)
+		.trim();
+	const nativeDeveloperFragments = [
+		prompt.render(selectPrompt(codexNativeAdapterPrompt, codexNativeAdapterPromptZh), data).trim(),
+		nativeRuntimeFragment,
+		...behaviorPolicyFragments,
+	].filter(fragment => fragment.length > 0);
+	const contextualUserFragments = [
+		...contextFiles.map(file => file.content),
+		nativeProjectPrompt,
+		activeRepoContextPrompt,
+	].filter((fragment): fragment is string => fragment.length > 0);
+	const codexNativePrompt = await buildCodexNativePrompt({
+		mode: codexPromptMode,
+		model,
+		profile: codexPromptProfile,
+		personality,
+		canonicalPromptMutated:
+			Boolean(systemPromptCustomization) || Boolean(resolvedCustomPrompt) || Boolean(resolvedAppendPrompt),
+		fallbackSystemPrompt: systemPrompt,
+		developerFragments: nativeDeveloperFragments,
+		contextualUserFragments,
+	});
+	return { systemPrompt, xdevCatalogNames, ...(codexNativePrompt ? { codexNativePrompt } : {}) };
 }

@@ -651,6 +651,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Session deleted": "会话已删除",
 	"Session exported to: {filePath}": "会话已导出到：{filePath}",
 	"Session has not been saved yet": "会话尚未保存",
+	"Session history": "会话历史",
+	"View session history": "查看会话历史",
 	"Session shared": "会话已分享",
 	"Set up Oh My Pi in terminal": "在终端里设置 Oh My Pi",
 	Skills: "技能",
@@ -981,6 +983,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Esc skips this step": "Esc 跳过此步",
 	"Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom": "Esc:关闭  {expandKey}:展开  j/k:滚动  g/G:顶部/底部",
 	"Esc:close  j/k:scroll  g/G:top/bottom": "Esc:关闭  j/k:滚动  g/G:顶部/底部",
+	"Esc:close  j/k:scroll  Alt+J/K:turn  /:search  n/N:match  g/G:top/bottom":
+		"Esc:关闭  j/k:滚动  Alt+J/K:回合  /:搜索  n/N:匹配  g/G:顶部/底部",
 	"Exit application": "退出应用",
 	"Expand tools": "展开工具",
 	"Failed to load agents: {message}": "加载代理失败：{message}",
@@ -3157,7 +3161,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Missing list for init operation": "init 操作缺少列表",
 	"Model output is missing required fields (identifier, whenToUse, systemPrompt)":
 		"模型输出缺少必填字段（identifier、whenToUse、systemPrompt）",
-	"No history yet": "还没有历史记录",
+	"No history yet": "暂无会话历史",
+	"No matches": "无匹配结果",
 	"No matching history": "没有匹配的历史记录",
 	"No matching items": "没有匹配项",
 	"No response returned by agent creation architect.": "agent creation architect 未返回响应。",
@@ -4352,7 +4357,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Open the advisor configuration editor (TUI)": "打开审阅助手配置编辑器（TUI）",
 	"[raw]": "[raw]",
 	"Open settings menu": "打开设置菜单",
-	"View the latest user turn": "查看最新用户回合",
 	"Open provider setup": "打开提供方设置",
 	"Toggle plan mode (agent plans before executing)": "切换计划模式（先规划再执行）",
 	"[prompt]": "[prompt]",
@@ -4997,4 +5001,28 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"结果已提交（在 {count} 次失败后已跳过结构校验）。",
 	"Result submitted (schema validation overridden).": "结果已提交（已跳过结构校验）。",
 	"Task aborted: {error}": "任务已中止：{error}",
+	Communication: "沟通",
+	"Next-Step Offers": "后续操作建议",
+	"Record up to three structured, user-selectable next-step offers after successful final responses.":
+		"在成功的最终回复后记录最多三项可由用户选择的结构化后续操作建议。",
+	"Keep legacy final responses without structured next-step offers": "保留不含结构化后续操作建议的旧版最终回复行为",
+	"Offer structured next steps when the active prompt policy supports them":
+		"在当前提示策略支持时提供结构化后续操作建议",
+	"Progress Updates": "进度更新",
+	"Control concise commentary updates during multi-step work.": "控制多步骤工作过程中的简洁说明更新。",
+	"Keep legacy behavior without a progress-update policy": "保留不使用进度更新策略的旧版行为",
+	"Use the active prompt policy to send progress updates at meaningful milestones":
+		"使用当前提示策略，仅在重要里程碑发送进度更新",
+	"Numbered Next-Step Selection": "编号后续操作选择",
+	"Interpret an eligible bare number as an explicit choice of the most recent structured next-step offer.":
+		"将符合条件的裸数字解释为对最近一次结构化后续操作建议的明确选择。",
+	"Codex Native Prompt": "Codex 原生提示词",
+	"Use the OpenAI Codex native-prompt sidecar when its trusted profile is eligible.":
+		"当可信配置可用时，使用 OpenAI Codex 原生提示词 sidecar。",
+	"Keep the generic system prompt only": "仅使用通用系统提示词",
+	Shadow: "影子模式",
+	"Evaluate native-prompt eligibility without sending a native sidecar": "评估原生提示词资格，但不发送原生 sidecar",
+	"Use a trusted native sidecar when eligible; otherwise use the generic system prompt":
+		"符合条件时使用可信原生 sidecar，否则使用通用系统提示词",
+	shadow: "影子模式",
 };

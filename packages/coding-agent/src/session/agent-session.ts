@@ -325,6 +325,12 @@ import {
 	USER_INTERRUPT_LABEL,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
+import {
+	DEFAULT_NEXT_STEP_OFFER_TTL_MS,
+	getNextStepOfferStore,
+	type NextStepOfferIdentity,
+	type NextStepOfferStore,
+} from "./next-step-offers";
 import { PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
 import {
 	isAdvisorCard,
@@ -551,6 +557,7 @@ export class AgentSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	readonly #nextStepOffers: NextStepOfferStore;
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
@@ -1248,6 +1255,10 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.#nextStepOffers = getNextStepOfferStore({
+			sessionManager: this.sessionManager,
+			getIdentity: () => this.#nextStepOfferIdentity(),
+		});
 		this.taskRequestConcurrency =
 			config.taskRequestConcurrency ??
 			new TaskRequestConcurrency(() => this.settings.get("task.maxRequestConcurrency"));
@@ -2522,6 +2533,7 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	#nextStepFinalCandidate: AssistantMessage | undefined = undefined;
 	/**
 	 * Classifier-refusal turn pruned from active context at settle (#3591).
 	 * Retained until the next run starts so post-settle readers
@@ -2856,6 +2868,8 @@ export class AgentSession {
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
 			this.#prunedTerminalRefusal = undefined;
+			this.#nextStepOffers.discardStagedOffers();
+			this.#nextStepFinalCandidate = undefined;
 		}
 		// Step the mid-run Todo counter synchronously before any await. The agent
 		// loop's next-turn aside poll can run before queued microtasks drain, so it
@@ -3182,6 +3196,7 @@ export class AgentSession {
 				.find((message): message is AssistantMessage => message.role === "assistant");
 			const msg = this.#lastAssistantMessage ?? fallbackAssistant;
 			this.#lastAssistantMessage = undefined;
+			this.#nextStepFinalCandidate = msg;
 			if (!msg) {
 				this.#lastSuccessfulYieldToolCallId = undefined;
 				logger.debug("agent_end maintenance routing", {
@@ -3785,8 +3800,76 @@ export class AgentSession {
 		}
 		return undefined;
 	}
+	#nextStepOfferIdentity(): NextStepOfferIdentity {
+		const branch = this.sessionManager.getBranch();
+		let branchId = branch.at(-1)?.id ?? "";
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry?.type === "message") {
+				branchId = entry.id;
+				break;
+			}
+		}
+		const model = this.model;
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			branchId,
+			modelId: model ? `${model.provider}/${model.id}` : "",
+		};
+	}
+
+	#isSuccessfulNextStepFinal(message: AssistantMessage): boolean {
+		return (
+			message.stopReason === "stop" &&
+			!message.content.some(content => content.type === "toolCall") &&
+			message.content.some(content => content.type === "text" && content.text.trim().length > 0)
+		);
+	}
+
+	#resolveNextStepUserText(text: string): string {
+		const selection =
+			this.settings.get("communication.nextSteps") === "auto" &&
+			this.settings.get("communication.nextStepNumberResolver")
+				? this.#nextStepOffers.resolveBareNumber(text)
+				: undefined;
+		if (selection) return selection.userMessage;
+		this.#nextStepOffers.noteUserMessage(text);
+		return text;
+	}
+
+	#recordNextStepOffersForTerminalFinal(options?: { willContinue?: boolean }): void {
+		if (options?.willContinue) {
+			this.#nextStepOffers.discardStagedOffers();
+			this.#nextStepFinalCandidate = undefined;
+			return;
+		}
+		const message = this.#nextStepFinalCandidate;
+		this.#nextStepFinalCandidate = undefined;
+		if (!message || !this.#isSuccessfulNextStepFinal(message)) {
+			this.#nextStepOffers.discardStagedOffers();
+			return;
+		}
+		const assistantMessageId = (message as PersistedAssistantMessage)[kPersistedSessionEntryId];
+		if (!assistantMessageId) {
+			this.#nextStepOffers.discardStagedOffers();
+			return;
+		}
+		try {
+			this.#nextStepOffers.recordSuccessfulFinal({
+				assistantMessageId,
+				offers: this.#nextStepOffers.consumeStagedOffers(),
+				expiresAt: Date.now() + DEFAULT_NEXT_STEP_OFFER_TTL_MS,
+			});
+		} catch (error) {
+			this.#nextStepOffers.discardStagedOffers();
+			logger.warn("Failed to record structured next-step offers", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 
 	async #emitAgentEndNotification(messages: AgentMessage[], options?: { willContinue?: boolean }): Promise<void> {
+		this.#recordNextStepOffersForTerminalFinal(options);
 		await this.#extensionRunner?.emit({
 			type: "agent_end",
 			messages,
@@ -5431,6 +5514,8 @@ export class AgentSession {
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+		const userInitiated = options?.userInitiated ?? !options?.synthetic;
+		if (userInitiated) text = this.#resolveNextStepUserText(text);
 
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
@@ -5466,7 +5551,7 @@ export class AgentSession {
 		// A user-initiated prompt (typed message or the `.`/`c` continue shortcut)
 		// re-enables advisor auto-resume that a prior user interrupt suppressed.
 		// Agent-initiated synthetic prompts (auto-continue, plan, reminders) do not.
-		if (options?.userInitiated ?? !options?.synthetic) {
+		if (userInitiated) {
 			this.#advisors.autoResumeSuppressed = false;
 			this.#planModeReminderCount = 0;
 			this.#planModeReminderAwaitingProgress = false;
@@ -5486,9 +5571,9 @@ export class AgentSession {
 				await this.#queueCustomMessage(notice, streamingBehavior);
 			}
 			if (streamingBehavior === "followUp") {
-				await this.#queueUserMessage(expandedText, options?.images, "followUp");
+				await this.#queueUserMessage(expandedText, options?.images, "followUp", true);
 			} else {
-				await this.#queueUserMessage(expandedText, options?.images, "steer");
+				await this.#queueUserMessage(expandedText, options?.images, "steer", true);
 			}
 			return true;
 		}
@@ -6068,7 +6153,9 @@ export class AgentSession {
 		text: string,
 		images: ImageContent[] | undefined,
 		mode: "steer" | "followUp",
+		nextStepHandled = false,
 	): Promise<void> {
+		if (!nextStepHandled) text = this.#resolveNextStepUserText(text);
 		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
 		// a user interrupt suppressed.
@@ -6768,6 +6855,7 @@ export class AgentSession {
 			}
 		}
 
+		this.#nextStepOffers.invalidate();
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
 		await this.abort();
@@ -7206,6 +7294,7 @@ export class AgentSession {
 		if (!checkpointState) {
 			return;
 		}
+		this.#nextStepOffers.invalidate();
 		this.#bash.withBranchTransition(() => {
 			try {
 				this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
@@ -7218,6 +7307,7 @@ export class AgentSession {
 				this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 			}
 		});
+		this.#nextStepOffers.invalidate({ forcePersist: true });
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -7329,6 +7419,7 @@ export class AgentSession {
 				this.#clearInheritedProviderPromptCacheKey();
 			}
 		}
+		if (isChanging) this.#nextStepOffers.invalidate();
 		this.agent.setModel(model);
 		// Model mutations driven through ModelControls (explicit /model, prewalk
 		// hand-offs, retry-fallback, model cycling) funnel through this method,
@@ -7848,6 +7939,7 @@ export class AgentSession {
 				return false;
 			}
 		}
+		this.#nextStepOffers.invalidate();
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
@@ -8043,6 +8135,7 @@ export class AgentSession {
 			// Workspace-checkpoint undo/redo cursor may have a different
 			// undoHeadCheckpointId/redoHeadCheckpointId on the target session.
 			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
+			this.#nextStepOffers.refresh();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -8145,6 +8238,7 @@ export class AgentSession {
 		// Clear pending messages (bound to old session state)
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
+		this.#nextStepOffers.invalidate();
 
 		this.#recordSessionRunStop("session_branch");
 		await this.#bash.flushPending();
@@ -8166,6 +8260,7 @@ export class AgentSession {
 				} else {
 					this.sessionManager.createBranchedSession(selectedEntry.parentId);
 				}
+				this.#nextStepOffers.invalidate({ forcePersist: true });
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
 				sessionTransitioned = true;
@@ -8259,6 +8354,7 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.agent.replaceQueues([], []);
+		this.#nextStepOffers.invalidate();
 		if (this.isStreaming) {
 			await this.abort({ goalReason: "internal", reason: "branching /btw" });
 			this.agent.replaceQueues([], []);
@@ -8277,6 +8373,7 @@ export class AgentSession {
 			await this.#advisors.drainAndDetachRecorders();
 			try {
 				this.sessionManager.createBranchedSession(leafId);
+				this.#nextStepOffers.invalidate({ forcePersist: true });
 				this.#bash.markSessionTransition(bashTransition);
 				this.#advisors.clearCost();
 				sessionTransitioned = true;
@@ -8592,6 +8689,7 @@ export class AgentSession {
 
 		// Switch leaf (with or without summary)
 		// Summary is attached at the navigation target position (newLeafId), not the old branch
+		this.#nextStepOffers.invalidate();
 		const bashTransition = this.#bash.beginSessionTransition();
 		let summaryEntry: BranchSummaryEntry | undefined;
 		let branchTransitioned = false;
@@ -8615,6 +8713,7 @@ export class AgentSession {
 		} finally {
 			this.#bash.finishSessionTransition(bashTransition, branchTransitioned);
 		}
+		this.#nextStepOffers.invalidate({ forcePersist: true });
 
 		// Update agent state — build display context to populate agent messages.
 		const stateContext = this.sessionManager.buildSessionContext();

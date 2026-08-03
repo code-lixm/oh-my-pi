@@ -54,6 +54,7 @@ import {
 	finishExecuteToolSpan,
 	finishInvokeAgentSpan,
 	fireOnRunEnd,
+	getCodexNativePromptTelemetryIdentity,
 	PiGenAIAttr,
 	recordSkippedTool,
 	resolveTelemetry,
@@ -1625,6 +1626,7 @@ async function streamAssistantResponse(
 			tools: llmContext.tools,
 			systemPrompt: llmContext.systemPrompt,
 			messages: llmContext.messages,
+			codexPrompt: getCodexNativePromptTelemetryIdentity(llmContext),
 		},
 	});
 

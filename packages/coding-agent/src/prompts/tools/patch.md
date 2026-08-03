@@ -18,7 +18,7 @@ When editing structured blocks (nested braces, tags, indented regions), include 
 
 <parameters>
 ```ts
-// Input is { path: string, edits: Entry[] }. `path` is required and applies to every entry.
+// The required top-level `path` applies to every entry.
 type Entry =
    // Diff is one or more hunks for the top-level path.
    // - Each hunk begins with "@@" (anchor optional).

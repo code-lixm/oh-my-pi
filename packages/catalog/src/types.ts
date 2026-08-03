@@ -805,6 +805,77 @@ export interface RemoteCompactionConfig<TApi extends Api = Api> {
 	/** Model id sent to the compaction endpoint when it differs from the active model id. */
 	model?: string;
 }
+/** The supported upstream Codex instruction personalities. */
+export type CodexPromptPersonality = "default" | "friendly" | "pragmatic";
+
+/** Personality fragments carried by an official Codex model profile. */
+export interface CodexPromptInstructionsVariables {
+	personalityDefault: string | null;
+	personalityFriendly: string | null;
+	personalityPragmatic: string | null;
+}
+
+/** Approval-policy provenance from an official Codex model profile. */
+export interface CodexPromptApprovalMessages {
+	onRequest: string | null;
+	onRequestAutoReview: string | null;
+	never: string | null;
+	unlessTrusted: string | null;
+}
+
+/** Collaboration-mode provenance from an official Codex model profile. */
+export interface CodexPromptCollaborationModeMessages {
+	default: string | null;
+	plan: string | null;
+}
+
+/** Auto-review provenance from an official Codex model profile. */
+export interface CodexPromptAutoReviewMessages {
+	policy: string | null;
+	policyTemplate: string | null;
+}
+
+/** Permission-mode provenance from an official Codex model profile. */
+export interface CodexPromptPermissionMessages {
+	dangerFullAccess: string | null;
+	workspaceWrite: string | null;
+	readOnly: string | null;
+}
+
+/** Model-owned token-budget provenance from an official Codex model profile. */
+export interface CodexPromptTokenBudget {
+	reminderThresholdTokens: number;
+	reminderMessageTemplate: string;
+	guidanceMessage: string;
+	autoCompactFallbackPrompt: string;
+	autoCompactFallbackBufferTokens: number;
+}
+
+/** Strictly normalized `model_messages` from official Codex discovery. */
+export interface CodexPromptModelMessages {
+	instructionsTemplate: string | null;
+	instructionsVariables: CodexPromptInstructionsVariables | null;
+	approvals: CodexPromptApprovalMessages | null;
+	collaborationModes: CodexPromptCollaborationModeMessages | null;
+	autoReview: CodexPromptAutoReviewMessages | null;
+	permissions: CodexPromptPermissionMessages | null;
+	tokenBudget: CodexPromptTokenBudget | null;
+}
+
+/**
+ * Trusted, provider-specific prompt metadata obtained only from official
+ * `openai-codex` discovery. Callers MUST treat non-instruction fields as
+ * provenance; OMP owns approvals, permissions, and collaboration semantics.
+ */
+export interface CodexPromptProfile {
+	modelId: string;
+	baseInstructions: string;
+	modelMessages: CodexPromptModelMessages;
+	compHash: string;
+	etag?: string;
+	source: "openai-codex";
+	vendorDigest: string;
+}
 
 // Model interface for the unified model system
 export interface Model<TApi extends Api = Api> {
@@ -893,6 +964,8 @@ export interface Model<TApi extends Api = Api> {
 	preferWebsockets?: boolean;
 	/** Codex Responses Lite transport: send the lite marker and carry instructions/tools as input items (mirrors codex-rs `use_responses_lite`). */
 	useResponsesLite?: boolean;
+	/** Trusted native-instruction profile from official Codex discovery only. */
+	codexPromptProfile?: CodexPromptProfile;
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */
 	contextPromotionTarget?: string;
 	/** Preferred model to use only for compaction (model id or provider/id); the active session model is unchanged. */

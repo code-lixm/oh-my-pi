@@ -12,6 +12,7 @@
 - Added `dark-terminal-adaptive` and `light-terminal-adaptive` themes that bind OMP semantic colors to the terminal ANSI palette, inherit terminal surfaces for derived tool-card tints, and let Ghostty-compatible themes remain the base color authority.
 - Added `theme.terminalPalette` under `/settings → Appearance`; enabling it temporarily overrides the configured dark and light themes with terminal-adaptive variants, while disabling it restores the saved theme selections.
 - Added `Alt+N` to atomically send the current text-and-image draft to a separate live top-level session, return focus to the original session, and let both tasks continue concurrently in the same workspace.
+- Added opt-in Codex native prompting, fallback/native behavior policies, and structured next-step offers with final binding, expiry/invalidation, numbered selection, and read-only session-write guards.
 
 - Added a `none` option for `display.borderStyle`, rendering tool output as borderless single-column trees rooted beneath the header icon, interactive PTY sessions with a two-cell gutter, and Markdown tables with three horizontal rules.
 - Added an opt-in `siyuan` tool for querying and safely mutating registered SiYuan workspaces through the official SiYuan Kernel CLI, with startup identity verification, macOS code-signature validation, explicit multi-workspace selection, and dry-run-by-default mutations.
@@ -64,7 +65,7 @@
 
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
 - Changed completed Grep details to show one compact `path:line-ranges` row per file, omit repeated source snippets, and remove redundant scope metadata while preserving full model-facing search output.
-- Changed the `/last` fullscreen shortcut guide from a standalone footer to the top-right header, returning the freed row to the transcript viewport.
+- Replaced `/last` with `/history`, a fullscreen application-scrolled viewer for the complete active session branch with a persistent scrollbar, width-aware `Alt+J`/`Alt+K` user-turn navigation, case-insensitive `/` search, and wrapping `n`/`N` match jumps.
 - Changed late Advisor notes of every severity to trigger a fresh primary-agent turn after a terminal answer with no queued work, while preserving deliberate user-interrupt, plan-mode, deferred-ACP, and headless safeguards.
 - Grouped uninterrupted Hub messaging, job waits, agent status, and IRC notifications into one compact expandable transcript activity block.
 - Changed the status-line usage segment to invalidate and filter quota data on active-model changes, while battery mode labels active-provider quota with the current model ID.
@@ -77,7 +78,14 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
-- Fixed shared `accent` tool-result surfaces omitting their painted top and bottom breathing rows; generic, custom, memory, Hub, computer, and legacy vibe cards now use the same vertical spacing while bare and self-framed renderers remain unchanged.
+- Fixed Edit tool cards remaining stuck in their streaming preview when final display assembly failed, which could splice later transcript content into a stale card; failed rebuilds now settle to a safe final-text fallback without caching incomplete display state.
+- Fixed Memory, LSP, Checkpoint, and Rewind results inheriting generic accent cards instead of their own semantic tool presentation; they now use bare status-and-tree layouts, `xd://` delegation preserves the wrapped renderer surface, and Memory keeps one English tool identity across UI locales.
+- Fixed shared `accent` tool-result surfaces adding redundant full-width rows and `xd://` fallback cards retaining nested state backgrounds and padding; wrappers now own one uniform tint across title, omission, and result rows, while self-framed blocks retain their internal spacing. Grouped Read summary trees now also align with the root column used by Glob, Grep, and CodeGraph.
+- Fixed Eval `agent()` progress trees touching the bottom of accent code-cell surfaces; one unpainted row now separates the external live HUD from the framed cell.
+- Fixed the Poimandres status-line HUD mixing geometric Unicode model, path, and mode icons into the configured Nerd preset; both dark and light variants now use one consistent Nerd glyph set while retaining their navigation, thinking, and Markdown markers.
+- Fixed empty Glob results rendering “No files found” as a second standalone warning row; the empty result now appears as a root-level tree child matching other search-tool result layouts.
+- Fixed the Jobs Hub using a preview-block list unrelated to the Agent Hub table and both directional hub gestures refusing to open empty centers; Jobs now share the fullscreen table language, while empty Jobs and Agent centers remain discoverable with explicit empty states.
+- Fixed the documented `--sandbox` launch flag surviving help, startup-directory handling, and regression coverage while being dropped by the runtime argv parser during the upstream merge; it now again creates and enters `~/.omp/sandbox` (or `--cwd`) before initialization.
 - Fixed the zh-CN main system prompt omitting conditional Computer Use and dynamic `xd://` guidance and lagging behind the English risk-proportional verification and cleanup contract.
 - Fixed the `hindsight` memory-backend choice being mistranslated as the generic Chinese phrase “事后回顾”; the zh-CN settings UI now preserves the Hindsight product name.
 - Fixed Hindsight authentication and request failures being hidden in logs during automatic recall, retention, and mental-model loading; sessions now show an actionable `/settings` notice, explicit forced retains propagate failures, and API URL/token edits rebuild the live client immediately.

@@ -20,6 +20,16 @@ export interface SecretEntry {
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue | undefined };
 export type JsonRecord = { [key: string]: JsonValue | undefined };
 
+const CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+	root: ["instructionsTemplate"],
+	instructionsVariables: ["personalityDefault", "personalityFriendly", "personalityPragmatic"],
+	approvals: ["onRequest", "onRequestAutoReview", "never", "unlessTrusted"],
+	collaborationModes: ["default", "plan"],
+	autoReview: ["policy", "policyTemplate"],
+	permissions: ["dangerFullAccess", "workspaceWrite", "readOnly"],
+	tokenBudget: ["reminderMessageTemplate", "guidanceMessage", "autoCompactFallbackPrompt"],
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Deterministic replacement generation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2040,6 +2050,242 @@ function obfuscateAssistantContentForReplay(
 	return changed ? result : content;
 }
 
+/** Visit only provider-visible or profile-provenance text fields; cache/provenance digests are intentionally excluded. */
+function visitCodexNativePromptRecordStrings(
+	value: unknown,
+	fields: readonly string[],
+	visit: (text: string) => void,
+): void {
+	if (typeof value !== "object" || value === null || !isPlainRecord(value)) return;
+	for (const field of fields) {
+		if (typeof value[field] === "string") visit(value[field]);
+	}
+}
+
+function visitCodexNativePromptModelMessages(value: unknown, visit: (text: string) => void): void {
+	if (Array.isArray(value)) {
+		for (const message of value) {
+			if (typeof message !== "object" || message === null || !isPlainRecord(message)) continue;
+			if (typeof message.content === "string") visit(message.content);
+		}
+		return;
+	}
+	if (typeof value !== "object" || value === null || !isPlainRecord(value)) return;
+	visitCodexNativePromptRecordStrings(value, CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.root, visit);
+	visitCodexNativePromptRecordStrings(
+		value.instructionsVariables,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.instructionsVariables,
+		visit,
+	);
+	visitCodexNativePromptRecordStrings(value.approvals, CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.approvals, visit);
+	visitCodexNativePromptRecordStrings(
+		value.collaborationModes,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.collaborationModes,
+		visit,
+	);
+	visitCodexNativePromptRecordStrings(
+		value.autoReview,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.autoReview,
+		visit,
+	);
+	visitCodexNativePromptRecordStrings(
+		value.permissions,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.permissions,
+		visit,
+	);
+	visitCodexNativePromptRecordStrings(
+		value.tokenBudget,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.tokenBudget,
+		visit,
+	);
+}
+
+function visitCodexNativePromptText(nativePrompt: unknown, visit: (text: string) => void): void {
+	if (typeof nativePrompt !== "object" || nativePrompt === null || !isPlainRecord(nativePrompt)) return;
+	if (typeof nativePrompt.instructions === "string") visit(nativePrompt.instructions);
+	for (const field of ["developerFragments", "contextualUserFragments"] as const) {
+		const fragments = nativePrompt[field];
+		if (!Array.isArray(fragments)) continue;
+		for (const fragment of fragments) {
+			if (typeof fragment === "string") visit(fragment);
+		}
+	}
+	visitCodexNativePromptModelMessages(nativePrompt.modelMessages, visit);
+}
+
+function collectCodexNativePromptRegexSecretValues(obfuscator: SecretObfuscator, nativePrompt: unknown): Set<string> {
+	const values = new Set<string>();
+	visitCodexNativePromptText(nativePrompt, text => {
+		for (const value of obfuscator.collectRegexSecretValuesForObfuscation(text)) values.add(value);
+	});
+	return values;
+}
+
+function obfuscateCodexNativePromptRecordStrings(
+	obfuscator: SecretObfuscator,
+	value: unknown,
+	fields: readonly string[],
+	sharedRegexSecretValues: ReadonlySet<string>,
+): unknown {
+	if (typeof value !== "object" || value === null || !isPlainRecord(value)) return value;
+	let result: Record<string, unknown> | undefined;
+	for (const field of fields) {
+		const original = value[field];
+		if (typeof original !== "string") continue;
+		const obfuscated = obfuscator.obfuscate(original, sharedRegexSecretValues);
+		if (obfuscated === original) continue;
+		result ??= { ...value };
+		result[field] = obfuscated;
+	}
+	return result ?? value;
+}
+
+function obfuscateCodexNativePromptFragments(
+	obfuscator: SecretObfuscator,
+	value: unknown,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): unknown {
+	if (!Array.isArray(value)) return value;
+	let changed = false;
+	const fragments = value.map(fragment => {
+		if (typeof fragment !== "string") return fragment;
+		const obfuscated = obfuscator.obfuscate(fragment, sharedRegexSecretValues);
+		if (obfuscated !== fragment) changed = true;
+		return obfuscated;
+	});
+	return changed ? fragments : value;
+}
+
+function obfuscateCodexNativePromptModelMessages(
+	obfuscator: SecretObfuscator,
+	value: unknown,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): unknown {
+	if (Array.isArray(value)) {
+		let changed = false;
+		const messages = value.map(message => {
+			if (typeof message !== "object" || message === null || !isPlainRecord(message)) return message;
+			if (typeof message.content !== "string") return message;
+			const content = obfuscator.obfuscate(message.content, sharedRegexSecretValues);
+			if (content === message.content) return message;
+			changed = true;
+			return { ...message, content };
+		});
+		return changed ? messages : value;
+	}
+	if (typeof value !== "object" || value === null || !isPlainRecord(value)) return value;
+	const root = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.root,
+		sharedRegexSecretValues,
+	);
+	const instructionsVariables = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.instructionsVariables,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.instructionsVariables,
+		sharedRegexSecretValues,
+	);
+	const approvals = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.approvals,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.approvals,
+		sharedRegexSecretValues,
+	);
+	const collaborationModes = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.collaborationModes,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.collaborationModes,
+		sharedRegexSecretValues,
+	);
+	const autoReview = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.autoReview,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.autoReview,
+		sharedRegexSecretValues,
+	);
+	const permissions = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.permissions,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.permissions,
+		sharedRegexSecretValues,
+	);
+	const tokenBudget = obfuscateCodexNativePromptRecordStrings(
+		obfuscator,
+		value.tokenBudget,
+		CODEX_NATIVE_PROMPT_MODEL_MESSAGE_TEXT_FIELDS.tokenBudget,
+		sharedRegexSecretValues,
+	);
+	if (
+		root === value &&
+		instructionsVariables === value.instructionsVariables &&
+		approvals === value.approvals &&
+		collaborationModes === value.collaborationModes &&
+		autoReview === value.autoReview &&
+		permissions === value.permissions &&
+		tokenBudget === value.tokenBudget
+	) {
+		return value;
+	}
+	return {
+		...(root as Record<string, unknown>),
+		...(instructionsVariables === value.instructionsVariables ? {} : { instructionsVariables }),
+		...(approvals === value.approvals ? {} : { approvals }),
+		...(collaborationModes === value.collaborationModes ? {} : { collaborationModes }),
+		...(autoReview === value.autoReview ? {} : { autoReview }),
+		...(permissions === value.permissions ? {} : { permissions }),
+		...(tokenBudget === value.tokenBudget ? {} : { tokenBudget }),
+	};
+}
+
+/**
+ * Redact the sidecar's provider-visible text without altering its cache and
+ * provenance identity. Broad JSON walking is deliberately avoided: opaque
+ * metadata must remain byte-stable, while every protocol-defined prompt field
+ * is covered explicitly.
+ */
+function obfuscateCodexNativePrompt(
+	obfuscator: SecretObfuscator,
+	nativePrompt: unknown,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): unknown {
+	if (typeof nativePrompt !== "object" || nativePrompt === null || !isPlainRecord(nativePrompt)) return nativePrompt;
+	const instructions =
+		typeof nativePrompt.instructions === "string"
+			? obfuscator.obfuscate(nativePrompt.instructions, sharedRegexSecretValues)
+			: nativePrompt.instructions;
+	const developerFragments = obfuscateCodexNativePromptFragments(
+		obfuscator,
+		nativePrompt.developerFragments,
+		sharedRegexSecretValues,
+	);
+	const contextualUserFragments = obfuscateCodexNativePromptFragments(
+		obfuscator,
+		nativePrompt.contextualUserFragments,
+		sharedRegexSecretValues,
+	);
+	const modelMessages = obfuscateCodexNativePromptModelMessages(
+		obfuscator,
+		nativePrompt.modelMessages,
+		sharedRegexSecretValues,
+	);
+	if (
+		instructions === nativePrompt.instructions &&
+		developerFragments === nativePrompt.developerFragments &&
+		contextualUserFragments === nativePrompt.contextualUserFragments &&
+		modelMessages === nativePrompt.modelMessages
+	) {
+		return nativePrompt;
+	}
+	return {
+		...nativePrompt,
+		...(instructions === nativePrompt.instructions ? {} : { instructions }),
+		...(developerFragments === nativePrompt.developerFragments ? {} : { developerFragments }),
+		...(contextualUserFragments === nativePrompt.contextualUserFragments ? {} : { contextualUserFragments }),
+		...(modelMessages === nativePrompt.modelMessages ? {} : { modelMessages }),
+	};
+}
+
 function collectMessageRegexSecretValues(obfuscator: SecretObfuscator, messages: Message[]): Set<string> {
 	const values = new Set<string>();
 	const addText = (text: string | undefined): void => {
@@ -2082,16 +2328,11 @@ function collectMessageRegexSecretValues(obfuscator: SecretObfuscator, messages:
 	return values;
 }
 
-/**
- * Redact secrets from outbound messages. User messages, tool results, and
- * user-authored developer messages (e.g. `@file` mentions) are obfuscated.
- * Assistant replay content is re-obfuscated too, because session restoration
- * expands keyed placeholders locally before the next provider request. Inline
- * image bytes are never walked.
- */
-export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Message[]): Message[] {
-	if (!obfuscator.hasSecrets()) return messages;
-	const sharedRegexSecretValues = collectMessageRegexSecretValues(obfuscator, messages);
+function obfuscateMessagesWithSharedRegexSecretValues(
+	obfuscator: SecretObfuscator,
+	messages: Message[],
+	sharedRegexSecretValues: ReadonlySet<string>,
+): Message[] {
 	let changed = false;
 	const result = messages.map((message): Message => {
 		if (
@@ -2121,13 +2362,42 @@ export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Messag
 }
 
 /**
- * Redact outbound provider context. Only conversation messages are rewritten;
- * the static system prompt and tool schemas pass through unchanged.
+ * Redact secrets from outbound messages. User messages, tool results, and
+ * user-authored developer messages (e.g. `@file` mentions) are obfuscated.
+ * Assistant replay content is re-obfuscated too, because session restoration
+ * expands keyed placeholders locally before the next provider request. Inline
+ * image bytes are never walked.
+ */
+export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Message[]): Message[] {
+	if (!obfuscator.hasSecrets()) return messages;
+	return obfuscateMessagesWithSharedRegexSecretValues(
+		obfuscator,
+		messages,
+		collectMessageRegexSecretValues(obfuscator, messages),
+	);
+}
+
+/**
+ * Redact outbound provider context. Conversation messages and the native Codex
+ * sidecar's provider-visible text are rewritten together so regex discoveries
+ * cannot make a friendly placeholder unsafe across their shared request.
+ * Static system prompts and tool schemas stay byte-identical.
  */
 export function obfuscateProviderContext(obfuscator: SecretObfuscator | undefined, context: Context): Context {
 	if (!obfuscator?.hasSecrets()) return context;
-	const messages = obfuscateMessages(obfuscator, context.messages);
-	return messages === context.messages ? context : { ...context, messages };
+	const nativePrompt = context.codexNativePrompt;
+	const sharedRegexSecretValues = collectMessageRegexSecretValues(obfuscator, context.messages);
+	for (const value of collectCodexNativePromptRegexSecretValues(obfuscator, nativePrompt)) {
+		sharedRegexSecretValues.add(value);
+	}
+	const messages = obfuscateMessagesWithSharedRegexSecretValues(obfuscator, context.messages, sharedRegexSecretValues);
+	const obfuscatedNativePrompt = obfuscateCodexNativePrompt(obfuscator, nativePrompt, sharedRegexSecretValues);
+	if (messages === context.messages && obfuscatedNativePrompt === nativePrompt) return context;
+	return {
+		...context,
+		...(messages === context.messages ? {} : { messages }),
+		...(obfuscatedNativePrompt === nativePrompt ? {} : { codexNativePrompt: obfuscatedNativePrompt }),
+	} as Context;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

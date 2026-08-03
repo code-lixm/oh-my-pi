@@ -5,14 +5,55 @@ import {
 } from "@oh-my-pi/pi-ai/oauth/openai-codex";
 import { type RequestBody, transformRequestBody } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import { CodexApiError, parseCodexError } from "@oh-my-pi/pi-ai/providers/openai-codex/response-handler";
-import { convertOpenAICodexResponsesTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import type { Tool } from "@oh-my-pi/pi-ai/types";
+import {
+	buildTransformedCodexRequestBody,
+	convertOpenAICodexResponsesTools,
+} from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
+import type { Context, Tool } from "@oh-my-pi/pi-ai/types";
 import { OPENAI_HEADER_VALUES } from "@oh-my-pi/pi-catalog/wire/codex";
 import { createCodexModel } from "./helpers";
 
 const DEFAULT_PROMPT_PREFIX =
 	"You are an expert coding assistant. You help users with coding tasks by reading files, executing commands";
 
+interface CodexNativePromptFixture {
+	instructions: string;
+	developerFragments: string[];
+	contextualUserFragments: string[];
+	vendorDigest: string;
+	promptFingerprint: string;
+	fallbackFingerprint: string;
+}
+
+function createNativePromptContext(codexNativePrompt: CodexNativePromptFixture): Context {
+	return {
+		systemPrompt: ["LEGACY FULL INSTRUCTIONS", "LEGACY FULL DEVELOPER"],
+		messages: [
+			{ role: "user", content: "CONVERSATION USER", timestamp: 1 },
+			{ role: "developer", content: "CONVERSATION DEVELOPER", timestamp: 2 },
+		],
+		codexNativePrompt,
+	} as Context;
+}
+
+function extractCodexInputRoleTexts(body: RequestBody): Array<{ role: string | undefined; text: string }> {
+	return (body.input ?? []).flatMap(item => {
+		if (!Array.isArray(item.content)) return [];
+		return item.content.flatMap(part => {
+			if (
+				part &&
+				typeof part === "object" &&
+				"type" in part &&
+				part.type === "input_text" &&
+				"text" in part &&
+				typeof part.text === "string"
+			) {
+				return [{ role: item.role, text: part.text }];
+			}
+			return [];
+		});
+	});
+}
 describe("openai-codex oauth", () => {
 	it("uses the same default originator for browser login and API requests", () => {
 		const authUrl = createOpenAICodexAuthorizationUrl({
@@ -381,5 +422,49 @@ describe("openai-codex error parsing", () => {
 		expect(error.code).toBe("rate_limit_exceeded");
 		expect(error.headers?.get("retry-after")).toBe("7");
 		expect(error.message).toContain("rate limit exceeded");
+	});
+});
+
+describe("openai-codex native prompt Full serialization", () => {
+	const nativePrompt: CodexNativePromptFixture = {
+		instructions: "NATIVE FULL INSTRUCTIONS",
+		developerFragments: ["OMP DEVELOPER FIRST", "OMP DEVELOPER SECOND"],
+		contextualUserFragments: ["CONTEXTUAL USER FIRST", "CONTEXTUAL USER SECOND"],
+		vendorDigest: "vendor-digest-terra",
+		promptFingerprint: "native-prompt-fingerprint",
+		fallbackFingerprint: "legacy-prompt-fingerprint",
+	};
+
+	it("places native instructions above ordered OMP and contextual-user fragments without duplicate fallback injection", async () => {
+		const body = await buildTransformedCodexRequestBody(
+			createCodexModel("gpt-5.6-terra"),
+			createNativePromptContext(nativePrompt),
+			{ responsesLite: false },
+		);
+
+		expect(body.instructions).toBe("NATIVE FULL INSTRUCTIONS");
+		expect(extractCodexInputRoleTexts(body)).toEqual([
+			{ role: "developer", text: "OMP DEVELOPER FIRST" },
+			{ role: "developer", text: "OMP DEVELOPER SECOND" },
+			{ role: "user", text: "CONTEXTUAL USER FIRST" },
+			{ role: "user", text: "CONTEXTUAL USER SECOND" },
+			{ role: "user", text: "CONVERSATION USER" },
+			{ role: "developer", text: "CONVERSATION DEVELOPER" },
+		]);
+	});
+
+	it("falls back to the complete legacy prompt when native instructions are invalid", async () => {
+		const body = await buildTransformedCodexRequestBody(
+			createCodexModel("gpt-5.6-terra"),
+			createNativePromptContext({ ...nativePrompt, instructions: "" }),
+			{ responsesLite: false },
+		);
+
+		expect(body.instructions).toBe("LEGACY FULL INSTRUCTIONS");
+		expect(extractCodexInputRoleTexts(body)).toEqual([
+			{ role: "developer", text: "LEGACY FULL DEVELOPER" },
+			{ role: "user", text: "CONVERSATION USER" },
+			{ role: "developer", text: "CONVERSATION DEVELOPER" },
+		]);
 	});
 });

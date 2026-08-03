@@ -5,6 +5,7 @@ import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/componen
 import { getThemeByName, initTheme, type Theme, type ThemeColor } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
 	getOutputBlockBorderStyle,
+	OUTPUT_BLOCK_ACCENT_GLYPH,
 	type OutputBlockBorderStyle,
 	setOutputBlockBorderStyle,
 } from "@oh-my-pi/pi-coding-agent/tui";
@@ -62,49 +63,45 @@ function expectVisibleSnippets(lines: readonly string[], label: string, snippets
 function expectNoAccentSurface(lines: readonly string[], label: string, uiTheme: Theme): void {
 	const raw = lines.join("\n");
 	const text = plainLines(lines).join("\n");
-	expect(text, `${label}: rail leaked into ${JSON.stringify(text)}`).not.toContain("▌");
+	expect(text, `${label}: rail leaked into ${JSON.stringify(text)}`).not.toContain(OUTPUT_BLOCK_ACCENT_GLYPH);
 	for (const color of ACCENT_SURFACE_COLORS) {
 		expect(raw, `${label}: ${color} tint leaked`).not.toContain(uiTheme.getSurfaceTintBgAnsi(color, 0.06));
 	}
 }
 
-function expectPaintedAccentEdge(
-	raw: string,
+function expectRootTreeChildren(lines: readonly string[], label: string, uiTheme: Theme): void {
+	const nonEmpty = lines.filter(line => line.trim().length > 0);
+	const first = nonEmpty[0];
+	const last = nonEmpty.at(-1);
+	const isRootTreeChild = (line: string) =>
+		line.startsWith(`${uiTheme.tree.branch} `) || line.startsWith(`${uiTheme.tree.last} `);
+
+	expect(first, `${label}: expected a result tree child`).toBeDefined();
+	expect(isRootTreeChild(first!), `${label}: first result row must be a root-level tree child`).toBe(true);
+	expect(leadingSpaces(first!), `${label}: first result tree depth`).toBe(0);
+	expect(last, `${label}: expected a final result tree child`).toBeDefined();
+	expect(last!.startsWith(`${uiTheme.tree.last} `), `${label}: final result row must terminate the tree`).toBe(true);
+	expect(leadingSpaces(last!), `${label}: final result tree depth`).toBe(0);
+}
+
+function expectSharedAccentContentRows(
+	lines: readonly string[],
 	label: string,
-	edge: "top" | "bottom",
 	uiTheme: Theme,
 	color: ThemeColor = "borderMuted",
 ): void {
 	const tint = uiTheme.getSurfaceTintBgAnsi(color, 0.06);
 	const railFg = color === "borderMuted" ? uiTheme.getSurfaceTintFgAnsi(color) : uiTheme.getFgAnsi(color);
 	const railPrefix = `${tint}${railFg}▌\x1b[39m\x1b[49m${tint} `;
-	const visible = Bun.stripANSI(raw);
-
-	expect(visible.trim(), `${label}: ${edge} edge must be a rail-only row`).toBe("▌");
-	expect(raw.startsWith(railPrefix), `${label}: ${edge} edge must carry the tinted rail`).toBe(true);
-	expect(raw.endsWith("\x1b[49m "), `${label}: ${edge} edge must leave the terminal inset unpainted`).toBe(true);
-	expect(visibleWidth(raw), `${label}: ${edge} edge width`).toBe(WIDTH);
-}
-
-function expectSinglePaintedAccentPadding(
-	lines: readonly string[],
-	label: string,
-	uiTheme: Theme,
-	color: ThemeColor = "borderMuted",
-): void {
 	const plain = plainLines(lines);
 
-	expect(lines.length, `${label}: expected content between accent edges`).toBeGreaterThan(2);
-	expect(
-		plain.filter(line => line.trim() === "▌"),
-		`${label}: expected exactly one blank rail row at each edge`,
-	).toHaveLength(2);
-
-	for (const [edge, raw] of [
-		["top", lines[0]!],
-		["bottom", lines.at(-1)!],
-	] as const) {
-		expectPaintedAccentEdge(raw, label, edge, uiTheme, color);
+	expect(lines, `${label}: expected content rows`).not.toHaveLength(0);
+	for (const [index, raw] of lines.entries()) {
+		const visible = plain[index]!;
+		expect(visible.trim(), `${label}: wrapper inserted a rail-only row at ${index}`).not.toBe("▌");
+		expect(raw.startsWith(railPrefix), `${label}: row ${index} must carry the tinted rail`).toBe(true);
+		expect(raw.endsWith("\x1b[49m "), `${label}: row ${index} must leave the terminal inset unpainted`).toBe(true);
+		expect(visibleWidth(raw), `${label}: row ${index} width`).toBe(WIDTH);
 	}
 }
 
@@ -299,6 +296,53 @@ function renderToolLifecycle(name: string, stripAnsi = true): { pending: string[
 		component.stopAnimation();
 	}
 }
+type XdevWriteRenderResult = {
+	content: readonly { type: string; text?: string }[];
+	details?: Record<string, unknown>;
+	isError?: boolean;
+};
+
+type XdevWriteRenderSpec = {
+	name: string;
+	device: "checkpoint" | "rewind";
+	title: "Checkpoint" | "Rewind";
+	content: string;
+	result: XdevWriteRenderResult;
+	snippets: readonly string[];
+	error?: boolean;
+};
+
+function renderXdevWriteResult({ device: name, content, result }: XdevWriteRenderSpec): string[] {
+	const label = name === "checkpoint" ? "Checkpoint" : "Rewind";
+	const device = { name, label } as unknown as AgentTool;
+	const write = {
+		name: "write",
+		label: "Write",
+		session: {
+			xdev: {
+				tools: new Map([[name, device]]),
+				mountedNames: new Set([name]),
+				builtInNames: new Set(["read", "write"]),
+				isActive: () => false,
+			},
+		},
+	} as unknown as AgentTool;
+	const component = new ToolExecutionComponent(
+		"write",
+		{ path: `xd://${name}`, content },
+		{},
+		write,
+		uiStub,
+		process.cwd(),
+	);
+
+	try {
+		component.updateResult({ ...result, content: [...result.content] }, false);
+		return [...component.render(WIDTH)];
+	} finally {
+		component.stopAnimation();
+	}
+}
 
 function renderReadGroupLifecycle(): { pending: string[]; success: string[] } {
 	const component = new ReadToolGroupComponent();
@@ -354,28 +398,140 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
-	// ─── shared accent-surface edge padding ──────────────────────────────────
+	// ─── bare status-and-tree renderers ──────────────────────────────────────
 
-	it.each([
-		{
-			path: "built-in Retain renderer",
-			toolName: "retain",
-			snippets: ["memory accent padding sentinel"],
-		},
-	] as const)("gives the $path exactly one painted accent pad row above and below nonempty content", async spec => {
+	it("renders Retain pending and result as bare Memory trees under global accent", async () => {
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
 
 		const { previous } = withBorderStyle("accent", () => {
-			const { pending, success } = renderToolLifecycle(spec.toolName, false);
+			const { pending, success } = renderToolLifecycle("retain", false);
 
 			for (const [state, lines] of [
 				["pending", pending],
 				["success", success],
 			] as const) {
-				expectSinglePaintedAccentPadding(lines, `${spec.path} ${state}`, uiTheme!);
+				const visible = plainLines(lines);
+				const titleIndex = visible.findIndex(line => line.trim().length > 0);
+				const title = firstNonEmptyLine(visible);
+
+				expectNoOuterPadding(visible, `retain ${state}`);
+				expectNoAccentSurface(lines, `retain ${state}`, uiTheme!);
+				expect(title, `retain ${state} title`).toContain("Memory");
+				expect(title, `retain ${state} operation`).toContain("retain");
+				expectRootTreeChildren(visible.slice(titleIndex + 1), `retain ${state}`, uiTheme!);
 			}
-			expectVisibleSnippets(success.slice(1, -1), `${spec.path} content`, spec.snippets);
+
+			expectVisibleSnippets(success, "retain success", ["memory accent padding sentinel"]);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+	const XDEV_WRITE_RENDER_CASES = [
+		{
+			name: "checkpoint success",
+			device: "checkpoint",
+			title: "Checkpoint",
+			content: '{"goal":"verify bare xdev rendering"}',
+			result: {
+				content: [
+					{
+						type: "text",
+						text: [
+							"Checkpoint created.",
+							"Goal: verify bare xdev rendering",
+							"Run your investigation, then call rewind with a concise report.",
+						].join("\n"),
+					},
+				],
+				details: {
+					xdev: {
+						tool: "checkpoint",
+						mode: "execute",
+						args: { goal: "verify bare xdev rendering" },
+						inner: { goal: "verify bare xdev rendering", startedAt: "2026-01-01T00:00:00.000Z" },
+					},
+				},
+			},
+			snippets: ["Checkpoint created."],
+			error: false,
+		},
+		{
+			name: "rewind success",
+			device: "rewind",
+			title: "Rewind",
+			content: '{"report":"Renderer contract verified."}',
+			result: {
+				content: [
+					{
+						type: "text",
+						text: ["Rewind requested.", "Report captured for context replacement."].join("\n"),
+					},
+				],
+				details: {
+					xdev: {
+						tool: "rewind",
+						mode: "execute",
+						args: { report: "Renderer contract verified." },
+						inner: { report: "Renderer contract verified.", rewound: true },
+					},
+				},
+			},
+			snippets: ["Rewind requested.", "Report captured for context replacement."],
+			error: false,
+		},
+		{
+			name: "rewind parse error",
+			device: "rewind",
+			title: "Rewind",
+			content: "{",
+			result: {
+				content: [
+					{
+						type: "text",
+						text: "xd://rewind expects a JSON args object as content (unterminated JSON).",
+					},
+				],
+				details: { xdev: { tool: "rewind", mode: "execute" } },
+				isError: true,
+			},
+			snippets: ["expects a JSON args object"],
+			error: true,
+		},
+	] satisfies readonly XdevWriteRenderSpec[];
+
+	it.each(XDEV_WRITE_RENDER_CASES)("renders write xd://$device $name as a bare delegated result", async spec => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("accent", () => {
+			const rendered = renderXdevWriteResult(spec);
+			const visible = plainLines(rendered);
+			const titleIndex = visible.findIndex(line => line.trim().length > 0);
+			const title = firstNonEmptyLine(visible);
+			const resultLines = visible.slice(titleIndex + 1);
+
+			expectNoOuterPadding(visible, `xd://${spec.device} ${spec.name}`);
+			expectNoAccentSurface(rendered, `xd://${spec.device} ${spec.name}`, uiTheme!);
+			expect(title, `xd://${spec.device} ${spec.name} title`).toContain(spec.title);
+			expect(title, `xd://${spec.device} ${spec.name} must not retain Write title`).not.toContain("Write");
+			expect(
+				title.startsWith(`${uiTheme!.tree.last} `),
+				`xd://${spec.device} ${spec.name} title must precede its result tree child`,
+			).toBe(false);
+			expectRootTreeChildren(resultLines, `xd://${spec.device} ${spec.name}`, uiTheme!);
+			expectVisibleSnippets(resultLines, `xd://${spec.device} ${spec.name} result`, spec.snippets);
+			expect(visible.join("\n"), `xd://${spec.device} ${spec.name} must not retain Write`).not.toContain("Write");
+			if (spec.error) {
+				expect(title, "rewind parse error must retain error status").toContain(uiTheme!.status.error);
+			}
+			if (!spec.error && spec.device === "checkpoint") {
+				expect(title, "checkpoint success must use the success glyph").toContain(uiTheme!.status.success);
+				expect(title, "checkpoint success must not use the rewind glyph").not.toContain(uiTheme!.icon.rewind);
+			}
+			if (!spec.error && spec.device === "rewind") {
+				expect(title, "rewind success must use the rewind glyph").toContain(uiTheme!.icon.rewind);
+			}
 		});
 
 		expect(getOutputBlockBorderStyle()).toBe(previous);
@@ -444,18 +600,51 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
 	});
 
-	it.each([
-		{
-			toolName: "read",
-			snippets: ["packages/coding-agent/src/example.ts", "export const answer = 42;"],
-		},
-		{ toolName: "lsp", snippets: ["Diagnostics", "src/example.ts", "OK"] },
-	] as const)("keeps self-framed $toolName results on their own accent surface without a nested rail", async spec => {
+	it("keeps a self-framed Read result on its own accent surface without a nested rail", async () => {
 		const { previous } = withBorderStyle("accent", () => {
-			const { success } = renderToolLifecycle(spec.toolName, false);
-			expectNoOuterPadding(plainLines(success), `${spec.toolName} success`);
-			expectSelfFramedAccentEdges(success, `${spec.toolName} success`);
-			expectVisibleSnippets(success, `${spec.toolName} success`, spec.snippets);
+			const { success } = renderToolLifecycle("read", false);
+			expectNoOuterPadding(plainLines(success), "read success");
+			expectSelfFramedAccentEdges(success, "read success");
+			expectVisibleSnippets(success, "read success", [
+				"packages/coding-agent/src/example.ts",
+				"export const answer = 42;",
+			]);
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
+	});
+
+	it("renders LSP pending and result as bare status-and-tree output under global accent", async () => {
+		const uiTheme = await getThemeByName("dark");
+		expect(uiTheme).toBeDefined();
+
+		const { previous } = withBorderStyle("accent", () => {
+			const { pending, success } = renderToolLifecycle("lsp", false);
+
+			for (const [state, lines] of [
+				["pending", pending],
+				["success", success],
+			] as const) {
+				const visible = plainLines(lines);
+				const text = visible.join("\n");
+
+				expectNoOuterPadding(visible, `lsp ${state}`);
+				expectNoAccentSurface(lines, `lsp ${state}`, uiTheme!);
+				expect(firstNonEmptyLine(visible), `lsp ${state} title`).toContain("LSP");
+				for (const corner of [
+					uiTheme!.boxRound.topLeft,
+					uiTheme!.boxRound.topRight,
+					uiTheme!.boxRound.bottomLeft,
+					uiTheme!.boxRound.bottomRight,
+				]) {
+					expect(text, `lsp ${state}: frame leaked`).not.toContain(corner);
+				}
+			}
+
+			const visibleSuccess = plainLines(success);
+			const titleIndex = visibleSuccess.findIndex(line => line.trim().length > 0);
+			expectRootTreeChildren(visibleSuccess.slice(titleIndex + 1), "lsp success", uiTheme!);
+			expectVisibleSnippets(success, "lsp success", ["Diagnostics", "src/example.ts", "OK"]);
 		});
 
 		expect(getOutputBlockBorderStyle()).toBe(previous);
@@ -551,7 +740,7 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previousNone);
 	});
 
-	it("wraps non-framed custom renderers in a tinted accent rail with painted edge rows", async () => {
+	it("wraps non-framed custom renderers in a tinted accent rail without extra edge rows", async () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
@@ -578,23 +767,20 @@ describe("tool execution left-edge alignment", () => {
 			component = new ToolExecutionComponent("custom_plain", {}, {}, tool, uiStub, process.cwd());
 
 			const pending = component.render(WIDTH);
-			expectSinglePaintedAccentPadding(pending, "custom renderer pending", uiTheme!);
-			expectVisibleSnippets(pending.slice(1, -1), "custom renderer pending content", ["Custom Plain"]);
+			expect(pending, "custom renderer pending child row count").toHaveLength(1);
+			expectSharedAccentContentRows(pending, "custom renderer pending", uiTheme!);
+			expectVisibleSnippets(pending, "custom renderer pending content", ["Custom Plain"]);
 
 			component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
 			const first = component.render(WIDTH);
 			const second = component.render(WIDTH);
 			const plain = plainLines(first);
-			const errorBg = uiTheme!.getSurfaceTintBgAnsi("error", 0.06);
-			const errorRail = `${errorBg}${uiTheme!.getFgAnsi("error")}▌\x1b[39m\x1b[49m${errorBg} `;
 
 			expect(second).toBe(first);
 			expect(childWidths).toEqual([WIDTH - 3, WIDTH - 3]);
-			expect(first.every(line => line.startsWith(errorRail))).toBe(true);
-			expect(first.join("\n")).toContain(errorBg);
-			expectSinglePaintedAccentPadding(first, "custom renderer success", uiTheme!, "error");
-			expect(plain.slice(1, -1).map(line => line.trimEnd())).toEqual(childLines.map(line => `▌ ${line}`));
-			expect(first.map(line => visibleWidth(line))).toEqual(Array(childLines.length + 2).fill(WIDTH));
+			expect(first, "custom renderer success child row count").toHaveLength(childLines.length);
+			expectSharedAccentContentRows(first, "custom renderer success", uiTheme!, "error");
+			expect(plain.map(line => line.trimEnd())).toEqual(childLines.map(line => `▌ ${line}`));
 			expect(plain.join("\n")).not.toContain("│");
 			expect(plain.join("\n")).not.toContain("╭");
 			expect(plain.join("\n")).not.toContain("╰");

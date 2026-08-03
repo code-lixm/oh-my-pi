@@ -130,6 +130,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk", "Vision"],
 	interaction: [
 		"Input",
+		"Communication",
 		"Approvals",
 		"Notifications",
 		"Speech",
@@ -2028,6 +2029,72 @@ export const SETTINGS_SCHEMA = {
 				{ value: "500", label: tSettingsUi("500 lines") },
 				{ value: "1000", label: tSettingsUi("1000 lines") },
 			],
+		},
+	},
+
+	// Assistant communication policies
+	"communication.nextSteps": {
+		type: "enum",
+		values: ["off", "auto"] as const,
+		default: "off",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Communication"),
+			label: tSettingsUi("Next-Step Offers"),
+			description: tSettingsUi(
+				"Record up to three structured, user-selectable next-step offers after successful final responses.",
+			),
+			options: [
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Keep legacy final responses without structured next-step offers"),
+				},
+				{
+					value: "auto",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi("Offer structured next steps when the active prompt policy supports them"),
+				},
+			],
+		},
+	},
+
+	"communication.progressUpdates": {
+		type: "enum",
+		values: ["off", "auto"] as const,
+		default: "off",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Communication"),
+			label: tSettingsUi("Progress Updates"),
+			description: tSettingsUi("Control concise commentary updates during multi-step work."),
+			options: [
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Keep legacy behavior without a progress-update policy"),
+				},
+				{
+					value: "auto",
+					label: tSettingsUi("Auto"),
+					description: tSettingsUi(
+						"Use the active prompt policy to send progress updates at meaningful milestones",
+					),
+				},
+			],
+		},
+	},
+
+	"communication.nextStepNumberResolver": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Communication"),
+			label: tSettingsUi("Numbered Next-Step Selection"),
+			description: tSettingsUi(
+				"Interpret an eligible bare number as an explicit choice of the most recent structured next-step offer.",
+			),
 		},
 	},
 
@@ -5811,6 +5878,36 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"providers.codex.nativePrompt": {
+		type: "enum",
+		values: ["off", "shadow", "on"] as const,
+		default: "off",
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Protocol"),
+			label: tSettingsUi("Codex Native Prompt"),
+			description: tSettingsUi("Use the OpenAI Codex native-prompt sidecar when its trusted profile is eligible."),
+			options: [
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Keep the generic system prompt only"),
+				},
+				{
+					value: "shadow",
+					label: tSettingsUi("Shadow"),
+					description: tSettingsUi("Evaluate native-prompt eligibility without sending a native sidecar"),
+				},
+				{
+					value: "on",
+					label: tSettingsUi("On"),
+					description: tSettingsUi(
+						"Use a trusted native sidecar when eligible; otherwise use the generic system prompt",
+					),
+				},
+			],
+		},
+	},
 	"providers.openaiWebsockets": {
 		type: "enum",
 		values: ["auto", "off", "on"] as const,

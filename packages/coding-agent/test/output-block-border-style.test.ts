@@ -457,7 +457,7 @@ describe("output-block border style", () => {
 		});
 	});
 
-	it("renders full-width accent rows around partial hub wait job snapshots", () => {
+	it("keeps partial hub wait snapshots to content rows on the full-width accent surface", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const hubResult = {
 			content: [{ type: "text" as const, text: "" }],
@@ -493,12 +493,10 @@ describe("output-block border style", () => {
 			const fullPlain = plain(full);
 			const nonePlain = plain(none);
 
-			expect(accentPlain).toHaveLength(4);
-			expect(accentPlain[0]).toBe(padLine("▌", RENDERER_WIDTH));
-			expect(accentPlain[1]).toContain("waiting on 1 job");
-			expect(accentPlain[2]).toContain("job-1");
-			expect(accentPlain[2]).toContain("Compile docs");
-			expect(accentPlain[3]).toBe(padLine("▌", RENDERER_WIDTH));
+			expect(accentPlain).toHaveLength(2);
+			expect(accentPlain[0]).toContain("waiting on 1 job");
+			expect(accentPlain[1]).toContain("job-1");
+			expect(accentPlain[1]).toContain("Compile docs");
 			expectFullWidthAccentSurface(accent, "borderMuted", RENDERER_WIDTH);
 
 			for (const [rawLines, plainLines] of [
@@ -549,7 +547,7 @@ describe("output-block border style", () => {
 		}
 	});
 
-	it("adds exactly one painted pad above and below ordinary read summaries", () => {
+	it("keeps ordinary read summaries to their content row in the shared accent surface", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const previousDetailsVisible = getBasicToolDetailsVisible();
 		try {
@@ -562,11 +560,9 @@ describe("output-block border style", () => {
 			);
 			const plainLines = plain(lines);
 
-			expect(plainLines).toHaveLength(3);
-			expect(plainLines[0]).toBe(padLine("▌", RENDERER_WIDTH));
-			expect(plainLines[1]).toContain("Read");
-			expect(plainLines[1]).toContain("src/summary.ts");
-			expect(plainLines[2]).toBe(padLine("▌", RENDERER_WIDTH));
+			expect(plainLines).toHaveLength(1);
+			expect(plainLines[0]).toContain("Read");
+			expect(plainLines[0]).toContain("src/summary.ts");
 			expectFullWidthAccentSurface(lines, "borderMuted", RENDERER_WIDTH);
 		} finally {
 			setOutputBlockBorderStyle(previousStyle);
@@ -577,7 +573,7 @@ describe("output-block border style", () => {
 		expect(getBasicToolDetailsVisible()).toBe(previousDetailsVisible);
 	});
 
-	it("adds exactly one painted pad above and below nonempty generic fallback surfaces", () => {
+	it("keeps nonempty generic fallback surfaces to child content rows", () => {
 		const previousStyle = getOutputBlockBorderStyle();
 		const width = 18;
 		const body = "ABCDEFGHIJKLMNO";
@@ -586,11 +582,9 @@ describe("output-block border style", () => {
 			const lines = renderGenericFallbackResult("mystery", body, width);
 			const plainLines = plain(lines);
 
-			expect(plainLines).toHaveLength(4);
-			expect(plainLines[0]).toBe(padLine("▌", width));
-			expect(plainLines[1]).toContain("mystery");
-			expect(plainLines[2]).toBe(padLine(`▌ ${body}`, width));
-			expect(plainLines[3]).toBe(padLine("▌", width));
+			expect(plainLines).toHaveLength(2);
+			expect(plainLines[0]).toContain("mystery");
+			expect(plainLines[1]).toBe(padLine(`▌ ${body}`, width));
 			expectFullWidthAccentSurface(lines, "borderMuted", width);
 		} finally {
 			setOutputBlockBorderStyle(previousStyle);

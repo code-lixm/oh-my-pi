@@ -437,11 +437,11 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "last",
-		description: "View the latest user turn",
+		name: "history",
+		description: "View session history",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.editor.setText("");
-			runtime.ctx.showLastTurn();
+			runtime.ctx.showSessionHistory();
 		},
 	},
 	{

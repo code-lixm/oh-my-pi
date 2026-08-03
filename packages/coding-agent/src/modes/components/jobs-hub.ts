@@ -8,7 +8,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatAge, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../../async/job-manager";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import type { AgentProgress } from "../../task/types";
@@ -20,7 +20,14 @@ import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
 
 const REFRESH_MS = 1_000;
-const LIST_PREVIEW_WIDTH = 72;
+const JOBS_WIDE_MIN_WIDTH = 120;
+const JOB_TYPE_WIDTH = 8;
+const JOB_STATUS_WIDTH = 14;
+const JOB_DURATION_WIDTH = 8;
+const JOB_MODEL_WIDTH = 20;
+const JOB_OWNER_WIDTH = 12;
+const JOB_UPDATE_WIDTH = 11;
+const JOB_COLUMN_GAP = "  ";
 const DETAIL_LABEL_WIDTH = 16;
 const STATUS_ORDER: Record<AsyncJob["status"], number> = {
 	running: 0,
@@ -46,6 +53,11 @@ interface JobRow {
 	progress?: AgentProgress;
 }
 
+interface RenderedJobEntry {
+	lines: string[];
+	rowIndex?: number;
+}
+
 function oneLine(value: string, width: number): string {
 	return truncateToWidth(
 		sanitizeText(replaceTabs(value).replace(/[\r\n]+/g, " ")).trim(),
@@ -56,15 +68,6 @@ function oneLine(value: string, width: number): string {
 
 function safeLines(value: string): string[] {
 	return sanitizeText(replaceTabs(value)).replace(/\r/g, "").split("\n");
-}
-
-function lastOutputLine(value: string): string {
-	let end = value.length;
-	while (end > 0 && (value.charCodeAt(end - 1) === 10 || value.charCodeAt(end - 1) === 13)) end--;
-	if (end === 0) return "";
-	const lf = value.lastIndexOf("\n", end - 1);
-	const cr = value.lastIndexOf("\r", end - 1);
-	return value.slice(Math.max(lf, cr) + 1, end);
 }
 
 function isAgentProgress(value: unknown): value is AgentProgress {
@@ -102,27 +105,6 @@ function statusGlyph(job: AsyncJob): string {
 	if (job.status === "completed") return theme.fg("success", theme.status.enabled);
 	if (job.status === "failed") return theme.fg("error", theme.status.error);
 	return theme.fg("dim", theme.status.disabled);
-}
-
-function taskWork(progress: AgentProgress | undefined): string | undefined {
-	return (
-		progress?.lastIntent ??
-		progress?.activity?.detail ??
-		progress?.currentToolArgs ??
-		progress?.assignment ??
-		progress?.task
-	);
-}
-
-function jobPreview(row: JobRow): string {
-	if (row.job.type === "bash") {
-		const output = row.job.latestProgressText ?? row.job.errorText ?? row.job.resultText ?? "";
-		return oneLine(lastOutputLine(output), LIST_PREVIEW_WIDTH);
-	}
-	return oneLine(
-		taskWork(row.progress) ?? row.job.description ?? row.job.errorText ?? row.job.resultText ?? "",
-		LIST_PREVIEW_WIDTH,
-	);
 }
 
 function jobDuration(job: AsyncJob): string {
@@ -249,7 +231,7 @@ export class JobsHubOverlayComponent extends Container {
 	}
 
 	#renderList(width: number): string[] {
-		const inner = Math.max(1, width - 2);
+		const innerWidth = Math.max(1, width - 2);
 		this.#rowAtScreenLine.clear();
 		const jobs = this.#rows.map(row => row.job);
 		const running = jobs.filter(job => job.status === "running" && !job.queued).length;
@@ -266,61 +248,196 @@ export class JobsHubOverlayComponent extends Container {
 			tSettingsUi("{count} cancelled", { count: cancelled }),
 			`${capacity.running}/${capacity.limit}`,
 		].join(theme.sep.dot);
-		const lines = [
-			...new DynamicBorder().render(width),
-			` ${truncateToWidth(`${theme.fg("accent", tSettingsUi("Jobs Hub"))}${theme.fg("dim", `${theme.sep.dot}${summary}`)}`, inner)}`,
-			` ${truncateToWidth(
-				[
-					rawKeyHint("j/k", tSettingsUi("select")),
-					rawKeyHint("Enter", tSettingsUi("open details")),
-					rawKeyHint("f", tSettingsUi("focus agent")),
-					rawKeyHint("x", tSettingsUi("cancel job")),
-					rawKeyHint("Esc", tSettingsUi("close")),
-				].join(theme.sep.dot),
-				inner,
-			)}`,
-		];
-		const terminalRows = process.stdout.rows || 40;
-		const chromeRows = 6 + (this.#notice ? 1 : 0);
-		const maxVisibleItems = Math.max(1, Math.floor((terminalRows - chromeRows) / 2));
-		const maxStart = Math.max(0, this.#rows.length - maxVisibleItems);
-		const visibleStart = Math.max(0, Math.min(this.#selected - Math.floor(maxVisibleItems / 2), maxStart));
-		const visibleEnd = Math.min(this.#rows.length, visibleStart + maxVisibleItems);
-		if (this.#rows.length === 0) lines.push(` ${theme.fg("dim", tSettingsUi("No retained background jobs."))}`);
-		if (visibleStart > 0)
-			lines.push(` ${theme.fg("dim", tSettingsUi("{count} earlier jobs", { count: visibleStart }))}`);
-		for (const [offset, row] of this.#rows.slice(visibleStart, visibleEnd).entries()) {
-			const index = visibleStart + offset;
-			const selected = index === this.#selected;
-			const job = row.job;
-			const model = row.progress?.resolvedModel
-				? ` ${theme.fg("dim", oneLine(row.progress.resolvedModel, 28))}`
-				: "";
-			const owner = job.ownerId ? ` ${theme.fg("dim", `← ${oneLine(job.ownerId, 20)}`)}` : "";
-			const head = ` ${selected ? theme.fg("accent", theme.nav.cursor) : " "} ${statusGlyph(job)} ${theme.fg("muted", `[${job.type}]`)} ${oneLine(job.label || job.id, Math.max(12, inner - 55))} ${theme.fg("dim", statusLabel(job))} ${theme.fg("dim", jobDuration(job))}${model}${owner}`;
-			const preview = jobPreview(row);
-			const block = [head, ...(preview ? [`     ${theme.fg("dim", preview)}`] : [])];
-			if (selected) {
-				for (let i = 0; i < block.length; i++) {
-					const clipped = truncateToWidth(block[i]!, inner, Ellipsis.Omit);
-					block[i] =
-						` ${theme.bg("selectedBg", `${clipped.trimStart()}${padding(Math.max(0, inner - visibleWidth(clipped)))}`)}`;
+		const hintLines = this.#hintLines(width);
+		const lines: string[] = [];
+
+		lines.push(...new DynamicBorder().render(width));
+		lines.push(` ${truncateToWidth(theme.fg("accent", tSettingsUi("Jobs Hub")), innerWidth)}`);
+		lines.push(` ${theme.fg("dim", truncateToWidth(summary, innerWidth))}`);
+		for (const hintLine of hintLines) lines.push(` ${truncateToWidth(hintLine, innerWidth)}`);
+
+		if (this.#rows.length === 0) {
+			lines.push(` ${theme.fg("dim", tSettingsUi("No retained background jobs."))}`);
+		} else {
+			const terminalRows = process.stdout.rows || 40;
+			const chromeRows = 4 + hintLines.length + (this.#notice ? 1 : 0);
+			const budget = Math.max(3, terminalRows - chromeRows);
+			const entries = this.#renderEntries(width);
+			const selectedEntry = Math.max(
+				0,
+				entries.findIndex(entry => entry.rowIndex === this.#selected),
+			);
+			const fitEntries = (entryBudget: number): { start: number; end: number; used: number } => {
+				let start = selectedEntry;
+				let end = Math.min(entries.length, start + 1);
+				let used = entries[start]?.lines.length ?? 0;
+				for (let grew = true; grew; ) {
+					grew = false;
+					if (end < entries.length && used + entries[end]!.lines.length <= entryBudget) {
+						used += entries[end]!.lines.length;
+						end++;
+						grew = true;
+					}
+					if (start > 0 && used + entries[start - 1]!.lines.length <= entryBudget) {
+						start--;
+						used += entries[start]!.lines.length;
+						grew = true;
+					}
+				}
+				return { start, end, used };
+			};
+			let entryBudget = budget;
+			let { start, end, used } = fitEntries(entryBudget);
+			for (let pass = 0; pass < 3; pass++) {
+				const markerRows = (start > 0 ? 1 : 0) + (end < entries.length ? 1 : 0);
+				const nextBudget = Math.max(1, budget - markerRows);
+				if (nextBudget === entryBudget) break;
+				entryBudget = nextBudget;
+				({ start, end, used } = fitEntries(entryBudget));
+			}
+			const markerCapacity = Math.max(0, budget - used);
+			const showStartMarker = start > 0 && markerCapacity > 0;
+			const showEndMarker = end < entries.length && markerCapacity > (showStartMarker ? 1 : 0);
+			if (showStartMarker) {
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
+			}
+			for (const entry of entries.slice(start, end)) {
+				const lineStart = lines.length;
+				lines.push(...entry.lines);
+				if (entry.rowIndex !== undefined) {
+					for (let offset = 0; offset < entry.lines.length; offset++) {
+						this.#rowAtScreenLine.set(lineStart + offset, entry.rowIndex);
+					}
 				}
 			}
-			const lineStart = lines.length;
-			lines.push(...block.map(line => truncateToWidth(line, inner + 1, Ellipsis.Omit)));
-			for (let lineOffset = 0; lineOffset < block.length; lineOffset++) {
-				this.#rowAtScreenLine.set(lineStart + lineOffset, index);
+			if (showEndMarker) {
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: entries.length - end })}`)}`);
 			}
 		}
-		if (visibleEnd < this.#rows.length) {
-			lines.push(
-				` ${theme.fg("dim", tSettingsUi("{count} later jobs", { count: this.#rows.length - visibleEnd }))}`,
-			);
-		}
-		if (this.#notice) lines.push(` ${theme.fg("warning", oneLine(this.#notice, inner))}`);
+
+		if (this.#notice) lines.push(` ${theme.fg("warning", oneLine(this.#notice, innerWidth))}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
+	}
+
+	#renderEntries(width: number): RenderedJobEntry[] {
+		const entries: RenderedJobEntry[] = [];
+		if (width >= JOBS_WIDE_MIN_WIDTH && this.#rows.length > 0) {
+			entries.push({ lines: [this.#columnHeader(width)] });
+		}
+		for (let rowIndex = 0; rowIndex < this.#rows.length; rowIndex++) {
+			const row = this.#rows[rowIndex]!;
+			entries.push({
+				lines: this.#renderEntry(row, rowIndex === this.#selected, width),
+				rowIndex,
+			});
+		}
+		return entries;
+	}
+
+	#columnHeader(width: number): string {
+		const max = Math.max(1, width - 2);
+		const jobWidth = Math.max(
+			18,
+			max -
+				3 -
+				JOB_TYPE_WIDTH -
+				JOB_STATUS_WIDTH -
+				JOB_DURATION_WIDTH -
+				JOB_MODEL_WIDTH -
+				JOB_OWNER_WIDTH -
+				JOB_UPDATE_WIDTH -
+				JOB_COLUMN_GAP.length * 6,
+		);
+		const cells = [
+			fixedCell(tSettingsUi("Job"), jobWidth),
+			fixedCell(tSettingsUi("Type"), JOB_TYPE_WIDTH),
+			fixedCell(tSettingsUi("Status"), JOB_STATUS_WIDTH),
+			fixedCell(tSettingsUi("Duration"), JOB_DURATION_WIDTH),
+			fixedCell(tSettingsUi("Model"), JOB_MODEL_WIDTH),
+			fixedCell(tSettingsUi("Owner"), JOB_OWNER_WIDTH),
+			fixedCell(tSettingsUi("Last update"), JOB_UPDATE_WIDTH),
+		];
+		return theme.fg("dim", `   ${cells.join(JOB_COLUMN_GAP)}`);
+	}
+
+	#hintLines(width: number): string[] {
+		const maxWidth = Math.max(1, width - 2);
+		const separator = theme.fg("dim", theme.sep.dot);
+		const clamp = (line: string): string => truncateToWidth(line, maxWidth);
+		const primary = [
+			rawKeyHint("j/k", tSettingsUi("select")),
+			rawKeyHint("Enter", tSettingsUi("open details")),
+			rawKeyHint("Esc", tSettingsUi("close")),
+		].join(separator);
+		if (!this.#rows[this.#selected]) return [clamp(primary)];
+
+		const actions = [rawKeyHint("f", tSettingsUi("focus agent")), rawKeyHint("x", tSettingsUi("cancel job"))].join(
+			separator,
+		);
+		const combined = `${primary}${separator}${actions}`;
+		return visibleWidth(combined) <= maxWidth ? [combined] : [clamp(primary), clamp(actions)];
+	}
+
+	#renderEntry(row: JobRow, selected: boolean, width: number): string[] {
+		const max = Math.max(1, width - 2);
+		const job = row.job;
+		const label = oneLine(job.label || job.id, max);
+		const type = oneLine(job.type, JOB_TYPE_WIDTH);
+		const status = `${statusGlyph(job)} ${statusLabel(job)}`;
+		const duration = jobDuration(job);
+		const model = row.progress?.resolvedModel ? oneLine(row.progress.resolvedModel, JOB_MODEL_WIDTH) : "—";
+		const owner = job.ownerId ? oneLine(job.ownerId, JOB_OWNER_WIDTH) : "—";
+		const lastUpdate = job.lastProgressAt
+			? formatAge(Math.max(1, Math.round((Date.now() - job.lastProgressAt) / 1000)))
+			: "—";
+		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
+		const entry: string[] = [];
+
+		if (width >= JOBS_WIDE_MIN_WIDTH) {
+			const jobWidth = Math.max(
+				18,
+				max -
+					3 -
+					JOB_TYPE_WIDTH -
+					JOB_STATUS_WIDTH -
+					JOB_DURATION_WIDTH -
+					JOB_MODEL_WIDTH -
+					JOB_OWNER_WIDTH -
+					JOB_UPDATE_WIDTH -
+					JOB_COLUMN_GAP.length * 6,
+			);
+			entry.push(
+				` ${cursor} ${[
+					fixedCell(theme.bold(oneLine(label, jobWidth)), jobWidth),
+					fixedCell(theme.fg("muted", type), JOB_TYPE_WIDTH),
+					fixedCell(status, JOB_STATUS_WIDTH),
+					fixedCell(theme.fg("dim", duration), JOB_DURATION_WIDTH),
+					fixedCell(theme.fg("dim", model), JOB_MODEL_WIDTH),
+					fixedCell(theme.fg("dim", owner), JOB_OWNER_WIDTH),
+					fixedCell(theme.fg("dim", lastUpdate), JOB_UPDATE_WIDTH),
+				].join(JOB_COLUMN_GAP)}`,
+			);
+		} else {
+			const suffix = `  ${theme.fg("muted", `[${type}]`)}${theme.sep.dot}${status}`;
+			const labelWidth = Math.max(8, max - 3 - visibleWidth(suffix));
+			entry.push(` ${cursor} ${fixedCell(theme.bold(oneLine(label, labelWidth)), labelWidth)}${suffix}`);
+			const metadata = [
+				theme.fg("dim", model),
+				theme.fg("dim", duration),
+				job.ownerId ? theme.fg("dim", `← ${owner}`) : undefined,
+				job.lastProgressAt ? theme.fg("dim", lastUpdate) : undefined,
+			]
+				.filter((value): value is string => value !== undefined)
+				.join(theme.sep.dot);
+			entry.push(`   ${truncateToWidth(metadata, Math.max(1, max - 3))}`);
+		}
+
+		if (!selected) return entry;
+		return entry.map(line => {
+			const clipped = truncateToWidth(line, max);
+			return theme.bg("selectedBg", `${clipped}${padding(Math.max(0, max - visibleWidth(clipped)))}`);
+		});
 	}
 
 	#renderDetail(width: number): string[] {

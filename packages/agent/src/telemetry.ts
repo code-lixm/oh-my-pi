@@ -63,6 +63,10 @@ const MAX_TELEMETRY_OBJECT_DEPTH = 3;
 const MAX_TELEMETRY_OBJECT_KEYS = 12;
 const MAX_TELEMETRY_TEXT_CHARS = 240;
 
+// Profile hashes are emitted only as bounded token-shaped strings. This keeps a
+// malformed sidecar from turning a digest attribute into a raw prompt channel.
+const CODEX_PROMPT_IDENTITY_RE = /^[A-Za-z0-9][A-Za-z0-9._~:+/=-]{7,127}$/;
+
 /**
  * GenAI semantic-convention attribute keys grouped by operation. Hoisted so
  * call sites stay typo-proof and easy to grep.
@@ -130,6 +134,10 @@ export const enum PiGenAIAttr {
 	RequestToolChoice = "pi.gen_ai.request.tool.choice",
 	RequestAvailableTools = "pi.gen_ai.request.available_tools",
 	RequestMessages = "pi.gen_ai.request.messages",
+	/** Digest-only identity for a native Codex prompt; rendered prompt text is never a telemetry attribute. */
+	RequestCodexPromptVendorDigest = "pi.gen_ai.request.codex_prompt.vendor_digest",
+	RequestCodexPromptFingerprint = "pi.gen_ai.request.codex_prompt.fingerprint",
+	RequestCodexPromptFallbackFingerprint = "pi.gen_ai.request.codex_prompt.fallback_fingerprint",
 	ResponseText = "pi.gen_ai.response.text",
 	ResponseToolCalls = "pi.gen_ai.response.tool_calls",
 	ResponseUpstreamProvider = "pi.gen_ai.response.upstream_provider",
@@ -259,6 +267,20 @@ export interface ChatUsageEvent {
 export type TelemetryContentCapture = boolean | "none" | "summary" | "full";
 
 export type ResolvedTelemetryContentCapture = "none" | "summary" | "full";
+
+/**
+ * Safe telemetry projection of a native Codex prompt. Keep rendered
+ * instructions, model messages, and fragments out of this type so content
+ * serializers cannot accidentally export them.
+ */
+export interface CodexNativePromptTelemetryIdentity {
+	/** Omitted when the sidecar's claimed digest is malformed or unsafe to export. */
+	readonly vendorDigest?: string;
+	/** Omitted when the sidecar's claimed fingerprint is malformed or unsafe to export. */
+	readonly promptFingerprint?: string;
+	/** Omitted when the sidecar's claimed fallback fingerprint is malformed or unsafe to export. */
+	readonly fallbackFingerprint?: string;
+}
 
 export interface TelemetryContentSerializer {
 	readonly requestMessages?: (request: ChatRequestSnapshot) => string | undefined;
@@ -734,6 +756,37 @@ export interface ChatRequestSnapshot {
 	readonly tools?: readonly { readonly name: string }[];
 	readonly systemPrompt?: string | readonly string[];
 	readonly messages?: readonly Message[];
+	/** Digest-only projection; never pass the native prompt sidecar itself here. */
+	readonly codexPrompt?: CodexNativePromptTelemetryIdentity;
+}
+
+/**
+ * Extract the only native-prompt values telemetry may retain. The provider
+ * context can carry rendered prompt bytes, but no telemetry caller receives
+ * those bytes through this projection.
+ */
+export function getCodexNativePromptTelemetryIdentity(
+	context: Context,
+): CodexNativePromptTelemetryIdentity | undefined {
+	return normalizeCodexNativePromptTelemetryIdentity(context.codexNativePrompt);
+}
+
+function normalizeCodexNativePromptTelemetryIdentity(value: unknown): CodexNativePromptTelemetryIdentity | undefined {
+	// Presence alone suppresses raw fallback-prompt capture. A malformed sidecar
+	// therefore loses observability detail rather than opening an exfiltration path.
+	if (value === undefined) return undefined;
+	if (!isPlainTelemetryRecord(value)) return {};
+	return {
+		...(isCodexPromptIdentityPart(value.vendorDigest) ? { vendorDigest: value.vendorDigest } : {}),
+		...(isCodexPromptIdentityPart(value.promptFingerprint) ? { promptFingerprint: value.promptFingerprint } : {}),
+		...(isCodexPromptIdentityPart(value.fallbackFingerprint)
+			? { fallbackFingerprint: value.fallbackFingerprint }
+			: {}),
+	};
+}
+
+function isCodexPromptIdentityPart(value: unknown): value is string {
+	return typeof value === "string" && CODEX_PROMPT_IDENTITY_RE.test(value);
 }
 
 function buildChatRequestAttributes(stepNumber: number, request: ChatRequestSnapshot, provider: string): Attributes {
@@ -760,6 +813,16 @@ function buildChatRequestAttributes(stepNumber: number, request: ChatRequestSnap
 	if (toolChoice) attrs[PiGenAIAttr.RequestToolChoice] = toolChoice;
 	if (request.tools && request.tools.length > 0) {
 		attrs[PiGenAIAttr.RequestAvailableTools] = request.tools.map(tool => tool.name);
+	}
+	const codexPrompt = normalizeCodexNativePromptTelemetryIdentity(request.codexPrompt);
+	if (codexPrompt?.vendorDigest) {
+		attrs[PiGenAIAttr.RequestCodexPromptVendorDigest] = codexPrompt.vendorDigest;
+	}
+	if (codexPrompt?.promptFingerprint) {
+		attrs[PiGenAIAttr.RequestCodexPromptFingerprint] = codexPrompt.promptFingerprint;
+	}
+	if (codexPrompt?.fallbackFingerprint) {
+		attrs[PiGenAIAttr.RequestCodexPromptFallbackFingerprint] = codexPrompt.fallbackFingerprint;
 	}
 	return attrs;
 }
@@ -805,11 +868,30 @@ function serializeRequestMessagesForTelemetry(
 	telemetry: AgentTelemetry,
 	request: ChatRequestSnapshot,
 ): string | undefined {
+	const codexPrompt = normalizeCodexNativePromptTelemetryIdentity(request.codexPrompt);
 	const serializer = telemetry.config.contentSerializer?.requestMessages;
-	if (serializer) return callContentSerializer(telemetry, "requestMessages", () => serializer(request));
+	if (serializer) {
+		// The fallback system prompt is still present in a native context for wire
+		// fallback, but exporting it would leak the complete prompt beside its digest.
+		const serializerRequest = codexPrompt ? { ...request, systemPrompt: undefined, codexPrompt } : request;
+		return callContentSerializer(telemetry, "requestMessages", () => serializer(serializerRequest));
+	}
 	const messages: TelemetryMessageSummary[] = [];
-	for (const text of normalizeSystemPromptParts(request.systemPrompt))
-		messages.push({ role: "system", content: summarizeTelemetryValue(text) });
+	if (codexPrompt) {
+		messages.push({
+			role: "system",
+			content: {
+				kind: "codex_native_prompt",
+				...(codexPrompt.vendorDigest ? { vendorDigest: codexPrompt.vendorDigest } : {}),
+				...(codexPrompt.promptFingerprint ? { promptFingerprint: codexPrompt.promptFingerprint } : {}),
+				...(codexPrompt.fallbackFingerprint ? { fallbackFingerprint: codexPrompt.fallbackFingerprint } : {}),
+			},
+		});
+	} else {
+		for (const text of normalizeSystemPromptParts(request.systemPrompt)) {
+			messages.push({ role: "system", content: summarizeTelemetryValue(text) });
+		}
+	}
 	if (request.messages) {
 		for (const message of request.messages) {
 			messages.push({ role: message.role, content: summarizeTelemetryValue(message.content) });
@@ -877,6 +959,10 @@ interface OtelOutputMessage extends OtelInputMessage {
 }
 
 function serializeFullSystemInstructionsForTelemetry(request: ChatRequestSnapshot): string | undefined {
+	// A native Codex sidecar always has a complete legacy fallback system prompt.
+	// It is not the active native instruction stream, and must not become a raw
+	// telemetry escape hatch when full content capture is enabled.
+	if (normalizeCodexNativePromptTelemetryIdentity(request.codexPrompt)) return undefined;
 	const systemPrompt = normalizeSystemPromptParts(request.systemPrompt);
 	if (systemPrompt.length === 0) return undefined;
 	return stringifyJsonAttribute(systemPrompt.map(text => ({ type: "text", content: text }) satisfies OtelMessagePart));
@@ -1704,6 +1790,7 @@ export async function instrumentedCompleteSimple<TApi extends Api>(
 			tools: ctx.tools,
 			systemPrompt: ctx.systemPrompt,
 			messages: ctx.messages,
+			codexPrompt: getCodexNativePromptTelemetryIdentity(ctx),
 		},
 	});
 	if (chatSpan) {

@@ -16,6 +16,7 @@ import { astEditToolRenderer } from "./ast-edit";
 import { astGrepToolRenderer } from "./ast-grep";
 import { bashToolRenderer } from "./bash";
 import { browserToolRenderer } from "./browser/render";
+import { createCheckpointToolRenderer } from "./checkpoint-renderer";
 import { codegraphToolRenderer } from "./codegraph-renderer";
 import { computerToolRenderer } from "./computer-renderer";
 import { debugToolRenderer } from "./debug";
@@ -88,6 +89,8 @@ export type ToolRenderer = {
 
 export const toolRenderers: Record<string, ToolRenderer> = {
 	codegraph: codegraphToolRenderer as ToolRenderer,
+	checkpoint: createCheckpointToolRenderer("Checkpoint") as ToolRenderer,
+	rewind: createCheckpointToolRenderer("Rewind") as ToolRenderer,
 	ask: askToolRenderer as ToolRenderer,
 	ast_grep: astGrepToolRenderer as ToolRenderer,
 	ast_edit: astEditToolRenderer as ToolRenderer,

@@ -5,7 +5,7 @@ import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-
 import { JobsHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/jobs-hub";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
@@ -42,17 +42,17 @@ function workerProgress(): AgentProgress {
 		tokens: 144,
 		cost: 0.0123,
 		durationMs: 4_000,
-		resolvedModel: "provider/TASK_MODEL_MARKER",
+		resolvedModel: "MODEL_MARKER",
 	};
 }
 
 function makeJobsGestureHarness(options?: { focusedAgentId?: string }): {
 	editor: CustomEditor;
-	opened: Array<{ requireContent?: boolean } | undefined>;
+	opened: unknown[];
 	inputListeners: InputListener[];
 } {
 	const editor = new CustomEditor(getEditorTheme());
-	const opened: Array<{ requireContent?: boolean } | undefined> = [];
+	const opened: unknown[] = [];
 	const inputListeners: InputListener[] = [];
 	const ctx = {
 		editor,
@@ -75,8 +75,8 @@ function makeJobsGestureHarness(options?: { focusedAgentId?: string }): {
 			getKeys: () => [],
 			matches: () => false,
 		},
-		showJobsHub(options?: { requireContent?: boolean }) {
-			opened.push(options);
+		showJobsHub(...args: unknown[]) {
+			opened.push(args[0]);
 		},
 	} as unknown as InteractiveModeContext;
 
@@ -136,7 +136,7 @@ describe("AsyncJobManager Jobs Hub snapshots", () => {
 });
 
 describe("Jobs Hub overlay", () => {
-	it("renders task work and model beside the bash live tail, freezes terminal duration, and navigates details", async () => {
+	it("renders wide single-line table rows without inline previews and keeps output in details", async () => {
 		vi.useFakeTimers();
 		const stdoutRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
 		Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => 16 });
@@ -171,7 +171,7 @@ describe("Jobs Hub overlay", () => {
 					taskProgressReported.resolve();
 					return await taskRelease.promise;
 				},
-				{ agentId: "Worker", ownerId: "Main" },
+				{ agentId: "Worker", ownerId: "OWNER_MARKER" },
 			);
 			await taskProgressReported.promise;
 			setSystemTime(6_000);
@@ -181,18 +181,34 @@ describe("Jobs Hub overlay", () => {
 			hub = new JobsHubOverlayComponent({ manager, onDone() {}, requestRender() {} });
 			setSystemTime(10_000);
 			const firstList = renderHub(hub);
-			expect(firstList).toContain("BASH_LIVE_TAIL_MARKER");
-			expect(firstList).toContain("TASK_WORK_MARKER");
-			expect(firstList).toContain("TASK_MODEL_MARKER");
-			const taskLine = firstList.split("\n").find(line => line.includes("TASK_LABEL_MARKER"));
-			if (!taskLine) throw new Error("Expected completed task row");
-			expect(taskLine).toContain("00:00:04");
+			const firstListLines = firstList.split("\n");
+			const columnHeader = firstListLines.find(line =>
+				["Job", "Type", "Status", "Duration", "Model", "Owner", "Last update"].every(column =>
+					line.includes(column),
+				),
+			);
+			expect(columnHeader).toBeDefined();
+			for (const label of ["BASH_LABEL_MARKER", "TASK_LABEL_MARKER"]) {
+				expect(
+					firstListLines.filter(line => line.includes(label)),
+					label,
+				).toHaveLength(1);
+			}
+			const taskRow = firstListLines.find(line => line.includes("TASK_LABEL_MARKER"));
+			if (!taskRow) throw new Error("Expected task table row");
+			expect(taskRow).toContain("MODEL_MARKER");
+			expect(taskRow).toContain("OWNER_MARKER");
+			expect(firstList).not.toContain("BASH_LIVE_TAIL_MARKER");
+			expect(firstList).not.toContain("TASK_WORK_MARKER");
+			const taskLine = taskRow;
+			expect(taskLine).toContain("4s");
 
 			setSystemTime(3_600_000);
 			const laterTaskLine = renderHub(hub)
 				.split("\n")
 				.find(line => line.includes("TASK_LABEL_MARKER"));
-			expect(laterTaskLine).toBe(taskLine);
+			if (!laterTaskLine) throw new Error("Expected completed task table row");
+			expect(laterTaskLine).toContain("4s");
 
 			hub.handleInput("\r");
 			expect(renderHub(hub)).toContain("Live output tail");
@@ -204,10 +220,18 @@ describe("Jobs Hub overlay", () => {
 
 			hub.handleInput("\x1b");
 			hub.handleInput("j");
+			const selectedBgProbe = theme.bg("selectedBg", "|");
+			const selectedBgStart = selectedBgProbe.slice(0, selectedBgProbe.indexOf("|"));
+			const selectedTaskRawLine = hub.render(120).find(line => Bun.stripANSI(line).includes("TASK_LABEL_MARKER"));
+			if (!selectedTaskRawLine) throw new Error("Expected selected task table row");
+			expect(selectedTaskRawLine).toContain(selectedBgStart);
+			const selectedTaskLine = Bun.stripANSI(selectedTaskRawLine);
+			expect(selectedTaskLine).toContain("MODEL_MARKER");
+			expect(selectedTaskLine).toContain("OWNER_MARKER");
 			hub.handleInput("\r");
 			const taskDetail = renderHub(hub);
 			expect(taskDetail).toContain("TASK_ASSIGNMENT_MARKER");
-			expect(taskDetail).toContain("TASK_MODEL_MARKER");
+			expect(taskDetail).toContain("MODEL_MARKER");
 			expect(taskDetail).toContain("TASK_RESULT_MARKER");
 		} finally {
 			try {
@@ -225,7 +249,7 @@ describe("Jobs Hub overlay", () => {
 		}
 	});
 
-	it("shows a task registration description before any progress snapshot exists", async () => {
+	it("keeps a task registration description out of the list and shows it in details", async () => {
 		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
 		manager.register(
 			"task",
@@ -242,7 +266,7 @@ describe("Jobs Hub overlay", () => {
 		try {
 			const list = renderHub(hub);
 			expect(list).toContain("TASK_DESCRIPTION_LABEL_MARKER");
-			expect(list).toContain("TASK_DESCRIPTION_WITHOUT_PROGRESS_MARKER");
+			expect(list).not.toContain("TASK_DESCRIPTION_WITHOUT_PROGRESS_MARKER");
 
 			hub.handleInput("\r");
 			const detail = renderHub(hub);
@@ -318,10 +342,11 @@ describe("Jobs Hub overlay", () => {
 });
 
 describe("SelectorController Jobs Hub mounting", () => {
-	it("gates an empty gesture and mounts retained work as a fullscreen overlay", async () => {
+	it("mounts the empty Jobs Hub fullscreen, shows its empty state, and restores focus on Escape", async () => {
 		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
 		let shown: JobsHubOverlayComponent | undefined;
 		const overlayOptions: unknown[] = [];
+		const overlayHide = vi.fn();
 		const focusTargets: unknown[] = [];
 		const visiblePrompt = { id: "visible-prompt" };
 		const editor = { id: "editor" };
@@ -333,7 +358,7 @@ describe("SelectorController Jobs Hub mounting", () => {
 				showOverlay(component: unknown, options: unknown) {
 					shown = component as JobsHubOverlayComponent;
 					overlayOptions.push(options);
-					return { hide() {}, setHidden() {}, isHidden: () => false };
+					return { hide: overlayHide, setHidden() {}, isHidden: () => false };
 				},
 				setFocus(target: unknown) {
 					focusTargets.push(target);
@@ -346,20 +371,7 @@ describe("SelectorController Jobs Hub mounting", () => {
 		const controller = new SelectorController(ctx);
 
 		try {
-			controller.showJobsHub({ requireContent: true });
-			expect(overlayOptions).toEqual([]);
-
-			manager.register(
-				"bash",
-				"retained work",
-				async ({ signal }) =>
-					await new Promise<string>(resolve => {
-						if (signal.aborted) return resolve("cancelled");
-						signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
-					}),
-			);
-			controller.showJobsHub({ requireContent: true });
-
+			controller.showJobsHub();
 			if (!shown) throw new Error("Expected Jobs Hub overlay");
 			const hub = shown;
 			expect(overlayOptions).toHaveLength(1);
@@ -373,9 +385,12 @@ describe("SelectorController Jobs Hub mounting", () => {
 				}),
 			);
 			expect(focusTargets).toEqual([hub]);
+			expect(renderHub(hub)).toContain("No retained background jobs.");
 			expect(editorContainer.clear).not.toHaveBeenCalled();
 			expect(editorContainer.addChild).not.toHaveBeenCalled();
+
 			hub.handleInput("\x1b");
+			expect(overlayHide).toHaveBeenCalledTimes(1);
 			expect(focusTargets.at(-1)).toBe(visiblePrompt);
 			expect(focusTargets.at(-1)).not.toBe(editor);
 		} finally {
@@ -388,7 +403,7 @@ describe("SelectorController Jobs Hub mounting", () => {
 });
 
 describe("InputController Jobs Hub gesture", () => {
-	it("opens only for a human-paced empty-editor double right tap", () => {
+	it("opens an unfiltered Jobs Hub only for a human-paced empty-editor double right tap", () => {
 		vi.useFakeTimers();
 		const cases = [
 			{ name: "deliberate double tap", timestamps: [1_000, 1_200], expectedOpen: true },
@@ -402,7 +417,7 @@ describe("InputController Jobs Hub gesture", () => {
 				setSystemTime(timestamp);
 				editor.handleInput("\x1b[C");
 			}
-			expect(opened, testCase.name).toEqual(testCase.expectedOpen ? [{ requireContent: true }] : []);
+			expect(opened, testCase.name).toEqual(testCase.expectedOpen ? [undefined] : []);
 		}
 	});
 
@@ -422,6 +437,6 @@ describe("InputController Jobs Hub gesture", () => {
 			expect(consumed).toBe(true);
 		}
 
-		expect(opened).toEqual([{ requireContent: true }]);
+		expect(opened).toEqual([undefined]);
 	});
 });

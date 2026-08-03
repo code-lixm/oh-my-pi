@@ -2280,10 +2280,7 @@ export class SelectorController {
 		});
 	}
 
-	showAgentHub(
-		observers: SessionObserverRegistry,
-		options?: { requireContent?: boolean; armCloseTap?: boolean },
-	): void {
+	showAgentHub(observers: SessionObserverRegistry, options?: { armCloseTap?: boolean }): void {
 		const hubKeys = [
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
@@ -2341,50 +2338,30 @@ export class SelectorController {
 			openImage: image => openRichContentImage(this.ctx, image),
 		});
 
-		const showReadyHub = () => {
-			// The double-← gesture passes requireContent so it stays inert when
-			// neither live nor persisted subagents are available. Persisted rows now
-			// load asynchronously, so defer the gate until that scan has refreshed the
-			// hub instead of treating the initial empty table as authoritative.
-			if (options?.requireContent && hub.isEmpty) {
-				hub.dispose();
-				return;
-			}
-
-			overlayHandle = this.ctx.ui.showOverlay(hub, {
-				anchor: "top-left",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-				fullscreen: true,
-				mouseTracking,
-			});
-			this.ctx.ui.setFocus(hub);
-			// When the hub was raised by the editor's double-← gesture, prime its own
-			// close detector so the *next* single ← dismisses it — the two taps that
-			// opened it were consumed by the editor's detector (issue #4780).
-			if (options?.armCloseTap) hub.armCloseTap();
-			this.ctx.ui.requestRender();
-		};
-
-		if (options?.requireContent && hub.isEmpty) {
-			void hub.persistedSubagentsReady.then(showReadyHub);
-			return;
-		}
-
-		showReadyHub();
+		overlayHandle = this.ctx.ui.showOverlay(hub, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking,
+		});
+		this.ctx.ui.setFocus(hub);
+		// When the hub was raised by the editor's double-← gesture, prime its own
+		// close detector so the next single ← dismisses it (issue #4780).
+		if (options?.armCloseTap) hub.armCloseTap();
+		this.ctx.ui.requestRender();
 	}
 
-	showJobsHub(options?: { requireContent?: boolean }): void {
+	showJobsHub(): void {
 		const manager = this.ctx.session.asyncJobManager;
 		if (!manager) {
 			this.ctx.showWarning(tSettingsUi("Async background jobs are unavailable in this session."));
 			return;
 		}
-		// Unlike persisted Agent Hub rows, job retention is process-local and the
-		// manager snapshot is synchronous, so an empty gesture never flashes an
-		// overlay before being rejected.
-		if (options?.requireContent && manager.getAllJobs().length === 0) return;
+		// Job retention is process-local and synchronous. The overlay still opens
+		// when the manager is empty so the center remains discoverable and can show
+		// its explicit empty state.
 
 		let hub: JobsHubOverlayComponent | undefined;
 		let overlayHandle: OverlayHandle | undefined;

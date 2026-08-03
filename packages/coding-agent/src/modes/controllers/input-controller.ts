@@ -303,7 +303,7 @@ export class InputController {
 				if (!this.ctx.focusedAgentId) return undefined;
 				if (!matchesKey(data, "right")) return undefined;
 				if (this.ctx.editor.getText().trim()) return undefined;
-				if (this.#detectRightDoubleTap()) this.ctx.showJobsHub({ requireContent: true });
+				if (this.#detectRightDoubleTap()) this.ctx.showJobsHub();
 				return { consume: true };
 			});
 		}
@@ -616,18 +616,18 @@ export class InputController {
 		// Double-tap left arrow on an empty editor opens the Agent Hub from Main
 		// and from a focused subagent. The shared center preserves the visible
 		// Main → Agent Hub → subagent hierarchy; Esc remains the direct return to
-		// Main from a focused view. From Main the gesture stays inert when there
-		// are no subagents (requireContent); the explicit hub key still opens the
-		// empty roster. `armCloseTap` hands this gesture's tap state to the hub so
-		// the same ←← that opened it also arms its close — otherwise the hub's
-		// fresh detector demands a second ←← (issue #4780).
+		// Main from a focused view. Empty centers remain available so their
+		// controls and empty states are discoverable. `armCloseTap` hands this
+		// gesture's tap state to the hub so the same ←← that opened it also arms
+		// its close — otherwise the hub's fresh detector demands a second ←←
+		// (issue #4780).
 		this.ctx.editor.onLeftAtStart = () => {
 			if (this.ctx.focusedAgentId) {
 				this.#handleFocusedLeftTap();
 				return;
 			}
 			if (this.#detectLeftDoubleTap()) {
-				this.ctx.showAgentHub({ requireContent: true, armCloseTap: true });
+				this.ctx.showAgentHub({ armCloseTap: true });
 			}
 		};
 
@@ -637,7 +637,7 @@ export class InputController {
 		// the right.
 		this.ctx.editor.onRightAtEnd = () => {
 			if (this.#detectRightDoubleTap()) {
-				this.ctx.showJobsHub({ requireContent: true });
+				this.ctx.showJobsHub();
 			}
 		};
 
@@ -658,7 +658,7 @@ export class InputController {
 	#handleFocusedLeftTap(): void {
 		if (this.#detectLeftDoubleTap()) {
 			void this.ctx.unfocusSession().then(() => {
-				this.ctx.showAgentHub({ requireContent: true, armCloseTap: true });
+				this.ctx.showAgentHub({ armCloseTap: true });
 			});
 		}
 	}

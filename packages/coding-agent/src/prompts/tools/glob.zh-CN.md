@@ -1,15 +1,16 @@
-通过快速模式匹配对文件和目录执行 glob，适用于任何规模的代码库。
+使用快速模式匹配对文件、目录和以路径为后端的内部 URL 执行 glob。
 
 <instruction>
-- `path`：一个 glob、文件或目录。通过传递以分号分隔的列表（`src/**/*.ts; test/**/*.ts`）可一次搜索多个。
-- `gitignore`（默认 `true`）会隐藏 `.gitignore` 匹配项。将 `gitignore: false` 设为可查找 `.env*`、`*.log`、新的构建输出，或仓库忽略的任何内容。
-- `hidden`（默认 `true`）；与 `gitignore: false` 结合以同时显示也被 gitignored 的点文件。
+- `path`：glob、文件、目录或以路径为后端的内部 URL；用 `;` 分隔目标（`src/**/*.ts; test/**/*.ts`）。
+- 支持 `memory://` glob 模式。`ssh://` 没有本地路径；请使用 `read`。其他内部 URL 仅接受精确路径。
+- `gitignore` 默认是 `true`。对 `.env*`、日志或构建输出等被忽略文件，设为 `false`。
+- `hidden` 默认是 `true`；与 `gitignore: false` 配合可查找被忽略的点文件。
 </instruction>
 
 <output>
-按 mtime 对匹配路径排序（最新优先），按 `# <dir>/` 标题分组并在下方显示 basename；目录会带有结尾的 `/`。
+匹配按最新优先排序并按目录分组；目录以 `/` 结尾。
 </output>
 
 <avoid>
-需要多轮 glob/search 的开放式搜索：你 MUST 改用 Task tool。
+开放式多轮发现 → Task + scout。
 </avoid>

@@ -387,7 +387,7 @@ export interface InteractiveModeContext {
 	handleDumpCommand(): Promise<void>;
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
-	showLastTurn(): void;
+	showSessionHistory(): void;
 	handleClearCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleDropCommand(): Promise<void>;
@@ -440,8 +440,8 @@ export interface InteractiveModeContext {
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
-	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
-	showJobsHub(options?: { requireContent?: boolean }): void;
+	showAgentHub(options?: { armCloseTap?: boolean }): void;
+	showJobsHub(): void;
 	resetObserverRegistry(): void;
 
 	// Input handling

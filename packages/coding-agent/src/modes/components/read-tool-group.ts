@@ -663,15 +663,14 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		usageRows: ReadUsageRow[],
 	): void {
 		const connector = index === total - 1 ? theme.tree.last : theme.tree.branch;
-		const treeIndent = isBorderlessOutputStyle(getOutputBlockBorderStyle()) ? "   " : "";
-		lines.push(`${treeIndent}${theme.fg("dim", connector)} ${this.#formatRow(row)}`.trimEnd());
+		lines.push(`${theme.fg("dim", connector)} ${this.#formatRow(row)}`.trimEnd());
 
 		const connectorWidth = Bun.stringWidth(connector);
 		const continuation =
 			index === total - 1
 				? " ".repeat(connectorWidth)
 				: `${theme.tree.vertical}${" ".repeat(Math.max(0, connectorWidth - Bun.stringWidth(theme.tree.vertical)))}`;
-		this.#appendUsageRows(lines, usageRows, `${treeIndent}${continuation} `);
+		this.#appendUsageRows(lines, usageRows, `${continuation} `);
 	}
 
 	#usageRowsBySummaryRow(rows: ReadSummaryRow[]): Map<number, ReadUsageRow[]> {

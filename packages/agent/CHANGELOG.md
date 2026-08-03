@@ -6,6 +6,8 @@
 
 - Added `AgentOptions.formatSkippedToolResult` and its loop-level equivalent so hosts can localize synthetic skipped-tool results produced by steering or peer interrupts.
 
+- Added digest-only Codex native-prompt identity to chat telemetry without recording vendor prompt text.
+
 ### Changed
 
 - Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema, retain constraints, decisions and evidence, command outcomes, active/blocked work, recovery references, and next actions, then replay the summary directly so execution continues without repeating completed work or reopening settled decisions without new evidence.

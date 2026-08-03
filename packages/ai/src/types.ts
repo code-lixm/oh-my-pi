@@ -34,7 +34,16 @@ import type {
 } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isOpenAIModelId } from "@oh-my-pi/pi-catalog/identity/family";
-import type { Api, FetchImpl, KnownApi, Model, Provider, ThinkingBudgets, Usage } from "@oh-my-pi/pi-catalog/types";
+import type {
+	Api,
+	CodexPromptModelMessages,
+	FetchImpl,
+	KnownApi,
+	Model,
+	Provider,
+	ThinkingBudgets,
+	Usage,
+} from "@oh-my-pi/pi-catalog/types";
 import type { Type } from "arktype";
 import type { ZodType, z } from "zod/v4";
 import type { ApiKey } from "./auth-retry";
@@ -1201,8 +1210,132 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	examples?: readonly ToolExample[];
 }
 
+/** Complete Codex-only prompt sidecar. Generic serializers MUST ignore it. */
+export interface CodexNativePrompt {
+	/** Rendered vendor instructions, emitted through the Codex `instructions` field. */
+	instructions: string;
+	/** Vendor `model_messages` kept opaque for provenance; serializers never inject it. */
+	modelMessages?: CodexPromptModelMessages;
+	/** OMP-owned developer fragments, preserved in their supplied order. */
+	developerFragments: readonly string[];
+	/** Repository and user context fragments, preserved in their supplied order. */
+	contextualUserFragments: readonly string[];
+	/** Canonical digest of the trusted vendor profile. */
+	vendorDigest: string;
+	/** Cache-partition fingerprint for the native prompt shape. */
+	promptFingerprint: string;
+	/** Fingerprint of the complete generic fallback prompt. */
+	fallbackFingerprint: string;
+}
+
+function isNonEmptyCodexPromptString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+/** True only when every serializer-relevant Codex sidecar field is complete. */
+export function isCodexNativePrompt(value: unknown): value is CodexNativePrompt {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const prompt = value as Record<string, unknown>;
+	return (
+		isNonEmptyCodexPromptString(prompt.instructions) &&
+		Array.isArray(prompt.developerFragments) &&
+		prompt.developerFragments.every(isNonEmptyCodexPromptString) &&
+		Array.isArray(prompt.contextualUserFragments) &&
+		prompt.contextualUserFragments.every(isNonEmptyCodexPromptString) &&
+		isNonEmptyCodexPromptString(prompt.vendorDigest) &&
+		isNonEmptyCodexPromptString(prompt.promptFingerprint) &&
+		isNonEmptyCodexPromptString(prompt.fallbackFingerprint)
+	);
+}
+
+/** Bump only when native or fallback fingerprint payload semantics change. */
+export const CODEX_PROMPT_FINGERPRINT_SCHEMA_VERSION = 1;
+
+export interface CodexNativePromptFingerprintInput {
+	vendorDigest: string;
+	instructions: string;
+	/** Provenance is fingerprinted even though serializers never inject it. */
+	modelMessages?: unknown;
+	developerFragments: readonly string[];
+	contextualUserFragments: readonly string[];
+}
+
+const codexPromptFingerprintTextEncoder = new TextEncoder();
+
+/**
+ * Hash the complete native prompt identity with canonical JSON. Object keys are
+ * sorted while arrays retain their supplied order.
+ */
+export async function createCodexNativePromptFingerprint(input: CodexNativePromptFingerprintInput): Promise<string> {
+	return sha256CodexPromptFingerprint(
+		canonicalizeCodexPromptFingerprint({
+			schemaVersion: CODEX_PROMPT_FINGERPRINT_SCHEMA_VERSION,
+			vendorDigest: input.vendorDigest,
+			instructions: input.instructions,
+			modelMessages: input.modelMessages,
+			developerFragments: input.developerFragments,
+			contextualUserFragments: input.contextualUserFragments,
+		}),
+	);
+}
+
+/** Hash the complete generic fallback prompt independently from native prompt state. */
+export async function createCodexFallbackPromptFingerprint(
+	systemPrompt: readonly string[] | undefined,
+): Promise<string> {
+	return sha256CodexPromptFingerprint(
+		canonicalizeCodexPromptFingerprint({
+			schemaVersion: CODEX_PROMPT_FINGERPRINT_SCHEMA_VERSION,
+			systemPrompt: systemPrompt ?? [],
+		}),
+	);
+}
+
+async function sha256CodexPromptFingerprint(value: string): Promise<string> {
+	const digest = await globalThis.crypto.subtle.digest("SHA-256", codexPromptFingerprintTextEncoder.encode(value));
+	return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function canonicalizeCodexPromptFingerprint(value: unknown): string {
+	if (value === null) return "null";
+	switch (typeof value) {
+		case "boolean":
+			return value ? "true" : "false";
+		case "number":
+			if (!Number.isFinite(value)) throw new TypeError("Codex prompt fingerprints require finite numbers");
+			return JSON.stringify(value);
+		case "string":
+			return JSON.stringify(value);
+		case "undefined":
+			throw new TypeError("Codex prompt fingerprints cannot hash top-level undefined values");
+		case "object":
+			if (Array.isArray(value)) {
+				return `[${value.map(item => (item === undefined ? "null" : canonicalizeCodexPromptFingerprint(item))).join(",")}]`;
+			}
+			return canonicalizeCodexPromptFingerprintObject(value);
+		default:
+			throw new TypeError(`Codex prompt fingerprints cannot hash ${typeof value} values`);
+	}
+}
+
+function canonicalizeCodexPromptFingerprintObject(value: object): string {
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) {
+		throw new TypeError("Codex prompt fingerprints require plain JSON objects");
+	}
+	const record = value as Record<string, unknown>;
+	const entries = Object.keys(record)
+		.sort()
+		.flatMap(key => {
+			const nested = record[key];
+			return nested === undefined ? [] : [`${JSON.stringify(key)}:${canonicalizeCodexPromptFingerprint(nested)}`];
+		});
+	return `{${entries.join(",")}}`;
+}
+
 export interface Context {
 	systemPrompt?: string[];
+	/** Codex-native prompt payload; ignored by every non-Codex serializer. */
+	codexNativePrompt?: CodexNativePrompt;
 	messages: Message[];
 	tools?: Tool[];
 }

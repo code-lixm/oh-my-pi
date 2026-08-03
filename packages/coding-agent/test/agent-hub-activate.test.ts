@@ -440,6 +440,12 @@ describe("Agent hub Enter activation", () => {
 		expect(editorContainer.clear).not.toHaveBeenCalled();
 		expect(editorContainer.addChild).not.toHaveBeenCalled();
 		expect(focusTargets[0]).toBe(capturedHub);
+		const tableLines = Bun.stripANSI(capturedHub.render(120).join("\n")).split("\n");
+		const columnHeader = tableLines.find(line =>
+			["Agent", "Status", "Duration", "Model", "Last update"].every(column => line.includes(column)),
+		);
+		expect(columnHeader).toBeDefined();
+		expect(tableLines.filter(line => line.includes(AGENT_ID))).toHaveLength(1);
 
 		capturedHub.handleInput("\r");
 
@@ -538,7 +544,7 @@ describe("Agent hub Enter activation", () => {
 	});
 });
 
-describe("Agent hub double-← gating", () => {
+describe("Agent hub overlay mounting and close tap", () => {
 	beforeAll(() => {
 		initTheme();
 	});
@@ -549,13 +555,11 @@ describe("Agent hub double-← gating", () => {
 
 	function setup(agents: AgentRegistry, sessionFile: string | null = null) {
 		let shown: AgentHubOverlayComponent | undefined;
-		const shownReady = Promise.withResolvers<AgentHubOverlayComponent>();
 		const editor = {};
 		const focusTargets: unknown[] = [];
 		const overlayHide = vi.fn();
 		const showOverlay = vi.fn((component: unknown) => {
 			shown = component as AgentHubOverlayComponent;
-			shownReady.resolve(shown);
 			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
 		});
 		const ctx = {
@@ -584,86 +588,45 @@ describe("Agent hub double-← gating", () => {
 			controller,
 			editor,
 			shown: () => shown,
-			shownReady: shownReady.promise,
 			focusTargets,
 			showOverlay,
 			overlayHide,
 		};
 	}
 
-	it("requireContent keeps the hub closed when only Main is registered", () => {
+	it("mounts a Main-only Agent Hub fullscreen, renders its empty state, and restores focus on Escape", () => {
 		const agents = new AgentRegistry();
-		agents.register({
-			id: "Main",
-			displayName: "Main",
-			kind: "main",
-			session: null,
-			sessionFile: null,
-			status: "running",
-		});
-		const { controller, shown } = setup(agents);
-
-		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
-
-		expect(shown()).toBeUndefined();
-	});
-
-	it("requireContent opens the hub once a subagent exists", () => {
-		const agents = new AgentRegistry();
-		registerWorker(agents);
-		const { controller, shown } = setup(agents);
-
-		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
-
-		expect(shown()).toBeDefined();
-		shown()!.dispose();
-	});
-
-	it("requireContent opens the hub after persisted subagents load", async () => {
-		using tempDir = TempDir.createSync("@omp-agent-hub-require-content-");
-		const sessionFile = path.join(tempDir.path(), "main.jsonl");
-		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
-		await Bun.write(sessionFile, "");
-		await Bun.write(workerSessionFile, "");
-		const agents = new AgentRegistry();
-		registerMain(agents, { sessionFile });
-		const { controller, shown, shownReady } = setup(agents, sessionFile);
-
-		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
-
-		expect(shown()).toBeUndefined();
-		const shownHub = await shownReady;
-		expect(shownHub).toBeDefined();
-		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
-		shownHub!.dispose();
-	});
-
-	it("the explicit hub key opens the empty roster even with no subagents", () => {
-		const agents = new AgentRegistry();
-		const { controller, shown } = setup(agents);
+		registerMain(agents);
+		const { controller, editor, shown, focusTargets, showOverlay, overlayHide } = setup(agents);
 
 		controller.showAgentHub(new SessionObserverRegistry());
 
-		expect(shown()).toBeDefined();
-		shown()!.dispose();
+		const hub = shown();
+		if (!hub) throw new Error("Expected Agent Hub overlay");
+		expect(showOverlay).toHaveBeenCalledWith(
+			hub,
+			expect.objectContaining({
+				anchor: "top-left",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+				fullscreen: true,
+			}),
+		);
+		expect(focusTargets).toEqual([hub]);
+		expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("No tasks yet");
+
+		hub.handleInput("\x1b");
+		expect(overlayHide).toHaveBeenCalledTimes(1);
+		expect(focusTargets.at(-1)).toBe(editor);
 	});
 
 	it("armCloseTap lets a single ← dismiss the hub the opening ←← raised", () => {
 		const agents = new AgentRegistry();
 		registerMain(agents);
-		// A parked/persisted agent opens the hub under requireContent (issue #4780).
-		agents.register({
-			id: "Parked",
-			displayName: "Parked",
-			kind: "sub",
-			parentId: "Main",
-			session: { subscribe: () => () => {} } as unknown as AgentSession,
-			sessionFile: null,
-			status: "parked",
-		});
 		const { controller, editor, shown, focusTargets } = setup(agents);
 
-		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true, armCloseTap: true });
+		controller.showAgentHub(new SessionObserverRegistry(), { armCloseTap: true });
 
 		const hub = shown();
 		expect(hub).toBeDefined();

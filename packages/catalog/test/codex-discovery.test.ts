@@ -4,11 +4,79 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { fetchCodexModels } from "@oh-my-pi/pi-catalog/discovery/codex";
+import { fetchCodexModels, renderCodexPromptInstructions } from "@oh-my-pi/pi-catalog/discovery/codex";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import { openaiCodexModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/special";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+
+const CODEX_PROFILE_BASE_URL = "https://chatgpt.com/backend-api";
+
+type CodexProfileFixture = {
+	slug: string;
+	display_name: string;
+	context_window: number;
+	default_reasoning_level: string;
+	supported_reasoning_levels: string[];
+	input_modalities: string[];
+	visibility: string;
+	base_instructions: string;
+	model_messages: Record<string, unknown>;
+	comp_hash: string;
+};
+
+function codexProfileFixture(
+	slug: string,
+	baseInstructions: string,
+	instructionsTemplate: string,
+	instructionsVariables: {
+		personality_default: string | null;
+		personality_friendly: string | null;
+		personality_pragmatic: string | null;
+	},
+	compHash: string,
+): CodexProfileFixture {
+	return {
+		slug,
+		display_name: slug,
+		context_window: 400_000,
+		default_reasoning_level: "medium",
+		supported_reasoning_levels: ["low", "medium", "high"],
+		input_modalities: ["text"],
+		visibility: "list",
+		base_instructions: baseInstructions,
+		model_messages: {
+			instructions_template: instructionsTemplate,
+			instructions_variables: instructionsVariables,
+			approvals: null,
+		},
+		comp_hash: compHash,
+	};
+}
+
+function codexProfileFetch(models: readonly CodexProfileFixture[]): typeof fetch {
+	const fetchFn: typeof fetch = Object.assign(
+		async () =>
+			new Response(JSON.stringify({ models }), {
+				headers: { etag: "codex-profile-fixture-v1" },
+			}),
+		{ preconnect() {} },
+	);
+	return fetchFn;
+}
+
+async function discoverCodexProfileModel(fixture: CodexProfileFixture, baseUrl: string) {
+	const result = await fetchCodexModels({
+		accessToken: "test-token",
+		baseUrl,
+		clientVersion: "0.144.1",
+		paths: ["/codex/models"],
+		fetchFn: codexProfileFetch([fixture]),
+	});
+	const model = result?.models.find(candidate => candidate.id === fixture.slug);
+	expect(model).toBeDefined();
+	return model!;
+}
 
 describe("Codex model discovery", () => {
 	it("marks discovered models for provider-native V2 compaction", async () => {
@@ -469,5 +537,231 @@ describe("Codex model discovery", () => {
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("preserves and renders the distinct 5.2, 5.4, 5.5, and Terra profile shapes", async () => {
+		const fixtures = [
+			{
+				fixture: codexProfileFixture(
+					"gpt-5.2-codex",
+					"5.2 base instructions",
+					"5.2 template without a personality placeholder",
+					{ personality_default: "", personality_friendly: null, personality_pragmatic: null },
+					"comp-5.2",
+				),
+				expected: {
+					default: "5.2 base instructions",
+					friendly: "5.2 base instructions",
+					pragmatic: "5.2 base instructions",
+				},
+			},
+			{
+				fixture: codexProfileFixture(
+					"gpt-5.4",
+					"5.4 base instructions",
+					"5.4 template: {{ personality }}.",
+					{
+						personality_default: "default-5.4",
+						personality_friendly: "friendly-5.4",
+						personality_pragmatic: "pragmatic-5.4",
+					},
+					"comp-5.4",
+				),
+				expected: {
+					default: "5.4 template: default-5.4.",
+					friendly: "5.4 template: friendly-5.4.",
+					pragmatic: "5.4 template: pragmatic-5.4.",
+				},
+			},
+			{
+				fixture: codexProfileFixture(
+					"gpt-5.5",
+					"5.5 base instructions",
+					"5.5 template: {{ personality }}\ncontinue",
+					{
+						personality_default: "",
+						personality_friendly: "friendly-5.5",
+						personality_pragmatic: "pragmatic-5.5",
+					},
+					"comp-5.5",
+				),
+				expected: {
+					default: "5.5 template: \ncontinue",
+					friendly: "5.5 template: friendly-5.5\ncontinue",
+					pragmatic: "5.5 template: pragmatic-5.5\ncontinue",
+				},
+			},
+			{
+				fixture: codexProfileFixture(
+					"gpt-5.6-terra",
+					"Terra base instructions",
+					"Terra template without a personality placeholder",
+					{ personality_default: "", personality_friendly: "", personality_pragmatic: "" },
+					"comp-5.6-terra",
+				),
+				expected: {
+					default: "Terra base instructions",
+					friendly: "Terra base instructions",
+					pragmatic: "Terra base instructions",
+				},
+			},
+		] as const;
+		const result = await fetchCodexModels({
+			accessToken: "test-token",
+			baseUrl: CODEX_PROFILE_BASE_URL,
+			clientVersion: "0.144.1",
+			paths: ["/codex/models"],
+			fetchFn: codexProfileFetch(fixtures.map(({ fixture }) => fixture)),
+		});
+
+		expect(result?.models).toHaveLength(fixtures.length);
+		for (const { fixture, expected } of fixtures) {
+			const model = result?.models.find(candidate => candidate.id === fixture.slug);
+			expect(model).toBeDefined();
+			const profile = model?.codexPromptProfile;
+			expect(profile).toMatchObject({
+				modelId: fixture.slug,
+				baseInstructions: fixture.base_instructions,
+				compHash: fixture.comp_hash,
+			});
+			expect(renderCodexPromptInstructions(profile!, "default")).toBe(expected.default);
+			expect(renderCodexPromptInstructions(profile!, "friendly")).toBe(expected.friendly);
+			expect(renderCodexPromptInstructions(profile!, "pragmatic")).toBe(expected.pragmatic);
+		}
+	});
+
+	it("uses a canonical vendor digest that covers exact profile identity and payload", async () => {
+		const canonical = codexProfileFixture(
+			"gpt-5.5",
+			"digest base",
+			"digest {{ personality }}",
+			{
+				personality_default: "default",
+				personality_friendly: "friendly",
+				personality_pragmatic: "pragmatic",
+			},
+			"comp-digest",
+		);
+		const reordered: CodexProfileFixture = {
+			slug: canonical.slug,
+			display_name: canonical.display_name,
+			context_window: canonical.context_window,
+			default_reasoning_level: canonical.default_reasoning_level,
+			supported_reasoning_levels: canonical.supported_reasoning_levels,
+			input_modalities: canonical.input_modalities,
+			visibility: canonical.visibility,
+			base_instructions: canonical.base_instructions,
+			model_messages: {
+				approvals: null,
+				instructions_variables: {
+					personality_pragmatic: "pragmatic",
+					personality_friendly: "friendly",
+					personality_default: "default",
+				},
+				instructions_template: "digest {{ personality }}",
+			},
+			comp_hash: canonical.comp_hash,
+		};
+		const changedBase = codexProfileFixture(
+			canonical.slug,
+			"changed digest base",
+			"digest {{ personality }}",
+			{
+				personality_default: "default",
+				personality_friendly: "friendly",
+				personality_pragmatic: "pragmatic",
+			},
+			canonical.comp_hash,
+		);
+		const changedVariable: CodexProfileFixture = {
+			...canonical,
+			model_messages: {
+				...canonical.model_messages,
+				instructions_variables: {
+					personality_default: "default",
+					personality_friendly: "changed-friendly",
+					personality_pragmatic: "pragmatic",
+				},
+			},
+		};
+		const differentModel = { ...canonical, slug: "gpt-5.6-terra", display_name: "gpt-5.6-terra" };
+		const [canonicalModel, reorderedModel, changedBaseModel, changedVariableModel, differentModelResult] =
+			await Promise.all(
+				[canonical, reordered, changedBase, changedVariable, differentModel].map(fixture =>
+					discoverCodexProfileModel(fixture, CODEX_PROFILE_BASE_URL),
+				),
+			);
+
+		const canonicalDigest = canonicalModel.codexPromptProfile?.vendorDigest;
+		expect(canonicalDigest).toBeDefined();
+		expect(reorderedModel.codexPromptProfile?.vendorDigest).toBe(canonicalDigest);
+		expect(changedBaseModel.codexPromptProfile?.vendorDigest).not.toBe(canonicalDigest);
+		expect(changedVariableModel.codexPromptProfile?.vendorDigest).not.toBe(canonicalDigest);
+		expect(differentModelResult.codexPromptProfile?.vendorDigest).not.toBe(canonicalDigest);
+	});
+
+	it("falls back to base instructions when a template is not exactly one personality placeholder", async () => {
+		const fixtures = [
+			codexProfileFixture(
+				"gpt-5.4",
+				"duplicate placeholder base",
+				"{{ personality }} then {{ personality }}",
+				{ personality_default: "default", personality_friendly: "friendly", personality_pragmatic: "pragmatic" },
+				"comp-duplicate-placeholder",
+			),
+			codexProfileFixture(
+				"gpt-5.5",
+				"unknown placeholder base",
+				"{{ unsupported }}",
+				{ personality_default: "default", personality_friendly: "friendly", personality_pragmatic: "pragmatic" },
+				"comp-unknown-placeholder",
+			),
+		];
+
+		for (const fixture of fixtures) {
+			const model = await discoverCodexProfileModel(fixture, CODEX_PROFILE_BASE_URL);
+			const profile = model.codexPromptProfile;
+			expect(profile).toBeDefined();
+			expect(renderCodexPromptInstructions(profile!, "pragmatic")).toBe(fixture.base_instructions);
+		}
+	});
+
+	it("withholds the entire native profile when a trusted response has malformed profile fields", async () => {
+		const malformed: CodexProfileFixture = {
+			...codexProfileFixture(
+				"gpt-5.5",
+				"malformed base",
+				"{{ personality }}",
+				{ personality_default: "default", personality_friendly: "friendly", personality_pragmatic: "pragmatic" },
+				"comp-malformed",
+			),
+			model_messages: {
+				instructions_template: "{{ personality }}",
+				instructions_variables: {
+					personality_default: "default",
+					personality_friendly: 7,
+					personality_pragmatic: "pragmatic",
+				},
+				approvals: null,
+			},
+		};
+
+		const model = await discoverCodexProfileModel(malformed, CODEX_PROFILE_BASE_URL);
+		expect(model.id).toBe(malformed.slug);
+		expect(model.codexPromptProfile).toBeUndefined();
+	});
+
+	it("keeps model discovery but refuses a dynamic profile from an untrusted origin", async () => {
+		const fixture = codexProfileFixture(
+			"gpt-5.6-terra",
+			"untrusted base",
+			"untrusted {{ personality }}",
+			{ personality_default: "default", personality_friendly: "friendly", personality_pragmatic: "pragmatic" },
+			"comp-untrusted",
+		);
+
+		const model = await discoverCodexProfileModel(fixture, "https://codex.example/backend-api");
+		expect(model.id).toBe(fixture.slug);
+		expect(model.codexPromptProfile).toBeUndefined();
 	});
 });

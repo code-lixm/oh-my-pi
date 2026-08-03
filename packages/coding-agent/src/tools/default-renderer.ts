@@ -3,7 +3,7 @@ import { isRecord } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme } from "../modes/theme/theme";
-import { renderStatusLine, WidthAwareText } from "../tui";
+import { getOutputBlockBorderStyle, renderStatusLine, WidthAwareText } from "../tui";
 import {
 	formatArgsInline,
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
@@ -144,13 +144,20 @@ export function formatDefaultToolExecution(
 
 /** Render the generic fallback as the state-tinted card used by direct custom tools. */
 export function renderDefaultToolExecution(input: DefaultToolRenderInput, uiTheme: Theme): Component {
-	const component = new WidthAwareText(contentWidth => formatDefaultToolExecution(input, contentWidth, uiTheme), 1, 1);
-	const background = input.options.isPartial
-		? "toolPendingBg"
-		: input.result?.isError
-			? "toolErrorBg"
-			: "toolSuccessBg";
-	component.setCustomBgFn(text => uiTheme.bg(background, text));
+	const accentMode = getOutputBlockBorderStyle() === "accent";
+	const component = new WidthAwareText(
+		contentWidth => formatDefaultToolExecution(input, contentWidth, uiTheme),
+		accentMode ? 0 : 1,
+		accentMode ? 0 : 1,
+	);
+	if (!accentMode) {
+		const background = input.options.isPartial
+			? "toolPendingBg"
+			: input.result?.isError
+				? "toolErrorBg"
+				: "toolSuccessBg";
+		component.setCustomBgFn(text => uiTheme.bg(background, text));
+	}
 	component.setIgnoreTight(true);
 	return component;
 }

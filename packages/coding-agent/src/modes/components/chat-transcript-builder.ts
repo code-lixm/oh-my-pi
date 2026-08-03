@@ -342,7 +342,7 @@ export class ChatTranscriptBuilder {
 		const proseOnlyThinking = this.deps.proseOnlyThinking ? this.deps.proseOnlyThinking() : false;
 		const timeline = splitAssistantMessageToolTimeline(message);
 		// Historical-transcript assistant messages reuse the live wiring: the host
-		// (AgentTranscriptViewer / LastTurnViewer) forwards its own openLink/openImage
+		// (AgentTranscriptViewer / SessionHistoryViewer) forwards its own openLink/openImage
 		// to Markdown children (setLinkHandler) and Image / fallback children (setClickHandler)
 		// via the same richContentHandlers shape the live InteractiveModeContext uses.
 		const richContentHandlers =

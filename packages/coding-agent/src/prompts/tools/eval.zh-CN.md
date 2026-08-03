@@ -1,72 +1,45 @@
-在持久内核中运行一步代码。
+在持久内核中运行一段代码；状态跨调用和子代理保持。
 
-<instruction>
-**一次 eval 调用 = 一个单元 = 一个逻辑步骤。** 状态按语言在独立的 eval 调用、工具调用和 `task` 子代理之间持久保留——在一次调用中定义 helpers/datasets/clients，后续调用即可直接复用它们。
+增量工作：import → 定义 → 测试 → 使用，每步各用一个单元。仅在 `reset` 或内核崩溃后重新运行 setup。
+在单元内部用 `parallel(thunks)` 并行，不要通过批处理并行。
 
-以增量方式工作：一次调用中 import，在下一次中定义，测试，然后使用——每个都各自是一次 eval 调用。仅在 `reset`、内核崩溃或某个证明状态已丢失的 `NameError`/`ReferenceError` 之后才重新运行 setup。使用 `parallel(thunks)` helper 在单元*内部*并行化工作，而不是通过批处理步骤。
+{{#if py}}顶层 `await` 可用；`asyncio.run(…)` 会报错。{{/if}}
+{{#if js}}JS 运行于 **Bun**：可用全局变量（`Bun.file`、`Bun.write`、`Bun.$`、`fetch`、`Buffer`）；顶层 `await`/`return` 可用。{{/if}}
 
-字段：
-
-- `language` — {{#if py}}`"py"` IPython kernel{{/if}}{{#ifAll py js}}、{{/ifAll}}{{#if js}}`"js"` persistent JavaScript VM{{/if}}{{#if rb}}{{#ifAny py js}}、{{/ifAny}}`"rb"` persistent Ruby kernel{{/if}}{{#if jl}}{{#ifAny py js rb}}、{{/ifAny}}`"jl"` persistent Julia kernel{{/if}}。
-- `code` — 单元主体，逐字不变。换行/引号采用 JSON 编码；无围栏，无标题。
-- `title`（可选）— 简短的 transcript 标签（例如 `"imports"`）。
-- `timeout`（可选）— 秒数。仅对重计算或较长的非代理工具调用提高。
-- `reset`（可选）— 先清除此语言的内核。{{#ifAll py js}} 按语言区分：`py` reset 绝不会触及 JS VM。{{/ifAll}}
-
-{{#if py}}实时事件循环：直接使用顶层 `await`；`asyncio.run(…)` 会引发 "cannot be called from a running event loop"。{{/if}}
-{{#if js}}JS 在 **Bun** 下运行：Bun 全局对象/API 可用（`Bun.file`、`Bun.write`、`Bun.$`、`fetch`、`Buffer`）；顶层 `await`/`return` 可直接工作。{{/if}}
-{{#if rb}}Ruby：同步；helper 选项是关键字参数（例如 `output("id", limit: 2)`）；最后一个表达式会自动显示，除非它是 `nil`、赋值或定义（像 IRB 一样）。{{/if}}
-{{#if jl}}Julia：同步；helper 选项是标准关键字参数（例如 `output("id", limit=2)`）；最后一个表达式会自动显示，除非它是赋值或定义（像 Julia REPL 一样）。{{/if}}
-出错时，修复并仅重新运行失败的步骤——先前调用的状态会保留。
-</instruction>
+出错时，修复并只重新运行失败步骤。
 
 <prelude>
-{{#ifAll py js}}相同的 helpers + 参数顺序，两种运行时都是如此。Python：同步，选项 = 末尾 kwargs。JS：异步/`await`able，选项 = 一个末尾 object literal，绝不使用位置参数（额外参数会抛错）。{{else}}{{#if py}}同步；选项 = 末尾 kwargs。{{/if}}{{#if js}}异步/`await`able；选项 = 一个末尾 object literal，绝不使用位置参数（额外参数会抛错）。{{/if}}{{/ifAll}}{{#if rb}} Ruby：同步，选项 = 末尾关键字参数。{{/if}}{{#if jl}} Julia：同步，选项 = 末尾关键字参数。{{/if}}
+{{#ifAll py js}}Python：同步，kwargs。JS：异步，使用唯一的末尾 object literal，绝不使用位置参数。{{else}}{{#if py}}同步，kwargs。{{/if}}{{#if js}}异步，使用唯一的末尾 object literal，绝不使用位置参数。{{/if}}{{/ifAll}}{{#if rb}} Ruby：同步，kwargs。{{/if}}{{#if jl}} Julia：同步，kwargs。{{/if}}
 ```
-display(value) → None
-    Cell output; figures/images/dataframes shown natively.
-print(value, ...) → None
-    Text output.
+display(value) → None        print(value, ...) → None
 read(path, offset?=1, limit?=None) → str
-    File as text; offset/limit 1-indexed lines. Accepts `local://…`.
 write(path, content) → str
-    Write file (creates parents) → resolved path. `local://…` persists across turns/subagents.
 env(key?=None, value?=None) → str | None | dict
-    No args → full env dict; one → value of `key`; two → set `key=value`, return value.
 output(*ids, format?="raw", query?=None, offset?=None, limit?=None) → str | dict | list[dict]
-    Task/agent output by id; one → text/dict, multiple → list.
 tool.<name>(args) → unknown
-    Invoke any session tool; `args` = its parameter object.
-completion(prompt, model?="default", system?=None, schema?=None) → str | dict
-    Oneshot, stateless (no history/tools). `model`: "smol" fast | "default" session | "slow" most capable. `schema` (JSON-Schema) → structured output, parsed object.
-{{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", model?=None, label?=None, schema?=None, handle?=False) → str | dict
-    Run a subagent → final output. `agent` picks another discovered agent; omit it to use `{{spawnDefaultAgent}}`.{{#if spawnAllowedAgentsText}} Allowed agents: {{spawnAllowedAgentsText}}.{{/if}} `schema` as in completion(). Background via `local://` files named in the prompt. `handle` → DAG node dict { text, output, handle: "agent://<id>", id, agent } (parsed under `data` when `schema` set).
-{{#if js}}    JS: options are ONE trailing object — agent(prompt, { agent, schema, handle }).
+    调用任意会话工具；`args` 是其参数对象。
+completion(prompt, model?="default"|"smol"|"slow", system?=None, schema?=None) → str | dict
+    一次性、无状态（没有历史／工具）。`model`：`"smol"` 快速，`"default"` 会话，`"slow"` 最强。`schema`（JSON-Schema）→ 已解析对象。
+{{#if spawns}}agent(prompt, agent?="{{spawnDefaultAgent}}", label?=None, schema?=None, schema{{#if js}}Mode{{else}}_mode{{/if}}?="permissive", isolated?=None, apply?=None, merge?=None, handle?=False) → str | dict
+    运行子代理 → 最终输出。`agent` 选择已发现的代理；省略则使用 `{{spawnDefaultAgent}}`。{{#if spawnAllowedAgentsText}} 允许的代理：{{spawnAllowedAgentsText}}。{{/if}} `schema` 覆盖代理／会话 schema；`schemaMode`/`schema_mode`：`"permissive"` | `"strict"`。有效 schema 返回已解析数据。`isolated` 请求工作树；`apply`/`merge` 控制其改动。通过提示词中命名的 `local://` 文件后台执行。`handle` → `{ text, output, handle: "agent://<id>", id, agent }`；结构化时解析 `data`。
+{{#if js}}    JS：使用唯一的末尾对象 — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, handle })。{{/if}}
 {{/if}}
-{{/if}}
-parallel(thunks) → list
-    Thunks through a bounded pool (wide as a `task` batch — don't pre-shrink), input order kept; returns when all finish, a throwing thunk propagates.
-pipeline(items, ...stages) → list
-    Map items through one-arg stages left-to-right, barrier between stages; stage 1 gets the item, later stages the previous result.
-log(message) → None
-    Progress line above the status tree.
-phase(title) → None
-    Phase grouping subsequent status lines.
-budget → per-turn token budget
-    {{#if py}}`budget.total` (ceiling or None), `budget.spent()`, `budget.remaining()` (math.inf when no ceiling), `budget.hard`.{{/if}}{{#if js}}`await budget.total()` (ceiling or null), `await budget.spent()`, `await budget.remaining()` (Infinity when no ceiling), `await budget.hard()`.{{/if}}{{#if rb}} Ruby: `budget.total` (ceiling or nil), `budget.spent`, `budget.remaining` (Float::INFINITY when no ceiling), `budget.hard`.{{/if}}{{#if jl}} Julia: `budget.total` (ceiling or nothing), `budget.spent()`, `budget.remaining()` (Inf when no ceiling), `budget.hard`.{{/if}} Ceiling: `+Nk` (advisory) or `+Nk!`/Goal Mode (hard — `agent()` won't spawn past it); spend still tracked.
+parallel(thunks) → list     pipeline(items, ...stages) → list
+log(message) → None         phase(title) → None
+budget → {{#if py}}`budget.total`（上限或 None）、`budget.spent()`、`budget.remaining()`{{/if}}{{#if js}}`await budget.total()`、`await budget.spent()`、`await budget.remaining()`{{/if}}{{#if rb}}`budget.total`、`budget.spent`、`budget.remaining`{{/if}}{{#if jl}}`budget.total`、`budget.spent()`、`budget.remaining()`{{/if}}；上限 `+Nk` 为建议，`+Nk!` 为硬限制。
 ```
 </prelude>
 {{#if spawns}}
 <dag>
-通过 stage helpers 传递句柄以构建依赖图——无环波次：
-- **命名节点。** 捕获每个 `agent(…, {{#if py}}handle=True{{/if}}{{#if js}}{ handle: true }{{/if}}{{#if jl}}handle=true{{/if}})` 结果；携带 `handle`（`agent://<id>`）+ `output`。
-- **通过引用连线边。** 将上游节点的 `handle`/`output` 放入依赖 stage 的 prompt 中——大型 transcript 不会被重新内联。批量情况下：`write("local://<name>.md", …)`，传递该 URI。
-- **`pipeline(items, *stages)` = 分阶段的波次**，阶段之间有屏障（每个条目都先完成第 N 阶段，之后任何条目才会进入 N+1）。**`parallel(thunks)` = 一次波次**，由独立节点组成。
-- **隔离失败。** 引发异常的节点会重新引发最低索引错误，并中止其所在波次；将有风险的节点包裹在 try/except 中，这样失败只会降级其依赖子树，独立分支仍可完成。
-- **仅限无环。** 节点绝不会等待它自己的后代。
+用 `agent(…, handle=true)` 和 `pipeline`/`parallel` 构建无环波次：
+- **命名节点。** 捕获代理结果 → `handle`（`agent://<id>`）+ `output`。
+- **连接边。** 将上游 `handle`/`output` 放入下游提示词。批量数据使用 `write("local://<name>.md", …)`。
+- **`pipeline`** = 分阶段波次，有屏障。**`parallel`** = 一次波次。
+- **隔离失败。** 将有风险的节点包装在 try/except；失败只降级其子树。
+- **仅限无环。** 节点不会等待自己的后代。
 </dag>
 {{/if}}
 
 <critical>
-先前的顶层名称（`data`、`sessions`、helpers、imports）会保留到下一次 eval 调用中——复用它们；NEVER 重新 import、re-require 或重新声明 helper。仅当文件自上次读取后可能已更改时才重新读取。仅在 `reset`、崩溃或 `NameError`/`ReferenceError` 之后才重新运行 setup。
+先前顶层名称会存活到下一个单元；复用，NEVER 重新 import／声明。仅在文件自上次读取后发生变化时重新读取。
 </critical>

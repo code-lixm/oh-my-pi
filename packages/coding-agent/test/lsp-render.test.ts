@@ -1,7 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
+import { lspToolRenderer, renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import { formatStatusIcon } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
+import {
+	getOutputBlockBorderStyle,
+	OUTPUT_BLOCK_ACCENT_GLYPH,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import type { Component } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	await themeModule.initTheme(false, undefined, undefined, "dark", "light");
@@ -27,41 +33,74 @@ describe("LSP render", () => {
 		expect(rendered).toContain("CACHED_HIGHLIGHT");
 	});
 
-	it("renders pending, success, and error LSP states as accent cards with their semantic backgrounds", () => {
+	it("keeps LSP pending and result states bare under accent output styling", () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 		const request = { action: "hover", file: "src/example.ts", line: 1, symbol: "value" } as never;
 		try {
 			setOutputBlockBorderStyle("accent");
-			const cases = [
+			expect(lspToolRenderer.transcriptSurface).toBe("bare");
+
+			const accentBackground = themeModule.theme.getSurfaceTintBgAnsi("borderMuted", 0.06);
+			const backgroundAnsi = /\x1b\[(?:\d+;)*(?:4[0-9]|10[0-7]|48;5;\d+|48;2;\d+;\d+;\d+)m/;
+			const cases: ReadonlyArray<{
+				name: string;
+				component: Component;
+				body?: string;
+				statusIcon?: string;
+			}> = [
 				{
-					component: renderCall(request, { expanded: false, isPartial: false }, themeModule.theme),
-					background: "toolPendingBg" as const,
+					name: "pending",
+					component: renderCall(request, { expanded: true, isPartial: false }, themeModule.theme),
+					statusIcon: formatStatusIcon("pending", themeModule.theme),
 				},
 				{
+					name: "success",
 					component: renderResult(
 						{ content: [{ type: "text", text: "hover result" }] },
-						{ expanded: false, isPartial: false },
+						{ expanded: true, isPartial: false },
 						themeModule.theme,
 						request,
 					),
-					background: "toolSuccessBg" as const,
+					body: "hover result",
 				},
 				{
+					name: "error",
 					component: renderResult(
 						{ content: [{ type: "text", text: "request failed" }], isError: true },
-						{ expanded: false, isPartial: false },
+						{ expanded: true, isPartial: false },
 						themeModule.theme,
 						request,
 					),
-					background: "toolErrorBg" as const,
+					body: "request failed",
+					statusIcon: formatStatusIcon("error", themeModule.theme),
 				},
-			] as const;
+				{
+					name: "warning diagnostic",
+					component: renderResult(
+						{
+							content: [{ type: "text", text: "1 warning(s)\nsrc/example.ts:1:1 [warning] unused value" }],
+						},
+						{ expanded: true, isPartial: false },
+						themeModule.theme,
+						request,
+					),
+					body: "unused value",
+					statusIcon: formatStatusIcon("warning", themeModule.theme),
+				},
+			];
 
-			for (const { component, background } of cases) {
+			for (const { component, body, statusIcon } of cases) {
 				const lines = component.render(88);
-				expect(Bun.stripANSI(lines.join("\n"))).toContain("LSP");
-				expect(lines.some(line => Bun.stripANSI(line).includes("▌"))).toBe(true);
-				expect(lines.some(line => line.includes(themeModule.theme.getBgAnsi(background)))).toBe(true);
+				const raw = lines.join("\n");
+				const rendered = Bun.stripANSI(raw);
+
+				expect(Bun.stripANSI(lines[0] ?? "")).toContain("LSP");
+				if (body) expect(rendered).toContain(body);
+				if (statusIcon) expect(raw).toContain(statusIcon);
+				expect(raw).not.toContain(OUTPUT_BLOCK_ACCENT_GLYPH);
+				expect(raw).not.toContain(accentBackground);
+				expect(raw).not.toMatch(backgroundAnsi);
+				expect(rendered).not.toMatch(/[╭╮╰╯]/);
 			}
 		} finally {
 			setOutputBlockBorderStyle(previousBorderStyle);

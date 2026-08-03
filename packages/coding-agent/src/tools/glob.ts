@@ -40,7 +40,7 @@ import {
 	resolveToCwd,
 	toPathList,
 } from "./path-utils";
-import { createCachedComponent, formatEmptyMessage, formatErrorMessage, toolDetailMaxLines } from "./render-utils";
+import { createCachedComponent, formatErrorMessage, toolDetailMaxLines } from "./render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -528,6 +528,32 @@ function globStatusIcon(uiTheme: Theme): string {
 	return uiTheme.fg("toolTitle", uiTheme.symbol("icon.search"));
 }
 
+function renderGlobEmptyTree(message: string, uiTheme: Theme): string[] {
+	return renderTreeList(
+		{
+			items: [message],
+			expanded: true,
+			renderItem: item => uiTheme.fg("muted", item),
+		},
+		uiTheme,
+	);
+}
+
+function renderGlobEmptyHeader(args: GlobRenderArgs | undefined, truncated: boolean, uiTheme: Theme): string {
+	return renderStatusLine(
+		{
+			icon: "warning",
+			title: tSettingsUi("Glob"),
+			titleColor: "toolTitle",
+			description: formatGlobRenderPaths(args),
+			meta: truncated
+				? [tSettingsUi("0 files"), uiTheme.fg("warning", tSettingsUi("timed out"))]
+				: [tSettingsUi("0 files")],
+		},
+		uiTheme,
+	);
+}
+
 export const globToolRenderer = {
 	inline: true,
 	transcriptSurface: "bare" as const,
@@ -604,7 +630,11 @@ export const globToolRenderer = {
 				textContent.includes("No files found") ||
 				textContent.trim() === ""
 			) {
-				return new Text(formatEmptyMessage(tSettingsUi("No files found"), uiTheme), 0, 0);
+				const lines = [
+					renderGlobEmptyHeader(args, false, uiTheme),
+					...renderGlobEmptyTree(tSettingsUi("No files found"), uiTheme),
+				];
+				return new Text(lines.join("\n"), 0, 0);
 			}
 
 			const lines = textContent.split("\n").filter(l => l.trim());
@@ -656,19 +686,8 @@ export const globToolRenderer = {
 			const emptyLabel = truncated
 				? tSettingsUi("No matches before timeout (scan incomplete)")
 				: tSettingsUi("No files found");
-			const header = renderStatusLine(
-				{
-					icon: "warning",
-					title: tSettingsUi("Glob"),
-					titleColor: "toolTitle",
-					description: formatGlobRenderPaths(args),
-					meta: truncated
-						? [tSettingsUi("0 files"), uiTheme.fg("warning", tSettingsUi("timed out"))]
-						: [tSettingsUi("0 files")],
-				},
-				uiTheme,
-			);
-			const lines = [header, formatEmptyMessage(emptyLabel, uiTheme)];
+			const header = renderGlobEmptyHeader(args, truncated, uiTheme);
+			const lines = [header, ...renderGlobEmptyTree(emptyLabel, uiTheme)];
 			if (missingNote) lines.push(missingNote);
 			return new Text(lines.join("\n"), 0, 0);
 		}

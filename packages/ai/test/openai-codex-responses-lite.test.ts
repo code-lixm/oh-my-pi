@@ -45,6 +45,53 @@ function createCodexTestContext(): Context {
 	};
 }
 
+interface CodexNativePromptFixture {
+	instructions: string;
+	developerFragments: string[];
+	contextualUserFragments: string[];
+	vendorDigest: string;
+	promptFingerprint: string;
+	fallbackFingerprint: string;
+}
+
+function createNativePromptContext(overrides: Partial<CodexNativePromptFixture> = {}): Context {
+	return {
+		systemPrompt: ["LEGACY LITE INSTRUCTIONS", "LEGACY LITE DEVELOPER"],
+		messages: [
+			{ role: "user", content: "CONVERSATION USER", timestamp: 1 },
+			{ role: "developer", content: "CONVERSATION DEVELOPER", timestamp: 2 },
+		],
+		codexNativePrompt: {
+			instructions: "NATIVE LITE INSTRUCTIONS",
+			developerFragments: ["OMP LITE DEVELOPER FIRST", "OMP LITE DEVELOPER SECOND"],
+			contextualUserFragments: ["CONTEXTUAL LITE USER FIRST", "CONTEXTUAL LITE USER SECOND"],
+			vendorDigest: "vendor-digest-terra",
+			promptFingerprint: "native-prompt-fingerprint-a",
+			fallbackFingerprint: "legacy-prompt-fingerprint",
+			...overrides,
+		},
+	} as Context;
+}
+
+function extractCodexInputRoleTexts(body: RequestBody): Array<{ role: string | undefined; text: string }> {
+	return (body.input ?? []).flatMap(item => {
+		if (!Array.isArray(item.content)) return [];
+		return item.content.flatMap(part => {
+			if (
+				part &&
+				typeof part === "object" &&
+				"type" in part &&
+				part.type === "input_text" &&
+				"text" in part &&
+				typeof part.text === "string"
+			) {
+				return [{ role: item.role, text: part.text }];
+			}
+			return [];
+		});
+	});
+}
+
 function createCodexSse(events: Array<Record<string, unknown>>): string {
 	return `${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`;
 }
@@ -443,6 +490,77 @@ describe("openai-codex Responses Lite input shaping", () => {
 		} finally {
 			if (previous === undefined) delete Bun.env.PI_CODEX_RESPONSES_LITE;
 			else Bun.env.PI_CODEX_RESPONSES_LITE = previous;
+		}
+	});
+});
+
+describe("openai-codex native prompt Lite serialization", () => {
+	it("places Lite tools, native instructions, OMP fragments, contextual-user fragments, and conversation in role order exactly once", async () => {
+		const body = await buildTransformedCodexRequestBody(
+			createCodexModel("gpt-5.6-terra"),
+			createNativePromptContext(),
+			{ responsesLite: true },
+		);
+
+		expect(body.instructions).toBeUndefined();
+		expect(body.tools).toBeUndefined();
+		expect(body.input?.[0]).toEqual({ type: "additional_tools", role: "developer", tools: [] });
+		expect(extractCodexInputRoleTexts(body)).toEqual([
+			{ role: "developer", text: "NATIVE LITE INSTRUCTIONS" },
+			{ role: "developer", text: "OMP LITE DEVELOPER FIRST" },
+			{ role: "developer", text: "OMP LITE DEVELOPER SECOND" },
+			{ role: "user", text: "CONTEXTUAL LITE USER FIRST" },
+			{ role: "user", text: "CONTEXTUAL LITE USER SECOND" },
+			{ role: "user", text: "CONVERSATION USER" },
+			{ role: "developer", text: "CONVERSATION DEVELOPER" },
+		]);
+	});
+
+	it("uses the complete legacy Lite prompt when the native sidecar is invalid", async () => {
+		const body = await buildTransformedCodexRequestBody(
+			createCodexModel("gpt-5.6-terra"),
+			createNativePromptContext({ instructions: "" }),
+			{ responsesLite: true },
+		);
+
+		expect(body.instructions).toBeUndefined();
+		expect(body.input?.[0]).toEqual({ type: "additional_tools", role: "developer", tools: [] });
+		expect(extractCodexInputRoleTexts(body)).toEqual([
+			{ role: "developer", text: "LEGACY LITE INSTRUCTIONS" },
+			{ role: "developer", text: "LEGACY LITE DEVELOPER" },
+			{ role: "user", text: "CONVERSATION USER" },
+			{ role: "developer", text: "CONVERSATION DEVELOPER" },
+		]);
+	});
+
+	it("partitions prompt cache keys by native fingerprint without changing Codex session headers", async () => {
+		const model = createCodexModel("gpt-5.6-terra");
+		const sessionId = "native-prompt-cache-session";
+		const captured: CapturedCodexRequest[] = [];
+		const fetchMock = createCodexFetchMock(createCodexSse(COMPLETED_CODEX_EVENTS), request => {
+			captured.push(request);
+		});
+
+		for (const promptFingerprint of ["native-prompt-fingerprint-a", "native-prompt-fingerprint-b"]) {
+			await streamOpenAICodexResponses(model, createNativePromptContext({ promptFingerprint }), {
+				apiKey: createCodexTestToken(),
+				fetch: fetchMock,
+				responsesLite: true,
+				sessionId,
+			}).result();
+		}
+
+		const firstPromptCacheKey = captured[0]?.body.prompt_cache_key;
+		const secondPromptCacheKey = captured[1]?.body.prompt_cache_key;
+		if (typeof firstPromptCacheKey !== "string" || typeof secondPromptCacheKey !== "string") {
+			throw new Error("expected native prompts to produce prompt_cache_key strings");
+		}
+		expect(firstPromptCacheKey).not.toBe(secondPromptCacheKey);
+		expect(captured.map(request => request.headers.get("session-id"))).toEqual([sessionId, sessionId]);
+		expect(captured[0]?.headers.get("thread-id")).toBe(captured[1]?.headers.get("thread-id"));
+		for (const [index, request] of captured.entries()) {
+			const metadata = requireRecord(request.body.client_metadata, `client_metadata ${index}`);
+			expect(metadata.session_id).toBe(sessionId);
 		}
 	});
 });

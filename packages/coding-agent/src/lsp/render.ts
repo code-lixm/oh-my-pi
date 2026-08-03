@@ -8,20 +8,18 @@
  * - Collapsible/expandable views
  */
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getLanguageFromPath, highlightCode as highlightThemeCode, type Theme } from "../modes/theme/theme";
 import {
 	formatExpandHint,
 	formatMoreItems,
-	formatStatusIcon,
 	replaceTabs,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../tools/render-utils";
-import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { renderStatusLine, renderTreeList } from "../tui";
 import type { LspParams, LspToolDetails } from "./types";
 
 // =============================================================================
@@ -46,16 +44,9 @@ interface LspRequestPresentation {
 	actionLabel: string;
 	description: string;
 	meta: string[];
-	requestLines: string[];
 }
 
-function lspCardBorderColor(state: LspCardState): "accent" | "warning" | "error" {
-	if (state === "error") return "error";
-	if (state === "warning") return "warning";
-	return "accent";
-}
-
-function renderLspRequestPresentation(request: Partial<LspParams> | undefined, theme: Theme): LspRequestPresentation {
+function renderLspRequestPresentation(request: Partial<LspParams> | undefined): LspRequestPresentation {
 	const action = typeof request?.action === "string" ? request.action : "request";
 	const actionLabel =
 		truncateToWidth(sanitizeInlineText(action).replaceAll("_", " "), TRUNCATE_LENGTHS.SHORT) || "request";
@@ -89,55 +80,32 @@ function renderLspRequestPresentation(request: Partial<LspParams> | undefined, t
 	if (newName) meta.push(`new:${newName}`);
 	if (request?.apply !== undefined) meta.push(`apply:${request.apply ? "true" : "false"}`);
 
-	const requestLines: string[] = [];
-	if (file) requestLines.push(theme.fg("toolOutput", shortenPath(file)));
-	if (line !== undefined) requestLines.push(theme.fg("dim", `line ${line}`));
-	if (symbol) requestLines.push(theme.fg("dim", `symbol: ${symbol}`));
-	if (query) requestLines.push(theme.fg("dim", `query: ${query}`));
-	if (newName) requestLines.push(theme.fg("dim", `new name: ${newName}`));
-	if (request?.apply !== undefined) requestLines.push(theme.fg("dim", `apply: ${request.apply ? "true" : "false"}`));
-
 	return {
 		actionLabel,
 		description: target ? `${actionLabel} ${target}` : query ? `${actionLabel} ${query}` : actionLabel,
 		meta,
-		requestLines,
 	};
 }
 
 export function renderCall(args: LspParams, options: RenderResultOptions, theme: Theme): Component {
-	const request = renderLspRequestPresentation(args, theme);
-	const outputBlock = new CachedOutputBlock();
-
-	return markFramedBlockComponent({
-		render(width: number): readonly string[] {
+	const request = renderLspRequestPresentation(args);
+	return {
+		render(): readonly string[] {
 			const state = options.spinnerFrame === undefined ? "pending" : "running";
-			const header = renderStatusLine(
-				{
-					icon: state,
-					spinnerFrame: options.spinnerFrame,
-					title: "LSP",
-					description: request.description,
-					meta: request.meta,
-				},
-				theme,
-			);
-			return outputBlock.render(
-				{
-					header,
-					state,
-					borderColor: "accent",
-					applyBg: true,
-					sections: [],
-					width,
-				},
-				theme,
-			);
+			return [
+				renderStatusLine(
+					{
+						icon: state,
+						spinnerFrame: options.spinnerFrame,
+						title: "LSP",
+						description: request.description,
+						meta: request.meta,
+					},
+					theme,
+				),
+			];
 		},
-		invalidate() {
-			outputBlock.invalidate();
-		},
-	});
+	};
 }
 
 // =============================================================================
@@ -154,44 +122,35 @@ export function renderResult(
 	theme: Theme,
 	args?: LspParams,
 ): Component {
-	const request = renderLspRequestPresentation(args ?? result.details?.request, theme);
+	const request = renderLspRequestPresentation(args ?? result.details?.request);
 	const content = result.content?.[0];
 	if (content?.type !== "text" || !content.text) {
-		const outputBlock = new CachedOutputBlock();
-		const state: LspCardState = result.isError ? "error" : "warning";
-		return markFramedBlockComponent({
-			render(width: number): readonly string[] {
-				const header = renderStatusLine(
+		return new Text(
+			[
+				renderStatusLine(
 					{
-						icon: state,
-						spinnerFrame: options.spinnerFrame,
+						icon: result.isError ? "error" : "warning",
 						title: "LSP",
-						description: request.actionLabel,
+						description: request.description,
 					},
 					theme,
-				);
-				return outputBlock.render(
+				),
+				...renderTreeList(
 					{
-						header,
-						state,
-						borderColor: lspCardBorderColor(state),
-						applyBg: true,
-						sections: [{ lines: [theme.fg(state === "error" ? "error" : "muted", "No result")] }],
-						width,
+						items: ["No result"],
+						expanded: true,
+						renderItem: line => theme.fg(result.isError ? "error" : "muted", line),
 					},
 					theme,
-				);
-			},
-			invalidate() {
-				outputBlock.invalidate();
-			},
-		});
+				),
+			].join("\n"),
+			0,
+			0,
+		);
 	}
 
 	const text = sanitizeDisplayText(content.text);
 	const lines = text.split("\n");
-
-	// Static type detection (result content doesn't change between renders)
 	const codeBlockMatch = text.match(/```(\w*)\n([\s\S]*?)```/);
 	const errorMatch = text.match(/(\d+)\s+error\(s\)/);
 	const warningMatch = text.match(/(\d+)\s+warning\(s\)/);
@@ -199,17 +158,12 @@ export function renderResult(
 	const symbolsMatch = text.match(/Symbols in (.+):/);
 	const hasStatusError = text.includes(theme.status.error);
 
-	const outputBlock = new CachedOutputBlock();
-
-	return markFramedBlockComponent({
+	return {
 		render(width: number): readonly string[] {
-			// Read mutable state at render time.
 			const { expanded, isPartial, spinnerFrame } = options;
-
-			// Determine label, status, and body based on type + current expansion.
-			let label = "Result";
+			let label = "Response";
 			let contentState: "success" | "warning" | "error" = result.isError ? "error" : "success";
-			let bodyLines: string[] = [];
+			let bodyLines: string[];
 
 			if (codeBlockMatch) {
 				label = "Hover";
@@ -229,45 +183,34 @@ export function renderResult(
 				bodyLines = renderSymbols(symbolsMatch, lines, expanded, theme);
 			} else if (result.details?.action === "diagnostics" && text === "OK") {
 				label = "Diagnostics";
-				bodyLines = [`${theme.styledSymbol("tool.lsp", "accent")} ${theme.fg("dim", "OK")}`];
+				bodyLines = [theme.fg("dim", "OK")];
 			} else {
-				label = "Response";
 				bodyLines = renderGeneric(text, lines, expanded, theme);
 			}
 
 			const state: LspCardState = result.isError ? "error" : isPartial ? "running" : contentState;
-			const icon =
-				state === "success"
-					? theme.styledSymbol("tool.lsp", "accent")
-					: formatStatusIcon(state, theme, spinnerFrame);
 			const header = renderStatusLine(
 				{
-					iconOverride: icon,
+					...(state === "success"
+						? { iconOverride: theme.styledSymbol("tool.lsp", "accent") }
+						: { icon: state, spinnerFrame }),
 					title: "LSP",
-					description: request.actionLabel,
+					description: request.description,
+					meta: [label],
 				},
 				theme,
 			);
-
-			return outputBlock.render(
+			const body = renderTreeList(
 				{
-					header,
-					state,
-					borderColor: lspCardBorderColor(state),
-					sections: [
-						...(request.requestLines.length > 0 ? [{ lines: request.requestLines }] : []),
-						{ label: theme.fg("toolTitle", label), lines: bodyLines },
-					],
-					width,
-					applyBg: true,
+					items: [bodyLines],
+					expanded: true,
+					renderItem: item => item,
 				},
 				theme,
 			);
+			return [header, ...body].map(line => truncateToWidth(line, width));
 		},
-		invalidate() {
-			outputBlock.invalidate();
-		},
-	});
+	};
 }
 
 // =============================================================================
@@ -735,6 +678,7 @@ function severityToColor(severity: string): "error" | "warning" | "accent" | "di
 export const lspToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,
+	transcriptSurface: "bare" as const,
 	renderCall,
 	renderResult,
 	mergeCallAndResult: true,

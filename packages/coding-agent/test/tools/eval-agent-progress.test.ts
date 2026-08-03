@@ -3,6 +3,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import type { EvalStatusEvent, EvalToolDetails } from "@oh-my-pi/pi-coding-agent/eval/types";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { OUTPUT_BLOCK_ACCENT_GLYPH } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 
 /**
  * Defends the contract that `agent()` calls inside an eval cell surface as a
@@ -49,9 +50,12 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		return Bun.stripANSI(component.render(120).join("\n")).split("\n");
 	}
 
-	/** Index of the box's closing border (bottom-right corner glyph). */
-	function boxBottomIndex(lines: string[]): number {
-		return lines.findIndex(line => line.includes(theme.boxRound.bottomRight));
+	/** Index of the eval cell's final accent-surface row. */
+	function accentSurfaceBottomIndex(lines: string[]): number {
+		for (let index = lines.length - 1; index >= 0; index--) {
+			if (lines[index]!.startsWith(OUTPUT_BLOCK_ACCENT_GLYPH)) return index;
+		}
+		return -1;
 	}
 
 	it("draws a running subagent below the box with its current tool and intent", () => {
@@ -73,12 +77,14 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		};
 
 		const lines = render([event]);
-		const bottom = boxBottomIndex(lines);
+		const bottom = accentSurfaceBottomIndex(lines);
 		expect(bottom).toBeGreaterThanOrEqual(0);
+		// The final accent-surface row is followed by one visibly blank seam before the external HUD.
+		expect(lines[bottom + 1]).toBe("");
 
 		const idLine = lines.findIndex(line => line.includes("0-Scout"));
-		// The subagent id renders strictly *below* the closing box border.
-		expect(idLine).toBeGreaterThan(bottom);
+		// The first agent line must remain below that separator, outside the cell surface.
+		expect(idLine).toBeGreaterThan(bottom + 1);
 
 		const below = lines.slice(bottom + 1).join("\n");
 		const inside = lines.slice(0, bottom + 1).join("\n");
@@ -105,7 +111,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		};
 
 		const lines = render([event], "complete");
-		const bottom = boxBottomIndex(lines);
+		const bottom = accentSurfaceBottomIndex(lines);
 		const idLine = lines.findIndex(line => line.includes("0-Scout"));
 		expect(idLine).toBeGreaterThan(bottom);
 
@@ -122,7 +128,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		];
 
 		const lines = render(events);
-		const below = lines.slice(boxBottomIndex(lines) + 1).join("\n");
+		const below = lines.slice(accentSurfaceBottomIndex(lines) + 1).join("\n");
 		expect(below).toContain("0-Alpha");
 		expect(below).toContain("1-Beta");
 		expect(below).toContain("2-Gamma");
@@ -135,7 +141,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		];
 
 		const lines = render(events);
-		const bottom = boxBottomIndex(lines);
+		const bottom = accentSurfaceBottomIndex(lines);
 		const inside = lines.slice(0, bottom + 1).join("\n");
 		const below = lines.slice(bottom + 1).join("\n");
 

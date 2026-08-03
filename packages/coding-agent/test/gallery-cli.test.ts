@@ -9,6 +9,7 @@ import type { GalleryFixture } from "@oh-my-pi/pi-coding-agent/cli/gallery-fixtu
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -104,19 +105,33 @@ describe("gallery harness", () => {
 	});
 
 	it("renders gallery-only read group fixtures", async () => {
-		const fixture = resolveFixture("read_group");
-		const success = Bun.stripANSI((await renderGalleryState("read_group", fixture, "success", 140)).join("\n"));
-		const renderPathMatches = success.match(/packages\/coding-agent\/src\/task\/render\.ts/g) ?? [];
-		const header = success
-			.split("\n")
-			.find(line => line.includes("Read "))
-			?.trim();
+		const previousBorderStyle = getOutputBlockBorderStyle();
 
-		expect(header).toBe(`${theme.symbol("icon.file")} Read 4 paths`);
-		expect(renderPathMatches).toHaveLength(1);
-		expect(success).toContain("packages/coding-agent/src/task/render.ts:507-605,1070-1194,…,1270-1274");
-		expect(success).not.toContain("1210-1240");
-		expect(success).not.toContain("full file");
+		try {
+			setOutputBlockBorderStyle("none");
+
+			const fixture = resolveFixture("read_group");
+			const success = Bun.stripANSI((await renderGalleryState("read_group", fixture, "success", 140)).join("\n"));
+			const lines = success.split("\n");
+			const summaryRows = lines.filter(line => /[├└]─ /.test(line));
+			const renderPathMatches = success.match(/packages\/coding-agent\/src\/task\/render\.ts/g) ?? [];
+			const header = lines.find(line => line.includes("Read "))?.trim();
+
+			expect(header).toBe(`${theme.symbol("icon.file")} Read 4 paths`);
+			expect(renderPathMatches).toHaveLength(1);
+			expect(success).toContain("packages/coding-agent/src/task/render.ts:507-605,1070-1194,…,1270-1274");
+			expect(success).not.toContain("1210-1240");
+			expect(success).not.toContain("full file");
+			// Root-level summary rows share the borderless left edge used by Glob/Grep.
+			expect(summaryRows).toHaveLength(4);
+			expect(summaryRows.every(row => row.search(/[├└]─/) === 0)).toBe(true);
+			expect(summaryRows.some(row => row.startsWith("├─ "))).toBe(true);
+			expect(summaryRows.some(row => row.startsWith("└─ "))).toBe(true);
+			expect(success).not.toContain("   ├─");
+			expect(success).not.toContain("   └─");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("falls back to a generic fixture for registry tools without curated sample data", () => {

@@ -402,9 +402,21 @@ export class SessionTools {
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
-		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
+		if (!activeModel || !model) return undefined;
+		const nativePromptMode = this.#host.settings.get("providers.codex.nativePrompt");
+		const nativePolicy =
+			nativePromptMode === "on"
+				? [
+						`mode:${nativePromptMode}`,
+						`profile:${activeModel.codexPromptProfile?.vendorDigest ?? "none"}`,
+						`personality:${this.#host.settings.get("personality")}`,
+						`progress:${this.#host.settings.get("communication.progressUpdates")}`,
+						`next-steps:${this.#host.settings.get("communication.nextSteps")}`,
+					].join(";")
+				: `mode:${nativePromptMode}`;
+		if (this.#host.settings.get("includeModelInPrompt")) return `${model};codex-native:${nativePolicy}`;
 		const taskPolicy = usesCodexTaskPrompt(model) ? "gpt-5.6" : "default";
-		return `task-policy:${taskPolicy};model-guidance:${modelPromptPolicy(model)}`;
+		return `task-policy:${taskPolicy};model-guidance:${modelPromptPolicy(model)};codex-native:${nativePolicy}`;
 	}
 
 	#logComputerState(message: string, enabled: boolean): void {
@@ -1117,6 +1129,9 @@ export class SessionTools {
 
 	/** Applies one-turn memory prompt injection before an agent run. */
 	async buildSystemPromptForAgentStart(promptText: string): Promise<string[]> {
+		if (this.#currentPromptModelKey() !== this.#promptModelKey) {
+			await this.refreshBaseSystemPrompt();
+		}
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.beforeAgentStartPrompt) return this.#baseSystemPrompt;
 

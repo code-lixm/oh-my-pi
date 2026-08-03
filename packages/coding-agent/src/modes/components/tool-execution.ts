@@ -18,6 +18,7 @@ import {
 import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
 import { getSettingsUiLocaleEpoch, tSettingsUi } from "../../i18n/settings-locale";
+import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
@@ -39,7 +40,6 @@ import {
 	markFramedBlockComponent,
 	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
 	renderOutputAccentLine,
-	renderOutputAccentPadLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -290,13 +290,13 @@ class ToolOutputSurfaceComponent implements Component {
 		private readonly child: Component,
 		private readonly isSelfFramed: () => boolean,
 		private readonly accentColor: () => ThemeColor,
-		private readonly bareSurface = false,
+		private readonly isBareSurface: () => boolean = () => false,
 	) {
 		this.wantsKeyRelease = child.wantsKeyRelease;
 	}
 
 	render(width: number): readonly string[] {
-		const accentMode = getOutputBlockBorderStyle() === "accent" && !this.bareSurface && !this.isSelfFramed();
+		const accentMode = getOutputBlockBorderStyle() === "accent" && !this.isBareSurface() && !this.isSelfFramed();
 		if (!accentMode) {
 			this.#cache = undefined;
 			return this.child.render(width);
@@ -313,15 +313,7 @@ class ToolOutputSurfaceComponent implements Component {
 		) {
 			return this.#cache.lines;
 		}
-		const contentLines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
-		const lines =
-			childLines.length > 0
-				? [
-						renderOutputAccentPadLine(width, theme, color),
-						...contentLines,
-						renderOutputAccentPadLine(width, theme, color),
-					]
-				: contentLines;
+		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
 		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}
@@ -448,6 +440,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	// #contentBox.children.length probe so the memo fast-path also covers the
 	// #contentText fallback path (which leaves #contentBox empty).
 	#displayBuilt = false;
+	// Plain-text terminal fallback installed when the component's own display
+	// assembly throws outside a guarded tool renderer. Keeps generic tools
+	// renderable without retrying the same broken assembly every frame.
+	#displayRecoveryText: string | undefined;
 	// Number of Image children the last rebuild emitted. Only when this is > 0 does
 	// the memo key fold in viewport-dependent image sizing (resolveImageOptions),
 	// so a terminal resize re-shapes image-bearing results to rescale them without
@@ -562,7 +558,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const accentMode = getOutputBlockBorderStyle() === "accent";
 		this.#contentBox = new Box(0, accentMode ? 0 : 1);
 		this.#contentText = new WidthAwareText(
-			contentWidth => this.#renderDefaultCard(contentWidth),
+			contentWidth => this.#displayRecoveryText ?? this.#renderDefaultCard(contentWidth),
 			accentMode ? 0 : 1,
 			accentMode ? 0 : 1,
 		);
@@ -571,7 +567,6 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// accent-mode instances need the surface wrapper; preserving the original
 		// direct child topology preserves the established full/none layout.
 		const hasRenderer = toolName in toolRenderers;
-		const bareSurface = toolRenderers[toolName]?.transcriptSurface === "bare";
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
 		this.#usesContentBox = hasCustomRenderer || hasRenderer;
 		const accentColor = (): ThemeColor =>
@@ -582,7 +577,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						this.#contentBox,
 						() => this.#contentBox.children.some(isFramedBlockComponent),
 						accentColor,
-						bareSurface,
+						() => this.#usesBareTranscriptSurface(),
 					)
 				: this.#contentBox;
 			this.addChild(surface);
@@ -598,6 +593,19 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateSpinnerAnimation();
 		this.#updateDisplay();
 		this.#schedulePreviewDiff();
+	}
+
+	#usesBareTranscriptSurface(): boolean {
+		if (toolRenderers[this.#toolName]?.transcriptSurface === "bare") return true;
+		if (this.#toolName !== "write") return false;
+		const rawPath =
+			typeof this.#args?.file_path === "string"
+				? this.#args.file_path
+				: typeof this.#args?.path === "string"
+					? this.#args.path
+					: undefined;
+		const deviceName = rawPath ? parseXdUrl(rawPath)?.name : undefined;
+		return deviceName ? toolRenderers[deviceName]?.transcriptSurface === "bare" : false;
 	}
 
 	updateArgs(args: any, _toolCallId?: string): void {
@@ -1085,10 +1093,60 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// here for the same reason markdown.ts keys its render cache on it.
 		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${getSettingsUiLocaleEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozenStyled}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
-		this.#lastDisplayKey = key;
 
-		this.#rebuildDisplay();
+		try {
+			this.#displayRecoveryText = undefined;
+			this.#rebuildDisplay();
+		} catch (err) {
+			this.#recoverDisplayAfterRebuildFailure(err);
+		}
+		// Commit the memo key only after either the real display or its safe
+		// fallback is complete. Committing before rebuild poisoned the cache when
+		// an outer assembly step threw: every later frame reused the last streaming
+		// Edit preview even though a terminal result had already arrived.
+		this.#lastDisplayKey = key;
 		this.#displayBuilt = true;
+	}
+
+	#recoverDisplayAfterRebuildFailure(err: unknown): void {
+		logger.warn("Tool display rebuild failed; using safe fallback", {
+			tool: this.#toolName,
+			error: String(err),
+		});
+
+		for (const component of this.#multiFileBoxes) this.removeChild(component);
+		this.#multiFileBoxes = [];
+		for (const image of this.#imageComponents) this.removeChild(image);
+		this.#imageComponents = [];
+		for (const spacer of this.#imageSpacers) this.removeChild(spacer);
+		this.#imageSpacers = [];
+		this.#renderedImageCount = 0;
+
+		let output = "";
+		try {
+			output = this.#getTextOutput();
+		} catch {
+			// Malformed result content must not defeat the terminal fallback too.
+		}
+		const status = this.#result?.isError ? "error" : this.#result ? "success" : "pending";
+		const header = renderStatusLine({ icon: status, title: this.#toolLabel, titleColor: "toolTitle" }, theme);
+		const body = output
+			? `${header}\n${theme.fg(this.#result?.isError ? "error" : "toolOutput", replaceTabs(output))}`
+			: `${header}\n${theme.fg("warning", tSettingsUi("(preview not available)"))}`;
+
+		if (!this.#usesContentBox) {
+			this.#displayRecoveryText = body;
+			this.#contentText.setCustomBgFn(undefined);
+			this.#contentText.invalidate();
+			return;
+		}
+
+		const borderStyle = getOutputBlockBorderStyle();
+		this.#contentBox.setBgFn(undefined);
+		this.#contentBox.clear();
+		this.#contentBox.setPaddingX(isBorderlessOutputStyle(borderStyle) ? 0 : 1);
+		this.#contentBox.setPaddingY(borderStyle === "accent" ? 0 : 1);
+		this.#contentBox.addChild(new Text(body, 0, 0));
 	}
 
 	#rendererFlag(name: "forceResultViewportRepaintOnSettle"): boolean {

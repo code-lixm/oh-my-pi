@@ -23,26 +23,28 @@ import { type } from "arktype";
 import packageJson from "../../package.json" with { type: "json" };
 import * as AIError from "../error";
 import { getEnvApiKey, isOfficialCodexApiUrl } from "../stream";
-import type {
-	Api,
-	AssistantMessage,
-	CodexCompactionContext,
-	CodexCompactionRequestContext,
-	Context,
-	FetchImpl,
-	Model,
-	ProviderSessionState,
-	RawSseEvent,
-	ServiceTier,
-	StreamFunction,
-	StreamOptions,
-	TextContent,
-	ThinkingContent,
-	Tool,
-	ToolCall,
-	ToolChoice,
-	ToolResultMessage,
-	Usage,
+import {
+	type Api,
+	type AssistantMessage,
+	type CodexCompactionContext,
+	type CodexCompactionRequestContext,
+	type CodexNativePrompt,
+	type Context,
+	type FetchImpl,
+	isCodexNativePrompt,
+	type Model,
+	type ProviderSessionState,
+	type RawSseEvent,
+	type ServiceTier,
+	type StreamFunction,
+	type StreamOptions,
+	type TextContent,
+	type ThinkingContent,
+	type Tool,
+	type ToolCall,
+	type ToolChoice,
+	type ToolResultMessage,
+	type Usage,
 } from "../types";
 import {
 	createOpenAIResponsesHistoryPayload,
@@ -54,6 +56,7 @@ import {
 	stripOpenAIResponsesComputerLinkedReasoningIdsForReplay,
 } from "../utils";
 import { clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
+import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { escapeHarmonyControlTokens, isHarmonyDialectModel } from "../utils/harmony-leak";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -68,6 +71,7 @@ import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResp
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { compactGrammarDefinition } from "./grammar";
+import { getCodexNativePromptCacheKey } from "./openai-codex/prompt-profile";
 import {
 	type CodexLiteShapedBody,
 	type CodexReasoningContext,
@@ -529,22 +533,23 @@ const CODEX_RESERVED_METADATA_KEYS: Record<string, true> = {
 	workspaces: true,
 };
 
-function createCodexMetadataSessionState(sessionId: string): CodexMetadataSessionState {
+function createCodexMetadataSessionState(sessionId: string, stableIdentity = false): CodexMetadataSessionState {
 	return {
 		sessionId,
-		threadId: crypto.randomUUID(),
-		windowId: crypto.randomUUID(),
+		threadId: stableIdentity ? deterministicUuid(`codex-thread:${sessionId}`) : crypto.randomUUID(),
+		windowId: stableIdentity ? deterministicUuid(`codex-window:${sessionId}`) : crypto.randomUUID(),
 	};
 }
 
 function getOrCreateCodexMetadataSessionState(
 	sessionId: string,
 	providerState: CodexProviderSessionState | undefined,
+	stableIdentity = false,
 ): CodexMetadataSessionState {
-	if (!providerState) return createCodexMetadataSessionState(sessionId);
+	if (!providerState) return createCodexMetadataSessionState(sessionId, stableIdentity);
 	const existing = providerState.metadataSessions.get(sessionId);
 	if (existing) return existing;
-	const created = createCodexMetadataSessionState(sessionId);
+	const created = createCodexMetadataSessionState(sessionId, stableIdentity);
 	providerState.metadataSessions.set(sessionId, created);
 	return created;
 }
@@ -674,8 +679,9 @@ export function createOpenAICodexCompatibilityMetadata(
 	options: OpenAICodexCompatibilityMetadataOptions,
 ): OpenAICodexCompatibilityMetadata {
 	const providerState = getCodexProviderSessionState(options.providerSessionState);
-	const sessionId = normalizeOpenAIPromptCacheKey(options.sessionId) ?? crypto.randomUUID();
-	const session = getOrCreateCodexMetadataSessionState(sessionId, providerState);
+	const normalizedSessionId = normalizeOpenAIPromptCacheKey(options.sessionId);
+	const sessionId = normalizedSessionId ?? crypto.randomUUID();
+	const session = getOrCreateCodexMetadataSessionState(sessionId, providerState, normalizedSessionId !== undefined);
 	const startNewTurn = resolveCodexStartNewTurn(
 		session,
 		options.requestKind,
@@ -1454,7 +1460,11 @@ function createCodexRequestContext(
 		websocketState.modelsEtag = sharedWebsocketState.modelsEtag;
 	}
 	const metadataSessionId = transportSessionId ?? crypto.randomUUID();
-	const metadataSession = getOrCreateCodexMetadataSessionState(metadataSessionId, providerSessionState);
+	const metadataSession = getOrCreateCodexMetadataSessionState(
+		metadataSessionId,
+		providerSessionState,
+		transportSessionId !== undefined,
+	);
 	const compaction = options?.codexCompaction;
 	const requestKind: OpenAICodexRequestKind = compaction ? "compaction" : "turn";
 	const startNewTurn = resolveCodexStartNewTurn(metadataSession, requestKind, compaction, contextOptions.startNewTurn);
@@ -1498,8 +1508,7 @@ async function buildCodexRequestContext(
 	context: Context,
 	options: OpenAICodexResponsesOptions | undefined,
 ): Promise<CodexRequestContext> {
-	const promptCacheKey = getOpenAIPromptCacheKey(options);
-	const transformedBody = await buildTransformedCodexRequestBody(model, context, options, promptCacheKey);
+	const transformedBody = await buildTransformedCodexRequestBody(model, context, options);
 	return createCodexRequestContext(model, transformedBody, options, {
 		isolateCompactionTransport: true,
 		startNewTurn: options?.codexCompaction ? undefined : !isCodexWithinTurnContinuation(context),
@@ -1514,11 +1523,17 @@ export async function buildTransformedCodexRequestBody(
 	options: OpenAICodexResponsesOptions | undefined,
 	promptCacheKey = getOpenAIPromptCacheKey(options),
 ): Promise<RequestBody> {
+	const nativePrompt: CodexNativePrompt | undefined = isCodexNativePrompt(context.codexNativePrompt)
+		? context.codexNativePrompt
+		: undefined;
+	const effectivePromptCacheKey = nativePrompt
+		? getCodexNativePromptCacheKey(options, nativePrompt.promptFingerprint)
+		: promptCacheKey;
 	const params: RequestBody = {
 		model: model.requestModelId ?? model.id,
 		input: convertMessages(model, context),
 		stream: true,
-		prompt_cache_key: promptCacheKey,
+		prompt_cache_key: effectivePromptCacheKey,
 	};
 
 	// `maxTokens` is intentionally not forwarded: transformRequestBody strips
@@ -1541,10 +1556,12 @@ export async function buildTransformedCodexRequestBody(
 	}
 
 	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
-	if (systemPrompts.length > 0) {
+	if (nativePrompt) {
+		params.instructions = nativePrompt.instructions;
+	} else if (systemPrompts.length > 0) {
 		params.instructions = systemPrompts[0];
 	}
-	const developerMessages = systemPrompts.slice(1);
+	const developerMessages = nativePrompt ? undefined : systemPrompts.slice(1);
 	if (options?.clientMetadata && Object.keys(options.clientMetadata).length > 0) {
 		params.client_metadata = { ...options.clientMetadata };
 	}
@@ -1557,7 +1574,17 @@ export async function buildTransformedCodexRequestBody(
 		responsesLite: options?.responsesLite,
 	};
 
-	return transformRequestBody(params, model, codexOptions, { developerMessages });
+	return transformRequestBody(
+		params,
+		model,
+		codexOptions,
+		nativePrompt
+			? {
+					developerFragments: nativePrompt.developerFragments,
+					contextualUserFragments: nativePrompt.contextualUserFragments,
+				}
+			: { developerMessages },
+	);
 }
 
 async function openInitialCodexEventStream(

@@ -18,7 +18,7 @@
 
 <parameters>
 ```ts
-// Input is { path: string, edits: Entry[] }. `path` is required and applies to every entry.
+// 必填的顶层 `path` 适用于每个条目。
 type Entry =
    // Diff is one or more hunks for the top-level path.
    // - Each hunk begins with "@@" (anchor optional).

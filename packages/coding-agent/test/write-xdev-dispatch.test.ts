@@ -21,6 +21,7 @@ import {
 	xdevDocsAll,
 	xdevEntries,
 } from "@oh-my-pi/pi-coding-agent/tools/xdev";
+import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 
@@ -249,47 +250,54 @@ describe("read and write route xd:// device URLs", () => {
 	});
 
 	it("keeps the generic custom-tool card when a mounted device has no renderer", async () => {
-		await themeModule.initTheme();
-		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
-		if (!uiTheme) throw new Error("expected an initialized theme");
+		const previousBorderStyle = getOutputBlockBorderStyle();
 
-		const weatherDevice: AgentTool = {
-			name: "weather",
-			label: "Weather",
-			description: "Gets the weather",
-			parameters: type({ query: "string" }),
-			async execute() {
-				return { content: [{ type: "text", text: "Tokyo: 22°C" }] };
-			},
-		};
-		const xdev = createTestXdevState([weatherDevice]);
-		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
-		const content = JSON.stringify({ query: "Tokyo" });
-		const result = await write.execute("write-xdev-default-renderer", {
-			path: "xd://weather",
-			content,
-		});
+		try {
+			setOutputBlockBorderStyle("full");
+			await themeModule.initTheme();
+			const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+			if (!uiTheme) throw new Error("expected an initialized theme");
 
-		const component = writeToolRenderer.renderResult(
-			result,
-			{
-				expanded: false,
-				isPartial: false,
-				renderContext: { resolveXdevMounted: name => resolveMountedXdevTool(xdev, name) },
-			},
-			uiTheme,
-			{ path: "xd://weather", content },
-		);
-		const lines = component.render(80);
-		const rendered = Bun.stripANSI(lines.join("\n"));
-		const backgroundProbe = uiTheme.bg("toolSuccessBg", "|");
-		const backgroundPrefix = backgroundProbe.slice(0, backgroundProbe.indexOf("|"));
+			const weatherDevice: AgentTool = {
+				name: "weather",
+				label: "Weather",
+				description: "Gets the weather",
+				parameters: type({ query: "string" }),
+				async execute() {
+					return { content: [{ type: "text", text: "Tokyo: 22°C" }] };
+				},
+			};
+			const xdev = createTestXdevState([weatherDevice]);
+			const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+			const content = JSON.stringify({ query: "Tokyo" });
+			const result = await write.execute("write-xdev-default-renderer", {
+				path: "xd://weather",
+				content,
+			});
 
-		expect(rendered).toContain("Weather");
-		expect(rendered).toContain('query="Tokyo"');
-		expect(rendered).toContain("Tokyo: 22°C");
-		expect(backgroundPrefix).not.toBe("");
-		expect(lines.some(line => line.includes(backgroundPrefix))).toBe(true);
+			const component = writeToolRenderer.renderResult(
+				result,
+				{
+					expanded: false,
+					isPartial: false,
+					renderContext: { resolveXdevMounted: name => resolveMountedXdevTool(xdev, name) },
+				},
+				uiTheme,
+				{ path: "xd://weather", content },
+			);
+			const lines = component.render(80);
+			const rendered = Bun.stripANSI(lines.join("\n"));
+			const backgroundProbe = uiTheme.bg("toolSuccessBg", "|");
+			const backgroundPrefix = backgroundProbe.slice(0, backgroundProbe.indexOf("|"));
+
+			expect(rendered).toContain("Weather");
+			expect(rendered).toContain('query="Tokyo"');
+			expect(rendered).toContain("Tokyo: 22°C");
+			expect(backgroundPrefix).not.toBe("");
+			expect(lines.some(line => line.includes(backgroundPrefix))).toBe(true);
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	// Dynamic device summaries are third-party text inlined into the system

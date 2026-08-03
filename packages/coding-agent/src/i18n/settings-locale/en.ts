@@ -653,6 +653,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Session deleted": "Session deleted",
 	"Session exported to: {filePath}": "Session exported to: {filePath}",
 	"Session has not been saved yet": "Session has not been saved yet",
+	"Session history": "Session history",
+	"View session history": "View session history",
 	"Session shared": "Session shared",
 	"Set up Oh My Pi in terminal": "Set up Oh My Pi in terminal",
 	Skills: "Skills",
@@ -990,6 +992,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom":
 		"Esc:close  {expandKey}:expand  j/k:scroll  g/G:top/bottom",
 	"Esc:close  j/k:scroll  g/G:top/bottom": "Esc:close  j/k:scroll  g/G:top/bottom",
+	"Esc:close  j/k:scroll  Alt+J/K:turn  /:search  n/N:match  g/G:top/bottom":
+		"Esc:close  j/k:scroll  Alt+J/K:turn  /:search  n/N:match  g/G:top/bottom",
 	"Exit application": "Exit application",
 	"Expand tools": "Expand tools",
 	"Failed to load agents: {message}": "Failed to load agents: {message}",
@@ -3328,6 +3332,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"No jobs to process": "No jobs to process",
 	"No log entries found for today.": "No log entries found for today.",
 	"No log entry selected": "No log entry selected",
+	"No matches": "No matches",
 	"No matches before timeout (scan incomplete)": "No matches before timeout (scan incomplete)",
 	"No matches found": "No matches found",
 	"No semantic matches found": "No semantic matches found",
@@ -4474,7 +4479,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"No handoff content.": "No handoff content.",
 	// Built-in slash command descriptions & hints. Authored in English; translated in zh-CN.
 	"Open settings menu": "Open settings menu",
-	"View the latest user turn": "View the latest user turn",
 	"Open provider setup": "Open provider setup",
 	"Configure sign-in and web search providers": "Configure sign-in and web search providers",
 	"Toggle plan mode (agent plans before executing)": "Toggle plan mode (agent plans before executing)",
@@ -5147,4 +5151,31 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Result submitted (schema validation overridden after {count} failed attempt(s)).",
 	"Result submitted (schema validation overridden).": "Result submitted (schema validation overridden).",
 	"Task aborted: {error}": "Task aborted: {error}",
+	Communication: "Communication",
+	"Next-Step Offers": "Next-Step Offers",
+	"Record up to three structured, user-selectable next-step offers after successful final responses.":
+		"Record up to three structured, user-selectable next-step offers after successful final responses.",
+	"Keep legacy final responses without structured next-step offers":
+		"Keep legacy final responses without structured next-step offers",
+	"Offer structured next steps when the active prompt policy supports them":
+		"Offer structured next steps when the active prompt policy supports them",
+	"Progress Updates": "Progress Updates",
+	"Control concise commentary updates during multi-step work.":
+		"Control concise commentary updates during multi-step work.",
+	"Keep legacy behavior without a progress-update policy": "Keep legacy behavior without a progress-update policy",
+	"Use the active prompt policy to send progress updates at meaningful milestones":
+		"Use the active prompt policy to send progress updates at meaningful milestones",
+	"Numbered Next-Step Selection": "Numbered Next-Step Selection",
+	"Interpret an eligible bare number as an explicit choice of the most recent structured next-step offer.":
+		"Interpret an eligible bare number as an explicit choice of the most recent structured next-step offer.",
+	"Codex Native Prompt": "Codex Native Prompt",
+	"Use the OpenAI Codex native-prompt sidecar when its trusted profile is eligible.":
+		"Use the OpenAI Codex native-prompt sidecar when its trusted profile is eligible.",
+	"Keep the generic system prompt only": "Keep the generic system prompt only",
+	Shadow: "Shadow",
+	"Evaluate native-prompt eligibility without sending a native sidecar":
+		"Evaluate native-prompt eligibility without sending a native sidecar",
+	"Use a trusted native sidecar when eligible; otherwise use the generic system prompt":
+		"Use a trusted native sidecar when eligible; otherwise use the generic system prompt",
+	shadow: "shadow",
 };

@@ -53,6 +53,7 @@ describe("globToolRenderer", () => {
 	});
 
 	it("renders a timed-out empty scan as incomplete instead of a definitive no-files claim", async () => {
+		setBasicToolDetailsVisible(true);
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -70,14 +71,21 @@ describe("globToolRenderer", () => {
 		const renderedLines = globToolRenderer
 			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "~/.cache/*" })
 			.render(240);
-		const plain = sanitizeText(renderedLines.join("\n"));
+		const plainLines = sanitizeText(renderedLines.join("\n"))
+			.split("\n")
+			.map(line => line.trimEnd());
+		const plain = plainLines.join("\n");
 
-		expect(plain).toContain("No matches before timeout (scan incomplete)");
+		expect(plainLines).toHaveLength(2);
+		expect(plainLines[0]).toContain("Glob");
+		expect(plainLines[1]).toStartWith("└─ ");
+		expect(plainLines[1]).toBe("└─ No matches before timeout (scan incomplete)");
 		expect(plain).toContain("timed out");
 		expect(plain).not.toContain("No files found");
 	});
 
 	it("renders a genuinely empty result as no files found", async () => {
+		setBasicToolDetailsVisible(true);
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
@@ -93,10 +101,39 @@ describe("globToolRenderer", () => {
 		const renderedLines = globToolRenderer
 			.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "src/*.zig" })
 			.render(240);
-		const plain = sanitizeText(renderedLines.join("\n"));
+		const plainLines = sanitizeText(renderedLines.join("\n"))
+			.split("\n")
+			.map(line => line.trimEnd());
+		const plain = plainLines.join("\n");
 
-		expect(plain).toContain("No files found");
+		expect(plainLines).toHaveLength(2);
+		expect(plainLines[0]).toContain("Glob");
+		expect(plainLines[1]).toStartWith("└─ ");
+		expect(plainLines[1]).toBe("└─ No files found");
 		expect(plain).not.toContain("incomplete");
+	});
+
+	it("renders a localized legacy empty result as a child below its Glob header", async () => {
+		setBasicToolDetailsVisible(true);
+		setSettingsUiLocale("zh-CN");
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const result = {
+			content: [{ type: "text", text: "No files found matching pattern" }],
+		};
+
+		const plainLines = sanitizeText(
+			globToolRenderer
+				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "src/*.zig" })
+				.render(240)
+				.join("\n"),
+		).split("\n").map(line => line.trimEnd());
+
+		expect(plainLines).toHaveLength(2);
+		expect(plainLines[0]).toContain("Glob");
+		expect(plainLines[1]).toStartWith("└─ ");
+		expect(plainLines[1]).toBe("└─ 未找到文件");
 	});
 
 	it("localizes zh-CN truncation status in the header without a duplicate detached reason line", async () => {

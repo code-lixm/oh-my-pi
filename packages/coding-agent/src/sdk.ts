@@ -63,7 +63,7 @@ import {
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
 import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
-import { Settings, type SkillsSettings } from "./config/settings";
+import { type Personality, Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
 import { createBridgeEditTool, createBridgeGrepFactory } from "./cursor-bridge-tools";
 import "./discovery";
@@ -170,6 +170,9 @@ import { unmountAll } from "./ssh/sshfs-mount";
 import {
 	type BuildSystemPromptResult,
 	buildSystemPrompt as buildSystemPromptInternal,
+	type CodexNativePrompt,
+	type CodexNativePromptMode,
+	type CodexPromptProfileInput,
 	loadProjectContextFiles as loadContextFilesInternal,
 	projectSystemPromptToolMetadata,
 } from "./system-prompt";
@@ -886,6 +889,16 @@ export interface BuildSystemPromptOptions {
 	includeWorkspaceTree?: boolean;
 	/** Include the read-only security:// resource inventory entry. Default: false. */
 	securityEnabled?: boolean;
+	/** Provider-qualified model identity required for native Codex eligibility. */
+	model?: string;
+	/** OMP personality used when rendering the trusted Codex profile. */
+	personality?: Personality;
+	/** Native Codex experiment mode. `shadow` preserves canonical fallback only. */
+	codexPromptMode?: CodexNativePromptMode;
+	/** Trusted Codex profile from official discovery. */
+	codexPromptProfile?: CodexPromptProfileInput;
+	progressUpdates?: "off" | "auto";
+	nextSteps?: "off" | "auto";
 }
 
 /**
@@ -912,6 +925,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		inlineToolDescriptors: options.inlineToolDescriptors,
 		includeWorkspaceTree: options.includeWorkspaceTree,
 		securityEnabled: options.securityEnabled,
+		model: options.model,
+		personality: options.personality,
+		codexPromptMode: options.codexPromptMode,
+		codexPromptProfile: options.codexPromptProfile,
+		progressUpdates: options.progressUpdates,
+		nextSteps: options.nextSteps,
 		toolNames,
 		tools: promptTools,
 	});
@@ -1717,6 +1736,35 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (activeModel) return formatModelString(activeModel);
 			if (model) return formatModelString(model);
 			return undefined;
+		};
+		let activeCodexNativePrompt: CodexNativePrompt | undefined;
+		let activeCodexNativeFallbackSystemPrompt: readonly string[] | undefined;
+		let activeCodexNativeModel: string | undefined;
+		const promptsMatch = (left: readonly string[] | undefined, right: readonly string[] | undefined): boolean =>
+			left !== undefined &&
+			right !== undefined &&
+			left.length === right.length &&
+			left.every((part, index) => part === right[index]);
+		const setActiveCodexNativePrompt = (built: BuildSystemPromptResult, promptModel: Model | undefined): void => {
+			activeCodexNativePrompt = built.codexNativePrompt;
+			activeCodexNativeFallbackSystemPrompt = built.codexNativePrompt ? [...built.systemPrompt] : undefined;
+			activeCodexNativeModel = built.codexNativePrompt && promptModel ? formatModelString(promptModel) : undefined;
+		};
+		const attachCodexNativePrompt = (context: Context, transformModel: Model): Context => {
+			if (
+				!activeCodexNativePrompt ||
+				!activeCodexNativeFallbackSystemPrompt ||
+				activeCodexNativeModel !== formatModelString(transformModel) ||
+				!promptsMatch(context.systemPrompt, activeCodexNativeFallbackSystemPrompt)
+			) {
+				return context;
+			}
+			return { ...context, codexNativePrompt: activeCodexNativePrompt };
+		};
+		const withoutCodexNativePrompt = (context: Context): Context => {
+			if (context.codexNativePrompt === undefined) return context;
+			const { codexNativePrompt: _nativePrompt, ...fallbackContext } = context;
+			return fallbackContext;
 		};
 		// Per-path mutation counter shared across edit/write tools. Late-diagnostics
 		// entries capture it at fetch time and are dropped at injection if a newer
@@ -2854,6 +2902,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
 		): Promise<BuildSystemPromptResult> => {
+			const promptModel = agent?.state.model ?? model;
 			toolContextStore.setToolNames(toolNames);
 			const promptCwd = sessionManager.getCwd();
 			const activeRepoContext = hasSession
@@ -2969,18 +3018,25 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
 				renderMermaid: settings.get("tui.renderMermaid"),
 				activeRepoContext,
+				codexPromptMode: settings.get("providers.codex.nativePrompt"),
+				codexPromptProfile: promptModel?.codexPromptProfile,
+				progressUpdates: settings.get("communication.progressUpdates"),
+				nextSteps: settings.get("communication.nextSteps"),
 			});
 
 			if (options.systemPrompt === undefined) {
+				setActiveCodexNativePrompt(defaultPrompt, promptModel);
 				return defaultPrompt;
 			}
 			const customPrompt =
 				typeof options.systemPrompt === "function"
 					? options.systemPrompt(defaultPrompt.systemPrompt)
 					: options.systemPrompt;
-			return {
+			const overriddenPrompt: BuildSystemPromptResult = {
 				systemPrompt: typeof customPrompt === "string" ? [customPrompt] : customPrompt,
 			};
+			setActiveCodexNativePrompt(overriddenPrompt, promptModel);
+			return overriddenPrompt;
 		};
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
@@ -3173,8 +3229,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					)
 				: undefined;
 		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
-			let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+			let transformed = attachCodexNativePrompt(context, transformModel);
+			if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
+			const systemPromptBeforeSnapcompact = transformed.systemPrompt;
 			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
+			if (!promptsMatch(transformed.systemPrompt, systemPromptBeforeSnapcompact)) {
+				transformed = withoutCodexNativePrompt(transformed);
+			}
 			return clampProviderContextImages(transformed, transformModel);
 		};
 		const onPayload = async (payload: unknown, model?: Model) => {
@@ -3737,7 +3798,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					convertToLlm: convertToLlmFinal,
 					transformContext: async messages => wrapSteeringForModel(messages),
 					transformProviderContext: async (context, transformModel) => {
-						const transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+						let transformed = attachCodexNativePrompt(context, transformModel);
+						if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
 						return clampProviderContextImages(transformed, transformModel);
 					},
 					thinkingBudgets: agent.thinkingBudgets,
