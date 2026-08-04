@@ -610,6 +610,7 @@ export class AgentSession {
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
 	#runnableTurnWaitAbortController = new AbortController();
+	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#inheritedProviderPromptCacheKey: string | undefined;
@@ -1600,7 +1601,7 @@ export class AgentSession {
 			schedulePostPromptTask: (task, options) => this.#schedulePostPromptTask(task, options),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			promptGeneration: () => this.#promptGeneration,
-			continueAgent: signal => this.#runRunnableAgentTurn(() => this.agent.continue(), signal),
+			continueAgent: signal => this.#continueAgentAutomatically(signal),
 		};
 		this.#ttsr = new TtsrCoordinator(ttsrHost, config.ttsrManager);
 		this.#obfuscator = config.obfuscator;
@@ -1632,7 +1633,7 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			schedulePostPromptTask: task => this.#schedulePostPromptTask(task),
 			discardAssistantTurn: message => this.#recovery.discardAssistantTurn(message),
-			continueAgent: signal => this.#runRunnableAgentTurn(() => this.agent.continue(), signal),
+			continueAgent: signal => this.#continueAgentAutomatically(signal),
 			restartAgent: (messages, signal) => this.#runRunnableAgentTurn(() => this.agent.prompt(messages), signal),
 		};
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
@@ -1640,6 +1641,7 @@ export class AgentSession {
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
 		this.#publishActivity(true);
+		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
@@ -1825,6 +1827,7 @@ export class AgentSession {
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
 			resetAdvisorRuntimes: () => this.#advisors.resetAllRuntimes(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
+			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),
 			shake: (mode, options) => this.shake(mode, options),
@@ -2088,6 +2091,29 @@ export class AgentSession {
 
 	setPlanProposalHandler(handler: PlanProposalHandler | null): void {
 		this.#planProposalHandler = handler ?? undefined;
+	}
+
+	#beforeAutoContinue: (() => void | Promise<void>) | undefined;
+	#beforeAutoContinueTail: Promise<void> = Promise.resolve();
+
+	setBeforeAutoContinue(handler: (() => void | Promise<void>) | null | undefined): void {
+		this.#beforeAutoContinue = handler ?? undefined;
+	}
+
+	async #runBeforeAutoContinue(): Promise<void> {
+		const handler = this.#beforeAutoContinue;
+		if (!handler) {
+			await this.#beforeAutoContinueTail;
+			return;
+		}
+		const run = this.#beforeAutoContinueTail.then(handler);
+		this.#beforeAutoContinueTail = run.catch(() => {});
+		await run;
+	}
+
+	async #continueAgentAutomatically(signal?: AbortSignal): Promise<void> {
+		await this.#runBeforeAutoContinue();
+		await this.#runRunnableAgentTurn(() => this.agent.continue(), signal);
 	}
 
 	#sessionBeforeSwitchReconciler: (() => Promise<void>) | undefined;
@@ -3541,6 +3567,15 @@ export class AgentSession {
 				}
 				this.#beginInFlight();
 				try {
+					await this.#runBeforeAutoContinue();
+					if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+						this.#skipAgentContinue("post-restore-unavailable", options);
+						return;
+					}
+					if (options?.shouldContinue && !options.shouldContinue()) {
+						this.#skipAgentContinue("should-continue-false", options);
+						return;
+					}
 					const queuedUserTurn = [...this.agent.peekSteeringQueue(), ...this.agent.peekFollowUpQueue()].some(
 						isUserQueuedMessage,
 					);
@@ -3625,6 +3660,8 @@ export class AgentSession {
 			async signal => {
 				await Promise.resolve();
 				if (signal.aborted) return;
+				await this.#runBeforeAutoContinue();
+				if (signal.aborted || this.#isDisposed || this.#promptGeneration !== generation) return;
 				if (this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
 						generation,
@@ -5329,6 +5366,11 @@ export class AgentSession {
 		};
 	}
 
+	#isScoutAvailable(): boolean {
+		const disabledAgents = this.settings.get("task.disabledAgents") as string[] | undefined;
+		return this.#scoutAllowedBySpawnPolicy && !disabledAgents?.includes("scout");
+	}
+
 	async #buildPlanModeMessage(): Promise<CustomMessage | null> {
 		const state = this.#planModeState;
 		if (!state?.enabled) return null;
@@ -5352,6 +5394,7 @@ export class AgentSession {
 			isHashlineEditMode: this.#resolveActiveEditMode() === "hashline",
 			reentry: state.reentry ?? false,
 			iterative: state.workflow === "iterative",
+			scoutAvailable: this.#isScoutAvailable(),
 		});
 
 		return {
@@ -5486,7 +5529,10 @@ export class AgentSession {
 				keywordNotices.push({
 					role: "custom",
 					customType: "workflow-notice",
-					content: renderWorkflowNotice({ taskBatch: this.settings.get("task.batch") }),
+					content: renderWorkflowNotice({
+						taskBatch: this.settings.get("task.batch"),
+						scoutAvailable: this.#isScoutAvailable(),
+					}),
 					display: false,
 					attribution: "user",
 					timestamp,
@@ -6282,6 +6328,7 @@ export class AgentSession {
 		if (this.#pendingNextTurnMessages.length === 0) {
 			return;
 		}
+		await this.#runBeforeAutoContinue();
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
 		this.#pendingNextTurnMessages = [];
@@ -8256,7 +8303,10 @@ export class AgentSession {
 			await this.#advisors.drainAndDetachRecorders();
 			try {
 				if (!selectedEntry.parentId) {
+					const title = this.sessionManager.getSessionName();
+					const titleSource = this.sessionManager.titleSource;
 					await this.sessionManager.newSession({ parentSession: previousSessionFile });
+					if (title) await this.sessionManager.setSessionName(title, titleSource);
 				} else {
 					this.sessionManager.createBranchedSession(selectedEntry.parentId);
 				}

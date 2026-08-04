@@ -9,5 +9,5 @@
 
 <critical>
 - MUST 使用本工具，而不是 shell `grep`/`rg`。
-- 开放式多轮搜索 MUST 使用 Task 工具 + scout 子代理，而不是链式调用。
+- 开放式多轮搜索 MUST 使用 {{#if scoutAvailable}}Task 工具 + scout 子代理{{else}}Task 工具{{/if}}，而不是链式调用。
 </critical>

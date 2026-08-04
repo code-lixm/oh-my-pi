@@ -128,7 +128,9 @@ describe("globToolRenderer", () => {
 				.renderResult(result as never, { expanded: true, isPartial: false }, uiTheme, { paths: "src/*.zig" })
 				.render(240)
 				.join("\n"),
-		).split("\n").map(line => line.trimEnd());
+		)
+			.split("\n")
+			.map(line => line.trimEnd());
 
 		expect(plainLines).toHaveLength(2);
 		expect(plainLines[0]).toContain("Glob");

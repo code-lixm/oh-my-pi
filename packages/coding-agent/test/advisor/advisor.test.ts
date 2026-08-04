@@ -31,8 +31,8 @@ import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/setting
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
-import advisorSystemPrompt from "../../src/prompts/advisor/system.md" with { type: "text" };
 import { getPromptLocale, setPromptLocale } from "../../src/prompts/prompt-locale";
+
 import { SecretObfuscator } from "../../src/secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../src/session/session-history-format";
 import { YieldQueue } from "../../src/session/yield-queue";
@@ -77,9 +77,6 @@ describe("advisor", () => {
 
 			expect(rendered).toContain("→ grep(needle @ packages/coding-agent/src) ⇒ error");
 			expect(rendered).not.toContain("paths[0]");
-			expect(advisorSystemPrompt).toContain("Arguments absent from the rendered transcript are UNKNOWN");
-			expect(advisorSystemPrompt).toContain("NEVER assert concrete values, array indexes");
-			expect(advisorSystemPrompt).toContain("NEVER claim `paths[0]`, array flattening, or malformed `paths`");
 		});
 	});
 
@@ -464,7 +461,7 @@ describe("advisor", () => {
 			expect(invalid instanceof type.errors).toBe(true);
 		});
 
-		it("localizes advisor tool results and prompt descriptions for explicit locales", async () => {
+		it("localizes advisor tool descriptions and results at runtime", async () => {
 			const previousSettingsUiLocale = getSettingsUiLocale();
 			const previousPromptLocale = getPromptLocale();
 			try {

@@ -201,6 +201,8 @@ export async function prepareNativeCorePackage(pkgDir: string, write: boolean): 
 	manifest.files = [
 		"native/index.js",
 		"native/index.d.ts",
+		"native/clipboard.js",
+		"native/clipboard.d.ts",
 		"native/desktop.js",
 		"native/desktop.d.ts",
 		"native/loader-state.js",
@@ -237,11 +239,16 @@ export interface PackedTarball {
 
 /** Read the package identity npm will publish from the packed archive. */
 export async function inspectPackedTarball(tarballPath: string): Promise<PackedTarball> {
-	const extracted = await $`tar -xOzf ${tarballPath} package/package.json`.quiet().nothrow();
-	if (extracted.exitCode !== 0) {
-		throw new Error(`Could not read packed manifest from ${tarballPath}: ${extracted.stderr.toString().trim()}`);
+	const compressed = new Uint8Array(await Bun.file(tarballPath).arrayBuffer());
+	let archive: Bun.Archive;
+	try {
+		archive = new Bun.Archive(Bun.gunzipSync(compressed));
+	} catch (error) {
+		throw new Error(`Could not read packed manifest from ${tarballPath}: ${String(error)}`);
 	}
-	const manifest = JSON.parse(extracted.stdout.toString()) as PackageManifest;
+	const manifestBlob = (await archive.files()).get("package/package.json");
+	if (!manifestBlob) throw new Error(`Could not read packed manifest from ${tarballPath}: member not found`);
+	const manifest = JSON.parse(await manifestBlob.text()) as PackageManifest;
 	if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
 		throw new Error(`Packed manifest is missing name/version: ${tarballPath}`);
 	}

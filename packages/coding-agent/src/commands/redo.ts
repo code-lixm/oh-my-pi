@@ -6,8 +6,8 @@
  * when conversation/all restore state is involved.
  */
 import { getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils";
-import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import chalk from "chalk";
+import { Command, Flags } from "../cli/command-runtime";
 import { Settings } from "../config/settings";
 import type { WorkspaceRestoreResult } from "../workspace-checkpoints";
 import {

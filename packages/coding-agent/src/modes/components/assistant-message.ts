@@ -251,6 +251,7 @@ export class AssistantMessageComponent extends Container {
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
 	#convertedKittyImages = new Map<string, ImageContent>();
 	#showImages = true;
+	#showToolResultImages = true;
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
 	/**
@@ -681,6 +682,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Toggle only images produced by tool results; assistant-native images remain governed by setImagesVisible. */
+	setToolResultImagesVisible(visible: boolean): void {
+		if (this.#showToolResultImages === visible) return;
+		this.#showToolResultImages = visible;
+		if (this.#lastMessage) {
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+	}
+
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
@@ -759,6 +769,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	#renderToolImages(): void {
+		if (!this.#showToolResultImages) return;
 		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
 			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
 		);

@@ -22,6 +22,7 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
+import { initializeConfigSyncAutoPushRuntime } from "../config-sync/auto-push-runtime";
 import { exportEncryptedBundle, importEncryptedBundle } from "../config-sync/bundle";
 import { assertEncryptedConfigBundle } from "../config-sync/crypto";
 import { DEFAULT_SYNC_PASSPHRASE_ENV } from "../config-sync/profile";
@@ -29,6 +30,8 @@ import { tSettingsUi } from "../i18n/settings-locale";
 import { theme } from "../modes/theme/theme";
 
 import { initXdg } from "./commands/init-xdg";
+
+initializeConfigSyncAutoPushRuntime();
 
 // =============================================================================
 // Types

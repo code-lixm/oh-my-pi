@@ -5,6 +5,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 
 export const THINKING_DISPLAY_MODES = ["full", "prose", "hidden"] as const;
 export type ThinkingDisplayMode = (typeof THINKING_DISPLAY_MODES)[number];
+export { CLI_THINKING_LEVELS } from "./cli/thinking-levels";
 
 /**
  * Metadata used to render thinking selector values in the coding-agent UI.
@@ -231,14 +232,6 @@ export function parseConfiguredThinkingLevel(value: string | null | undefined): 
 export function getConfiguredThinkingLevelMetadata(level: ConfiguredThinkingLevel): ConfiguredThinkingLevelMetadata {
 	return level === AUTO_THINKING ? AUTO_THINKING_METADATA : getThinkingLevelMetadata(level);
 }
-
-/**
- * Thinking selectors accepted by the `--thinking` CLI flag, in display order:
- * `off`, every concrete effort (`minimal`..`max`), then `auto`. Single source
- * for the flag's `options` list, shell completions, and the "invalid level"
- * warning so all three stay in sync.
- */
-export const CLI_THINKING_LEVELS: readonly string[] = [ThinkingLevel.Off, ...THINKING_EFFORTS, AUTO_THINKING];
 
 /**
  * Parses a `--thinking` CLI value. Accepts every {@link parseConfiguredThinkingLevel}

@@ -1,0 +1,190 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { getAgentDir, getConfigRootDir, refreshDirsFromEnv } from "./dirs";
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Strict shell-identifier shape accepted for dotenv keys. */
+export function isValidEnvName(name: string): boolean {
+	return ENV_NAME_RE.test(name);
+}
+
+/** Return whether a name can be forwarded safely through native execve framing. */
+export function isSafeEnvName(name: string): boolean {
+	return name.length > 0 && !name.includes("=") && !name.includes("\0");
+}
+
+export function isSafeEnvValue(value: string): boolean {
+	return !value.includes("\0");
+}
+
+export function isMacosMallocStackLoggingEnvName(name: string): boolean {
+	return name === "MallocStackLogging" || name === "MallocStackLoggingNoCompact";
+}
+
+export function filterProcessEnv(env: Record<string, string | undefined>): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const key in env) {
+		const value = env[key];
+		if (
+			!isSafeEnvName(key) ||
+			isMacosMallocStackLoggingEnvName(key) ||
+			value === undefined ||
+			!isSafeEnvValue(value)
+		) {
+			continue;
+		}
+		result[key] = value;
+	}
+	return result;
+}
+
+// Bun autoloads the project's dotenv files into `process.env` before user code
+// runs. Linux's procfs (or `--no-env-file`) preserves the launch environment,
+// which lets child shells distinguish inherited values from project dotenv data.
+function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
+	if (process.platform === "linux") {
+		try {
+			const values = new Map<string, string>();
+			for (const entry of fs.readFileSync("/proc/self/environ", "utf8").split("\0")) {
+				const separator = entry.indexOf("=");
+				if (separator > 0) values.set(entry.slice(0, separator), entry.slice(separator + 1));
+			}
+			return values;
+		} catch {}
+	}
+	if (!process.execArgv.includes("--no-env-file")) return undefined;
+	const values = new Map<string, string>();
+	for (const key in Bun.env) {
+		const value = Bun.env[key];
+		if (value !== undefined) values.set(key, value);
+	}
+	return values;
+}
+
+const launchEnvValues = readLaunchEnv();
+const projectEnvNamesLoadedByOmp = new Set<string>();
+
+function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
+	const expanded: Record<string, string> = {};
+	for (const key in values) {
+		expanded[key] = values[key].replace(
+			/(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g,
+			(match, escaped: string | undefined, braced: string | undefined, bare: string | undefined) => {
+				if (escaped) return match.slice(1);
+				const name = braced ?? bare;
+				if (!name) return match;
+				return env[name] ?? expanded[name] ?? "";
+			},
+		);
+	}
+	return expanded;
+}
+
+/** Filters process env for child shells without launch-cwd dotenv values. */
+export function filterChildShellEnv(
+	env: Record<string, string | undefined>,
+	cwd: string = process.cwd(),
+): Record<string, string> {
+	const result = filterProcessEnv(env);
+	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
+	const nodeEnvName = `.env.${env.NODE_ENV || "development"}`;
+	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
+	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
+	const launchEnv = { ...projectEnv, ...modeEnv, ...localEnv };
+	const expandedLaunchEnv = {
+		...expandDotenvValues(projectEnv, result),
+		...expandDotenvValues(modeEnv, result),
+		...expandDotenvValues(localEnv, result),
+	};
+	for (const key in launchEnv) {
+		const launchValue = launchEnvValues?.get(key);
+		if (launchValue !== undefined) {
+			if (
+				result[key] !== launchValue &&
+				(result[key] === launchEnv[key] || result[key] === expandedLaunchEnv[key])
+			) {
+				result[key] = launchValue;
+			}
+			continue;
+		}
+		if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
+			delete result[key];
+		} else if (result[key] === launchEnv[key] || result[key] === expandedLaunchEnv[key]) {
+			delete result[key];
+		}
+	}
+	return result;
+}
+
+function parseEnvLine(line: string): { key: string; value: string } | undefined {
+	const trimmed = line.trim();
+	if (!trimmed || trimmed.startsWith("#")) return undefined;
+	const eqIndex = trimmed.indexOf("=");
+	if (eqIndex === -1) return undefined;
+	let key = trimmed.slice(0, eqIndex).trim();
+	const exported = key.match(/^export[ \t]+(.*)$/);
+	if (exported) key = exported[1].trim();
+	if (!isValidEnvName(key)) return undefined;
+	const raw = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
+	const quote = raw[0];
+	if (quote === '"' || quote === "'" || quote === "`") {
+		let close = raw.indexOf(quote, 1);
+		while (close !== -1 && raw[close - 1] === "\\") close = raw.indexOf(quote, close + 1);
+		return { key, value: close === -1 ? raw.slice(1) : raw.slice(1, close) };
+	}
+	const commentIndex = raw.search(/[ \t]#/);
+	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd() };
+}
+
+/** Parse a dotenv file and mirror OMP_ values to their PI_ aliases. */
+export function parseEnvFile(filePath: string): Record<string, string> {
+	const result: Record<string, string> = {};
+	try {
+		const content = fs.readFileSync(filePath, "utf-8");
+		for (const line of content.split("\n")) {
+			const parsed = parseEnvLine(line);
+			if (parsed && isSafeEnvValue(parsed.value)) result[parsed.key] = parsed.value;
+		}
+	} catch {
+		// Missing or unreadable dotenv files contribute no values.
+	}
+	for (const key in result) {
+		if (key.startsWith("OMP_")) result[`PI_${key.slice(4)}`] = result[key];
+	}
+	return result;
+}
+
+let loaded = false;
+
+/** Load profile-aware dotenv files after the caller has selected the active profile. */
+export function loadDotenvEnvironment(): void {
+	if (loaded) return;
+	loaded = true;
+	const homeEnv = parseEnvFile(path.join(os.homedir(), ".env"));
+	const piEnv = parseEnvFile(path.join(getConfigRootDir(), ".env"));
+	const agentEnv = parseEnvFile(path.join(getAgentDir(), ".env"));
+	const projectEnv = parseEnvFile(path.join(process.cwd(), ".env"));
+
+	for (const key of Object.keys(Bun.env)) {
+		const value = Bun.env[key];
+		if (
+			!isSafeEnvName(key) ||
+			isMacosMallocStackLoggingEnvName(key) ||
+			value === undefined ||
+			!isSafeEnvValue(value)
+		) {
+			delete Bun.env[key];
+		}
+	}
+	for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
+		for (const key in file) {
+			if (!isMacosMallocStackLoggingEnvName(key) && !Bun.env[key]) {
+				Bun.env[key] = file[key];
+				if (file === projectEnv) projectEnvNamesLoadedByOmp.add(key);
+			}
+		}
+	}
+	refreshDirsFromEnv();
+}

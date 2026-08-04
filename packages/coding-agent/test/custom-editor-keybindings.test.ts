@@ -5,21 +5,12 @@ import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme
 import type { AutocompleteItem, AutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 
 // ---------------------------------------------------------------------------
-// Tab / Shift+Tab model cycling (app.model.cycleForward / cycleBackward)
-//
-// New default keybindings:
-//   • Tab            → app.model.cycleForward  (falls through only on completion miss)
-//   • Shift+Tab     → app.model.cycleBackward (blocked when autocomplete visible)
-//   • Ctrl+P        → app.thinking.cycle     (no longer cycles models)
-//   • Shift+Ctrl+P → user-configurable       (no longer a default action)
+// App-level actions routed by CustomEditor
 //
 // Contracts:
-//   • Tab → model.cycleForward only when autocomplete popup is absent AND
-//     Tab has no completion candidates (completion miss).
-//   • Tab with a visible autocomplete popup → accepts the selection, no cycling.
-//   • Tab when completion candidates exist → opens / inserts autocomplete, no cycling.
-//   • Shift+Tab without autocomplete popup → model.cycleBackward.
-//   • Shift+Tab with autocomplete popup open → no cycling.
+//   • Ctrl+D invokes the default app.exit action.
+//   • Tab / Shift+Tab invoke their configured model-cycle actions, including
+//     while autocomplete is shown.
 // ---------------------------------------------------------------------------
 
 describe("CustomEditor keybindings", () => {
@@ -36,6 +27,17 @@ describe("CustomEditor keybindings", () => {
 		editor.handleInput("\x1bR");
 
 		expect(onRetry).toHaveBeenCalledTimes(1);
+	});
+
+	it("routes the configured tool activity visibility chord through handleInput", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onToggleToolActivity = vi.fn();
+
+		editor.setActionKeys("app.tools.toggleVisibility", ["alt+h"]);
+		editor.onToggleToolActivity = onToggleToolActivity;
+		editor.handleInput("\x1bh");
+
+		expect(onToggleToolActivity).toHaveBeenCalledTimes(1);
 	});
 
 	it("lets custom handlers keep precedence over the default retry chord", () => {
@@ -65,32 +67,31 @@ describe("CustomEditor keybindings", () => {
 		expect(onRetry).not.toHaveBeenCalled();
 	});
 
-	it("does not exit on ctrl+d with the default keybindings", () => {
+	it("routes ctrl+d to onExit with the default keybindings", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onExit = vi.fn();
 
 		editor.onExit = onExit;
 		editor.handleInput("\x04");
 
-		expect(onExit).not.toHaveBeenCalled();
+		expect(onExit).toHaveBeenCalledTimes(1);
 	});
 
-	it("routes ctrl+d to onExit only when app.exit is explicitly configured", () => {
+	it("routes a remapped exit chord to onExit", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onExit = vi.fn();
 
-		editor.setActionKeys("app.exit", ["ctrl+d"]);
+		editor.setActionKeys("app.exit", ["alt+x"]);
 		editor.onExit = onExit;
-		editor.handleInput("\x04");
+		editor.handleInput("\x1bx");
 
 		expect(onExit).toHaveBeenCalledTimes(1);
 	});
 });
 
 /**
- * Minimal provider that returns candidates only when explicitly configured.
- * When `candidates` is null the provider returns nothing, simulating a
- * "completion miss" — Tab must fall through to model.cycleForward.
+ * Minimal provider that exposes an autocomplete popup only when candidates
+ * are explicitly configured.
  */
 class OptionalProvider implements AutocompleteProvider {
 	private readonly _candidates: Array<{ value: string; label: string }> | null;
@@ -126,86 +127,35 @@ class OptionalProvider implements AutocompleteProvider {
 }
 
 describe("Tab model cycling", () => {
-	it("Tab with no autocomplete provider fires model.cycleForward", async () => {
+	it("routes a configured Tab chord to model.cycleForward", () => {
 		const editor = new CustomEditor(getEditorTheme());
-		// No provider — Tab has nothing to offer, must fall through.
+		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 		const onCycleForward = vi.fn();
 		editor.onCycleModelForward = onCycleForward;
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 
 		editor.handleInput("\t");
-		// handleInput() calls super.handleInput() which fires a void promise whose
-		// .then() chain calls handleTabCompletionMiss → onCycleModelForward.
-		// Drain the microtask queue so that callback runs before the assertion.
-		await Bun.sleep(0);
 
 		expect(onCycleForward).toHaveBeenCalledTimes(1);
 	});
 
-	it("Tab with provider returning no candidates fires model.cycleForward", async () => {
+	it("routes Tab to model.cycleForward while autocomplete is visible", async () => {
 		const editor = new CustomEditor(getEditorTheme());
-		editor.setAutocompleteProvider(new OptionalProvider(null));
-		const onCycleForward = vi.fn();
-		editor.onCycleModelForward = onCycleForward;
 		editor.setActionKeys("app.model.cycleForward", ["tab"]);
-
-		editor.handleInput("\t");
-		await Bun.sleep(0);
-
-		expect(onCycleForward).toHaveBeenCalledTimes(1);
-	});
-
-	it("Tab with visible autocomplete popup accepts selection and does not fire model.cycleForward", async () => {
-		const editor = new CustomEditor(getEditorTheme());
 		editor.setAutocompleteProvider(new OptionalProvider([{ value: "alpha", label: "alpha" }]));
 		const onCycleForward = vi.fn();
 		editor.onCycleModelForward = onCycleForward;
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 
-		// Open the popup with a leading slash so auto-trigger fires.
 		editor.handleInput("/");
-		await Bun.sleep(0);
-
+		await Promise.resolve();
 		expect(editor.isShowingAutocomplete()).toBe(true);
 
-		editor.handleInput("\t"); // Accept via Tab.
-
-		expect(editor.isShowingAutocomplete()).toBe(false);
-		expect(onCycleForward).not.toHaveBeenCalled();
-	});
-
-	it("Tab with provider returning candidates opens autocomplete and does not fire model.cycleForward", async () => {
-		const editor = new CustomEditor(getEditorTheme());
-		editor.setAutocompleteProvider(new OptionalProvider([{ value: "beta", label: "beta" }]));
-		const onCycleForward = vi.fn();
-		editor.onCycleModelForward = onCycleForward;
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
-
 		editor.handleInput("\t");
-		await Bun.sleep(0);
 
-		// Tab should have opened autocomplete (or accepted the first item)
-		// but must NOT have triggered model cycling.
-		expect(onCycleForward).not.toHaveBeenCalled();
-	});
-
-	it("Tab fires model.cycleForward when autocomplete is dismissed (no candidates)", async () => {
-		const editor = new CustomEditor(getEditorTheme());
-		// Provider that returns no candidates on first call.
-		editor.setAutocompleteProvider(new OptionalProvider(null));
-		const onCycleForward = vi.fn();
-		editor.onCycleModelForward = onCycleForward;
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
-
-		editor.handleInput("\t");
-		await Bun.sleep(0);
-
-		// Tab → provider returns null → no autocomplete shown → cycle fires.
-		expect(editor.isShowingAutocomplete()).toBe(false);
+		expect(editor.isShowingAutocomplete()).toBe(true);
 		expect(onCycleForward).toHaveBeenCalledTimes(1);
 	});
 
-	it("handleDraftEdit(Tab) with no candidates does not fire model.cycleForward", async () => {
+	it("keeps app-level model cycling out of handleDraftEdit", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 		editor.setAutocompleteProvider(new OptionalProvider(null));
@@ -213,161 +163,38 @@ describe("Tab model cycling", () => {
 		editor.onCycleModelForward = onCycleForward;
 
 		editor.handleDraftEdit("\t");
-		await Bun.sleep(0);
 
-		expect(editor.isShowingAutocomplete()).toBe(false);
-		expect(onCycleForward).not.toHaveBeenCalled();
-	});
-
-	it("cancels a pending Tab completion-miss fallback after a later non-editor action", async () => {
-		class DelayedNoCandidatesProvider implements AutocompleteProvider {
-			readonly pending = Promise.withResolvers<{ items: AutocompleteItem[]; prefix: string } | null>();
-
-			async getSuggestions(
-				_lines: string[],
-				_cursorLine: number,
-				_cursorCol: number,
-			): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
-				return this.pending.promise;
-			}
-
-			applyCompletion(
-				lines: string[],
-				cursorLine: number,
-				cursorCol: number,
-				_item: AutocompleteItem,
-				_prefix: string,
-			): { lines: string[]; cursorLine: number; cursorCol: number } {
-				return { lines, cursorLine, cursorCol };
-			}
-		}
-
-		const provider = new DelayedNoCandidatesProvider();
-		const editor = new CustomEditor(getEditorTheme());
-		editor.setAutocompleteProvider(provider);
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
-		editor.setActionKeys("app.retry", ["alt+r"]);
-		const onCycleForward = vi.fn();
-		const onRetry = vi.fn();
-		editor.onCycleModelForward = onCycleForward;
-		editor.onRetry = onRetry;
-
-		editor.handleInput("\t");
-		editor.handleInput("\x1br");
-		provider.pending.resolve(null);
-		await Bun.sleep(0);
-
-		expect(onRetry).toHaveBeenCalledTimes(1);
-		expect(editor.isShowingAutocomplete()).toBe(false);
-		expect(onCycleForward).not.toHaveBeenCalled();
-	});
-
-	it("cancels a pending Tab completion-miss fallback after focus changes before resolve", async () => {
-		class DelayedNoCandidatesProvider implements AutocompleteProvider {
-			readonly pending = Promise.withResolvers<{ items: AutocompleteItem[]; prefix: string } | null>();
-
-			async getSuggestions(
-				_lines: string[],
-				_cursorLine: number,
-				_cursorCol: number,
-			): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
-				return this.pending.promise;
-			}
-
-			applyCompletion(
-				lines: string[],
-				cursorLine: number,
-				cursorCol: number,
-				_item: AutocompleteItem,
-				_prefix: string,
-			): { lines: string[]; cursorLine: number; cursorCol: number } {
-				return { lines, cursorLine, cursorCol };
-			}
-		}
-
-		const provider = new DelayedNoCandidatesProvider();
-		const editor = new CustomEditor(getEditorTheme());
-		editor.focused = true;
-		editor.setAutocompleteProvider(provider);
-		editor.setActionKeys("app.model.cycleForward", ["tab"]);
-		const onCycleForward = vi.fn();
-		editor.onCycleModelForward = onCycleForward;
-
-		editor.handleInput("\t");
-		editor.focused = false;
-		provider.pending.resolve(null);
-		await Bun.sleep(0);
-
-		expect(editor.isShowingAutocomplete()).toBe(false);
 		expect(onCycleForward).not.toHaveBeenCalled();
 	});
 });
 
 describe("Shift+Tab model cycling", () => {
-	it("Shift+Tab without autocomplete popup fires model.cycleBackward", () => {
+	it("routes a configured Shift+Tab chord to model.cycleBackward", () => {
 		const editor = new CustomEditor(getEditorTheme());
+		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
 		const onCycleBackward = vi.fn();
 		editor.onCycleModelBackward = onCycleBackward;
-		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
 
-		editor.handleInput("\x1b[Z"); // Shift+Tab escape sequence.
+		editor.handleInput("\x1b[Z");
 
 		expect(onCycleBackward).toHaveBeenCalledTimes(1);
 	});
 
-	it("Shift+Tab with autocomplete popup open does not fire model.cycleBackward", async () => {
-		class AlwaysHasCandidatesProvider implements AutocompleteProvider {
-			async getSuggestions(
-				_lines: string[],
-				_cursorLine: number,
-				_cursorCol: number,
-			): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
-				return { items: [{ value: "x", label: "x" }], prefix: "" };
-			}
-
-			applyCompletion(
-				lines: string[],
-				cursorLine: number,
-				cursorCol: number,
-				_item: AutocompleteItem,
-				_prefix: string,
-			): { lines: string[]; cursorLine: number; cursorCol: number } {
-				return { lines, cursorLine, cursorCol };
-			}
-		}
-
+	it("routes Shift+Tab to model.cycleBackward while autocomplete is visible", async () => {
 		const editor = new CustomEditor(getEditorTheme());
-		editor.setAutocompleteProvider(new AlwaysHasCandidatesProvider());
+		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
+		editor.setAutocompleteProvider(new OptionalProvider([{ value: "x", label: "x" }]));
 		const onCycleBackward = vi.fn();
 		editor.onCycleModelBackward = onCycleBackward;
-		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
-
-		// Open the popup.
-		editor.handleInput("/");
-		await Bun.sleep(0);
-		expect(editor.isShowingAutocomplete()).toBe(true);
-
-		editor.handleInput("\x1b[Z"); // Shift+Tab.
-
-		// Autocomplete should still be visible; no backward cycle.
-		expect(editor.isShowingAutocomplete()).toBe(true);
-		expect(onCycleBackward).not.toHaveBeenCalled();
-	});
-
-	it("Shift+Tab with autocomplete popup open does not fire a custom Shift+Tab handler", async () => {
-		const editor = new CustomEditor(getEditorTheme());
-		editor.setAutocompleteProvider(new OptionalProvider([{ value: "x", label: "x" }]));
-		const onCustomShiftTab = vi.fn();
-		editor.setCustomKeyHandler("shift+tab", onCustomShiftTab);
 
 		editor.handleInput("/");
-		await Bun.sleep(0);
+		await Promise.resolve();
 		expect(editor.isShowingAutocomplete()).toBe(true);
 
 		editor.handleInput("\x1b[Z");
 
 		expect(editor.isShowingAutocomplete()).toBe(true);
-		expect(onCustomShiftTab).not.toHaveBeenCalled();
+		expect(onCycleBackward).toHaveBeenCalledTimes(1);
 	});
 });
 

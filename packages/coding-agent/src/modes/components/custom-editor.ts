@@ -31,9 +31,9 @@ type ConfigurableEditorAction = Extract<
 	| "app.model.select"
 	| "app.model.selectTemporary"
 	| "app.tools.expand"
+	| "app.tools.toggleVisibility"
 	| "app.thinking.toggle"
 	| "app.editor.external"
-	| "app.editor.clear"
 	| "app.history.search"
 	| "app.message.dequeue"
 	| "app.retry"
@@ -45,7 +45,7 @@ type ConfigurableEditorAction = Extract<
 const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.interrupt": ["escape"],
 	"app.clear": ["ctrl+c"],
-	"app.exit": [],
+	"app.exit": ["ctrl+d"],
 	"app.suspend": ["ctrl+z"],
 	"app.display.reset": ["alt+l"],
 	"app.thinking.cycle": ["shift+tab"],
@@ -54,9 +54,9 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.model.select": ["alt+m"],
 	"app.model.selectTemporary": ["alt+p"],
 	"app.tools.expand": ["ctrl+o"],
+	"app.tools.toggleVisibility": ["ctrl+shift+o"],
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
-	"app.editor.clear": ["alt+c"],
 	"app.history.search": ["ctrl+r"],
 	"app.message.dequeue": ["alt+up", "shift+up"],
 	"app.retry": ["alt+r"],
@@ -419,24 +419,14 @@ export class CustomEditor extends Editor {
 	}
 
 	/** Clear the composer draft: optionally commit `historyText` to history, then
-	 * reset the editor text and all pending draft-image state. The shared tail of
-	 * every "message submitted" path; pass no argument for a plain discard.
-	 * Returns whether there was draft state to clear. */
-	clearDraft(historyText?: string): boolean {
+	 *  reset the editor text and all pending draft-image state. The shared tail of
+	 *  every "message submitted" path; pass no argument for a plain discard. */
+	clearDraft(historyText?: string): void {
 		if (historyText !== undefined) this.addToHistory(historyText);
-		if (
-			this.getText().length === 0 &&
-			(this.imageLinks?.length ?? 0) === 0 &&
-			this.pendingImages.length === 0 &&
-			this.pendingImageLinks.length === 0
-		) {
-			return false;
-		}
 		this.setText("");
 		this.imageLinks = undefined;
 		this.pendingImages = [];
 		this.pendingImageLinks = [];
-		return true;
 	}
 
 	/** Replace the composer draft with a restored historical prompt: sets the text and
@@ -555,8 +545,6 @@ export class CustomEditor extends Editor {
 	}
 	onEscape?: () => void;
 	onClear?: () => void;
-	/** Called when the configured editor-only clear shortcut is pressed. */
-	onClearEditor?: () => void;
 	onExit?: () => void;
 	onDisplayReset?: () => void;
 	onCycleThinkingLevel?: () => void;
@@ -564,6 +552,7 @@ export class CustomEditor extends Editor {
 	onCycleModelBackward?: () => void;
 	onSelectModel?: () => void;
 	onExpandTools?: () => void;
+	onToggleToolActivity?: () => void;
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onHistorySearch?: () => void;
@@ -585,8 +574,6 @@ export class CustomEditor extends Editor {
 	onCapsLock?: () => void;
 	/** Called when left-arrow is pressed while the editor is empty (cursor necessarily at start). */
 	onLeftAtStart?: () => void;
-	/** Called when right-arrow is pressed while the editor is empty (cursor necessarily at end). */
-	onRightAtEnd?: () => void;
 
 	/** Fired when a sustained space-bar hold is recognized — the push-to-talk STT start. The
 	 *  optimistically-typed spaces have already been deleted by the time this runs. */
@@ -789,7 +776,6 @@ export class CustomEditor extends Editor {
 	}
 
 	handleInput(data: string): void {
-		this.invalidateTabInputFallback();
 		// Serialize behind any in-flight async paste so a trailing Enter / follow-up key can't
 		// submit before the clipboard image reaches `pendingImages` (Codex PR #3602 review).
 		if (this.#pasteInFlight > 0) {
@@ -858,27 +844,8 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		// Right-arrow on an empty editor mirrors the Agent Hub gesture for the
-		// Jobs Hub. Modified arrows and in-text cursor movement stay normal.
-		if (canonical === "right" && this.onRightAtEnd && this.getText().trim() === "") {
-			this.onRightAtEnd();
-			return;
-		}
-
 		// Space-hold push-to-talk: a sustained space bar starts/stops STT instead of typing spaces.
 		if (this.#handleSpaceHold(data, canonical)) return;
-
-		if (
-			canonical !== undefined &&
-			this.isShowingAutocomplete() &&
-			(canonical === "tab" || canonical === "shift+tab")
-		) {
-			// Autocomplete owns both Tab directions before any built-in or extension
-			// action. Forward Tab accepts the selected completion; Shift+Tab is
-			// intentionally consumed so it cannot leak into a remapped shortcut.
-			super.handleInput(data);
-			return;
-		}
 
 		// One union probe decides whether any per-action interception below can
 		// match — plain typing then skips the ~20 per-action set lookups per key.
@@ -945,19 +912,21 @@ export class CustomEditor extends Editor {
 				this.onExpandTools();
 				return;
 			}
-			// Outside autocomplete, backward cycling is immediate. Forward Tab first
-			// queries Editor completion and cycles only through its no-candidate fallback.
+
+			// Intercept configured tool activity visibility toggle
+			if (this.#matchesAction(canonical, "app.tools.toggleVisibility") && this.onToggleToolActivity) {
+				this.onToggleToolActivity();
+				return;
+			}
+
+			// Intercept configured backward model cycling (check before forward cycling)
 			if (this.#matchesAction(canonical, "app.model.cycleBackward") && this.onCycleModelBackward) {
 				this.onCycleModelBackward();
 				return;
 			}
 
+			// Intercept configured forward model cycling
 			if (this.#matchesAction(canonical, "app.model.cycleForward") && this.onCycleModelForward) {
-				if (canonical === "tab") {
-					if (this.isShowingAutocomplete()) super.handleInput(data);
-					else this.handleTabInput(() => this.onCycleModelForward?.());
-					return;
-				}
 				this.onCycleModelForward();
 				return;
 			}
@@ -977,13 +946,6 @@ export class CustomEditor extends Editor {
 			// agent run (#1655).
 			if (this.#matchesAction(canonical, "app.interrupt") && this.onEscape && !this.isShowingAutocomplete()) {
 				this.onEscape();
-				return;
-			}
-
-			// Intercept configured editor-only clear shortcut.
-			if (this.#matchesAction(canonical, "app.editor.clear")) {
-				if (this.onClearEditor) this.onClearEditor();
-				else this.clearDraft();
 				return;
 			}
 
@@ -1057,20 +1019,16 @@ export class CustomEditor extends Editor {
 	 */
 	handleDraftEdit(data: string): void {
 		// The base editor reserves Ctrl+C for parent handling and returns without
-		// touching the buffer, so clear actions must be dispatched explicitly here —
-		// otherwise the guard's "finish or clear the prompt" instruction has no working
-		// clear key. Both actions clear through the composer draft path instead of
-		// swapping the editor slot.
+		// touching the buffer, so the configured clear action must be dispatched
+		// explicitly here — otherwise the guard's "finish or clear the prompt"
+		// instruction has no working clear key. onClear (Ctrl+C → handleCtrlC)
+		// clears the draft on first press without swapping the editor slot; a
+		// standalone editor with no callback clears its own text.
 		const parsed = parseKey(data);
 		const canonical = parsed !== undefined ? canonicalKeyId(parsed) : undefined;
-		if (canonical !== undefined && this.#matchesAction(canonical, "app.editor.clear")) {
-			if (this.onClearEditor) this.onClearEditor();
-			else this.clearDraft();
-			return;
-		}
 		if (canonical !== undefined && this.#matchesAction(canonical, "app.clear")) {
 			if (this.onClear) this.onClear();
-			else this.clearDraft();
+			else this.setText("");
 			return;
 		}
 		super.handleInput(data);

@@ -4,7 +4,7 @@ description: Generate AGENTS.md for current codebase
 thinking-level: medium
 ---
 
-通过并行启动多个 `scout` 代理（通过 `task` 工具）扫描不同区域（core src、tests、configs/build、scripts/docs），然后将发现综合为单个文件，以生成 AGENTS.md。
+通过并行启动多个研究代理（通过 `task` 工具）扫描不同区域（core src、tests、configs/build、scripts/docs），然后将发现综合为单个文件，以生成 AGENTS.md。
 
 <structure>
 - **项目概览**：对项目目的的简要描述

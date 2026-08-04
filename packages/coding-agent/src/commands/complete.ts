@@ -9,11 +9,12 @@
  * doesn't pay for the full agent boot.
  */
 import { type GeneratedProvider, getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
-import { Command } from "@oh-my-pi/pi-utils/cli";
+import { completeHelp as commandHelp } from "../cli/command-help";
+import { Command } from "../cli/command-runtime";
 import { SessionManager } from "../session/session-manager";
 
 export default class Complete extends Command {
-	static hidden = true;
+	static hidden = commandHelp.hidden;
 	static strict = false;
 
 	async run(): Promise<void> {

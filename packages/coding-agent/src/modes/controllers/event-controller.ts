@@ -22,6 +22,7 @@ import {
 	isHubActivityRoutePending,
 	isHubGroupedActivityArgs,
 	isHubPeerCommunicationArgs,
+	isHubProcessActivityArgs,
 } from "../../modes/components/hub-activity-group";
 import {
 	groupedReadUsageCallIds,
@@ -305,13 +306,19 @@ export class EventController {
 		if (!this.#hubActivityGroup?.canAppend) {
 			this.#hubActivityGroup = new HubActivityGroupComponent();
 			this.#hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
+			this.#hubActivityGroup.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(this.#hubActivityGroup);
 		}
 		return this.#hubActivityGroup;
 	}
 
 	inheritHubActivityGroup(component: HubActivityGroupComponent | null | undefined): void {
-		this.#hubActivityGroup = component?.canAppend ? component : undefined;
+		if (!component?.canAppend) {
+			this.#hubActivityGroup = undefined;
+			return;
+		}
+		component.setToolActivityVisible(!this.ctx.hideToolActivity);
+		this.#hubActivityGroup = component;
 	}
 
 	#resetReadGroup(): void {
@@ -325,6 +332,7 @@ export class EventController {
 				showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
 			});
 			group.setExpanded(this.ctx.toolOutputExpanded);
+			group.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(group);
 			this.#lastReadGroup = group;
 		}
@@ -1019,14 +1027,15 @@ export class EventController {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
 				}
+				if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
 				if (
 					content.name === "hub" &&
-					(this.ctx.focusedAgentId !== undefined || !settings.get("display.showHubProcessActivity"))
+					(this.ctx.focusedAgentId !== undefined ||
+						(!settings.get("display.showHubProcessActivity") && isHubProcessActivityArgs(renderArgs)))
 				) {
 					this.#toolArgsReveal.finish(content.id);
 					continue;
 				}
-				if (content.name === "hub" && isHubActivityRoutePending(renderArgs, partialJson !== undefined)) continue;
 				if (content.name === "hub" && isHubPeerCommunicationArgs(renderArgs)) {
 					this.#toolArgsReveal.finish(content.id);
 					continue;
@@ -1072,6 +1081,7 @@ export class EventController {
 						content.id,
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
+					component.setToolActivityVisible(!this.ctx.hideToolActivity);
 					this.ctx.chatContainer.addChild(component);
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
@@ -1308,7 +1318,8 @@ export class EventController {
 		}
 		if (
 			event.toolName === "hub" &&
-			(this.ctx.focusedAgentId !== undefined || !settings.get("display.showHubProcessActivity"))
+			(this.ctx.focusedAgentId !== undefined ||
+				(!settings.get("display.showHubProcessActivity") && isHubProcessActivityArgs(event.args)))
 		) {
 			this.#toolArgsReveal.finish(event.toolCallId);
 			this.ctx.ui.requestRender();
@@ -1370,6 +1381,7 @@ export class EventController {
 				event.toolCallId,
 			);
 			component.setExpanded(this.ctx.toolOutputExpanded);
+			component.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
@@ -1670,15 +1682,18 @@ export class EventController {
 		}
 	}
 	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
-		// A superseded agent_end: the agent is already streaming a fresh turn, so
-		// this event belongs to a turn that has already been replaced. The session
-		// dispatches to listeners fire-and-forget across an async extension-emit hop
-		// (#emitSessionEvent), so an interrupted turn's agent_end can land AFTER the
-		// resumed turn's agent_start (e.g. any post-turn agent.continue()). Running
-		// the turn-end teardown now would stop the loader the live turn just created,
-		// leaving "Working…" gone while the agent keeps running. The live turn owns
-		// the loader and finalizes it at its own agent_end (isStreaming === false by
-		// then). Mirrors the collab guest's !isStreaming loader reconciler.
+		// A non-terminal settle (`isTerminal: false`) schedules a continuation. Its
+		// public event can arrive after that continuation has already marked the
+		// session streaming, so this MUST run before the stale-terminal guard below:
+		// `#emit` invokes this async listener synchronously up to this first await,
+		// giving the queued continuation the pending model before its next turn.
+		if (event.isTerminal === false) {
+			await this.ctx.flushPendingModelSwitch();
+			return;
+		}
+
+		// A superseded terminal agent_end belongs to a turn that has already been
+		// replaced. Its teardown must not stop the loader owned by the live turn.
 		if (this.ctx.session.isStreaming) return;
 		this.#syncTerminalTitleState();
 

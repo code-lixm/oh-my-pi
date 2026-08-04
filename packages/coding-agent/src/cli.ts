@@ -15,35 +15,22 @@ try {
  * lightweight CLI runner from pi-utils.
  */
 import { parentPort } from "node:worker_threads";
-import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
-import {
-	APP_NAME,
-	getActiveProfile,
-	MIN_BUN_VERSION,
-	resolveProfileEnv,
-	setProfile,
-	VERSION,
-} from "@oh-my-pi/pi-utils/dirs";
+import { APP_NAME, getActiveProfile, MIN_BUN_VERSION, resolveProfileEnv, setProfile } from "@oh-my-pi/pi-utils/dirs";
 import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
-import type { LocalizableCliConstructor } from "./cli/help-locale";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
-import { smokeTestCodeGraphWorker } from "./codegraph/supervisor";
-import { CODEGRAPH_WORKER_ARG, startCodeGraphWorker } from "./codegraph/worker-entry";
+import { runCliRuntime } from "./cli-runtime";
+import { CODEGRAPH_WORKER_ARG } from "./codegraph/worker-protocol";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
+import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
-
-interface CliHelpFunctions {
-	ensureCliHelpLocale: (cwd?: string) => Promise<void>;
-	localizeCliHelpMetadata: <T extends LocalizableCliConstructor>(ctor: T) => T;
-}
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
 	process.stderr.write(
@@ -68,19 +55,6 @@ const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
 // `@oh-my-pi/pi-utils/env` eagerly loads `.env` from the agent directory at
 // import time, so it must not be imported before `setProfile` runs.
 
-async function showHelp(config: CliConfig, helpers: CliHelpFunctions): Promise<void> {
-	const { renderRootHelp } = await import("@oh-my-pi/pi-utils/cli");
-	const { getExtraHelpText } = await import("./cli/args");
-	await helpers.ensureCliHelpLocale();
-	for (const command of config.commands.values()) {
-		helpers.localizeCliHelpMetadata(command);
-	}
-	renderRootHelp(config);
-	const extra = getExtraHelpText();
-	if (extra.trim().length > 0) {
-		process.stdout.write(`\n${extra}\n`);
-	}
-}
 /**
  * Smoke-test entry. Spawns bundled workers, serves the stats dashboard once,
  * pings everything, then exits.
@@ -101,6 +75,7 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestJsEvalWorker } = await import("./eval/js/context-manager");
 	// Other smoke dependencies stay lazy so normal CLI startup does not load their worker clients.
 	const { smokeTestDaemonBroker } = await import("./launch/client");
+	const { smokeTestLspMux } = await import("./lsp/mux/daemon");
 	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	await smokeTestSyncWorker();
 
@@ -120,10 +95,10 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestSttWorker();
 	await smokeTestJsEvalWorker();
 	await smokeTestComputerWorker();
-	await smokeTestCodeGraphWorker();
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
+	await smokeTestLspMux();
 	await smokeTestTerminalOutputWorker();
 	process.stdout.write("smoke-test: ok\n");
 }
@@ -172,6 +147,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TAB_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		await import("./tools/browser/tab-worker-entry");
+		return true;
+	}
+	if (arg === CODEGRAPH_WORKER_ARG) {
+		if (parentPort) installWorkerInbox(parentPort);
+		const { startCodeGraphWorker } = await import("./codegraph/worker-entry");
+		startCodeGraphWorker();
 		return true;
 	}
 	if (arg === COMPUTER_WORKER_ARG) {
@@ -223,12 +204,9 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		await startDaemonBrokerFromEnvironment();
 		return true;
 	}
-	if (arg === CODEGRAPH_WORKER_ARG) {
-		// Worker-thread re-entry: install a parentPort inbox synchronously
-		// so the parent's `index` request survives the pre-flush, then
-		// hand off to the worker's typed transport.
-		if (parentPort) installWorkerInbox(parentPort);
-		startCodeGraphWorker();
+	if (arg === LSP_MUX_WORKER_ARG) {
+		const { startLspMuxFromEnvironment } = await import("./lsp/mux/server");
+		await startLspMuxFromEnvironment();
 		return true;
 	}
 	return false;
@@ -406,47 +384,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		await runSmokeTest();
 		return;
 	}
-	const [
-		{ run },
-		{
-			commands,
-			ensureCliHelpLocale,
-			localizeCliHelpMetadata,
-			localizeCommandEntryHelp,
-			registerConfigSyncAutoPush,
-			resolveCliArgv,
-		},
-	] = await Promise.all([import("@oh-my-pi/pi-utils/cli"), import("./cli-runtime")]);
-	registerConfigSyncAutoPush();
-	// --help and --version are handled by run() directly, don't rewrite those.
-	// Everything else that isn't a known subcommand routes to "launch".
-	const resolved = resolveCliArgv(resolvedArgv);
-	if ("error" in resolved) {
-		process.stderr.write(`error: ${resolved.error}\n`);
-		process.exitCode = 1;
-		return;
-	}
-	const commandId = resolved.argv[0] ?? "";
-	const commandArgv = resolved.argv.slice(1);
-	const isRootHelp = commandId === "--help" || commandId === "-h" || commandId === "help" || commandId === "";
-	const isCommandHelp = commandArgv.includes("--help") || commandArgv.includes("-h");
-	if (isRootHelp) {
-		await ensureCliHelpLocale();
-		await localizeCommandEntryHelp(commands);
-	} else if (isCommandHelp) {
-		await ensureCliHelpLocale();
-		const entry = commands.find(command => command.name === commandId || command.aliases?.includes(commandId));
-		if (entry) {
-			localizeCliHelpMetadata(await entry.load());
-		}
-	}
-	return run({
-		bin: APP_NAME,
-		version: VERSION,
-		argv: resolved.argv,
-		commands,
-		help: config => showHelp(config, { ensureCliHelpLocale, localizeCliHelpMetadata }),
-	});
+	return runCliRuntime(resolvedArgv);
 }
 
 // Floating call instead of top-level await: TLA forces `--bytecode` (CJS

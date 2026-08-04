@@ -1,5 +1,6 @@
 import { describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type KeyId, matchesKey } from "@oh-my-pi/pi-tui";
@@ -20,6 +21,7 @@ type FakeEditor = {
 	onPasteImage?: () => Promise<boolean>;
 	onCopyPrompt?: () => void;
 	onExpandTools?: () => void;
+	onToggleToolActivity?: () => void;
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onRetry?: () => void;
@@ -207,6 +209,7 @@ async function createContext() {
 		"app.session.sendToNew": ["alt+n"],
 		"app.retry": ["alt+r"],
 		"app.clipboard.pasteImage": ["ctrl+v"],
+		"app.tools.toggleVisibility": ["ctrl+shift+o"],
 	};
 	const customHandlers = new Map<string, () => void>();
 	const setActionKeys = vi.fn();
@@ -217,6 +220,7 @@ async function createContext() {
 		customHandlers.clear();
 	});
 	const resetDisplay = vi.fn();
+	const clearInlineImages = vi.fn();
 	const showModelSelector = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -286,6 +290,7 @@ async function createContext() {
 		ui: {
 			requestRender,
 			resetDisplay,
+			clearInlineImages,
 			addInputListener,
 			addStartListener,
 			getFocused: vi.fn(() => focused),
@@ -336,6 +341,10 @@ async function createContext() {
 		updatePendingMessagesDisplay,
 		isBashMode: false,
 		isPythonMode: false,
+		hideToolActivity: false,
+		toolOutputExpanded: false,
+		settings: { set: vi.fn() },
+		chatContainer: { children: [] },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
 		handleClearCommand: vi.fn(),
@@ -375,6 +384,7 @@ async function createContext() {
 			retry,
 			abort,
 			resetDisplay,
+			clearInlineImages,
 			refreshAppearance,
 			resetDisplayAfterAppearanceRefresh,
 			handleBtwBranchKey,
@@ -411,6 +421,27 @@ describe("InputController keybinding setup", () => {
 		expect(spies.resetDisplayAfterAppearanceRefresh).toHaveBeenCalledTimes(1);
 	});
 
+	it("registers the tool activity visibility action", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const hubActivityGroup = new HubActivityGroupComponent();
+		const setHubToolActivityVisible = vi.spyOn(hubActivityGroup, "setToolActivityVisible");
+		(ctx.chatContainer.children as unknown[]).push(hubActivityGroup);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(spies.setActionKeys).toHaveBeenCalledWith("app.tools.toggleVisibility", ["ctrl+shift+o"]);
+		expect(editor.onToggleToolActivity).toBeDefined();
+
+		editor.onToggleToolActivity?.();
+
+		expect(setHubToolActivityVisible).toHaveBeenCalledWith(false);
+		expect(ctx.hideToolActivity).toBe(true);
+		expect(ctx.settings.set).toHaveBeenCalledWith("display.hideToolActivity", true);
+		expect(spies.clearInlineImages).toHaveBeenCalledTimes(1);
+		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("routes configurable agent-cycle shortcuts to next and previous focus changes", async () => {
 		const { InputController, ctx, customHandlers, keyMap } = await createContext();
 		const cycleAgentSession = vi.fn(async (_direction: "next" | "previous") => {});
@@ -433,6 +464,35 @@ describe("InputController keybinding setup", () => {
 		expect(cycleAgentSession.mock.calls).toEqual([["next"], ["previous"]]);
 	});
 
+	it("opens the Jobs Hub from an empty main or focused composer through the global double-right listener", async () => {
+		const { InputController, ctx, editor, setFocused, spies } = await createContext();
+		const showJobsHub = vi.fn();
+		(ctx as unknown as { showJobsHub: typeof showJobsHub }).showJobsHub = showJobsHub;
+		let now = 1_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const listeners = registeredInputListeners(spies.addInputListener);
+		const pressRight = () => dispatchInput(listeners, "\x1b[C");
+
+		expect(pressRight()).toEqual({ consume: true });
+		now += 100;
+		expect(pressRight()).toEqual({ consume: true });
+		expect(showJobsHub).toHaveBeenCalledTimes(1);
+
+		setFocused({ pasteText: vi.fn() });
+		now += 1_000;
+		expect(pressRight()).toBeUndefined();
+		expect(showJobsHub).toHaveBeenCalledTimes(1);
+
+		setFocused(editor);
+		(ctx as unknown as { focusedAgentId?: string }).focusedAgentId = "worker";
+		expect(pressRight()).toEqual({ consume: true });
+		now += 100;
+		expect(pressRight()).toEqual({ consume: true });
+		expect(showJobsHub).toHaveBeenCalledTimes(2);
+	});
 	it("does not mark pasted shell prompts as Python mode while editing", async () => {
 		const { InputController, ctx, editor } = await createContext();
 		const controller = new InputController(ctx);

@@ -649,6 +649,7 @@ describe("Agent hub data refresh coalescing", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		IrcBus.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
 

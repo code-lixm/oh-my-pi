@@ -7,14 +7,22 @@
  */
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import type { Theme } from "../../modes/theme/theme";
-import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCell, renderStatusLine } from "../../tui";
+import {
+	Ellipsis,
+	Hasher,
+	isFramedBlockComponent,
+	markFramedBlockComponent,
+	renderCodeCell,
+	renderStatusLine,
+} from "../../tui";
 import type { BrowserToolDetails } from "../browser";
 import { formatJavaScriptForDisplay } from "../eval-format/javascript";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../output-meta";
-import { replaceTabs, shortenPath } from "../render-utils";
+import { previewLine, replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../render-utils";
 
 const BROWSER_DEFAULT_PREVIEW_LINES = 10;
 
@@ -25,7 +33,7 @@ interface BrowserRenderArgs {
 	code?: string;
 	all?: boolean;
 	kill?: boolean;
-	app?: { path?: string; cdp_url?: string; target?: string; cmux?: boolean; surface?: string };
+	app?: { path?: string; cdp_url?: string; relay?: boolean; target?: string; cmux?: boolean; surface?: string };
 	viewport?: { width: number; height: number; scale?: number };
 	timeout?: number;
 }
@@ -35,31 +43,55 @@ interface BrowserRenderContext {
 	previewLines?: number;
 }
 
+function forDisplay(text: string): string {
+	return replaceTabs(sanitizeText(text));
+}
+
+function statusPreview(text: string): string {
+	return previewLine(forDisplay(text), TRUNCATE_LENGTHS.CONTENT);
+}
+
 function describeBrowser(args: BrowserRenderArgs, details: BrowserToolDetails | undefined): string | undefined {
 	const cdpUrl = typeof args.app?.cdp_url === "string" ? args.app.cdp_url : "";
-	if (cdpUrl) return tSettingsUi("connected {target}", { target: cdpUrl });
 	const appPath = typeof args.app?.path === "string" ? args.app.path : "";
-	if (appPath) return tSettingsUi("spawned {target}", { target: shortenPath(appPath) });
-	if (args.app?.cmux !== false && (args.app?.cmux === true || args.app?.surface)) {
-		return args.app.surface ? tSettingsUi("cmux {surface}", { surface: args.app.surface }) : tSettingsUi("cmux");
+	const cmuxSurface = args.app?.surface;
+
+	if (details?.browser !== undefined) {
+		switch (details.browser) {
+			case "connected":
+				return cdpUrl
+					? tSettingsUi("connected {target}", { target: statusPreview(cdpUrl) })
+					: tSettingsUi("connected");
+			case "spawned":
+				return appPath
+					? tSettingsUi("spawned {target}", { target: statusPreview(shortenPath(appPath)) })
+					: tSettingsUi("spawned");
+			case "relay":
+				return "relay";
+			case "cmux":
+				return cmuxSurface
+					? tSettingsUi("cmux {surface}", { surface: statusPreview(cmuxSurface) })
+					: tSettingsUi("cmux");
+			case "headless":
+				return tSettingsUi("headless");
+			default:
+				return undefined;
+		}
 	}
-	switch (details?.browser) {
-		case "headless":
-			return tSettingsUi("headless");
-		case "spawned":
-			return tSettingsUi("spawned");
-		case "connected":
-			return tSettingsUi("connected");
-		case "cmux":
-			return tSettingsUi("cmux");
-		default:
-			return undefined;
+
+	// Pending calls and historical transcripts lack the resolved browser kind.
+	if (cdpUrl) return tSettingsUi("connected {target}", { target: statusPreview(cdpUrl) });
+	if (appPath) return tSettingsUi("spawned {target}", { target: statusPreview(shortenPath(appPath)) });
+	if (args.app?.relay) return "relay";
+	if (args.app?.cmux !== false && (args.app?.cmux === true || cmuxSurface)) {
+		return cmuxSurface ? tSettingsUi("cmux {surface}", { surface: statusPreview(cmuxSurface) }) : tSettingsUi("cmux");
 	}
+	return undefined;
 }
 
 function tabLabel(args: BrowserRenderArgs, details: BrowserToolDetails | undefined): string {
 	const name = details?.name ?? args.name ?? "main";
-	return tSettingsUi("tab {name}", { name: JSON.stringify(name) });
+	return tSettingsUi("tab {name}", { name: statusPreview(JSON.stringify(name)) });
 }
 
 function cellStatus(isPartial: boolean, isError: boolean): "pending" | "running" | "complete" | "error" {
@@ -77,7 +109,7 @@ function appendLine(component: Component, line: string | undefined): Component {
 	const wrapped = {
 		render: (width: number): readonly string[] => {
 			const base = component.render(width);
-			return [...base, line];
+			return [...base, truncateToWidth(line, width, Ellipsis.Omit)];
 		},
 		invalidate: () => component.invalidate?.(),
 	};
@@ -92,12 +124,12 @@ function renderRunCell(
 	isError: boolean,
 	theme: Theme,
 ): Component {
-	const code = formatJavaScriptForDisplay(dropTrailingBlankLines(args.code ?? ""));
+	const code = formatJavaScriptForDisplay(dropTrailingBlankLines(forDisplay(args.code ?? "")));
 	const status = cellStatus(options.isPartial, isError);
 
 	const titleParts: string[] = [tabLabel(args, details)];
 	const url = typeof details?.url === "string" ? details.url : typeof args.url === "string" ? args.url : "";
-	if (url) titleParts.push(shortenPath(url));
+	if (url) titleParts.push(statusPreview(shortenPath(url)));
 	const browserDesc = describeBrowser(args, details);
 	if (browserDesc) titleParts.push(browserDesc);
 	const title = titleParts.join(" · ");
@@ -170,14 +202,14 @@ function renderOpenOrCloseLine(
 	const browserDesc = describeBrowser(args, details);
 	if (browserDesc) meta.push(browserDesc);
 	const url = typeof details?.url === "string" ? details.url : typeof args.url === "string" ? args.url : "";
-	if (url) meta.push(shortenPath(url));
+	if (url) meta.push(statusPreview(shortenPath(url)));
 
 	const header =
 		status === "complete"
 			? renderStatusLine({ iconOverride: theme.styledSymbol("tool.browser", "accent"), title, meta }, theme)
 			: renderStatusLine({ icon, title, meta }, theme);
 	if (!output) return new Text(header, 0, 0);
-	const outputLines = output.split("\n").map(line => theme.fg("toolOutput", replaceTabs(line)));
+	const outputLines = output.split("\n").map(line => theme.fg("toolOutput", forDisplay(line)));
 	return new Text([header, ...outputLines].join("\n"), 0, 0);
 }
 
@@ -187,7 +219,7 @@ function extractTextOutput(content: Array<{ type: string; text?: string }> | und
 		.filter(c => c.type === "text")
 		.map(c => c.text ?? "")
 		.join("\n");
-	return dropTrailingBlankLines(text);
+	return dropTrailingBlankLines(forDisplay(text));
 }
 
 export const browserToolRenderer = {

@@ -223,12 +223,13 @@ describe("EventController displaces consecutive waiting polls", () => {
 		children: Component[],
 		toolCallId: string,
 		statuses: JobStatus[] = ["running"],
+		waitStyle: "bare" | "ids" = "ids",
 	) {
 		await controller.handleEvent({
 			type: "tool_execution_start",
 			toolCallId,
 			toolName: "hub",
-			args: { op: "wait", ids: [`${toolCallId}-j0`] },
+			args: waitStyle === "bare" ? { op: "wait" } : { op: "wait", ids: [`${toolCallId}-j0`] },
 		});
 		const group = latestHubGroup(children);
 		await controller.handleEvent({
@@ -241,7 +242,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		return group;
 	}
 
-	it("removes the previous waiting poll when the next hub call starts", async () => {
+	it("removes the previous ID-targeted waiting poll when the next hub call starts", async () => {
 		const { controller, children } = createFixture();
 
 		const firstGroup = await runPoll(controller, children, "t1");
@@ -261,10 +262,10 @@ describe("EventController displaces consecutive waiting polls", () => {
 		expect(secondGroup.isTranscriptBlockFinalized()).toBe(false);
 	});
 
-	it("seals the waiting poll group in place when a different tool runs next", async () => {
+	it("keeps a bare wait in its Hub group and seals it when a different tool runs next", async () => {
 		const { controller, children } = createFixture();
 
-		const pollGroup = await runPoll(controller, children, "t1");
+		const pollGroup = await runPoll(controller, children, "t1", ["running"], "bare");
 		expect(pollGroup.canAppend).toBe(true);
 
 		await controller.handleEvent({
@@ -490,7 +491,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 
 	it("hands the trailing hub activity group to the controller during mid-turn rebuild", () => {
 		const { helpers, chatContainer, eventController } = createHelpersFixture({ streaming: true });
-		const assistant = assistantWithToolCalls([{ id: "hub-1", name: "hub", arguments: { op: "wait", ids: ["j0"] } }]);
+		const assistant = assistantWithToolCalls([{ id: "hub-1", name: "hub", arguments: { op: "wait" } }]);
 
 		helpers.renderSessionContext({ messages: [assistant, hubToolResult("hub-1", ["running"])] } as SessionContext);
 
@@ -509,7 +510,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		const boundaryText = "Visible assistant boundary.";
 		const assistant = assistantWithToolCalls(
 			[
-				{ id: "hub-before-text", name: "hub", arguments: { op: "wait", ids: ["j0"] } },
+				{ id: "hub-before-text", name: "hub", arguments: { op: "wait" } },
 				{ id: "hub-after-text", name: "hub", arguments: { op: "wait", ids: ["j1"] } },
 			],
 			{ id: "hub-before-text", text: boundaryText },

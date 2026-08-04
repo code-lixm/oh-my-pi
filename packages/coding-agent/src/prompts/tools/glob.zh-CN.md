@@ -12,5 +12,5 @@
 </output>
 
 <avoid>
-开放式多轮发现 → Task + scout。
+开放式多轮发现 → {{#if scoutAvailable}}Task + scout。{{else}}Task。{{/if}}
 </avoid>

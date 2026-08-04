@@ -6,6 +6,7 @@ import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-co
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { tSettingsUi } from "../src/i18n/settings-locale";
 
 type Spy = Mock<(...args: unknown[]) => unknown>;
 type StartPendingSubmissionSpy = Mock<InteractiveModeContext["startPendingSubmission"]>;
@@ -286,7 +287,6 @@ function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
 	// so state mutations are explicit.
 	return ctx.session as MutableSessionState;
 }
-const ESCAPE_CANCEL_PROMPT = "Press Esc again within 2s to cancel the active task.";
 
 function installClock(start = 1_000) {
 	let now = start;
@@ -300,7 +300,7 @@ function installClock(start = 1_000) {
 
 function expectEscapeCancelPrompt(showStatus: Spy, times: number): void {
 	expect(showStatus).toHaveBeenCalledTimes(times);
-	expect(showStatus).toHaveBeenLastCalledWith(ESCAPE_CANCEL_PROMPT);
+	expect(showStatus).toHaveBeenLastCalledWith(tSettingsUi("Press Esc again within 2s to cancel the active task."));
 }
 
 function emitSessionEvent(sessionListeners: Array<(event: { type: string }) => void>, type: string): void {
@@ -414,6 +414,21 @@ describe("InputController escape behavior", () => {
 		// synthetic tool results read as a deliberate interrupt, not "Request was aborted".
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
+	it("pauses an idle loop and cancels its pending submission", () => {
+		const { ctx, editor, spies } = createContext();
+		const pauseLoop = vi.fn();
+		ctx.loopModeEnabled = true;
+		ctx.pauseLoop = pauseLoop;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(pauseLoop).toHaveBeenCalledTimes(1);
+		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
 	it("requires a second Esc to abort active handoff generation before default Esc handling", () => {

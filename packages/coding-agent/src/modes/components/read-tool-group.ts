@@ -348,6 +348,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#usageBatchByToolCallId = new Map<string, string>();
 	#text: Text;
 	#expanded = false;
+	#toolActivityVisible = true;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
 	// long as the run of reads is uninterrupted. While it is the active group it
@@ -369,6 +370,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	override render(width: number): readonly string[] {
+		if (!this.#toolActivityVisible) return [];
+		return super.render(width);
+	}
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
 		if (!this.#finalized) return false;
@@ -510,6 +515,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	setExpanded(expanded: boolean): void {
 		this.#expanded = expanded;
 		this.#updateDisplay();
+	}
+
+	setToolActivityVisible(visible: boolean): void {
+		this.#toolActivityVisible = visible;
+		super.invalidate();
 	}
 
 	getComponent(): Component {

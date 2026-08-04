@@ -19,7 +19,6 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { Text } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { grepToolRenderer } from "../../src/tools/grep";
 
@@ -311,8 +310,8 @@ describe("tool path arrays", () => {
 			plainTheme,
 		);
 
-		expect(component).toBeInstanceOf(Text);
-		expect((component as Text).getText()).toContain("in folder with spaces/");
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		expect(rendered).toContain("in folder with spaces/");
 	});
 	it("agent hub chat renders a single-string grep path summary", async () => {
 		const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "search-path-lists-"));

@@ -16,8 +16,6 @@ import {
 	SPACE_REPEAT_MAX_GAP_MS,
 } from "../../../src/modes/components/custom-editor";
 import { getEditorTheme, initTheme, theme } from "../../../src/modes/theme/theme";
-import type { InteractiveModeContext } from "../../../src/modes/types";
-import { UiHelpers } from "../../../src/modes/utils/ui-helpers";
 
 function makeEditor() {
 	const editor = new CustomEditor(getEditorTheme());
@@ -110,19 +108,17 @@ describe("CustomEditor restored image drafts", () => {
 	});
 });
 
-describe("CustomEditor draft clear shortcut", () => {
+describe("CustomEditor configured clear shortcut", () => {
 	beforeAll(async () => {
 		await initTheme();
 	});
 
-	it("clears a multiline image draft to an empty cursor with one redraw", () => {
+	it("routes the configured clear action through the final draft-clearing contract", () => {
 		const { editor } = makeEditor();
 		const changes = vi.fn();
 		editor.onChange = changes;
-		editor.setActionKeys("app.editor.clear", ["alt+c"]);
-		const requestRender = vi.fn();
-		const helpers = new UiHelpers({ editor, ui: { requestRender } } as unknown as InteractiveModeContext);
-		editor.onClearEditor = () => helpers.clearEditor();
+		editor.setActionKeys("app.clear", ["alt+c"]);
+		editor.onClear = () => editor.clearDraft();
 		editor.setText("first line\nsecond line");
 		editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "abc" }];
 		editor.pendingImageLinks = ["file:///tmp/draft.png"];
@@ -138,16 +134,11 @@ describe("CustomEditor draft clear shortcut", () => {
 		expect(editor.imageLinks).toBeUndefined();
 		expect(changes).toHaveBeenCalledTimes(1);
 		expect(changes).toHaveBeenLastCalledWith("");
-		expect(requestRender).toHaveBeenCalledTimes(1);
-
-		editor.handleInput("\x1bc");
-		expect(changes).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not treat ordinary c as the Alt+C clear gesture", () => {
+	it("does not treat ordinary c as the configured Alt+C clear gesture", () => {
 		const { editor } = makeEditor();
-		editor.setActionKeys("app.editor.clear", ["alt+c"]);
+		editor.setActionKeys("app.clear", ["alt+c"]);
 
 		editor.handleInput("c");
 

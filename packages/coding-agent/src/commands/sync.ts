@@ -1,4 +1,4 @@
-import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
+import { Args, Command, Flags, renderCommandHelp } from "../cli/command-runtime";
 import { runSyncCommand, type SyncAction, type SyncCommandArgs } from "../cli/sync-cli";
 
 const ACTIONS: SyncAction[] = ["init", "status", "push", "pull", "conflict", "resolve", "gc"];

@@ -5,6 +5,23 @@
 ### Added
 
 - Added the CodeGraph native extraction kernel to the existing `pi_natives` addon, including its ABI/grammar introspection, 20 language walkers, and C function-pointer scan helpers, with upstream MIT attribution and exact vendored grammar assets; also exposed the side-effect-free `@oh-my-pi/pi-natives/loader` entry so optional accelerators can catch addon-load failures and fall back safely.
+## [17.2.5] - 2026-08-03
+
+### Breaking Changes
+
+- Replaced DesktopSession.execute(actions, window) and action batches with dedicated per-operation methods for capture, pointer, keyboard, window, and accessibility. Capture capabilities now apply per call, and coordinate input requires a prior frame for the same target.
+
+### Added
+
+- Added a cross-platform, in-process ps shell builtin supporting BSD/procps selection forms, custom output columns, sorting, process metrics, and header suppression.
+- Added unified desktop backends for macOS, Win32, X11, and Wayland behind a single session API, featuring capture-free window discovery, isolated capture, explicit background/foreground delivery, native accessibility trees (AX/UIA/AT-SPI) with generational references, and structured errors for unsupported background input.
+
+### Fixed
+
+- Fixed accessibility snapshots incorrectly marking a window root as focused based on its app-local AXFocused attribute when another application held global focus; the root annotation now correctly reflects the global window-roster focus flag.
+- Improved coordinate-frame error messages for pointer input before capture, out-of-frame coordinates, and between-display points to clearly explain the capture-frame contract and remedy instead of throwing a generic bounds check.
+- Fixed duplicated characters in AppKit targets on macOS caused by background keyboard events being posted through both CoreGraphics and SkyLight; events are now delivered once via the authenticated SkyLight route.
+
 ## [17.2.2] - 2026-07-31
 
 ### Changed

@@ -5,7 +5,7 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { type AstFindMatch, astGrep } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -14,6 +14,7 @@ import type { Theme } from "../modes/theme/theme";
 import { selectPrompt } from "../prompts/prompt-locale";
 import astGrepDescription from "../prompts/tools/ast-grep.md" with { type: "text" };
 import astGrepDescriptionZh from "../prompts/tools/ast-grep.zh-CN.md" with { type: "text" };
+import { isScoutSpawnable } from "../task/spawn-policy";
 import { Ellipsis, fileHyperlink, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
@@ -33,6 +34,10 @@ import {
 	formatParseErrors,
 	formatParseErrorsCountLabel,
 	PREVIEW_LIMITS,
+	previewLine,
+	replaceTabs,
+	shortenPath,
+	TRUNCATE_LENGTHS,
 } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -152,7 +157,14 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 	readonly approval = "read" as const;
 	readonly label = "AST Grep";
 	readonly summary = "Search code with AST patterns (structural grep)";
-	readonly description: string;
+	get description(): string {
+		return prompt.render(selectPrompt(astGrepDescription, astGrepDescriptionZh), {
+			scoutAvailable: isScoutSpawnable(
+				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.getSessionSpawns?.() ?? "*",
+			),
+		});
+	}
 	readonly parameters = astGrepSchema;
 	readonly strict = true;
 
@@ -180,9 +192,7 @@ export class AstGrepTool implements AgentTool<typeof astGrepSchema, AstGrepToolD
 	];
 	readonly loadMode = "discoverable";
 
-	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(selectPrompt(astGrepDescription, astGrepDescriptionZh));
-	}
+	constructor(private readonly session: ToolSession) {}
 
 	async execute(
 		_toolCallId: string,
@@ -399,6 +409,14 @@ interface AstGrepRenderArgs {
 	paths?: string[];
 	skip?: number;
 }
+
+function forDisplay(text: string): string {
+	return replaceTabs(sanitizeText(text));
+}
+
+function statusPreview(text: string): string {
+	return previewLine(forDisplay(text), TRUNCATE_LENGTHS.CONTENT);
+}
 const COLLAPSED_MATCH_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
 
 export const astGrepToolRenderer = {
@@ -407,10 +425,11 @@ export const astGrepToolRenderer = {
 	renderCall(args: AstGrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		const scopePaths = toPathList(args.path ?? args.paths);
-		if (scopePaths.length) meta.push(tSettingsUi("in {scopePath}", { scopePath: scopePaths.join(", ") }));
+		const scopePath = statusPreview(scopePaths.map(path => shortenPath(path)).join(", "));
+		if (scopePath) meta.push(tSettingsUi("in {scopePath}", { scopePath }));
 		if (args.skip !== undefined && args.skip > 0) meta.push(`${tSettingsUi("skip:")}${args.skip}`);
 
-		const description = args.pat ?? "?";
+		const description = statusPreview(args.pat ?? "?");
 		const text = renderStatusLine({ icon: "pending", title: tSettingsUi("AST Grep"), description, meta }, uiTheme);
 		return new Text(text, 0, 0);
 	},
@@ -424,7 +443,9 @@ export const astGrepToolRenderer = {
 		const details = result.details;
 
 		if (result.isError) {
-			const errorText = result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
+			const errorText = statusPreview(
+				result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error"),
+			);
 			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
 		}
 
@@ -432,22 +453,25 @@ export const astGrepToolRenderer = {
 		const fileCount = details?.fileCount ?? 0;
 		const filesSearched = details?.filesSearched ?? 0;
 		const limitReached = details?.limitReached ?? false;
+		const scopePath = details?.scopePath ? statusPreview(shortenPath(details.scopePath)) : undefined;
+		const parseErrors = details?.parseErrors?.map(forDisplay);
+		const parseErrorsTotal = details?.parseErrorsTotal;
 
 		if (matchCount === 0) {
-			const description = args?.pat;
+			const description = args?.pat === undefined ? undefined : statusPreview(args.pat);
 			const meta = [tSettingsUi("{count} matches", { count: 0 })];
-			if (details?.scopePath) meta.push(tSettingsUi("in {scopePath}", { scopePath: details.scopePath }));
+			if (scopePath) meta.push(tSettingsUi("in {scopePath}", { scopePath }));
 			if (filesSearched > 0) meta.push(tSettingsUi("searched {count}", { count: filesSearched }));
 			const header = renderStatusLine(
 				{ icon: "warning", title: tSettingsUi("AST Grep"), description, meta },
 				uiTheme,
 			);
 			const lines = [header, formatEmptyMessage(tSettingsUi("No matches found"), uiTheme)];
-			if (details?.parseErrors?.length) {
+			if (parseErrors?.length) {
 				lines.push(
 					uiTheme.fg("warning", tSettingsUi("Query may be mis-scoped; narrow `path` before concluding absence")),
 				);
-				appendParseErrorsBulletList(lines, details.parseErrors, uiTheme, details.parseErrorsTotal);
+				appendParseErrorsBulletList(lines, parseErrors, uiTheme, parseErrorsTotal);
 			}
 			return new Text(lines.join("\n"), 0, 0);
 		}
@@ -457,10 +481,10 @@ export const astGrepToolRenderer = {
 			tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount }),
 		];
 		const meta = [...summaryParts];
-		if (details?.scopePath) meta.push(tSettingsUi("in {scopePath}", { scopePath: details.scopePath }));
+		if (scopePath) meta.push(tSettingsUi("in {scopePath}", { scopePath }));
 		meta.push(tSettingsUi("searched {count}", { count: filesSearched }));
 		if (limitReached) meta.push(uiTheme.fg("warning", tSettingsUi("limit reached")));
-		const description = args?.pat;
+		const description = args?.pat === undefined ? undefined : statusPreview(args.pat);
 		const header = renderStatusLine(
 			{
 				...(limitReached
@@ -474,10 +498,11 @@ export const astGrepToolRenderer = {
 		);
 
 		const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text ?? "";
-		const allLines = textContent.split("\n");
+		const rawLines = textContent.split("\n");
+		const allLines = rawLines.map(forDisplay);
 		// Resolve hyperlinks over the whole output so nested directory headers
 		// reconstruct across the blank-line groups the tree list collapses by.
-		const contexts = classifyGroupedLines(allLines, details?.cwd ?? details?.searchPath, details?.searchPath);
+		const contexts = classifyGroupedLines(rawLines, details?.cwd ?? details?.searchPath, details?.searchPath);
 		const styledLines = allLines.map((line, index) => {
 			const ctx = contexts[index]!;
 			if (ctx.kind === "dir") {
@@ -502,10 +527,8 @@ export const astGrepToolRenderer = {
 		if (limitReached) {
 			extraLines.push(uiTheme.fg("warning", tSettingsUi("limit reached; narrow path or increase limit")));
 		}
-		if (details?.parseErrors?.length) {
-			extraLines.push(
-				uiTheme.fg("warning", formatParseErrorsCountLabel(details.parseErrors, details.parseErrorsTotal)),
-			);
+		if (parseErrors?.length) {
+			extraLines.push(uiTheme.fg("warning", formatParseErrorsCountLabel(parseErrors, parseErrorsTotal)));
 		}
 
 		return createCachedComponent(

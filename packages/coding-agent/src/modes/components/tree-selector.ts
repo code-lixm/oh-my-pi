@@ -6,6 +6,7 @@ import {
 	fuzzyMatch,
 	Input,
 	matchesKey,
+	Spacer,
 	Text,
 	TruncatedText,
 	truncateToWidth,
@@ -13,14 +14,19 @@ import {
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
-import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
+import {
+	matchesAppInterrupt,
+	matchesSelectDown,
+	matchesSelectPageDown,
+	matchesSelectPageUp,
+	matchesSelectUp,
+} from "../../modes/utils/keybinding-matchers";
 import type { SessionTreeNode } from "../../session/session-entries";
 import { toPathList } from "../../tools/path-utils";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
 import { DynamicBorder } from "./dynamic-border";
-import { rawKeyHint } from "./keybinding-hints";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
 
 /** Gutter info: position (displayIndent where connector was) and whether to show │ */
@@ -46,8 +52,6 @@ interface FlatNode {
 
 /** Filter mode for tree display */
 type FilterMode = TreeFilterMode;
-// Rows outside the tree viewport: three borders, title, two hint rows, and search.
-const TREE_CHROME_ROWS = 7;
 
 /**
  * Tree list component with selection and ASCII art visualization
@@ -428,7 +432,7 @@ class TreeList implements Component {
 		}
 	}
 
-	getFilterLabel(): string {
+	#getFilterLabel(): string {
 		switch (this.#filterMode) {
 			case "no-tools":
 				return " [no-tools]";
@@ -456,7 +460,7 @@ class TreeList implements Component {
 			//    read as "broken /tree" — see #1909.
 			if (this.#flatNodes.length === 0) {
 				lines.push(truncateToWidth(theme.fg("muted", `  ${tSettingsUi("No entries found")}`), width));
-				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.getFilterLabel()}`), width));
+				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.#getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
 				lines.push(
 					truncateToWidth(
@@ -471,10 +475,10 @@ class TreeList implements Component {
 					truncateToWidth(theme.fg("muted", `  ${tSettingsUi("Press Backspace to clear the search")}`), width),
 				);
 				lines.push(
-					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
 			} else {
-				const filterLabel = this.getFilterLabel().trim() || "[default]";
+				const filterLabel = this.#getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
 						theme.fg(
@@ -491,7 +495,7 @@ class TreeList implements Component {
 					),
 				);
 				lines.push(
-					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.getFilterLabel()}`), width),
+					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
 			}
 			return lines;
@@ -610,6 +614,11 @@ class TreeList implements Component {
 			}),
 		);
 
+		const filterLabel = this.#getFilterLabel();
+		if (filterLabel) {
+			lines.push(truncateToWidth(theme.fg("muted", `  ${filterLabel.trim()}`), width));
+		}
+
 		return lines;
 	}
 
@@ -643,7 +652,8 @@ class TreeList implements Component {
 						result = theme.fg("success", tSettingsUi("assistant:")) + textContent;
 					} else if (presentation.kind === "full") {
 						result =
-							theme.fg("success", "assistant: ") + theme.fg("error", normalize(presentation.text).slice(0, 80));
+							theme.fg("success", tSettingsUi("assistant:")) +
+							theme.fg("error", normalize(presentation.text).slice(0, 80));
 					} else if (msgWithContent.stopReason === "aborted") {
 						result = theme.fg("success", tSettingsUi("assistant:")) + theme.fg("muted", tSettingsUi("(aborted)"));
 					} else {
@@ -798,16 +808,36 @@ class TreeList implements Component {
 		}
 	}
 
+	#moveToAdjacentTurn(direction: -1 | 1): void {
+		for (
+			let index = this.#selectedIndex + direction;
+			index >= 0 && index < this.#filteredNodes.length;
+			index += direction
+		) {
+			const entry = this.#filteredNodes[index]?.node.entry;
+			if (entry?.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")) {
+				this.#selectedIndex = index;
+				return;
+			}
+		}
+	}
+
 	handleInput(keyData: string): void {
 		if (matchesSelectUp(keyData)) {
 			this.#selectedIndex = this.#selectedIndex === 0 ? this.#filteredNodes.length - 1 : this.#selectedIndex - 1;
 		} else if (matchesSelectDown(keyData)) {
 			this.#selectedIndex = this.#selectedIndex === this.#filteredNodes.length - 1 ? 0 : this.#selectedIndex + 1;
-		} else if (matchesKey(keyData, "left")) {
-			// Page up
+		} else if (matchesKey(keyData, "alt+up")) {
+			this.#moveToAdjacentTurn(-1);
+		} else if (matchesKey(keyData, "alt+down")) {
+			this.#moveToAdjacentTurn(1);
+		} else if (matchesKey(keyData, "home")) {
+			this.#selectedIndex = 0;
+		} else if (matchesKey(keyData, "end")) {
+			this.#selectedIndex = Math.max(0, this.#filteredNodes.length - 1);
+		} else if (matchesSelectPageUp(keyData) || matchesKey(keyData, "left")) {
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.maxVisibleLines);
-		} else if (matchesKey(keyData, "right")) {
-			// Page down
+		} else if (matchesSelectPageDown(keyData) || matchesKey(keyData, "right")) {
 			this.#selectedIndex = Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + this.maxVisibleLines);
 		} else if (matchesKey(keyData, "shift+enter") || matchesKey(keyData, "shift+return")) {
 			// Summarize-and-switch: fork with a branch summary without the extra prompt.
@@ -884,12 +914,10 @@ class SearchLine implements Component {
 
 	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
-		const filterLabel = this.treeList.getFilterLabel();
-		const search = query
-			? `${theme.fg("muted", tSettingsUi("Search:"))} ${theme.fg("accent", query)}`
-			: theme.fg("muted", tSettingsUi("Search:"));
-		const filter = filterLabel ? theme.fg("muted", ` · ${filterLabel.trim()}`) : "";
-		return [truncateToWidth(`  ${search}${filter}`, width)];
+		if (query) {
+			return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))} ${theme.fg("accent", query)}`, width)];
+		}
+		return [truncateToWidth(`  ${theme.fg("muted", tSettingsUi("Search:"))}`, width)];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -954,21 +982,7 @@ export class TreeSelectorComponent extends Container {
 		initialFilterMode: FilterMode = "default",
 	) {
 		super();
-		const maxVisibleLines = Math.max(1, terminalHeight - TREE_CHROME_ROWS);
-		const hintSeparator = theme.fg("dim", " · ");
-		const primaryHints = [
-			rawKeyHint("Enter", tSettingsUi("switch")),
-			rawKeyHint("Shift+Enter", tSettingsUi("summarize and switch")),
-			rawKeyHint("↑↓", tSettingsUi("move")),
-			rawKeyHint("←→", tSettingsUi("page")),
-			rawKeyHint("Shift+L", tSettingsUi("label")),
-		].join(hintSeparator);
-		const secondaryHints = [
-			rawKeyHint("Ctrl+O", tSettingsUi("filter")),
-			rawKeyHint("Shift+Ctrl+O", tSettingsUi("reverse")),
-			rawKeyHint("Alt+D/T/U/L/A", tSettingsUi("direct")),
-			theme.fg("muted", tSettingsUi("type to search")),
-		].join(hintSeparator);
+		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
 
 		this.#treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialFilterMode);
 		this.#treeList.onSelect = onSelect;
@@ -980,14 +994,27 @@ export class TreeSelectorComponent extends Container {
 
 		this.#labelInputContainer = new Container();
 
+		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${tSettingsUi("Session Tree")}`)), 0, 0));
-		this.addChild(new TruncatedText(`  ${primaryHints}`, 0, 0));
-		this.addChild(new TruncatedText(`  ${secondaryHints}`, 0, 0));
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${tSettingsUi("Session Tree")}`)), 1, 0));
+		this.addChild(
+			new TruncatedText(
+				theme.fg(
+					"muted",
+					tSettingsUi(
+						"Enter: switch. Alt+↑/↓: previous/next turn. PgUp/PgDn (←/→): page. Home/End: first/last item. Shift+Enter: summarize & switch. Shift+L: label. Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					),
+				),
+				0,
+				0,
+			),
+		);
 		this.addChild(new SearchLine(this.#treeList));
 		this.addChild(new DynamicBorder());
+		this.addChild(new Spacer(1));
 		this.addChild(this.#treeContainer);
 		this.addChild(this.#labelInputContainer);
+		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
 		if (tree.length === 0) {

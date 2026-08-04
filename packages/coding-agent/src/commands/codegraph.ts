@@ -22,7 +22,7 @@
  * `--max-*` flags, the legacy `--keep 10` default is preserved so a
  * parameterless invocation stays predictable.
  */
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
+
 import {
 	type CodeGraphClearAllOptions,
 	type CodeGraphClearOptions,
@@ -35,6 +35,7 @@ import {
 	runCodeGraphPrune,
 	runCodeGraphStatus,
 } from "../cli/codegraph-cli";
+import { Args, Command, Flags } from "../cli/command-runtime";
 
 type CodeGraphAction = "status" | "list" | "clear" | "clear-all" | "prune";
 

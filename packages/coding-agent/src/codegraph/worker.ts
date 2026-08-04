@@ -17,7 +17,7 @@
  * The worker exits after one request so an idle CLI process reaps it
  * automatically — no explicit `unref` from this side.
  */
-import { logger } from "@oh-my-pi/pi-utils";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import { runAutoPrune } from "./auto-prune";
 import { detectInterruptedProgress, markFailed, markQueued, markReady, writeProgress } from "./progress";
 import { openCodeGraphRuntime } from "./runtime";

@@ -86,6 +86,52 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Run an auth-gateway forward proxy backed by the configured broker":
 		"Run an auth-gateway forward proxy backed by the configured broker",
 	"Manage the omp auth-broker (credential vault)": "Manage the omp auth-broker (credential vault)",
+	"Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio":
+		"Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio",
+	"Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s)":
+		"Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s)",
+	"Run the local CDP relay that lets the browser tool drive your own Chrome tabs":
+		"Run the local CDP relay that lets the browser tool drive your own Chrome tabs",
+	"Detect and fix project diagnostics with weighted parallel subagents":
+		"Detect and fix project diagnostics with weighted parallel subagents",
+	"Generate a commit message and update changelogs": "Generate a commit message and update changelogs",
+	"Print a shell completion script (bash, zsh, or fish)": "Print a shell completion script (bash, zsh, or fish)",
+	"Manage configuration settings": "Manage configuration settings",
+	"Dry-run OAuth account balancing across random session ids":
+		"Dry-run OAuth account balancing across random session ids",
+	"Preview tool renderers across streaming, in-progress, success, and failure states":
+		"Preview tool renderers across streaming, in-progress, success, and failure states",
+	"Run storage garbage collection": "Run storage garbage collection",
+	"Test grep tool": "Test grep tool",
+	"View, clean, or push reported tool issues (auto-QA grievances)":
+		"View, clean, or push reported tool issues (auto-QA grievances)",
+	"Install or link an extension package (alias of `plugin install`/`plugin link`)":
+		"Install or link an extension package (alias of `plugin install`/`plugin link`)",
+	"Join a shared collab session (same as /join)": "Join a shared collab session (same as /join)",
+	"List, search, and refresh available models": "List, search, and refresh available models",
+	"Manage plugins (install, uninstall, list, etc.)": "Manage plugins (install, uninstall, list, etc.)",
+	"Show what the read tool will return for a path, URL, or internal URI":
+		"Show what the read tool will return for a path, URL, or internal URI",
+	"Synthesize text with the local TTS engine and play it through the speakers":
+		"Synthesize text with the local TTS engine and play it through the speakers",
+	"Test web search providers": "Test web search providers",
+	"Interactive shell console": "Interactive shell console",
+	"Manage SSH host configurations": "Manage SSH host configurations",
+	"View usage statistics": "View usage statistics",
+	"Download tiny local models (session titles + memory)": "Download tiny local models (session titles + memory)",
+	"Get the API key or OAuth token for a provider": "Get the API key or OAuth token for a provider",
+	"Inspect and test Time-Traveling Stream Rules (TTSR)": "Inspect and test Time-Traveling Stream Rules (TTSR)",
+	"Check for and install updates": "Check for and install updates",
+	"Show provider usage limits for every authenticated account":
+		"Show provider usage limits for every authenticated account",
+	"List or clear agent-managed git worktrees (~/.omp/wt)": "List or clear agent-managed git worktrees (~/.omp/wt)",
+	"Run an in-memory session in an isolated sandbox directory without project discovery":
+		"Run an in-memory session in an isolated sandbox directory without project discovery",
+	"Session storage directory (default: ~/{configDir}/agent)":
+		"Session storage directory (default: ~/{configDir}/agent)",
+	"Execute Python code (requires: {command})": "Execute Python code (requires: {command})",
+	"Native host desktop capture and input (disabled by default)":
+		"Native host desktop capture and input (disabled by default)",
 	"Output JSON": "Output JSON",
 	"Sub-command": "Sub-command",
 	"OAuth provider id (login/logout) or path (import)": "OAuth provider id (login/logout) or path (import)",
@@ -3895,6 +3941,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Unknown component: {component}": "Unknown component: {component}",
 	"Python not found": "Python not found",
 	"Install Python 3.8+ and ensure it's in your PATH": "Install Python 3.8+ and ensure it's in your PATH",
+	"Install Python 3.8+ or set python.interpreter to its executable path":
+		"Install Python 3.8+ or set python.interpreter to its executable path",
 	"Python: {path}": "Python: {path}",
 	"Quarter of a 200K window": "Quarter of a 200K window",
 	"Using managed environment: {path}": "Using managed environment: {path}",

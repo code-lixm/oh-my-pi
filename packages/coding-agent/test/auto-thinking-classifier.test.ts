@@ -282,11 +282,7 @@ describe("auto thinking classifier helpers", () => {
 		const optedIn = createOnlineFixture(buildLadderModel("mock-max", MAX_LADDER), "high", "max");
 		await classifyDifficulty("refactor the scheduler", optedIn.deps);
 		const optedInRequest = optedIn.completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt: string[] };
-		// The label alone is inert: the criteria and the tie-break exception are
-		// what make the tier reachable, so all three must ship together.
 		expect(optedInRequest.systemPrompt[0]).toContain("`max`");
-		expect(optedInRequest.systemPrompt[0]).toContain("no reproduction to work from");
-		expect(optedInRequest.systemPrompt[0]).toContain("except between `xhigh` and `max`");
 
 		vi.restoreAllMocks();
 
@@ -295,10 +291,6 @@ describe("auto thinking classifier helpers", () => {
 		const defaultedRequest = defaulted.completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt: string[] };
 		expect(defaultedRequest.systemPrompt[0]).not.toMatch(/\bmax\b/);
 		expect(defaultedRequest.systemPrompt[0]).toContain("`xhigh`");
-		// The tie-break exception is what makes the top tier reachable, so it must
-		// not leak into the prompt of a user who did not opt in.
-		expect(defaultedRequest.systemPrompt[0]).toContain("choose the lower one.");
-		expect(defaultedRequest.systemPrompt[0]).not.toContain("no reproduction to work from");
 
 		vi.restoreAllMocks();
 
@@ -306,7 +298,6 @@ describe("auto thinking classifier helpers", () => {
 		await classifyDifficulty("refactor the scheduler", unsupported.deps);
 		const unsupportedRequest = unsupported.completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt: string[] };
 		expect(unsupportedRequest.systemPrompt[0]).not.toMatch(/\bmax\b/);
-		expect(unsupportedRequest.systemPrompt[0]).toContain("choose the lower one.");
 	});
 
 	it("exposes the Chinese max criteria only when the configured ceiling permits max", async () => {

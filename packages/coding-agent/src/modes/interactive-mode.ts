@@ -575,6 +575,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	initialChatRendered = false;
 	isBashMode = false;
 	toolOutputExpanded = false;
+	hideToolActivity = false;
 	todoExpanded = false;
 	planModeEnabled = false;
 	planModePaused = false;
@@ -942,6 +943,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const unsubscribe of this.#runtimeUnsubscribers.splice(0)) unsubscribe();
 		this.clearTransientSessionUi();
 		this.#eventController.resetTranscriptAnchors();
+		this.session.setBeforeAutoContinue(undefined);
 		this.session.setSessionBeforeSwitchReconciler?.(null);
 		this.session.setSessionSwitchReconciler?.(null);
 		this.#toolUiContextSetter({} as ExtensionUIContext, false);
@@ -994,6 +996,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#installRuntimeBindings(): void {
+		this.session.setBeforeAutoContinue(() => this.flushPendingModelSwitch());
 		this.#runtimeUnsubscribers.push(
 			this.sessionManager.onSessionNameChanged(() => {
 				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
@@ -1139,6 +1142,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// hot path where the render never gets to paint the result.
 		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
+		this.hideToolActivity = settings.get("display.hideToolActivity");
 		const thinkingDisplay = settings.get("thinkingDisplay");
 		this.hideThinkingBlock = thinkingDisplay === "hidden";
 		this.proseOnlyThinking = thinkingDisplay === "prose";

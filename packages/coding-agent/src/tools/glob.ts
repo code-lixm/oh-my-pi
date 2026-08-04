@@ -5,7 +5,7 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import * as natives from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { formatGroupedPaths, isEnoent, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { formatGroupedPaths, isEnoent, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { tSettingsUi } from "../i18n/settings-locale";
@@ -16,6 +16,7 @@ import { selectPrompt } from "../prompts/prompt-locale";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
 import globDescriptionZh from "../prompts/tools/glob.zh-CN.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
+import { isScoutSpawnable } from "../task/spawn-policy";
 import {
 	Ellipsis,
 	fileHyperlink,
@@ -40,7 +41,7 @@ import {
 	resolveToCwd,
 	toPathList,
 } from "./path-utils";
-import { createCachedComponent, formatErrorMessage, toolDetailMaxLines } from "./render-utils";
+import { createCachedComponent, formatErrorMessage, replaceTabs, toolDetailMaxLines } from "./render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -111,7 +112,14 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	readonly approval = "read" as const;
 	readonly loadMode = "essential";
 	readonly label = "Glob";
-	readonly description: string;
+	get description(): string {
+		return prompt.render(selectPrompt(globDescription, globDescriptionZh), {
+			scoutAvailable: isScoutSpawnable(
+				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.getSessionSpawns?.() ?? "*",
+			),
+		});
+	}
 	readonly parameters = findSchema;
 
 	readonly examples: readonly ToolExample<typeof findSchema.infer>[] = [
@@ -143,7 +151,6 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	) {
 		this.#customOps = options?.operations;
 		this.#rootPathAlias = options?.rootPathAlias === true;
-		this.description = prompt.render(selectPrompt(globDescription, globDescriptionZh));
 	}
 
 	async execute(
@@ -300,6 +307,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					// absence — never emit the definitive "No files found" claim next
 					// to a timeout notice (the two statements contradict each other).
 					const parts = opts?.timedOut ? [] : [tSettingsUi("No files found matching pattern")];
+					if (notice) parts.push(notice);
 					if (missingPathsNote) parts.push(missingPathsNote);
 					// Zero results is useless regardless of notices: the follow-up
 					// call has already corrected course by the time compaction runs.
@@ -519,9 +527,14 @@ interface GlobRenderArgs {
 	limit?: number;
 }
 
+function sanitizeGlobDisplay(value: string, singleLine = false): string {
+	const sanitized = replaceTabs(sanitizeText(value));
+	return singleLine ? sanitized.replace(/[\r\n]+/g, " ") : sanitized;
+}
+
 function formatGlobRenderPaths(args: GlobRenderArgs | undefined): string | undefined {
 	const list = toPathList(args?.path ?? args?.paths);
-	return list.length > 0 ? list.join(", ") : undefined;
+	return list.length > 0 ? sanitizeGlobDisplay(list.join(", "), true) : undefined;
 }
 
 function globStatusIcon(uiTheme: Theme): string {
@@ -551,6 +564,17 @@ function renderGlobEmptyHeader(args: GlobRenderArgs | undefined, truncated: bool
 				: [tSettingsUi("0 files")],
 		},
 		uiTheme,
+	);
+}
+
+function isEmptyGlobText(text: string | undefined): boolean {
+	return (
+		!text ||
+		text.includes("No files matching") ||
+		text.includes("No files found") ||
+		text.includes(tSettingsUi("No files found matching pattern")) ||
+		text.includes(tSettingsUi("No files found")) ||
+		text.trim() === ""
 	);
 }
 
@@ -585,51 +609,15 @@ export const globToolRenderer = {
 		if (result.isError || details?.error) {
 			const errorText =
 				details?.error || result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
-			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
+			return new Text(formatErrorMessage(sanitizeGlobDisplay(errorText, true), uiTheme), 0, 0);
 		}
 
 		const hasDetailedData = details?.fileCount !== undefined;
-		const textContent = result.content?.find(c => c.type === "text")?.text;
-
-		if (!getBasicToolDetailsVisible()) {
-			const legacyLines = textContent?.split("\n").filter(line => line.trim().length > 0) ?? [];
-			const legacyEmpty =
-				!textContent ||
-				textContent.includes("No files matching") ||
-				textContent.includes("No files found") ||
-				textContent.trim() === "";
-			const fileCount = hasDetailedData ? (details?.fileCount ?? 0) : legacyEmpty ? 0 : legacyLines.length;
-			const truncation = details?.truncation ?? details?.meta?.truncation;
-			const limits = details?.meta?.limits;
-			const truncated = Boolean(
-				details?.truncated || truncation || details?.resultLimitReached || limits?.resultLimit,
-			);
-			const meta = [tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount })];
-			const scopePath = details?.scopePath ?? formatGlobRenderPaths(args);
-			if (scopePath) meta.push(tSettingsUi("in {paths}", { paths: scopePath }));
-			if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
-			const header = renderStatusLine(
-				{
-					...(fileCount === 0 || truncated
-						? { icon: "warning" as const }
-						: { iconOverride: globStatusIcon(uiTheme) }),
-					title: tSettingsUi("Glob"),
-					titleColor: "toolTitle",
-					description: formatGlobRenderPaths(args) || "*",
-					meta,
-				},
-				uiTheme,
-			);
-			return new Text(header, 0, 0);
-		}
+		const rawTextContent = result.content?.find(c => c.type === "text")?.text;
+		const textContent = sanitizeGlobDisplay(rawTextContent ?? "");
 
 		if (!hasDetailedData) {
-			if (
-				!textContent ||
-				textContent.includes("No files matching") ||
-				textContent.includes("No files found") ||
-				textContent.trim() === ""
-			) {
+			if (isEmptyGlobText(textContent)) {
 				const lines = [
 					renderGlobEmptyHeader(args, false, uiTheme),
 					...renderGlobEmptyTree(tSettingsUi("No files found"), uiTheme),
@@ -637,7 +625,7 @@ export const globToolRenderer = {
 				return new Text(lines.join("\n"), 0, 0);
 			}
 
-			const lines = textContent.split("\n").filter(l => l.trim());
+			const lines = textContent.split("\n").filter(line => line.trim());
 			const header = renderStatusLine(
 				{
 					iconOverride: globStatusIcon(uiTheme),
@@ -657,14 +645,13 @@ export const globToolRenderer = {
 							expanded: options.expanded,
 							maxCollapsedLines: toolDetailMaxLines(),
 							truncateFrom: "middle",
+							renderItem: line => line,
 							itemType: "file",
-							renderItem: line => uiTheme.fg("accent", line),
 						},
 						uiTheme,
 					);
-					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
+					return [header, ...listLines].map(line => truncateToWidth(line, width, Ellipsis.Omit));
 				},
-				{ paddingX: 1 },
 			);
 		}
 
@@ -677,7 +664,12 @@ export const globToolRenderer = {
 		const missingPaths = details?.missingPaths ?? [];
 		const missingNote =
 			missingPaths.length > 0
-				? uiTheme.fg("warning", tSettingsUi("skipped missing: {paths}", { paths: missingPaths.join(", ") }))
+				? uiTheme.fg(
+						"warning",
+						tSettingsUi("skipped missing: {paths}", {
+							paths: missingPaths.map(path => sanitizeGlobDisplay(path, true)).join(", "),
+						}),
+					)
 				: undefined;
 
 		if (fileCount === 0) {
@@ -692,7 +684,8 @@ export const globToolRenderer = {
 			return new Text(lines.join("\n"), 0, 0);
 		}
 		const meta: string[] = [tSettingsUi(fileCount === 1 ? "{count} file" : "{count} files", { count: fileCount })];
-		if (details?.scopePath) meta.push(tSettingsUi("in {paths}", { paths: details.scopePath }));
+		if (details?.scopePath)
+			meta.push(tSettingsUi("in {paths}", { paths: sanitizeGlobDisplay(details.scopePath, true) }));
 		if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
 		const header = renderStatusLine(
 			{
@@ -705,8 +698,14 @@ export const globToolRenderer = {
 			uiTheme,
 		);
 
-		const extraLines: string[] = [];
-		if (missingNote) extraLines.push(missingNote);
+		if (!getBasicToolDetailsVisible()) {
+			return createCachedComponent(
+				() => false,
+				width => [truncateToWidth(header, width, Ellipsis.Omit)],
+			);
+		}
+
+		const extraLines = missingNote ? [missingNote] : [];
 
 		return createCachedComponent(
 			() => options.expanded,
@@ -715,7 +714,7 @@ export const globToolRenderer = {
 				const fileLines = renderFileList(
 					{
 						files: files.map(entry => ({
-							path: entry,
+							path: sanitizeGlobDisplay(entry, true),
 							isDirectory: entry.endsWith("/"),
 							absPath: cwd && !entry.endsWith("/") ? path.resolve(cwd, entry) : undefined,
 						})),
@@ -726,7 +725,7 @@ export const globToolRenderer = {
 					},
 					uiTheme,
 				);
-				return [header, ...fileLines, ...extraLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
+				return [header, ...fileLines, ...extraLines].map(line => truncateToWidth(line, width, Ellipsis.Omit));
 			},
 		);
 	},

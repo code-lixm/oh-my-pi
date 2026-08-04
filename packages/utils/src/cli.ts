@@ -75,6 +75,8 @@ const CLI_MESSAGES: Record<CliLocale, Record<string, string>> = {
 		"cli.error.missing_flag": "Missing required flag: --{name}",
 		"cli.error.missing_argument": "Missing required argument: {name}",
 		"cli.error.expected_arg_options": 'Expected {name} to be one of: {options}; got "{value}"',
+		"cli.error.prefix": "error: {message}",
+		"cli.error.command_help_details": "Run `{bin} {id} --help` for details.",
 	},
 	"zh-CN": {
 		"cli.section.usage": "用法",
@@ -90,6 +92,8 @@ const CLI_MESSAGES: Record<CliLocale, Record<string, string>> = {
 		"cli.error.missing_flag": "缺少必需选项：--{name}",
 		"cli.error.missing_argument": "缺少必需参数：{name}",
 		"cli.error.expected_arg_options": "{name} 必须是以下取值之一：{options}；得到 “{value}”",
+		"cli.error.prefix": "错误：{message}",
+		"cli.error.command_help_details": "运行 `{bin} {id} --help` 查看详情。",
 	},
 };
 
@@ -259,23 +263,26 @@ export interface ParseOutput<
 // Command base class
 // ---------------------------------------------------------------------------
 
-export interface CommandCtor {
-	new (argv: string[], config: CliConfig): Command;
+export interface CommandMetadata {
 	description?: string;
 	hidden?: boolean;
-	strict?: boolean;
-	aliases?: string[];
-	examples?: string[];
 	flags?: Record<string, FlagDescriptor>;
 	args?: Record<string, ArgDescriptor>;
+	examples?: string[];
+}
+
+export interface CommandCtor extends CommandMetadata {
+	new (argv: string[], config: CliConfig): Command;
+	strict?: boolean;
+	aliases?: string[];
 }
 
 /** Configuration passed to every command instance and help renderers. */
-export interface CliConfig {
+export interface CliConfig<TCommand extends CommandMetadata = CommandCtor> {
 	bin: string;
 	version: string;
 	/** All registered commands keyed by their canonical name. */
-	commands: Map<string, CommandCtor>;
+	commands: Map<string, TCommand>;
 }
 
 /**
@@ -431,7 +438,7 @@ export abstract class Command {
 // ---------------------------------------------------------------------------
 
 /** Render full root help: header, default command details, subcommand list. */
-export function renderRootHelp(config: CliConfig): void {
+export function renderRootHelp(config: CliConfig<CommandMetadata>): void {
 	const { bin, version, commands } = config;
 	const lines: string[] = [];
 	lines.push(`${bin} v${version}\n`);
@@ -440,7 +447,7 @@ export function renderRootHelp(config: CliConfig): void {
 
 	// Show the default command's flags/args/examples inline.
 	// The default command is the one marked hidden (it's the implicit entry point).
-	const defaultCmd = [...commands.values()].find(C => C.hidden);
+	const defaultCmd = [...commands.values()].find(command => command.hidden);
 	if (defaultCmd) {
 		renderCommandBody(lines, defaultCmd);
 	}
@@ -450,8 +457,8 @@ export function renderRootHelp(config: CliConfig): void {
 	if (visible.length > 0) {
 		lines.push(tCli("cli.section.commands"));
 		const maxLen = Math.max(...visible.map(([n]) => n.length));
-		for (const [name, C] of visible.sort((a, b) => a[0].localeCompare(b[0]))) {
-			lines.push(`  ${name.padEnd(maxLen + 2)}${C.description ?? ""}`);
+		for (const [name, command] of visible.sort((a, b) => a[0].localeCompare(b[0]))) {
+			lines.push(`  ${name.padEnd(maxLen + 2)}${command.description ?? ""}`);
 		}
 		lines.push("");
 	}
@@ -501,9 +508,9 @@ export function formatCommandNotFound(id: string, bin: string, locale: CliLocale
 	return `${tCli("cli.error.command_not_found", { id }, locale)}\n${tCli("cli.error.run_help", { bin }, locale)}\n`;
 }
 
-function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
-	const argDefs = Cmd.args ?? {};
-	const flagDefs = Cmd.flags ?? {};
+function renderCommandBody(lines: string[], command: CommandMetadata): void {
+	const argDefs = command.args ?? {};
+	const flagDefs = command.flags ?? {};
 
 	// Arguments
 	const argEntries = Object.entries(argDefs);
@@ -538,9 +545,9 @@ function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
 	}
 
 	// Examples
-	if (Cmd.examples && Cmd.examples.length > 0) {
+	if (command.examples && command.examples.length > 0) {
 		lines.push(tCli("cli.section.examples"));
-		for (const ex of Cmd.examples) {
+		for (const ex of command.examples) {
 			for (const line of ex.split("\n")) {
 				lines.push(`  ${line}`);
 			}
@@ -557,6 +564,7 @@ function renderCommandBody(lines: string[], Cmd: CommandCtor): void {
 export interface CommandEntry {
 	name: string;
 	load: () => Promise<CommandCtor>;
+	help?: CommandMetadata;
 	aliases?: string[];
 }
 
@@ -565,8 +573,10 @@ export interface RunOptions {
 	version: string;
 	argv: string[];
 	commands: CommandEntry[];
-	/** Custom help renderer. Receives fully-populated config. */
+	/** Custom help renderer with the fully loaded command constructors. */
 	help?: (config: CliConfig) => Promise<void> | void;
+	/** Lightweight help renderer backed by static command metadata. */
+	metadataHelp?: (config: CliConfig<CommandMetadata>) => Promise<void> | void;
 }
 
 /** Find a command entry by exact name or alias. */
@@ -588,11 +598,15 @@ export async function run(opts: RunOptions): Promise<void> {
 
 	// Top-level help
 	if (commandId === "--help" || commandId === "-h" || commandId === "help" || commandId === "") {
-		const config = await loadAllCommands(opts);
 		if (opts.help) {
-			await opts.help(config);
+			await opts.help(await loadAllCommands(opts));
 		} else {
-			renderRootHelp(config);
+			const config = await loadAllCommandMetadata(opts);
+			if (opts.metadataHelp) {
+				await opts.metadataHelp(config);
+			} else {
+				renderRootHelp(config);
+			}
 		}
 		return;
 	}
@@ -637,9 +651,9 @@ export async function run(opts: RunOptions): Promise<void> {
 		// process-level catch would dump a minified `dist/cli.js` code frame over a
 		// plain argument error (issue #5369).
 		if (error instanceof CliUsageError) {
-			process.stderr.write(`error: ${error.message}\n\n`);
-			process.stderr.write(`USAGE\n  ${commandUsageLine(bin, entry.name, Cmd)}\n`);
-			process.stderr.write(`\nRun \`${bin} ${entry.name} --help\` for details.\n`);
+			process.stderr.write(`${tCli("cli.error.prefix", { message: error.message })}\n\n`);
+			process.stderr.write(`${tCli("cli.section.usage")}\n  ${commandUsageLine(bin, entry.name, Cmd)}\n`);
+			process.stderr.write(`\n${tCli("cli.error.command_help_details", { bin, id: entry.name })}\n`);
 			process.exitCode = 1;
 			return;
 		}
@@ -655,12 +669,16 @@ async function loadEntry(entry: CommandEntry): Promise<CommandCtor> {
 	return Cmd;
 }
 
-/** Resolve all command loaders for help/alias display. */
+/** Load every command constructor for backward-compatible custom help callbacks. */
 async function loadAllCommands(opts: RunOptions): Promise<CliConfig> {
-	const commands = new Map<string, CommandCtor>();
-	const loaded = await Promise.all(opts.commands.map(async e => [e.name, await loadEntry(e)] as const));
-	for (const [name, Cmd] of loaded) {
-		commands.set(name, Cmd);
-	}
-	return { bin: opts.bin, version: opts.version, commands };
+	const loaded = await Promise.all(opts.commands.map(async entry => [entry.name, await loadEntry(entry)] as const));
+	return { bin: opts.bin, version: opts.version, commands: new Map(loaded) };
+}
+
+/** Resolve static command metadata for lightweight root help. */
+async function loadAllCommandMetadata(opts: RunOptions): Promise<CliConfig<CommandMetadata>> {
+	const loaded = await Promise.all(
+		opts.commands.map(async entry => [entry.name, entry.help ?? (await loadEntry(entry))] as const),
+	);
+	return { bin: opts.bin, version: opts.version, commands: new Map(loaded) };
 }

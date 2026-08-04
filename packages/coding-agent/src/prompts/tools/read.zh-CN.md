@@ -1,4 +1,4 @@
-通过 `path` 加上可选的 `selector`，读取文件、目录、归档、SQLite、图像、文档、内部资源和网页 URL。
+通过 `path` 读取文件、目录、归档、SQLite、图像、文档、内部资源和网页 URL。
 
 <instruction>
 - SHOULD 并行处理相互独立的读取。
@@ -7,8 +7,7 @@
 
 ## 参数
 
-- `path` — 必填。本地路径、内部 URI（`skill://`、`agent://`、`artifact://`、`memory://`、`rule://`、`local://`、`vault://`、`mcp://`、`omp://`、`issue://`、`pr://`、`ssh://`），或 URL。内联 `:<sel>` 对范围／模式仍然有效（例如 `src/foo.ts:50-200`、`src/foo.ts:raw`、`db.sqlite:users:42`）。
-- `selector` — 可选选择器，不带前导 `:`（例如 `"50-200"`、`"raw"`、`"raw:50-100"`、`"conflicts"`）。当 `path` 包含字面冒号时使用：`{"path":"test:1-2","selector":"1-2"}`。
+- `path` — 必填。本地路径、内部 URI（`skill://`、`agent://`、`artifact://`、`memory://`、`rule://`、`local://`、`vault://`、`mcp://`、`omp://`、`issue://`、`pr://`、`ssh://`），或 URL。将 `:<sel>` 内联追加到 `path` 以指定范围／模式（例如 `src/foo.ts:50-200`、`src/foo.ts:raw`、`db.sqlite:users:42`）。
 
 ## 选择器
 
@@ -73,6 +72,5 @@ PDF、Word、PowerPoint、Excel、RTF、EPUB → 提取的文本。笔记本（`
 `ssh://host/<absolute-path>` 读取远程文本文件（UTF-8，≤1 MiB）或列出目录下一层内容，目标为预配置的 SSH 主机或 `~/.ssh/config` 别名；`ssh://host/` 列出远程根目录，而裸 `ssh://` 列出已配置的主机。文件也可通过 `write` 写入，并可通过 `search` 搜索；目录仅支持列出（`search` 拒绝目录，`write` 拒绝覆盖目录）。远程路径中的字面量 `:`、`?` 或 `#` 必须进行百分号编码（`%3A`/`%3F`/`%23`）——末尾的 `:sel` 会被视为行选择器，而 `?`/`#` 会开始 URL 查询／片段。需要 POSIX 登录 shell（`sh`/`bash`/`zsh`）；Windows 主机或非 POSIX shell（fish、csh/tcsh）会被拒绝——请在那种情况下使用 `ssh` 工具。
 
 <critical>
-- 字面量冒号文件名 + 选择器？请使用 `selector`，不要使用递归 `path:"file:sel:sel"`。
 - 摘要页脚标出了省略的范围？仅重新发出这些范围。NEVER 猜测 `..`/`…` 的内容。
 </critical>

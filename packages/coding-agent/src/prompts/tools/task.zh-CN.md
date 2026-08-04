@@ -12,9 +12,9 @@
 {{/if}}
 
 # 任务设计
-- **代理选型：** 为每个条目选择 `agent` 类型。只读研究 MUST 使用 `agent: "scout"`（更快的模型）。仅在没有专用代理适合时使用默认 worker。
+- **代理选型：** 为每个条目选择 `agent` 类型。{{#if scoutAvailable}} 只读研究 MUST 使用 `agent: "scout"`（更快的模型）。{{/if}}仅在没有专用代理适合时使用默认 worker。
 - **避免额外开销：** 每个 `task` MUST 指示代理跳过 formatter、linter 和项目级测试套件；最后只运行一次。
-- **单次完成：** 优先让代理在一次流程内调查并编辑；仅在受影响文件确实未知时启动只读 scout。
+- **单次完成：** 优先让代理在一次流程内调查并编辑；{{#if scoutAvailable}}仅在受影响文件确实未知时启动只读 scout。{{/if}}
 - **协调重叠：** 共享文件编辑需要明确隔离或所有权协调。NEVER 仅因路径重叠而缩小真正独立的批次。两个前提：
   1. 每个任务 MUST 跳过验证（build/lint/tests）— 中途验证会阻塞代理。
   2. 预先决定跨任务契约（例如 A 实现、B 使用的接口），并写入{{#if batchEnabled}}批次 `context`{{else}}任务{{/if}}，不要留给代理临时协商。
@@ -23,8 +23,8 @@
 {{#if batchEnabled}}
 - `context`：共享状态、约束与契约。它适用于整个批次；不要在单个任务中重复这些背景。
 - `tasks[]`：要生成的子代理数组。
-  - `name`：稳定的 CamelCase 标识符（≤32 个字符），用于寻址代理（IRC、job ID）。省略时自动生成。
-  - `agent`：运行此条目的代理类型（例如 `scout`、`reviewer`）。省略时使用通用 worker（`{{defaultAgent}}`）— NEVER 显式传入该名称。仅在检查下方代理列表且没有专长匹配时才省略。{{#if allowedAgentsText}} 当前生成策略允许：{{allowedAgentsText}}。{{/if}}
+  - `name`：稳定的 CamelCase 标识符（≤32 个字符），用于通过 `hub` 寻址代理。省略时自动生成。
+  - `agent`：运行此条目的代理类型（例如 {{#if scoutAvailable}}`scout`、{{/if}}`reviewer`）。省略时使用通用 worker（`{{defaultAgent}}`）— NEVER 显式传入该名称。仅在检查下方代理列表且没有专长匹配时才省略。{{#if allowedAgentsText}} 当前生成策略允许：{{allowedAgentsText}}。{{/if}}
   - `task`：完整、自包含的指令。单行或缺少验收标准都是 PROHIBITED。
 {{#if effortEnabled}}  - `effort`：按任务复杂度选择：`"lo"`|`"med"`|`"hi"`。
 {{/if}}
@@ -38,8 +38,8 @@
 {{/if}}
 {{/if}}
 {{else}}
-- `name`：稳定的 CamelCase 标识符（≤32 个字符），用于寻址代理（IRC、job ID）。省略时自动生成。
-- `agent`：要生成的代理类型（例如 `scout`、`reviewer`）。省略时使用通用 worker（`{{defaultAgent}}`）— NEVER 显式传入该名称。仅在检查下方代理列表且没有专长匹配时才省略。{{#if allowedAgentsText}} 当前生成策略允许：{{allowedAgentsText}}。{{/if}}
+- `name`：稳定的 CamelCase 标识符（≤32 个字符），用于通过 `hub` 寻址代理。省略时自动生成。
+- `agent`：要生成的代理类型（例如 {{#if scoutAvailable}}`scout`、{{/if}}`reviewer`）。省略时使用通用 worker（`{{defaultAgent}}`）— NEVER 显式传入该名称。仅在检查下方代理列表且没有专长匹配时才省略。{{#if allowedAgentsText}} 当前生成策略允许：{{allowedAgentsText}}。{{/if}}
 - `task`：完整、自包含的指令。单行或缺少验收标准都是 PROHIBITED。
 {{#if effortEnabled}}- `effort`：按任务复杂度选择：`"lo"`|`"med"`|`"hi"`。
 {{/if}}
@@ -55,7 +55,7 @@
 {{/if}}
 
 # 通信
-子代理从空白状态开始，没有会话历史。{{#if ircEnabled}}父到子代理的 IRC 会立即作为 steering 送达。{{/if}}
+子代理从空白状态开始，没有会话历史。
 大载荷通过 `local://<path>` URI 传递，NEVER 内联文本。
 
 # 格式契约

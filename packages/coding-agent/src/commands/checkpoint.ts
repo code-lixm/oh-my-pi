@@ -7,8 +7,8 @@
  * a code-only checkpoint and does NOT advertise conversation/all scopes.
  */
 import { getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils";
-import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import chalk from "chalk";
+import { Args, Command, Flags } from "../cli/command-runtime";
 import { Settings } from "../config/settings";
 import type { CreateWorkspaceCheckpointRequest, WorkspaceCheckpointRecord } from "../workspace-checkpoints";
 import {

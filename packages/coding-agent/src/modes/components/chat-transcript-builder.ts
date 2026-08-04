@@ -53,7 +53,6 @@ import {
 } from "./compaction-summary-message";
 import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
-import { isHubGroupedActivityArgs } from "./hub-activity-group";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
@@ -215,6 +214,7 @@ export class ChatTranscriptBuilder {
 			this.#readGroup = new ReadToolGroupComponent({
 				showContentPreview: settings.get("read.toolResultPreview"),
 			});
+			this.#readGroup.setToolActivityVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(this.#readGroup);
 			this.container.addChild(this.#readGroup);
 		}
@@ -362,6 +362,7 @@ export class ChatTranscriptBuilder {
 			richContentHandlers,
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
+		assistantComponent.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
 		this.#trackExpandable(assistantComponent);
 		this.container.addChild(assistantComponent);
 		this.#errorAggregation = updateAssistantErrorAggregation(
@@ -401,6 +402,7 @@ export class ChatTranscriptBuilder {
 				richContentHandlers,
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
+			component.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 		};
@@ -413,14 +415,6 @@ export class ChatTranscriptBuilder {
 			// This builder backs parked/advisor/subagent viewers, where Hub lifecycle
 			// plumbing is never user-facing even when Main debugging opts into it.
 			if (content.name === "hub") {
-				appendAssistantSegment(afterToolSegment);
-				continue;
-			}
-			if (content.name === "hub" && isHubGroupedActivityArgs(content.arguments)) {
-				// Peer coordination is internal to the task. The actual `ask` tool remains
-				// a normal transcript component, so a child waiting for user input stays visible.
-				this.#readGroup?.seal();
-				this.#readGroup = null;
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
@@ -471,6 +465,7 @@ export class ChatTranscriptBuilder {
 				this.deps.cwd,
 				content.id,
 			);
+			component.setToolActivityVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 

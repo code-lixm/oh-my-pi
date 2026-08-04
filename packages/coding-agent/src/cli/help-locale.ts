@@ -1,6 +1,8 @@
-import { getProjectDir } from "@oh-my-pi/pi-utils";
-import { Settings } from "../config/settings";
-import { tSettingsUi } from "../i18n/settings-locale";
+import { setCliLocale } from "@oh-my-pi/pi-utils/cli";
+import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import { loadDotenvEnvironment } from "@oh-my-pi/pi-utils/dotenv";
+import { setSettingsUiLocale, tSettingsUi } from "../i18n/settings-locale";
+import { loadDisplayLanguage } from "./display-language";
 
 interface LocalizableCliEntry {
 	load: () => Promise<LocalizableCliConstructor>;
@@ -51,7 +53,12 @@ function snapshotCommandHelp(ctor: LocalizableCliConstructor): CommandHelpSnapsh
 }
 
 export async function ensureCliHelpLocale(cwd = getProjectDir()): Promise<void> {
-	helpLocalePromise ??= Settings.loadReadOnly({ cwd }).then(() => undefined);
+	helpLocalePromise ??= (async () => {
+		loadDotenvEnvironment();
+		const displayLanguage = await loadDisplayLanguage(cwd);
+		setSettingsUiLocale(displayLanguage);
+		setCliLocale(displayLanguage);
+	})();
 	await helpLocalePromise;
 }
 

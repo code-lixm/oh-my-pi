@@ -52,6 +52,7 @@ import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { withFileLock } from "./file-lock";
 import { applyNetworkProxy } from "./network-proxy";
+import { fireGlobalSettingsPersisted } from "./settings-persistence";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -61,6 +62,8 @@ import {
 	type SettingPath,
 	type SettingValue,
 } from "./settings-schema";
+
+export { onGlobalSettingsPersisted } from "./settings-persistence";
 
 function applyDisplayLanguage(value: unknown): void {
 	setSettingsUiLocale(value);
@@ -2120,7 +2123,9 @@ export class Settings {
 		}
 
 		this.#rebuildMerged();
-		globalSettingsPersistedSignal.fire(this.#agentDir);
+		fireGlobalSettingsPersisted(this.#agentDir, error => {
+			logger.warn("Settings: global settings persisted hook failed", { error: String(error) });
+		});
 	}
 	#queueProjectSave(): void {
 		if (!this.#persist) return;
@@ -2367,12 +2372,6 @@ const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccen
  * Returns an unsubscribe function. Callers should re-read settings in the callback.
  */
 export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
-
-/** Fires after the global config file has been atomically persisted. */
-const globalSettingsPersistedSignal = new SettingSignal<[agentDir: string]>("global settings persisted");
-
-/** Subscribe to successful global config persistence. */
-export const onGlobalSettingsPersisted = (cb: (agentDir: string) => void) => globalSettingsPersistedSignal.on(cb);
 
 /** Fires when Hindsight connection or bank-routing settings change. */
 const hindsightRuntimeSignal = new SettingSignal("hindsight runtime");

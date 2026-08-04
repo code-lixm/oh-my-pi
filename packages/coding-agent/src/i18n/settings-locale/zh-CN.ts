@@ -81,6 +81,47 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Run an auth-gateway forward proxy backed by the configured broker":
 		"运行由已配置 broker 支持的 auth-gateway 转发代理",
 	"Manage the omp auth-broker (credential vault)": "管理 omp auth-broker（凭据保险库）",
+	"Run Oh My Pi as an ACP (Agent Client Protocol) server over stdio":
+		"通过 stdio 将 Oh My Pi 作为 ACP（Agent Client Protocol）服务器运行",
+	"Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s)":
+		"使用相同提示词对模型进行基准测试：首个 token 时间和生成吞吐量（tokens/s）",
+	"Run the local CDP relay that lets the browser tool drive your own Chrome tabs":
+		"运行本地 CDP 中继，使浏览器工具能够控制你自己的 Chrome 标签页",
+	"Detect and fix project diagnostics with weighted parallel subagents": "使用加权并行子代理检测并修复项目诊断问题",
+	"Generate a commit message and update changelogs": "生成 commit 信息并更新变更日志",
+	"Print a shell completion script (bash, zsh, or fish)": "输出 shell 补全脚本（bash、zsh 或 fish）",
+	"Manage configuration settings": "管理配置设置",
+	"Dry-run OAuth account balancing across random session ids": "演练在随机会话 ID 之间均衡 OAuth 帐户",
+	"Preview tool renderers across streaming, in-progress, success, and failure states":
+		"预览工具渲染器在流式、进行中、成功和失败状态下的表现",
+	"Run storage garbage collection": "运行存储垃圾回收",
+	"Test grep tool": "测试 grep 工具",
+	"View, clean, or push reported tool issues (auto-QA grievances)":
+		"查看、清理或推送已报告的工具问题（自动化 QA 申诉）",
+	"Install or link an extension package (alias of `plugin install`/`plugin link`)":
+		"安装或链接扩展包（`plugin install`/`plugin link` 的别名）",
+	"Join a shared collab session (same as /join)": "加入共享协作会话（同 /join）",
+	"List, search, and refresh available models": "列出、搜索并刷新可用模型",
+	"Manage plugins (install, uninstall, list, etc.)": "管理插件（安装、卸载、列出等）",
+	"Show what the read tool will return for a path, URL, or internal URI":
+		"显示 read 工具会为路径、URL 或内部 URI 返回的内容",
+	"Synthesize text with the local TTS engine and play it through the speakers":
+		"使用本地 TTS 引擎合成文本并通过扬声器播放",
+	"Test web search providers": "测试 Web 搜索提供商",
+	"Interactive shell console": "交互式 Shell 控制台",
+	"Manage SSH host configurations": "管理 SSH 主机配置",
+	"View usage statistics": "查看用量统计",
+	"Download tiny local models (session titles + memory)": "下载微型本地模型（会话标题和记忆）",
+	"Get the API key or OAuth token for a provider": "获取提供商的 API key 或 OAuth token",
+	"Inspect and test Time-Traveling Stream Rules (TTSR)": "检查并测试时间旅行流规则（TTSR）",
+	"Check for and install updates": "检查并安装更新",
+	"Show provider usage limits for every authenticated account": "显示每个已认证帐户的提供商使用限制",
+	"List or clear agent-managed git worktrees (~/.omp/wt)": "列出或清理代理管理的 Git 工作树（~/.omp/wt）",
+	"Run an in-memory session in an isolated sandbox directory without project discovery":
+		"在隔离的沙箱目录中运行内存会话，不进行项目发现",
+	"Session storage directory (default: ~/{configDir}/agent)": "会话存储目录（默认：~/{configDir}/agent）",
+	"Execute Python code (requires: {command})": "执行 Python 代码（需要：{command}）",
+	"Native host desktop capture and input (disabled by default)": "原生主机桌面捕获和输入（默认禁用）",
 	"Output JSON": "输出 JSON",
 	"Sub-command": "子命令",
 	"OAuth provider id (login/logout) or path (import)": "OAuth 提供方 ID（login/logout）或路径（import）",
@@ -3783,6 +3824,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Unknown component: {component}": "未知组件：{component}",
 	"Python not found": "未找到 Python",
 	"Install Python 3.8+ and ensure it's in your PATH": "请安装 Python 3.8+ 并确保它在你的 PATH 中",
+	"Install Python 3.8+ or set python.interpreter to its executable path":
+		"请安装 Python 3.8+，或将 `python.interpreter` 设为解释器可执行文件路径",
 	"Python: {path}": "Python：{path}",
 	"Quarter of a 200K window": "200K 上下文的 1/4",
 	"Using managed environment: {path}": "使用托管环境：{path}",

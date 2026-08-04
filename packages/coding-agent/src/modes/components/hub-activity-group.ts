@@ -108,19 +108,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Long-running named-process lifecycle activity controlled by `display.showHubProcessActivity`. */
+export function isHubProcessActivityArgs(value: unknown): value is HubRenderArgs {
+	if (!isRecord(value)) return false;
+	if (typeof value.name === "string") return true;
+	switch (value.op) {
+		case "start":
+		case "ps":
+		case "logs":
+		case "stop":
+		case "restart":
+		case "describe":
+			return true;
+		default:
+			return false;
+	}
+}
+
 /** Whether a hub call is peer coordination rather than named-process control. */
 export function isHubGroupedActivityArgs(value: unknown): value is HubRenderArgs {
 	if (!isRecord(value)) return false;
 	if (value.op === "inbox" || value.op === "list") return true;
 	if (value.op === "send") return typeof value.name !== "string";
-	return value.op === "wait" && typeof value.name !== "string";
+	// A targeted peer wait (`from`) is internal IRC activity. Bare or job-id
+	// waits can report jobs and belong in the grouped job-activity renderer.
+	return value.op === "wait" && typeof value.name !== "string" && typeof value.from !== "string";
 }
 
 /** Peer communication is internal; the anchored subagent HUD surfaces useful feedback. */
 export function isHubPeerCommunicationArgs(value: unknown): value is HubRenderArgs {
 	if (!isRecord(value) || typeof value.name === "string") return false;
 	if (value.op === "inbox" || value.op === "list" || value.op === "send") return true;
-	return value.op === "wait";
+	return value.op === "wait" && typeof value.from === "string";
 }
 
 /** True while streamed Hub args do not yet carry enough discriminators to choose a renderer. */
@@ -158,6 +177,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	#entries: HubActivityEntry[] = [];
 	#toolEntries = new Map<string, HubToolActivityEntry>();
 	#expanded = false;
+	#toolActivityVisible = true;
 	#finalized = false;
 	#sealed = false;
 	#customSequence = 0;
@@ -290,6 +310,12 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#invalidate();
 	}
 
+	setToolActivityVisible(visible: boolean): void {
+		if (this.#toolActivityVisible === visible) return;
+		this.#toolActivityVisible = visible;
+		this.#invalidate();
+	}
+
 	appendIrcEvent(event: HubIrcActivityEvent, settled = true): string | undefined {
 		if (!this.canAppend) return undefined;
 		const id = `irc:${this.#customSequence++}`;
@@ -407,7 +433,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	}
 
 	#entryLines(entry: HubActivityEntry, expanded: boolean): string[] {
-		if (entry.kind === "tool" && entry.hidden) return [];
+		if (entry.kind === "tool" && (entry.hidden || !this.#toolActivityVisible)) return [];
 		if (entry.kind !== "tool") return this.#ircLines(entry, expanded);
 		const op = entry.args.op;
 		if (op === "send") return this.#sendLines(entry, expanded);

@@ -30,8 +30,8 @@ interface AppKeybindings {
 	"app.model.select": true;
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
+	"app.tools.toggleVisibility": true;
 	"app.editor.external": true;
-	"app.editor.clear": true;
 	"app.message.followUp": true;
 	"app.retry": true;
 	"app.message.dequeue": true;
@@ -138,13 +138,13 @@ export const KEYBINDINGS = {
 		defaultKeys: "ctrl+o",
 		description: tSettingsUi("Expand tools"),
 	},
+	"app.tools.toggleVisibility": {
+		defaultKeys: "ctrl+shift+o",
+		description: "Show or hide tool activity",
+	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",
 		description: tSettingsUi("Open external editor"),
-	},
-	"app.editor.clear": {
-		defaultKeys: "alt+c",
-		description: tSettingsUi("Clear editor"),
 	},
 	"app.message.followUp": {
 		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
@@ -549,7 +549,6 @@ function migrateKeybindingsConfigFile(agentDir: string): void {
 }
 
 const USER_CLAIMABLE_DEFAULT_KEYBINDINGS = [
-	"app.editor.clear",
 	"app.message.followUp",
 	"app.message.dequeue",
 	"app.thinking.cycle",
@@ -563,8 +562,6 @@ function userClaimableDefaultKey(keybinding: Keybinding): KeyId | undefined {
 			return "ctrl+q";
 		case "app.message.dequeue":
 			return "shift+up";
-		case "app.editor.clear":
-			return "alt+c";
 		case "app.thinking.cycle":
 			return "ctrl+p";
 		case "app.model.cycleForward":

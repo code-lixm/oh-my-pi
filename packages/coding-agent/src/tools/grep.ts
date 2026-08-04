@@ -12,7 +12,7 @@ import type {
 import { type GrepMatch, GrepOutputMode, type GrepResult, grep } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -25,6 +25,7 @@ import { selectPrompt } from "../prompts/prompt-locale";
 import grepDescription from "../prompts/tools/grep.md" with { type: "text" };
 import grepDescriptionZh from "../prompts/tools/grep.zh-CN.md" with { type: "text" };
 import { DEFAULT_MAX_COLUMN, type TruncationResult, truncateHead, truncateLine } from "../session/streaming-output";
+import { isScoutSpawnable } from "../task/spawn-policy";
 import {
 	Ellipsis,
 	fileHyperlink,
@@ -914,7 +915,17 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 	readonly label = "Grep";
 	readonly loadMode = "discoverable";
 	readonly summary = "Grep file contents using ripgrep (fast regex search)";
-	readonly description: string;
+	get description(): string {
+		const displayMode = resolveFileDisplayMode(this.session);
+		return prompt.render(selectPrompt(grepDescription, grepDescriptionZh), {
+			IS_HL_MODE: displayMode.hashLines,
+			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
+			scoutAvailable: isScoutSpawnable(
+				this.session.settings.get("task.disabledAgents") as string[] | undefined,
+				this.session.getSessionSpawns?.() ?? "*",
+			),
+		});
+	}
 	readonly parameters = searchSchema;
 	readonly strict = true;
 
@@ -929,11 +940,6 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 		this.#contextOverride = context !== undefined ? Math.max(0, Math.floor(context)) : undefined;
 		const total = options?.totalMatchLimit;
 		this.#totalMatchLimit = total !== undefined ? Math.max(1, Math.floor(total)) : undefined;
-		const displayMode = resolveFileDisplayMode(session);
-		this.description = prompt.render(selectPrompt(grepDescription, grepDescriptionZh), {
-			IS_HL_MODE: displayMode.hashLines,
-			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
-		});
 	}
 
 	async execute(
@@ -1638,10 +1644,16 @@ interface GrepFileLocation {
 	lineNumbers: readonly number[];
 }
 
+function sanitizeSearchDisplay(value: string, singleLine = false): string {
+	const sanitized = sanitizeText(value);
+	return singleLine ? sanitized.replace(/[\r\n]+/g, " ") : sanitized;
+}
+
 function searchScopeMeta(details: GrepToolDetails | undefined): string | undefined {
 	if (!details?.scopePath) return undefined;
-	const label = details.searchPath ? fileHyperlink(details.searchPath, details.scopePath) : details.scopePath;
-	return `in ${label}`;
+	const scopePath = sanitizeSearchDisplay(details.scopePath, true);
+	const label = details.searchPath ? fileHyperlink(details.searchPath, scopePath) : scopePath;
+	return tSettingsUi("in {paths}", { paths: label });
 }
 
 function formatLineRanges(lineNumbers: readonly number[]): { text: string; firstLine?: number } {
@@ -1675,13 +1687,14 @@ function grepFileLocations(details: GrepToolDetails): GrepFileLocation[] {
 function grepFileEntry(location: GrepFileLocation, details: GrepToolDetails) {
 	const ranges = formatLineRanges(location.lineNumbers);
 	const meta = ranges.text ? `:${ranges.text}` : undefined;
+	const displayPath = sanitizeSearchDisplay(location.path, true);
 	const resolvedInternalPath = tryResolveInternalUrlSync(location.path);
 	if (resolvedInternalPath) {
-		return { path: location.path, absPath: resolvedInternalPath, line: ranges.firstLine, meta };
+		return { path: displayPath, absPath: resolvedInternalPath, line: ranges.firstLine, meta };
 	}
 	if (location.path.includes("://")) {
 		return {
-			path: location.path,
+			path: displayPath,
 			meta,
 			link: (displayText: string) => uriHyperlink(location.path, displayText),
 		};
@@ -1691,7 +1704,7 @@ function grepFileEntry(location: GrepFileLocation, details: GrepToolDetails) {
 		: details.cwd
 			? path.resolve(details.cwd, location.path)
 			: undefined;
-	return { path: location.path, absPath: absolutePath, line: ranges.firstLine, meta };
+	return { path: displayPath, absPath: absolutePath, line: ranges.firstLine, meta };
 }
 
 function grepStatusIcon(uiTheme: Theme): string {
@@ -1704,7 +1717,7 @@ export const grepToolRenderer = {
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];
-		if (paths.length) meta.push(tSettingsUi("in {paths}", { paths: paths.join(", ") }));
+		if (paths.length) meta.push(tSettingsUi("in {paths}", { paths: sanitizeSearchDisplay(paths.join(", "), true) }));
 		if (args.case === false) meta.push(tSettingsUi("case:insensitive"));
 		if (args.gitignore === false) meta.push(tSettingsUi("gitignore:false"));
 		if (args.skip !== undefined && args.skip > 0) meta.push(tSettingsUi("skip:{count}", { count: args.skip }));
@@ -1714,7 +1727,7 @@ export const grepToolRenderer = {
 				icon: "pending",
 				title: tSettingsUi("Grep"),
 				titleColor: "toolTitle",
-				description: args.pattern || "?",
+				description: sanitizeSearchDisplay(args.pattern || "?", true),
 				meta,
 			},
 			uiTheme,
@@ -1735,7 +1748,7 @@ export const grepToolRenderer = {
 		if (result.isError || details?.error) {
 			const errorText =
 				details?.error || result.content?.find(c => c.type === "text")?.text || tSettingsUi("Unknown error");
-			const text = formatErrorMessage(errorText, uiTheme);
+			const text = formatErrorMessage(sanitizeSearchDisplay(errorText, true), uiTheme);
 			return createCachedComponent(
 				() => false,
 				width => [truncateToWidth(text, width, Ellipsis.Omit)],
@@ -1743,10 +1756,15 @@ export const grepToolRenderer = {
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;
+		const rawTextContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
+		const textContent = rawTextContent === undefined ? undefined : sanitizeSearchDisplay(rawTextContent);
 
 		if (!getBasicToolDetailsVisible()) {
-			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
-			const legacyEmpty = !textContent || textContent === "No matches found" || textContent.trim() === "";
+			const legacyEmpty =
+				!textContent ||
+				textContent === "No matches found" ||
+				textContent === tSettingsUi("No matches found") ||
+				textContent.trim() === "";
 			const legacyLines = textContent?.split("\n").filter(line => line.trim().length > 0) ?? [];
 			const matchCount = hasDetailedData ? (details?.matchCount ?? 0) : legacyEmpty ? 0 : legacyLines.length;
 			const fileCount = hasDetailedData ? (details?.fileCount ?? 0) : 0;
@@ -1769,7 +1787,9 @@ export const grepToolRenderer = {
 				meta.push(scopeMeta);
 			} else {
 				const paths = toPathList(args?.path ?? args?.paths);
-				if (paths.length > 0) meta.push(tSettingsUi("in {paths}", { paths: paths.join(", ") }));
+				if (paths.length > 0) {
+					meta.push(tSettingsUi("in {paths}", { paths: sanitizeSearchDisplay(paths.join(", "), true) }));
+				}
 			}
 			if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
 			const header = renderStatusLine(
@@ -1779,7 +1799,7 @@ export const grepToolRenderer = {
 						: { iconOverride: grepStatusIcon(uiTheme) }),
 					title: tSettingsUi("Grep"),
 					titleColor: "toolTitle",
-					description: args?.pattern,
+					description: args?.pattern ? sanitizeSearchDisplay(args.pattern, true) : undefined,
 					meta,
 				},
 				uiTheme,
@@ -1791,12 +1811,11 @@ export const grepToolRenderer = {
 		}
 
 		if (!hasDetailedData) {
-			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
-			if (!textContent || textContent === "No matches found") {
+			if (!textContent || textContent === "No matches found" || textContent === tSettingsUi("No matches found")) {
 				return new Text(formatEmptyMessage(tSettingsUi("No matches found"), uiTheme), 0, 0);
 			}
 			const lines = textContent.split("\n").filter(line => line.trim() !== "");
-			const description = args?.pattern ?? undefined;
+			const description = args?.pattern ? sanitizeSearchDisplay(args.pattern, true) : undefined;
 			const header = renderStatusLine(
 				{
 					iconOverride: grepStatusIcon(uiTheme),
@@ -1821,7 +1840,7 @@ export const grepToolRenderer = {
 						},
 						uiTheme,
 					);
-					return [header, ...listLines].map(l => truncateToWidth(l, width, Ellipsis.Omit));
+					return [header, ...listLines].map(line => truncateToWidth(line, width, Ellipsis.Omit));
 				},
 			);
 		}
@@ -1835,7 +1854,12 @@ export const grepToolRenderer = {
 		const missingPathsList = details?.missingPaths ?? [];
 		const missingNote =
 			missingPathsList.length > 0
-				? uiTheme.fg("warning", tSettingsUi("skipped missing: {paths}", { paths: missingPathsList.join(", ") }))
+				? uiTheme.fg(
+						"warning",
+						tSettingsUi("skipped missing: {paths}", {
+							paths: missingPathsList.map(path => sanitizeSearchDisplay(path, true)).join(", "),
+						}),
+					)
 				: undefined;
 
 		if (matchCount === 0) {
@@ -1849,7 +1873,13 @@ export const grepToolRenderer = {
 				if (scopeMeta) meta.push(scopeMeta);
 			}
 			const header = renderStatusLine(
-				{ icon: "warning", title: tSettingsUi("Grep"), titleColor: "toolTitle", description: args?.pattern, meta },
+				{
+					icon: "warning",
+					title: tSettingsUi("Grep"),
+					titleColor: "toolTitle",
+					description: args?.pattern ? sanitizeSearchDisplay(args.pattern, true) : undefined,
+					meta,
+				},
 				uiTheme,
 			);
 			return createCachedComponent(
@@ -1858,7 +1888,7 @@ export const grepToolRenderer = {
 					const emptyLabel = tSettingsUi("No matches found");
 					const fileLines = renderFileList(
 						{
-							files: searchedPaths.map(path => ({ path, meta: emptyLabel })),
+							files: searchedPaths.map(path => ({ path: sanitizeSearchDisplay(path, true), meta: emptyLabel })),
 							expanded: options.expanded,
 							maxCollapsedLines: toolDetailMaxLines(),
 							truncateFrom: "middle",
@@ -1879,7 +1909,7 @@ export const grepToolRenderer = {
 		];
 		const meta = [...summaryParts];
 		if (truncated) meta.push(uiTheme.fg("warning", tSettingsUi("truncated")));
-		const description = args?.pattern ?? undefined;
+		const description = args?.pattern ? sanitizeSearchDisplay(args.pattern, true) : undefined;
 		const header = renderStatusLine(
 			{
 				...(truncated ? { icon: "warning" as const } : { iconOverride: grepStatusIcon(uiTheme) }),

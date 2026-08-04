@@ -9,6 +9,8 @@ import subagentSystemPromptTemplateZh from "../../src/prompts/system/subagent-sy
 	type: "text",
 };
 
+// Contract: a multi-sibling spawn with spawn capacity and IRC available draws
+// a proactive coordinate-via-irc suggestion.
 const item = (): TaskItem => ({ task: "do the thing" });
 let previousSettingsUiLocale = getSettingsUiLocale();
 let previousPromptLocale = getPromptLocale();
@@ -107,7 +109,6 @@ describe("subagent Current collaborators guidance", () => {
 		);
 	});
 });
-
 // Contract: TaskTool.execute composes the specialization nudge with the
 // coordination suggestion, gating the latter to the async path (sync siblings
 // have already finished). composeSpawnAdvisory is the seam that decision flows
@@ -125,6 +126,22 @@ describe("composeSpawnAdvisory", () => {
 		});
 		expect(advisory).toContain("generic");
 		expect(advisory).toContain('`agent: "scout"`');
+		expect(advisory).toContain("Results return automatically; do not poll.");
+		expect(advisory).toContain("confirm ownership first.");
+		expect(advisory).not.toContain("Coordinate:");
+	});
+
+	it("drops the scout example from the specialization tip when scout is unavailable", () => {
+		const advisory = composeSpawnAdvisory({
+			agents: ["task", "task"],
+			items: [worker(), worker()],
+			depthCapacity: true,
+			ircEnabled: true,
+			willRunAsync: true,
+			scoutAvailable: false,
+		});
+		expect(advisory).toContain("generic");
+		expect(advisory).not.toContain("scout");
 		expect(advisory).toContain("Results return automatically; do not poll.");
 		expect(advisory).toContain("confirm ownership first.");
 		expect(advisory).not.toContain("Coordinate:");

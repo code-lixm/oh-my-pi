@@ -39,7 +39,7 @@ function renderStripped(tree: SessionTreeNode[], leafId: string, width = 120): s
 	return selector.render(width).map(line => Bun.stripANSI(line));
 }
 
-describe("issue #2298: chain rows under last-sibling branches keep their gutter", () => {
+describe("issue #2298 / #7332: linear branch continuations keep their local gutter", () => {
 	beforeAll(async () => {
 		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
 	});
