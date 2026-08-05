@@ -8,8 +8,9 @@
 - Added render-time mouse hit routing for editors, Markdown links, images, nested containers, boxes, and overlays without changing rendered terminal output.
 
 ### Fixed
+- Fixed event-loop watchdog reports losing render attribution by marking the complete synchronous TUI render and terminal-paint cycle as `ui.render`, including exception-safe phase cleanup.
 
-- Fixed literal Markdown code rows dropping component gutters and host backgrounds, which left fenced code narrower than surrounding content and punched unpainted holes through styled message surfaces.
+- Fixed framed and plain Markdown code rows bypassing the surrounding component gutter, which made assistant fenced blocks start at column zero instead of aligning with prose and could punch unpainted holes through styled message surfaces.
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
 - Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
 ## [17.0.6] - 2026-07-20

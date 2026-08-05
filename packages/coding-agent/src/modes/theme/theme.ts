@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
 import {
@@ -30,7 +31,6 @@ import {
 	relativeLuminance,
 	rgbToHex,
 } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import chalk from "chalk";
 import { LRUCache } from "lru-cache/raw";
 // Embed theme JSON files at build time
@@ -1130,7 +1130,7 @@ const themeJsonSchema = type({
 	"$schema?": "string",
 	name: "string",
 	"terminalPalette?": "boolean",
-	"vars?": "Record<string, string | number>",
+	"vars?": { "[string]": "string | number" },
 	colors: themeColorsSchema,
 	"export?": {
 		"pageBg?": "string | number",
@@ -1139,7 +1139,7 @@ const themeJsonSchema = type({
 	},
 	"symbols?": {
 		"preset?": "'unicode' | 'nerd' | 'ascii'",
-		"overrides?": "Record<string, string>",
+		"overrides?": { "[string]": "string" },
 		"spinnerFrames?": spinnerFramesSchema,
 	},
 });

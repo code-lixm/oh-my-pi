@@ -58,10 +58,12 @@ describe("EventController async update finalization", () => {
 	function createFixture() {
 		const chatContainer = new TranscriptContainer();
 		const pendingTools = new Map<string, ToolExecutionComponent>();
+		const requestRender = vi.fn();
+		const requestComponentRender = vi.fn();
 		const ctx = {
 			isInitialized: true,
 			init: vi.fn(async () => {}),
-			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
+			ui: { requestRender, requestComponentRender },
 			statusLine: { invalidate: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
 			toolOutputExpanded: false,
@@ -74,7 +76,7 @@ describe("EventController async update finalization", () => {
 			sessionManager: { getCwd: () => process.cwd() },
 			setTodos: vi.fn(),
 		} as unknown as InteractiveModeContext;
-		return { controller: new EventController(ctx), pendingTools };
+		return { controller: new EventController(ctx), pendingTools, requestRender, requestComponentRender };
 	}
 
 	async function startTask(controller: EventController, pendingTools: Map<string, ToolExecutionComponent>) {
@@ -88,6 +90,47 @@ describe("EventController async update finalization", () => {
 		sealed.push(component);
 		return component;
 	}
+
+	it("repaints only the matching tool card for updates and skips missing cards", async () => {
+		const { controller, pendingTools, requestRender, requestComponentRender } = createFixture();
+		const component = await startTask(controller, pendingTools);
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "tc-task",
+			toolName: "task",
+			result: taskResult("running", "Background task Job1 started."),
+			isError: false,
+		});
+		expect(pendingTools.get("tc-task")).toBe(component);
+
+		requestRender.mockClear();
+		requestComponentRender.mockClear();
+		await controller.handleEvent({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("completed", "Background task Job1 completed."),
+		});
+
+		expect(Bun.stripANSI(component.render(100).join("\n"))).toContain("Background task Job1 completed.");
+		expect(pendingTools.has("tc-task")).toBe(false);
+		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestComponentRender.mock.calls).toEqual([[component]]);
+
+		requestRender.mockClear();
+		requestComponentRender.mockClear();
+		await controller.handleEvent({
+			type: "tool_execution_update",
+			toolCallId: "tc-missing",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("completed", "This result has no card."),
+		});
+		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestComponentRender).not.toHaveBeenCalled();
+	});
 
 	it("keeps the block tracked when a final async frame precedes tool_execution_end", async () => {
 		const { controller, pendingTools } = createFixture();

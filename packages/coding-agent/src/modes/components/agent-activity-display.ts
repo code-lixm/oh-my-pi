@@ -33,6 +33,36 @@ export type AgentActivityDisplayProgress = Pick<
 	status?: AgentProgress["status"];
 };
 
+export type AgentTerminalStatus = Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
+
+/**
+ * Resolve the task outcome shared by Agent Hub and transcript surfaces.
+ * Registry `idle`/`parked` are lifecycle states, not proof of success; an
+ * explicit aborted tombstone still wins over stale observer/progress data.
+ */
+export function resolveAgentTerminalStatus(options: {
+	progressStatus?: AgentProgress["status"];
+	observedStatus?: "active" | "completed" | "failed" | "aborted";
+	registryStatus?: AgentStatus;
+}): AgentTerminalStatus | undefined {
+	if (options.registryStatus === "aborted") return "aborted";
+	if (
+		options.progressStatus === "completed" ||
+		options.progressStatus === "failed" ||
+		options.progressStatus === "aborted"
+	) {
+		return options.progressStatus;
+	}
+	if (
+		options.observedStatus === "completed" ||
+		options.observedStatus === "failed" ||
+		options.observedStatus === "aborted"
+	) {
+		return options.observedStatus;
+	}
+	return undefined;
+}
+
 export interface AgentActivityDisplay {
 	/** Current phase, activity detail, and phase/quiet elapsed time. */
 	activityLine?: string;
@@ -172,8 +202,9 @@ export function renderAgentStatusBadge(status: AgentStatus | AgentProgress["stat
 		case "pending":
 			return theme.fg("warning", tSettingsUi("waiting"));
 		case "idle":
-		case "completed":
 			return theme.fg("accent", tSettingsUi("idle"));
+		case "completed":
+			return theme.fg("success", tSettingsUi("completed"));
 		case "parked":
 			return theme.fg("muted", tSettingsUi("parked"));
 		case "failed":

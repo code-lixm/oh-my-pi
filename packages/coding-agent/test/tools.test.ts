@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +16,7 @@ import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { unzip } from "@oh-my-pi/pi-coding-agent/utils/zip";
+import * as piNatives from "@oh-my-pi/pi-natives";
 import { $which, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { GlobTool } from "../src/tools/glob";
 import { DEFAULT_FILE_LIMIT, GrepTool, MULTI_FILE_PER_FILE_MATCHES } from "../src/tools/grep";
@@ -1557,6 +1558,269 @@ function b() {
 			expect(deliveries[0]?.text).toContain("done");
 			expect(updates).toEqual(updatesAtBackground);
 			await asyncJobManager.dispose();
+		});
+
+		it.each([
+			{ name: "a successful command", exitCode: 0, status: "completed" as const },
+			{ name: "a non-zero command", exitCode: 17, status: "failed" as const },
+		])(
+			"coalesces noisy managed Bash progress at 250ms and retains $name's terminal artifact",
+			async ({ exitCode, status }) => {
+				vi.useFakeTimers();
+				setSystemTime(1_000);
+
+				const advance = async (ms: number): Promise<void> => {
+					vi.advanceTimersByTime(ms);
+					for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+				};
+
+				const nativeResult = Promise.withResolvers<piNatives.ShellRunResult>();
+				let nativeResultSettled = false;
+				let asyncJobManager: AsyncJobManager | undefined;
+				try {
+					const deliveries: Array<{ jobId: string; text: string }> = [];
+					const updates: string[] = [];
+					const artifactPath = path.join(testDir, `managed-bash-pressure-${exitCode}.log`);
+					const liveHead = "LIVE_HEAD\n";
+					const noisyChunks = Array.from(
+						{ length: 64 },
+						(_, index) => `LIVE_BURST_${index}:${"x".repeat(2048)}\n`,
+					);
+					const finalTail = `FINAL_TAIL_${exitCode}\n`;
+					const expectedArtifact = [liveHead, ...noisyChunks, finalTail].join("");
+					const started = Promise.withResolvers<void>();
+					let emitChunk: ((chunk: string) => void) | undefined;
+
+					vi.spyOn(piNatives.Shell.prototype, "run").mockImplementation((_options, onChunk) => {
+						emitChunk = chunk => onChunk?.(null, chunk);
+						emitChunk(liveHead);
+						for (const chunk of noisyChunks) emitChunk(chunk);
+						started.resolve();
+						return nativeResult.promise;
+					});
+
+					asyncJobManager = new AsyncJobManager({
+						onJobComplete: async (jobId, text) => {
+							deliveries.push({ jobId, text });
+						},
+					});
+					const autoBackgroundBashTool = wrapToolWithMetaNotice(
+						new BashTool(
+							createTestToolSession(
+								testDir,
+								Settings.isolated({
+									"bash.autoBackground.enabled": true,
+									"bash.autoBackground.thresholdMs": 700,
+								}),
+								{
+									getSessionId: () => "managed-bash-pressure",
+									asyncJobManager,
+									allocateOutputArtifact: async () => {
+										fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+										return { id: `managed-bash-pressure-${exitCode}`, path: artifactPath };
+									},
+								},
+							),
+						),
+					);
+
+					const startResult = autoBackgroundBashTool.execute(
+						`managed-bash-pressure-${exitCode}`,
+						{ command: "managed-bash-pressure" },
+						undefined,
+						update => {
+							updates.push(update.content?.find(block => block.type === "text")?.text ?? "");
+						},
+					);
+					await started.promise;
+					await Promise.resolve();
+					await Promise.resolve();
+
+					// The producer accepts the head immediately, but the shared manager
+					// cannot publish it before its 100ms scheduler tick.
+					expect(updates).toEqual([]);
+					await advance(99);
+					expect(updates).toEqual([]);
+					await advance(1);
+					expect(updates).toEqual([liveHead]);
+
+					// The noisy burst stays inside the producer's 250ms window, then waits
+					// another 100ms for the manager callback budget.
+					await advance(149);
+					expect(updates).toEqual([liveHead]);
+					await advance(1);
+					expect(updates).toEqual([liveHead]);
+					await advance(99);
+					expect(updates).toEqual([liveHead]);
+					await advance(1);
+					expect(updates).toHaveLength(2);
+					expect(updates[1]).not.toContain(finalTail.trim());
+					expect(updates[1]).toContain("LIVE_BURST_63");
+
+					// A quiet terminal tail follows the same 250ms producer and 100ms
+					// manager stages before the original tool card is frozen.
+					await advance(149);
+					if (!emitChunk) throw new Error("expected the mocked shell to expose its output callback");
+					emitChunk(finalTail);
+					expect(updates).toHaveLength(2);
+					await advance(1);
+					expect(updates).toHaveLength(2);
+					await advance(99);
+					expect(updates).toHaveLength(2);
+					await advance(1);
+					expect(updates).toHaveLength(3);
+					expect(updates[2]).toContain(finalTail.trim());
+
+					// Crossing the auto-background threshold freezes the original tool card.
+					await advance(100);
+					const backgrounded = await startResult;
+					expect(backgrounded.details?.async?.state).toBe("running");
+					const jobId = backgrounded.details?.async?.jobId;
+					if (!jobId) throw new Error("expected an auto-backgrounded job id");
+					expect(asyncJobManager.getJob(jobId)?.status).toBe("running");
+					const updatesAtBackground = updates.slice();
+
+					// Terminal progress consumes the shared callback budget. Fix the clock at
+					// the auto-background boundary, then drive budget windows until the
+					// managed job has actually settled.
+					setSystemTime(1_700);
+					const managedJob = asyncJobManager.getJob(jobId);
+					if (!managedJob) throw new Error("expected managed Bash job");
+					let managedJobSettled = false;
+					void managedJob.promise.then(() => {
+						managedJobSettled = true;
+					});
+					nativeResult.resolve({ exitCode, cancelled: false, timedOut: false });
+					nativeResultSettled = true;
+					for (let turn = 0; turn < 32 && !managedJobSettled; turn += 1) {
+						// Artifact finalization uses the real file sink; yield to it before
+						// advancing the next virtual global-budget window.
+						await fs.promises.stat(artifactPath).catch(() => undefined);
+						vi.advanceTimersByTime(100);
+					}
+					expect(managedJobSettled).toBe(true);
+					await managedJob.promise;
+
+					const settledJob = asyncJobManager.getJob(jobId);
+					expect(updates).toEqual(updatesAtBackground);
+					expect(settledJob?.status).toBe(status);
+					expect(deliveries).toHaveLength(1);
+					expect(deliveries[0]?.jobId).toBe(jobId);
+					expect(settledJob?.latestProgressText).toBe(deliveries[0]?.text);
+					expect(deliveries[0]?.text).toContain(finalTail.trim());
+					if (exitCode === 0) {
+						expect(deliveries[0]?.text).not.toContain("Command exited with code");
+					} else {
+						expect(deliveries[0]?.text).toContain(`Command exited with code ${exitCode}`);
+					}
+					expect(fs.readFileSync(artifactPath, "utf8")).toBe(expectedArtifact);
+				} finally {
+					if (!nativeResultSettled) {
+						nativeResult.resolve({ exitCode: 0, cancelled: false, timedOut: false });
+					}
+					await Promise.resolve();
+					await Promise.resolve();
+					await asyncJobManager?.dispose({ timeoutMs: 0 });
+					vi.useRealTimers();
+					setSystemTime();
+				}
+			},
+		);
+
+		it.each([
+			{ name: "a successful command", exitCode: 0, status: "completed" as const },
+			{ name: "a non-zero command", exitCode: 17, status: "failed" as const },
+		])("awaits terminal progress before resolving foreground $name", async ({ exitCode, status }) => {
+			const terminalUpdateStarted = Promise.withResolvers<void>();
+			const releaseTerminalUpdate = Promise.withResolvers<void>();
+			const order: string[] = [];
+			let asyncJobManager: AsyncJobManager | undefined;
+			try {
+				vi.spyOn(piNatives.Shell.prototype, "run").mockResolvedValue({
+					exitCode,
+					cancelled: false,
+					timedOut: false,
+				});
+
+				asyncJobManager = new AsyncJobManager({});
+				let managedJobId: string | undefined;
+				const register = asyncJobManager.register.bind(asyncJobManager);
+				vi.spyOn(asyncJobManager, "register").mockImplementation((...args) => {
+					const jobId = register(...args);
+					managedJobId = jobId;
+					return jobId;
+				});
+				const autoBackgroundBashTool = wrapToolWithMetaNotice(
+					new BashTool(
+						createTestToolSession(
+							testDir,
+							Settings.isolated({
+								"bash.autoBackground.enabled": true,
+								"bash.autoBackground.thresholdMs": 60_000,
+							}),
+							{
+								getSessionId: () => `managed-bash-terminal-order-${exitCode}`,
+								asyncJobManager,
+							},
+						),
+					),
+				);
+
+				let foregroundOutcome: "pending" | "result" | "error" = "pending";
+				const foreground = autoBackgroundBashTool
+					.execute(
+						`managed-bash-terminal-order-${exitCode}`,
+						{ command: "managed-bash-terminal-order" },
+						undefined,
+						async () => {
+							order.push("terminal update started");
+							terminalUpdateStarted.resolve();
+							await releaseTerminalUpdate.promise;
+							order.push("terminal update finished");
+						},
+					)
+					.then(
+						result => {
+							foregroundOutcome = "result";
+							order.push("detailed tool result");
+							return result;
+						},
+						error => {
+							foregroundOutcome = "error";
+							order.push("foreground error");
+							throw error;
+						},
+					);
+				void foreground.catch(() => {});
+
+				await terminalUpdateStarted.promise;
+
+				// The foreground result must remain unavailable while the terminal's
+				// final update is blocked. Resolving completion before reportProgress
+				// regresses this into a completed foreground call here.
+				expect(foregroundOutcome).toBe("pending");
+				expect(order).toEqual(["terminal update started"]);
+
+				releaseTerminalUpdate.resolve();
+				const result = await foreground;
+				expect(order).toEqual(["terminal update started", "terminal update finished", "detailed tool result"]);
+
+				if (!managedJobId) throw new Error("expected managed Bash job registration");
+				await asyncJobManager.waitForAll();
+				expect(asyncJobManager.getJob(managedJobId)?.status).toBe(status);
+				if (exitCode === 0) {
+					expect(result.isError).not.toBe(true);
+				} else {
+					expect(result.isError).toBe(true);
+					expect(result.details?.exitCode).toBe(exitCode);
+					expect(getTextOutput(result)).toContain(`Command exited with code ${exitCode}`);
+				}
+			} finally {
+				releaseTerminalUpdate.resolve();
+				await Promise.resolve();
+				await Promise.resolve();
+				await asyncJobManager?.dispose({ timeoutMs: 0 });
+			}
 		});
 
 		it("backgrounds a running command when the steering signal fires mid-wait", async () => {

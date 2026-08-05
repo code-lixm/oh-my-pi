@@ -70,8 +70,41 @@ function renderHub(hub: AgentHubOverlayComponent): string {
 	return Bun.stripANSI(hub.render(120).join("\n"));
 }
 
+function hubRow(hub: AgentHubOverlayComponent, id: string): string {
+	const row = renderHub(hub)
+		.split("\n")
+		.find(line => line.includes(id));
+	if (!row) throw new Error(`Expected Hub row for ${id}`);
+	return row;
+}
+
+function makeViewer(options: {
+	agentId: string;
+	registry: AgentRegistry;
+	observers?: SessionObserverRegistry;
+}): AgentTranscriptViewer {
+	return new AgentTranscriptViewer({
+		agentId: options.agentId,
+		registry: options.registry,
+		observers: options.observers,
+		ui: { requestRender() {}, requestComponentRender() {} } as unknown as TUI,
+		cwd: "/tmp",
+		expandKeys: ["ctrl+o"],
+		hubKeys: [],
+		requestRender: () => {},
+		onClose: () => {},
+		onHubClose: () => {},
+	});
+}
+
 function renderViewer(viewer: AgentTranscriptViewer): string {
 	return Bun.stripANSI(viewer.render(88).join("\n"));
+}
+
+function viewerHeader(viewer: AgentTranscriptViewer): string {
+	const header = renderViewer(viewer).split("\n")[1];
+	if (!header) throw new Error("Expected compact transcript header");
+	return header;
 }
 
 function registerMain(registry: AgentRegistry): void {
@@ -354,7 +387,7 @@ describe("Agent Hub redesign", () => {
 		}
 	});
 
-	it("shows a usable no-session placeholder beneath the compact transcript header", () => {
+	it("shows a usable no-session placeholder beneath the compact transcript header", async () => {
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
 		const registry = new AgentRegistry();
 		registerMain(registry);
@@ -374,34 +407,117 @@ describe("Agent Hub redesign", () => {
 				progress,
 			},
 		]);
-		const viewer = new AgentTranscriptViewer({
-			agentId: COMPLETED,
-			registry,
-			observers,
-			ui: { requestRender() {}, requestComponentRender() {} } as unknown as TUI,
-			cwd: "/tmp",
-			expandKeys: ["ctrl+o"],
-			hubKeys: [],
-			requestRender: () => {},
-			onClose: () => {},
-			onHubClose: () => {},
-		});
+		const hub = makeHub({ registry, observers });
+		const viewer = makeViewer({ agentId: COMPLETED, registry, observers });
 
 		try {
+			await hub.persistedSubagentsReady;
+			const hubEntry = hubRow(hub, COMPLETED);
 			const lines = Bun.stripANSI(viewer.render(120).join("\n")).split("\n");
 			const header = lines[1];
 			if (!header) throw new Error("Expected compact transcript header");
 			const body = lines.slice(2, -1).join("\n");
 
 			expect(header).toContain("Alt+K");
-			expect(header).toContain("COMPLETED_PARKED_HUB_");
+			expect(header).toContain("COMPLETED");
 			expect(header).toContain("Alt+J");
 			expect(header).toContain("Model: provider/short-model");
 			expect(header).toContain("Duration: 5s");
-			expect(header).toContain("Status: parked");
+			expect(header).toContain("Status: completed");
+			expect(hubEntry).toContain("Completed");
 			expect(body).toContain("No session file available yet.");
 		} finally {
 			viewer.dispose();
+			hub.dispose();
+		}
+	});
+
+	it("shows failed observer outcomes consistently for idle and parked agent refs", async () => {
+		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
+		for (const lifecycleStatus of ["idle", "parked"] as const) {
+			const id = `FAILED_${lifecycleStatus.toUpperCase()}_STATUS`;
+			const registry = new AgentRegistry();
+			registerMain(registry);
+			registerParticipant(registry, { id, kind: "sub", status: lifecycleStatus, sessionFile: null });
+			const observers = new SessionObserverRegistry();
+			vi.spyOn(observers, "getSessions").mockReturnValue([
+				{
+					id,
+					kind: "subagent",
+					label: id,
+					status: "failed",
+					lastUpdate: startedAtMs + 5_000,
+					progress: { ...completedProgress(id, startedAtMs, 5_000), status: "failed" },
+				},
+			]);
+			const hub = makeHub({ registry, observers });
+			const viewer = makeViewer({ agentId: id, registry, observers });
+
+			try {
+				await hub.persistedSubagentsReady;
+				expect(hubRow(hub, id)).toContain("Failed");
+				expect(viewerHeader(viewer)).toContain("Status: failed");
+			} finally {
+				viewer.dispose();
+				hub.dispose();
+			}
+		}
+	});
+
+	it("keeps idle and parked lifecycle labels when no observer outcome exists", async () => {
+		for (const lifecycleStatus of ["idle", "parked"] as const) {
+			const id = `LIFECYCLE_${lifecycleStatus.toUpperCase()}_STATUS`;
+			const registry = new AgentRegistry();
+			registerMain(registry);
+			registerParticipant(registry, { id, kind: "sub", status: lifecycleStatus, sessionFile: null });
+			const observers = new SessionObserverRegistry();
+			const hub = makeHub({ registry, observers });
+			const viewer = makeViewer({ agentId: id, registry, observers });
+
+			try {
+				await hub.persistedSubagentsReady;
+				const hubEntry = hubRow(hub, id);
+				expect(hubEntry).toContain(lifecycleStatus);
+				expect(hubEntry).not.toContain("Completed");
+				expect(viewerHeader(viewer)).toContain(`Status: ${lifecycleStatus}`);
+			} finally {
+				viewer.dispose();
+				hub.dispose();
+			}
+		}
+	});
+
+	it("keeps an aborted tombstone ahead of stale completed observer data", async () => {
+		const id = "ABORTED_TOMBSTONE_STATUS";
+		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		registerParticipant(registry, { id, kind: "sub", status: "aborted", sessionFile: null });
+		const observers = new SessionObserverRegistry();
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id,
+				kind: "subagent",
+				label: id,
+				status: "completed",
+				lastUpdate: startedAtMs + 5_000,
+				progress: completedProgress(id, startedAtMs, 5_000),
+			},
+		]);
+		const hub = makeHub({ registry, observers });
+		const viewer = makeViewer({ agentId: id, registry, observers });
+
+		try {
+			await hub.persistedSubagentsReady;
+			const hubEntry = hubRow(hub, id);
+			expect(hubEntry).toContain("Stopped");
+			expect(hubEntry).not.toContain("Completed");
+			const header = viewerHeader(viewer);
+			expect(header).toContain("Status: aborted");
+			expect(header).not.toContain("Status: completed");
+		} finally {
+			viewer.dispose();
+			hub.dispose();
 		}
 	});
 

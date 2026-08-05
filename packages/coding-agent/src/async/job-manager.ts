@@ -7,6 +7,8 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
+const PROGRESS_FLUSH_INTERVAL_MS = 100;
+const PROGRESS_CALLBACK_BUDGET = 8;
 
 /**
  * Adaptive ("smart") `hub` poll-wait ladder (ms). A tight poll loop climbs
@@ -120,6 +122,27 @@ export interface AsyncJobDeliveryState {
 	pendingJobIds: string[];
 }
 
+interface AsyncJobProgressOptions {
+	/** Prioritize this revision, but still dispatch it through the global callback budget. */
+	terminal?: boolean;
+}
+
+type AsyncJobProgressText = string | (() => string);
+type AsyncJobProgressDetails = Record<string, unknown> | (() => Record<string, unknown>);
+type AsyncJobProgressKey = string | AsyncJob;
+
+interface PendingAsyncJobProgress {
+	key: AsyncJobProgressKey;
+	job: AsyncJob;
+	revision: number;
+	text: AsyncJobProgressText;
+	details?: AsyncJobProgressDetails;
+	started?: boolean;
+	onProgress: NonNullable<AsyncJobRegisterOptions["onProgress"]>;
+	cancelled?: boolean;
+	resolve(): void;
+}
+
 export interface AsyncJobRegisterOptions {
 	id?: string;
 	/** Registry id of the agent that owns this job; used to scope cancelAll. */
@@ -129,6 +152,8 @@ export interface AsyncJobRegisterOptions {
 	/** User-facing work summary available before the first progress event. */
 	description?: string;
 	onProgress?: (text: string, details?: Record<string, unknown>) => void | Promise<void>;
+	/** Shared UI target for latest-wins progress coalescing (for example one task batch/tool call). */
+	progressKey?: string;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
 }
@@ -171,6 +196,19 @@ export class AsyncJobManager {
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
+	#runningJobCount = 0;
+	#activeRunningJobCount = 0;
+	#queuedRunningJobCount = 0;
+	readonly #runningJobCountByOwner = new Map<string, number>();
+	readonly #pendingProgress = new Map<AsyncJobProgressKey, PendingAsyncJobProgress>();
+	readonly #pendingTerminalProgress: PendingAsyncJobProgress[] = [];
+	readonly #activeProgressKeys = new Set<AsyncJobProgressKey>();
+	readonly #inFlightProgressByJob = new Map<AsyncJob, Set<Promise<void>>>();
+	readonly #dispatchedProgressByJob = new Map<AsyncJob, Set<PendingAsyncJobProgress>>();
+	readonly #settlingJobs = new Set<AsyncJob>();
+	#progressRevision = 0;
+	#progressTimer: NodeJS.Timeout | undefined;
+	#progressCooldown = false;
 	#deliveryLoop: Promise<void> | undefined;
 	#disposed = false;
 
@@ -193,24 +231,16 @@ export class AsyncJobManager {
 	/** True when the running-job count has reached the configured cap. */
 	get atCapacity(): boolean {
 		if (this.#disposed) return true;
-		// Mirror register(): queued jobs hold no execution slot.
-		let activeCount = 0;
-		for (const job of this.#jobs.values()) {
-			if (job.status === "running" && !job.queued) activeCount++;
-		}
-		return activeCount >= this.#maxRunningJobs;
+		return this.#activeRunningJobCount >= this.#maxRunningJobs;
 	}
 
 	/** Snapshot real manager capacity without scheduling work or polling. */
 	getConcurrencySnapshot(): AsyncJobConcurrencySnapshot {
-		let running = 0;
-		let queued = 0;
-		for (const job of this.#jobs.values()) {
-			if (job.status !== "running") continue;
-			if (job.queued) queued++;
-			else running++;
-		}
-		return { running, queued, limit: this.#maxRunningJobs };
+		return {
+			running: this.#activeRunningJobCount,
+			queued: this.#queuedRunningJobCount,
+			limit: this.#maxRunningJobs,
+		};
 	}
 
 	/**
@@ -237,7 +267,11 @@ export class AsyncJobManager {
 		run: (ctx: {
 			jobId: string;
 			signal: AbortSignal;
-			reportProgress: (text: string, details?: Record<string, unknown>) => Promise<void>;
+			reportProgress: (
+				text: AsyncJobProgressText,
+				details?: AsyncJobProgressDetails,
+				progressOptions?: AsyncJobProgressOptions,
+			) => Promise<void>;
 			/** Clear the queued flag once the job actually starts executing. */
 			markRunning: () => void;
 		}) => Promise<string>,
@@ -248,11 +282,7 @@ export class AsyncJobManager {
 		}
 		// Queued jobs hold no execution slot yet — only count jobs that are
 		// actually running so a large parked batch cannot starve registration.
-		let activeCount = 0;
-		for (const existing of this.#jobs.values()) {
-			if (existing.status === "running" && !existing.queued) activeCount++;
-		}
-		if (activeCount >= this.#maxRunningJobs) {
+		if (this.#activeRunningJobCount >= this.#maxRunningJobs) {
 			throw new Error(
 				tSettingsUi("Background job limit reached ({count}). Wait for running jobs to finish or cancel one.", {
 					count: this.#maxRunningJobs,
@@ -281,21 +311,14 @@ export class AsyncJobManager {
 			agentId: options?.agentId,
 			queued,
 		};
+		this.#jobs.set(id, job);
+		this.#incrementRunningJob(job);
 
-		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
-			job.latestProgressText = text;
-			if (details) job.latestDetails = details;
-			job.lastProgressAt = Date.now();
-			if (!options?.onProgress) return;
-			try {
-				await options.onProgress(text, details);
-			} catch (error) {
-				logger.warn("Async job progress callback failed", {
-					jobId: id,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		};
+		const reportProgress = (
+			text: AsyncJobProgressText,
+			details?: AsyncJobProgressDetails,
+			progressOptions?: AsyncJobProgressOptions,
+		): Promise<void> => this.#queueProgress(job, options, text, details, progressOptions);
 		job.promise = (async () => {
 			try {
 				const text = await run({
@@ -306,36 +329,39 @@ export class AsyncJobManager {
 						if (job.status !== "running" || !job.queued) return;
 						job.queued = false;
 						job.startedAt ??= Date.now();
+						this.#queuedRunningJobCount--;
+						this.#activeRunningJobCount++;
 					},
 				});
+				await this.#prepareJobSettlement(job);
 				if (job.status === "cancelled") {
 					job.resultText = text;
 					job.endedAt ??= Date.now();
-					this.#scheduleEviction(id);
+					this.#scheduleEviction(job);
 					return;
 				}
-				job.status = "completed";
+				this.#settleRunningJob(job, "completed");
 				job.resultText = text;
 				job.endedAt = Date.now();
 				this.#enqueueDelivery(id, text);
-				this.#scheduleEviction(id);
+				this.#scheduleEviction(job);
 			} catch (error) {
+				await this.#prepareJobSettlement(job);
 				if (job.status === "cancelled") {
 					job.errorText = error instanceof Error ? error.message : String(error);
 					job.endedAt ??= Date.now();
-					this.#scheduleEviction(id);
+					this.#scheduleEviction(job);
 					return;
 				}
 				const errorText = error instanceof Error ? error.message : String(error);
-				job.status = "failed";
+				this.#settleRunningJob(job, "failed");
 				job.errorText = errorText;
 				job.endedAt = Date.now();
 				this.#enqueueDelivery(id, errorText);
-				this.#scheduleEviction(id);
+				this.#scheduleEviction(job);
 			}
 		})();
 
-		this.#jobs.set(id, job);
 		return id;
 	}
 
@@ -349,10 +375,10 @@ export class AsyncJobManager {
 		if (!job) return false;
 		if (filter?.ownerId && job.ownerId !== filter.ownerId) return false;
 		if (job.status !== "running") return false;
-		job.status = "cancelled";
+		this.#settleRunningJob(job, "cancelled");
 		job.endedAt = Date.now();
 		job.abortController.abort();
-		this.#scheduleEviction(id);
+		this.#scheduleEviction(job);
 		return true;
 	}
 
@@ -377,6 +403,12 @@ export class AsyncJobManager {
 
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#filterJobs(this.#jobs.values(), filter).filter(job => job.status === "running");
+	}
+
+	/** Number of jobs whose lifecycle status is still `running`, including queued jobs. */
+	getRunningJobCount(filter?: AsyncJobFilter): number {
+		const ownerId = filter?.ownerId;
+		return ownerId ? (this.#runningJobCountByOwner.get(ownerId) ?? 0) : this.#runningJobCount;
 	}
 
 	getRecentJobs(limit = 10, filter?: AsyncJobFilter): AsyncJob[] {
@@ -509,10 +541,10 @@ export class AsyncJobManager {
 	 */
 	cancelAll(filter?: AsyncJobFilter): void {
 		for (const job of this.getRunningJobs(filter)) {
-			job.status = "cancelled";
+			this.#settleRunningJob(job, "cancelled");
 			job.endedAt = Date.now();
 			job.abortController.abort();
-			this.#scheduleEviction(job.id);
+			this.#scheduleEviction(job);
 		}
 	}
 
@@ -531,7 +563,7 @@ export class AsyncJobManager {
 		for (const job of this.#filterJobs(this.#jobs.values(), filter)) {
 			if (job.status !== "completed" && job.status !== "failed") continue;
 			this.acknowledgeDeliveries([job.id]);
-			if (this.#evictJob(job.id)) evicted += 1;
+			if (this.#evictJob(job)) evicted += 1;
 		}
 		return evicted;
 	}
@@ -658,6 +690,7 @@ export class AsyncJobManager {
 		this.#disposed = true;
 		this.#clearEvictionTimers();
 		this.cancelAll();
+		this.#clearQueuedProgress();
 		const timeoutMs = Math.max(options?.timeoutMs ?? 3_000, 0);
 		const deadline = Date.now() + timeoutMs;
 		const jobsSettled = await this.#waitForAllUntil(deadline);
@@ -670,7 +703,271 @@ export class AsyncJobManager {
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
 		this.#deliverySinks.clear();
+		this.#runningJobCount = 0;
+		this.#activeRunningJobCount = 0;
+		this.#queuedRunningJobCount = 0;
+		this.#runningJobCountByOwner.clear();
+		this.#activeProgressKeys.clear();
+		this.#inFlightProgressByJob.clear();
+		this.#dispatchedProgressByJob.clear();
+		this.#settlingJobs.clear();
 		return jobsSettled && drained;
+	}
+
+	#queueProgress(
+		job: AsyncJob,
+		registerOptions: AsyncJobRegisterOptions | undefined,
+		text: AsyncJobProgressText,
+		details: AsyncJobProgressDetails | undefined,
+		progressOptions: AsyncJobProgressOptions | undefined,
+	): Promise<void> {
+		if (job.status !== "running" || this.#settlingJobs.has(job)) return Promise.resolve();
+		job.lastProgressAt = Date.now();
+		const onProgress = registerOptions?.onProgress;
+		if (!onProgress) {
+			job.latestProgressText = typeof text === "function" ? text() : text;
+			if (details) job.latestDetails = typeof details === "function" ? details() : details;
+			return Promise.resolve();
+		}
+		if (typeof text === "string") job.latestProgressText = text;
+		if (details && typeof details !== "function") job.latestDetails = details;
+
+		const key = registerOptions?.progressKey?.trim() || job;
+		const completion = Promise.withResolvers<void>();
+		const entry: PendingAsyncJobProgress = {
+			key,
+			job,
+			revision: ++this.#progressRevision,
+			text,
+			details,
+			onProgress,
+			resolve: completion.resolve,
+		};
+		const previous = this.#pendingProgress.get(key);
+		if (previous) {
+			this.#pendingProgress.delete(key);
+			previous.resolve();
+		}
+		if (progressOptions?.terminal === true) {
+			this.#pendingTerminalProgress.push(entry);
+			this.#scheduleProgressFlush(true);
+		} else {
+			this.#pendingProgress.set(key, entry);
+			this.#scheduleProgressFlush();
+		}
+		return completion.promise;
+	}
+	#hasDispatchableProgress(): boolean {
+		for (const entry of this.#pendingTerminalProgress) {
+			if (!this.#activeProgressKeys.has(entry.key)) return true;
+		}
+		for (const key of this.#pendingProgress.keys()) {
+			if (!this.#activeProgressKeys.has(key)) return true;
+		}
+		return false;
+	}
+
+	#scheduleProgressFlush(priority = false): void {
+		if (this.#disposed || !this.#hasDispatchableProgress()) return;
+		if (this.#progressTimer) {
+			if (this.#progressCooldown || !priority) return;
+			clearTimeout(this.#progressTimer);
+		}
+		this.#progressTimer = setTimeout(
+			() => {
+				this.#progressTimer = undefined;
+				if (this.#hasDispatchableProgress()) this.#flushProgressBudget();
+			},
+			priority ? 0 : PROGRESS_FLUSH_INTERVAL_MS,
+		);
+		this.#progressTimer.unref?.();
+	}
+
+	#flushProgressBudget(): void {
+		this.#progressCooldown = true;
+		this.#progressTimer = setTimeout(() => {
+			this.#progressTimer = undefined;
+			this.#progressCooldown = false;
+			if (this.#hasDispatchableProgress()) this.#flushProgressBudget();
+		}, PROGRESS_FLUSH_INTERVAL_MS);
+		this.#progressTimer.unref?.();
+		let reservedOrdinary: [AsyncJobProgressKey, PendingAsyncJobProgress] | undefined;
+		for (const candidate of this.#pendingProgress) {
+			if (this.#activeProgressKeys.has(candidate[0])) continue;
+			reservedOrdinary = candidate;
+			break;
+		}
+		const terminalBudget = reservedOrdinary ? PROGRESS_CALLBACK_BUDGET - 1 : PROGRESS_CALLBACK_BUDGET;
+		let dispatched = 0;
+		for (let index = 0; index < this.#pendingTerminalProgress.length && dispatched < terminalBudget; ) {
+			const entry = this.#pendingTerminalProgress[index];
+			if (!entry || this.#activeProgressKeys.has(entry.key) || entry.key === reservedOrdinary?.[0]) {
+				index++;
+				continue;
+			}
+			this.#pendingTerminalProgress.splice(index, 1);
+			void this.#dispatchProgress(entry);
+			dispatched++;
+		}
+		if (reservedOrdinary && dispatched < PROGRESS_CALLBACK_BUDGET) {
+			this.#pendingProgress.delete(reservedOrdinary[0]);
+			void this.#dispatchProgress(reservedOrdinary[1]);
+			dispatched++;
+		}
+		if (dispatched < PROGRESS_CALLBACK_BUDGET) {
+			for (const [key, entry] of this.#pendingProgress) {
+				if (this.#activeProgressKeys.has(key)) continue;
+				this.#pendingProgress.delete(key);
+				void this.#dispatchProgress(entry);
+				dispatched++;
+				if (dispatched >= PROGRESS_CALLBACK_BUDGET) break;
+			}
+		}
+	}
+
+	#dispatchProgress(entry: PendingAsyncJobProgress): Promise<void> {
+		this.#activeProgressKeys.add(entry.key);
+		let dispatched = this.#dispatchedProgressByJob.get(entry.job);
+		if (!dispatched) {
+			dispatched = new Set();
+			this.#dispatchedProgressByJob.set(entry.job, dispatched);
+		}
+		dispatched.add(entry);
+		let tracked: Promise<void>;
+		tracked = Promise.resolve()
+			.then(async () => {
+				if (entry.cancelled) return;
+				if (
+					this.#jobs.get(entry.job.id) !== entry.job ||
+					entry.job.status !== "running" ||
+					this.#settlingJobs.has(entry.job)
+				)
+					return;
+				entry.started = true;
+				try {
+					const text = typeof entry.text === "function" ? entry.text() : entry.text;
+					const details = typeof entry.details === "function" ? entry.details() : entry.details;
+					entry.job.latestProgressText = text;
+					if (details) entry.job.latestDetails = details;
+					await entry.onProgress(text, details);
+				} catch (error) {
+					logger.warn("Async job progress callback failed", {
+						jobId: entry.job.id,
+						revision: entry.revision,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			})
+			.finally(() => {
+				entry.resolve();
+				this.#activeProgressKeys.delete(entry.key);
+				const dispatchedForJob = this.#dispatchedProgressByJob.get(entry.job);
+				dispatchedForJob?.delete(entry);
+				if (dispatchedForJob?.size === 0) this.#dispatchedProgressByJob.delete(entry.job);
+				const inFlight = this.#inFlightProgressByJob.get(entry.job);
+				inFlight?.delete(tracked);
+				if (inFlight?.size === 0) {
+					this.#inFlightProgressByJob.delete(entry.job);
+					if (entry.job.status !== "running") this.#settlingJobs.delete(entry.job);
+				}
+				this.#scheduleProgressFlush(
+					this.#pendingTerminalProgress.some(candidate => !this.#activeProgressKeys.has(candidate.key)),
+				);
+			});
+		let inFlight = this.#inFlightProgressByJob.get(entry.job);
+		if (!inFlight) {
+			inFlight = new Set();
+			this.#inFlightProgressByJob.set(entry.job, inFlight);
+		}
+		inFlight.add(tracked);
+		return tracked;
+	}
+
+	async #prepareJobSettlement(job: AsyncJob): Promise<void> {
+		if (job.status !== "running") return;
+		this.#settlingJobs.add(job);
+		this.#cancelQueuedProgress(job);
+		const inFlight = this.#inFlightProgressByJob.get(job);
+		if (!inFlight?.size) return;
+		if (job.abortController.signal.aborted) return;
+		const aborted = Promise.withResolvers<void>();
+		const onAbort = () => aborted.resolve();
+		job.abortController.signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			await Promise.race([Promise.all(inFlight), aborted.promise]);
+		} finally {
+			job.abortController.signal.removeEventListener("abort", onAbort);
+		}
+	}
+
+	#cancelQueuedProgress(job: AsyncJob): void {
+		for (const [key, entry] of this.#pendingProgress) {
+			if (entry.job !== job) continue;
+			this.#pendingProgress.delete(key);
+			entry.resolve();
+		}
+		for (let index = this.#pendingTerminalProgress.length - 1; index >= 0; index--) {
+			const entry = this.#pendingTerminalProgress[index];
+			if (entry?.job !== job) continue;
+			this.#pendingTerminalProgress.splice(index, 1);
+			entry.resolve();
+		}
+		if (
+			this.#pendingTerminalProgress.length === 0 &&
+			this.#pendingProgress.size === 0 &&
+			this.#progressTimer &&
+			!this.#progressCooldown
+		) {
+			clearTimeout(this.#progressTimer);
+			this.#progressTimer = undefined;
+		}
+	}
+
+	#cancelDispatchedProgress(job: AsyncJob): void {
+		const dispatched = this.#dispatchedProgressByJob.get(job);
+		if (!dispatched) return;
+		for (const entry of dispatched) {
+			entry.cancelled = true;
+			if (!entry.started) entry.resolve();
+		}
+		this.#dispatchedProgressByJob.delete(job);
+	}
+
+	#clearQueuedProgress(): void {
+		if (this.#progressTimer) {
+			clearTimeout(this.#progressTimer);
+			this.#progressTimer = undefined;
+		}
+		this.#progressCooldown = false;
+		for (const entry of this.#pendingProgress.values()) entry.resolve();
+		for (const entry of this.#pendingTerminalProgress) entry.resolve();
+		this.#pendingProgress.clear();
+		this.#pendingTerminalProgress.length = 0;
+	}
+
+	#incrementRunningJob(job: AsyncJob): void {
+		this.#runningJobCount++;
+		if (job.queued) this.#queuedRunningJobCount++;
+		else this.#activeRunningJobCount++;
+		if (!job.ownerId) return;
+		this.#runningJobCountByOwner.set(job.ownerId, (this.#runningJobCountByOwner.get(job.ownerId) ?? 0) + 1);
+	}
+
+	#settleRunningJob(job: AsyncJob, status: Exclude<AsyncJob["status"], "running">): boolean {
+		if (job.status !== "running") return false;
+		job.status = status;
+		this.#cancelQueuedProgress(job);
+		if (status === "cancelled") this.#cancelDispatchedProgress(job);
+		if ((this.#inFlightProgressByJob.get(job)?.size ?? 0) === 0) this.#settlingJobs.delete(job);
+		this.#runningJobCount--;
+		if (job.queued) this.#queuedRunningJobCount--;
+		else this.#activeRunningJobCount--;
+		if (job.ownerId) {
+			const ownerCount = (this.#runningJobCountByOwner.get(job.ownerId) ?? 1) - 1;
+			if (ownerCount === 0) this.#runningJobCountByOwner.delete(job.ownerId);
+			else this.#runningJobCountByOwner.set(job.ownerId, ownerCount);
+		}
+		return true;
 	}
 
 	#resolveJobId(preferredId?: string): string {
@@ -698,29 +995,28 @@ export class AsyncJobManager {
 		return candidate;
 	}
 
-	#evictJob(jobId: string): boolean {
-		clearTimeout(this.#evictionTimers.get(jobId));
-		this.#evictionTimers.delete(jobId);
-		this.#suppressedDeliveries.delete(jobId);
-		this.#watchedJobs.delete(jobId);
-		return this.#jobs.delete(jobId);
+	#evictJob(job: AsyncJob): boolean {
+		if (this.#jobs.get(job.id) !== job) return false;
+		clearTimeout(this.#evictionTimers.get(job.id));
+		this.#evictionTimers.delete(job.id);
+		this.#suppressedDeliveries.delete(job.id);
+		this.#watchedJobs.delete(job.id);
+		return this.#jobs.delete(job.id);
 	}
 
-	#scheduleEviction(jobId: string): void {
-		if (this.#disposed) return;
+	#scheduleEviction(job: AsyncJob): void {
+		if (this.#disposed || this.#jobs.get(job.id) !== job) return;
 		if (this.#retentionMs <= 0) {
-			this.#evictJob(jobId);
+			this.#evictJob(job);
 			return;
 		}
-		const existing = this.#evictionTimers.get(jobId);
-		if (existing) {
-			clearTimeout(existing);
-		}
+		const existing = this.#evictionTimers.get(job.id);
+		if (existing) clearTimeout(existing);
 		const timer = setTimeout(() => {
-			this.#evictJob(jobId);
+			this.#evictJob(job);
 		}, this.#retentionMs);
 		timer.unref();
-		this.#evictionTimers.set(jobId, timer);
+		this.#evictionTimers.set(job.id, timer);
 	}
 
 	#clearEvictionTimers(): void {

@@ -75,12 +75,13 @@ import type {
 	AgentTurnEndContext,
 	AsideMessage,
 	BeforeToolCallResult,
+	CommittableAsideMessage,
 	SoftToolRequirement,
 	SteeringInterruptSource,
 	SteeringQueueState,
 	StreamFn,
 } from "./types";
-import { isSoftToolRequirement } from "./types";
+import { ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD, isSoftToolRequirement } from "./types";
 import { yieldIfDue } from "./utils/yield";
 
 /** Stop-details marker for a provider error after assistant content/tool args already streamed. */
@@ -528,6 +529,9 @@ export function agentLoop(
 			...context,
 			messages: [...context.messages, ...prompts],
 		};
+		for (const prompt of prompts) {
+			(prompt as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
+		}
 
 		stream.push({ type: "agent_start" });
 
@@ -953,11 +957,22 @@ function emitInputMessages(stream: EventStream<AgentEvent, AgentMessage[]>, mess
 function resolveAsides(entries: AsideMessage[] | undefined): AgentMessage[] {
 	if (!entries || entries.length === 0) return [];
 	const out: AgentMessage[] = [];
-	for (const entry of entries) {
-		const message = typeof entry === "function" ? entry() : entry;
-		if (message) out.push(message);
+	try {
+		for (const entry of entries) {
+			const message = typeof entry === "function" ? entry() : entry;
+			if (message) out.push(message);
+		}
+	} catch (error) {
+		discardAsides(out, error instanceof Error ? error : new Error(String(error)));
+		throw error;
 	}
 	return out;
+}
+
+function discardAsides(messages: readonly AgentMessage[], error: Error): void {
+	for (const message of messages) {
+		(message as CommittableAsideMessage)[ASIDE_MESSAGE_DISCARD]?.(error);
+	}
 }
 
 async function runLoopBody(
@@ -990,6 +1005,7 @@ async function runLoopBody(
 	const softRequirementState = config.softToolRequirementState ?? { escalations: 0 };
 	let preserveSoftRequirementState = false;
 
+	let pendingMessages: AgentMessage[] = [];
 	try {
 		let messagesToEmit = [...initialMessages];
 		let logicalTurnInputs = initialMessages.filter(message => message.role === "user" || message.role === "custom");
@@ -1001,7 +1017,6 @@ async function runLoopBody(
 		// Check for steering messages at start (user may have typed while waiting).
 		// Skip when the run is already externally aborted — dequeuing would strand
 		// the messages in a run that is about to die.
-		let pendingMessages: AgentMessage[];
 		try {
 			pendingMessages = signal?.aborted ? [] : (await config.getSteeringMessages?.()) || [];
 		} catch (error) {
@@ -1054,6 +1069,7 @@ async function runLoopBody(
 						newMessages.push(message);
 						turnMessages.push(message);
 						if (message.role === "user" || message.role === "custom") logicalTurnInputs.push(message);
+						(message as CommittableAsideMessage)[ASIDE_MESSAGE_COMMIT]?.();
 					}
 					pendingMessages = [];
 				}
@@ -1458,6 +1474,7 @@ async function runLoopBody(
 
 		endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 	} finally {
+		discardAsides(pendingMessages, new Error("Aside message was not committed before the agent loop ended"));
 		if (!preserveSoftRequirementState) {
 			softRequirementState.id = undefined;
 			softRequirementState.forcedToolChoice = undefined;

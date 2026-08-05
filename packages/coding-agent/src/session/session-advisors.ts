@@ -1036,6 +1036,7 @@ export class SessionAdvisors {
 			streaming: this.#host.agent.state.isStreaming,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
+			planMode: this.#host.planModeState()?.enabled === true,
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		if (channel === "aside") {

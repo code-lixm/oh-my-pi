@@ -45,7 +45,12 @@ import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/rend
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { formatAgentClockTime, formatAgentDuration, selectAgentActivity } from "./agent-activity-display";
+import {
+	formatAgentClockTime,
+	formatAgentDuration,
+	resolveAgentTerminalStatus,
+	selectAgentActivity,
+} from "./agent-activity-display";
 import { AgentTranscriptViewer } from "./agent-transcript-viewer";
 import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
@@ -83,7 +88,15 @@ function fixedCell(text: string, width: number): string {
 	return `${clipped}${padding(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-type HubTaskStatus = "not-started" | "running" | "waiting-user" | "completed" | "failed" | "stopped";
+type HubTaskStatus =
+	| "not-started"
+	| "running"
+	| "waiting-user"
+	| "idle"
+	| "parked"
+	| "completed"
+	| "failed"
+	| "stopped";
 
 type HubRow = { ref: AgentRef };
 
@@ -92,6 +105,8 @@ const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["
 	"not-started": "pending",
 	running: "running",
 	"waiting-user": "waiting",
+	idle: "idle",
+	parked: "parked",
 	completed: "completed",
 	failed: "failed",
 	stopped: "aborted",
@@ -308,7 +323,9 @@ export class AgentHubOverlayComponent extends Container {
 		this.#openImage = deps.openImage;
 
 		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange(true)));
-		this.#unsubscribers.push(this.#observers.onChange(kind => this.#scheduleDataChange(kind !== "progress")));
+		this.#unsubscribers.push(
+			this.#observers.onChange(change => this.#scheduleDataChange(change.kind !== "progress")),
+		);
 		this.#ageTimer = setInterval(() => this.#requestRender(), HUB_TICK_MS);
 		this.#ageTimer.unref?.();
 
@@ -493,10 +510,14 @@ export class AgentHubOverlayComponent extends Container {
 	#taskStatus(ref: AgentRef, observed: ObservableSession | undefined): HubTaskStatus {
 		const progress = observed?.progress;
 		const activity = selectAgentActivity(ref.activityState, progress);
-		if (progress?.status === "failed" || observed?.status === "failed") return "failed";
-		if (progress?.status === "aborted" || observed?.status === "aborted" || ref.status === "aborted")
-			return "stopped";
-		if (progress?.status === "completed" || observed?.status === "completed") return "completed";
+		const terminalStatus = resolveAgentTerminalStatus({
+			progressStatus: progress?.status,
+			observedStatus: observed?.status,
+			registryStatus: ref.status,
+		});
+		if (terminalStatus === "failed") return "failed";
+		if (terminalStatus === "aborted") return "stopped";
+		if (terminalStatus === "completed") return "completed";
 		if (progress?.status === "pending" || activity?.phase === "queued") return "not-started";
 		if (ref.status === "waiting" || activity?.phase === "waiting-user" || activity?.phase === "waiting-peer")
 			return "waiting-user";
@@ -508,7 +529,8 @@ export class AgentHubOverlayComponent extends Container {
 		) {
 			return "running";
 		}
-		return "completed";
+		if (ref.status === "parked") return "parked";
+		return "idle";
 	}
 
 	#renderTaskStatus(status: HubTaskStatus): string {
@@ -519,6 +541,10 @@ export class AgentHubOverlayComponent extends Container {
 				return theme.fg("success", tSettingsUi("Running"));
 			case "waiting-user":
 				return theme.fg("warning", tSettingsUi("Waiting for user"));
+			case "idle":
+				return theme.fg("accent", tSettingsUi("idle"));
+			case "parked":
+				return theme.fg("muted", tSettingsUi("parked"));
 			case "completed":
 				return theme.fg("success", tSettingsUi("Completed"));
 			case "failed":
@@ -734,7 +760,13 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#isTerminal(status: HubTaskStatus): boolean {
-		return status === "completed" || status === "failed" || status === "stopped";
+		return (
+			status === "idle" ||
+			status === "parked" ||
+			status === "completed" ||
+			status === "failed" ||
+			status === "stopped"
+		);
 	}
 
 	#taskDuration(ref: AgentRef, observed: ObservableSession | undefined, terminal: boolean): string {

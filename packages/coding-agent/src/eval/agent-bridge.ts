@@ -1,7 +1,7 @@
 /**
  * Host-side handler for the eval `agent()` helper.
  */
-import { type } from "arktype";
+import { type } from "@oh-my-pi/omptype";
 import {
 	buildStructuredSubagentRecoveryHint,
 	runStructuredSubagent,
@@ -156,7 +156,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						...(isolation ? { isolation } : {}),
 						...(parsed.handle ? { retainArtifacts: true } : {}),
 						keepAlive: false,
-						maxRuntimeMs: 0,
+						// `maxRuntimeMs` is intentionally omitted: the executor then inherits
+						// `task.maxRuntimeMs`, matching the task tool.
 						shareEvalSession: false,
 						...(options.signal !== undefined ? { signal: options.signal } : {}),
 						...(options.emitStatus

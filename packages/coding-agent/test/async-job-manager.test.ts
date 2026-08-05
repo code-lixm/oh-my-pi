@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+
+async function flushMicrotasks(): Promise<void> {
+	for (let index = 0; index < 8; index++) {
+		await Promise.resolve();
+	}
+}
 
 describe("AsyncJobManager", () => {
 	test("forwards progress updates and delivers completion", async () => {
@@ -111,6 +117,104 @@ describe("AsyncJobManager", () => {
 
 		expect(manager.getJob(jobId)?.status).toBe("cancelled");
 		expect(completions).toHaveLength(0);
+	});
+
+	test("keeps scalar counts aligned with lifecycle queries across queued owner transitions", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const complete = Promise.withResolvers<string>();
+		const fail = Promise.withResolvers<void>();
+		const startQueued = Promise.withResolvers<void>();
+		const queuedStarted = Promise.withResolvers<void>();
+		const waitForAbort = (signal: AbortSignal) =>
+			new Promise<string>(resolve => {
+				if (signal.aborted) {
+					resolve("cancelled");
+					return;
+				}
+				signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
+			});
+		const mainFilter = { ownerId: "Main" };
+		const workerFilter = { ownerId: "Worker" };
+		const expectCount = (filter: { ownerId: string } | undefined, expected: number) => {
+			expect(manager.getRunningJobCount(filter)).toBe(expected);
+			expect(manager.getRunningJobs(filter)).toHaveLength(expected);
+		};
+
+		const queuedMainJobId = manager.register(
+			"task",
+			"queued main job",
+			async ({ markRunning, signal }) => {
+				await startQueued.promise;
+				markRunning();
+				queuedStarted.resolve();
+				return waitForAbort(signal);
+			},
+			{ ownerId: "Main", queued: true },
+		);
+		const completedMainJobId = manager.register("task", "completing main job", () => complete.promise, {
+			ownerId: "Main",
+		});
+		const failedWorkerJobId = manager.register(
+			"task",
+			"failing worker job",
+			async () => {
+				await fail.promise;
+				throw new Error("worker failed");
+			},
+			{ ownerId: "Worker" },
+		);
+		const cancelledWorkerJobId = manager.register(
+			"bash",
+			"cancelled worker job",
+			({ signal }) => waitForAbort(signal),
+			{ ownerId: "Worker" },
+		);
+
+		try {
+			// Queued work is visible as running, but remains isolated to its owner.
+			expect(manager.getJob(queuedMainJobId)?.queued).toBe(true);
+			expectCount(undefined, 4);
+			expectCount(mainFilter, 2);
+			expectCount(workerFilter, 2);
+
+			complete.resolve("main completed");
+			await manager.getJob(completedMainJobId)?.promise;
+			expect(manager.getJob(completedMainJobId)?.status).toBe("completed");
+			expectCount(undefined, 3);
+			expectCount(mainFilter, 1);
+			expectCount(workerFilter, 2);
+
+			fail.resolve();
+			await manager.getJob(failedWorkerJobId)?.promise;
+			expect(manager.getJob(failedWorkerJobId)?.status).toBe("failed");
+			expectCount(undefined, 2);
+			expectCount(mainFilter, 1);
+			expectCount(workerFilter, 1);
+
+			startQueued.resolve();
+			await queuedStarted.promise;
+			expect(manager.getJob(queuedMainJobId)?.queued).toBe(false);
+			expectCount(undefined, 2);
+			expectCount(mainFilter, 1);
+			expectCount(workerFilter, 1);
+
+			expect(manager.cancel(queuedMainJobId, mainFilter)).toBe(true);
+			expect(manager.getJob(queuedMainJobId)?.status).toBe("cancelled");
+			expectCount(undefined, 1);
+			expectCount(mainFilter, 0);
+			expectCount(workerFilter, 1);
+
+			manager.cancelAll(workerFilter);
+			expect(manager.getJob(cancelledWorkerJobId)?.status).toBe("cancelled");
+			expectCount(undefined, 0);
+			expectCount(mainFilter, 0);
+			expectCount(workerFilter, 0);
+		} finally {
+			startQueued.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.drainDeliveries();
+		}
 	});
 
 	test("enforces maxRunningJobs cap", () => {
@@ -275,10 +379,15 @@ describe("AsyncJobManager", () => {
 			onJobComplete: async () => {},
 		});
 
-		manager.register("bash", "ignores-abort", async () => {
-			await Promise.withResolvers<never>().promise;
-			return "unreachable";
-		});
+		manager.register(
+			"bash",
+			"ignores-abort",
+			async () => {
+				await Promise.withResolvers<never>().promise;
+				return "unreachable";
+			},
+			{ ownerId: "stuck-owner" },
+		);
 
 		const startedAt = Date.now();
 		const result = await Promise.race([
@@ -290,6 +399,8 @@ describe("AsyncJobManager", () => {
 		expect(result.drained).toBe(false);
 		expect(Date.now() - startedAt).toBeLessThan(150);
 		expect(manager.getAllJobs()).toHaveLength(0);
+		expect(manager.getRunningJobCount()).toBe(0);
+		expect(manager.getRunningJobCount({ ownerId: "stuck-owner" })).toBe(0);
 	});
 
 	test("scoped delivery drain returns once matching owner deliveries finish", async () => {
@@ -561,6 +672,1007 @@ describe("AsyncJobManager", () => {
 		manager.cancelAll({ ownerId: "Sub" });
 		await expect(reap).resolves.toBe(true);
 		expect(manager.getJob("hung-1")?.status).toBe("cancelled");
+	});
+
+	test("coalesces shared progress across jobs and resolves the superseded report", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const supersededReportResolved = Promise.withResolvers<void>();
+		const releaseFirstJob = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"task",
+			"first shared target",
+			async ({ reportProgress }) => {
+				await reportProgress("stale revision");
+				supersededReportResolved.resolve();
+				await releaseFirstJob.promise;
+				return "first done";
+			},
+			{
+				progressKey: "shared-target",
+				onProgress: text => {
+					rendered.push(`first:${text}`);
+				},
+			},
+		);
+		const newestJobId = manager.register(
+			"task",
+			"second shared target",
+			async ({ reportProgress }) => {
+				await reportProgress("newest revision");
+				return "second done";
+			},
+			{
+				progressKey: "shared-target",
+				onProgress: text => {
+					rendered.push(`second:${text}`);
+				},
+			},
+		);
+
+		try {
+			await supersededReportResolved.promise;
+			expect(rendered).toEqual([]);
+
+			vi.advanceTimersByTime(100);
+			await Promise.resolve();
+			expect(rendered).toEqual(["second:newest revision"]);
+
+			releaseFirstJob.resolve();
+			await manager.waitForAll();
+			expect(manager.getJob(newestJobId)?.status).toBe("completed");
+		} finally {
+			releaseFirstJob.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("materializes lazy progress factories only for the dispatched revision", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const materialized: string[] = [];
+		const rendered: Array<{ text: string; details?: Record<string, unknown> }> = [];
+		const staleReportResolved = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"bash",
+			"lazy progress",
+			async ({ reportProgress }) => {
+				const stale = reportProgress(
+					() => {
+						materialized.push("stale text");
+						return "stale";
+					},
+					() => {
+						materialized.push("stale details");
+						return { revision: "stale" };
+					},
+				);
+				const latest = reportProgress(
+					() => {
+						materialized.push("latest text");
+						return "latest";
+					},
+					() => {
+						materialized.push("latest details");
+						return { revision: "latest" };
+					},
+				);
+				await stale;
+				staleReportResolved.resolve();
+				await latest;
+				return "done";
+			},
+			{
+				onProgress: (text, details) => {
+					rendered.push({ text, details });
+				},
+			},
+		);
+
+		try {
+			await staleReportResolved.promise;
+			expect(materialized).toEqual([]);
+
+			vi.advanceTimersByTime(100);
+			await manager.waitForAll();
+
+			expect(materialized).toEqual(["latest text", "latest details"]);
+			expect(rendered).toEqual([{ text: "latest", details: { revision: "latest" } }]);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("limits progress globally to eight callbacks per tick and serves the deferred target next", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const releaseJobs = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		for (let index = 0; index < 9; index++) {
+			manager.register(
+				"bash",
+				`target ${index}`,
+				async ({ reportProgress }) => {
+					void reportProgress(`frame-${index}`);
+					await releaseJobs.promise;
+					return `done-${index}`;
+				},
+				{
+					progressKey: `target-${index}`,
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+		}
+
+		try {
+			vi.advanceTimersByTime(99);
+			await Promise.resolve();
+			expect(rendered).toEqual([]);
+
+			vi.advanceTimersByTime(1);
+			await Promise.resolve();
+			expect(rendered).toEqual(Array.from({ length: 8 }, (_value, index) => `frame-${index}`));
+
+			vi.advanceTimersByTime(100);
+			await Promise.resolve();
+			expect(rendered).toEqual(Array.from({ length: 9 }, (_value, index) => `frame-${index}`));
+
+			releaseJobs.resolve();
+			await manager.waitForAll();
+		} finally {
+			releaseJobs.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("throttles a terminal burst to eight callbacks per global budget window", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		for (let index = 0; index < 9; index++) {
+			manager.register(
+				"bash",
+				`terminal target ${index}`,
+				async ({ reportProgress }) => {
+					await reportProgress(`terminal-${index}`, undefined, { terminal: true });
+					return `done-${index}`;
+				},
+				{
+					progressKey: `terminal-target-${index}`,
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+		}
+
+		try {
+			await Promise.resolve();
+			expect(rendered).toEqual([]);
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+			expect(rendered).toEqual(Array.from({ length: 8 }, (_value, index) => `terminal-${index}`));
+
+			vi.advanceTimersByTime(99);
+			await Promise.resolve();
+			expect(rendered).toEqual(Array.from({ length: 8 }, (_value, index) => `terminal-${index}`));
+
+			vi.advanceTimersByTime(1);
+			await manager.waitForAll();
+			expect(rendered).toEqual(Array.from({ length: 9 }, (_value, index) => `terminal-${index}`));
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("reserves one shared-budget slot for ordinary progress while terminals have priority", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const manager = new AsyncJobManager({ maxRunningJobs: 16, onJobComplete: async () => {} });
+
+		for (let index = 0; index < 8; index++) {
+			manager.register(
+				"bash",
+				`ordinary target ${index}`,
+				async ({ reportProgress }) => {
+					await reportProgress(`ordinary-${index}`);
+					return `ordinary done-${index}`;
+				},
+				{
+					progressKey: `ordinary-target-${index}`,
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+		}
+		for (let index = 0; index < 8; index++) {
+			manager.register(
+				"bash",
+				`terminal target ${index}`,
+				async ({ reportProgress }) => {
+					await reportProgress(`terminal-${index}`, undefined, { terminal: true });
+					return `terminal done-${index}`;
+				},
+				{
+					progressKey: `terminal-target-${index}`,
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+		}
+
+		try {
+			await Promise.resolve();
+			expect(rendered).toEqual([]);
+
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+			expect(rendered).toEqual([
+				"terminal-0",
+				"terminal-1",
+				"terminal-2",
+				"terminal-3",
+				"terminal-4",
+				"terminal-5",
+				"terminal-6",
+				"ordinary-0",
+			]);
+
+			vi.advanceTimersByTime(99);
+			await Promise.resolve();
+			expect(rendered).toHaveLength(8);
+
+			vi.advanceTimersByTime(1);
+			await manager.waitForAll();
+			expect(rendered).toEqual([
+				"terminal-0",
+				"terminal-1",
+				"terminal-2",
+				"terminal-3",
+				"terminal-4",
+				"terminal-5",
+				"terminal-6",
+				"ordinary-0",
+				"terminal-7",
+				"ordinary-1",
+				"ordinary-2",
+				"ordinary-3",
+				"ordinary-4",
+				"ordinary-5",
+				"ordinary-6",
+				"ordinary-7",
+			]);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("defers a terminal arriving after a full ordinary window until the next global window", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		for (let index = 0; index < 8; index++) {
+			manager.register(
+				"bash",
+				`ordinary target ${index}`,
+				async ({ reportProgress }) => {
+					await reportProgress(`ordinary-${index}`);
+					return `ordinary done-${index}`;
+				},
+				{
+					progressKey: `ordinary-target-${index}`,
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+		}
+
+		try {
+			vi.advanceTimersByTime(100);
+			await Promise.resolve();
+			expect(rendered).toEqual(Array.from({ length: 8 }, (_value, index) => `ordinary-${index}`));
+
+			manager.register(
+				"bash",
+				"late terminal target",
+				async ({ reportProgress }) => {
+					await reportProgress("terminal", undefined, { terminal: true });
+					return "terminal done";
+				},
+				{
+					progressKey: "late-terminal-target",
+					onProgress: text => {
+						rendered.push(text);
+					},
+				},
+			);
+
+			await Promise.resolve();
+			expect(rendered).toHaveLength(8);
+			vi.advanceTimersByTime(0);
+			await Promise.resolve();
+			expect(rendered).toHaveLength(8);
+
+			vi.advanceTimersByTime(100);
+			await manager.waitForAll();
+			expect(rendered).toEqual([...Array.from({ length: 8 }, (_value, index) => `ordinary-${index}`), "terminal"]);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("holds terminal job settlement and delivery until its terminal callback completes", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const order: string[] = [];
+		const terminalProgressStarted = Promise.withResolvers<void>();
+		const releaseTerminalProgress = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {
+				order.push("delivery");
+			},
+		});
+		const jobId = manager.register(
+			"bash",
+			"terminal settlement",
+			async ({ reportProgress }) => {
+				await reportProgress("terminal", undefined, { terminal: true });
+				return "finished";
+			},
+			{
+				onProgress: async text => {
+					order.push(`${text}:started`);
+					terminalProgressStarted.resolve();
+					await releaseTerminalProgress.promise;
+					order.push(`${text}:finished`);
+				},
+			},
+		);
+
+		try {
+			await Promise.resolve();
+			expect(order).toEqual([]);
+
+			vi.advanceTimersByTime(0);
+			await terminalProgressStarted.promise;
+			expect(order).toEqual(["terminal:started"]);
+			expect(manager.getJob(jobId)?.status).toBe("running");
+
+			releaseTerminalProgress.resolve();
+			await manager.waitForAll();
+			await manager.drainDeliveries({ timeoutMs: 1_000 });
+			expect(order).toEqual(["terminal:started", "terminal:finished", "delivery"]);
+			expect(manager.getJob(jobId)?.status).toBe("completed");
+		} finally {
+			releaseTerminalProgress.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancelling an active terminal callback waits for its report before settling", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const order: string[] = [];
+		const terminalProgressStarted = Promise.withResolvers<void>();
+		const releaseTerminalProgress = Promise.withResolvers<void>();
+		let reporterResumed = false;
+		let jobSettled = false;
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {
+				order.push("delivery");
+			},
+		});
+		const jobId = manager.register(
+			"bash",
+			"active terminal cancellation",
+			async ({ reportProgress }) => {
+				await reportProgress("terminal", undefined, { terminal: true });
+				reporterResumed = true;
+				return "finished";
+			},
+			{
+				onProgress: async () => {
+					order.push("terminal:started");
+					terminalProgressStarted.resolve();
+					await releaseTerminalProgress.promise;
+					order.push("terminal:finished");
+				},
+			},
+		);
+		const jobPromise = manager.getJob(jobId)!.promise;
+		void jobPromise.then(() => {
+			jobSettled = true;
+		});
+
+		try {
+			await Promise.resolve();
+			vi.advanceTimersByTime(0);
+			await terminalProgressStarted.promise;
+
+			expect(manager.cancel(jobId)).toBe(true);
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(reporterResumed).toBe(false);
+			expect(jobSettled).toBe(false);
+			expect(order).toEqual(["terminal:started"]);
+
+			releaseTerminalProgress.resolve();
+			await jobPromise;
+			expect(reporterResumed).toBe(true);
+			expect(jobSettled).toBe(true);
+			expect(manager.getJob(jobId)?.status).toBe("cancelled");
+			expect(order).toEqual(["terminal:started", "terminal:finished"]);
+		} finally {
+			releaseTerminalProgress.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("keeps same-key terminal reports FIFO while replacing a queued ordinary revision", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		const ordinaryReporterResumed = Promise.withResolvers<void>();
+		const firstTerminalStarted = Promise.withResolvers<void>();
+		const releaseFirstTerminal = Promise.withResolvers<void>();
+		const secondTerminalStarted = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"bash",
+			"shared terminal target",
+			async ({ reportProgress }) => {
+				const ordinary = reportProgress("ordinary");
+				const firstTerminal = reportProgress("terminal first", undefined, { terminal: true });
+				const secondTerminal = reportProgress("terminal second", undefined, { terminal: true });
+				await ordinary;
+				ordinaryReporterResumed.resolve();
+				await firstTerminal;
+				await secondTerminal;
+				return "finished";
+			},
+			{
+				progressKey: "shared-terminal-target",
+				onProgress: async text => {
+					rendered.push(text);
+					if (text === "terminal first") {
+						firstTerminalStarted.resolve();
+						await releaseFirstTerminal.promise;
+						return;
+					}
+					if (text === "terminal second") secondTerminalStarted.resolve();
+				},
+			},
+		);
+
+		try {
+			await ordinaryReporterResumed.promise;
+			expect(rendered).toEqual([]);
+
+			vi.advanceTimersByTime(0);
+			await firstTerminalStarted.promise;
+			expect(rendered).toEqual(["terminal first"]);
+
+			releaseFirstTerminal.resolve();
+			await flushMicrotasks();
+			vi.advanceTimersToNextTimer();
+			await flushMicrotasks();
+			await secondTerminalStarted.promise;
+			await manager.waitForAll();
+			expect(rendered).toEqual(["terminal first", "terminal second"]);
+		} finally {
+			releaseFirstTerminal.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("starts queued same-key terminal callbacks at global budget boundaries", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const order: string[] = [];
+		const firstTerminalStarted = Promise.withResolvers<void>();
+		const releaseFirstTerminal = Promise.withResolvers<void>();
+		const queueRemainingTerminals = Promise.withResolvers<void>();
+		const remainingTerminalsQueued = Promise.withResolvers<void>();
+		const secondTerminalStarted = Promise.withResolvers<void>();
+		const releaseSecondTerminal = Promise.withResolvers<void>();
+		const thirdTerminalStarted = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"bash",
+			"same-key terminal queue",
+			async ({ reportProgress }) => {
+				const first = reportProgress("first", undefined, { terminal: true });
+				await queueRemainingTerminals.promise;
+				const second = reportProgress("second", undefined, { terminal: true });
+				const third = reportProgress("third", undefined, { terminal: true });
+				remainingTerminalsQueued.resolve();
+				await first;
+				await second;
+				await third;
+				return "finished";
+			},
+			{
+				onProgress: async text => {
+					order.push(text);
+					if (text === "first") {
+						firstTerminalStarted.resolve();
+						await releaseFirstTerminal.promise;
+						return;
+					}
+					if (text === "second") {
+						secondTerminalStarted.resolve();
+						await releaseSecondTerminal.promise;
+						return;
+					}
+					if (text === "third") thirdTerminalStarted.resolve();
+				},
+			},
+		);
+
+		try {
+			vi.advanceTimersByTime(0);
+			await firstTerminalStarted.promise;
+			queueRemainingTerminals.resolve();
+			await remainingTerminalsQueued.promise;
+
+			vi.advanceTimersByTime(50);
+			await Promise.resolve();
+			expect(order).toEqual(["first"]);
+
+			releaseFirstTerminal.resolve();
+			await flushMicrotasks();
+			expect(order).toEqual(["first"]);
+
+			vi.advanceTimersByTime(49);
+			await Promise.resolve();
+			expect(order).toEqual(["first"]);
+			vi.advanceTimersByTime(1);
+			await flushMicrotasks();
+			await secondTerminalStarted.promise;
+			expect(order).toEqual(["first", "second"]);
+
+			releaseSecondTerminal.resolve();
+			await flushMicrotasks();
+			expect(order).toEqual(["first", "second"]);
+
+			vi.advanceTimersByTime(99);
+			await Promise.resolve();
+			expect(order).toEqual(["first", "second"]);
+			vi.advanceTimersByTime(1);
+			await flushMicrotasks();
+			await thirdTerminalStarted.promise;
+			await manager.waitForAll();
+			expect(order).toEqual(["first", "second", "third"]);
+		} finally {
+			queueRemainingTerminals.resolve();
+			releaseFirstTerminal.resolve();
+			releaseSecondTerminal.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancel and cancelAll discard queued progress and unblock its reporters", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		let materializations = 0;
+		const callbacks: string[] = [];
+		const firstReporterResumed = Promise.withResolvers<void>();
+		const secondReporterResumed = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		const firstJobId = manager.register(
+			"bash",
+			"cancel one",
+			async ({ reportProgress }) => {
+				await reportProgress(() => {
+					materializations++;
+					return "cancel one";
+				});
+				firstReporterResumed.resolve();
+				return "cancelled";
+			},
+			{
+				onProgress: text => {
+					callbacks.push(text);
+				},
+			},
+		);
+		const secondJobId = manager.register(
+			"bash",
+			"cancel all",
+			async ({ reportProgress }) => {
+				await reportProgress(() => {
+					materializations++;
+					return "cancel all";
+				});
+				secondReporterResumed.resolve();
+				return "cancelled";
+			},
+			{
+				onProgress: text => {
+					callbacks.push(text);
+				},
+			},
+		);
+
+		try {
+			expect(manager.cancel(firstJobId)).toBe(true);
+			manager.cancelAll();
+			await Promise.all([firstReporterResumed.promise, secondReporterResumed.promise]);
+			await manager.waitForAll();
+
+			vi.advanceTimersByTime(1_000);
+			await Promise.resolve();
+			expect(materializations).toBe(0);
+			expect(callbacks).toEqual([]);
+			expect(manager.getJob(firstJobId)?.status).toBe("cancelled");
+			expect(manager.getJob(secondJobId)?.status).toBe("cancelled");
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancelling a terminal reporter chained behind another job releases it without rendering", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		let terminalFactoryMaterializations = 0;
+		const firstCallbackStarted = Promise.withResolvers<void>();
+		const releaseFirstCallback = Promise.withResolvers<void>();
+		const terminalReporterResumed = Promise.withResolvers<void>();
+		const terminalJobSettled = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"bash",
+			"blocking shared target",
+			async ({ reportProgress }) => {
+				await reportProgress("live");
+				return "first done";
+			},
+			{
+				progressKey: "shared-cancel-target",
+				onProgress: async text => {
+					rendered.push(`first:${text}`);
+					firstCallbackStarted.resolve();
+					await releaseFirstCallback.promise;
+				},
+			},
+		);
+
+		try {
+			vi.advanceTimersByTime(100);
+			await firstCallbackStarted.promise;
+
+			const terminalJobId = manager.register(
+				"bash",
+				"terminal behind callback",
+				async ({ reportProgress }) => {
+					await reportProgress(
+						() => {
+							terminalFactoryMaterializations++;
+							return "terminal";
+						},
+						undefined,
+						{ terminal: true },
+					);
+					terminalReporterResumed.resolve();
+					return "terminal done";
+				},
+				{
+					progressKey: "shared-cancel-target",
+					onProgress: text => {
+						rendered.push(`terminal:${text}`);
+					},
+				},
+			);
+			manager.getJob(terminalJobId)?.promise.then(() => terminalJobSettled.resolve());
+
+			vi.advanceTimersByTime(100);
+			await Promise.resolve();
+			expect(rendered).toEqual(["first:live"]);
+			expect(terminalFactoryMaterializations).toBe(0);
+
+			expect(manager.cancel(terminalJobId)).toBe(true);
+			await terminalReporterResumed.promise;
+			await terminalJobSettled.promise;
+			expect(manager.getJob(terminalJobId)?.status).toBe("cancelled");
+			expect(rendered).toEqual(["first:live"]);
+			expect(terminalFactoryMaterializations).toBe(0);
+		} finally {
+			releaseFirstCallback.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("keeps stale default-key progress out of a retention-zero job id reuse", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const callbacks: string[] = [];
+		let oldTerminalFactoryMaterializations = 0;
+		const oldLiveStarted = Promise.withResolvers<void>();
+		const releaseOldLive = Promise.withResolvers<void>();
+		const allowOldTerminal = Promise.withResolvers<void>();
+		const oldTerminalQueued = Promise.withResolvers<void>();
+		const oldLiveReportResolved = Promise.withResolvers<void>();
+		const newTerminalQueued = Promise.withResolvers<void>();
+		const newTerminalRendered = Promise.withResolvers<void>();
+		const releaseNewJob = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ retentionMs: 0, onJobComplete: async () => {} });
+
+		const oldJobId = manager.register(
+			"bash",
+			"old job",
+			async ({ reportProgress }) => {
+				const oldLive = reportProgress("old live");
+				void oldLive.then(() => oldLiveReportResolved.resolve());
+				await allowOldTerminal.promise;
+				const oldTerminal = reportProgress(
+					() => {
+						oldTerminalFactoryMaterializations++;
+						return "old terminal";
+					},
+					undefined,
+					{ terminal: true },
+				);
+				oldTerminalQueued.resolve();
+				await oldTerminal;
+				return "old done";
+			},
+			{
+				onProgress: async text => {
+					callbacks.push(`old:${text}`);
+					if (text !== "old live") return;
+					oldLiveStarted.resolve();
+					await releaseOldLive.promise;
+				},
+			},
+		);
+
+		try {
+			vi.advanceTimersByTime(100);
+			await oldLiveStarted.promise;
+			allowOldTerminal.resolve();
+			await oldTerminalQueued.promise;
+			vi.advanceTimersByTime(100);
+			await Promise.resolve();
+			expect(callbacks).toEqual(["old:old live"]);
+			expect(oldTerminalFactoryMaterializations).toBe(0);
+
+			expect(manager.cancel(oldJobId)).toBe(true);
+			expect(manager.getJob(oldJobId)).toBeUndefined();
+
+			const newJobId = manager.register(
+				"bash",
+				"new job",
+				async ({ reportProgress }) => {
+					await reportProgress("new live");
+					const newTerminal = reportProgress("new terminal", undefined, { terminal: true });
+					newTerminalQueued.resolve();
+					await newTerminal;
+					await releaseNewJob.promise;
+					return "new done";
+				},
+				{
+					onProgress: text => {
+						callbacks.push(`new:${text}`);
+						if (text === "new terminal") newTerminalRendered.resolve();
+					},
+				},
+			);
+			expect(newJobId).toBe(oldJobId);
+
+			vi.advanceTimersToNextTimer();
+			await newTerminalQueued.promise;
+			await flushMicrotasks();
+			expect(callbacks).toEqual(["old:old live", "new:new live"]);
+			vi.advanceTimersToNextTimer();
+			await flushMicrotasks();
+			await newTerminalRendered.promise;
+			expect(callbacks).toEqual(["old:old live", "new:new live", "new:new terminal"]);
+			expect(manager.getJob(newJobId)?.latestProgressText).toBe("new terminal");
+
+			releaseOldLive.resolve();
+			await oldLiveReportResolved.promise;
+			await flushMicrotasks();
+			expect(callbacks).toEqual(["old:old live", "new:new live", "new:new terminal"]);
+			expect(oldTerminalFactoryMaterializations).toBe(0);
+			expect(manager.getJob(newJobId)?.latestProgressText).toBe("new terminal");
+
+			releaseNewJob.resolve();
+			await manager.waitForAll();
+		} finally {
+			allowOldTerminal.resolve();
+			releaseOldLive.resolve();
+			releaseNewJob.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("cancellation gates an old revision already waiting behind an in-flight callback", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const rendered: string[] = [];
+		let staleFactoryMaterializations = 0;
+		const firstProgressStarted = Promise.withResolvers<void>();
+		const releaseFirstProgress = Promise.withResolvers<void>();
+		const allowSecondReport = Promise.withResolvers<void>();
+		const secondReportQueued = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		const jobId = manager.register(
+			"bash",
+			"gated progress",
+			async ({ reportProgress, signal }) => {
+				const first = reportProgress("first");
+				await allowSecondReport.promise;
+				const stale = reportProgress(() => {
+					staleFactoryMaterializations++;
+					return "stale";
+				});
+				secondReportQueued.resolve();
+				await Promise.all([first, stale]);
+				await new Promise<void>(resolve => {
+					if (signal.aborted) {
+						resolve();
+						return;
+					}
+					signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return "cancelled";
+			},
+			{
+				onProgress: async text => {
+					rendered.push(text);
+					if (text !== "first") return;
+					firstProgressStarted.resolve();
+					await releaseFirstProgress.promise;
+				},
+			},
+		);
+
+		try {
+			vi.advanceTimersByTime(100);
+			await firstProgressStarted.promise;
+
+			allowSecondReport.resolve();
+			await secondReportQueued.promise;
+			vi.advanceTimersByTime(100);
+
+			expect(manager.cancel(jobId)).toBe(true);
+			releaseFirstProgress.resolve();
+			await manager.waitForAll();
+
+			expect(rendered).toEqual(["first"]);
+			expect(staleFactoryMaterializations).toBe(0);
+			expect(manager.getJob(jobId)?.status).toBe("cancelled");
+		} finally {
+			allowSecondReport.resolve();
+			releaseFirstProgress.resolve();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
+	});
+
+	test("dispose clears scheduled progress, resolves its reporter, and prevents a late callback", async () => {
+		vi.useFakeTimers();
+		setSystemTime(1);
+		const timerBaseline = vi.getTimerCount();
+		let materializations = 0;
+		let callbackCalls = 0;
+		const reporterResumed = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+
+		manager.register(
+			"bash",
+			"dispose pending progress",
+			async ({ reportProgress }) => {
+				await reportProgress(() => {
+					materializations++;
+					return "late";
+				});
+				reporterResumed.resolve();
+				return "cancelled";
+			},
+			{
+				onProgress: () => {
+					callbackCalls++;
+				},
+			},
+		);
+
+		try {
+			expect(vi.getTimerCount()).toBe(timerBaseline + 1);
+			const disposed = await manager.dispose({ timeoutMs: 1_000 });
+			await reporterResumed.promise;
+			expect(vi.getTimerCount()).toBe(timerBaseline);
+			vi.advanceTimersByTime(1_000);
+			await Promise.resolve();
+
+			expect(disposed).toBe(true);
+			expect(materializations).toBe(0);
+			expect(callbackCalls).toBe(0);
+			expect(manager.getAllJobs()).toEqual([]);
+		} finally {
+			await manager.dispose({ timeoutMs: 0 });
+			setSystemTime();
+			vi.useRealTimers();
+		}
 	});
 });
 

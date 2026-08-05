@@ -39,6 +39,18 @@ export interface ObservableSession {
 /** Coarse source of an observer change; callers use it to separate lifecycle work from high-frequency progress. */
 export type SessionObserverChangeKind = "main" | "reset" | "lifecycle" | "progress";
 
+/** Observer change metadata, including whether parent todos must be reconciled. */
+export type SessionObserverChange = {
+	kind: SessionObserverChangeKind;
+	requiresTodoReconcile: boolean;
+};
+
+const MAIN_CHANGE: SessionObserverChange = { kind: "main", requiresTodoReconcile: true };
+const RESET_CHANGE: SessionObserverChange = { kind: "reset", requiresTodoReconcile: true };
+const LIFECYCLE_CHANGE: SessionObserverChange = { kind: "lifecycle", requiresTodoReconcile: true };
+const PROGRESS_CHANGE: SessionObserverChange = { kind: "progress", requiresTodoReconcile: false };
+const COMPLETED_PROGRESS_CHANGE: SessionObserverChange = { kind: "progress", requiresTodoReconcile: true };
+
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	pending: "active",
 	running: "active",
@@ -72,20 +84,20 @@ function withSessionTiming(progress: AgentProgress, session?: ObservableSession)
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
-	#listeners = new Set<(kind: SessionObserverChangeKind) => void>();
+	#listeners = new Set<(change: SessionObserverChange) => void>();
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
 
 	/** Add a change listener. Returns unsubscribe function. */
-	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
+	onChange(cb: (change: SessionObserverChange) => void): () => void {
 		this.#listeners.add(cb);
 		return () => this.#listeners.delete(cb);
 	}
 
-	#notifyListeners(kind: SessionObserverChangeKind): void {
-		for (const cb of this.#listeners) cb(kind);
+	#notifyListeners(change: SessionObserverChange): void {
+		for (const cb of this.#listeners) cb(change);
 	}
 
 	#ensureSortOrder(id: string): number {
@@ -124,7 +136,7 @@ export class SessionObserverRegistry {
 			sessionFile: sessionFile ?? existing?.sessionFile,
 			lastUpdate: Date.now(),
 		});
-		this.#notifyListeners("main");
+		this.#notifyListeners(MAIN_CHANGE);
 	}
 
 	getSessions(): ObservableSession[] {
@@ -199,7 +211,7 @@ export class SessionObserverRegistry {
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
-		this.#notifyListeners("reset");
+		this.#notifyListeners(RESET_CHANGE);
 	}
 
 	dispose(): void {
@@ -272,7 +284,7 @@ export class SessionObserverRegistry {
 						...(completedAtMs === undefined ? {} : { completedAtMs }),
 					});
 				}
-				this.#notifyListeners("lifecycle");
+				this.#notifyListeners(LIFECYCLE_CHANGE);
 			}),
 		);
 
@@ -322,7 +334,7 @@ export class SessionObserverRegistry {
 						progress: snapshot,
 					});
 				}
-				this.#notifyListeners("progress");
+				this.#notifyListeners(snapshot.status === "completed" ? COMPLETED_PROGRESS_CHANGE : PROGRESS_CHANGE);
 			}),
 		);
 	}

@@ -194,6 +194,10 @@ describe("task runnable progress scheduling", () => {
 
 		await waitUntil(() => startedIds.length === 8, "expected only eight children to reach runStructuredSubagent");
 		expect(scheduler.snapshot()).toEqual({ active: 8, queued: 2, limit: 8 });
+		await waitUntil(
+			() => snapshots.some(snapshot => snapshot.filter(progress => progress.status === "running").length === 8),
+			"expected manager scheduler to publish eight running children",
+		);
 		expect(snapshots.some(snapshot => snapshot.filter(progress => progress.status === "running").length === 8)).toBe(
 			true,
 		);

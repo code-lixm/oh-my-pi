@@ -1848,7 +1848,7 @@ export class StatusLineComponent implements Component {
 			}
 		}
 
-		const runningBackgroundJobs = this.session.getAsyncJobSnapshot()?.running.length ?? 0;
+		const runningBackgroundJobs = this.session.getVisibleAsyncJobCount();
 		if (runningBackgroundJobs > 0) {
 			rightParts.unshift(theme.fg("statusLineSubagents", `${theme.icon.job} ${runningBackgroundJobs}`));
 		}

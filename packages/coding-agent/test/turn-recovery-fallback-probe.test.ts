@@ -32,6 +32,9 @@ const primarySelector = `${primary.provider}/${primary.id}`;
 const fallbackSelector = `${fallback.provider}/${fallback.id}`;
 
 type Probe = TurnRecoveryHost["probeModelConnectivity"];
+type StreamingAgentStub = {
+	state: Pick<TurnRecoveryHost["agent"]["state"], "isStreaming">;
+};
 
 let modelRegistry: ModelRegistry;
 
@@ -69,12 +72,12 @@ async function flushMicrotasks(): Promise<void> {
 
 function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}): FallbackProbeHarness {
 	let currentModel: Model = primary;
-	let streaming = false;
+	const agent: StreamingAgentStub = { state: { isStreaming: false } };
 	let configuredThinkingLevel = options.configuredThinkingLevel;
 	const events: AgentSessionEvent[] = [];
 	const probeModelConnectivity = vi.fn(probe);
 	const host: TurnRecoveryHost = {
-		agent: undefined as never,
+		agent: agent as TurnRecoveryHost["agent"],
 		sessionManager: undefined as never,
 		persistedAssistantEntryId: () => undefined,
 		settings: Settings.isolated(),
@@ -88,7 +91,7 @@ function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}):
 		},
 		thinkingLevelCeiling: () => undefined,
 		isDisposed: () => false,
-		isStreaming: () => streaming,
+		isStreaming: () => agent.state.isStreaming,
 		isCompacting: () => false,
 		abortInProgress: () => false,
 		streamingEditAbortTriggered: () => false,
@@ -122,7 +125,7 @@ function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}):
 		currentModel: () => currentModel,
 		currentThinkingLevel: () => configuredThinkingLevel,
 		setStreaming: (value: boolean) => {
-			streaming = value;
+			agent.state.isStreaming = value;
 		},
 	};
 }

@@ -8,7 +8,12 @@ import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
+import {
+	type AgentProgress,
+	type SubagentProgressPayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task";
 import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { NativeScrollbackLiveRegion } from "@oh-my-pi/pi-tui";
@@ -17,6 +22,36 @@ import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-l
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
+}
+
+function makeProgressPayload(
+	id: string,
+	description: string,
+	status: AgentProgress["status"] = "running",
+): SubagentProgressPayload {
+	return {
+		index: 0,
+		agent: "task",
+		agentSource: "bundled",
+		task: description,
+		detached: true,
+		progress: {
+			index: 0,
+			id,
+			agent: "task",
+			agentSource: "bundled",
+			status,
+			task: description,
+			description,
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			requests: 0,
+			tokens: 0,
+			cost: 0,
+			durationMs: 0,
+		},
+	};
 }
 
 describe("InteractiveMode todo HUD persistence", () => {
@@ -245,6 +280,99 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(task?.status).toBe("completed");
 		// The blocker note is dropped with the blocked status — the wait is over.
 		expect(task?.blocker).toBeUndefined();
+	});
+
+	it("uses only the todo root for set, toggle, and auto-clear repainting", async () => {
+		await createMode(1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const fullRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: [
+					{ content: "completed cleanup", status: "completed" },
+					{ content: "pending one", status: "pending" },
+					{ content: "pending two", status: "pending" },
+					{ content: "pending three", status: "pending" },
+					{ content: "pending four", status: "pending" },
+					{ content: "pending five", status: "pending" },
+					{ content: "pending six", status: "pending" },
+				],
+			},
+		]);
+		expect(scopedRender).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(fullRender).not.toHaveBeenCalled();
+
+		scopedRender.mockClear();
+		mode.toggleTodoExpansion();
+		expect(scopedRender).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(fullRender).not.toHaveBeenCalled();
+
+		scopedRender.mockClear();
+		vi.advanceTimersByTime(1_000);
+		expect(renderTodos(mode)).not.toContain("completed cleanup");
+		expect(scopedRender).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(fullRender).not.toHaveBeenCalled();
+	});
+
+	it("repaints only the todo HUD when an active subagent description starts matching a todo", async () => {
+		await createMode(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.setTodoPhases([
+			{ name: "Implementation", tasks: [{ content: "Apply focused repair", status: "pending" }] },
+		]);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const fullRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("RepairWorker", "Unrelated work"));
+		vi.advanceTimersByTime(100);
+		const beforeMatch = mode.todoContainer.render(120).join("\n");
+		scopedRender.mockClear();
+		fullRender.mockClear();
+
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("RepairWorker", "Apply focused repair"));
+		vi.advanceTimersByTime(100);
+
+		expect(mode.todoContainer.render(120).join("\n")).not.toBe(beforeMatch);
+		expect(scopedRender).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(fullRender).not.toHaveBeenCalled();
+	});
+
+	it("reconciles a progress-only completion once and repaints its todo root once", async () => {
+		await createMode(-1);
+		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+		session.setTodoPhases([
+			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
+		]);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.useFakeTimers();
+		const persistedTodos = vi.spyOn(session, "setTodoPhases");
+		const fullRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+		eventBus.emit(
+			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			makeProgressPayload("ReviewFixer", "Fix review comments", "completed"),
+		);
+		vi.advanceTimersByTime(100);
+
+		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
+		expect(persistedTodos).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenCalledTimes(1);
+		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(fullRender).not.toHaveBeenCalled();
 	});
 });
 

@@ -105,7 +105,7 @@ function expectSharedAccentContentRows(
 	}
 }
 
-function expectSelfFramedAccentEdges(lines: readonly string[], label: string): void {
+function expectAccentSurfaceEdges(lines: readonly string[], label: string): void {
 	expect(lines.length, `${label}: expected content between accent edges`).toBeGreaterThan(2);
 	for (const [edge, raw] of [
 		["top", lines[0]!],
@@ -117,7 +117,7 @@ function expectSelfFramedAccentEdges(lines: readonly string[], label: string): v
 		expect(raw.endsWith("\x1b[49m "), `${label}: ${edge} edge must leave the terminal inset unpainted`).toBe(true);
 		expect(visibleWidth(raw), `${label}: ${edge} edge width`).toBe(WIDTH);
 	}
-	expect(plainLines(lines).join("\n"), `${label}: nested shared and self-framed rails`).not.toContain("▌ ▌");
+	expect(plainLines(lines).join("\n"), `${label}: nested accent rails`).not.toContain("▌ ▌");
 }
 
 // Inline args keep rendering tests independent of the real tool executors.
@@ -604,7 +604,7 @@ describe("tool execution left-edge alignment", () => {
 		const { previous } = withBorderStyle("accent", () => {
 			const { success } = renderToolLifecycle("read", false);
 			expectNoOuterPadding(plainLines(success), "read success");
-			expectSelfFramedAccentEdges(success, "read success");
+			expectAccentSurfaceEdges(success, "read success");
 			expectVisibleSnippets(success, "read success", [
 				"packages/coding-agent/src/example.ts",
 				"export const answer = 42;",
@@ -740,7 +740,7 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previousNone);
 	});
 
-	it("wraps non-framed custom renderers in a tinted accent rail without extra edge rows", async () => {
+	it("wraps non-framed custom renderers in a tinted accent rail with top and bottom breathing rows", async () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 		const uiTheme = await getThemeByName("dark");
 		expect(uiTheme).toBeDefined();
@@ -767,20 +767,20 @@ describe("tool execution left-edge alignment", () => {
 			component = new ToolExecutionComponent("custom_plain", {}, {}, tool, uiStub, process.cwd());
 
 			const pending = component.render(WIDTH);
-			expect(pending, "custom renderer pending child row count").toHaveLength(1);
-			expectSharedAccentContentRows(pending, "custom renderer pending", uiTheme!);
+			expect(pending, "custom renderer pending content plus breathing rows").toHaveLength(3);
+			expectAccentSurfaceEdges(pending, "custom renderer pending");
+			expectSharedAccentContentRows(pending.slice(1, -1), "custom renderer pending", uiTheme!);
 			expectVisibleSnippets(pending, "custom renderer pending content", ["Custom Plain"]);
 
 			component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
 			const first = component.render(WIDTH);
-			const second = component.render(WIDTH);
 			const plain = plainLines(first);
 
-			expect(second).toBe(first);
-			expect(childWidths).toEqual([WIDTH - 3, WIDTH - 3]);
-			expect(first, "custom renderer success child row count").toHaveLength(childLines.length);
-			expectSharedAccentContentRows(first, "custom renderer success", uiTheme!, "error");
-			expect(plain.map(line => line.trimEnd())).toEqual(childLines.map(line => `▌ ${line}`));
+			expect(childWidths).toEqual([WIDTH - 3]);
+			expect(first, "custom renderer success content plus breathing rows").toHaveLength(childLines.length + 2);
+			expectAccentSurfaceEdges(first, "custom renderer success");
+			expectSharedAccentContentRows(first.slice(1, -1), "custom renderer success", uiTheme!, "error");
+			expect(plain.slice(1, -1).map(line => line.trimEnd())).toEqual(childLines.map(line => `▌ ${line}`));
 			expect(plain.join("\n")).not.toContain("│");
 			expect(plain.join("\n")).not.toContain("╭");
 			expect(plain.join("\n")).not.toContain("╰");
@@ -791,6 +791,34 @@ describe("tool execution left-edge alignment", () => {
 		}
 
 		expect(getOutputBlockBorderStyle()).toBe(previousBorderStyle);
+	});
+
+	it("does not paint a ghost accent surface around an empty non-framed custom renderer", () => {
+		const emptyChild: Component = {
+			render(): readonly string[] {
+				return [];
+			},
+		};
+		const tool = {
+			name: "custom_empty",
+			label: "Custom Empty",
+			mergeCallAndResult: true,
+			renderResult(): Component {
+				return emptyChild;
+			},
+		} as unknown as AgentTool;
+
+		const { previous } = withBorderStyle("accent", () => {
+			const component = new ToolExecutionComponent("custom_empty", {}, {}, tool, uiStub, process.cwd());
+			try {
+				component.updateResult({ content: [{ type: "text", text: "ignored" }], isError: true }, false);
+				expect(component.render(WIDTH), "empty custom renderer must not produce accent pad rows").toEqual([]);
+			} finally {
+				component.stopAnimation();
+			}
+		});
+
+		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
 	it("renders the final self-framed Edit block flush to its own top and bottom borders", async () => {

@@ -632,6 +632,167 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
+	it("restores a probe-ready fallback at the next user-turn boundary after its stream settles", async () => {
+		let fakeTimersEnabled = false;
+		const releaseFallbackStream = Promise.withResolvers<void>();
+		try {
+			const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+			if (!primaryModel || !fallbackModel) {
+				throw new Error("Expected bundled primary and fallback test models to exist");
+			}
+
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const requestedModels: string[] = [];
+			const requestedProbeModels: string[] = [];
+			const fallbackRestoredEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_restored" }>> = [];
+			const fallbackStreamStarted = Promise.withResolvers<void>();
+			const probeCompleted = Promise.withResolvers<void>();
+			const fallbackMock = createMockModel({
+				provider: fallbackModel.provider,
+				id: fallbackModel.id,
+				handler: async () => {
+					fallbackStreamStarted.resolve();
+					await releaseFallbackStream.promise;
+					return { content: ["Fallback turn completed"] };
+				},
+			});
+			const primaryMock = createMockModel({
+				provider: primaryModel.provider,
+				id: primaryModel.id,
+				responses: [{ content: ["Primary turn completed"] }],
+			});
+			const probeMock = createMockModel({
+				provider: primaryModel.provider,
+				id: primaryModel.id,
+				responses: [{ content: ["pong"] }],
+			});
+			const flushMicrotasks = async (): Promise<void> => {
+				for (let turn = 0; turn < 32; turn += 1) await Promise.resolve();
+			};
+			const advanceTimers = async (ms: number): Promise<void> => {
+				vi.advanceTimersByTime(ms);
+				await flushMicrotasks();
+			};
+			const settleWithFakeTimers = async <T>(operation: Promise<T>, label: string): Promise<T> => {
+				let outcome: { value: T } | { error: unknown } | undefined;
+				void operation.then(
+					value => {
+						outcome = { value };
+					},
+					error => {
+						outcome = { error };
+					},
+				);
+				for (let turn = 0; turn < 1_000 && !outcome; turn += 1) {
+					await flushMicrotasks();
+					if (!outcome) {
+						await advanceTimers(20);
+						await scheduler.yield();
+					}
+				}
+				if (!outcome) throw new Error(`Timed out waiting for ${label}`);
+				if ("error" in outcome) throw outcome.error;
+				return outcome.value;
+			};
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: fallbackModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const selector = `${model.provider}/${model.id}`;
+					requestedModels.push(selector);
+					if (selector === fallbackSelector) {
+						fallbackStreamStarted.resolve();
+						return fallbackMock.stream(model, context, options);
+					}
+					if (selector === primarySelector) {
+						return primaryMock.stream(model, context, options);
+					}
+					throw new Error(`Unexpected model requested during fallback recovery test: ${selector}`);
+				},
+			});
+			const settings = Settings.isolated({ "compaction.enabled": false });
+			settings.setModelRole("default", primarySelector);
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				initialRetryFallback: {
+					role: "default",
+					originalSelector: primarySelector,
+					originalThinkingLevel: undefined,
+				},
+				sideStreamFn: (model, context, options) => {
+					requestedProbeModels.push(`${model.provider}/${model.id}`);
+					const stream = probeMock.stream(model, context, options);
+					void stream.result().then(
+						() => probeCompleted.resolve(),
+						error => probeCompleted.reject(error),
+					);
+					return stream;
+				},
+			});
+			session.subscribe(event => {
+				if (event.type === "retry_fallback_restored") fallbackRestoredEvents.push(event);
+			});
+
+			vi.useFakeTimers();
+			fakeTimersEnabled = true;
+			const fallbackTurn = session.prompt("Keep the active fallback streaming while the primary probe finishes");
+			await settleWithFakeTimers(fallbackStreamStarted.promise, "fallback stream start");
+
+			await advanceTimers(60_000);
+			await settleWithFakeTimers(probeCompleted.promise, "primary probe completion");
+			await flushMicrotasks();
+
+			expect(requestedProbeModels).toEqual([primarySelector]);
+			expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
+			expect(fallbackRestoredEvents).toEqual([]);
+
+			releaseFallbackStream.resolve();
+			await settleWithFakeTimers(fallbackTurn, "fallback turn");
+			await settleWithFakeTimers(session.waitForIdle(), "fallback idle");
+
+			await settleWithFakeTimers(
+				session.prompt("Restore the primary before this next user turn"),
+				"restored user turn",
+			);
+			await settleWithFakeTimers(session.waitForIdle(), "restored idle");
+
+			expect(requestedModels).toEqual([fallbackSelector, primarySelector]);
+			expect(session.model).toMatchObject({ provider: primaryModel.provider, id: primaryModel.id });
+			expect(fallbackRestoredEvents).toEqual([
+				{
+					type: "retry_fallback_restored",
+					from: fallbackSelector,
+					to: primarySelector,
+					role: "default",
+				},
+			]);
+		} finally {
+			releaseFallbackStream.resolve();
+			try {
+				session?.beginDispose();
+			} finally {
+				if (fakeTimersEnabled) {
+					vi.clearAllTimers();
+					vi.useRealTimers();
+				}
+			}
+			try {
+				await session?.dispose();
+			} finally {
+				session = undefined;
+			}
+		}
+	});
 	it("keeps an advisor fallback until a private primary probe restores it", async () => {
 		let fakeTimersEnabled = false;
 		try {
@@ -848,7 +1009,7 @@ describe("AgentSession retry fallback", () => {
 			await settleWithFakeTimers(fallbackRestored.promise, "fallback restoration");
 			expect(requestedProbeModels).toEqual([advisorPrimarySelector]);
 			expect(probeContextSizes).toEqual([1]);
-			expect(probePrompts).toEqual(["Reply with exactly `pong`."]);
+			expect(probePrompts.map(prompt => prompt.trim())).toEqual(["Reply with exactly `pong`."]);
 			expect(requestedAdvisorModels).toEqual([
 				advisorPrimarySelector,
 				advisorPrimarySelector,

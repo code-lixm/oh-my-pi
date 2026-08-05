@@ -44,7 +44,6 @@ import type {
 	ThinkingBudgets,
 	Usage,
 } from "@oh-my-pi/pi-catalog/types";
-import type { Type } from "arktype";
 import type { ZodType, z } from "zod/v4";
 import type { ApiKey } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
@@ -223,16 +222,19 @@ export function resolveModelServiceTier(
 
 /**
  * True when the tier should be sent on the wire as the provider's service-tier
- * request field. OpenAI / OpenAI-Codex accept every {@link ServiceTier};
- * Google (Gemini API + Vertex) and OpenRouter accept `flex`/`priority`;
- * Fireworks Serverless realizes only its Priority serving path. Anthropic is
- * absent because it realizes `priority` via `speed: "fast"`.
+ * request field. `auto` is never forwarded — it is OpenAI's implicit default, so
+ * omitting `service_tier` is identical to requesting `auto`, and the Codex
+ * (ChatGPT OAuth) endpoint rejects an explicit `auto` outright. OpenAI /
+ * OpenAI-Codex accept every other {@link ServiceTier}; Google (Gemini API +
+ * Vertex) and OpenRouter accept `flex`/`priority`; Fireworks Serverless
+ * realizes only its Priority serving path. Anthropic is absent because it
+ * realizes `priority` via `speed: "fast"`.
  */
 export function shouldSendServiceTier(
 	serviceTier: ServiceTier | null | undefined,
 	target: Provider | ServiceTierModel | undefined,
 ): boolean {
-	if (!serviceTier) return false;
+	if (!serviceTier || serviceTier === "auto") return false;
 	const provider = typeof target === "string" ? target : target?.provider;
 	if (provider === "openai" || provider === "openai-codex") return true;
 	if (provider === "openrouter") {
@@ -1144,6 +1146,7 @@ export interface CursorExecHandlers {
  * emits this shape). Distinguished from arktype at runtime.
  */
 export type TJsonSchema = Record<string, unknown>;
+type InferredSchema = { readonly infer: unknown };
 
 /**
  * Schema type accepted by the {@link Tool} interface.
@@ -1151,12 +1154,12 @@ export type TJsonSchema = Record<string, unknown>;
  * Canonical authoring uses Zod or ArkType. Extension compat may supply a JSON
  * Schema object (including TypeBox static schema objects).
  */
-export type TSchema = ZodType | Type | TJsonSchema;
+export type TSchema = ZodType | InferredSchema | TJsonSchema;
 
 /** Resolve parameter types for tool execution / handlers. */
 export type Static<S> = S extends ZodType
 	? z.infer<S>
-	: S extends Type
+	: S extends InferredSchema
 		? S["infer"]
 		: S extends { static: infer T }
 			? T

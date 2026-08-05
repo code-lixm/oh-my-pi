@@ -32,11 +32,12 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
+import type { AgentProgress } from "../../task";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { formatAgentDuration, renderAgentStatusBadge } from "./agent-activity-display";
+import { formatAgentDuration, renderAgentStatusBadge, resolveAgentTerminalStatus } from "./agent-activity-display";
 import type { AgentHubRemote } from "./agent-hub";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
@@ -111,7 +112,7 @@ function sanitizeErrorLine(text: string, maxWidth: number): string {
 
 /** Task timing/status plus legacy result fields retained for the Hub dependency boundary. */
 interface TranscriptProgressSnapshot {
-	status?: string;
+	status?: AgentProgress["status"];
 	startedAtMs?: number;
 	completedAtMs?: number;
 	durationMs?: number;
@@ -653,14 +654,14 @@ export class AgentTranscriptViewer implements Component {
 
 	#headerLine(ref: AgentRef | undefined, observed: ObservableSession | undefined, width: number): string {
 		const progress: TranscriptProgressSnapshot | undefined = observed?.progress;
-		const terminal = this.#isTerminal(ref, progress);
+		const terminal = this.#isTerminal(ref, observed, progress);
 		const previous = rawKeyHint("Alt+K", tSettingsUi("previous"));
 		const next = rawKeyHint("Alt+J", tSettingsUi("next"));
 		const metadata = [
 			this.#metadataValue("Model", this.#modelValue(observed)),
 			this.#metadataValue("Context", this.#contextValue(observed)),
 			this.#metadataValue("Duration", this.#runtimeValue(ref, progress, terminal)),
-			this.#metadataValue("Status", this.#statusValue(ref, progress)),
+			this.#metadataValue("Status", this.#statusValue(ref, observed, progress)),
 		].filter((value): value is string => value !== undefined);
 		const separator = theme.fg("dim", theme.sep.dot);
 		const minimumNavigationWidth = visibleWidth(previous) + visibleWidth(next) + 2 + MIN_NAVIGATION_TITLE_WIDTH;
@@ -720,15 +721,22 @@ export class AgentTranscriptViewer implements Component {
 		return `${theme.fg("dim", `${tSettingsUi(label)}:`)} ${value}`;
 	}
 
-	#statusValue(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): string | undefined {
+	#statusValue(
+		ref: AgentRef | undefined,
+		observed: ObservableSession | undefined,
+		progress: TranscriptProgressSnapshot | undefined,
+	): string | undefined {
+		const terminalStatus = resolveAgentTerminalStatus({
+			progressStatus: progress?.status,
+			observedStatus: observed?.status,
+			registryStatus: ref?.status,
+		});
+		if (terminalStatus) return renderAgentStatusBadge(terminalStatus) || undefined;
 		if (ref?.status) return renderAgentStatusBadge(ref.status) || undefined;
 		const status = progress?.status;
 		switch (status) {
 			case "pending":
 			case "running":
-			case "completed":
-			case "failed":
-			case "aborted":
 				return renderAgentStatusBadge(status) || undefined;
 			default:
 				return undefined;
@@ -777,14 +785,19 @@ export class AgentTranscriptViewer implements Component {
 		);
 	}
 
-	#isTerminal(ref: AgentRef | undefined, progress: TranscriptProgressSnapshot | undefined): boolean {
+	#isTerminal(
+		ref: AgentRef | undefined,
+		observed: ObservableSession | undefined,
+		progress: TranscriptProgressSnapshot | undefined,
+	): boolean {
 		return (
-			progress?.status === "completed" ||
-			progress?.status === "failed" ||
-			progress?.status === "aborted" ||
+			resolveAgentTerminalStatus({
+				progressStatus: progress?.status,
+				observedStatus: observed?.status,
+				registryStatus: ref?.status,
+			}) !== undefined ||
 			ref?.status === "idle" ||
-			ref?.status === "parked" ||
-			ref?.status === "aborted"
+			ref?.status === "parked"
 		);
 	}
 

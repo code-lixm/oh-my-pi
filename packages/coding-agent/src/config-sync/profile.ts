@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { YAML } from "bun";
-import { withFileLock } from "../config/file-lock";
 import { CONFIG_SYNC_VERSION, type SyncProfile, type SyncState } from "./types";
 
 export const DEFAULT_SYNC_PASSPHRASE_ENV = "OMP_CONFIG_SYNC_PASSPHRASE";

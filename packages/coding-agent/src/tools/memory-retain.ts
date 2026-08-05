@@ -1,5 +1,5 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type } from "arktype";
 import { selectPrompt } from "../prompts/prompt-locale";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import retainDescriptionZh from "../prompts/tools/retain.zh-CN.md" with { type: "text" };

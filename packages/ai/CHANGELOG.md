@@ -5,10 +5,26 @@
 ### Added
 
 - Added optional Codex native-prompt sidecars with Full/Lite role ordering, fingerprint-partitioned prompt caches, stable session/thread identity, and complete generic-prompt fallback.
+## [17.2.7] - 2026-08-03
+
+### Changed
+
+- Replaced `arktype` with `@oh-my-pi/omptype` for schema validation, delivering up to 100x faster schema construction and 60-100x faster validation while maintaining full compatibility with existing `type`/`Type` exports and the `isArkSchema` contract.
+
 ### Fixed
 
-- Fixed Ollama requests with no `user`-role turn (e.g. a plan-approval handoff whose only non-system message is an agent-attributed developer turn) returning `done_reason: "load"` and generating nothing, which was laundered into a clean empty stop and retried until the cap surfaced a misleading error. `convertMessages` now demotes the last non-prefix `system` turn to `user` so the request can produce output, and `mapDoneReason` surfaces `done_reason: "load"` as an error instead of a silent stop ([#7465](https://github.com/can1357/oh-my-pi/issues/7465)).
-- Added profile-aware Bedrock Mantle region selection, authenticated model discovery, bearer-token or SigV4 authentication, and credential refresh handling for OpenAI Responses models ([#7080](https://github.com/can1357/oh-my-pi/pull/7080) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Fixed OpenAI-Codex (ChatGPT OAuth) requests failing with an `Unsupported service_tier: auto` error on default or legacy sessions by omitting the implicit `auto` service tier on the wire.
+- Fixed an issue where Cursor `kimi-k3` sessions would break permanently when a same-model assistant turn was persisted without thinking blocks, replacing hard errors with graceful warnings.
+
+## [17.2.6] - 2026-08-03
+
+### Added
+
+- Added profile-aware Bedrock Mantle region selection, authenticated model discovery, bearer-token or SigV4 authentication, and credential refresh handling for OpenAI Responses models.
+
+### Fixed
+
+- Fixed an issue where Ollama requests without a user-role message would fail to generate output or silently fail with a misleading error.
 
 ## [17.2.5] - 2026-08-03
 

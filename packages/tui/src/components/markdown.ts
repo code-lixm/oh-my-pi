@@ -2431,7 +2431,12 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 
 			previousLineWasOsc66 = false;
 			if (literalCodeRow) {
-				contentLines.push(line);
+				// Framed/plain code rows pre-size themselves to the Markdown content width
+				// and own their background. Preserve that styling while applying the same
+				// outer gutter as prose; bypassing both margins made assistant fences start
+				// one cell left of the surrounding body.
+				const lineWithMargins = leftMargin + line + rightMargin;
+				contentLines.push(lineWithMargins + padding(Math.max(0, signature.width - visibleWidth(lineWithMargins))));
 				continue;
 			}
 			const lineWithMargins = leftMargin + line + rightMargin;

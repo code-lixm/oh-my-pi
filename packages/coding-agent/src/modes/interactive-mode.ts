@@ -208,7 +208,7 @@ import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
 import {
 	type ObservableSession,
-	type SessionObserverChangeKind,
+	type SessionObserverChange,
 	SessionObserverRegistry,
 } from "./session-observer-registry";
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
@@ -543,6 +543,19 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	return ["", theme.bold(theme.fg("accent", tSettingsUi("Subagents"))), ...renderedRows.map(line => ` ${line}`)].map(
 		line => truncateAgentActivityLine(line, Math.max(1, columns)),
 	);
+}
+
+/** Normalize active descriptions into the same order-independent match semantics as todo highlighting. */
+function getTodoDescriptionSemanticKey(descriptions: readonly string[]): string {
+	const normalized = new Set<string>();
+	for (const description of descriptions) {
+		const value = description
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}]+/gu, " ")
+			.trim();
+		if (value) normalized.add(value);
+	}
+	return [...normalized].sort().join("\u0000");
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -1027,6 +1040,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	#ircPendingReplyUnsubscribe?: () => void;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentRegistry;
+	/** Last rendered terminal text for the stable HUD roots; undefined forces the initial rebuild. */
+	#todoVisibleText: string | undefined;
+	#subagentVisibleText: string | undefined;
+	#activeSubagentDescriptionKey: string | undefined;
+	#runningSubagentBadgeCount: number | undefined;
 	#mcpStatusOrder: string[] = [];
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
@@ -1106,6 +1124,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncEditorMaxHeight();
 		this.#resizeHandler = () => {
 			this.#syncEditorMaxHeight();
+			this.#invalidateHudTextCaches();
+			this.#renderTodoList();
+			this.#renderSubagentList();
 			this.ui.requestRender();
 		};
 		process.stdout.on("resize", this.#resizeHandler);
@@ -1374,8 +1395,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
-		this.#observerRegistry.onChange(kind => {
-			this.#scheduleObserverUiSync(kind);
+		this.#observerRegistry.onChange(change => {
+			this.#scheduleObserverUiSync(change);
 		});
 		this.#ircPendingReplyUnsubscribe = IrcBus.global().onPendingReplyChange(() => {
 			this.#eventController.syncTerminalTitleState();
@@ -1398,6 +1419,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				clearRenderCache();
 				clearMermaidCache();
 				this.ui.invalidate();
+				this.#invalidateHudTextCaches();
+				this.#renderTodoList();
+				this.#renderSubagentList();
 				this.updateEditorBorderColor();
 				if (event.ephemeral || isInsideTerminalMultiplexer()) {
 					// Theme previews and multiplexer panes cannot safely replace native
@@ -2127,7 +2151,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
-	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): void {
+	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): boolean {
 		const registry = getRunningSubagentBadgeRegistry(this.collabGuest);
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
 			this.#agentRegistryUnsubscribe?.();
@@ -2137,8 +2161,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		}
 		const count = countRunningSubagentBadgeAgents(registry);
+		if (count === this.#runningSubagentBadgeCount) return false;
+		this.#runningSubagentBadgeCount = count;
 		this.statusLine.setSubagentCount(count);
-		if (options.requestRender !== false) this.ui.requestRender();
+		if (options.requestRender !== false) this.ui.requestComponentRender(this.editor);
+		return true;
 	}
 
 	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
@@ -2313,19 +2340,18 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Auto-complete any open todo (pending/in_progress/blocked) whose content
-	 * matches a subagent that has finished successfully. Fires on every observer
-	 * `onChange` so the visual state stays in sync with subagent lifecycle
-	 * without requiring the agent to issue a follow-up `todo`. A todo `block`ed
-	 * while waiting on a detached subagent is included: that subagent completing
-	 * is exactly the unblock signal, and blocked todos are excluded from the stop
-	 * reminder, so leaving it blocked would strand it silently. Failed and aborted
-	 * subagents are intentionally NOT auto-completed — those stay open so the user
-	 * (or the next agent turn) can decide what to do.
+	 * Auto-complete any open todo (pending/in_progress/blocked) whose content matches a subagent that has finished
+	 * successfully. Lifecycle changes and terminal progress snapshots request this reconciliation so the visual state
+	 * stays in sync without requiring the agent to issue a follow-up `todo`. A todo
+	 * `block`ed while waiting on a detached subagent is included: that subagent
+	 * completing is exactly the unblock signal, and blocked todos are excluded from
+	 * the stop reminder, so leaving it blocked would strand it silently. Failed and
+	 * aborted subagents are intentionally NOT auto-completed — those stay open so
+	 * the user (or the next agent turn) can decide what to do.
 	 *
 	 * Idempotent: only flips open tasks, never re-touches completed ones.
 	 */
-	#reconcileTodosWithSubagents(): void {
+	#reconcileTodosWithSubagents(): boolean {
 		const completedDescs: string[] = [];
 		for (const session of this.#observerRegistry.getSessions()) {
 			if (session.kind !== "subagent") continue;
@@ -2334,7 +2360,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				session.description?.trim() || session.progress?.description?.trim() || session.label?.trim();
 			if (candidate) completedDescs.push(candidate);
 		}
-		if (completedDescs.length === 0) return;
+		if (completedDescs.length === 0) return false;
 
 		let mutated = false;
 		const next: TodoPhase[] = this.todoPhases.map(phase => ({
@@ -2350,9 +2376,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				return { content: task.content, status: "completed" as const };
 			}),
 		}));
-		if (!mutated) return;
+		if (!mutated) return false;
 		this.session.setTodoPhases(next);
-		this.setTodos(next);
+		this.todoPhases = next;
+		return true;
 	}
 
 	#cancelTodoAutoClearTimer(): void {
@@ -2390,8 +2417,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#todoAutoClearTimer = setTimeout(() => {
 			this.#todoAutoClearTimer = undefined;
 			this.todoPhases = this.#removeClosedTodos(this.todoPhases);
-			this.#renderTodoList();
-			this.ui.requestRender();
+			if (this.#renderTodoList()) this.ui.requestComponentRender(this.todoContainer);
 		}, delaySeconds * 1000);
 		this.#todoAutoClearTimer.unref?.();
 	}
@@ -2439,8 +2465,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		return active ?? nonEmpty[nonEmpty.length - 1];
 	}
 
-	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
-		if (kind !== "progress") {
+	#scheduleObserverUiSync(change: SessionObserverChange): void {
+		if (change.kind !== "progress") {
+			// Main/reset/lifecycle payloads are structural transitions and always
+			// request reconciliation under the observer contract.
+			this.#observerUiSyncNeedsTodoReconcile = true;
+		} else if (change.requiresTodoReconcile) {
+			// A completed terminal snapshot can arrive without a lifecycle event.
 			this.#observerUiSyncNeedsTodoReconcile = true;
 		}
 		if (this.#observerUiSyncTimer) return;
@@ -2452,15 +2483,25 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#flushObserverUiSync(): void {
-		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			this.#observerUiSyncNeedsTodoReconcile = false;
-			this.#reconcileTodosWithSubagents();
+		const roots: Component[] = [];
+		if (this.syncRunningSubagentBadge({ requestRender: false })) roots.push(this.editor);
+
+		const needsTodoReconcile = this.#observerUiSyncNeedsTodoReconcile;
+		this.#observerUiSyncNeedsTodoReconcile = false;
+		let todosChanged = false;
+		if (needsTodoReconcile) {
+			todosChanged = this.#reconcileTodosWithSubagents();
+			if (todosChanged) this.#syncTodoAutoClearTimer();
 		}
-		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
-		this.#renderSubagentList();
-		this.ui.requestRender();
+
+		const activeDescriptions = this.#getActiveSubagentDescriptions();
+		const activeDescriptionKey = getTodoDescriptionSemanticKey(activeDescriptions);
+		if (todosChanged || activeDescriptionKey !== this.#activeSubagentDescriptionKey) {
+			if (this.#renderTodoList(activeDescriptions, activeDescriptionKey)) roots.push(this.todoContainer);
+		}
+		if (this.#renderSubagentList()) roots.push(this.subagentContainer);
+
+		for (const root of roots) this.ui.requestComponentRender(root);
 	}
 
 	#cancelObserverUiSyncTimer(): void {
@@ -2471,18 +2512,42 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#observerUiSyncNeedsTodoReconcile = false;
 	}
 
-	#renderTodoList(): void {
+	#invalidateHudTextCaches(): void {
+		this.#todoVisibleText = undefined;
+		this.#subagentVisibleText = undefined;
+		this.#activeSubagentDescriptionKey = undefined;
+	}
+
+	#replaceTodoVisibleText(text: string): boolean {
+		if (this.#todoVisibleText === text && this.todoContainer.children.length === (text ? 1 : 0)) return false;
+		this.#todoVisibleText = text;
 		this.todoContainer.clear();
+		if (text) this.todoContainer.addChild(new Text(text, 1, 0));
+		return true;
+	}
+
+	#replaceSubagentVisibleText(text: string): boolean {
+		if (this.#subagentVisibleText === text && this.subagentContainer.children.length === (text ? 1 : 0)) return false;
+		this.#subagentVisibleText = text;
+		this.subagentContainer.clear();
+		if (text) this.subagentContainer.addChild(new Text(text, 1, 0));
+		return true;
+	}
+
+	#renderTodoList(
+		activeDescriptions: readonly string[] = this.#getActiveSubagentDescriptions(),
+		activeDescriptionKey = getTodoDescriptionSemanticKey(activeDescriptions),
+	): boolean {
+		this.#activeSubagentDescriptionKey = activeDescriptionKey;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (!phases.some(phase => phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"))) {
-			return;
+			return this.#replaceTodoVisibleText("");
 		}
 		if (this.focusedAgentId) {
 			const tasks = phases.flatMap(phase => phase.tasks);
 			const done = tasks.filter(task => this.#isClosedTodo(task)).length;
 			const label = tSettingsUi("Main · Global plan · {done}/{total}", { done, total: tasks.length });
-			this.todoContainer.addChild(new Text(`\n${theme.fg("dim", label)}`, 1, 0));
-			return;
+			return this.#replaceTodoVisibleText(`\n${theme.fg("dim", label)}`);
 		}
 		const expanded = this.todoExpanded;
 		const multiPhase = phases.length > 1;
@@ -2491,11 +2556,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const subsequentStageCap = 4; // stages shown after the active one (header count implies the rest)
 		const activeTaskCap = 5; // open tasks previewed for the active stage
 
-		const activeDescs = this.#getActiveSubagentDescriptions();
 		// A pending todo "lights up" (accent) when an in-flight subagent is doing
 		// its work, matched by normalized content overlap.
 		const isMatched = (todo: TodoItem): boolean =>
-			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
+			activeDescriptions.length > 0 && todoMatchesAnyDescription(todo.content, activeDescriptions);
 
 		// Task subtree for a phase. Collapsed keeps the active stage within a
 		// fixed HUD budget, but preserves in-order neighboring state so short lists
@@ -2563,25 +2627,23 @@ export class InteractiveMode implements InteractiveModeContext {
 			theme.bold(theme.fg("accent", tSettingsUi("Todos"))) +
 			(multiPhase ? theme.fg("dim", ` · ${activeIdx + 1}/${phases.length}`) : "");
 		const lines = ["", root, ...phaseTreeLines.map(line => ` ${line}`)];
-		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		return this.#replaceTodoVisibleText(lines.join("\n"));
 	}
 
 	/** Anchored HUD for active detached work. */
-	#renderSubagentList(): void {
-		this.subagentContainer.clear();
+	#renderSubagentList(): boolean {
 		const sessions = this.#observerRegistry.getSessions();
 		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
-		const lines = renderSubagentHudLines(sessions, columns);
-		if (lines.length > 0) {
-			this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		}
+		const text = renderSubagentHudLines(sessions, columns).join("\n");
+		const changed = this.#replaceSubagentVisibleText(text);
 		this.#refreshWorkingActivityMessage();
+		return changed;
 	}
 
-	async #loadTodoList(): Promise<void> {
+	async #loadTodoList(): Promise<boolean> {
 		this.todoPhases = this.session.getTodoPhases();
 		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
+		return this.#renderTodoList();
 	}
 
 	async #getPlanFilePath(): Promise<string> {
@@ -5070,6 +5132,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleFreshCommand();
 	}
 
+	handleResetContextCommand(): Promise<void> {
+		return this.#commandController.handleResetContextCommand();
+	}
+
 	async handleDropCommand(): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		this.prepareSessionSwitch();
@@ -5416,6 +5482,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#btwController.canBranch();
 	}
 
+	/** Reserves plain `b` only after /btw has a completed branch action to handle. */
+	handlesBtwBranchKey(): boolean {
+		return this.#btwController.handlesBranchKey();
+	}
+
 	handleBtwBranchKey(): Promise<boolean> {
 		return this.#btwController.handleBranch();
 	}
@@ -5428,9 +5499,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#btwController.handleCopy();
 	}
 
-	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {
+	async handleBtwBranch(
+		question: string,
+		assistantMessage: AssistantMessage,
+		leafId: string,
+		sessionId: string,
+	): Promise<void> {
 		try {
-			const result = await this.session.branchFromBtw(question, assistantMessage);
+			const result = await this.session.branchFromBtw(question, assistantMessage, leafId, sessionId);
 			if (result.cancelled) {
 				this.showStatus(tSettingsUi("/btw branch cancelled"), { dim: true });
 				return;
@@ -5485,8 +5561,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	toggleTodoExpansion(): void {
 		this.todoExpanded = !this.todoExpanded;
-		this.#renderTodoList();
-		this.ui.requestRender();
+		if (this.#renderTodoList()) this.ui.requestComponentRender(this.todoContainer);
 	}
 
 	setTodos(todos: TodoItem[] | TodoPhase[]): void {
@@ -5501,13 +5576,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#syncTodoAutoClearTimer();
-		this.#renderTodoList();
-		this.ui.requestRender();
+		if (this.#renderTodoList()) this.ui.requestComponentRender(this.todoContainer);
 	}
 
 	async reloadTodos(): Promise<void> {
-		await this.#loadTodoList();
-		this.ui.requestRender();
+		if (await this.#loadTodoList()) this.ui.requestComponentRender(this.todoContainer);
 	}
 
 	openExternalEditor(): void {

@@ -1181,7 +1181,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					markRunning();
 					await reportProgress(
 						tSettingsUi("Running background task {agentId}...", { agentId }),
-						buildDetails() as unknown as Record<string, unknown>,
+						() => buildDetails() as unknown as Record<string, unknown>,
 					);
 					const forwardSyncProgress: AgentToolUpdateCallback<TaskToolDetails> = async update => {
 						const nextProgress = update.details?.progress?.[0];
@@ -1236,7 +1236,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						const updateText =
 							update.content.find(part => part.type === "text")?.text ??
 							tSettingsUi("Running background task {agentId}...", { agentId });
-						await reportProgress(updateText, buildDetails() as unknown as Record<string, unknown>);
+						await reportProgress(updateText, () => buildDetails() as unknown as Record<string, unknown>);
 					};
 					const result = await this.#executeSync(
 						toolCallId,
@@ -1281,7 +1281,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const statusText = resultFailed
 						? tSettingsUi("Background task {agentId} failed.", { agentId })
 						: tSettingsUi("Background task {agentId} complete.", { agentId });
-					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
+					await reportProgress(statusText, () => buildDetails() as unknown as Record<string, unknown>, {
+						terminal: true,
+					});
 					const deliveryText = `${finalText}${await buildFollowUpHint(singleResult?.aborted === true)}`;
 					if (resultFailed) {
 						// Mark the job itself failed; the failed agent stays interrogable.
@@ -1298,7 +1300,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.durationMs = Math.max(0, completedAtMs - (progress.startedAtMs ?? startedAt));
 					onSettled?.(true);
 					const statusText = tSettingsUi("Background task {agentId} failed.", { agentId });
-					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
+					await reportProgress(statusText, () => buildDetails() as unknown as Record<string, unknown>, {
+						terminal: true,
+					});
 					const message = error instanceof Error ? error.message : String(error);
 					const hint = AgentRegistry.global().get(agentId) ? await buildFollowUpHint(false) : "";
 					throw new TaskJobError(`${message}${hint}`);
@@ -1309,9 +1313,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				agentId,
 				description: progress.assignment ?? progress.task,
 				queued: true,
+				progressKey: toolCallId,
 				ownerId: this.session.getAgentId?.() ?? undefined,
-				onProgress: text => {
-					onUpdate?.({ content: [{ type: "text", text }], details: buildDetails() });
+				onProgress: (text, details) => {
+					const taskDetails = details ? (details as unknown as TaskToolDetails) : buildDetails();
+					onUpdate?.({ content: [{ type: "text", text }], details: taskDetails });
 				},
 			},
 		);

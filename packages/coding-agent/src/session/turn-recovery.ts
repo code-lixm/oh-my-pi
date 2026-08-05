@@ -305,11 +305,11 @@ export class TurnRecovery {
 		if (!(await this.#restoreFallbackPrimary(fallback, false))) this.clearActiveRetryFallback();
 	}
 
-	/** Applies a successful probe only when no request or maintenance owns the session. */
+	/** Applies a successful probe before the next provider stream starts. */
 	async restoreReadyFallbackAtSafeBoundary(): Promise<void> {
 		if (
 			this.#host.isDisposed() ||
-			this.#host.isStreaming() ||
+			this.#host.agent.state.isStreaming ||
 			this.#host.isCompacting() ||
 			this.#host.abortInProgress()
 		) {

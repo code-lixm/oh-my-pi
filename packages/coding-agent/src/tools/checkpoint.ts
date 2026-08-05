@@ -1,6 +1,6 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { selectPrompt } from "../prompts/prompt-locale";
 import checkpointDescription from "../prompts/tools/checkpoint.md" with { type: "text" };

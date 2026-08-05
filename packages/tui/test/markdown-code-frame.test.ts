@@ -22,6 +22,24 @@ function renderPlain(markdown: Markdown, width: number): string[] {
 	return markdown.render(width).map(line => stripVTControlCharacters(line));
 }
 
+function lineContaining(lines: readonly string[], fragment: string): string {
+	const line = lines.find(candidate => candidate.includes(fragment));
+	if (line === undefined) throw new Error(`Missing rendered fragment: ${JSON.stringify(fragment)}`);
+	return line;
+}
+
+function visibleColumnOf(line: string, fragment: string): number {
+	const index = line.indexOf(fragment);
+	if (index < 0) throw new Error(`Missing rendered fragment: ${JSON.stringify(fragment)}`);
+	return visibleWidth(line.slice(0, index));
+}
+
+function firstNonWhitespaceColumn(line: string): number {
+	const index = line.search(/\S/u);
+	if (index < 0) throw new Error("Expected a non-whitespace rendered cell");
+	return visibleWidth(line.slice(0, index));
+}
+
 function createFramedMarkdown(text: string, budget: number): Markdown {
 	const markdown = new Markdown(text, 0, 0, defaultMarkdownTheme);
 	markdown.setCodeBlockDisplayOptions(codeBlockDisplayOptions(budget));
@@ -45,6 +63,57 @@ describe("Markdown assistant code-frame opt-in", () => {
 		expect(lines[1]).toContain(defaultMarkdownTheme.symbols.boxRound.vertical);
 		expect(lines[1]).toContain("const answer = 42;");
 		expect(lines[lines.length - 1]).toContain(defaultMarkdownTheme.symbols.boxRound.bottomLeft);
+		expect(lines.every(line => firstNonWhitespaceColumn(line) === 0)).toBe(true);
+	});
+
+	it("aligns framed code outer edges with prose at paddingX=1", () => {
+		const width = 32;
+		const prose = "prose-before-frame";
+		const markdown = new Markdown(`${prose}\n\n${fence(["frame-row-1", "frame-row-2"])}`, 1, 0, defaultMarkdownTheme);
+		markdown.setCodeBlockDisplayOptions(codeBlockDisplayOptions(6));
+
+		const lines = renderPlain(markdown, width);
+		const proseLine = lineContaining(lines, prose);
+		const frameStart = lines.findIndex(
+			line => line.includes("ts") && line.includes(defaultMarkdownTheme.symbols.boxRound.topLeft),
+		);
+		if (frameStart < 0) throw new Error("Missing framed code block");
+		const frameRows = lines.slice(frameStart);
+
+		expect(visibleColumnOf(proseLine, prose)).toBe(1);
+		expect(frameRows.every(line => firstNonWhitespaceColumn(line) === 1)).toBe(true);
+		expect(lines.every(line => visibleWidth(line) === width)).toBe(true);
+	});
+
+	it("keeps a plain code background inside prose's padding gutter", () => {
+		const width = 32;
+		const prose = "prose-before-plain-code";
+		const backgroundStart = "\x1b[48;5;236m";
+		const backgroundEnd = "\x1b[49m";
+		const markdown = new Markdown(`${prose}\n\n${fence(["plain-row-1", "plain-row-2"])}`, 1, 0, defaultMarkdownTheme);
+		markdown.setCodeBlockDisplayOptions({
+			...codeBlockDisplayOptions(6),
+			frame: false,
+			cacheKey: "test:plain-background-gutter",
+			plainPaddingX: 1,
+			plainBackground: text => `${backgroundStart}${text}${backgroundEnd}`,
+		});
+
+		const rawLines = markdown.render(width);
+		const proseLine = lineContaining(
+			rawLines.map(line => stripVTControlCharacters(line)),
+			prose,
+		);
+
+		expect(visibleColumnOf(proseLine, prose)).toBe(1);
+		for (const marker of ["plain-row-1", "plain-row-2"]) {
+			const rawCodeLine = lineContaining(rawLines, marker);
+			const plainCodeLine = stripVTControlCharacters(rawCodeLine);
+
+			expect(rawCodeLine.startsWith(` ${backgroundStart}`)).toBe(true);
+			expect(visibleColumnOf(plainCodeLine, marker)).toBe(2);
+		}
+		expect(rawLines.every(line => visibleWidth(line) === width)).toBe(true);
 	});
 
 	it("folds long blocks into head, omission hint, and tail rows", () => {

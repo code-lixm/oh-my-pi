@@ -132,6 +132,13 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
+	#runningSubagentCount = 0;
+
+	#adjustRunningSubagentCount(ref: AgentRef | undefined, delta: 1 | -1): void {
+		if (ref?.kind === "sub" && ref.status === "running") {
+			this.#runningSubagentCount += delta;
+		}
+	}
 
 	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
 		return expected === undefined || ref === expected || ref.session === expected;
@@ -153,7 +160,10 @@ export class AgentRegistry {
 			sessionId: input.sessionId,
 			activityState: input.activityState,
 		};
+		const replaced = this.#refs.get(ref.id);
+		this.#adjustRunningSubagentCount(replaced, -1);
 		this.#refs.set(ref.id, ref);
+		this.#adjustRunningSubagentCount(ref, 1);
 		this.#emit({ type: "registered", ref });
 		return ref;
 	}
@@ -177,7 +187,9 @@ export class AgentRegistry {
 		// generation must never transition the tombstone back to a live status.
 		if (ref.status === "aborted") return status === "aborted";
 		if (ref.status === status) return true;
+		this.#adjustRunningSubagentCount(ref, -1);
 		ref.status = status;
+		this.#adjustRunningSubagentCount(ref, 1);
 		// A non-running ref must not advertise an active roster gist, but its
 		// structured last activity remains useful to parked/restored observers.
 		if (status !== "running") ref.activity = undefined;
@@ -265,6 +277,7 @@ export class AgentRegistry {
 	unregister(id: string, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
 		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		this.#adjustRunningSubagentCount(ref, -1);
 		this.#refs.delete(id);
 		this.#emit({ type: "removed", ref });
 		return true;
@@ -276,6 +289,10 @@ export class AgentRegistry {
 
 	list(): AgentRef[] {
 		return [...this.#refs.values()];
+	}
+
+	getRunningSubagentCount(): number {
+		return this.#runningSubagentCount;
 	}
 
 	/**

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -9,7 +10,6 @@ import type {
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -67,7 +67,69 @@ export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
 const BASH_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS = 60_000;
-const BASH_APPROVAL_SHELL_CONTROL_RE = /[\n\r;&|<>`$()]/u;
+// Background output is a live preview, not the lossless result channel. This
+// producer cadence limits per-job tail materialization; AsyncJobManager applies
+// the shared callback budget. OutputSink.dump() still flushes the final chunk.
+const BACKGROUND_BASH_PROGRESS_THROTTLE_MS = 250;
+const BASH_APPROVAL_SHELL_CONTROL_CHARS: Record<string, true> = {
+	"\n": true,
+	"\r": true,
+	";": true,
+	"&": true,
+	"|": true,
+	"<": true,
+	">": true,
+	"`": true,
+	$: true,
+	"(": true,
+	")": true,
+};
+const BASH_APPROVAL_REINTERPRETED_ARGUMENT_RE = /(?:^|[ \t])(?:-[^-]*[ce]|--(?:command|eval))(?:[= \t]|$)/u;
+
+function hasBashApprovalShellControl(command: string): boolean {
+	let quote: "'" | '"' | undefined;
+	let hasReinterpretableShellControl = false;
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (quote === "'") {
+			if (ch === "'") {
+				quote = undefined;
+			} else if (Object.hasOwn(BASH_APPROVAL_SHELL_CONTROL_CHARS, ch)) {
+				hasReinterpretableShellControl = true;
+			}
+			continue;
+		}
+		if (ch === "\\") {
+			const escaped = command[i + 1];
+			if (escaped && Object.hasOwn(BASH_APPROVAL_SHELL_CONTROL_CHARS, escaped)) {
+				hasReinterpretableShellControl = true;
+			}
+			i++;
+			continue;
+		}
+		if (quote === '"') {
+			if (ch === '"') {
+				quote = undefined;
+				continue;
+			}
+			// Expansion is active inside double quotes even in the original line.
+			if (ch === "`" || ch === "$") return true;
+			// Other control characters are literal here but become executable if a
+			// `-c`/`-e` option reinterprets the argument through another shell.
+			if (Object.hasOwn(BASH_APPROVAL_SHELL_CONTROL_CHARS, ch)) hasReinterpretableShellControl = true;
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			continue;
+		}
+		if (Object.hasOwn(BASH_APPROVAL_SHELL_CONTROL_CHARS, ch)) return true;
+	}
+	// Options such as `git -c alias.x='!...'` and `sh -c "..."` reinterpret
+	// otherwise literal quoted or escaped arguments as executable code.
+	return hasReinterpretableShellControl && BASH_APPROVAL_REINTERPRETED_ARGUMENT_RE.test(command);
+}
+
 const BASH_PATTERN_APPROVAL_VALUES = new Set(["allow", "deny", "prompt"]);
 
 /**
@@ -227,7 +289,7 @@ function commandSegmentMatchesBashApprovalPattern(command: string, pattern: stri
 // `prompt` fire on any matching segment so they mean what they appear to.
 function bashApprovalRuleMatches(command: string, rule: BashApprovalPatternRule): boolean {
 	if (rule.approval === "allow") {
-		if (BASH_APPROVAL_SHELL_CONTROL_RE.test(command)) return false;
+		if (hasBashApprovalShellControl(command)) return false;
 		return commandMatchesBashApprovalPattern(command, rule.match);
 	}
 	return commandSegmentMatchesBashApprovalPattern(command, rule.match);
@@ -773,6 +835,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 				const wallTimeStart = performance.now();
+				let completedResult: AgentToolResult<BashToolDetails> | undefined;
 				try {
 					const result = await executeBash(options.command, {
 						cwd: options.commandCwd,
@@ -784,10 +847,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						artifactId,
 						onChunk: chunk => {
 							tailBuffer.append(chunk);
-							latestText = tailBuffer.text();
-							void reportProgress(latestText, { async: { state: "running", jobId, type: "bash" } });
+							void reportProgress(() => tailBuffer.text(), { async: { state: "running", jobId, type: "bash" } });
 						},
 						onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+						chunkThrottleMs: BACKGROUND_BASH_PROGRESS_THROTTLE_MS,
 					});
 					const wallTimeMs = performance.now() - wallTimeStart;
 					const finalResult = await this.#buildCompletedResult(result, options.timeoutSec, {
@@ -797,23 +860,27 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					});
 					const finalText = this.#extractTextResult(finalResult);
 					latestText = finalText;
-					// Hand the detailed result to the foreground auto-background
-					// waiter (which renders it, footer included) before deciding
-					// the job's terminal state.
-					completion.resolve({ kind: "completed", result: finalResult });
+					// A non-zero exit is a completed command that failed. Preserve its
+					// detailed result for the foreground waiter while allowing the job
+					// manager to record the terminal state as failed.
 					if (finalResult.isError === true) {
-						// A non-zero exit is a completed command that failed. Re-enter
-						// the failure path so the job manager records it as failed and
-						// delivers the error text, matching prior throw-based behavior.
+						completedResult = finalResult;
 						throw new ToolError(finalText);
 					}
-					await reportProgress(finalText, { async: { state: "completed", jobId, type: "bash" } });
+					await reportProgress(
+						finalText,
+						{ async: { state: "completed", jobId, type: "bash" } },
+						{ terminal: true },
+					);
+					completion.resolve({ kind: "completed", result: finalResult });
 					return finalText;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					latestText = message;
-					completion.resolve({ kind: "failed", error });
-					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } });
+					await reportProgress(message, { async: { state: "failed", jobId, type: "bash" } }, { terminal: true });
+					completion.resolve(
+						completedResult ? { kind: "completed", result: completedResult } : { kind: "failed", error },
+					);
 					throw error;
 				}
 			},

@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage, ToolCall, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolExecutionHandle } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -60,10 +61,12 @@ function lineContaining(lines: string[], marker: string): number {
 
 function createFixture(hideToolActivity = false) {
 	const chatContainer = new TranscriptContainer();
-	const pendingTools = new Map();
+	const pendingTools = new Map<string, ToolExecutionHandle>();
+	const requestRender = vi.fn();
+	const requestComponentRender = vi.fn();
 	const ui = {
-		requestRender: vi.fn(),
-		requestComponentRender: vi.fn(),
+		requestRender,
+		requestComponentRender,
 		imageBudget: undefined,
 	} as unknown as TUI;
 	const viewSession = {
@@ -104,7 +107,13 @@ function createFixture(hideToolActivity = false) {
 		lastAssistantUsage: zeroUsage(),
 	};
 
-	return { controller: new EventController(ctx as unknown as InteractiveModeContext), chatContainer, ctx };
+	return {
+		controller: new EventController(ctx as unknown as InteractiveModeContext),
+		chatContainer,
+		ctx,
+		requestRender,
+		requestComponentRender,
+	};
 }
 
 describe("EventController mixed assistant text/tool rendering", () => {
@@ -120,6 +129,49 @@ describe("EventController mixed assistant text/tool rendering", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("scopes cumulative assistant stream updates to the transcript while start and end stay full boundaries", async () => {
+		const { controller, chatContainer, requestRender, requestComponentRender } = createFixture();
+		const streamedRead: ToolCall = {
+			type: "toolCall",
+			id: "toolu_scoped_stream_read",
+			name: "read",
+			arguments: { path: "streamed-scoped-render.ts" },
+		};
+		const started = assistantMessage([]);
+		const cumulative = assistantMessage([{ type: "text", text: "STREAMED SCOPED TRANSCRIPT CONTENT" }, streamedRead]);
+
+		await controller.handleEvent({ type: "message_start", message: started } as Extract<
+			AgentSessionEvent,
+			{ type: "message_start" }
+		>);
+		expect(requestRender).toHaveBeenCalled();
+
+		requestRender.mockClear();
+		requestComponentRender.mockClear();
+		await controller.handleEvent({
+			type: "message_update",
+			message: cumulative,
+			assistantMessageEvent: {
+				type: "toolcall_end",
+				contentIndex: 1,
+				toolCall: streamedRead,
+				partial: cumulative,
+			},
+		} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+		expect(Bun.stripANSI(chatContainer.render(120).join("\n"))).toContain("STREAMED SCOPED TRANSCRIPT CONTENT");
+		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestComponentRender.mock.calls).toEqual([[chatContainer]]);
+
+		requestRender.mockClear();
+		requestComponentRender.mockClear();
+		await controller.handleEvent({ type: "message_end", message: cumulative } as Extract<
+			AgentSessionEvent,
+			{ type: "message_end" }
+		>);
+		expect(requestRender).toHaveBeenCalled();
 	});
 
 	it("renders assistant text segments in order around two tool results from one mixed message", async () => {

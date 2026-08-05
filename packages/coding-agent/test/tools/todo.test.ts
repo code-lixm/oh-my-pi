@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -18,7 +19,6 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools";
 import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
-import { type } from "arktype";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 function createSession(initialPhases: TodoPhase[] = []): ToolSession {

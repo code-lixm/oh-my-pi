@@ -1129,7 +1129,7 @@ export class EventController {
 				}
 			}
 
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestComponentRender(this.ctx.chatContainer);
 		}
 	}
 
@@ -1449,7 +1449,7 @@ export class EventController {
 				this.ctx.pendingTools.delete(event.toolCallId);
 				this.#backgroundTaskCallIds.delete(event.toolCallId);
 			}
-			this.ctx.ui.requestRender();
+			this.ctx.ui.requestComponentRender(component);
 		}
 	}
 
@@ -1488,7 +1488,7 @@ export class EventController {
 			}
 			this.#displaceableTodoComponent = component;
 		}
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestComponentRender(component);
 	}
 
 	async #handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): Promise<void> {

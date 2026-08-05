@@ -1,5 +1,5 @@
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult, ToolTier } from "@oh-my-pi/pi-agent-core";
-import { type } from "arktype";
 import { selectPrompt } from "../prompts/prompt-locale";
 import securityScanDescription from "../prompts/tools/security-scan.md" with { type: "text" };
 import securityScanDescriptionZh from "../prompts/tools/security-scan.zh-CN.md" with { type: "text" };

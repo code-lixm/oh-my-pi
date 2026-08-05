@@ -40,6 +40,7 @@ import {
 	markFramedBlockComponent,
 	OUTPUT_BLOCK_ACCENT_RIGHT_INSET,
 	renderOutputAccentLine,
+	renderOutputAccentPadLine,
 	renderStatusLine,
 	WidthAwareText,
 } from "../../tui";
@@ -271,10 +272,11 @@ class SafeToolRendererComponent implements Component {
 }
 
 /**
- * Adds the thin accent rail to renderer surfaces that do not already own their
- * output-block chrome. Self-framing renderers receive the full width and draw
- * the rail in `renderOutputBlock`; plain/custom fallback surfaces are narrowed
- * by the same two cells before this wrapper prefixes each row.
+ * Adds the thin accent rail and standard vertical breathing rows to renderer
+ * surfaces that do not already own their output-block chrome. Self-framing
+ * renderers receive the full width and draw the rail/padding in
+ * `renderOutputBlock`; plain/custom fallback surfaces are narrowed by the same
+ * two cells before this wrapper paints their rows.
  */
 class ToolOutputSurfaceComponent implements Component {
 	readonly wantsKeyRelease: boolean | undefined;
@@ -313,7 +315,14 @@ class ToolOutputSurfaceComponent implements Component {
 		) {
 			return this.#cache.lines;
 		}
-		const lines = childLines.map(line => renderOutputAccentLine(line, width, theme, color));
+		const lines =
+			childLines.length === 0
+				? childLines
+				: [
+						renderOutputAccentPadLine(width, theme, color),
+						...childLines.map(line => renderOutputAccentLine(line, width, theme, color)),
+						renderOutputAccentPadLine(width, theme, color),
+					];
 		this.#cache = { width, childLines, color, themeEpoch, lines };
 		return lines;
 	}

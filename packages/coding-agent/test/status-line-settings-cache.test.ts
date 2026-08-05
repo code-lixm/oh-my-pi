@@ -7,9 +7,17 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { StatusLineComponent, type StatusLineSettings } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { STATUS_LINE_PRESETS } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/presets";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+
+type AsyncJobStatusAccessors = Pick<AgentSession, "getAsyncJobSnapshot" | "getVisibleAsyncJobCount">;
+
+const emptyAsyncJobStatus: AsyncJobStatusAccessors = {
+	getAsyncJobSnapshot: () => null,
+	getVisibleAsyncJobCount: () => 0,
+};
 
 let settingsState: SettingsTestState | undefined;
 let projectDir = "";
@@ -31,7 +39,7 @@ afterEach(() => {
 	projectDir = "";
 });
 
-function makeSession(sessionName = "Cache Session") {
+function makeSession(sessionName = "Cache Session", asyncJobStatus: AsyncJobStatusAccessors = emptyAsyncJobStatus) {
 	const messages: unknown[] = [];
 	const model = { id: "test-model", name: "Test Model", contextWindow: 100_000 };
 	return {
@@ -47,7 +55,7 @@ function makeSession(sessionName = "Cache Session") {
 		isFastModeActive: () => false,
 		isAdvisorActive: () => false,
 		getAdvisorStatusOverview: () => ({ configured: false, advisors: [] }),
-		getAsyncJobSnapshot: () => ({ running: [] }),
+		...asyncJobStatus,
 		settings: { get: () => false },
 		modelRegistry: { isUsingOAuth: () => false },
 		sessionManager: {
@@ -211,6 +219,35 @@ describe("StatusLineComponent effective settings cache", () => {
 		expect(nextEffective).not.toBe(effective);
 		expect(component.getEffectiveSettingsForTest()).toBe(nextEffective);
 	});
+
+	it("renders the async badge from a scalar without building a rich job snapshot", () => {
+		let scalarReads = 0;
+		let snapshotReads = 0;
+		const asyncJobStatus: AsyncJobStatusAccessors = {
+			getVisibleAsyncJobCount: () => {
+				scalarReads += 1;
+				return 3;
+			},
+			getAsyncJobSnapshot: () => {
+				snapshotReads += 1;
+				throw new Error("status-line rendering must not request an async job snapshot");
+			},
+		};
+		const component = new StatusLineComponent(makeSession("Cache Session", asyncJobStatus));
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: [],
+			separator: "none",
+			sessionAccent: false,
+		});
+
+		const content = stripVTControlCharacters(component.getTopBorder(120).content);
+		expect(content).toContain("3");
+		expect(scalarReads).toBe(1);
+		expect(snapshotReads).toBe(0);
+	});
+
 	it("skips git probes when git integration is disabled", async () => {
 		const headSpy = spyOn(git.head, "resolveSync").mockReturnValue(null);
 		const statusSpy = spyOn(git.status, "summary").mockResolvedValue({ staged: 0, unstaged: 0, untracked: 0 });

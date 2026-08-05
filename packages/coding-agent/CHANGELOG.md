@@ -77,6 +77,10 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed Agent Hub and fullscreen subagent transcripts disagreeing on completed, failed, aborted, idle, and parked states by separating task outcomes from registry lifecycle status and preserving persisted outcome fallbacks.
+- Fixed TUI input stalls under high subagent and background-job concurrency by globally coalescing progress callbacks, lazily materializing Bash and task snapshots, using constant-time activity counts, and scoping live HUD, message, and tool renders to the roots that changed.
+- Fixed non-framed tool renderers such as Hub job wait cards missing the standard top and bottom breathing rows under the `accent` display style.
+- Fixed probe-ready retry fallbacks becoming permanently stuck on the temporary model when the next user turn reserved an in-flight prompt before restoring the recovered primary endpoint.
 - Fixed Edit tool cards remaining stuck in their streaming preview when final display assembly failed, which could splice later transcript content into a stale card; failed rebuilds now settle to a safe final-text fallback without caching incomplete display state.
 - Fixed Memory, LSP, Checkpoint, and Rewind results inheriting generic accent cards instead of their own semantic tool presentation; they now use bare status-and-tree layouts, `xd://` delegation preserves the wrapped renderer surface, and Memory keeps one English tool identity across UI locales.
 - Fixed shared `accent` tool-result surfaces adding redundant full-width rows and `xd://` fallback cards retaining nested state backgrounds and padding; wrappers now own one uniform tint across title, omission, and result rows, while self-framed blocks retain their internal spacing. Grouped Read summary trees now also align with the root column used by Glob, Grep, and CodeGraph.
@@ -178,12 +182,39 @@
 - Fixed ordinary user messages losing their configured `userMessageBg` after the initial turn, and accent tool cards painting their tint through the rightmost terminal column.
 - Fixed the working-loader shimmer band jumping several cells in a single render after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): the per-loader capped clock now caps the per-render wall delta to one normal render cycle (default 80 ms), discards the surplus, and tracks animation time separately from the wall clock so subsequent renders do not pay back the stall.
 - Fixed the advisor staleness caveat appended to notes when newer primary turns arrived after the reviewed transcript window being hard-coded in English: the markdown wrapper now goes through `tSettingsUi(...)` with a `zh-CN` translation, so the advisory and transcript reflect the active `displayLanguage` like the rest of the advisor chrome.
+## [17.2.7] - 2026-08-03
+
+### Changed
+
+- Replaced arktype with @oh-my-pi/omptype for tool parameter and config schemas, significantly improving startup performance with ~100x faster schema construction. Config schema errors are now reported via OmpErrors using the same path/problem structure.
+
+### Fixed
+
+- Fixed an issue where custom, extension, or hook tool wrappers stripped schema methods off parameters, causing wire-schema detection failures and status-line token estimator crashes.
+- Fixed a bug where agent() calls in evaluation cells ignored turn cancellation and continued running indefinitely.
+- Fixed the built-in tail command to exit silently with code 141 (SIGPIPE) instead of failing with a "Broken pipe" error when a downstream pipeline reader exits early.
+- Fixed the in-process ps shell builtin to support common procps/BSD format specifiers, including tpgid, pri, flags, real/effective user/group columns, wchan, fault counters, sz, and the STAT + foreground flag.
+- Fixed install.sh falsely reporting success on musl-based systems (such as Alpine Linux) when the binary fails to start; the installer now smoke-tests the binary, exits non-zero on failure, and provides remediation steps.
+- Fixed Codex config.toml discovery incorrectly importing MCP servers that are configured with enabled = false.
+- Fixed bash.patterns allow rules rejecting valid commands when quoted arguments contained shell metacharacters (such as Cargo benchmark regex filters).
+
+## [17.2.6] - 2026-08-03
+
+### Added
+
+- Added the `/reset` slash command to reset the conversation context in place: it drops the live messages, queued turns, and pending tool calls (and cancels the turn's async jobs, post-prompt continuations, and checkpoint/plan runtime state) while keeping the session id, title, cwd, model, and on-disk transcript. It records a durable reset boundary so the live transcript stays cleared across rebuilds (theme change, focus attach, `/shake`, resume) instead of resurrecting the pre-reset messages, while the full pre-reset history stays on disk ([#3580](https://github.com/can1357/oh-my-pi/issues/3580)).
+
 ### Fixed
 
 - Fixed extension slash commands appearing as user prompts after being handled locally.
 - Preserved explicit session titles when branching from an earlier conversation turn.
-- Fixed floating rejections from cmux browser guest JavaScript terminating the main process and every active session; attributable rejections now fail the browser run as tool errors while unrelated process rejections retain the fatal path ([#7365](https://github.com/can1357/oh-my-pi/issues/7365)).
-- Fixed the Windows bash tool silently taking down the whole omp process when a command blocked until its timeout: cancelling a timed-out run walked the spawned child's descendant tree from raw `th32ParentProcessID` links, and a recycled pid matching the harness's stale recorded parent pid could enumerate omp as a false descendant and `TerminateProcess` it, killing the session with no `session_exit` record. Run-cancellation sweeps now refuse to signal the harness or any process collected beneath it, while still reaping the timed-out target when it owns a recycled ancestor pid ([#7452](https://github.com/can1357/oh-my-pi/issues/7452)).
+- Fixed an issue where unhandled JavaScript rejections in the browser guest could crash the main process and active sessions, converting them into tool errors instead.
+- Fixed a critical issue on Windows where cancelling a timed-out bash tool command could mistakenly terminate the main process due to PID recycling.
+- Fixed an issue where supervised processes reaching a terminal state failed to notify their launching session, requiring polling; the broker now actively notifies the session upon process completion.
+- Fixed crashes on macOS when using PCRE2-only grep patterns with Bun by defaulting to the interpreted PCRE2 engine instead of JIT, and introduced the `OMP_PCRE2_JIT` environment variable to manually control JIT compilation.
+- Fixed issues with `/btw` branch promotion where branches could park behind active turns, cut from outdated session leaves, or leave rejected branch keys indistinguishable from composer input.
+- Fixed database bloat by ensuring archived main and nested session rows are properly cleaned up from `stats.db` during garbage collection.
+- Fixed startup hanging during local model discovery when a timed-out transport left its request pending, which blocked the CLI before OAuth login could finish ([#7482](https://github.com/can1357/oh-my-pi/issues/7482)).
 
 ## [17.2.5] - 2026-08-03
 
@@ -2511,7 +2542,7 @@
 
 ### Fixed
 
-- Fixed `omp install` of legacy pi extensions failing with `Cannot find module '/$bunfs/root/packages/coding-agent/src/extensibility/typebox.js'` on every released `omp-<platform>-<arch>` binary. Commit `dc5c93462f` removed worker entrypoints from `scripts/ci-release-build-binaries.ts`; the inline comment then claimed the legacy-shim and package-barrel entrypoints (`typebox.ts`, `legacy-pi-{ai,coding-agent}-shim.ts`, `packages/{agent,natives,tui,utils}/...`) were "still" passed to `bun build --compile`, but they had never been re-added. The release binaries shipped without those files in bunfs, so `legacy-pi-compat.ts` redirected `typebox` imports to a bunfs path that didn't exist. `__resolveTypeBoxShimPath` now mirrors `__validateLegacyPiPackageRootOverrides` (#2168) by dropping the override when the shim file is missing, so a missing shim falls through to native `node_modules` resolution instead of emitting a dead bunfs URL ([#3414](https://github.com/can1357/oh-my-pi/issues/3414)).
+- Fixed `omp install` of legacy pi extensions failing because the compiled binary omitted the coding-agent TypeBox shim on every released `omp-<platform>-<arch>` binary. Commit `dc5c93462f` removed worker entrypoints from `scripts/ci-release-build-binaries.ts`; the inline comment then claimed the legacy-shim and package-barrel entrypoints (`typebox.ts`, `legacy-pi-{ai,coding-agent}-shim.ts`, `packages/{agent,natives,tui,utils}/...`) were "still" passed to `bun build --compile`, but they had never been re-added. The release binaries shipped without those files in bunfs, so `legacy-pi-compat.ts` redirected `typebox` imports to a bunfs path that didn't exist. `__resolveTypeBoxShimPath` now mirrors `__validateLegacyPiPackageRootOverrides` (#2168) by dropping the override when the shim file is missing, so a missing shim falls through to native `node_modules` resolution instead of emitting a dead bunfs URL ([#3414](https://github.com/can1357/oh-my-pi/issues/3414)).
 - Fixed every legacy `@(scope)/pi-*` and `@sinclair/typebox` import failing to load on the `omp-darwin-arm64` release binary (and any other `omp` built with Bun 1.3.14). `__validateLegacyPiPackageRootOverrides` and the `rewriteLegacyPiImports` emit path both depended on `--compile` extras being reachable as `/$bunfs/root/...` filesystem entries, but Bun 1.3.14 stopped exposing them through every API (`fs.existsSync`, `Bun.file().exists()`, `Bun.resolveSync`, `await import()` on the bunfs path or its `file://` URL all fail; only `/$bunfs/root/<binary-name>` itself answers). `legacy-pi-compat.ts` now keeps a JS-heap reference to every bundled pi-* surface in a lazy-loaded sibling `legacy-pi-bundled-registry.ts` and serves them through an `omp-legacy-pi-bundled:` virtual namespace whose `Bun.plugin().onLoad` returns synthetic re-exports — no bunfs path ever leaves the module in compiled mode, and dev / source-link / installed-package modes keep the historical `file://` rewrite. The matching `--compile` extras in `scripts/build-binary.ts`, the shared `scripts/binary-entrypoints.ts` list, and the dead `BUNFS_PACKAGE_ROOT` / `bunfsPath` / `__computeBunfsPackageRoot` / `__joinBunfsPath` helpers are gone. ([#3423](https://github.com/can1357/oh-my-pi/issues/3423))
 
 ## [16.1.17] - 2026-06-24

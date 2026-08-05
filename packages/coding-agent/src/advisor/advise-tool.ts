@@ -1,3 +1,4 @@
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentIdentity,
 	AgentTelemetryConfig,
@@ -7,7 +8,6 @@ import type {
 	AgentToolUpdateCallback,
 } from "@oh-my-pi/pi-agent-core";
 import { escapeXmlAttribute, escapeXmlText } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { tSettingsUi } from "../i18n/settings-locale";
 import adviseDescription from "../prompts/advisor/advise-tool.md" with { type: "text" };
 import adviseDescriptionZh from "../prompts/advisor/advise-tool.zh-CN.md" with { type: "text" };
@@ -94,8 +94,8 @@ export function isAdvisorInterruptImmuneTurnActive(opts: {
  *
  * - A `preserveOnly` caller records every note that arrives while the primary
  *   is idle as a visible card and never starts a new primary turn.
- * - A non-blocking `nit` or `concern` rides the aside queue.
- * - A `blocker` steers into the live or triggered turn.
+ * - A plan-mode concern received while the primary is idle is preserved as a visible card instead of entering the aside queue.
+ * - A non-blocking `nit` rides the aside queue.
  * - After a terminal text answer, a `blocker` still steers so the primary
  *   acknowledges incomplete work; otherwise it would remain unresolved.
  * - After a deliberate user interrupt (`autoResumeSuppressed`), an idle
@@ -111,8 +111,10 @@ export function resolveAdvisorDeliveryChannel(opts: {
 	terminalAnswerNoQueuedWork?: boolean;
 	interruptImmuneTurnActive?: boolean;
 	preserveOnly?: boolean;
+	planMode?: boolean;
 }): AdvisorDeliveryChannel {
 	if (opts.preserveOnly && !opts.streaming) return "preserve";
+	if (opts.planMode && opts.severity === "concern" && !opts.streaming && !opts.aborting) return "preserve";
 	if (!isInterruptingSeverity(opts.severity)) return "aside";
 	if (opts.autoResumeSuppressed && (opts.aborting || !opts.streaming)) return "preserve";
 	if (opts.terminalAnswerNoQueuedWork && opts.severity !== "blocker" && !opts.streaming && !opts.aborting)

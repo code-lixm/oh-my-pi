@@ -1222,15 +1222,16 @@ more text`,
 			}
 		});
 
-		it("keeps coding-agent's padded fenced code body at column zero", () => {
+		it("keeps coding-agent's padded fenced code rows inside the outer gutter", () => {
 			const markdown = new Markdown("```sh\ncat <<'EOF'\nEOF\n```", 1, 0, defaultMarkdownTheme, undefined, 0);
 
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
-			expect(plainLines).toEqual([" ```sh", "cat <<'EOF'", "EOF", " ```"]);
+			const gutter = " ";
+			expect(plainLines).toEqual(["```sh", "cat <<'EOF'", "EOF", "```"].map(line => `${gutter}${line}`));
 		});
 
-		it("keeps literal code body rows unprefixed through nested container wrapping", () => {
+		it("keeps literal code body rows inside the outer gutter through nested container wrapping", () => {
 			const longCodeLine = "x".repeat(24);
 			const cases = [
 				`- shell:
@@ -1248,11 +1249,18 @@ more text`,
 			for (const text of cases) {
 				const markdown = new Markdown(text, 1, 0, defaultMarkdownTheme, undefined, 0);
 				const plainLines = markdown.render(12).map(line => stripVTControlCharacters(line).trimEnd());
-				const literalRows = plainLines.filter(line => line.includes("x") || line === "EOF");
+				const gutter = " ";
+				const literalRows = plainLines.filter(line => {
+					const codeContent = line.slice(gutter.length);
+					return codeContent.includes("x") || codeContent === "EOF";
+				});
 
-				expect(literalRows.join("")).toBe(`${longCodeLine}EOF`);
-				expect(literalRows.length).toBeGreaterThan(2);
-				expect(literalRows.every(line => line.startsWith("x") || line === "EOF")).toBe(true);
+				expect(literalRows.every(line => line.startsWith(gutter))).toBe(true);
+
+				const literalCodeContent = literalRows.map(line => line.slice(gutter.length));
+				expect(literalCodeContent.join("")).toBe(`${longCodeLine}EOF`);
+				expect(literalCodeContent.length).toBeGreaterThan(2);
+				expect(literalCodeContent.every(line => line.startsWith("x") || line === "EOF")).toBe(true);
 			}
 		});
 

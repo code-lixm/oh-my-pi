@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { AgentRegistry, resolveTopLevelAgent } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import {
+	type AgentKind,
+	AgentRegistry,
+	type AgentStatus,
+	resolveTopLevelAgent,
+} from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 function register(registry: AgentRegistry, input: { id: string; kind: "main" | "sub"; parentId?: string }) {
@@ -8,6 +13,17 @@ function register(registry: AgentRegistry, input: { id: string; kind: "main" | "
 		displayName: input.id,
 		session: {} as AgentSession,
 		status: "idle",
+	});
+}
+
+function registerAgent(
+	registry: AgentRegistry,
+	input: { id: string; kind: AgentKind; status: AgentStatus; parentId?: string },
+) {
+	return registry.register({
+		...input,
+		displayName: input.id,
+		session: null,
 	});
 }
 
@@ -33,5 +49,79 @@ describe("resolveTopLevelAgent", () => {
 
 		expect(resolveTopLevelAgent(registry, "orphan")).toBeUndefined();
 		expect(resolveTopLevelAgent(registry, "cycle-a")).toBeUndefined();
+	});
+});
+
+describe("AgentRegistry running subagent count", () => {
+	it("counts only running subagents across status transitions and unregister", () => {
+		const registry = new AgentRegistry();
+		registerAgent(registry, { id: "Main", kind: "main", status: "running" });
+		registerAgent(registry, { id: "Advisor", kind: "advisor", status: "running" });
+		const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "idle" });
+
+		expect(registry.getRunningSubagentCount()).toBe(0);
+
+		const transitions: Array<[AgentStatus, number]> = [
+			["running", 1],
+			["waiting", 0],
+			["running", 1],
+			["idle", 0],
+			["running", 1],
+			["parked", 0],
+			["running", 1],
+			["aborted", 0],
+		];
+		for (const [status, expectedCount] of transitions) {
+			expect(registry.setStatus(worker.id, status)).toBe(true);
+			expect(registry.getRunningSubagentCount()).toBe(expectedCount);
+		}
+
+		const removable = registerAgent(registry, { id: "Removable", kind: "sub", status: "running" });
+		expect(registry.getRunningSubagentCount()).toBe(1);
+		expect(registry.unregister(removable.id)).toBe(true);
+		expect(registry.getRunningSubagentCount()).toBe(0);
+	});
+
+	it("reconciles same-id replacement generations in the running count", () => {
+		const registry = new AgentRegistry();
+
+		registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+		expect(registry.getRunningSubagentCount()).toBe(1);
+
+		registerAgent(registry, { id: "Worker", kind: "sub", status: "idle" });
+		expect(registry.getRunningSubagentCount()).toBe(0);
+
+		registerAgent(registry, { id: "Worker", kind: "main", status: "running" });
+		expect(registry.getRunningSubagentCount()).toBe(0);
+
+		registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+		expect(registry.getRunningSubagentCount()).toBe(1);
+	});
+
+	it("leaves the count unchanged by metadata and activity updates", () => {
+		const registry = new AgentRegistry();
+		const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+		const metadata = {
+			displayName: "Registry audit worker",
+			sessionTitle: "Agent count investigation",
+			sessionFile: "/sessions/registry-audit.jsonl",
+		};
+
+		expect(registry.getRunningSubagentCount()).toBe(1);
+		expect(registry.updateMetadata(worker.id, metadata)).toBe(true);
+		expect(registry.getRunningSubagentCount()).toBe(1);
+		registry.setActivity(worker.id, "Reconciling live work");
+		expect(registry.getRunningSubagentCount()).toBe(1);
+		expect(
+			registry.setActivityState(worker.id, {
+				phase: "tool",
+				label: "Inspecting registry",
+				phaseStartedAtMs: 100,
+				lastActivityAtMs: 110,
+			}),
+		).toBe(true);
+		expect(registry.getRunningSubagentCount()).toBe(1);
+		expect(registry.updateMetadata(worker.id, metadata)).toBe(true);
+		expect(registry.getRunningSubagentCount()).toBe(1);
 	});
 });

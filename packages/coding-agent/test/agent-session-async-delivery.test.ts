@@ -15,6 +15,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { DaemonCompletionNotification } from "@oh-my-pi/pi-coding-agent/launch/protocol";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AsyncResultEntry } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -43,6 +44,91 @@ describe("AgentSession owner-routed async delivery", () => {
 			removeSyncWithRetries(tempDir);
 		}
 		AsyncJobManager.resetForTests();
+	});
+
+	const createSessionWithAsyncManager = async (manager: AsyncJobManager, agentId?: string): Promise<AgentSession> => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		return new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			asyncJobManager: manager,
+			...(agentId === undefined ? {} : { agentId }),
+		});
+	};
+
+	const waitForAbort = (signal: AbortSignal) =>
+		new Promise<string>(resolve => {
+			if (signal.aborted) {
+				resolve("cancelled");
+				return;
+			}
+			signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
+		});
+
+	it("keeps visible count aligned with an owner-scoped snapshot and cancels only that owner", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		session = await createSessionWithAsyncManager(manager, "SubAgent");
+		const ownedJobId = manager.register("task", "queued owned job", ({ signal }) => waitForAbort(signal), {
+			ownerId: "SubAgent",
+			queued: true,
+		});
+		const otherJobId = manager.register("bash", "other owner's job", ({ signal }) => waitForAbort(signal), {
+			ownerId: "Other",
+		});
+
+		try {
+			const snapshot = session.getAsyncJobSnapshot();
+			if (!snapshot) throw new Error("Expected owner-scoped async job snapshot");
+			expect(snapshot.running.map(job => job.id)).toEqual([ownedJobId]);
+			expect(session.getVisibleAsyncJobCount()).toBe(snapshot.running.length);
+			expect(session.getVisibleAsyncJobCount()).toBe(1);
+			expect(session.runningAsyncJobCount).toBe(1);
+
+			expect(session.cancelAsyncJobs()).toBe(1);
+			expect(manager.getJob(ownedJobId)?.status).toBe("cancelled");
+			expect(manager.getJob(otherJobId)?.status).toBe("running");
+			expect(session.getVisibleAsyncJobCount()).toBe(0);
+			expect(session.getAsyncJobSnapshot()?.running).toEqual([]);
+			expect(manager.getRunningJobCount()).toBe(1);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+		}
+	});
+
+	it("keeps visible count unscoped without an agent id while cancellation remains own-scoped", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		session = await createSessionWithAsyncManager(manager);
+		const mainJobId = manager.register("task", "main job", ({ signal }) => waitForAbort(signal), { ownerId: "Main" });
+		const otherJobId = manager.register("bash", "other job", ({ signal }) => waitForAbort(signal), {
+			ownerId: "Other",
+		});
+
+		try {
+			const snapshot = session.getAsyncJobSnapshot();
+			if (!snapshot) throw new Error("Expected unscoped async job snapshot");
+			expect(snapshot.running.map(job => job.id)).toEqual([mainJobId, otherJobId]);
+			expect(session.getVisibleAsyncJobCount()).toBe(snapshot.running.length);
+			expect(session.getVisibleAsyncJobCount()).toBe(2);
+			expect(session.runningAsyncJobCount).toBe(0);
+			expect(session.cancelAsyncJobs()).toBe(0);
+			expect(manager.getRunningJobs().map(job => job.id)).toEqual([mainJobId, otherJobId]);
+		} finally {
+			manager.cancelAll();
+			await manager.waitForAll();
+		}
 	});
 
 	it("injects an owned completion as a follow-up turn and reaches quiescence", async () => {
@@ -93,6 +179,60 @@ describe("AgentSession owner-routed async delivery", () => {
 			}),
 		);
 		expect(sawResult).toBe(true);
+	});
+
+	it("routes an advisor-owned launch completion through the session", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const sessionManager = SessionManager.inMemory();
+		const owner = `${sessionManager.getSessionId()}-advisor`;
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		const completion = {
+			event: "daemon-completed",
+			completionId: "advisor-completion",
+			owner,
+			daemon: {
+				name: "advisor-worker",
+				id: "daemon-id",
+				state: "exited",
+				createdAt: 1,
+				startedAt: 1,
+				exitedAt: 2,
+				exitCode: 0,
+				restartCount: 0,
+				outputBytes: 0,
+				owner,
+				persist: false,
+				detached: false,
+			},
+		} satisfies DaemonCompletionNotification;
+
+		await session.queueLaunchCompletion(completion);
+		await session.waitForIdle();
+
+		expect(
+			mock.calls.some(call =>
+				call.context.messages.some(message =>
+					typeof message.content === "string"
+						? message.content.includes("advisor-worker")
+						: message.content.some(content => content.type === "text" && content.text.includes("advisor-worker")),
+				),
+			),
+		).toBe(true);
 	});
 
 	it("purges finished owned jobs when starting a new session", async () => {
