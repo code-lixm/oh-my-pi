@@ -324,7 +324,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		gate.resolve();
+		vi.runAllTimers();
+		await Promise.resolve();
 		await compactPromise;
+		vi.runAllTimers();
+		await Promise.resolve();
 		await session.waitForIdle();
 
 		// compact()'s finally re-drained the stranded queue after reconnecting.
@@ -1003,6 +1007,8 @@ describe("AgentSession auto-compaction queue resume", () => {
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 
 		await withTimeout(reminderDone, 1000, "Todo reminder timed out");
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
 		await Promise.resolve();
 
 		expect(getRuntimeSignals()).toContain("todo:1/3");

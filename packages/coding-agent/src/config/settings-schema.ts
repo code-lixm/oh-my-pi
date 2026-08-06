@@ -1058,7 +1058,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Mouse Input"),
 			description: tSettingsUi(
-				"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.",
+				"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.",
 			),
 		},
 	},
@@ -1253,6 +1253,28 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Show Token Usage"),
 			description: tSettingsUi("Show per-turn token usage on assistant messages"),
+		},
+	},
+
+	"display.showAgentCommunication": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Agent Communication"),
+			description: tSettingsUi("Show agent-to-agent messages and coordination activity in the transcript"),
+		},
+	},
+
+	"display.showSubagentList": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Show Subagent List"),
+			description: tSettingsUi("Show the live subagent list above the Main prompt"),
 		},
 	},
 
@@ -5319,7 +5341,20 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Subagents"),
 			label: tSettingsUi("Agent Idle TTL"),
 			description: tSettingsUi(
-				"How long an idle subagent stays live in memory before being parked to disk (ms). Parked agents are revived automatically when messaged or resumed. 0 keeps idle agents live until exit.",
+				"How long an idle subagent stays live in memory before time-based parking (ms). Parked agents are revived automatically when messaged or resumed. 0 disables time-based parking; task.maxLiveIdleAgents may still park idle agents by count.",
+			),
+		},
+	},
+
+	"task.maxLiveIdleAgents": {
+		type: "number",
+		default: 8,
+		ui: {
+			tab: "tasks",
+			group: tSettingsUi("Subagents"),
+			label: tSettingsUi("Max Live Idle Agents"),
+			description: tSettingsUi(
+				"Maximum adopted idle subagents kept live in memory across the process. Oldest idle agents are parked first; 0 disables the count cap.",
 			),
 		},
 	},

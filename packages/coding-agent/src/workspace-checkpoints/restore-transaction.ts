@@ -185,7 +185,7 @@ export class WorkspaceRestoreTransactionError extends Error {
 	readonly transactionId: string;
 	readonly path: string | null;
 	readonly stage: "prepare" | "apply" | "rollback" | "recover" | "validate";
-	readonly cause: unknown;
+	override readonly cause: unknown;
 
 	constructor(init: {
 		message: string;

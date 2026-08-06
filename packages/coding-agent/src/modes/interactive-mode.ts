@@ -870,6 +870,34 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#reindexRuntime(runtime);
 	}
 
+	#logTopLevelRuntimeMemory(
+		boundary: "start-new" | "switch" | "shutdown",
+		phase: "created" | "attached" | "requested" | "disposing" | "disposed",
+	): void {
+		try {
+			const memory = process.memoryUsage();
+			const runtimes = new Set<InteractiveRuntime>();
+			const sessions = new Set<AgentSession>();
+			for (const runtime of this.#runtimes.values()) {
+				runtimes.add(runtime);
+				sessions.add(runtime.session);
+			}
+			logger.debug("InteractiveMode top-level runtime memory", {
+				boundary,
+				phase,
+				runtimeCount: runtimes.size,
+				sessionCount: sessions.size,
+				rss: memory.rss,
+				heapUsed: memory.heapUsed,
+				heapTotal: memory.heapTotal,
+				external: memory.external,
+				arrayBuffers: memory.arrayBuffers,
+			});
+		} catch {
+			// Debug-only telemetry must never affect interactive runtime control flow.
+		}
+	}
+
 	#bindMcpManager(mcpManager?: MCPManager): void {
 		mcpManager?.setAuthHandler((serverName, challenge) =>
 			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
@@ -906,6 +934,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const runtime = await this.#runtimeFactory(this.sessionManager.getCwd());
 		this.#registerRuntime(runtime);
+		this.#logTopLevelRuntimeMemory("start-new", "created");
 		return this.#attachTopLevelRuntime(
 			runtime,
 			tSettingsUi("New session started; previous session continues in background."),
@@ -921,9 +950,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			throw new Error(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
 		}
 		await this.#attachTopLevelRuntime(runtime, tSettingsUi("Switched to session"));
+		this.#logTopLevelRuntimeMemory("switch", "attached");
 	}
 
 	async #disposeAllRuntimeSessions(reason?: Parameters<SessionTeardown>[0]): Promise<void> {
+		this.#logTopLevelRuntimeMemory("shutdown", "disposing");
 		const runtimes = [...new Set(this.#runtimes.values())];
 		for (const runtime of runtimes) {
 			if (runtime === this.#primaryRuntime) continue;
@@ -933,6 +964,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 			reason,
 		});
+		this.#logTopLevelRuntimeMemory("shutdown", "disposed");
 	}
 	async attachLiveTopLevelRuntime(sessionPath: string): Promise<boolean | undefined> {
 		// A cold switch mutates a runtime's SessionManager in place. Rebuild every
@@ -945,7 +977,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning(tSettingsUi("Finish or cancel the active dialog before switching sessions."));
 			return false;
 		}
-		return this.#attachTopLevelRuntime(runtime, tSettingsUi("Resumed live session"));
+		const attached = await this.#attachTopLevelRuntime(runtime, tSettingsUi("Resumed live session"));
+		this.#logTopLevelRuntimeMemory("switch", "attached");
+		return attached;
 	}
 	async #attachTopLevelRuntime(runtime: InteractiveRuntime, label: string): Promise<boolean> {
 		if (runtime === this.#activeRuntime) return true;
@@ -1113,7 +1147,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
-		this.editor.mouseTracking = settings.get("tui.mouseInput");
+		// The main transcript lives in terminal-native scrollback. Enabling mouse
+		// tracking here captures Ghostty's wheel events and makes that history
+		// unreachable; application mouse input remains available in overlays.
+		this.editor.mouseTracking = false;
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -2179,28 +2216,35 @@ export class InteractiveMode implements InteractiveModeContext {
 		// vanishes from the chat (#3656). Snapshot the in-flight components,
 		// clear+replay, then re-append them in their original chat-container order
 		// and restore the `pendingTools` map so streaming routes back into them.
+		const context = this.viewSession.buildTranscriptSessionContext({
+			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+		});
+		const runningAsyncToolCallIds = new Set<string>();
+		for (const message of context.messages) {
+			if (message.role !== "toolResult") continue;
+			const details = message.details as { async?: { state?: string } } | undefined;
+			if (details?.async?.state === "running") runningAsyncToolCallIds.add(message.toolCallId);
+		}
 		const liveComponents: Component[] = [];
 		const livePendingTools = new Map<string, ToolExecutionHandle>();
-		if (this.viewSession?.isStreaming) {
-			const liveSet = new Set<Component>();
-			if (this.streamingComponent) liveSet.add(this.streamingComponent);
-			for (const [id, component] of this.pendingTools) {
-				livePendingTools.set(id, component);
-				liveSet.add(component as unknown as Component);
-			}
-			if (liveSet.size > 0) {
-				for (const child of this.chatContainer.children) {
-					if (liveSet.has(child)) liveComponents.push(child);
-				}
+		const liveSet = new Set<Component>();
+		if (this.viewSession?.isStreaming && this.streamingComponent) {
+			liveSet.add(this.streamingComponent);
+		}
+		for (const [id, component] of this.pendingTools) {
+			if (!this.viewSession?.isStreaming && !runningAsyncToolCallIds.has(id)) continue;
+			livePendingTools.set(id, component);
+			liveSet.add(component as unknown as Component);
+		}
+		if (liveSet.size > 0) {
+			for (const child of this.chatContainer.children) {
+				if (liveSet.has(child)) liveComponents.push(child);
 			}
 		}
 		this.chatContainer.clear();
 		// Live display collapses to the compacted transcript tail unless the
 		// user opted into the full inline history; export/resume callers choose
 		// their own mode.
-		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
-		});
 		const preservedLiveToolCallIds = new Set<string>();
 		// A preserved pending-tool component whose result has already landed in
 		// the replayed transcript is re-rendered by `renderSessionContext` itself
@@ -2632,6 +2676,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Anchored HUD for active detached work. */
 	#renderSubagentList(): boolean {
+		if (!this.settings.get("display.showSubagentList")) {
+			const changed = this.#replaceSubagentVisibleText("");
+			this.#refreshWorkingActivityMessage();
+			return changed;
+		}
 		const sessions = this.#observerRegistry.getSessions();
 		const columns = this.ui.terminal.columns || process.stdout.columns || TRUNCATE_LENGTHS.LINE;
 		const text = renderSubagentHudLines(sessions, columns).join("\n");
@@ -3330,7 +3379,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.ui.requestRender();
 			},
 		});
-		handle = this.ui.showOverlay(viewer, { width: "100%", margin: 0, fullscreen: true });
+		handle = this.ui.showOverlay(viewer, {
+			width: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking: this.settings.get("tui.mouseInput"),
+		});
 		this.ui.setFocus(viewer);
 		this.ui.requestRender();
 	}
@@ -4585,6 +4639,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async shutdown(): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
+		this.#logTopLevelRuntimeMemory("shutdown", "requested");
 
 		await this.#liveCommandController.stop();
 
@@ -4669,7 +4724,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
-		nextEditor.mouseTracking = this.settings.get("tui.mouseInput");
+		// Preserve terminal-native transcript scrolling for extension editors too.
+		nextEditor.mouseTracking = false;
 		nextEditor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -5254,6 +5310,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.setUseTerminalCursor(this.#voicePreviousUseTerminalCursor);
 			this.#voicePreviousUseTerminalCursor = null;
 		}
+	}
+	refreshSubagentList(): void {
+		if (this.#renderSubagentList()) this.ui.requestComponentRender(this.subagentContainer);
 	}
 
 	async showDebugSelector(): Promise<void> {

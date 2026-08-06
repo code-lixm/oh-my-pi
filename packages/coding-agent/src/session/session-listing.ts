@@ -5,7 +5,7 @@ import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, procmgr, 
 import { LRUCache } from "lru-cache/raw";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { SESSION_RUN_START_CUSTOM_TYPE, SESSION_RUN_STOP_CUSTOM_TYPE } from "./exit-diagnostics";
-import { computeDefaultSessionDir } from "./session-paths";
+import { computeCompatibleSessionDirs, resolveManagedSessionRoot } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 
 /**
@@ -634,6 +634,21 @@ export function listSessions(sessionDir: string, storage: SessionStorage): Promi
 	return scanSessionDir(sessionDir, storage, true);
 }
 
+/** List and merge several session buckets, de-duplicated by absolute file path. */
+export async function listSessionsFromDirs(
+	sessionDirs: readonly string[],
+	storage: SessionStorage,
+): Promise<SessionInfo[]> {
+	if (sessionDirs.length === 1) return listSessions(sessionDirs[0]!, storage);
+
+	const byPath = new Map<string, SessionInfo>();
+	for (const session of (await Promise.all(sessionDirs.map(dir => listSessions(dir, storage)))).flat()) {
+		const sessionPath = path.resolve(session.path);
+		if (!byPath.has(sessionPath)) byPath.set(sessionPath, session);
+	}
+	return [...byPath.values()].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
 /**
  * List sessions without repairing orphaned backups or mutating the directory.
  */
@@ -718,8 +733,10 @@ export async function resolveResumableSession(
 ): Promise<ResolvedSessionMatch | undefined> {
 	const storage = isSessionStorage(storageOrOptions) ? storageOrOptions : new FileSessionStorage();
 	const resolvedOptions = isSessionStorage(storageOrOptions) ? options : storageOrOptions;
-	const localSessionDir = sessionDir ?? computeDefaultSessionDir(cwd, storage);
-	const localSessions = await listSessions(localSessionDir, storage);
+	const managedRoot = sessionDir ? resolveManagedSessionRoot(sessionDir, cwd) : undefined;
+	const localSessionDirs =
+		sessionDir && !managedRoot ? [sessionDir] : computeCompatibleSessionDirs(cwd, storage, managedRoot);
+	const localSessions = await listSessionsFromDirs(localSessionDirs, storage);
 	const localMatch = localSessions.find(session => sessionMatchesResumeArg(session, sessionArg));
 	if (localMatch) {
 		return { session: localMatch, scope: "local" };

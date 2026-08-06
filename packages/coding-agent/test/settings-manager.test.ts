@@ -462,12 +462,14 @@ describe("Settings", () => {
 				maxRequestConcurrency: settings.get("task.maxRequestConcurrency"),
 				maxRecursionDepth: settings.get("task.maxRecursionDepth"),
 				maxRuntimeMs: settings.get("task.maxRuntimeMs"),
+				maxLiveIdleAgents: settings.get("task.maxLiveIdleAgents"),
 				softRequestBudget: settings.get("task.softRequestBudget"),
 			}).toEqual({
 				maxConcurrency: 8,
 				maxRequestConcurrency: 8,
 				maxRecursionDepth: 1,
 				maxRuntimeMs: 900_000,
+				maxLiveIdleAgents: 8,
 				softRequestBudget: 90,
 			});
 		});

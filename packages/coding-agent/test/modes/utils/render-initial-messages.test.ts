@@ -143,6 +143,7 @@ function makeRenderCtx(
 	hideToolActivity = false,
 	showHubProcessActivity = false,
 	focusedAgentId?: string,
+	showAgentCommunication = false,
 ): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
 	let helpers: UiHelpers;
@@ -165,6 +166,7 @@ function makeRenderCtx(
 				if (key === "terminal.showImages") return showImages;
 				if (key === "display.hideToolActivity") return hideToolActivity;
 				if (key === "display.showHubProcessActivity") return showHubProcessActivity;
+				if (key === "display.showAgentCommunication") return showAgentCommunication;
 				return false;
 			},
 		},
@@ -551,75 +553,102 @@ describe("UiHelpers.renderInitialMessages — hidden tool activity", () => {
 	});
 });
 
-describe("UiHelpers.renderInitialMessages — hub activity cluster", () => {
-	it("rebuilds peer hub coordination and historical IRC rows silently", async () => {
-		await Settings.init({ inMemory: true });
-		const hubTurn: AssistantMessage = {
-			...assistantToolCall("hub-send", "hub", { op: "send", to: "Worker", message: "ping", await: true }),
-			content: [
-				{
-					type: "toolCall",
-					id: "hub-send",
-					name: "hub",
-					arguments: { op: "send", to: "Worker", message: "ping", await: true },
-				},
-				{ type: "toolCall", id: "hub-wait", name: "hub", arguments: { op: "wait", from: "AuthLoader" } },
-			],
-		};
-		const transcript = transcriptWith([
-			hubTurn,
+function peerCommunicationTranscript(): SessionContext {
+	const hubTurn: AssistantMessage = {
+		...assistantToolCall("hub-send", "hub", {
+			op: "send",
+			to: "PEER_SEND_TARGET_MARKER",
+			message: "PEER_SEND_BODY_MARKER",
+			await: true,
+		}),
+		content: [
 			{
-				role: "toolResult",
-				toolCallId: "hub-send",
-				toolName: "hub",
-				content: [{ type: "text", text: "" }],
-				details: {
+				type: "toolCall",
+				id: "hub-send",
+				name: "hub",
+				arguments: {
 					op: "send",
-					to: "Worker",
-					receipts: [{ to: "Worker", outcome: "woken" }],
-					waited: null,
+					to: "PEER_SEND_TARGET_MARKER",
+					message: "PEER_SEND_BODY_MARKER",
+					await: true,
 				},
-				isError: false,
-				timestamp: 2,
 			},
 			{
-				role: "toolResult",
-				toolCallId: "hub-wait",
-				toolName: "hub",
-				content: [{ type: "text", text: "Reply received" }],
-				details: {
-					op: "wait",
-					waited: {
-						id: "irc-wait-1",
-						from: "AuthLoader",
-						to: "Main",
-						body: "ready now",
-						ts: 3,
-					},
+				type: "toolCall",
+				id: "hub-wait",
+				name: "hub",
+				arguments: { op: "wait", from: "PEER_WAIT_SOURCE_MARKER" },
+			},
+		],
+	};
+	return transcriptWith([
+		hubTurn,
+		{
+			role: "toolResult",
+			toolCallId: "hub-send",
+			toolName: "hub",
+			content: [{ type: "text", text: "PEER_SEND_RESULT_MARKER" }],
+			details: {
+				op: "send",
+				to: "PEER_SEND_TARGET_MARKER",
+				receipts: [{ to: "PEER_SEND_TARGET_MARKER", outcome: "woken" }],
+				waited: null,
+			},
+			isError: false,
+			timestamp: 2,
+		},
+		{
+			role: "toolResult",
+			toolCallId: "hub-wait",
+			toolName: "hub",
+			content: [{ type: "text", text: "PEER_WAIT_RESULT_MARKER" }],
+			details: {
+				op: "wait",
+				waited: {
+					id: "irc-wait-1",
+					from: "PEER_WAIT_SOURCE_MARKER",
+					to: "Main",
+					body: "PEER_WAIT_BODY_MARKER",
+					ts: 3,
 				},
-				isError: false,
-				timestamp: 3,
 			},
-			{
-				role: "custom",
-				customType: "irc:incoming",
-				content: "peer ready",
-				display: true,
-				details: { from: "Worker", message: "peer ready" },
-				timestamp: 4,
-			},
-		]);
-		const { ctx, chatContainer } = makeRenderCtx(transcript);
+			isError: false,
+			timestamp: 3,
+		},
+		{
+			role: "custom",
+			customType: "irc:incoming",
+			content: "PEER_IRC_BODY_MARKER",
+			display: true,
+			details: { from: "PEER_IRC_SOURCE_MARKER", message: "PEER_IRC_BODY_MARKER" },
+			timestamp: 4,
+		},
+	]);
+}
+
+describe("UiHelpers.renderInitialMessages — peer communication replay", () => {
+	it("hides historical peer Hub calls, results, and IRC rows when agent communication is disabled", () => {
+		const { ctx, chatContainer } = makeRenderCtx(peerCommunicationTranscript(), true, false, true, undefined, false);
 
 		new UiHelpers(ctx).renderInitialMessages();
 
 		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
-		expect(transcriptText).not.toContain("Worker");
-		expect(transcriptText).not.toContain("ping");
-		expect(transcriptText).not.toContain("woken");
-		expect(transcriptText).not.toContain("ready now");
-		expect(transcriptText).not.toContain("peer ready");
-		expect(transcriptText).not.toContain("pending");
+		expect(chatContainer.children).toHaveLength(0);
+		for (const marker of ["PEER_SEND_BODY_MARKER", "PEER_WAIT_BODY_MARKER", "PEER_IRC_BODY_MARKER"]) {
+			expect(transcriptText).not.toContain(marker);
+		}
+	});
+
+	it("rebuilds historical peer Hub calls, results, and IRC rows when agent communication is enabled", () => {
+		const { ctx, chatContainer } = makeRenderCtx(peerCommunicationTranscript(), true, false, false, undefined, true);
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(chatContainer.children.length).toBeGreaterThan(0);
+		for (const marker of ["PEER_SEND_BODY_MARKER", "PEER_WAIT_BODY_MARKER", "PEER_IRC_BODY_MARKER"]) {
+			expect(transcriptText).toContain(marker);
+		}
 	});
 });
 

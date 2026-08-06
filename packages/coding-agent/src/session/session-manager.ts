@@ -61,10 +61,11 @@ import {
 	type WorkspaceCheckpointEntry,
 	type WorkspaceRestoreEntry,
 } from "./session-entries";
-import { listAllSessions, listSessions, type SessionInfo } from "./session-listing";
+import { listAllSessions, listSessionsFromDirs, type SessionInfo } from "./session-listing";
 import { loadEntriesFromFile, readTitleSlotFromFile, resolveBlobRefsInEntries } from "./session-loader";
 import { generateId, migrateToCurrentVersion } from "./session-migrations";
 import {
+	computeCompatibleSessionDirs,
 	computeDefaultSessionDir,
 	readTerminalBreadcrumbEntry,
 	resolveManagedSessionRoot,
@@ -205,8 +206,11 @@ async function hasRecoverableSessionState(sessionFile: string, storage: SessionS
 	return entries.some(entry => entry.type !== "session" && !isDraftOnlyMetadataEntry(entry as SessionEntry));
 }
 
-async function findMostRecentRecoverableSession(sessionDir: string, storage: SessionStorage): Promise<string | null> {
-	for (const session of await listSessions(sessionDir, storage)) {
+async function findMostRecentRecoverableSession(
+	sessionDirs: readonly string[],
+	storage: SessionStorage,
+): Promise<string | null> {
+	for (const session of await listSessionsFromDirs(sessionDirs, storage)) {
 		if (await hasRecoverableSessionState(session.path, storage)) return session.path;
 	}
 	return null;
@@ -2650,7 +2654,10 @@ export class SessionManager {
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionManager> {
-		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		const managedRoot = sessionDir ? resolveManagedSessionRoot(sessionDir, cwd) : undefined;
+		const sessionDirs =
+			sessionDir && !managedRoot ? [sessionDir] : computeCompatibleSessionDirs(cwd, storage, managedRoot);
+		const dir = sessionDirs[0]!;
 		const resolvedCwd = path.resolve(cwd);
 		const breadcrumb = await readTerminalBreadcrumbEntry();
 		let chosenSession: string | null | undefined;
@@ -2679,7 +2686,7 @@ export class SessionManager {
 					// own, re-root the moved session here instead of starting fresh. When an
 					// explicit sessionDir is reused across the move, the stale breadcrumb file
 					// may be the newest entry there; prefer a genuine current-cwd session.
-					let newestInTargetDir = await findMostRecentRecoverableSession(dir, storage);
+					let newestInTargetDir = await findMostRecentRecoverableSession(sessionDirs, storage);
 					const breadcrumbCwdMissing = !fs.existsSync(breadcrumbCwd);
 					const newestIsBreadcrumb = newestInTargetDir
 						? path.resolve(newestInTargetDir) === breadcrumbFile
@@ -2723,7 +2730,7 @@ export class SessionManager {
 			}
 		}
 
-		if (chosenSession === undefined) chosenSession = await findMostRecentRecoverableSession(dir, storage);
+		if (chosenSession === undefined) chosenSession = await findMostRecentRecoverableSession(sessionDirs, storage);
 
 		const manager = new SessionManager(cwd, dir, true, storage);
 		if (chosenSession) await manager.setSessionFile(chosenSession);
@@ -2750,8 +2757,10 @@ export class SessionManager {
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
-		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
-		return listSessions(dir, storage);
+		const managedRoot = sessionDir ? resolveManagedSessionRoot(sessionDir, cwd) : undefined;
+		const sessionDirs =
+			sessionDir && !managedRoot ? [sessionDir] : computeCompatibleSessionDirs(cwd, storage, managedRoot);
+		return listSessionsFromDirs(sessionDirs, storage);
 	}
 
 	/** List all sessions across all project directories. */

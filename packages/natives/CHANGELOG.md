@@ -5,6 +5,16 @@
 ### Added
 
 - Added the CodeGraph native extraction kernel to the existing `pi_natives` addon, including its ABI/grammar introspection, 20 language walkers, and C function-pointer scan helpers, with upstream MIT attribution and exact vendored grammar assets; also exposed the side-effect-free `@oh-my-pi/pi-natives/loader` entry so optional accelerators can catch addon-load failures and fall back safely.
+## [17.2.9] - 2026-08-05
+
+### Changed
+
+- Bounded fuzzy-find scored-match retention to the top-K results (worst-first heap) instead of collecting and fully sorting every hit; ranking and totals are unchanged ([#7415](https://github.com/can1357/oh-my-pi/issues/7415)).
+
+### Fixed
+
+- Fixed newer OMP versions deleting a freshly created older native addon cache directory during concurrent startup, which could interrupt extraction with `ENOENT`.
+
 ## [17.2.7] - 2026-08-03
 
 ### Added

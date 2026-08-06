@@ -89,6 +89,10 @@ export class SessionObserverRegistry {
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
+	#sortedTrackedSessions: ObservableSession[] | undefined;
+	#agentRegistryRef: WeakRef<AgentRegistry> | undefined;
+	#agentRegistryUnsubscribe: (() => void) | undefined;
+	#disposed = false;
 
 	/** Add a change listener. Returns unsubscribe function. */
 	onChange(cb: (change: SessionObserverChange) => void): () => void {
@@ -100,17 +104,37 @@ export class SessionObserverRegistry {
 		for (const cb of this.#listeners) cb(change);
 	}
 
+	#invalidateSortedSessions(): void {
+		this.#sortedTrackedSessions = undefined;
+	}
+
+	#ensureAgentRegistrySubscription(): AgentRegistry {
+		const registry = AgentRegistry.global();
+		if (this.#agentRegistryRef?.deref() === registry) return registry;
+
+		this.#agentRegistryUnsubscribe?.();
+		this.#agentRegistryUnsubscribe = undefined;
+		this.#agentRegistryRef = undefined;
+		if (!this.#disposed) {
+			this.#agentRegistryRef = new WeakRef(registry);
+			this.#agentRegistryUnsubscribe = registry.onChange(() => this.#invalidateSortedSessions());
+		}
+		this.#invalidateSortedSessions();
+		return registry;
+	}
+
 	#ensureSortOrder(id: string): number {
 		const existing = this.#sortOrderById.get(id);
 		if (existing !== undefined) return existing;
+		this.#invalidateSortedSessions();
 		const order = this.#nextSortOrder++;
 		this.#sortOrderById.set(id, order);
 		return order;
 	}
 
 	#ensureParentSortOrder(parentToolCallId: string | undefined, order: number): void {
-		if (!parentToolCallId) return;
-		if (this.#parentSortOrderById.has(parentToolCallId)) return;
+		if (!parentToolCallId || this.#parentSortOrderById.has(parentToolCallId)) return;
+		this.#invalidateSortedSessions();
 		this.#parentSortOrderById.set(parentToolCallId, order);
 	}
 
@@ -125,6 +149,84 @@ export class SessionObserverRegistry {
 		return parentOrder ?? this.#getStableOrder(session);
 	}
 
+	#compareSessions(a: ObservableSession, b: ObservableSession): number {
+		if (a.kind === "main" && b.kind !== "main") return -1;
+		if (b.kind === "main" && a.kind !== "main") return 1;
+		if (a.kind === "main" || b.kind === "main") return 0;
+
+		const groupDiff = this.#getGroupOrder(a) - this.#getGroupOrder(b);
+		if (groupDiff !== 0) return groupDiff;
+
+		const aIndex = a.index ?? Number.MAX_SAFE_INTEGER;
+		const bIndex = b.index ?? Number.MAX_SAFE_INTEGER;
+		if (aIndex !== bIndex) return aIndex - bIndex;
+
+		return this.#getStableOrder(a) - this.#getStableOrder(b);
+	}
+
+	#getSortedTrackedSessions(): ObservableSession[] {
+		if (this.#sortedTrackedSessions) return this.#sortedTrackedSessions;
+		const sessions = [...this.#sessions.values()];
+		sessions.sort((a, b) => this.#compareSessions(a, b));
+		this.#sortedTrackedSessions = sessions;
+		return sessions;
+	}
+
+	#insertSortedSession(sessions: ObservableSession[], session: ObservableSession): void {
+		let start = 0;
+		let end = sessions.length;
+		while (start < end) {
+			const middle = (start + end) >>> 1;
+			if (this.#compareSessions(session, sessions[middle]!) > 0) start = middle + 1;
+			else end = middle;
+		}
+		sessions.splice(start, 0, session);
+	}
+
+	#collectPersistedParkedSessions(registry: AgentRegistry): ObservableSession[] | undefined {
+		const mainSessionFile = this.#sessions.get("main")?.sessionFile;
+		if (!mainSessionFile) return undefined;
+
+		let sessions: ObservableSession[] | undefined;
+		for (const ref of registry.list()) {
+			if (ref.kind !== "sub" || ref.status !== "parked" || this.#sessions.has(ref.id)) continue;
+			if (resolveTopLevelAgent(registry, ref.id)?.sessionFile !== mainSessionFile) continue;
+			const observation = getPersistedAgentSnapshot(ref)?.observations.get(ref.id);
+			if (!observation?.status) continue;
+			const status =
+				observation.status === "completed" || observation.status === "failed" || observation.status === "aborted"
+					? observation.status
+					: observation.status === "pending" || observation.status === "running"
+						? "active"
+						: undefined;
+			const lastUpdate = observation.lastUpdate ?? observation.activityState?.lastActivityAtMs;
+			if (!status || lastUpdate === undefined) continue;
+			const sortOrder = this.#ensureSortOrder(ref.id);
+			this.#ensureParentSortOrder(observation.parentToolCallId, sortOrder);
+			if (!sessions) sessions = [];
+			sessions.push({
+				id: ref.id,
+				kind: "subagent",
+				label: observation.description ?? ref.displayName,
+				agent: observation.agent,
+				description: observation.description,
+				status,
+				sessionFile: ref.sessionFile ?? undefined,
+				parentToolCallId: observation.parentToolCallId,
+				index: observation.index,
+				lastUpdate,
+				startedAtMs: observation.progress?.startedAtMs,
+				completedAtMs: observation.progress?.completedAtMs,
+				progress: observation.progress,
+				resolvedModel: observation.resolvedModel,
+				resolvedModelIsFallback: observation.resolvedModelIsFallback,
+				retryState: observation.retryState,
+				retryFailure: observation.retryFailure,
+			});
+		}
+		return sessions;
+	}
+
 	setMainSession(sessionFile?: string): void {
 		const existing = this.#sessions.get("main");
 		this.#ensureSortOrder("main");
@@ -136,65 +238,27 @@ export class SessionObserverRegistry {
 			sessionFile: sessionFile ?? existing?.sessionFile,
 			lastUpdate: Date.now(),
 		});
+		this.#invalidateSortedSessions();
+		this.#ensureAgentRegistrySubscription();
 		this.#notifyListeners(MAIN_CHANGE);
 	}
 
+	/** Return one tracked session without copying or sorting the registry. */
+	getSession(id: string): ObservableSession | undefined {
+		return this.#sessions.get(id);
+	}
+
 	getSessions(): ObservableSession[] {
-		const sessions = [...this.#sessions.values()];
-		const mainSessionFile = this.#sessions.get("main")?.sessionFile;
-		if (mainSessionFile) {
-			const registry = AgentRegistry.global();
-			for (const ref of registry.list()) {
-				if (ref.kind !== "sub" || ref.status !== "parked" || this.#sessions.has(ref.id)) continue;
-				if (resolveTopLevelAgent(registry, ref.id)?.sessionFile !== mainSessionFile) continue;
-				const observation = getPersistedAgentSnapshot(ref)?.observations.get(ref.id);
-				if (!observation?.status) continue;
-				const status =
-					observation.status === "completed" || observation.status === "failed" || observation.status === "aborted"
-						? observation.status
-						: observation.status === "pending" || observation.status === "running"
-							? "active"
-							: undefined;
-				const lastUpdate = observation.lastUpdate ?? observation.activityState?.lastActivityAtMs;
-				if (!status || lastUpdate === undefined) continue;
-				const sortOrder = this.#ensureSortOrder(ref.id);
-				this.#ensureParentSortOrder(observation.parentToolCallId, sortOrder);
-				sessions.push({
-					id: ref.id,
-					kind: "subagent",
-					label: observation.description ?? ref.displayName,
-					agent: observation.agent,
-					description: observation.description,
-					status,
-					sessionFile: ref.sessionFile ?? undefined,
-					parentToolCallId: observation.parentToolCallId,
-					index: observation.index,
-					lastUpdate,
-					startedAtMs: observation.progress?.startedAtMs,
-					completedAtMs: observation.progress?.completedAtMs,
-					progress: observation.progress,
-					resolvedModel: observation.resolvedModel,
-					resolvedModelIsFallback: observation.resolvedModelIsFallback,
-					retryState: observation.retryState,
-					retryFailure: observation.retryFailure,
-				});
-			}
-		}
-		sessions.sort((a, b) => {
-			if (a.kind === "main" && b.kind !== "main") return -1;
-			if (b.kind === "main" && a.kind !== "main") return 1;
-			if (a.kind === "main" || b.kind === "main") return 0;
+		const registry = this.#ensureAgentRegistrySubscription();
+		// Persisted snapshots can be refreshed without an AgentRegistry event, so scan
+		// parked refs on demand and only cache the fully in-memory tracked rows.
+		const persistedSessions = this.#collectPersistedParkedSessions(registry);
+		const sessions = this.#getSortedTrackedSessions();
+		if (!persistedSessions) return sessions.slice();
 
-			const groupDiff = this.#getGroupOrder(a) - this.#getGroupOrder(b);
-			if (groupDiff !== 0) return groupDiff;
-
-			const aIndex = a.index ?? Number.MAX_SAFE_INTEGER;
-			const bIndex = b.index ?? Number.MAX_SAFE_INTEGER;
-			if (aIndex !== bIndex) return aIndex - bIndex;
-
-			return this.#getStableOrder(a) - this.#getStableOrder(b);
-		});
-		return sessions;
+		const merged = [...sessions];
+		for (const session of persistedSessions) this.#insertSortedSession(merged, session);
+		return merged;
 	}
 
 	getActiveSubagentCount(): number {
@@ -208,6 +272,7 @@ export class SessionObserverRegistry {
 	/** Clear all tracked sessions (e.g. on session switch). Keeps EventBus subscriptions and listeners. */
 	resetSessions(): void {
 		this.#sessions.clear();
+		this.#invalidateSortedSessions();
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
@@ -215,6 +280,11 @@ export class SessionObserverRegistry {
 	}
 
 	dispose(): void {
+		this.#agentRegistryUnsubscribe?.();
+		this.#agentRegistryUnsubscribe = undefined;
+		this.#agentRegistryRef = undefined;
+		this.#sortedTrackedSessions = undefined;
+		this.#disposed = true;
 		for (const unsub of this.#eventBusUnsubscribers) unsub();
 		this.#eventBusUnsubscribers = [];
 		this.#sessions.clear();
@@ -234,6 +304,7 @@ export class SessionObserverRegistry {
 				const payload = data as SubagentLifecyclePayload;
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
+				this.#invalidateSortedSessions();
 
 				const sortOrder = this.#ensureSortOrder(payload.id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
@@ -297,6 +368,7 @@ export class SessionObserverRegistry {
 				const snapshot = withSessionTiming(progress, existing);
 				const status = STATUS_MAP[snapshot.status];
 				if (!status) return;
+				this.#invalidateSortedSessions();
 				// Progress can be coalesced independently from lifecycle events. Once a
 				// lifecycle generation is terminal, only a new `started` lifecycle event
 				// may reopen it; a late progress snapshot must never resurrect or rewrite it.

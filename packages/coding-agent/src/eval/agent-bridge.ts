@@ -23,7 +23,6 @@ export const EVAL_AGENT_BRIDGE_NAME = "__agent__";
 const agentArgsSchema = type({
 	prompt: "string>0",
 	"agent?": "string>0",
-	"model?": "string>0|string>0[]",
 	"label?": "string",
 	"schema?": "unknown",
 	"schemaMode?": "'permissive' | 'strict'",
@@ -31,12 +30,12 @@ const agentArgsSchema = type({
 	"apply?": "boolean",
 	"merge?": "boolean",
 	"handle?": "boolean",
+	"+": "delete",
 });
 
 interface EvalAgentArgs {
 	prompt: string;
 	agent?: string;
-	model?: string | string[];
 	label?: string;
 	schema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
@@ -149,7 +148,6 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						invocationKind: "eval",
 						assignment: parsed.prompt,
 						...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
-						...(parsed.model !== undefined ? { model: parsed.model } : {}),
 						...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 						...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
 						...(parsed.label !== undefined ? { identity: { label: parsed.label } } : {}),
@@ -157,7 +155,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						...(parsed.handle ? { retainArtifacts: true } : {}),
 						keepAlive: false,
 						// `maxRuntimeMs` is intentionally omitted: the executor then inherits
-						// `task.maxRuntimeMs`, matching the task tool.
+						// `task.maxRuntimeMs`, matching the task tool. Pinning it to 0 here
+						// silently overrode the user's wall-clock cap for eval fan-outs.
 						shareEvalSession: false,
 						...(options.signal !== undefined ? { signal: options.signal } : {}),
 						...(options.emitStatus

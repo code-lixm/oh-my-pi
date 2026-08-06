@@ -16,7 +16,7 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { truncateToWidth } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
-import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
+import { matchesMacOSOptionJKText, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { ChatTranscriptBuilder } from "./chat-transcript-builder";
 import { DynamicBorder } from "./dynamic-border";
 import { UserMessageComponent } from "./user-message";
@@ -146,6 +146,8 @@ export class SessionHistoryViewer implements Component {
 			return;
 		}
 
+		// Real Alt chords keep their navigation precedence while search is focused.
+		// The macOS Option text aliases are checked only after the text-input branch.
 		if (matchesKey(data, "alt+k")) {
 			this.#moveTurn(-1);
 			return;
@@ -158,6 +160,15 @@ export class SessionHistoryViewer implements Component {
 		if (this.#searching) {
 			this.#searchInput.handleInput(data);
 			this.deps.requestRender();
+			return;
+		}
+
+		if (matchesMacOSOptionJKText(data, "previous")) {
+			this.#moveTurn(-1);
+			return;
+		}
+		if (matchesMacOSOptionJKText(data, "next")) {
+			this.#moveTurn(1);
 			return;
 		}
 

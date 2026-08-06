@@ -88,11 +88,11 @@ export class HashlineFilesystem extends Filesystem {
 		return resolvePlanPath(this.session, relativePath);
 	}
 
-	canonicalPath(relativePath: string): string {
+	override canonicalPath(relativePath: string): string {
 		return canonicalSnapshotKey(this.resolveAbsolute(relativePath));
 	}
 
-	allowTagPathRecovery(authoredPath: string, resolvedPath: string): boolean {
+	override allowTagPathRecovery(authoredPath: string, resolvedPath: string): boolean {
 		// Internal-URL authored targets (`local://`, `vault://`, …) are approved
 		// at the lower "read" privilege; never let one redirect onto a "write".
 		if (isInternalUrlPath(authoredPath)) return false;
@@ -126,7 +126,7 @@ export class HashlineFilesystem extends Filesystem {
 		return content;
 	}
 
-	async readBinary(relativePath: string): Promise<Uint8Array | undefined> {
+	override async readBinary(relativePath: string): Promise<Uint8Array | undefined> {
 		const absolutePath = this.resolveAbsolute(relativePath);
 		if (isNotebookPath(absolutePath)) return undefined;
 		try {
@@ -137,7 +137,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 	}
 
-	async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
+	override async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
 		const fileOp = options?.fileOp;
 		if (fileOp?.kind === "rem") {
 			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
@@ -150,7 +150,7 @@ export class HashlineFilesystem extends Filesystem {
 		enforcePlanModeWrite(this.session, relativePath, { op: "update" });
 	}
 
-	async delete(relativePath: string): Promise<void> {
+	override async delete(relativePath: string): Promise<void> {
 		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
@@ -171,7 +171,7 @@ export class HashlineFilesystem extends Filesystem {
 		notifyFileMutation(this.session, absolutePath, "delete");
 	}
 
-	async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
+	override async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
 		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
 		const fromAbsolute = this.resolveAbsolute(fromRelative);
 		const toAbsolute = this.resolveAbsolute(toRelative);
@@ -248,7 +248,7 @@ export class HashlineFilesystem extends Filesystem {
 		return { text: content };
 	}
 
-	async exists(relativePath: string): Promise<boolean> {
+	override async exists(relativePath: string): Promise<boolean> {
 		const absolutePath = this.resolveAbsolute(relativePath);
 		return Bun.file(absolutePath).exists();
 	}

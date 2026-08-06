@@ -1531,6 +1531,11 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Advisor history copied to clipboard": "Advisor history copied to clipboard",
 	"Advisor is not active for this session.": "Advisor is not active for this session.",
 	"Agent Idle TTL": "Agent Idle TTL",
+	"How long an idle subagent stays live in memory before time-based parking (ms). Parked agents are revived automatically when messaged or resumed. 0 disables time-based parking; task.maxLiveIdleAgents may still park idle agents by count.":
+		"How long an idle subagent stays live in memory before time-based parking (ms). Parked agents are revived automatically when messaged or resumed. 0 disables time-based parking; task.maxLiveIdleAgents may still park idle agents by count.",
+	"Max Live Idle Agents": "Max Live Idle Agents",
+	"Maximum adopted idle subagents kept live in memory across the process. Oldest idle agents are parked first; 0 disables the count cap.":
+		"Maximum adopted idle subagents kept live in memory across the process. Oldest idle agents are parked first; 0 disables the count cap.",
 	"Agent {id} is {status}; returned to main session": "Agent {id} is {status}; returned to main session",
 	"Agent {id} is gone; returned to main session": "Agent {id} is gone; returned to main session",
 	"Agent {id} is not live": "Agent {id} is not live",
@@ -2251,8 +2256,13 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
 	"Mouse Input": "Mouse Input",
-	"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.":
-		"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.",
+	"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.":
+		"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.",
+	"Show Agent Communication": "Show Agent Communication",
+	"Show agent-to-agent messages and coordination activity in the transcript":
+		"Show agent-to-agent messages and coordination activity in the transcript",
+	"Show Subagent List": "Show Subagent List",
+	"Show the live subagent list above the Main prompt": "Show the live subagent list above the Main prompt",
 	"Repeated grid with ink cycling six hues at sentence boundaries.":
 		"Repeated grid with ink cycling six hues at sentence boundaries.",
 	"Repetition Penalty": "Repetition Penalty",
@@ -3240,6 +3250,12 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	'Switching to "{label}" is unavailable in this Agent Hub.':
 		'Switching to "{label}" is unavailable in this Agent Hub.',
 	'"{label}" cannot be resumed.': '"{label}" cannot be resumed.',
+	"Select a subagent to message.": "Select a subagent to message.",
+	'"{label}" was aborted and cannot be messaged.': '"{label}" was aborted and cannot be messaged.',
+	"Type a message before sending.": "Type a message before sending.",
+	'"{label}" cannot receive a message.': '"{label}" cannot receive a message.',
+	"The selected subagent is no longer available.": "The selected subagent is no longer available.",
+	"Message delivery failed.": "Message delivery failed.",
 	"open transcript": "open transcript",
 	focus: "focus",
 	revive: "revive",

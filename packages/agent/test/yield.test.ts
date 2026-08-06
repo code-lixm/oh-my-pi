@@ -39,6 +39,32 @@ describe("YieldGate.yieldIfDue", () => {
 		expect(sleeps()).toBe(1);
 	});
 
+	it("does not schedule a second sleep while the first is pending", async () => {
+		const pendingSleep = Promise.withResolvers<void>();
+		let sleepCalls = 0;
+		const sleep = vi.fn(() => {
+			sleepCalls += 1;
+			return sleepCalls === 1 ? pendingSleep.promise : Promise.resolve();
+		});
+		const gate = new YieldGate({
+			now: () => 1_000_000,
+			sleep,
+			intervalMs: YIELD_INTERVAL_MS,
+		});
+
+		const firstYield = gate.yieldIfDue();
+
+		try {
+			expect(sleep).toHaveBeenCalledTimes(1);
+			const concurrentYield = gate.yieldIfDue();
+			await concurrentYield;
+			expect(sleep).toHaveBeenCalledTimes(1);
+		} finally {
+			pendingSleep.resolve();
+			await firstYield;
+		}
+	});
+
 	it("sleeps again once the gate window elapses", async () => {
 		const { gate, advanceBy, sleeps } = makeGate();
 

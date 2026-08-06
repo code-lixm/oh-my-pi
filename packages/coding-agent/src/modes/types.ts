@@ -310,6 +310,7 @@ export interface InteractiveModeContext {
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
 	showSubagentFeedback?(feedback: SubagentFeedback): void;
+	refreshSubagentList?(): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;

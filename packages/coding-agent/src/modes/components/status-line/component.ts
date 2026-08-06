@@ -1635,6 +1635,7 @@ export class StatusLineComponent implements Component {
 		includeContext: boolean,
 		includeGit: boolean,
 		includePr: boolean,
+		includeTokenRate: boolean,
 	): SegmentContext {
 		const state = this.session.state;
 
@@ -1656,7 +1657,7 @@ export class StatusLineComponent implements Component {
 		};
 		const usageStats = {
 			...aggregateUsageStats,
-			tokensPerSecond: this.#getTokensPerSecond(),
+			tokensPerSecond: includeTokenRate ? this.#getTokensPerSecond() : null,
 		};
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
@@ -1804,6 +1805,9 @@ export class StatusLineComponent implements Component {
 			(hasGitSegment(effectiveSettings.leftSegments) || hasGitSegment(effectiveSettings.rightSegments));
 		const includePr =
 			gitEnabled && (hasPrSegment(effectiveSettings.leftSegments) || hasPrSegment(effectiveSettings.rightSegments));
+		const includeTokenRate =
+			effectiveSettings.leftSegments.includes("token_rate") ||
+			effectiveSettings.rightSegments.includes("token_rate");
 		const ctx = this.#buildSegmentContext(
 			width,
 			effectiveSettings.segmentOptions,
@@ -1811,6 +1815,7 @@ export class StatusLineComponent implements Component {
 			includeContext,
 			includeGit,
 			includePr,
+			includeTokenRate,
 		);
 		const separatorDef = getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
 

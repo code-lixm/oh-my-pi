@@ -84,6 +84,7 @@ function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}):
 		modelRegistry,
 		configWarnings: [],
 		model: () => currentModel,
+		textOutputCommitted: () => false,
 		thinkingLevel: () => undefined,
 		configuredThinkingLevel: () => configuredThinkingLevel,
 		setTransientThinkingLevel: level => {

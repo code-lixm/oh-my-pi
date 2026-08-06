@@ -170,6 +170,84 @@ describe("selector setting side effects", () => {
 		});
 	}
 
+	it("refreshes the subagent list when its visibility changes", () => {
+		const refreshSubagentList = vi.fn();
+		const controller = new SelectorController({
+			refreshSubagentList,
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("display.showSubagentList", false);
+
+		expect(refreshSubagentList).toHaveBeenCalledTimes(1);
+	});
+
+	it("rebuilds the transcript and resets the display when agent communication visibility changes", () => {
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const controller = new SelectorController({
+			rebuildChatFromMessages,
+			ui: { resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("display.showAgentCommunication", false);
+
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads the current tui.mouseInput setting each time the fullscreen Settings overlay opens", async () => {
+		const testTheme = await getThemeByName("dark");
+		if (!testTheme) throw new Error("Failed to load dark theme for settings selector test");
+		setThemeInstance(testTheme);
+
+		const settings = Settings.isolated();
+		const firstOpened = Promise.withResolvers<void>();
+		const secondOpened = Promise.withResolvers<void>();
+		const overlays: Array<{
+			component: { handleInput(data: string): void };
+			options: { mouseTracking?: boolean };
+		}> = [];
+		const editor = {};
+		const controller = new SelectorController({
+			editor,
+			editorContainer: { children: [editor], clear() {}, addChild() {} },
+			settings,
+			session: {
+				getAvailableThinkingLevels: () => [],
+				getAvailableModels: () => [],
+				thinkingLevel: undefined,
+				model: undefined,
+			},
+			statusLine: { invalidate() {}, updateSettings() {} },
+			ui: {
+				requestRender() {},
+				setFocus() {},
+				showOverlay(component: unknown, options: { mouseTracking?: boolean }) {
+					const selector = component as { handleInput(data: string): void };
+					if (typeof selector.handleInput !== "function") {
+						throw new Error("Expected Settings selector overlay");
+					}
+					overlays.push({ component: selector, options });
+					if (overlays.length === 1) firstOpened.resolve();
+					if (overlays.length === 2) secondOpened.resolve();
+					return { hide() {} };
+				},
+			},
+		} as unknown as InteractiveModeContext);
+
+		settings.set("tui.mouseInput", false);
+		controller.showSettingsSelector();
+		await firstOpened.promise;
+
+		overlays[0]?.component.handleInput("\x1b");
+
+		settings.set("tui.mouseInput", true);
+		controller.showSettingsSelector();
+		await secondOpened.promise;
+
+		expect(overlays.map(({ options }) => options.mouseTracking)).toEqual([false, true]);
+	});
+
 	it("clears stale default role thinking when auto is selected", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");

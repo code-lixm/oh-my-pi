@@ -260,6 +260,11 @@ describe("InteractiveMode subagent HUD repainting", () => {
 		await mode.init({ suppressWelcomeIntro: true });
 	});
 
+	function enableSubagentHud(): void {
+		session.settings.set("display.showSubagentList", true);
+		mode.refreshSubagentList();
+	}
+
 	afterEach(async () => {
 		mode?.stop();
 		await session?.dispose();
@@ -272,7 +277,22 @@ describe("InteractiveMode subagent HUD repainting", () => {
 		resetSettingsForTest();
 	});
 
+	it("keeps the detached subagent HUD hidden by default until explicitly enabled", () => {
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("OptInWorker"));
+		vi.advanceTimersByTime(100);
+
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).toBe("");
+
+		enableSubagentHud();
+
+		const hud = Bun.stripANSI(mode.subagentContainer.render(160).join("\n"));
+		expect(hud).toContain("Subagents");
+		expect(hud).toContain("OptInWorker");
+	});
+
 	it("does not repaint for progress with no visible HUD surface", () => {
+		enableSubagentHud();
 		vi.useFakeTimers();
 		const fullRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
@@ -288,6 +308,7 @@ describe("InteractiveMode subagent HUD repainting", () => {
 	});
 
 	it("repaints only the subagent root for visible cost, context, waiting, and order changes", () => {
+		enableSubagentHud();
 		vi.useFakeTimers();
 		const fullRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
@@ -358,6 +379,7 @@ describe("InteractiveMode subagent HUD repainting", () => {
 	});
 
 	it("recomputes subagent HUD text after a terminal column change", () => {
+		enableSubagentHud();
 		const columns = stubStdoutColumns(160);
 		try {
 			vi.useFakeTimers();

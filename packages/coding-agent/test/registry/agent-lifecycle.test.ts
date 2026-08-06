@@ -334,6 +334,23 @@ describe("AgentLifecycleManager", () => {
 		expect(registry.get("6-Sub")).toBeUndefined();
 	});
 
+	it("does not let one stuck adopted agent block sibling disposal", async () => {
+		const gate = deferred();
+		const stuck = makeSessionStub(() => gate.promise);
+		const sibling = makeSessionStub();
+		registerIdleSub("stuck-Sub", stuck.session);
+		registerIdleSub("sibling-Sub", sibling.session);
+		lifecycle.adopt("stuck-Sub", { idleTtlMs: TTL });
+		lifecycle.adopt("sibling-Sub", { idleTtlMs: TTL });
+
+		await lifecycle.dispose(Date.now());
+
+		expect(stuck.disposeCalls()).toBe(1);
+		expect(sibling.disposeCalls()).toBe(1);
+		gate.resolve();
+		await flushAsync();
+	});
+
 	it("a delayed release cannot remove or mutate a replacement ref with the same id", async () => {
 		const gate = deferred();
 		const oldSession = makeSessionStub(() => gate.promise);
@@ -574,6 +591,147 @@ describe("AgentLifecycleManager", () => {
 		expect(ref?.session).toBe(stub.session);
 		expect(stub.disposeCalls()).toBe(0);
 		expect(lifecycle.has("8-Sub")).toBe(true);
+	});
+
+	it("parks the oldest idle agent above maxLiveIdleAgents even when TTL parking is disabled", async () => {
+		vi.useFakeTimers();
+		const oldest = makeSessionStub();
+		const newer = makeSessionStub();
+		const newest = makeSessionStub();
+		registerIdleSub("IdleLimit-Oldest", oldest.session, "/tmp/IdleLimit-Oldest.jsonl");
+		lifecycle.adopt("IdleLimit-Oldest", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+		vi.advanceTimersByTime(1);
+		registerIdleSub("IdleLimit-Newer", newer.session);
+		lifecycle.adopt("IdleLimit-Newer", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+		vi.advanceTimersByTime(1);
+		registerIdleSub("IdleLimit-Newest", newest.session);
+		lifecycle.adopt("IdleLimit-Newest", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+
+		await flushAsync();
+
+		const oldestRef = registry.get("IdleLimit-Oldest");
+		expect(oldest.disposeCalls()).toBe(1);
+		expect(oldestRef?.status).toBe("parked");
+		expect(oldestRef?.session).toBeNull();
+		expect(oldestRef?.sessionFile).toBe("/tmp/IdleLimit-Oldest.jsonl");
+		expect(registry.get("IdleLimit-Newer")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Newer")?.session).toBe(newer.session);
+		expect(registry.get("IdleLimit-Newest")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Newest")?.session).toBe(newest.session);
+	});
+
+	it("keeps running and waiting agents outside the idle cap until a return to idle exceeds it", async () => {
+		vi.useFakeTimers();
+		const oldestIdle = makeSessionStub();
+		const newerIdle = makeSessionStub();
+		const running = makeSessionStub();
+		const waiting = makeSessionStub();
+		registerIdleSub("IdleLimit-Active-Oldest", oldestIdle.session);
+		lifecycle.adopt("IdleLimit-Active-Oldest", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+		vi.advanceTimersByTime(1);
+		registerIdleSub("IdleLimit-Active-Newer", newerIdle.session);
+		lifecycle.adopt("IdleLimit-Active-Newer", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+		registry.register({
+			id: "IdleLimit-Running",
+			displayName: "task",
+			kind: "sub",
+			session: running.session,
+			sessionFile: "/tmp/IdleLimit-Running.jsonl",
+			status: "running",
+		});
+		lifecycle.adopt("IdleLimit-Running", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+		registry.register({
+			id: "IdleLimit-Waiting",
+			displayName: "task",
+			kind: "sub",
+			session: waiting.session,
+			sessionFile: "/tmp/IdleLimit-Waiting.jsonl",
+			status: "waiting",
+		});
+		lifecycle.adopt("IdleLimit-Waiting", { idleTtlMs: 0, maxLiveIdleAgents: 2 });
+
+		await flushAsync();
+
+		// The two active agents leave the two existing idle agents within the cap.
+		expect(oldestIdle.disposeCalls()).toBe(0);
+		expect(registry.get("IdleLimit-Active-Oldest")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Active-Newer")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Running")?.status).toBe("running");
+		expect(registry.get("IdleLimit-Running")?.session).toBe(running.session);
+		expect(registry.get("IdleLimit-Waiting")?.status).toBe("waiting");
+		expect(registry.get("IdleLimit-Waiting")?.session).toBe(waiting.session);
+
+		vi.advanceTimersByTime(1);
+		registry.setStatus("IdleLimit-Running", "idle");
+		await flushAsync();
+
+		// Returning to idle makes three live idle agents, so the oldest idle ref parks.
+		expect(oldestIdle.disposeCalls()).toBe(1);
+		expect(registry.get("IdleLimit-Active-Oldest")?.status).toBe("parked");
+		expect(registry.get("IdleLimit-Active-Newer")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Active-Newer")?.session).toBe(newerIdle.session);
+		expect(registry.get("IdleLimit-Running")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Running")?.session).toBe(running.session);
+		expect(registry.get("IdleLimit-Waiting")?.status).toBe("waiting");
+		expect(registry.get("IdleLimit-Waiting")?.session).toBe(waiting.session);
+		expect(newerIdle.disposeCalls()).toBe(0);
+		expect(running.disposeCalls()).toBe(0);
+		expect(waiting.disposeCalls()).toBe(0);
+	});
+
+	it("uses a cold-revived agent's persisted factory idle cap when a later idle agent exceeds it", async () => {
+		const revived = makeSessionStub();
+		const revivedRef = registry.register({
+			id: "IdleLimit-ColdRevived",
+			displayName: "task",
+			kind: "sub",
+			session: null,
+			sessionFile: "/tmp/IdleLimit-ColdRevived.jsonl",
+			status: "parked",
+		});
+		lifecycle.setPersistedSubagentReviverFactory(async () => async () => revived.session, TTL, 1);
+
+		expect(await lifecycle.ensureLive("IdleLimit-ColdRevived")).toBe(revived.session);
+		expect(registry.get("IdleLimit-ColdRevived")?.status).toBe("idle");
+		const laterIdle = makeSessionStub();
+		registerIdleSub("IdleLimit-ColdRevived-Later", laterIdle.session);
+		// The persisted factory cap is the only enabled cap; the later disabled cap cannot override it.
+		lifecycle.adopt("IdleLimit-ColdRevived-Later", { idleTtlMs: 0, maxLiveIdleAgents: 0 });
+
+		await flushAsync();
+
+		expect(revived.disposeCalls()).toBe(1);
+		expect(registry.get("IdleLimit-ColdRevived")).toBe(revivedRef);
+		expect(revivedRef.status).toBe("parked");
+		expect(revivedRef.session).toBeNull();
+		expect(revivedRef.sessionFile).toBe("/tmp/IdleLimit-ColdRevived.jsonl");
+		expect(registry.get("IdleLimit-ColdRevived-Later")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-ColdRevived-Later")?.session).toBe(laterIdle.session);
+		expect(laterIdle.disposeCalls()).toBe(0);
+	});
+
+	it.each([0, -1] as const)("does not cap live idle agents when maxLiveIdleAgents is %d", async maxLiveIdleAgents => {
+		const first = makeSessionStub();
+		const second = makeSessionStub();
+		const third = makeSessionStub();
+		registerIdleSub("IdleLimit-Disabled-First", first.session);
+		lifecycle.adopt("IdleLimit-Disabled-First", { idleTtlMs: 0, maxLiveIdleAgents });
+		registerIdleSub("IdleLimit-Disabled-Second", second.session);
+		lifecycle.adopt("IdleLimit-Disabled-Second", { idleTtlMs: 0, maxLiveIdleAgents });
+		registerIdleSub("IdleLimit-Disabled-Third", third.session);
+		lifecycle.adopt("IdleLimit-Disabled-Third", { idleTtlMs: 0, maxLiveIdleAgents });
+
+		await flushAsync();
+
+		expect(registry.get("IdleLimit-Disabled-First")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Disabled-First")?.session).toBe(first.session);
+		expect(registry.get("IdleLimit-Disabled-Second")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Disabled-Second")?.session).toBe(second.session);
+		expect(registry.get("IdleLimit-Disabled-Third")?.status).toBe("idle");
+		expect(registry.get("IdleLimit-Disabled-Third")?.session).toBe(third.session);
+		expect(first.disposeCalls()).toBe(0);
+		expect(second.disposeCalls()).toBe(0);
+		expect(third.disposeCalls()).toBe(0);
 	});
 
 	it("tombstone release keeps a killed ref as terminal `aborted` so a persisted-subagent rescan cannot resurrect it as parked", async () => {

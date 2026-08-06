@@ -9,8 +9,8 @@ import type { AutocompleteItem, AutocompleteProvider } from "@oh-my-pi/pi-tui/au
 //
 // Contracts:
 //   • Ctrl+D invokes the default app.exit action.
-//   • Tab / Shift+Tab invoke their configured model-cycle actions, including
-//     while autocomplete is shown.
+//   • Tab / Shift+Tab invoke their configured model-cycle actions only with an empty prompt.
+//   • Non-empty slash-command input keeps Tab available to autocomplete.
 // ---------------------------------------------------------------------------
 
 describe("CustomEditor keybindings", () => {
@@ -127,7 +127,7 @@ class OptionalProvider implements AutocompleteProvider {
 }
 
 describe("Tab model cycling", () => {
-	it("routes a configured Tab chord to model.cycleForward", () => {
+	it("routes a configured Tab chord to model.cycleForward when the prompt is empty", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 		const onCycleForward = vi.fn();
@@ -138,7 +138,7 @@ describe("Tab model cycling", () => {
 		expect(onCycleForward).toHaveBeenCalledTimes(1);
 	});
 
-	it("routes Tab to model.cycleForward while autocomplete is visible", async () => {
+	it("leaves Tab to visible slash-command autocomplete instead of cycling models", async () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleForward", ["tab"]);
 		editor.setAutocompleteProvider(new OptionalProvider([{ value: "alpha", label: "alpha" }]));
@@ -151,8 +151,9 @@ describe("Tab model cycling", () => {
 
 		editor.handleInput("\t");
 
-		expect(editor.isShowingAutocomplete()).toBe(true);
-		expect(onCycleForward).toHaveBeenCalledTimes(1);
+		expect(onCycleForward).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("/alpha");
+		expect(editor.isShowingAutocomplete()).toBe(false);
 	});
 
 	it("keeps app-level model cycling out of handleDraftEdit", () => {
@@ -169,7 +170,7 @@ describe("Tab model cycling", () => {
 });
 
 describe("Shift+Tab model cycling", () => {
-	it("routes a configured Shift+Tab chord to model.cycleBackward", () => {
+	it("routes a configured Shift+Tab chord to model.cycleBackward when the prompt is empty", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
 		const onCycleBackward = vi.fn();
@@ -180,7 +181,7 @@ describe("Shift+Tab model cycling", () => {
 		expect(onCycleBackward).toHaveBeenCalledTimes(1);
 	});
 
-	it("routes Shift+Tab to model.cycleBackward while autocomplete is visible", async () => {
+	it("leaves a non-empty slash-command editor out of backward model cycling", async () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleBackward", ["shift+tab"]);
 		editor.setAutocompleteProvider(new OptionalProvider([{ value: "x", label: "x" }]));
@@ -193,8 +194,9 @@ describe("Shift+Tab model cycling", () => {
 
 		editor.handleInput("\x1b[Z");
 
+		expect(onCycleBackward).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("/");
 		expect(editor.isShowingAutocomplete()).toBe(true);
-		expect(onCycleBackward).toHaveBeenCalledTimes(1);
 	});
 });
 

@@ -116,7 +116,7 @@ export interface WorkspaceGitStateRestoreOptions {
 
 /** Error raised when a restore encounters an unrecoverable conflict. */
 export class WorkspaceGitStateRestoreError extends Error {
-	readonly cause?: unknown;
+	override readonly cause?: unknown;
 	constructor(message: string, options: { cause?: unknown } = {}) {
 		super(message);
 		this.name = "WorkspaceGitStateRestoreError";

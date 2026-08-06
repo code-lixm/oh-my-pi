@@ -56,7 +56,7 @@ export class SessionAccountSelectorComponent extends Container {
 	}
 
 	/** Route mouse selection through the title rows into the account list. */
-	routeMouse(event: SgrMouseEvent, line: number, col: number): void {
+	override routeMouse(event: SgrMouseEvent, line: number, col: number): void {
 		this.#selectList.routeMouse(event, line - ACCOUNT_LIST_ROW_OFFSET, col);
 	}
 }

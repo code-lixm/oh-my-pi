@@ -102,14 +102,14 @@ function waitForStatus(registry: AgentRegistry, id: string, status: "idle"): Pro
 	});
 }
 
-function waitForRemoval(registry: AgentRegistry, id: string): Promise<void> {
-	return new Promise(resolve => {
-		const unsubscribe = registry.onChange(event => {
-			if (event.type !== "removed" || event.ref.id !== id) return;
-			unsubscribe();
-			resolve();
-		});
+function waitForAborted(registry: AgentRegistry, id: string): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const unsubscribe = registry.onChange(event => {
+		if (event.type !== "status_changed" || event.ref.id !== id || event.ref.status !== "aborted") return;
+		unsubscribe();
+		resolve();
 	});
+	return promise;
 }
 
 describe("Agent Hub table actions", () => {
@@ -187,7 +187,7 @@ describe("Agent Hub table actions", () => {
 		}
 	});
 
-	it("x removes a live child from the roster after its teardown completes", async () => {
+	it("x leaves a live child as an aborted tombstone after its teardown completes", async () => {
 		vi.useFakeTimers();
 		const registry = new AgentRegistry();
 		const lifecycle = new AgentLifecycleManager(registry);
@@ -199,12 +199,14 @@ describe("Agent Hub table actions", () => {
 
 		try {
 			await hub.persistedSubagentsReady;
-			const removed = waitForRemoval(registry, WORKER);
+			const aborted = waitForAborted(registry, WORKER);
 			hub.handleInput("x");
-			await removed;
+			await aborted;
+			expect(registry.get(WORKER)?.session).toBeNull();
 			vi.advanceTimersByTime(100);
 
-			expect(rendered(hub)).not.toContain("Worker");
+			expect(rendered(hub)).toContain("Worker");
+			expect(rendered(hub)).toContain("aborted");
 		} finally {
 			hub.dispose();
 			await lifecycle.dispose();

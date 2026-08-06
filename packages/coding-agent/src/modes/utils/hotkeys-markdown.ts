@@ -1,4 +1,4 @@
-import { type AppKeybinding, type KeybindingsManager } from "../../config/keybindings";
+import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
 	keybindings: Pick<KeybindingsManager, "getDisplayString">;

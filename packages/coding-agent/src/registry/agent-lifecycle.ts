@@ -20,8 +20,9 @@
  * a superseded revive) can never clobber a newer same-id ref.
  */
 
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import { trackLateCleanup } from "../utils/late-cleanup";
 import {
 	type AgentRef,
 	type AgentRefExpectation,
@@ -31,6 +32,8 @@ import {
 } from "./agent-registry";
 
 export type AgentReviver = (expected: AgentRef) => Promise<AgentSession>;
+
+const AGENT_RELEASE_GRACE_MS = 5000;
 
 /**
  * Builds a reviver for a `parked` ref restored from disk (Agent Hub scan,
@@ -44,6 +47,8 @@ export type PersistedSubagentReviverFactory = (ref: AgentRef) => Promise<AgentRe
 export interface AdoptOptions {
 	/** TTL before an idle agent is parked. <= 0 disables parking. */
 	idleTtlMs: number;
+	/** Process-wide cap for adopted idle agents kept live. <= 0 disables the count cap. */
+	maxLiveIdleAgents?: number;
 	/** Recreates a live AgentSession from the ref's sessionFile. Absent => not resumable after park (e.g. isolated runs). */
 	revive?: AgentReviver;
 }
@@ -52,6 +57,11 @@ interface AdoptedAgent {
 	ref: AgentRef;
 	idleTtlMs: number;
 	revive?: AgentReviver;
+	maxLiveIdleAgents: number;
+	/** Wall-clock instant when this adopted agent most recently became idle. */
+	idleSince?: number;
+	/** Stable ordering for idle transitions that share the same millisecond. */
+	idleOrder?: number;
 	timer?: NodeJS.Timeout;
 }
 
@@ -72,6 +82,8 @@ interface RevivingAgent {
 	ref: AgentRef;
 	promise: Promise<AgentSession>;
 }
+
+type ParkReason = "manual" | "ttl" | "idle_limit";
 
 export class AgentLifecycleManager {
 	static #global: AgentLifecycleManager | undefined;
@@ -96,6 +108,7 @@ export class AgentLifecycleManager {
 			current.#revivals.clear();
 			current.#parks.clear();
 			current.#persistedReviverFactory = undefined;
+			current.#persistedReviveMaxLiveIdleAgents = 0;
 		}
 		AgentLifecycleManager.#global = undefined;
 	}
@@ -114,6 +127,9 @@ export class AgentLifecycleManager {
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 	/** TTL applied when a cold-revived ref is adopted on demand. */
 	#persistedReviveTtlMs = 0;
+	/** Count cap applied when a cold-revived ref is adopted on demand. */
+	#persistedReviveMaxLiveIdleAgents = 0;
+	#idleOrder = 0;
 
 	constructor(registry: AgentRegistry = AgentRegistry.global()) {
 		this.#registry = registry;
@@ -126,9 +142,14 @@ export class AgentLifecycleManager {
 	 * but no adoption. Set by the top-level session, which owns the ambient deps
 	 * (auth, models, MCP, artifacts) the factory needs at revive time.
 	 */
-	setPersistedSubagentReviverFactory(factory: PersistedSubagentReviverFactory, idleTtlMs: number): void {
+	setPersistedSubagentReviverFactory(
+		factory: PersistedSubagentReviverFactory,
+		idleTtlMs: number,
+		maxLiveIdleAgents = 0,
+	): void {
 		this.#persistedReviverFactory = factory;
 		this.#persistedReviveTtlMs = idleTtlMs;
+		this.#persistedReviveMaxLiveIdleAgents = this.#normalizeMaxLiveIdleAgents(maxLiveIdleAgents);
 	}
 
 	/**
@@ -146,9 +167,17 @@ export class AgentLifecycleManager {
 		}
 		const existing = this.#adopted.get(id);
 		clearTimeout(existing?.timer);
-		const adopted: AdoptedAgent = { ref, idleTtlMs: opts.idleTtlMs, revive: opts.revive };
+		const adopted: AdoptedAgent = {
+			ref,
+			idleTtlMs: opts.idleTtlMs,
+			maxLiveIdleAgents: this.#normalizeMaxLiveIdleAgents(opts.maxLiveIdleAgents),
+			revive: opts.revive,
+		};
+		if (ref.status === "idle" && ref.session) this.#markIdle(adopted);
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
+		this.#logLifecycle("adopted", id);
+		this.#enforceLiveIdleLimit(id);
 	}
 
 	/** True if the id is adopted (parked or live) — and, when `expected` is given, still bound to that ref. */
@@ -181,24 +210,23 @@ export class AgentLifecycleManager {
 			park && !park.cancelled && (expected === undefined || park.ref === expected || park.ref.session === expected),
 		);
 	}
-
 	/**
 	 * Dispose the live session, detach it from the registry, and mark the
-	 * agent `parked`. No-op unless the id is adopted and live.
+	 * agent `parked`. No-op unless the id is adopted, idle, and live.
 	 *
 	 * The session is detached (and status flipped to `parked`) *before*
 	 * `session.dispose()` so concurrent {@link ensureLive}/hub-send never
 	 * observe or inject into a disposing session. A concurrent ensureLive that
 	 * arrives before detach cancels the park and keeps the live session.
 	 */
-	async park(id: string): Promise<void> {
+	async park(id: string, reason: ParkReason = "manual"): Promise<void> {
 		const existing = this.#parks.get(id);
 		if (existing) return existing.promise;
 
 		const adopted = this.#adopted.get(id);
 		if (!adopted) return;
 		const ref = this.#registry.get(id);
-		if (!ref || adopted.ref !== ref) return;
+		if (!ref || adopted.ref !== ref || ref.status !== "idle") return;
 		const session = ref.session;
 		if (!session) return;
 
@@ -230,9 +258,10 @@ export class AgentLifecycleManager {
 				await Promise.resolve();
 				if (cancelled) return;
 
-				// Re-check liveness: release/unregister/replace may have raced us.
+				// Re-check liveness and status: release/unregister/replace or a new
+				// turn may have raced us. Only an idle ref may be detached and parked.
 				const live = this.#registry.get(id);
-				if (live !== ref || !live.session || live.session !== session) return;
+				if (live !== ref || live.status !== "idle" || !live.session || live.session !== session) return;
 				if (this.#adopted.get(id)?.ref !== ref) return;
 
 				// Commit: detach + parked *before* dispose so callers never see a
@@ -240,6 +269,7 @@ export class AgentLifecycleManager {
 				park.detached = true;
 				this.#registry.detachSession(id, ref);
 				this.#registry.setStatus(id, "parked", ref);
+				this.#logLifecycle("park_detached", id, { reason });
 
 				try {
 					await session.dispose();
@@ -249,6 +279,7 @@ export class AgentLifecycleManager {
 			} finally {
 				// Only clear if we are still the in-flight entry (a later park would
 				// have replaced us only after we resolved).
+				this.#logLifecycle("park_completed", id, { detached: park.detached, reason });
 				if (this.#parks.get(id) === park) this.#parks.delete(id);
 			}
 		})();
@@ -320,8 +351,15 @@ export class AgentLifecycleManager {
 		if (!revive && ref.status === "parked" && ref.sessionFile && this.#persistedReviverFactory) {
 			revive = await this.#persistedReviverFactory(ref);
 			if (revive) {
-				adoption = { ref, idleTtlMs: this.#persistedReviveTtlMs, revive };
+				adoption = {
+					ref,
+					idleTtlMs: this.#persistedReviveTtlMs,
+					maxLiveIdleAgents: this.#persistedReviveMaxLiveIdleAgents,
+					revive,
+				};
 				this.#adopted.set(id, adoption);
+				this.#logLifecycle("adopted", id);
+				this.#enforceLiveIdleLimit(id);
 				coldAdopted = true;
 			}
 		}
@@ -402,14 +440,30 @@ export class AgentLifecycleManager {
 	}
 
 	/** Teardown everything (process exit / main session dispose). */
-	async dispose(): Promise<void> {
+	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
 		this.#unsubscribe?.();
 		this.#unsubscribe = undefined;
 		const ids = [...new Set([...this.#adopted.keys(), ...this.#parks.keys()])];
-		await Promise.all(ids.map(id => this.release(id)));
+		await Promise.all(
+			ids.map(async id => {
+				const release = this.release(id).then(() => {});
+				try {
+					await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
+				} catch (error) {
+					if (Date.now() >= deadlineAt) {
+						trackLateCleanup(release, { id, resource: "adopted-agent" });
+					}
+					logger.warn("Agent cleanup exceeded its deadline", {
+						id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}),
+		);
 		this.#revivals.clear();
 		this.#parks.clear();
 		this.#persistedReviverFactory = undefined;
+		this.#persistedReviveMaxLiveIdleAgents = 0;
 	}
 
 	async #revive(id: string, revive: AgentReviver, ref: AgentRef, adopted: AdoptedAgent): Promise<AgentSession> {
@@ -443,6 +497,7 @@ export class AgentLifecycleManager {
 			await session.dispose();
 			throw new Error(`Agent "${id}" changed before its persisted session became idle.`);
 		}
+		this.#logLifecycle("revive_completed", id);
 		return session;
 	}
 
@@ -451,10 +506,87 @@ export class AgentLifecycleManager {
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;
-			void this.park(id);
+			void this.park(id, "ttl");
 		}, adopted.idleTtlMs);
 		timer.unref?.();
 		adopted.timer = timer;
+	}
+
+	#normalizeMaxLiveIdleAgents(value: number | undefined): number {
+		const limit = Math.trunc(Number(value) || 0);
+		return Number.isFinite(limit) && limit > 0 ? limit : 0;
+	}
+
+	#markIdle(adopted: AdoptedAgent): void {
+		adopted.idleSince = Date.now();
+		adopted.idleOrder = ++this.#idleOrder;
+	}
+
+	#effectiveMaxLiveIdleAgents(): number | undefined {
+		let limit: number | undefined;
+		for (const [id, adopted] of this.#adopted) {
+			if (this.#registry.get(id) !== adopted.ref || adopted.maxLiveIdleAgents <= 0) continue;
+			limit = limit === undefined ? adopted.maxLiveIdleAgents : Math.min(limit, adopted.maxLiveIdleAgents);
+		}
+		return limit;
+	}
+
+	#liveIdleAdoptions(): Array<{ id: string; adopted: AdoptedAgent; idleSince: number; idleOrder: number }> {
+		const now = Date.now();
+		const liveIdle: Array<{ id: string; adopted: AdoptedAgent; idleSince: number; idleOrder: number }> = [];
+		for (const [id, adopted] of this.#adopted) {
+			const ref = adopted.ref;
+			if (this.#registry.get(id) !== ref || ref.status !== "idle" || !ref.session) continue;
+			if (adopted.idleSince === undefined || adopted.idleOrder === undefined) this.#markIdle(adopted);
+			liveIdle.push({ id, adopted, idleSince: adopted.idleSince ?? now, idleOrder: adopted.idleOrder ?? 0 });
+		}
+		return liveIdle;
+	}
+
+	#agentCounts(): { adopted: number; liveIdle: number; parked: number } {
+		let adopted = 0;
+		let liveIdle = 0;
+		let parked = 0;
+		for (const [id, entry] of this.#adopted) {
+			if (this.#registry.get(id) !== entry.ref) continue;
+			adopted++;
+			if (entry.ref.status === "idle" && entry.ref.session) liveIdle++;
+			if (entry.ref.status === "parked") parked++;
+		}
+		return { adopted, liveIdle, parked };
+	}
+
+	#logLifecycle(
+		event: string,
+		id: string,
+		details: { detached?: boolean; limit?: number; reason?: ParkReason; selected?: number } = {},
+	): void {
+		const memory = process.memoryUsage();
+		const counts = this.#agentCounts();
+		logger.debug("Agent lifecycle memory", {
+			event,
+			id,
+			rss: memory.rss,
+			heapUsed: memory.heapUsed,
+			heapTotal: memory.heapTotal,
+			external: memory.external,
+			arrayBuffers: memory.arrayBuffers,
+			...counts,
+			...details,
+		});
+	}
+
+	#enforceLiveIdleLimit(id: string): void {
+		const limit = this.#effectiveMaxLiveIdleAgents();
+		const liveIdle = this.#liveIdleAdoptions();
+		const selected =
+			limit === undefined
+				? []
+				: liveIdle
+						.sort((left, right) => left.idleSince - right.idleSince || left.idleOrder - right.idleOrder)
+						.slice(0, Math.max(0, liveIdle.length - limit));
+		this.#logLifecycle("idle_limit_enforced", id, { limit: limit ?? 0, selected: selected.length });
+		for (const candidate of selected) void this.park(candidate.id, "idle_limit");
 	}
 
 	#onRegistryEvent(event: RegistryEvent): void {
@@ -467,14 +599,20 @@ export class AgentLifecycleManager {
 		}
 		if (event.type !== "status_changed") return;
 		if (event.ref.status === "running" || event.ref.status === "waiting") {
+			adopted.idleSince = undefined;
+			adopted.idleOrder = undefined;
 			if (adopted.timer) {
 				clearTimeout(adopted.timer);
 				adopted.timer = undefined;
 			}
 		} else if (event.ref.status === "idle") {
+			this.#markIdle(adopted);
 			// Don't re-arm while a park is in flight — the park owns the transition.
-			if (this.#parks.has(event.ref.id)) return;
-			this.#armTimer(event.ref.id, adopted);
+			if (!this.#parks.has(event.ref.id)) this.#armTimer(event.ref.id, adopted);
+			this.#enforceLiveIdleLimit(event.ref.id);
+		} else {
+			adopted.idleSince = undefined;
+			adopted.idleOrder = undefined;
 		}
 	}
 }

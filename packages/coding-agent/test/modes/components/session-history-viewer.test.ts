@@ -234,6 +234,45 @@ describe("SessionHistoryViewer", () => {
 		});
 	}
 
+	it("navigates real user turns with Ghostty macOS Option+J/K text sequences", () => {
+		withLocale("en", () => {
+			const viewer = makeViewer(anchorEntries());
+			viewers.push(viewer);
+
+			renderText(viewer, 96, 10);
+			for (const [input, marker] of [
+				["\u02da", "REAL_TURN_TWO"],
+				["\u02da", "REAL_TURN_ONE"],
+				["\u2206", "REAL_TURN_TWO"],
+				["\u2206", "REAL_TURN_THREE"],
+			] as const) {
+				viewer.handleInput(input);
+				expect(renderText(viewer, 96, 10)).toContain(marker);
+			}
+		});
+	});
+
+	it("keeps Ghostty macOS Option+J/K text sequences in the focused search input", () => {
+		withLocale("en", () => {
+			const viewer = makeViewer(anchorEntries());
+			viewers.push(viewer);
+
+			renderText(viewer, 96, 10);
+			viewer.handleInput(ALT_K);
+			viewer.handleInput(ALT_K);
+			expect(renderText(viewer, 96, 10)).toContain("REAL_TURN_ONE");
+
+			viewer.handleInput("/");
+			viewer.handleInput("˚");
+			viewer.handleInput("∆");
+			const searching = renderText(viewer, 96, 10);
+			expect(searching).toContain("Search: ˚∆");
+
+			viewer.handleInput("\x1b");
+			expect(renderText(viewer, 96, 10)).toContain("REAL_TURN_ONE");
+		});
+	});
+
 	for (const width of [28, 96]) {
 		it(`anchors Alt+J/K at the manually scrolled middle turn at ${width} columns`, () => {
 			withLocale("en", () => {

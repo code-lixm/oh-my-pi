@@ -1489,6 +1489,11 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Advisor history copied to clipboard": "已将审阅记录复制到剪贴板",
 	"Advisor is not active for this session.": "当前会话未启用审阅助手。",
 	"Agent Idle TTL": "代理空闲 TTL",
+	"How long an idle subagent stays live in memory before time-based parking (ms). Parked agents are revived automatically when messaged or resumed. 0 disables time-based parking; task.maxLiveIdleAgents may still park idle agents by count.":
+		"空闲子代理在按时间停放前于内存中保持存活的时长（毫秒）。被停放的代理会在收到消息或恢复时自动唤醒。0 表示禁用按时间停放；task.maxLiveIdleAgents 仍可能按数量停放空闲代理。",
+	"Max Live Idle Agents": "最大存活空闲代理数",
+	"Maximum adopted idle subagents kept live in memory across the process. Oldest idle agents are parked first; 0 disables the count cap.":
+		"进程中保持存活的已接管空闲子代理数量上限。优先停放最早进入空闲状态的代理；0 表示禁用数量上限。",
 	"Agent {id} is {status}; returned to main session": "agent {id} 已为 {status}；已返回主会话",
 	"Agent {id} is gone; returned to main session": "代理 {id} 已移除；已返回主会话",
 	"Agent {id} is not live": "代理 {id} 当前不可实时查看",
@@ -2179,8 +2184,12 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"在对话记录中内联渲染 read 工具结果，而不是显示为摘要行",
 	"Mouse Input": "鼠标输入",
-	"Enable mouse clicks to position the main prompt cursor and interact with subagent panels. This reserves terminal mouse input while an interactive surface is focused, so native text selection may require your terminal's selection modifier.":
-		"启用鼠标点击定位主输入框光标并操作子代理面板。交互界面聚焦时会占用终端鼠标输入，原生选择文本可能需要使用终端的选择修饰键。",
+	"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.":
+		"启用 Agent Hub、会话历史和选择器等应用内面板的鼠标交互。主会话保留终端原生鼠标输入，以便继续使用回滚历史和文本选择。",
+	"Show Agent Communication": "显示代理通信",
+	"Show agent-to-agent messages and coordination activity in the transcript": "在对话记录中显示代理间消息和协调活动",
+	"Show Subagent List": "显示子代理列表",
+	"Show the live subagent list above the Main prompt": "在 Main 输入框上方显示实时子代理列表",
 	"Repeated grid with ink cycling six hues at sentence boundaries.": "重复网格，在句子边界按六种色相轮换墨色。",
 	"Repetition Penalty": "重复惩罚",
 	"Requires google-antigravity OAuth": "需要 google-antigravity OAuth",
@@ -3134,6 +3143,12 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Live subagent focus is unavailable in this Agent Hub.": "此代理中心无法聚焦正在运行的子代理。",
 	'Switching to "{label}" is unavailable in this Agent Hub.': "此代理中心无法切换到“{label}”。",
 	'"{label}" cannot be resumed.': "“{label}”无法恢复。",
+	"Select a subagent to message.": "请选择要发送消息的子代理。",
+	'"{label}" was aborted and cannot be messaged.': "“{label}”已中止，无法接收消息。",
+	"Type a message before sending.": "请输入消息后再发送。",
+	'"{label}" cannot receive a message.': "“{label}”无法接收消息。",
+	"The selected subagent is no longer available.": "所选子代理已不可用。",
+	"Message delivery failed.": "消息投递失败。",
 	"open transcript": "打开转录",
 	focus: "聚焦",
 	revive: "恢复",
@@ -4986,7 +5001,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	Vale: "Vale",
 	"{key} cancel": "{key} 取消",
 	Working: "处理中",
-	Queued: "已排队",
+	Queued: "排队中",
 	"Requesting model": "正在请求模型",
 	"Streaming response": "正在生成回复",
 	"Using tool": "正在使用工具",

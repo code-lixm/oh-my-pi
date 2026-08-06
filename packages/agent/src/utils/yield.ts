@@ -105,6 +105,9 @@ export class YieldGate {
 		// yield (NTP step, fake-timer test, or a stale future timestamp left by
 		// another caller): treat it as due and re-anchor rather than gate forever.
 		if (elapsed >= 0 && elapsed < this.#intervalMs) return;
+		// Reserve the interval before awaiting so concurrent callers share one
+		// cooperative sleep instead of all entering the timer at once.
+		this.#lastYieldAt = now;
 		await this.#sleep(this.#sleepMs, signal);
 		this.#lastYieldAt = this.#now();
 	}

@@ -1135,7 +1135,7 @@ export class ModelSelectorComponent extends Container {
 		return lines;
 	}
 
-	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
+	override routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
 		if (this.#isMenuOpen) return;
 
 		if (event.wheel !== null) {

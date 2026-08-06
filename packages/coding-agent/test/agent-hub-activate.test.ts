@@ -441,8 +441,9 @@ describe("Agent hub Enter activation", () => {
 		expect(editorContainer.addChild).not.toHaveBeenCalled();
 		expect(focusTargets[0]).toBe(capturedHub);
 		const tableLines = Bun.stripANSI(capturedHub.render(120).join("\n")).split("\n");
-		const columnHeader = tableLines.find(line =>
-			["Agent", "Status", "Duration", "Model", "Last update"].every(column => line.includes(column)),
+		const columnHeader = tableLines.find(
+			line =>
+				["Agent", "Status", "Duration", "Model"].every(column => line.includes(column)) && line.includes("Last up"),
 		);
 		expect(columnHeader).toBeDefined();
 		expect(tableLines.filter(line => line.includes(AGENT_ID))).toHaveLength(1);
@@ -653,7 +654,7 @@ describe("Agent hub data refresh coalescing", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
-	it("coalesces a synchronous registry burst into one render and refreshes rows", async () => {
+	it("coalesces a synchronous registry burst into one urgent render and refreshes rows", async () => {
 		vi.useFakeTimers();
 		const agents = new AgentRegistry();
 		registerMain(agents);
@@ -688,10 +689,7 @@ describe("Agent hub data refresh coalescing", () => {
 			expect(requestRender).not.toHaveBeenCalled();
 			expect(Bun.stripANSI(hub.render(120).join("\n"))).not.toContain("BurstA");
 
-			vi.advanceTimersByTime(99);
-			expect(requestRender).not.toHaveBeenCalled();
-
-			vi.advanceTimersByTime(1);
+			vi.advanceTimersByTime(0);
 			expect(requestRender).toHaveBeenCalledTimes(1);
 
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));

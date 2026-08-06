@@ -19,6 +19,7 @@ import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus"
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, resolveTopLevelAgent } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
+import type { CustomMessage } from "../../session/messages";
 import { canSpawnAtDepth } from "../../task/types";
 import {
 	Ellipsis,
@@ -520,6 +521,52 @@ export function createIrcMessageCard(
 			width,
 		};
 	});
+}
+
+/** Convert a persisted/live IRC custom message into the shared transcript card. */
+export function createIrcCustomMessageCard(
+	message: CustomMessage,
+	getExpanded: () => boolean,
+	uiTheme: Theme,
+): Component | undefined {
+	let kind: "incoming" | "autoreply" | "relay";
+	switch (message.customType) {
+		case "irc:incoming":
+			kind = "incoming";
+			break;
+		case "irc:autoreply":
+			kind = "autoreply";
+			break;
+		case "irc:relay":
+			kind = "relay";
+			break;
+		default:
+			return undefined;
+	}
+	const details = message.details as
+		| {
+				from?: string;
+				to?: string;
+				message?: string;
+				body?: string;
+				replyTo?: string;
+				expectsReply?: boolean;
+				ts?: number;
+		  }
+		| undefined;
+	return createIrcMessageCard(
+		{
+			kind,
+			from: details?.from,
+			to: details?.to,
+			body: kind === "incoming" ? details?.message : details?.body,
+			replyTo: details?.replyTo,
+			expectsReply: details?.expectsReply,
+			timestamp: message.timestamp ?? details?.ts,
+		},
+		getExpanded,
+		uiTheme,
+	);
 }
 
 function renderSendResult(

@@ -25,7 +25,7 @@ import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import {
 	HubActivityGroupComponent,
 	isHubGroupedActivityArgs,
-	isHubPeerCommunicationArgs,
+	isHubPeerCommunicationToolCall,
 	isHubProcessActivityArgs,
 } from "../../modes/components/hub-activity-group";
 import {
@@ -55,6 +55,7 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
+import { createIrcCustomMessageCard } from "../../tools/hub/messaging";
 import { replaceTabs } from "../../tools/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import {
@@ -200,6 +201,14 @@ export class UiHelpers {
 						message.customType === "irc:autoreply" ||
 						message.customType === "irc:relay"
 					) {
+						if (this.ctx.settings.get("display.showAgentCommunication")) {
+							const component = createIrcCustomMessageCard(
+								message as CustomMessage<unknown>,
+								() => this.ctx.toolOutputExpanded,
+								theme,
+							);
+							if (component) this.ctx.chatContainer.addChild(component);
+						}
 						break;
 					}
 					if (message.customType === "advisor") {
@@ -419,13 +428,13 @@ export class UiHelpers {
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
 				const peerOnlyAssistantTurn =
+					!this.ctx.settings.get("display.showAgentCommunication") &&
 					message.content.length > 0 &&
 					message.content.every(
 						content =>
-							content.type === "toolCall" &&
-							content.name === "hub" &&
-							isHubPeerCommunicationArgs(content.arguments),
+							content.type === "toolCall" && isHubPeerCommunicationToolCall(content.name, content.arguments),
 					);
+
 				if (!peerOnlyAssistantTurn) {
 					this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				}
@@ -484,7 +493,10 @@ export class UiHelpers {
 						appendAssistantSegment(afterToolSegment);
 						continue;
 					}
-					if (content.name === "hub" && isHubPeerCommunicationArgs(content.arguments)) {
+					if (
+						!this.ctx.settings.get("display.showAgentCommunication") &&
+						isHubPeerCommunicationToolCall(content.name, content.arguments)
+					) {
 						hiddenHubToolCallIds.add(content.id);
 						appendAssistantSegment(afterToolSegment);
 						continue;

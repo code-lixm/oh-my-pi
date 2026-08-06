@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, setDefaultTimeout, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -21,6 +21,10 @@ import * as isolationRunner from "../../src/task/isolation-runner";
 import { AgentOutputManager } from "../../src/task/output-manager";
 import type { AgentDefinition, AgentProgress, SingleResult, StructuredSubagentOutput } from "../../src/task/types";
 import type { ToolSession } from "../../src/tools";
+
+// JS eval tests include a cold worker-process handshake; keep the same headroom
+// used by the core JS executor suite instead of the Bun default 5s timeout.
+setDefaultTimeout(20_000);
 
 const taskAgent = {
 	name: "task",
@@ -290,10 +294,7 @@ describe("runEvalAgent", () => {
 			}),
 		});
 
-		await runEvalAgent(
-			{ prompt: " hello ", label: "My Agent", model: "p/override", schema },
-			{ session, signal: abortController.signal },
-		);
+		await runEvalAgent({ prompt: " hello ", label: "My Agent", schema }, { session, signal: abortController.signal });
 		await runEvalAgent({ prompt: "plain" }, { session });
 
 		const firstOptions = runSpy.mock.calls[0]?.[0];
@@ -306,9 +307,25 @@ describe("runEvalAgent", () => {
 		expect(firstOptions.outputSchemaOverridesAgent).toBe(true);
 		expect(firstOptions.assignment).toBe("hello");
 		expect(firstOptions.description).toBe("My Agent");
-		expect(firstOptions.modelOverride).toEqual(["p/override"]);
+		// No per-call override: the agent's own frontmatter model applies.
+		expect(firstOptions.modelOverride).toEqual(["p/current"]);
 		expect(secondOptions.outputSchema).toBeUndefined();
 		expect(secondOptions.outputSchemaOverridesAgent).toBeUndefined();
+	});
+
+	it("drops a per-call model argument on agent() (removed, issue #6438)", async () => {
+		mockAgents();
+		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => singleResult(options));
+
+		// The schema strips unknown keys; a legacy `model` argument is silently
+		// discarded so resolution is identical to omitting it — the agent's own
+		// frontmatter model applies (issue #6438).
+		await runEvalAgent({ prompt: "work", model: "default" }, { session: makeSession() });
+		await runEvalAgent({ prompt: "work" }, { session: makeSession() });
+
+		const withModel = runSpy.mock.calls[0]?.[0];
+		const withoutModel = runSpy.mock.calls[1]?.[0];
+		expect(withModel?.modelOverride).toEqual(withoutModel?.modelOverride);
 	});
 	it("returns host-parsed data for caller, agent, and inherited schemas", async () => {
 		const agentSchema = { type: "object" };

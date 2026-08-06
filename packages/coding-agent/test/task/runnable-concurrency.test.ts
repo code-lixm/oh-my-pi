@@ -10,7 +10,10 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TaskRunnableConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
+import {
+	TaskRunnableConcurrency,
+	type TaskRunnableConcurrencySnapshot,
+} from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "../helpers/agent-session-setup";
 
@@ -122,8 +125,10 @@ describe("TaskRunnableConcurrency", () => {
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
+				"workspaceCheckpoint.enabled": false,
 				"compaction.enabled": false,
 				"retry.enabled": false,
+				"retry.usageAwareFallback": false,
 			}),
 			modelRegistry,
 			agentId: id,
@@ -199,9 +204,9 @@ describe("TaskRunnableConcurrency", () => {
 
 		const phases: string[] = [];
 		const snapshots = {
-			suspended: undefined as ReturnType<TaskRunnableConcurrency["snapshot"]> | undefined,
-			duringChild: undefined as ReturnType<TaskRunnableConcurrency["snapshot"]> | undefined,
-			resumed: undefined as ReturnType<TaskRunnableConcurrency["snapshot"]> | undefined,
+			suspended: undefined as TaskRunnableConcurrencySnapshot | undefined,
+			duringChild: undefined as TaskRunnableConcurrencySnapshot | undefined,
+			resumed: undefined as TaskRunnableConcurrencySnapshot | undefined,
 		};
 
 		await scheduler.withSuspended(

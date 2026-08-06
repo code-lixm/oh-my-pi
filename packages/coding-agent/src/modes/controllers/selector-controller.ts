@@ -312,6 +312,7 @@ export class SelectorController {
 				maxHeight: "100%",
 				margin: 0,
 				fullscreen: true,
+				mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 			});
 			this.ctx.ui.setFocus(selector);
 			this.ctx.ui.requestRender();
@@ -396,6 +397,7 @@ export class SelectorController {
 				maxHeight: "100%",
 				margin: 0,
 				fullscreen: true,
+				mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 			});
 			this.ctx.ui.setFocus(overlay);
 			this.ctx.ui.requestRender();
@@ -527,6 +529,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -547,6 +550,7 @@ export class SelectorController {
 			anchor: "top-left",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
@@ -687,6 +691,13 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			}
+			case "display.showAgentCommunication":
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
+			case "display.showSubagentList":
+				this.ctx.refreshSubagentList?.();
+				break;
 			case "terminal.showImages":
 			case "showImages": {
 				const visible = value as boolean;
@@ -1262,6 +1273,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 		});
 		this.ctx.ui.setFocus(hub);
 		this.ctx.ui.requestRender();
@@ -1604,6 +1616,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -1780,6 +1793,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
+			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();

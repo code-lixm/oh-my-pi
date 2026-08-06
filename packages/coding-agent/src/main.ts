@@ -1704,6 +1704,7 @@ export async function runRootCommand(
 				eventBus,
 			}),
 			Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+			Math.max(0, Math.trunc(Number(settingsInstance.get("task.maxLiveIdleAgents") ?? 8) || 0)),
 		);
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);

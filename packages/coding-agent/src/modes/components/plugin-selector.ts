@@ -85,7 +85,7 @@ export class PluginSelectorComponent extends Container {
 		return this.#selectList;
 	}
 
-	routeMouse(event: SgrMouseEvent, line: number, col: number): void {
+	override routeMouse(event: SgrMouseEvent, line: number, col: number): void {
 		routeSelectListMouseWithTopBorder(this.#selectList, event, line, col);
 	}
 }

@@ -376,7 +376,7 @@ export const WORKSPACE_CHECKPOINT_ERROR_NAME = "WorkspaceCheckpointError";
 
 /** Raised when restore cannot proceed because of conflicts and the caller didn't allow them. */
 export class WorkspaceCheckpointError extends Error {
-	readonly name = WORKSPACE_CHECKPOINT_ERROR_NAME;
+	override readonly name = WORKSPACE_CHECKPOINT_ERROR_NAME;
 	readonly conflicts: readonly WorkspaceRestoreConflict[];
 	readonly planId: string | null;
 

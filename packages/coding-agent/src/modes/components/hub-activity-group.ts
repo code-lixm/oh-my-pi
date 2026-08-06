@@ -1,7 +1,9 @@
 import { type Component, Container, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
+import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { IrcDeliveryReceipt } from "../../irc/bus";
 import { bodyLines, ircGlyph, messageAge } from "../../tools/hub/messaging";
+
 import type { CoordinationDetails, HubRenderArgs } from "../../tools/hub/types";
 import { replaceTabs } from "../../tools/render-utils";
 import {
@@ -140,6 +142,20 @@ export function isHubPeerCommunicationArgs(value: unknown): value is HubRenderAr
 	if (!isRecord(value) || typeof value.name === "string") return false;
 	if (value.op === "inbox" || value.op === "list" || value.op === "send") return true;
 	return value.op === "wait" && typeof value.from === "string";
+}
+
+/** Whether a direct Hub call or `write xd://hub` carries peer coordination. */
+export function isHubPeerCommunicationToolCall(toolName: string, value: unknown): boolean {
+	if (toolName === "hub") return isHubPeerCommunicationArgs(value);
+	if (toolName !== "write" || !isRecord(value)) return false;
+	const rawPath =
+		typeof value.path === "string" ? value.path : typeof value.file_path === "string" ? value.file_path : undefined;
+	if (rawPath === undefined || parseXdUrl(rawPath)?.name !== "hub" || typeof value.content !== "string") return false;
+	try {
+		return isHubPeerCommunicationArgs(JSON.parse(value.content));
+	} catch {
+		return false;
+	}
 }
 
 /** True while streamed Hub args do not yet carry enough discriminators to choose a renderer. */

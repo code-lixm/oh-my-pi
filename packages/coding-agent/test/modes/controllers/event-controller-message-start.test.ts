@@ -5,6 +5,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { Component } from "@oh-my-pi/pi-tui";
 
 beforeAll(() => {
 	initTheme();
@@ -182,14 +183,32 @@ function createIrcMessage(
 	};
 }
 
-function createIrcContext() {
+function renderTranscript(container: TranscriptContainer): string {
+	return Bun.stripANSI(container.render(120).join("\n"));
+}
+
+function createIrcContext(showAgentCommunication: boolean, showHubProcessActivity: boolean) {
 	const chatContainer = new TranscriptContainer();
 	const showSubagentFeedback = vi.fn();
+	const present = (component: Component | Component[]) => {
+		for (const child of Array.isArray(component) ? component : [component]) {
+			chatContainer.addChild(child);
+		}
+	};
 	const ctx = {
 		isInitialized: true,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		ui: { requestRender: vi.fn() },
+		settings: {
+			get: (key: string) => {
+				if (key === "display.showAgentCommunication") return showAgentCommunication;
+				if (key === "display.showHubProcessActivity") return showHubProcessActivity;
+				return false;
+			},
+		},
+		present,
+		toolOutputExpanded: false,
 		chatContainer,
 		pendingTools: new Map(),
 		session: {},
@@ -204,8 +223,8 @@ describe("EventController irc_message feedback routing", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("routes irc:incoming through showSubagentFeedback without creating transcript cards", async () => {
-		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
+	it("hides IRC cards while agent communication is disabled even when Hub process activity is enabled", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(false, true);
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({
@@ -213,12 +232,28 @@ describe("EventController irc_message feedback routing", () => {
 			message: createIrcMessage("irc:incoming", { from: "0-Main", message: "Ready 1" }, 1),
 		});
 
-		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 1", timestamp: 1 });
 		expect(chatContainer.children).toHaveLength(0);
+		expect(renderTranscript(chatContainer)).not.toContain("Ready 1");
+		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 1", timestamp: 1 });
+	});
+
+	it("renders an IRC transcript card when agent communication is enabled even when Hub process activity is disabled", async () => {
+		const { ctx, chatContainer } = createIrcContext(true, false);
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({
+			type: "irc_message",
+			message: createIrcMessage("irc:incoming", { from: "0-Main", message: "Ready 1" }, 1),
+		});
+
+		expect(chatContainer.children).toHaveLength(1);
+		const transcriptText = renderTranscript(chatContainer);
+		expect(transcriptText).toContain("0-Main");
+		expect(transcriptText).toContain("Ready 1");
 	});
 
 	it("dedupes duplicate IRC signatures before surfacing feedback", async () => {
-		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(true, false);
 		const controller = new EventController(ctx);
 		const message = createIrcMessage("irc:incoming", { from: "0-Main", message: "Ready 2" }, 2);
 
@@ -227,11 +262,12 @@ describe("EventController irc_message feedback routing", () => {
 
 		expect(showSubagentFeedback).toHaveBeenCalledTimes(1);
 		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 2", timestamp: 2 });
-		expect(chatContainer.children).toHaveLength(0);
+		expect(chatContainer.children).toHaveLength(1);
+		expect(renderTranscript(chatContainer)).toContain("Ready 2");
 	});
 
-	it("includes relay targets in the HUD feedback text", async () => {
-		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
+	it("includes relay targets in the visible card and HUD feedback", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(true, false);
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({
@@ -248,11 +284,14 @@ describe("EventController irc_message feedback routing", () => {
 			text: "→ AuthLoader: Need the cookie boundary checked.",
 			timestamp: 7,
 		});
-		expect(chatContainer.children).toHaveLength(0);
+		expect(chatContainer.children).toHaveLength(1);
+		const transcriptText = renderTranscript(chatContainer);
+		expect(transcriptText).toContain("AuthLoader");
+		expect(transcriptText).toContain("Need the cookie boundary checked.");
 	});
 
-	it("ignores irc:autoreply for the main HUD", async () => {
-		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext();
+	it("renders autoreply cards without sending a main HUD feedback item", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(true, false);
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({
@@ -261,6 +300,9 @@ describe("EventController irc_message feedback routing", () => {
 		});
 
 		expect(showSubagentFeedback).not.toHaveBeenCalled();
-		expect(chatContainer.children).toHaveLength(0);
+		expect(chatContainer.children).toHaveLength(1);
+		const transcriptText = renderTranscript(chatContainer);
+		expect(transcriptText).toContain("Main");
+		expect(transcriptText).toContain("On it.");
 	});
 });

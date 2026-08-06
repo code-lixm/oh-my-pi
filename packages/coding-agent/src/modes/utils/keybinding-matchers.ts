@@ -31,6 +31,14 @@ export function matchesSelectDown(data: string): boolean {
 	return getKeybindings().matches(data, "tui.select.down");
 }
 
+/**
+ * Match macOS US/ABC text emitted for Option+J/K when a terminal does not
+ * encode Option as Alt. Callers MUST check this only outside text-entry modes.
+ */
+export function matchesMacOSOptionJKText(data: string, direction: "previous" | "next"): boolean {
+	return data === (direction === "previous" ? "˚" : "∆");
+}
+
 /** Match the generic selector page-up keybinding. */
 export function matchesSelectPageUp(data: string): boolean {
 	return getKeybindings().matches(data, "tui.select.pageUp");

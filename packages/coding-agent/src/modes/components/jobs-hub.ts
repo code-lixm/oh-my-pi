@@ -144,7 +144,7 @@ export class JobsHubOverlayComponent extends Container {
 		return this.deps.manager.getAllJobs().length === 0;
 	}
 
-	dispose(): void {
+	override dispose(): void {
 		if (this.#timer) clearInterval(this.#timer);
 		this.#timer = undefined;
 	}

@@ -105,6 +105,17 @@ function renderedAgentLabels(hub: AgentHubOverlayComponent, knownLabels: readonl
 	return labels;
 }
 
+function renderedAgentIds(hub: AgentHubOverlayComponent): string[] {
+	// Current Hub rows begin with ` <cursor> <label>`; only fixture ids are
+	// counted so column headers stay out of the result.
+	const ids: string[] = [];
+	for (const raw of hub.render(120)) {
+		const match = /^ (?:❯| ) (\S+)/u.exec(Bun.stripANSI(raw));
+		if (match && /^(?:Agent-|TaskAgent-)/u.test(match[1]!)) ids.push(match[1]!);
+	}
+	return ids;
+}
+
 describe("Agent hub row ordering", () => {
 	let geometry: GeometryStub | undefined;
 	let previousLocale: string;
@@ -157,7 +168,7 @@ describe("Agent hub row ordering", () => {
 		Reflect.deleteProperty(missingZulu, "createdAt");
 		Reflect.deleteProperty(missingAlpha, "createdAt");
 
-		vi.spyOn(observers, "getSessions").mockReturnValue([
+		const snapshots: ObservableSession[] = [
 			{
 				id: "pending",
 				kind: "subagent",
@@ -182,7 +193,8 @@ describe("Agent hub row ordering", () => {
 				lastUpdate: 400,
 				progress: { status: "completed" } as never,
 			},
-		]);
+		];
+		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(session => session.id === id));
 
 		const hub = makeHub(agents, observers);
 		try {
@@ -288,7 +300,57 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("strips untrusted terminal controls and bounds hub rows", () => {
+	it("bounds observer lookups and entry rendering to the viewport on large rosters", () => {
+		geometry = stubStdoutGeometry(120);
+		geometry.setRows(12);
+		const agents = new AgentRegistry();
+		for (let i = 0; i < 10_000; i++) {
+			const id = `Agent-${i.toString().padStart(5, "0")}`;
+			agents.register({ id, displayName: id, kind: "sub", session: null, status: "parked" });
+		}
+
+		const observers = new SessionObserverRegistry();
+		const getSessions = vi.spyOn(observers, "getSessions");
+		const getSession = vi.spyOn(observers, "getSession");
+		const hub = new AgentHubOverlayComponent({
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+		});
+
+		try {
+			getSessions.mockClear();
+			getSession.mockClear();
+			const visibleIds = renderedAgentIds(hub);
+			// The wide table header consumes one of the five row-budget lines.
+			expect(visibleIds).toHaveLength(4);
+			expect(getSessions).not.toHaveBeenCalled();
+			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
+			expect(getSession.mock.calls.length).toBeGreaterThan(0);
+
+			const text = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(text).toContain("10000 parked");
+			expect(text).toMatch(/… \d+ more/);
+
+			// Moving selection re-renders only the new viewport, not the whole roster.
+			getSessions.mockClear();
+			getSession.mockClear();
+			hub.handleInput("j");
+			const afterMove = renderedAgentIds(hub);
+			expect(afterMove).toHaveLength(4);
+			expect(afterMove).toContain(visibleIds[1]!);
+			expect(getSessions).not.toHaveBeenCalled();
+			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("truncates lines and sanitizes newlines to prevent terminal wrapping", () => {
 		geometry = stubStdoutGeometry(80);
 		const agents = new AgentRegistry();
 		const sessionA = {} as AgentSession;
@@ -300,15 +362,14 @@ describe("Agent hub row ordering", () => {
 		});
 
 		const observers = new SessionObserverRegistry();
-		vi.spyOn(observers, "getSessions").mockReturnValue([
-			{
-				id: "RevAgentStream",
-				kind: "subagent",
-				label: "Subagent",
-				status: "active",
-				lastUpdate: Date.now(),
-			},
-		]);
+		vi.spyOn(observers, "getSession").mockReturnValue({
+			id: "RevAgentStream",
+			kind: "subagent",
+			label: "Subagent",
+			status: "active",
+			description: "Complete the assignment below, thoroughly:\n- check performance\n- check leaks",
+			lastUpdate: Date.now(),
+		});
 
 		const hub = new AgentHubOverlayComponent({
 			observers,
@@ -336,7 +397,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("renders one Chinese task list with lifecycle projections and no internal traffic", async () => {
+	it("renders one wide task list with inline controls, lifecycle projections, and no internal traffic", async () => {
 		geometry = stubStdoutGeometry(160);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
@@ -357,12 +418,15 @@ describe("Agent hub row ordering", () => {
 		});
 		registerTask("pending", "Alpha");
 		registerTask("queued", "Bravo");
+		// A queued activity used to be rendered as a second detail row. It belongs
+		// only in the status cell, so make that formerly visible gist explicit.
+		agents.setActivity("queued", "Queued");
 		registerTask("running", "Charlie");
 		registerTask("waiting", "Delta");
 		registerTask("completed", "Echo");
 		registerTask("failed", "Foxtrot");
 		registerTask("aborted", "Golf");
-		vi.spyOn(observers, "getSessions").mockReturnValue([
+		const snapshots: ObservableSession[] = [
 			{
 				id: "pending",
 				kind: "subagent",
@@ -381,7 +445,7 @@ describe("Agent hub row ordering", () => {
 					status: "running",
 					activity: {
 						phase: "queued",
-						label: "Queued by scheduler",
+						label: "Queued",
 						phaseStartedAtMs: 2,
 						lastActivityAtMs: 2,
 					},
@@ -392,6 +456,7 @@ describe("Agent hub row ordering", () => {
 				kind: "subagent",
 				label: "Charlie",
 				status: "active",
+				description: "Refresh timing",
 				lastUpdate: 3,
 				progress: { status: "running" } as never,
 			},
@@ -435,7 +500,8 @@ describe("Agent hub row ordering", () => {
 				lastUpdate: 7,
 				progress: { status: "aborted" } as never,
 			},
-		]);
+		];
+		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(session => session.id === id));
 		const irc = new IrcBus(agents);
 		const hub = new AgentHubOverlayComponent({
 			observers,
@@ -449,7 +515,8 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			await irc.send({ from: "running", to: "Main", body: "IRC_DELIVERY_LEAK_MARKER" });
-			const english = hub.render(160).map(Bun.stripANSI).join("\n");
+			const englishLines = hub.render(160).map(Bun.stripANSI);
+			const english = englishLines.join("\n");
 			expect(english).not.toMatch(
 				/^\s*(?:Active(?: agents| tasks)?|Queued|Pending|Running|Waiting for user|Not started|Completed|Failed|Stopped)(?:\s*\(\d+\))?\s*$/mu,
 			);
@@ -462,16 +529,50 @@ describe("Agent hub row ordering", () => {
 				expect(english).not.toContain(hiddenDetail);
 			}
 
+			const rowFor = (lines: readonly string[], label: string): string => {
+				const row = lines.find(line => line.includes(label));
+				if (!row) throw new Error(`Expected Hub row for ${label}`);
+				return row;
+			};
+			const titleLineIndex = englishLines.findIndex(line => line.includes("Agent Hub"));
+			if (titleLineIndex < 0) throw new Error("Expected Agent Hub title line");
+			const titleLine = englishLines[titleLineIndex]!;
+			const columnHeaderIndex = englishLines.findIndex(line =>
+				["Agent", "Status", "Duration", "Model"].every(column => line.includes(column)),
+			);
+			if (columnHeaderIndex < 0) throw new Error("Expected Hub table column header");
+			const columnHeader = englishLines[columnHeaderIndex]!;
+			const titleColumn = titleLine.indexOf("Agent Hub");
+			const titleEnd = titleColumn + "Agent Hub".length;
+			const jKColumn = titleLine.indexOf("j/k");
+			const enterColumn = titleLine.indexOf("Enter");
+			const escColumn = titleLine.indexOf("Esc");
+			expect(titleColumn).toBeGreaterThanOrEqual(0);
+			expect(jKColumn).toBeGreaterThan(titleEnd - 1);
+			expect(enterColumn).toBeGreaterThan(jKColumn);
+			expect(escColumn).toBeGreaterThan(enterColumn);
+			expect(englishLines.filter(line => ["j/k", "Enter", "Esc"].some(control => line.includes(control)))).toEqual([
+				titleLine,
+			]);
+			expect(columnHeaderIndex).toBe(titleLineIndex + 1);
+
+			const statusColumn = columnHeader.indexOf("Status");
+			expect(rowFor(englishLines, "Alpha").indexOf("Not started")).toBe(statusColumn);
+			const bravoRow = rowFor(englishLines, "Bravo");
+			expect(bravoRow.indexOf("Queued")).toBe(statusColumn);
+			expect(englishLines.filter(line => line.includes("Queued"))).toEqual([bravoRow]);
+			expect(englishLines.filter(line => line.includes("Refresh timing"))).toEqual([]);
+
 			setSettingsUiLocale("zh-CN");
 			const chineseLines = hub.render(160).map(Bun.stripANSI);
-			const rowFor = (label: string) => chineseLines.find(line => line.includes(label));
-			expect(rowFor("Alpha")).toContain("未开始");
-			expect(rowFor("Bravo")).toContain("未开始");
-			expect(rowFor("Charlie")).toContain("运行中");
-			expect(rowFor("Delta")).toContain("等待用户");
-			expect(rowFor("Echo")).toContain("已完成");
-			expect(rowFor("Foxtrot")).toContain("失败");
-			expect(rowFor("Golf")).toContain("已停止");
+			const chineseBravo = rowFor(chineseLines, "Bravo");
+			expect(rowFor(chineseLines, "Alpha")).toContain("未开始");
+			expect(chineseBravo).toContain("排队中");
+			expect(rowFor(chineseLines, "Charlie")).toContain("运行中");
+			expect(rowFor(chineseLines, "Delta")).toContain("等待用户");
+			expect(rowFor(chineseLines, "Echo")).toContain("已完成");
+			expect(rowFor(chineseLines, "Foxtrot")).toContain("失败");
+			expect(rowFor(chineseLines, "Golf")).toContain("已停止");
 			const chinese = chineseLines.join("\n");
 			expect(chinese).not.toContain("pending");
 			expect(chinese).not.toContain("queued");
@@ -488,19 +589,17 @@ describe("Agent hub row ordering", () => {
 		agents.register({ id: "GuestAgent", displayName: "Guest", kind: "sub", session: null, status: "running" });
 
 		const observers = new SessionObserverRegistry();
-		vi.spyOn(observers, "getSessions").mockReturnValue([
-			{
-				id: "GuestAgent",
-				kind: "subagent",
-				label: "Subagent",
-				status: "active",
-				lastUpdate: Date.now(),
-				progress: {
-					resolvedModel: "openai/gpt-4o",
-					resolvedModelIsFallback: true,
-				} as never,
-			},
-		]);
+		vi.spyOn(observers, "getSession").mockReturnValue({
+			id: "GuestAgent",
+			kind: "subagent",
+			label: "Subagent",
+			status: "active",
+			lastUpdate: Date.now(),
+			progress: {
+				resolvedModel: "openai/gpt-4o",
+				resolvedModelIsFallback: true,
+			} as never,
+		});
 
 		const hub = new AgentHubOverlayComponent({
 			observers,
@@ -539,19 +638,17 @@ describe("Agent hub row ordering", () => {
 		agents.register({ id: "FastAgent", displayName: "Fast Agent", kind: "sub", session });
 
 		const observers = new SessionObserverRegistry();
-		vi.spyOn(observers, "getSessions").mockReturnValue([
-			{
-				id: "FastAgent",
-				kind: "subagent",
-				label: "Subagent",
-				status: "active",
-				lastUpdate: Date.now(),
-				progress: {
-					resolvedModel: "fireworks/kimi-k2",
-					resolvedModelIsFallback: true,
-				} as never,
-			},
-		]);
+		vi.spyOn(observers, "getSession").mockReturnValue({
+			id: "FastAgent",
+			kind: "subagent",
+			label: "Subagent",
+			status: "active",
+			lastUpdate: Date.now(),
+			progress: {
+				resolvedModel: "fireworks/kimi-k2",
+				resolvedModelIsFallback: true,
+			} as never,
+		});
 
 		const hub = new AgentHubOverlayComponent({
 			observers,
@@ -742,9 +839,9 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("takes one fresh observer snapshot for each large-table render", () => {
+	it("refreshes visible observer rows without scanning the full roster", () => {
 		geometry = stubStdoutGeometry(120);
-		geometry.setRows(200);
+		geometry.setRows(12);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
 		const ids = Array.from({ length: 100 }, (_, index) => `render-${String(index).padStart(3, "0")}`);
@@ -752,10 +849,11 @@ describe("Agent hub row ordering", () => {
 			id,
 			kind: "subagent",
 			label: `Worker ${String(index).padStart(3, "0")}`,
-			status: index === 99 ? "failed" : "active",
+			status: "active",
 			lastUpdate: index,
 		}));
-		for (const [index, id] of ids.entries()) {
+		for (let index = ids.length - 1; index >= 0; index--) {
+			const id = ids[index]!;
 			agents.register({
 				id,
 				displayName: `Worker ${String(index).padStart(3, "0")}`,
@@ -765,7 +863,9 @@ describe("Agent hub row ordering", () => {
 			});
 		}
 		const observers = new SessionObserverRegistry();
-		const getSessions = vi.spyOn(observers, "getSessions").mockImplementation(() => snapshots);
+		const getSession = vi
+			.spyOn(observers, "getSession")
+			.mockImplementation(id => snapshots.find(snapshot => snapshot.id === id));
 		const hub = new AgentHubOverlayComponent({
 			observers,
 			hubKeys: [],
@@ -778,15 +878,15 @@ describe("Agent hub row ordering", () => {
 		});
 
 		try {
-			getSessions.mockClear();
+			getSession.mockClear();
 			const initial = hub.render(120).map(Bun.stripANSI);
-			expect(getSessions).toHaveBeenCalledTimes(1);
+			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 			expect(initial.find(line => line.includes("Worker 000"))).toContain("Running");
-			expect(initial.find(line => line.includes("Worker 099"))).toContain("Failed");
 
 			snapshots[0] = { ...snapshots[0]!, status: "failed" };
+			getSession.mockClear();
 			const refreshed = hub.render(120).map(Bun.stripANSI);
-			expect(getSessions).toHaveBeenCalledTimes(2);
+			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 			expect(refreshed.find(line => line.includes("Worker 000"))).toContain("Failed");
 		} finally {
 			hub.dispose();

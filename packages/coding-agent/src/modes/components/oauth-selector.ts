@@ -466,7 +466,7 @@ export class OAuthSelectorComponent extends Container {
 	 * #visibleCount rows from #scrollStart. Wheel moves the selection, motion
 	 * drives the hover band, and a left click selects and confirms like Enter.
 	 */
-	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
+	override routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
 		if (event.wheel !== null) {
 			this.handleWheel(event.wheel);
 			return;

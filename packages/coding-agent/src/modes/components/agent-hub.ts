@@ -3,8 +3,8 @@
  *
  * - Main and advisors are internal routing/observability nodes, never selectable rows.
  * - Rows use shared status priority and newest creation first; activity heartbeats never reorder a group.
- * - Enter opens a fullscreen transcript; `f` focuses a live subagent, and
- *   `r`/`x` resume/terminate a task.
+ * - Enter opens a fullscreen transcript; `f` focuses a live subagent, `m` sends
+ *   it a message, and `r`/`x` resume/terminate a task.
  * - The transcript viewer cycles the same rows in place and tails persisted/local
  *   or collab-host history without changing the ambient runtime.
  * Replaces the old SessionObserverOverlayComponent (ctrl+s observer).
@@ -14,6 +14,7 @@ import { type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	Container,
 	Ellipsis,
+	Input,
 	matchesKey,
 	type OverlayHandle,
 	padding,
@@ -26,7 +27,7 @@ import { formatAge, getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-uti
 import type { KeyId } from "../../config/keybindings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { IrcBus } from "../../irc/bus";
+import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import {
 	type AgentRef,
@@ -83,6 +84,8 @@ const HUB_MODEL_WIDTH = 28;
 const HUB_ACTIVITY_WIDTH = 8;
 const HUB_COLUMN_GAP = "  ";
 
+/** Use observer projections for small rosters; large rosters stay viewport-bounded. */
+const HUB_STATUS_SORT_OBSERVER_LIMIT = 64;
 function fixedCell(text: string, width: number): string {
 	const clipped = truncateToWidth(text, Math.max(1, width));
 	return `${clipped}${padding(Math.max(0, width - visibleWidth(clipped)))}`;
@@ -90,6 +93,7 @@ function fixedCell(text: string, width: number): string {
 
 type HubTaskStatus =
 	| "not-started"
+	| "queued"
 	| "running"
 	| "waiting-user"
 	| "idle"
@@ -100,9 +104,9 @@ type HubTaskStatus =
 
 type HubRow = { ref: AgentRef };
 
-/** Maps existing Hub presentation statuses to the shared navigation comparator's status model. */
 const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["status"]> = {
 	"not-started": "pending",
+	queued: "pending",
 	running: "running",
 	"waiting-user": "waiting",
 	idle: "idle",
@@ -111,11 +115,6 @@ const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["
 	failed: "failed",
 	stopped: "aborted",
 };
-
-interface RenderedHubEntry {
-	lines: string[];
-	rowIndex?: number;
-}
 
 const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -245,6 +244,7 @@ export interface AgentHubDeps {
 export class AgentHubOverlayComponent extends Container {
 	#registry: AgentRegistry;
 	#observers: SessionObserverRegistry;
+	#irc: IrcBus;
 	#lifecycle: () => AgentLifecycleManager;
 	#onDone: () => void;
 	#requestRender: () => void;
@@ -259,10 +259,13 @@ export class AgentHubOverlayComponent extends Container {
 	readonly persistedSubagentsReady: Promise<void>;
 
 	// Table state
-	#observedById = new Map<string, ObservableSession>();
 	#rows: HubRow[] = [];
+	#observedById = new Map<string, ObservableSession>();
+	#statusCounts: Record<AgentStatus, number> = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
 	#selectedRow = 0;
 	#notice: string | undefined;
+	#messageAgentId: string | undefined;
+	#messageInput: Input | undefined;
 	/** Screen rows from the latest render that activate a concrete hub row. */
 	#rowAtScreenLine = new Map<number, number>();
 	/** Double-tap window state for the table's left-left "close hub" gesture. */
@@ -294,6 +297,7 @@ export class AgentHubOverlayComponent extends Container {
 		super();
 		this.#registry = deps.registry ?? AgentRegistry.global();
 		this.#observers = deps.observers;
+		this.#irc = deps.irc ?? IrcBus.global();
 		// Lazy: the lifecycle global self-constructs against the global
 		// registry, so only touch it when revive/kill actually needs it.
 		this.#lifecycle = () => deps.lifecycle ?? AgentLifecycleManager.global();
@@ -352,7 +356,7 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	/** Tear down every subscription and timer. Called by the overlay owner on close. */
-	dispose(): void {
+	override dispose(): void {
 		for (const unsubscribe of this.#unsubscribers.splice(0)) unsubscribe();
 		if (this.#ageTimer) {
 			clearInterval(this.#ageTimer);
@@ -487,24 +491,43 @@ export class AgentHubOverlayComponent extends Container {
 
 	#refreshRows(): void {
 		const selectedId = this.#rows[this.#selectedRow]?.ref.id;
-		this.#observedById = new Map(this.#observers.getSessions().map(observed => [observed.id, observed]));
-		const rows = this.#registry
-			.list()
-			.filter(ref => ref.kind === "sub")
-			.map(ref => ({ ref, status: this.#taskStatus(ref, this.#observedById.get(ref.id)) }))
-			.sort((left, right) =>
-				compareAgentNavigationOrder(
-					left.ref,
-					right.ref,
-					HUB_NAVIGATION_STATUS[left.status],
-					HUB_NAVIGATION_STATUS[right.status],
-				),
-			)
-			.map(({ ref }) => ({ ref }));
-		this.#rows = rows;
+		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
+		const counts: Record<AgentStatus, number> = {
+			running: 0,
+			waiting: 0,
+			idle: 0,
+			parked: 0,
+			aborted: 0,
+		};
+		for (const ref of refs) counts[ref.status]++;
+		this.#statusCounts = counts;
+		this.#observedById = this.#collectObserved(refs);
+		const observedForSort = refs.length <= HUB_STATUS_SORT_OBSERVER_LIMIT ? this.#observedById : undefined;
+		this.#rows = refs
+			.sort((left, right) => {
+				const leftStatus = this.#taskStatus(left, observedForSort?.get(left.id));
+				const rightStatus = this.#taskStatus(right, observedForSort?.get(right.id));
+				return compareAgentNavigationOrder(
+					left,
+					right,
+					HUB_NAVIGATION_STATUS[leftStatus],
+					HUB_NAVIGATION_STATUS[rightStatus],
+				);
+			})
+			.map(ref => ({ ref }));
 
 		const keptIndex = selectedId ? this.#rows.findIndex(row => row.ref.id === selectedId) : -1;
 		this.#selectedRow = keptIndex >= 0 ? keptIndex : Math.min(this.#selectedRow, Math.max(0, this.#rows.length - 1));
+	}
+
+	#collectObserved(refs: readonly AgentRef[]): Map<string, ObservableSession> {
+		const observedById = new Map(this.#observers.getSessions().map(observed => [observed.id, observed] as const));
+		for (const ref of refs) {
+			if (observedById.has(ref.id)) continue;
+			const observed = this.#observers.getSession(ref.id);
+			if (observed) observedById.set(ref.id, observed);
+		}
+		return observedById;
 	}
 
 	#taskStatus(ref: AgentRef, observed: ObservableSession | undefined): HubTaskStatus {
@@ -518,9 +541,11 @@ export class AgentHubOverlayComponent extends Container {
 		if (terminalStatus === "failed") return "failed";
 		if (terminalStatus === "aborted") return "stopped";
 		if (terminalStatus === "completed") return "completed";
-		if (progress?.status === "pending" || activity?.phase === "queued") return "not-started";
-		if (ref.status === "waiting" || activity?.phase === "waiting-user" || activity?.phase === "waiting-peer")
+		if (ref.status === "running" && activity?.phase === "queued") return "queued";
+		if (progress?.status === "pending") return "not-started";
+		if (ref.status === "waiting" || activity?.phase === "waiting-user" || activity?.phase === "waiting-peer") {
 			return "waiting-user";
+		}
 		if (
 			progress?.status === "running" ||
 			observed?.status === "active" ||
@@ -537,6 +562,8 @@ export class AgentHubOverlayComponent extends Container {
 		switch (status) {
 			case "not-started":
 				return theme.fg("warning", tSettingsUi("Not started"));
+			case "queued":
+				return theme.fg("warning", tSettingsUi("Queued"));
 			case "running":
 				return theme.fg("success", tSettingsUi("Running"));
 			case "waiting-user":
@@ -561,7 +588,7 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#observableFor(id: string): ObservableSession | undefined {
-		return this.#observedById.get(id);
+		return this.#observers.getSession(id) ?? this.#observedById.get(id);
 	}
 
 	// ========================================================================
@@ -569,75 +596,83 @@ export class AgentHubOverlayComponent extends Container {
 	// ========================================================================
 
 	#renderTable(width: number): string[] {
-		this.#observedById = new Map(this.#observers.getSessions().map(observed => [observed.id, observed]));
 		const lines: string[] = [];
 		const innerWidth = Math.max(1, width - 2);
 		this.#rowAtScreenLine.clear();
-		const hintLines = this.#hintLines(width);
+		if (this.#rows.length <= HUB_STATUS_SORT_OBSERVER_LIMIT) {
+			this.#observedById = this.#collectObserved(this.#rows.map(row => row.ref));
+		}
 
 		lines.push(...new DynamicBorder().render(width));
-		const title = theme.fg("accent", tSettingsUi("Agent Hub"));
-		lines.push(` ${truncateToWidth(title, innerWidth)}`);
-		for (const hintLine of hintLines) lines.push(` ${truncateToWidth(hintLine, innerWidth)}`);
+		lines.push(this.#headerLine(width));
+		let messageLine: string | undefined;
+		if (this.#messageInput && this.#messageAgentId) {
+			const target = this.#registry.get(this.#messageAgentId);
+			const label = target ? this.#displayLabel(target) : tSettingsUi("Subagent");
+			const prefix = ` ${theme.fg("muted", `m → ${label}: `)}`;
+			const input = this.#messageInput.render(Math.max(1, innerWidth - visibleWidth(prefix)))[0] ?? "";
+			messageLine = truncateToWidth(`${prefix}${input}`, innerWidth);
+		}
 
 		if (this.#rows.length === 0) {
 			lines.push(` ${theme.fg("dim", tSettingsUi("No tasks yet"))}`);
 		} else {
 			const termHeight = process.stdout.rows || 40;
-			const chromeRows = 3 + hintLines.length + (this.#notice ? 1 : 0);
-			const budget = Math.max(3, termHeight - chromeRows);
-			const entries = this.#renderEntries(width);
-			const selectedEntry = Math.max(
-				0,
-				entries.findIndex(entry => entry.rowIndex === this.#selectedRow),
-			);
-			const fitEntries = (entryBudget: number): { start: number; end: number; used: number } => {
-				let start = selectedEntry;
-				let end = Math.min(entries.length, start + 1);
-				let used = entries[start]?.lines.length ?? 0;
-				for (let grew = true; grew; ) {
-					grew = false;
-					if (end < entries.length && used + entries[end]!.lines.length <= entryBudget) {
-						used += entries[end]!.lines.length;
+			const budget = Math.max(4, termHeight - 7 - (messageLine ? 1 : 0) - (this.#notice ? 1 : 0));
+			// Render outward from the selection and stop once the viewport is full.
+			// Cache rendered entries so a boundary probe is not paid twice when the
+			// same index is later accepted into the window.
+			const header = width >= HUB_WIDE_MIN_WIDTH ? this.#columnHeader(width) : undefined;
+			if (header) lines.push(header);
+			const rowBudget = Math.max(1, budget - (header ? 1 : 0));
+			const rendered = new Map<number, string[]>();
+			const entryAt = (index: number): string[] => {
+				const cached = rendered.get(index);
+				if (cached) return cached;
+				const row = this.#rows[index];
+				if (!row) return [];
+				const entry = this.#renderEntry(row, index === this.#selectedRow, width);
+				rendered.set(index, entry);
+				return entry;
+			};
+			let start = this.#selectedRow;
+			let end = this.#selectedRow + 1;
+			let used = entryAt(start).length;
+			for (let grew = true; grew; ) {
+				grew = false;
+				if (end < this.#rows.length) {
+					const next = entryAt(end);
+					if (used + next.length <= rowBudget) {
+						used += next.length;
 						end++;
 						grew = true;
 					}
-					if (start > 0 && used + entries[start - 1]!.lines.length <= entryBudget) {
+				}
+				if (start > 0) {
+					const previous = entryAt(start - 1);
+					if (used + previous.length <= rowBudget) {
 						start--;
-						used += entries[start]!.lines.length;
+						used += previous.length;
 						grew = true;
 					}
 				}
-				return { start, end, used };
-			};
-			let entryBudget = budget;
-			let { start, end, used } = fitEntries(entryBudget);
-			for (let pass = 0; pass < 3; pass++) {
-				const markerRows = (start > 0 ? 1 : 0) + (end < entries.length ? 1 : 0);
-				const nextBudget = Math.max(1, budget - markerRows);
-				if (nextBudget === entryBudget) break;
-				entryBudget = nextBudget;
-				({ start, end, used } = fitEntries(entryBudget));
 			}
-			const markerCapacity = Math.max(0, budget - used);
-			const showStartMarker = start > 0 && markerCapacity > 0;
-			const showEndMarker = end < entries.length && markerCapacity > (showStartMarker ? 1 : 0);
-			if (showStartMarker) {
+			if (start > 0) {
 				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
 			}
-			for (const entry of entries.slice(start, end)) {
+			for (let i = start; i < end; i++) {
 				const lineStart = lines.length;
-				lines.push(...entry.lines);
-				if (entry.rowIndex !== undefined) {
-					for (let offset = 0; offset < entry.lines.length; offset++) {
-						this.#rowAtScreenLine.set(lineStart + offset, entry.rowIndex);
-					}
+				const entry = entryAt(i);
+				lines.push(...entry);
+				for (let offset = 0; offset < entry.length; offset++) {
+					this.#rowAtScreenLine.set(lineStart + offset, i);
 				}
 			}
-			if (showEndMarker) {
-				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: entries.length - end })}`)}`);
+			if (end < this.#rows.length) {
+				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: this.#rows.length - end })}`)}`);
 			}
 		}
+		if (messageLine) lines.push(messageLine);
 
 		if (this.#notice) {
 			lines.push(` ${theme.fg("error", sanitizeLine(this.#notice, innerWidth))}`);
@@ -646,19 +681,13 @@ export class AgentHubOverlayComponent extends Container {
 		return lines;
 	}
 
-	#renderEntries(width: number): RenderedHubEntry[] {
-		const entries: RenderedHubEntry[] = [];
-		if (width >= HUB_WIDE_MIN_WIDTH && this.#rows.length > 0) {
-			entries.push({ lines: [this.#columnHeader(width)] });
+	#statusSummary(): string {
+		const parts: string[] = [];
+		for (const status of ["running", "waiting", "idle", "parked", "aborted"] as const) {
+			const count = this.#statusCounts[status];
+			if (count > 0) parts.push(`${count} ${tSettingsUi(status)}`);
 		}
-		for (let rowIndex = 0; rowIndex < this.#rows.length; rowIndex++) {
-			const row = this.#rows[rowIndex]!;
-			entries.push({
-				lines: this.#renderEntry(row, rowIndex === this.#selectedRow, width),
-				rowIndex,
-			});
-		}
-		return entries;
+		return parts.join(theme.sep.dot);
 	}
 
 	#columnHeader(width: number): string {
@@ -683,29 +712,36 @@ export class AgentHubOverlayComponent extends Container {
 		return theme.fg("dim", `   ${cells.join(HUB_COLUMN_GAP)}`);
 	}
 
-	#hintLines(width: number): string[] {
-		const maxWidth = Math.max(1, width - 2);
-		const separator = theme.fg("dim", theme.sep.dot);
-		const clamp = (line: string): string => truncateToWidth(line, maxWidth);
+	#headerLine(width: number): string {
+		const innerWidth = Math.max(1, width - 3);
+		const summary = this.#statusSummary();
+		const title = `${theme.fg("accent", tSettingsUi("Agent Hub"))}${summary ? theme.fg("dim", `${theme.sep.dot}${summary}`) : ""}`;
 		const selected = this.#rows[this.#selectedRow];
+		const separator = theme.fg("dim", theme.sep.dot);
 		const primary = [
 			rawKeyHint("j/k", tSettingsUi("select")),
 			rawKeyHint("Enter", tSettingsUi("open transcript")),
 			rawKeyHint("Esc/←←", tSettingsUi("close")),
-		].join(separator);
-		if (!selected) return [clamp(primary)];
-
+		];
 		const actions: string[] = [];
-		const ref = selected.ref;
-		const live =
-			ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
-		if (live) actions.push(rawKeyHint("f", tSettingsUi("focus")));
-		if (ref.status === "parked") actions.push(rawKeyHint("r", tSettingsUi("revive")));
-		if (ref.status !== "aborted") actions.push(rawKeyHint("x", tSettingsUi("kill")));
-		if (actions.length === 0) return [clamp(primary)];
-		const secondary = actions.join(separator);
-		const combined = `${primary}${separator}${secondary}`;
-		return visibleWidth(combined) <= maxWidth ? [combined] : [clamp(primary), clamp(secondary)];
+		if (selected) {
+			const ref = selected.ref;
+			const live =
+				ref.session !== null && (ref.status === "running" || ref.status === "waiting" || ref.status === "idle");
+			if (ref.status !== "aborted") actions.push(tSettingsUi("m:message"));
+			if (live) actions.push(rawKeyHint("f", tSettingsUi("focus")));
+			if (ref.status === "parked") actions.push(rawKeyHint("r", tSettingsUi("revive")));
+			if (ref.status !== "aborted") actions.push(rawKeyHint("x", tSettingsUi("kill")));
+		}
+		const controls = this.#messageInput
+			? tSettingsUi("Enter:send message · Esc:cancel message")
+			: [...primary, ...actions].join(separator);
+		const renderedTitle = truncateToWidth(title, innerWidth);
+		const controlsWidth = Math.max(0, innerWidth - visibleWidth(renderedTitle) - 1);
+		if (controlsWidth === 0) return ` ${renderedTitle}`;
+		const renderedControls = truncateToWidth(controls, controlsWidth);
+		const gap = padding(Math.max(1, innerWidth - visibleWidth(renderedTitle) - visibleWidth(renderedControls)));
+		return ` ${renderedTitle}${gap}${renderedControls}`;
 	}
 
 	#renderEntry(row: HubRow, selected: boolean, width: number): string[] {
@@ -784,6 +820,10 @@ export class AgentHubOverlayComponent extends Container {
 	}
 
 	#handleTableInput(keyData: string): void {
+		if (this.#messageInput) {
+			this.#handleMessageInput(keyData);
+			return;
+		}
 		if (matchesKey(keyData, "escape")) {
 			this.#onDone();
 			return;
@@ -814,6 +854,14 @@ export class AgentHubOverlayComponent extends Container {
 			this.#focusSelected();
 			return;
 		}
+		if (keyData === "m") {
+			this.#startMessage();
+			return;
+		}
+		if (keyData === "p") {
+			this.#switchToMain();
+			return;
+		}
 		if (keyData === "r") {
 			this.#reviveSelected();
 			return;
@@ -829,7 +877,96 @@ export class AgentHubOverlayComponent extends Container {
 		this.#requestRender();
 	}
 
+	#handleMessageInput(keyData: string): void {
+		const input = this.#messageInput;
+		const agentId = this.#messageAgentId;
+		if (!input || !agentId) {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
+			return;
+		}
+		if (matchesKey(keyData, "escape")) {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
+			this.#notice = undefined;
+			this.#requestRender();
+			return;
+		}
+		if (matchesKey(keyData, "enter") || keyData === "\r" || keyData === "\n") {
+			this.#submitMessage(agentId, input.getValue());
+			return;
+		}
+		input.handleInput(keyData);
+		this.#requestRender();
+	}
+
+	#startMessage(): void {
+		const row = this.#rows[this.#selectedRow];
+		if (!row) {
+			this.#notice = tSettingsUi("Select a subagent to message.");
+			this.#requestRender();
+			return;
+		}
+		const ref = row.ref;
+		if (ref.status === "aborted") {
+			this.#notice = tSettingsUi('"{label}" was aborted and cannot be messaged.', {
+				label: this.#displayLabel(ref),
+			});
+			this.#requestRender();
+			return;
+		}
+		this.#notice = undefined;
+		this.#messageAgentId = ref.id;
+		this.#messageInput = new Input();
+		this.#requestRender();
+	}
+
+	#submitMessage(agentId: string, body: string): void {
+		const text = body.trim();
+		if (!text) {
+			this.#notice = tSettingsUi("Type a message before sending.");
+			this.#requestRender();
+			return;
+		}
+		const target = this.#registry.get(agentId);
+		if (target?.kind !== "sub" || target.status === "aborted") {
+			this.#messageInput = undefined;
+			this.#messageAgentId = undefined;
+			this.#notice = target
+				? tSettingsUi('"{label}" cannot receive a message.', { label: this.#displayLabel(target) })
+				: tSettingsUi("The selected subagent is no longer available.");
+			this.#requestRender();
+			return;
+		}
+		this.#messageInput = undefined;
+		this.#messageAgentId = undefined;
+		this.#notice = undefined;
+		if (this.#remote) {
+			try {
+				this.#remote.chat(agentId, text);
+			} catch (error) {
+				this.#notice = error instanceof Error ? error.message : String(error);
+			}
+			this.#requestRender();
+			return;
+		}
+		void this.#irc
+			.send({ from: this.#activeTopLevelId, to: agentId, body: text })
+			.then(receipt => {
+				if (receipt.outcome === "failed") {
+					this.#notice = receipt.error ?? tSettingsUi("Message delivery failed.");
+				}
+				this.#requestRender();
+			})
+			.catch((error: unknown) => {
+				this.#notice = error instanceof Error ? error.message : String(error);
+				this.#requestRender();
+			});
+		this.#requestRender();
+	}
+
 	#handleMouseInput(keyData: string): void {
+		if (this.#messageInput) return;
 		routeSgrMouseInput(keyData, (event: SgrMouseEvent) => {
 			if (event.wheel !== null) {
 				this.#moveSelection(event.wheel);
@@ -892,6 +1029,36 @@ export class AgentHubOverlayComponent extends Container {
 				this.#requestRender();
 			}
 		})();
+	}
+
+	#switchToMain(): void {
+		const row = this.#rows[this.#selectedRow];
+		if (!row) return;
+		const root = resolveTopLevelAgent(this.#registry, row.ref.id);
+		if (!root) {
+			this.#notice = tSettingsUi('The Main for "{label}" is unavailable.', { label: this.#displayLabel(row.ref) });
+			this.#requestRender();
+			return;
+		}
+		if (root.id === this.#activeTopLevelId) {
+			this.#onDone();
+			return;
+		}
+		const switchTopLevel = this.#switchTopLevel;
+		if (!switchTopLevel) {
+			this.#notice = tSettingsUi('Switching to "{label}" is unavailable in this Agent Hub.', {
+				label: this.#displayLabel(root),
+			});
+			this.#requestRender();
+			return;
+		}
+		this.#notice = undefined;
+		void switchTopLevel(root.id)
+			.then(() => this.#onDone())
+			.catch((error: unknown) => {
+				this.#notice = error instanceof Error ? error.message : String(error);
+				this.#requestRender();
+			});
 	}
 
 	#reviveSelected(): void {
