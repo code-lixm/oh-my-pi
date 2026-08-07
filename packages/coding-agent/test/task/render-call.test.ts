@@ -1,14 +1,20 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TaskParams } from "@oh-my-pi/pi-coding-agent/task";
 import { taskToolRenderer } from "@oh-my-pi/pi-coding-agent/task/renderer";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
 const initialSettingsUiLocale = getSettingsUiLocale();
 
 describe("task renderer: streaming call preview", () => {
 	let theme: Theme;
+	let previousBorderStyle: OutputBlockBorderStyle;
 
 	beforeAll(async () => {
 		resetSettingsForTest();
@@ -19,12 +25,18 @@ describe("task renderer: streaming call preview", () => {
 		setThemeInstance(theme);
 	});
 
+	beforeEach(() => {
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setOutputBlockBorderStyle("full");
+	});
+
 	afterAll(() => {
 		resetSettingsForTest();
 	});
 
 	afterEach(() => {
 		setSettingsUiLocale(initialSettingsUiLocale);
+		setOutputBlockBorderStyle(previousBorderStyle);
 	});
 
 	function render(args: TaskParams, expanded = false): string {

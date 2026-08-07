@@ -4,23 +4,17 @@
  * identity make ordering repeatable while activity heartbeats only update display.
  */
 import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
+import { type AgentHubDeps, AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import {
 	type ObservableSession,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import {
-	type AgentProgress,
-	type SubagentLifecyclePayload,
-	type SubagentProgressPayload,
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	TASK_SUBAGENT_PROGRESS_CHANNEL,
-} from "@oh-my-pi/pi-coding-agent/task";
-import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
@@ -50,70 +44,113 @@ function stubStdoutGeometry(cols: number): GeometryStub {
 	};
 }
 
-function makeHub(
-	agents: AgentRegistry,
-	observers = new SessionObserverRegistry(),
-	focusAgent: (id: string) => Promise<void> = async () => {},
-) {
+function makeHub(agents: AgentRegistry, overrides: Partial<AgentHubDeps> = {}) {
 	return new AgentHubOverlayComponent({
-		observers,
+		settings: Settings.isolated(),
+		observers: new SessionObserverRegistry(),
 		hubKeys: [],
 		onDone: () => {},
 		requestRender: () => {},
 		registry: agents,
 		irc: new IrcBus(agents),
-		focusAgent,
+		focusAgent: async () => {},
+		...overrides,
 	});
 }
 
-function lifecyclePayload(id: string, status: SubagentLifecyclePayload["status"]): SubagentLifecyclePayload {
-	return { id, index: 0, agent: "task", agentSource: "bundled", status };
+interface ParsedRosterCell {
+	raw: string;
+	text: string;
+	selected: boolean;
 }
 
-function progressPayload(id: string, status: AgentProgress["status"]): SubagentProgressPayload {
-	return {
-		index: 0,
-		agent: "task",
-		agentSource: "bundled",
-		task: "Refresh timing",
-		progress: {
-			index: 0,
-			id,
-			agent: "task",
-			agentSource: "bundled",
-			status,
-			task: "Refresh timing",
-			recentTools: [],
-			recentOutput: [],
-			toolCount: 0,
-			requests: 0,
-			tokens: 0,
-			cost: 0,
-			durationMs: 0,
-		},
-	};
+interface RenderedAgentRow extends ParsedRosterCell {
+	label: string;
+	line: number;
 }
 
-function renderedAgentLabels(hub: AgentHubOverlayComponent, knownLabels: readonly string[]): string[] {
-	// Sort assertions only need the relative order of the fixture labels. Do not
-	// bind them to incidental cursor or status-glyph columns in the row chrome.
-	const labels: string[] = [];
-	for (const raw of hub.render(120)) {
-		const label = knownLabels.find(candidate => Bun.stripANSI(raw).includes(candidate));
-		if (label) labels.push(label);
+const ROSTER_ROW_PATTERN = /^(❯| ) \S+ /u;
+const TREE_PREFIX_PATTERN = /^(?:… )?(?:(?:│| ) {3})*(?:├── |└── )/u;
+
+/**
+ * Parse the left roster cell from either a single-pane or side-by-side Hub
+ * frame. The frame is de-styled before inspecting its chrome, so the caller
+ * never depends on theme escape sequences. Requiring the row cursor and
+ * status glyph excludes the roster header, footer, and right-hand inspector.
+ */
+function parseRosterCell(raw: string): ParsedRosterCell | undefined {
+	const frame = Bun.stripANSI(raw);
+	if (!frame.startsWith("│ ") || !frame.endsWith(" │")) return undefined;
+	const splitDivider = frame.lastIndexOf(" │ ");
+	const text = frame.slice(2, splitDivider >= 0 ? splitDivider : frame.length - 2).trimEnd();
+	const match = ROSTER_ROW_PATTERN.exec(text);
+	if (!match) return undefined;
+	return { raw, text, selected: match[1] === "❯" };
+}
+
+/** Resolve an entry exclusively through its caller-facing display label. */
+function displayLabelInRosterCell(cell: string, labels: readonly string[]): string | undefined {
+	const match = ROSTER_ROW_PATTERN.exec(cell);
+	if (!match) return undefined;
+	const entry = cell.slice(match[0].length);
+	const branch = TREE_PREFIX_PATTERN.exec(entry)?.[0] ?? "";
+	const display = entry.slice(branch.length);
+	const markers = [...labels].sort((left, right) => right.length - left.length);
+	return markers.find(label => {
+		if (!display.startsWith(label)) return false;
+		const next = display.at(label.length);
+		return next === undefined || /[\s…]/u.test(next);
+	});
+}
+
+/**
+ * Find physical roster rows by caller-facing display label, never by a clipped
+ * internal session id. `parseRosterCell` deliberately reads only the left
+ * pane, so an inspector or header cannot be mistaken for a roster entry.
+ */
+function renderedAgentRows(hub: AgentHubOverlayComponent, labels: readonly string[], width = 120): RenderedAgentRow[] {
+	const rows: RenderedAgentRow[] = [];
+	for (const [line, raw] of hub.render(width).entries()) {
+		const cell = parseRosterCell(raw);
+		if (!cell) continue;
+		const label = displayLabelInRosterCell(cell.text, labels);
+		if (label) rows.push({ ...cell, label, line });
 	}
-	return labels;
+	return rows;
 }
 
-function renderedAgentIds(hub: AgentHubOverlayComponent): string[] {
-	// Current Hub rows begin with ` <cursor> <label>`; only fixture ids are
-	// counted so column headers stay out of the result.
-	const ids: string[] = [];
-	for (const raw of hub.render(120)) {
-		const match = /^ (?:❯| ) (\S+)/u.exec(Bun.stripANSI(raw));
-		if (match && /^(?:Agent-|TaskAgent-)/u.test(match[1]!)) ids.push(match[1]!);
-	}
-	return ids;
+function renderedAgentLabels(hub: AgentHubOverlayComponent, labels: readonly string[], width = 120): string[] {
+	return renderedAgentRows(hub, labels, width).map(row => row.label);
+}
+
+function selectedAgentLabel(hub: AgentHubOverlayComponent, labels: readonly string[], width = 120): string | undefined {
+	return renderedAgentRows(hub, labels, width).find(row => row.selected)?.label;
+}
+
+function renderedRosterEntry(hub: AgentHubOverlayComponent, label: string, width: number): string {
+	const row = renderedAgentRows(hub, [label], width)[0];
+	expect(row).toBeDefined();
+	return row!.text;
+}
+
+function renderedRosterHeaderLineRaw(hub: AgentHubOverlayComponent, label: string, width: number): string {
+	const row = renderedAgentRows(hub, [label], width)[0];
+	if (!row) throw new Error(`No rendered roster header for ${label}`);
+	return row.raw;
+}
+
+function stubObservedSessions(observers: SessionObserverRegistry, snapshots: readonly ObservableSession[]): void {
+	const snapshotsById = new Map<string, ObservableSession>();
+	for (const snapshot of snapshots) snapshotsById.set(snapshot.id, snapshot);
+	vi.spyOn(observers, "getSession").mockImplementation(id => snapshotsById.get(id));
+}
+
+function leftClick(row1Based: number): string {
+	return `\x1b[<0;4;${row1Based}M`;
+}
+
+function wheel(direction: "up" | "down"): string {
+	return `\x1b[<${direction === "down" ? 65 : 64};4;4M`;
 }
 
 describe("Agent hub row ordering", () => {
@@ -135,6 +172,19 @@ describe("Agent hub row ordering", () => {
 		setSettingsUiLocale(previousLocale);
 	});
 
+	it("renders a useful empty state before any task agents exist", () => {
+		geometry = stubStdoutGeometry(120);
+		const hub = makeHub(new AgentRegistry());
+
+		try {
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered).toContain("No tasks yet");
+			expect(rendered).toContain("no subagents yet — task spawns appear here");
+		} finally {
+			hub.dispose();
+		}
+	});
+
 	it("orders rows by lifecycle group, newest creation, then stable identity", () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
@@ -151,11 +201,12 @@ describe("Agent hub row ordering", () => {
 			setSystemTime(createdAt);
 			return agents.register({ id, displayName, kind: "sub", session, status });
 		};
+		const sameCreatedAt = 30;
 
 		register("run-older", "Running older", "running", 10);
 		register("run-newer", "Running newer", "running", 20);
-		register("run-tie-zulu", "Running tie Zulu", "running", 30);
-		register("run-tie-alpha", "Running tie Alpha", "running", 30);
+		register("run-tie-zulu", "Running tie Zulu", "running", sameCreatedAt);
+		register("run-tie-alpha", "Running tie Alpha", "running", sameCreatedAt);
 		const missingZulu = register("run-missing-zulu", "Running missing Zulu", "running", 40);
 		const missingAlpha = register("run-missing-alpha", "Running missing Alpha", "running", 40);
 		register("waiting", "Waiting worker", "waiting", 100);
@@ -163,8 +214,6 @@ describe("Agent hub row ordering", () => {
 		register("failed", "Failed worker", "running", 300);
 		register("completed", "Completed worker", "idle", 400);
 		register("aborted", "Aborted worker", "aborted", 500);
-		// Historical rows can lack a valid persisted creation time; identity is the
-		// deterministic fallback for that boundary.
 		Reflect.deleteProperty(missingZulu, "createdAt");
 		Reflect.deleteProperty(missingAlpha, "createdAt");
 
@@ -194,25 +243,25 @@ describe("Agent hub row ordering", () => {
 				progress: { status: "completed" } as never,
 			},
 		];
-		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(session => session.id === id));
+		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(snapshot => snapshot.id === id));
 
-		const hub = makeHub(agents, observers);
+		const hub = makeHub(agents, { observers });
 		try {
-			const labels = [
-				"Running older",
-				"Running newer",
-				"Running tie Zulu",
-				"Running tie Alpha",
-				"Running missing Zulu",
-				"Running missing Alpha",
-				"Waiting worker",
-				"Queued worker",
-				"Failed worker",
-				"Completed worker",
-				"Aborted worker",
-			] as const;
-
-			expect(renderedAgentLabels(hub, labels)).toEqual([
+			expect(
+				renderedAgentLabels(hub, [
+					"Running older",
+					"Running newer",
+					"Running tie Zulu",
+					"Running tie Alpha",
+					"Running missing Zulu",
+					"Running missing Alpha",
+					"Waiting worker",
+					"Queued worker",
+					"Failed worker",
+					"Completed worker",
+					"Aborted worker",
+				]),
+			).toEqual([
 				"Running tie Alpha",
 				"Running tie Zulu",
 				"Running newer",
@@ -225,6 +274,7 @@ describe("Agent hub row ordering", () => {
 				"Aborted worker",
 				"Completed worker",
 			]);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).not.toContain("undefined");
 		} finally {
 			hub.dispose();
 		}
@@ -246,7 +296,7 @@ describe("Agent hub row ordering", () => {
 
 		const hub = makeHub(agents);
 		try {
-			const labels = ["Oldest", "Heartbeat", "Newest"] as const;
+			const labels = ["Oldest", "Heartbeat", "Newest"];
 			const expectedOrder = ["Newest", "Heartbeat", "Oldest"];
 			expect(renderedAgentLabels(hub, labels)).toEqual(expectedOrder);
 
@@ -265,13 +315,15 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("keeps the selected agent when a refresh changes its row position", () => {
+	it("keeps the selected agent when a refresh changes its row position", async () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
 		const session = {} as AgentSession;
 		const focused: string[] = [];
+		const done = vi.fn();
+		const finished = Promise.withResolvers<void>();
 
 		setSystemTime(1_000);
 		agents.register({ id: "oldest", displayName: "Oldest", kind: "sub", session, status: "running" });
@@ -280,12 +332,17 @@ describe("Agent hub row ordering", () => {
 		setSystemTime(3_000);
 		agents.register({ id: "newest", displayName: "Newest", kind: "sub", session, status: "running" });
 
-		const hub = makeHub(agents, undefined, id => {
-			focused.push(id);
-			return Promise.resolve();
+		const hub = makeHub(agents, {
+			onDone: reason => {
+				done(reason);
+				finished.resolve();
+			},
+			focusAgent: async id => {
+				focused.push(id);
+			},
 		});
 		try {
-			const labels = ["Oldest", "Selected", "Newest"] as const;
+			const labels = ["Oldest", "Selected", "Newest"];
 			expect(renderedAgentLabels(hub, labels)).toEqual(["Newest", "Selected", "Oldest"]);
 			hub.handleInput("j");
 
@@ -294,7 +351,9 @@ describe("Agent hub row ordering", () => {
 			expect(renderedAgentLabels(hub, labels)).toEqual(["Selected", "Oldest", "Newest"]);
 
 			hub.handleInput("f");
+			await finished.promise;
 			expect(focused).toEqual(["selected"]);
+			expect(done).toHaveBeenCalledWith("preserve-focus");
 		} finally {
 			hub.dispose();
 		}
@@ -304,45 +363,44 @@ describe("Agent hub row ordering", () => {
 		geometry = stubStdoutGeometry(120);
 		geometry.setRows(12);
 		const agents = new AgentRegistry();
+		const labels: string[] = [];
 		for (let i = 0; i < 10_000; i++) {
-			const id = `Agent-${i.toString().padStart(5, "0")}`;
-			agents.register({ id, displayName: id, kind: "sub", session: null, status: "parked" });
+			const suffix = i.toString().padStart(5, "0");
+			const label = `Viewport agent ${suffix}`;
+			labels.push(label);
+			agents.register({
+				id: `internal-agent-${suffix}`,
+				displayName: label,
+				kind: "sub",
+				session: null,
+				status: "parked",
+			});
 		}
 
 		const observers = new SessionObserverRegistry();
 		const getSessions = vi.spyOn(observers, "getSessions");
 		const getSession = vi.spyOn(observers, "getSession");
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-		});
+		const hub = makeHub(agents, { observers });
 
 		try {
 			getSessions.mockClear();
 			getSession.mockClear();
-			const visibleIds = renderedAgentIds(hub);
-			// The wide table header consumes one of the five row-budget lines.
-			expect(visibleIds).toHaveLength(4);
+			const visibleLabels = renderedAgentLabels(hub, labels);
+			expect(visibleLabels).toHaveLength(4);
 			expect(getSessions).not.toHaveBeenCalled();
 			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 			expect(getSession.mock.calls.length).toBeGreaterThan(0);
 
-			const text = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(text).toContain("10000 parked");
-			expect(text).toMatch(/… \d+ more/);
+			for (const label of visibleLabels) expect(renderedRosterEntry(hub, label, 120)).toContain("parked");
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toMatch(/… \d+ more/);
 
-			// Moving selection re-renders only the new viewport, not the whole roster.
 			getSessions.mockClear();
 			getSession.mockClear();
 			hub.handleInput("j");
-			const afterMove = renderedAgentIds(hub);
+			const afterMove = renderedAgentRows(hub, labels);
 			expect(afterMove).toHaveLength(4);
-			expect(afterMove).toContain(visibleIds[1]!);
+			expect(afterMove.find(row => row.selected)?.label).not.toBe(visibleLabels[0]);
+			expect(afterMove.map(row => row.label)).toContain(visibleLabels[0]!);
 			expect(getSessions).not.toHaveBeenCalled();
 			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 		} finally {
@@ -350,15 +408,14 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("truncates lines and sanitizes newlines to prevent terminal wrapping", () => {
+	it("sanitizes task details before they reach the terminal", () => {
 		geometry = stubStdoutGeometry(80);
 		const agents = new AgentRegistry();
-		const sessionA = {} as AgentSession;
 		agents.register({
 			id: "RevAgentStream",
-			displayName: "CONTROL_MARKER\x1b[2J\treview terminal safety\n- check wrapping\r- check leaks",
+			displayName: "CONTROL_MARKER\x1b[2J\treview terminal safety\u0007\n- check wrapping\r- check leaks",
 			kind: "sub",
-			session: sessionA,
+			session: {} as AgentSession,
 		});
 
 		const observers = new SessionObserverRegistry();
@@ -369,35 +426,34 @@ describe("Agent hub row ordering", () => {
 			status: "active",
 			description: "Complete the assignment below, thoroughly:\n- check performance\n- check leaks",
 			lastUpdate: Date.now(),
+			progress: {
+				currentTool: "bash",
+				currentToolArgs: "\x1b[2Jdangerous args",
+			} as never,
 		});
 
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-		});
-
+		const hub = makeHub(agents, { observers });
 		try {
-			const lines = hub.render(80);
-			const rawOutput = lines.join("\n");
-			expect(rawOutput).not.toContain("\x1b[2J");
-			expect(rawOutput).not.toContain("\t");
-			expect(Bun.stripANSI(rawOutput)).toContain("CONTROL_MARKER");
-			for (const line of lines) {
+			for (const line of hub.render(80)) {
 				const cleanLine = Bun.stripANSI(line);
 				expect(cleanLine).not.toMatch(/[\t\r\n]/u);
-				expect(visibleWidth(line)).toBeLessThanOrEqual(78);
+				expect(visibleWidth(line)).toBeLessThanOrEqual(80);
 			}
+
+			hub.handleInput("\t");
+			const detailOutput = hub.render(80).join("\n");
+			expect(detailOutput).not.toContain("\x1b[2J");
+			expect(detailOutput).not.toContain("\t");
+			expect(detailOutput).not.toContain("\u0007");
+			const details = Bun.stripANSI(detailOutput);
+			expect(details).toContain("CONTROL_MARKER");
+			expect(details).toContain("dangerous args");
 		} finally {
 			hub.dispose();
 		}
 	});
 
-	it("renders one wide task list with inline controls, lifecycle projections, and no internal traffic", async () => {
+	it("renders one compact task row per agent with details confined to the inspector", async () => {
 		geometry = stubStdoutGeometry(160);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
@@ -408,6 +464,7 @@ describe("Agent hub row ordering", () => {
 		} as unknown as AgentSession;
 		const registerTask = (id: string, displayName: string) =>
 			agents.register({ id, displayName, kind: "sub", session: endpoint, status: "running" });
+		const longTask = "LONG_TASK_DETAIL_MARKER detail detail detail detail detail detail detail detail";
 		agents.register({ id: "Main", displayName: "Main", kind: "main", session: endpoint, status: "running" });
 		agents.register({
 			id: "Main/advisor",
@@ -418,8 +475,6 @@ describe("Agent hub row ordering", () => {
 		});
 		registerTask("pending", "Alpha");
 		registerTask("queued", "Bravo");
-		// A queued activity used to be rendered as a second detail row. It belongs
-		// only in the status cell, so make that formerly visible gist explicit.
 		agents.setActivity("queued", "Queued");
 		registerTask("running", "Charlie");
 		registerTask("waiting", "Delta");
@@ -456,7 +511,7 @@ describe("Agent hub row ordering", () => {
 				kind: "subagent",
 				label: "Charlie",
 				status: "active",
-				description: "Refresh timing",
+				description: longTask,
 				lastUpdate: 3,
 				progress: { status: "running" } as never,
 			},
@@ -501,81 +556,118 @@ describe("Agent hub row ordering", () => {
 				progress: { status: "aborted" } as never,
 			},
 		];
-		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(session => session.id === id));
+		vi.spyOn(observers, "getSession").mockImplementation(id => snapshots.find(snapshot => snapshot.id === id));
 		const irc = new IrcBus(agents);
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc,
-			focusAgent: async () => {},
-		});
+		const hub = makeHub(agents, { observers, irc });
 
 		try {
 			await irc.send({ from: "running", to: "Main", body: "IRC_DELIVERY_LEAK_MARKER" });
-			const englishLines = hub.render(160).map(Bun.stripANSI);
-			const english = englishLines.join("\n");
-			expect(english).not.toMatch(
-				/^\s*(?:Active(?: agents| tasks)?|Queued|Pending|Running|Waiting for user|Not started|Completed|Failed|Stopped)(?:\s*\(\d+\))?\s*$/mu,
-			);
-			for (const hiddenDetail of [
-				"ADVISOR_LEAK_MARKER",
-				"IRC_DELIVERY_LEAK_MARKER",
-				"Delivered to Main",
-				"m message",
-			]) {
-				expect(english).not.toContain(hiddenDetail);
-			}
+			const taskLabels = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"];
+			const rosterRows = renderedAgentRows(hub, taskLabels, 160);
+			expect(rosterRows).toHaveLength(taskLabels.length);
+			expect(rosterRows.map(row => row.label).sort()).toEqual([...taskLabels].sort());
+			for (const label of taskLabels) expect(rosterRows.filter(row => row.label === label)).toHaveLength(1);
 
-			const rowFor = (lines: readonly string[], label: string): string => {
-				const row = lines.find(line => line.includes(label));
-				if (!row) throw new Error(`Expected Hub row for ${label}`);
-				return row;
-			};
-			const titleLineIndex = englishLines.findIndex(line => line.includes("Agent Hub"));
-			if (titleLineIndex < 0) throw new Error("Expected Agent Hub title line");
-			const titleLine = englishLines[titleLineIndex]!;
-			const columnHeaderIndex = englishLines.findIndex(line =>
-				["Agent", "Status", "Duration", "Model"].every(column => line.includes(column)),
-			);
-			if (columnHeaderIndex < 0) throw new Error("Expected Hub table column header");
-			const columnHeader = englishLines[columnHeaderIndex]!;
-			const titleColumn = titleLine.indexOf("Agent Hub");
-			const titleEnd = titleColumn + "Agent Hub".length;
-			const jKColumn = titleLine.indexOf("j/k");
-			const enterColumn = titleLine.indexOf("Enter");
-			const escColumn = titleLine.indexOf("Esc");
-			expect(titleColumn).toBeGreaterThanOrEqual(0);
-			expect(jKColumn).toBeGreaterThan(titleEnd - 1);
-			expect(enterColumn).toBeGreaterThan(jKColumn);
-			expect(escColumn).toBeGreaterThan(enterColumn);
-			expect(englishLines.filter(line => ["j/k", "Enter", "Esc"].some(control => line.includes(control)))).toEqual([
-				titleLine,
-			]);
-			expect(columnHeaderIndex).toBe(titleLineIndex + 1);
+			const english = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(english).not.toContain("ADVISOR_LEAK_MARKER");
+			expect(english).not.toContain("IRC_DELIVERY_LEAK_MARKER");
+			expect(renderedRosterEntry(hub, "Bravo", 160)).toContain("Queued");
+			const runningEntry = renderedRosterEntry(hub, "Charlie", 160);
+			expect(runningEntry).not.toContain("LONG_TASK_DETAIL_MARKER");
+			expect(rosterRows.filter(row => row.label === "Charlie")).toHaveLength(1);
 
-			const statusColumn = columnHeader.indexOf("Status");
-			expect(rowFor(englishLines, "Alpha").indexOf("Not started")).toBe(statusColumn);
-			const bravoRow = rowFor(englishLines, "Bravo");
-			expect(bravoRow.indexOf("Queued")).toBe(statusColumn);
-			expect(englishLines.filter(line => line.includes("Queued"))).toEqual([bravoRow]);
-			expect(englishLines.filter(line => line.includes("Refresh timing"))).toEqual([]);
+			const selectedIndex = rosterRows.findIndex(row => row.selected);
+			const runningIndex = rosterRows.findIndex(row => row.label === "Charlie");
+			for (let index = selectedIndex; index < runningIndex; index++) hub.handleInput("j");
+			for (let index = selectedIndex; index > runningIndex; index--) hub.handleInput("k");
+			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("LONG_TASK_DETAIL_MARKER");
 
 			setSettingsUiLocale("zh-CN");
-			const chineseLines = hub.render(160).map(Bun.stripANSI);
-			const chineseBravo = rowFor(chineseLines, "Bravo");
-			expect(rowFor(chineseLines, "Alpha")).toContain("未开始");
-			expect(chineseBravo).toContain("排队中");
-			expect(rowFor(chineseLines, "Charlie")).toContain("运行中");
-			expect(rowFor(chineseLines, "Delta")).toContain("等待用户");
-			expect(rowFor(chineseLines, "Echo")).toContain("已完成");
-			expect(rowFor(chineseLines, "Foxtrot")).toContain("失败");
-			expect(rowFor(chineseLines, "Golf")).toContain("已停止");
-			const chinese = chineseLines.join("\n");
-			expect(chinese).not.toContain("pending");
-			expect(chinese).not.toContain("queued");
+			expect(renderedRosterEntry(hub, "Alpha", 160)).toContain("未开始");
+			expect(renderedRosterEntry(hub, "Bravo", 160)).toContain("排队中");
+			expect(renderedRosterEntry(hub, "Charlie", 160)).toContain("运行中");
+			expect(renderedRosterEntry(hub, "Delta", 160)).toContain("等待用户");
+			expect(renderedRosterEntry(hub, "Echo", 160)).toContain("已完成");
+			expect(renderedRosterEntry(hub, "Foxtrot", 160)).toContain("失败");
+			expect(renderedRosterEntry(hub, "Golf", 160)).toContain("已停止");
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("fits the fullscreen table to short terminals without scanning the roster", () => {
+		geometry = stubStdoutGeometry(80);
+		geometry.setRows(10);
+		const agents = new AgentRegistry();
+		for (let i = 0; i < 50; i++) {
+			agents.register({
+				id: `Agent${i}`,
+				displayName: `Agent ${i}`,
+				kind: "sub",
+				session: {} as AgentSession,
+			});
+		}
+
+		const observers = new SessionObserverRegistry();
+		const getSessions = vi.spyOn(observers, "getSessions");
+		const getSession = vi.spyOn(observers, "getSession");
+		const hub = makeHub(agents, { observers });
+
+		try {
+			getSessions.mockClear();
+			getSession.mockClear();
+			const lines = hub.render(80);
+			expect(lines).toHaveLength(10);
+			expect(getSessions).not.toHaveBeenCalled();
+			expect(getSession.mock.calls.length).toBeLessThan(agents.list().length);
+			expect(Bun.stripANSI(lines.join("\n"))).toContain("…");
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("uses mouse to select while f performs the explicit live focus action", async () => {
+		vi.useFakeTimers();
+		geometry = stubStdoutGeometry(120);
+		const agents = new AgentRegistry();
+		setSystemTime(1_000);
+		agents.register({ id: "mouse-alpha", displayName: "Mouse Alpha", kind: "sub", session: {} as AgentSession });
+		setSystemTime(2_000);
+		agents.register({ id: "mouse-beta", displayName: "Mouse Beta", kind: "sub", session: {} as AgentSession });
+		setSystemTime(3_000);
+		agents.register({ id: "mouse-gamma", displayName: "Mouse Gamma", kind: "sub", session: {} as AgentSession });
+
+		const focused: string[] = [];
+		const done = vi.fn();
+		const finished = Promise.withResolvers<void>();
+		const hub = makeHub(agents, {
+			onDone: reason => {
+				done(reason);
+				finished.resolve();
+			},
+			focusAgent: async id => {
+				focused.push(id);
+			},
+		});
+
+		try {
+			const labels = ["Mouse Alpha", "Mouse Beta", "Mouse Gamma"];
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Gamma");
+			hub.handleInput(wheel("down"));
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Beta");
+
+			const alphaRow = renderedAgentRows(hub, ["Mouse Alpha"], 120)[0];
+			expect(alphaRow).toBeDefined();
+			const alphaLine = alphaRow!.line;
+			hub.handleInput(`\x1b[<0;110;${alphaLine + 1}M`);
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Beta");
+			expect(focused).toEqual([]);
+			hub.handleInput(leftClick(alphaLine + 1));
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Alpha");
+			expect(focused).toEqual([]);
+
+			hub.handleInput("f");
+			await finished.promise;
+			expect(focused).toEqual(["mouse-alpha"]);
+			expect(done).toHaveBeenCalledWith("preserve-focus");
 		} finally {
 			hub.dispose();
 		}
@@ -586,11 +678,17 @@ describe("Agent hub row ordering", () => {
 		const agents = new AgentRegistry();
 		// A collab guest / observer-only row carries no live AgentSession, so the
 		// badge must come from the executor-reported progress instead.
-		agents.register({ id: "GuestAgent", displayName: "Guest", kind: "sub", session: null, status: "running" });
+		agents.register({
+			id: "observer-only-guest",
+			displayName: "Guest reviewer",
+			kind: "sub",
+			session: null,
+			status: "running",
+		});
 
 		const observers = new SessionObserverRegistry();
 		vi.spyOn(observers, "getSession").mockReturnValue({
-			id: "GuestAgent",
+			id: "observer-only-guest",
 			kind: "subagent",
 			label: "Subagent",
 			status: "active",
@@ -601,27 +699,19 @@ describe("Agent hub row ordering", () => {
 			} as never,
 		});
 
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-		});
+		const hub = makeHub(agents, { observers });
 
 		try {
 			for (const width of [60, 120]) {
 				geometry?.restore();
 				geometry = stubStdoutGeometry(width);
 				const lines = hub.render(width);
-				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width - 2);
-				const rendered = Bun.stripANSI(lines.join("\n"));
-				expect(rendered).toContain("Guest");
-				expect(rendered).toContain("Running");
-				expect(rendered).toContain("fallback → openai/gpt-4o");
+				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				const entry = renderedRosterEntry(hub, "Guest reviewer", width);
+				expect(entry).toContain("Guest reviewer");
+				expect(entry).toContain("Running");
 			}
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → openai/gpt-4o");
 		} finally {
 			hub.dispose();
 		}
@@ -635,11 +725,11 @@ describe("Agent hub row ordering", () => {
 		// arming `#activeRetryFallback`, so the badge must fall back to the
 		// executor-reported progress flag.
 		const session = { model: { id: "kimi-k2" }, retryFallbackModel: undefined } as unknown as AgentSession;
-		agents.register({ id: "FastAgent", displayName: "Fast Agent", kind: "sub", session });
+		agents.register({ id: "fast-agent-internal", displayName: "Fast Agent", kind: "sub", session });
 
 		const observers = new SessionObserverRegistry();
 		vi.spyOn(observers, "getSession").mockReturnValue({
-			id: "FastAgent",
+			id: "fast-agent-internal",
 			kind: "subagent",
 			label: "Subagent",
 			status: "active",
@@ -650,247 +740,682 @@ describe("Agent hub row ordering", () => {
 			} as never,
 		});
 
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-		});
+		const hub = makeHub(agents, { observers });
 
 		try {
+			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("Fast Agent");
 			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → fireworks/kimi-k2");
 		} finally {
 			hub.dispose();
 		}
 	});
 
-	it("flattens non-Main agents without rendering owning Main labels or groups", () => {
+	it("renders task-only rows without Main or advisor labels", () => {
+		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
 		agents.register({
 			id: "Main",
-			displayName: "Primary registry identity",
+			displayName: "PRIMARY_MAIN_LEAK_MARKER",
 			kind: "main",
-			sessionTitle: "Primary workspace",
+			sessionTitle: "PRIMARY_WORKSPACE_LEAK_MARKER",
 			session: {} as AgentSession,
 			status: "idle",
 		});
 		agents.register({
 			id: "top-level:review",
-			displayName: "Review registry identity",
+			displayName: "REVIEW_MAIN_LEAK_MARKER",
 			kind: "main",
-			sessionTitle: "Review workspace",
+			sessionTitle: "REVIEW_WORKSPACE_LEAK_MARKER",
 			session: {} as AgentSession,
 			status: "idle",
 		});
 		agents.register({
-			id: "Primary worker",
+			id: "ADVISOR_ROW_LEAK_MARKER",
+			displayName: "ADVISOR_LABEL_LEAK_MARKER",
+			kind: "advisor",
+			session: {} as AgentSession,
+			status: "idle",
+		});
+		setSystemTime(1_000);
+		agents.register({
+			id: "PrimaryWorker",
 			displayName: "Primary worker",
 			kind: "sub",
 			parentId: "Main",
 			session: {} as AgentSession,
 			status: "idle",
 		});
+		setSystemTime(2_000);
 		agents.register({
-			id: "Review worker",
+			id: "ReviewWorker",
 			displayName: "Review worker",
 			kind: "sub",
 			parentId: "top-level:review",
 			session: {} as AgentSession,
 			status: "idle",
 		});
-		const hub = new AgentHubOverlayComponent({
-			observers: new SessionObserverRegistry(),
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-			activeTopLevelId: "Main",
-		});
+		const hub = makeHub(agents, { activeTopLevelId: "Main" });
 
 		try {
+			expect(renderedAgentLabels(hub, ["Primary worker", "Review worker"])).toEqual([
+				"Review worker",
+				"Primary worker",
+			]);
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(rendered).toContain("Agent Hub");
-			expect(rendered).toContain("Primary worker");
-			expect(rendered).toContain("Review worker");
-			expect(rendered).not.toContain("Primary registry identity");
-			expect(rendered).not.toContain("Review registry identity");
-			expect(rendered).not.toContain("Primary workspace");
-			expect(rendered).not.toContain("Review workspace");
-			expect(rendered).not.toContain("Main:");
-			expect(rendered).not.toContain("Subagents");
+			for (const hidden of [
+				"PRIMARY_MAIN_LEAK_MARKER",
+				"PRIMARY_WORKSPACE_LEAK_MARKER",
+				"REVIEW_MAIN_LEAK_MARKER",
+				"REVIEW_WORKSPACE_LEAK_MARKER",
+				"ADVISOR_ROW_LEAK_MARKER",
+				"ADVISOR_LABEL_LEAK_MARKER",
+			]) {
+				expect(rendered).not.toContain(hidden);
+			}
 		} finally {
 			hub.dispose();
 		}
 	});
 
-	it("hides UUID-only Main and subagent labels behind generic names", () => {
-		geometry = stubStdoutGeometry(120);
-		const uuid = "4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f";
+	it("retains the live thinking level unless progress has an explicit suffix", () => {
+		geometry = stubStdoutGeometry(140);
+		const agents = new AgentRegistry();
+		const inheritedSession = { thinkingLevel: ThinkingLevel.High } as unknown as AgentSession;
+		const explicitSession = { thinkingLevel: ThinkingLevel.High } as unknown as AgentSession;
+		agents.register({
+			id: "inherited-level-internal",
+			displayName: "Inherited level",
+			kind: "sub",
+			session: inheritedSession,
+		});
+		agents.register({
+			id: "explicit-level-internal",
+			displayName: "Explicit level",
+			kind: "sub",
+			session: explicitSession,
+		});
+		const observers = new SessionObserverRegistry();
+		const snapshots: ObservableSession[] = [
+			{
+				id: "inherited-level-internal",
+				kind: "subagent",
+				label: "Inherited level",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: { resolvedModel: "openai/gpt-5.4" } as never,
+			},
+			{
+				id: "explicit-level-internal",
+				kind: "subagent",
+				label: "Explicit level",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: { resolvedModel: "openai/gpt-5.4:low" } as never,
+			},
+		];
+		stubObservedSessions(observers, snapshots);
+		const hub = makeHub(agents, { observers });
+
+		try {
+			const inherited = renderedRosterEntry(hub, "Inherited level", 140);
+			expect(inherited).toContain("gpt-5.4");
+			expect(inherited).toContain(theme.thinking.high);
+
+			const explicit = renderedRosterEntry(hub, "Explicit level", 140);
+			expect(explicit).toContain("gpt-5.4");
+			expect(explicit).toContain(theme.thinking.low);
+			expect(explicit).not.toContain(theme.thinking.high);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("renders aggregate usage and inspector history without inventing change attribution", () => {
+		geometry = stubStdoutGeometry(140);
+		geometry.setRows(28);
 		const agents = new AgentRegistry();
 		agents.register({
-			id: "Main",
-			displayName: "Primary workspace",
-			kind: "main",
-			session: {} as AgentSession,
-			status: "idle",
-		});
-		agents.register({
-			id: `top-level:${uuid}`,
-			displayName: uuid,
-			kind: "main",
-			session: {} as AgentSession,
-			status: "idle",
-		});
-		agents.register({
-			id: "uuid-labelled child",
-			displayName: uuid,
+			id: "reviewer-internal",
+			displayName: "Security Reviewer",
 			kind: "sub",
-			parentId: `top-level:${uuid}`,
-			session: {} as AgentSession,
-			status: "idle",
+			parentId: "Main",
+			session: null,
+			history: {
+				outputPath: "/tmp/Reviewer.md",
+				patchPath: "/tmp/Reviewer.patch",
+				branchName: "omp/task/Reviewer",
+			},
 		});
-		const hub = new AgentHubOverlayComponent({
-			observers: new SessionObserverRegistry(),
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			focusAgent: async () => {},
-			activeTopLevelId: "Main",
-		});
+		const observers = new SessionObserverRegistry();
+		const snapshots: ObservableSession[] = [
+			{
+				id: "reviewer-internal",
+				kind: "subagent",
+				label: "Security Reviewer",
+				description: "Review the session lifecycle and produce actionable findings",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "reviewer-internal",
+					index: 0,
+					agent: "reviewer",
+					agentSource: "bundled",
+					status: "running",
+					task: "Review the session lifecycle",
+					currentTool: "read",
+					currentToolArgs: "src/session/agent-session.ts",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 27,
+					requests: 12,
+					tokens: 18_400,
+					contextTokens: 31_000,
+					contextWindow: 128_000,
+					cost: 0.2134,
+					durationMs: 134_000,
+					resolvedModel: "openai/gpt-5.4:high",
+				} as never,
+			},
+		];
+		stubObservedSessions(observers, snapshots);
+		const hub = makeHub(agents, { observers });
 
 		try {
-			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(rendered).not.toContain(uuid);
-			expect(rendered).toMatch(/\bSubagent\b/u);
+			const rendered = Bun.stripANSI(hub.render(140).join("\n"));
+			expect(rendered).toContain("1 running");
+			expect(rendered).toContain("$0.213 · 2m14s active · 12 req · 27 tools · 18K tok");
+			expect(rendered).toContain("Security Reviewer");
+			expect(rendered).toContain("read · src/session/agent-session.ts");
+			expect(rendered).toContain("31K/128K 24%");
+			expect(rendered).toContain("Output /tmp/Reviewer.md");
+			expect(rendered).toContain("Patch /tmp/Reviewer.patch");
+			expect(rendered).toContain("Branch omp/task/Reviewer");
+			expect(rendered).not.toContain("per-agent LoC");
+			expect(renderedRosterEntry(hub, "Security Reviewer", 140)).not.toContain("Review the session lifecycle");
 		} finally {
 			hub.dispose();
 		}
 	});
+	it("shows measured usage in aggregate and selected-agent inspector budgets", () => {
+		geometry = stubStdoutGeometry(160);
+		geometry.setRows(32);
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "running-metrics-internal",
+			displayName: "Running metrics",
+			kind: "sub",
+			session: null,
+			status: "running",
+		});
+		agents.register({
+			id: "completed-metrics-internal",
+			displayName: "Completed metrics",
+			kind: "sub",
+			session: null,
+			status: "idle",
+		});
+		agents.register({
+			id: "historical-metrics-internal",
+			displayName: "Historical metrics",
+			kind: "sub",
+			session: null,
+			status: "parked",
+			activity: "Restored task",
+		});
+		const observers = new SessionObserverRegistry();
+		const snapshots: ObservableSession[] = [
+			{
+				id: "running-metrics-internal",
+				kind: "subagent",
+				label: "Running metrics",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "running-metrics-internal",
+					index: 0,
+					agent: "worker",
+					agentSource: "bundled",
+					status: "running",
+					task: "Run checks",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 4,
+					requests: 3,
+					tokens: 1_200,
+					cost: 0.1234,
+					durationMs: 6_500,
+				} as never,
+			},
+			{
+				id: "completed-metrics-internal",
+				kind: "subagent",
+				label: "Completed metrics",
+				status: "completed",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "completed-metrics-internal",
+					index: 1,
+					agent: "worker",
+					agentSource: "bundled",
+					status: "completed",
+					task: "Finish checks",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 8,
+					requests: 5,
+					tokens: 2_500,
+					cost: 0.4567,
+					durationMs: 125_000,
+				} as never,
+			},
+		];
+		stubObservedSessions(observers, snapshots);
+		const hub = makeHub(agents, { observers });
+		const labels = ["Running metrics", "Completed metrics", "Historical metrics"];
 
-	it("refreshes registry, lifecycle, and reset changes urgently while coalescing progress", () => {
+		try {
+			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(rendered).toContain("2/3 measured");
+			expect(rendered).toContain("$0.580");
+			expect(rendered).toContain("3.7K tok");
+			expect(rendered).toContain("8 req");
+			expect(rendered).toContain("12 tools");
+			expect(rendered).toContain("2m11s active agent time");
+			expect(renderedRosterEntry(hub, "Running metrics", 160)).not.toContain("Run checks");
+			expect(renderedRosterEntry(hub, "Running metrics", 160)).not.toContain("$0.123");
+			expect(rendered).toContain("$0.123 · 6.5s active · 3 req · 4 tools · 1.2K tok");
+
+			let rows = renderedAgentRows(hub, labels, 160);
+			let selectedIndex = rows.findIndex(row => row.selected);
+			let targetIndex = rows.findIndex(row => row.label === "Completed metrics");
+			expect(selectedIndex).toBeGreaterThanOrEqual(0);
+			expect(targetIndex).toBeGreaterThanOrEqual(0);
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			const completedDetails = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(completedDetails).toContain("$0.457 · 2m5s active · 5 req · 8 tools · 2.5K tok");
+
+			rows = renderedAgentRows(hub, labels, 160);
+			selectedIndex = rows.findIndex(row => row.selected);
+			targetIndex = rows.findIndex(row => row.label === "Historical metrics");
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			const historicalDetails = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(renderedRosterEntry(hub, "Historical metrics", 160)).toContain("Restored task");
+			expect(historicalDetails).toContain("not reported");
+			expect(historicalDetails).not.toContain("$0.000");
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("treats incomplete and non-finite progress usage as unknown", () => {
+		geometry = stubStdoutGeometry(160);
+		const agents = new AgentRegistry();
+		const getSessionStats = vi.fn(() => ({
+			sessionFile: undefined,
+			sessionId: "incomplete",
+			userMessages: 1,
+			assistantMessages: 9,
+			toolCalls: 4,
+			toolResults: 4,
+			totalMessages: 18,
+			tokens: { input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 150 },
+			premiumRequests: 0,
+			cost: 0.25,
+		}));
+		agents.register({
+			id: "incomplete-telemetry-internal",
+			displayName: "Incomplete telemetry",
+			kind: "sub",
+			session: { getSessionStats } as unknown as AgentSession,
+		});
+		agents.register({
+			id: "non-finite-telemetry-internal",
+			displayName: "Non-finite telemetry",
+			kind: "sub",
+			session: null,
+		});
+		const observers = new SessionObserverRegistry();
+		const snapshots: ObservableSession[] = [
+			{
+				id: "incomplete-telemetry-internal",
+				kind: "subagent",
+				label: "Incomplete telemetry",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					tokens: 100,
+					toolCount: 2,
+					cost: 0.1,
+					durationMs: 1_000,
+				} as never,
+			},
+			{
+				id: "non-finite-telemetry-internal",
+				kind: "subagent",
+				label: "Non-finite telemetry",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					tokens: Number.NaN,
+					requests: 2,
+					toolCount: 2,
+					cost: 0.1,
+					durationMs: 1_000,
+				} as never,
+			},
+		];
+		stubObservedSessions(observers, snapshots);
+		const hub = makeHub(agents, { observers });
+		const labels = ["Incomplete telemetry", "Non-finite telemetry"];
+
+		try {
+			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("0/2 measured");
+			let rows = renderedAgentRows(hub, labels, 160);
+			let selectedIndex = rows.findIndex(row => row.selected);
+			let targetIndex = rows.findIndex(row => row.label === "Incomplete telemetry");
+			expect(selectedIndex).toBeGreaterThanOrEqual(0);
+			expect(targetIndex).toBeGreaterThanOrEqual(0);
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("not reported");
+
+			rows = renderedAgentRows(hub, labels, 160);
+			selectedIndex = rows.findIndex(row => row.selected);
+			targetIndex = rows.findIndex(row => row.label === "Non-finite telemetry");
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			const nonFiniteDetails = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(nonFiniteDetails).toContain("not reported");
+			expect(renderedRosterEntry(hub, "Non-finite telemetry", 160)).not.toContain("$0.000");
+			expect(getSessionStats).not.toHaveBeenCalled();
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("shows configured role text beside a resolved model but not for an explicit selector", () => {
+		geometry = stubStdoutGeometry(80);
+		const agents = new AgentRegistry();
+		agents.register({ id: "role-agent-internal", displayName: "Role Agent", kind: "sub", session: null });
+		agents.register({ id: "explicit-agent-internal", displayName: "Explicit Agent", kind: "sub", session: null });
+		const observers = new SessionObserverRegistry();
+		const snapshots: ObservableSession[] = [
+			{
+				id: "role-agent-internal",
+				kind: "subagent",
+				label: "Role Agent",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "role-agent-internal",
+					index: 0,
+					agent: "worker",
+					agentSource: "bundled",
+					status: "running",
+					task: "Run with the configured role",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 0,
+					requests: 1,
+					tokens: 10,
+					cost: 0,
+					durationMs: 100,
+					modelRole: "rapid",
+					resolvedModel: "openai/gpt-4o",
+				} as never,
+			},
+			{
+				id: "explicit-agent-internal",
+				kind: "subagent",
+				label: "Explicit Agent",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "explicit-agent-internal",
+					index: 1,
+					agent: "worker",
+					agentSource: "bundled",
+					status: "running",
+					task: "Run with an explicit selector",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 0,
+					requests: 1,
+					tokens: 10,
+					cost: 0,
+					durationMs: 100,
+					resolvedModel: "openai/gpt-4o",
+				} as never,
+			},
+		];
+		stubObservedSessions(observers, snapshots);
+		const hub = makeHub(agents, {
+			observers,
+			settings: Settings.isolated({
+				modelRoles: { rapid: "openai/gpt-4o" },
+				modelTags: { rapid: { name: "Quick", color: "warning" } },
+			}),
+		});
+		const labels = ["Role Agent", "Explicit Agent"];
+
+		try {
+			let rows = renderedAgentRows(hub, labels, 80);
+			let selectedIndex = rows.findIndex(row => row.selected);
+			let targetIndex = rows.findIndex(row => row.label === "Role Agent");
+			expect(selectedIndex).toBeGreaterThanOrEqual(0);
+			expect(targetIndex).toBeGreaterThanOrEqual(0);
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			hub.handleInput("\t");
+			const roleDetails = Bun.stripANSI(hub.render(80).join("\n"));
+			expect(roleDetails).toContain("Quick");
+			expect(roleDetails).toContain("gpt-4o");
+			expect(roleDetails.indexOf("Quick")).toBeLessThan(roleDetails.indexOf("gpt-4o"));
+
+			hub.handleInput("\t");
+			rows = renderedAgentRows(hub, labels, 80);
+			selectedIndex = rows.findIndex(row => row.selected);
+			targetIndex = rows.findIndex(row => row.label === "Explicit Agent");
+			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
+				hub.handleInput("j");
+			hub.handleInput("\t");
+			const explicitDetails = Bun.stripANSI(hub.render(80).join("\n"));
+			expect(explicitDetails).toContain("gpt-4o");
+			expect(explicitDetails).not.toContain("Quick");
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("switches between inline Flat and By parent projections with selection preserved", () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
-		const observers = new SessionObserverRegistry();
-		const eventBus = new EventBus();
-		const requestRender = vi.fn();
-		const id = "refresh-timing";
-		observers.subscribeToEventBus(eventBus);
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender,
-			registry: agents,
-			irc: new IrcBus(agents),
-			remote: { chat: () => {}, kill: () => {}, revive: () => {}, readTranscript: async () => null },
-			focusAgent: async () => {},
+		setSystemTime(1_000);
+		agents.register({
+			id: "parent-internal",
+			displayName: "Parent task",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
 		});
+		setSystemTime(2_000);
+		agents.register({
+			id: "peer-internal",
+			displayName: "Peer task",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+		});
+		setSystemTime(3_000);
+		agents.register({
+			id: "child-internal",
+			displayName: "Child task",
+			kind: "sub",
+			parentId: "parent-internal",
+			session: null,
+		});
+		const hub = makeHub(agents);
+		const labels = ["Parent task", "Peer task", "Child task"];
 
 		try {
-			agents.register({
-				id,
-				displayName: "Refresh timing worker",
-				kind: "sub",
-				session: {} as AgentSession,
-				status: "running",
-			});
-			expect(requestRender).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(0);
-			expect(requestRender).toHaveBeenCalledTimes(1);
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Refresh timing worker");
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Child task", "Peer task", "Parent task"]);
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
+			const flat = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(flat).toContain("Flat");
+			expect(flat).toContain("By parent");
 
-			requestRender.mockClear();
-			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, lifecyclePayload(id, "failed"));
-			expect(requestRender).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(0);
-			expect(requestRender).toHaveBeenCalledTimes(1);
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Failed");
+			hub.setHoverIndex(0);
+			expect(renderedRosterHeaderLineRaw(hub, "Child task", 120)).toContain(theme.getBgAnsi("selectedBg"));
+			hub.handleInput("t");
+			const byParentLabels = renderedAgentLabels(hub, labels);
+			expect(byParentLabels).toEqual(["Parent task", "Child task", "Peer task"]);
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
+			const byParent = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(byParent).toContain("Flat");
+			expect(byParent).toContain("By parent");
+			expect(byParentLabels.indexOf("Parent task")).toBeLessThan(byParentLabels.indexOf("Child task"));
+			expect(renderedRosterHeaderLineRaw(hub, "Parent task", 120)).not.toContain(theme.getBgAnsi("selectedBg"));
+			expect(renderedRosterHeaderLineRaw(hub, "Child task", 120)).toContain(theme.getBgAnsi("selectedBg"));
 
-			requestRender.mockClear();
-			observers.resetSessions();
-			vi.advanceTimersByTime(0);
-			expect(requestRender).toHaveBeenCalledTimes(1);
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Running");
-
-			requestRender.mockClear();
-			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running"));
-			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running"));
-			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "failed"));
-			expect(requestRender).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(99);
-			expect(requestRender).not.toHaveBeenCalled();
-			vi.advanceTimersByTime(1);
-			expect(requestRender).toHaveBeenCalledTimes(1);
-			expect(observers.getSessions()).toMatchObject([{ id, status: "failed", progress: { status: "failed" } }]);
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Failed");
+			hub.handleInput("t");
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Child task", "Peer task", "Parent task"]);
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
 		} finally {
 			hub.dispose();
-			observers.dispose();
+			vi.useRealTimers();
+			setSystemTime();
 		}
 	});
 
-	it("refreshes visible observer rows without scanning the full roster", () => {
+	it("renders parent lineage with bash-style tree connectors", () => {
 		geometry = stubStdoutGeometry(120);
-		geometry.setRows(12);
-		setSettingsUiLocale("en");
+		geometry.setRows(32);
 		const agents = new AgentRegistry();
-		const ids = Array.from({ length: 100 }, (_, index) => `render-${String(index).padStart(3, "0")}`);
-		const snapshots: ObservableSession[] = ids.map((id, index) => ({
-			id,
-			kind: "subagent",
-			label: `Worker ${String(index).padStart(3, "0")}`,
-			status: "active",
-			lastUpdate: index,
-		}));
-		for (let index = ids.length - 1; index >= 0; index--) {
-			const id = ids[index]!;
-			agents.register({
-				id,
-				displayName: `Worker ${String(index).padStart(3, "0")}`,
-				kind: "sub",
-				session: {} as AgentSession,
-				status: "running",
-			});
-		}
-		const observers = new SessionObserverRegistry();
-		const getSession = vi
-			.spyOn(observers, "getSession")
-			.mockImplementation(id => snapshots.find(snapshot => snapshot.id === id));
-		const hub = new AgentHubOverlayComponent({
-			observers,
-			hubKeys: [],
-			onDone: () => {},
-			requestRender: () => {},
-			registry: agents,
-			irc: new IrcBus(agents),
-			remote: { chat: () => {}, kill: () => {}, revive: () => {}, readTranscript: async () => null },
-			focusAgent: async () => {},
+		agents.register({
+			id: "parent-tree-internal",
+			displayName: "Parent task",
+			kind: "sub",
+			parentId: "Main",
+			session: null,
 		});
+		agents.register({
+			id: "first-tree-internal",
+			displayName: "First task",
+			kind: "sub",
+			parentId: "parent-tree-internal",
+			session: null,
+		});
+		agents.register({
+			id: "grandchild-tree-internal",
+			displayName: "Grandchild task",
+			kind: "sub",
+			parentId: "first-tree-internal",
+			session: null,
+		});
+		agents.register({
+			id: "last-tree-internal",
+			displayName: "Last task",
+			kind: "sub",
+			parentId: "parent-tree-internal",
+			session: null,
+		});
+		const hub = makeHub(agents);
 
 		try {
-			getSession.mockClear();
-			const initial = hub.render(120).map(Bun.stripANSI);
-			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
-			expect(initial.find(line => line.includes("Worker 000"))).toContain("Running");
-
-			snapshots[0] = { ...snapshots[0]!, status: "failed" };
-			getSession.mockClear();
-			const refreshed = hub.render(120).map(Bun.stripANSI);
-			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
-			expect(refreshed.find(line => line.includes("Worker 000"))).toContain("Failed");
+			hub.handleInput("t");
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "First task", 120))).toContain("├── First task");
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Grandchild task", 120))).toContain(
+				"│   └── Grandchild task",
+			);
+			expect(Bun.stripANSI(renderedRosterHeaderLineRaw(hub, "Last task", 120))).toContain("└── Last task");
 		} finally {
 			hub.dispose();
-			observers.dispose();
+		}
+	});
+
+	it("keeps cyclic parent links renderable in tree mode", () => {
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "cycle-a-internal",
+			displayName: "Cycle Alpha",
+			kind: "sub",
+			parentId: "cycle-b-internal",
+			session: null,
+		});
+		agents.register({
+			id: "cycle-b-internal",
+			displayName: "Cycle Beta",
+			kind: "sub",
+			parentId: "cycle-a-internal",
+			session: null,
+		});
+		const hub = makeHub(agents);
+
+		try {
+			hub.handleInput("t");
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered).toContain("Cycle Alpha");
+			expect(rendered).toContain("Cycle Beta");
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("opens the selected-agent inspector as a narrow-terminal fallback", () => {
+		geometry = stubStdoutGeometry(80);
+		geometry.setRows(16);
+		const agents = new AgentRegistry();
+		agents.register({ id: "NarrowAgent", displayName: "Narrow Agent", kind: "sub", session: null });
+		const observers = new SessionObserverRegistry();
+		stubObservedSessions(observers, [
+			{
+				id: "NarrowAgent",
+				kind: "subagent",
+				label: "Narrow Agent",
+				status: "active",
+				lastUpdate: Date.now(),
+				progress: {
+					id: "NarrowAgent",
+					status: "running",
+					task: "Inspect responsive behavior",
+					recentTools: [],
+					recentOutput: [],
+					toolCount: 3,
+					requests: 2,
+					tokens: 900,
+					cost: 0,
+					durationMs: 2_000,
+				} as never,
+			},
+		]);
+		const hub = makeHub(agents, { observers });
+
+		try {
+			const roster = Bun.stripANSI(hub.render(80).join("\n"));
+			expect(roster).toContain("Tab");
+			expect(roster).toContain("Narrow Agent");
+
+			hub.handleInput("\t");
+			const detailsLines = hub.render(80);
+			const details = Bun.stripANSI(detailsLines.join("\n"));
+			expect(detailsLines[0]).toContain("Agent Hub · Narrow Agent");
+			expect(details).toContain("Usage");
+			expect(details).toContain("$0.0000 · 2.0s active · 2 req · 3 tools · 900 tok");
+			expect(details).not.toContain("Tab");
+			hub.handleInput("\x1b[6~");
+			const scrolledDetails = Bun.stripANSI(hub.render(80).join("\n"));
+			expect(scrolledDetails).toContain("Owner");
+			for (const line of hub.render(80)) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+
+			hub.handleInput("\x1b");
+			const restoredRoster = Bun.stripANSI(hub.render(80).join("\n"));
+			expect(restoredRoster).toContain("Agent Hub");
+			expect(restoredRoster).toContain("Roster");
+			expect(restoredRoster).toContain("Tab");
+		} finally {
+			hub.dispose();
 		}
 	});
 });

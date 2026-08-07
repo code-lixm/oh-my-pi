@@ -269,7 +269,7 @@ describe("CodeGraphTool contract", () => {
 		expect(header).toBeDefined();
 		const editSession = session as unknown as ToolSession;
 		const editResult = await new EditTool(editSession).execute("edit-from-codegraph", {
-			input: `${header}\nSWAP 2.=2:\n+  return \`Hi, \${name}!\`;`,
+			input: `${header}\nPUT 2.=2:\n+  return \`Hi, \${name}!\`;`,
 		});
 		expect(editResult.isError).not.toBe(true);
 		expect(await Bun.file(path.join(repoRoot, "greeter.ts")).text()).toMatch(/return `Hi, \$\{name\}!`;/u);

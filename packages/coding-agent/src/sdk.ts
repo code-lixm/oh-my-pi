@@ -1515,45 +1515,41 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 	let initialRetryFallback: InitialRetryFallbackState | undefined;
-	// Identify session model strings to restore in fallback order. We do an
-	// initial pass here so model-dependent setup (thinking-level resolution,
-	// host preconnect) can use the restored model; extension-registered
-	// providers aren't visible yet, so we retry the preferred candidates once
-	// extensions register below.
-	const sessionModelStrings =
-		!hasExplicitModel && hasExistingSession
-			? getRestorableSessionModels(existingSession.models, sessionManager.getLastModelChangeRole())
+	// Separate durable model_change selectors from legacy assistant-message
+	// inference. Only durable entries may outrank a configured default.
+	const lastSessionModelChangeRole =
+		!hasExplicitModel && hasExistingSession ? sessionManager.getLastModelChangeRole() : undefined;
+	const durableSessionModelStrings =
+		lastSessionModelChangeRole === undefined
+			? []
+			: getRestorableSessionModels(
+					existingSession.models,
+					lastSessionModelChangeRole,
+					existingSession.inferredDefaultModel,
+				);
+	const inferredLegacyModelStrings =
+		!hasExplicitModel && hasExistingSession && lastSessionModelChangeRole === undefined
+			? getRestorableSessionModels(
+					existingSession.models,
+					lastSessionModelChangeRole,
+					existingSession.inferredDefaultModel,
+				)
 			: [];
 	let restoredSessionModelIndex = -1;
 	let restoredSessionThinkingLevel: ConfiguredThinkingLevel | undefined;
-	if (!hasExplicitModel && !model && sessionModelStrings.length > 0) {
-		logger.time("restoreSessionModel", () => {
-			let failedSessionModel: string | undefined;
-			for (let i = 0; i < sessionModelStrings.length; i++) {
-				const sessionModelStr = sessionModelStrings[i];
-				const parsedModel = parseModelString(sessionModelStr, {
-					allowMaxSuffix: true,
-					allowAutoAlias: true,
-					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
-				});
-				if (!parsedModel) {
-					failedSessionModel ??= sessionModelStr;
-					continue;
-				}
-
-				const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
-				if (restoredModel && hasModelAuth(restoredModel)) {
-					model = restoredModel;
-					restoredSessionModelIndex = i;
-					restoredSessionThinkingLevel = parsedModel.thinkingLevel;
-					break;
-				}
-				failedSessionModel ??= sessionModelStr;
-			}
-			if (failedSessionModel) {
-				modelFallbackMessage = `Could not restore model ${failedSessionModel}`;
-			}
-		});
+	let restoredSessionModelSource: "durable" | "legacy" | undefined;
+	if (!hasExplicitModel && !model && durableSessionModelStrings.length > 0) {
+		const restored = logger.time("restoreSessionModel", () =>
+			findRestorableSessionModel(durableSessionModelStrings, modelRegistry, hasModelAuth),
+		);
+		if (restored.model) {
+			model = restored.model;
+			restoredSessionModelIndex = restored.index;
+			restoredSessionThinkingLevel = restored.thinkingLevel;
+			restoredSessionModelSource = "durable";
+		} else if (restored.failedModel) {
+			modelFallbackMessage = `Could not restore model ${restored.failedModel}`;
+		}
 	}
 
 	// If still no model, try settings default.
@@ -1565,6 +1561,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// so re-validating auth here just repeats the expensive lookup path.
 			model = settingsDefaultModel;
 		});
+	}
+
+	if (!hasExplicitModel && !model && inferredLegacyModelStrings.length > 0) {
+		const restored = logger.time("restoreLegacySessionModel", () =>
+			findRestorableSessionModel(inferredLegacyModelStrings, modelRegistry, hasModelAuth),
+		);
+		if (restored.model) {
+			model = restored.model;
+			restoredSessionThinkingLevel = restored.thinkingLevel;
+			restoredSessionModelSource = "legacy";
+		} else if (restored.failedModel) {
+			modelFallbackMessage ??= `Could not restore model ${restored.failedModel}`;
+		}
 	}
 
 	const taskDepth = options.taskDepth ?? 0;
@@ -2201,43 +2210,39 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		});
 
-		// Retry session-model candidates now that extension providers are
+		// Retry durable session-model candidates now that extension providers are
 		// registered. The initial restore runs before extensions load, so a role
 		// model supplied by an extension would have either fallen back to the
 		// saved default (`restoredSessionModelIndex > 0`) or failed entirely
 		// (`restoredSessionModelIndex === -1`, with the settings default or
 		// downstream fallback filling `model`). Reclaim it here so resume
 		// honors the last active role in either case.
-		const sessionRetryLimit = restoredSessionModelIndex >= 0 ? restoredSessionModelIndex : sessionModelStrings.length;
-		if (!hasExplicitModel && sessionRetryLimit > 0) {
-			for (let i = 0; i < sessionRetryLimit; i++) {
-				const sessionModelStr = sessionModelStrings[i];
-				const parsedModel = parseModelString(sessionModelStr, {
-					allowMaxSuffix: true,
-					allowAutoAlias: true,
-					isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
-				});
-				if (!parsedModel) continue;
-				const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
-				if (restoredModel && hasModelAuth(restoredModel)) {
-					model = restoredModel;
-					modelFallbackMessage = undefined;
-					restoredSessionModelIndex = i;
-					restoredSessionThinkingLevel = parsedModel.thinkingLevel;
-					// Recompute thinking-level from scratch against the reclaimed
-					// model: any value derived from the earlier fallback model's
-					// `thinking.defaultLevel` must not become sticky.
-					thinkingLevel = pickInitialThinkingLevel(restoredModel);
-					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
-					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-						autoThinking
-							? resolveProvisionalAutoLevel(restoredModel)
-							: resolveThinkingLevelForModel(restoredModel, effectiveThinkingLevel),
-					);
-					preconnectModelHost(restoredModel.baseUrl);
-					break;
-				}
+		const durableSessionRetryLimit =
+			restoredSessionModelIndex >= 0 ? restoredSessionModelIndex : durableSessionModelStrings.length;
+		if (!hasExplicitModel && durableSessionRetryLimit > 0) {
+			const restored = findRestorableSessionModel(
+				durableSessionModelStrings.slice(0, durableSessionRetryLimit),
+				modelRegistry,
+				hasModelAuth,
+			);
+			if (restored.model) {
+				model = restored.model;
+				modelFallbackMessage = undefined;
+				restoredSessionModelIndex = restored.index;
+				restoredSessionThinkingLevel = restored.thinkingLevel;
+				restoredSessionModelSource = "durable";
+				// Recompute thinking-level from scratch against the reclaimed
+				// model: any value derived from the earlier fallback model's
+				// `thinking.defaultLevel` must not become sticky.
+				thinkingLevel = pickInitialThinkingLevel(restored.model);
+				autoThinking = thinkingLevel === AUTO_THINKING;
+				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+					autoThinking
+						? resolveProvisionalAutoLevel(restored.model)
+						: resolveThinkingLevelForModel(restored.model, effectiveThinkingLevel),
+				);
+				preconnectModelHost(restored.model.baseUrl);
 			}
 		}
 		// Resolve deferred --model/subagent patterns now that extension models are
@@ -2532,10 +2537,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 		}
 
-		// Fall back to first available model with a valid API key, honoring the
-		// path-scoped `enabledModels` allow-list when configured. Skip when the
-		// user explicitly requested a model via --model that wasn't found.
-		if (!model && deferredModelPatterns.length === 0) {
+		// Resolve late configured defaults and legacy assistant inference before
+		// falling back to the first authenticated available model. Skip when an
+		// explicit --model selection was requested but could not resolve.
+		if ((!model || restoredSessionModelSource === "legacy") && deferredModelPatterns.length === 0) {
 			// Retry the configured default role against the current catalog,
 			// setting `model` (+ thinking level) when it resolves. Extension
 			// factories register providers AFTER the early `defaultRoleSpec`
@@ -2560,6 +2565,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				defaultRoleSpec = reResolvedRoleSpec;
 				const resolvedDefaultModel = reResolvedRoleSpec.model;
 				model = resolvedDefaultModel;
+				restoredSessionModelSource = undefined;
+				restoredSessionThinkingLevel = undefined;
 				modelFallbackMessage = undefined;
 				// Recompute the thinking level against the now-real model.
 				// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
@@ -2577,6 +2584,29 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			};
 
 			await tryResolveDefaultRole();
+
+			if (!model && inferredLegacyModelStrings.length > 0) {
+				const restored = logger.time("restoreLegacySessionModel", () =>
+					findRestorableSessionModel(inferredLegacyModelStrings, modelRegistry, hasModelAuth),
+				);
+				if (restored.model) {
+					model = restored.model;
+					restoredSessionThinkingLevel = restored.thinkingLevel;
+					restoredSessionModelSource = "legacy";
+					modelFallbackMessage = undefined;
+					thinkingLevel = pickInitialThinkingLevel(restored.model);
+					autoThinking = thinkingLevel === AUTO_THINKING;
+					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+						autoThinking
+							? resolveProvisionalAutoLevel(restored.model)
+							: resolveThinkingLevelForModel(restored.model, effectiveThinkingLevel),
+					);
+					preconnectModelHost(restored.model.baseUrl);
+				} else if (restored.failedModel) {
+					modelFallbackMessage ??= `Could not restore model ${restored.failedModel}`;
+				}
+			}
 
 			if (!model) {
 				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
@@ -4026,6 +4056,40 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 		throw error;
 	}
+}
+
+/** Resolves persisted model selectors without triggering asynchronous auth refresh. */
+function findRestorableSessionModel(
+	modelStrings: readonly string[],
+	modelRegistry: ModelRegistry,
+	hasModelAuth: (candidate: Model) => boolean,
+): {
+	model: Model | undefined;
+	index: number;
+	thinkingLevel: ConfiguredThinkingLevel | undefined;
+	failedModel: string | undefined;
+} {
+	let failedModel: string | undefined;
+	for (let index = 0; index < modelStrings.length; index++) {
+		const sessionModelStr = modelStrings[index];
+		if (!sessionModelStr) continue;
+		const parsedModel = parseModelString(sessionModelStr, {
+			allowMaxSuffix: true,
+			allowAutoAlias: true,
+			isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+		});
+		if (!parsedModel) {
+			failedModel ??= sessionModelStr;
+			continue;
+		}
+
+		const restoredModel = modelRegistry.find(parsedModel.provider, parsedModel.id);
+		if (restoredModel && hasModelAuth(restoredModel)) {
+			return { model: restoredModel, index, thinkingLevel: parsedModel.thinkingLevel, failedModel };
+		}
+		failedModel ??= sessionModelStr;
+	}
+	return { model: undefined, index: -1, thinkingLevel: undefined, failedModel };
 }
 
 /**

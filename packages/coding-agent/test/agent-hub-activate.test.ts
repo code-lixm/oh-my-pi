@@ -15,7 +15,9 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { visitEntriesFromFileStream } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
@@ -65,15 +67,18 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 	const agents = new AgentRegistry();
 	registerWorker(agents);
 	let doneCalls = 0;
-	const done = Promise.withResolvers<void>();
+	const doneReasons: Array<"preserve-focus" | undefined> = [];
+	const done = Promise.withResolvers<"preserve-focus" | undefined>();
 	const renderRequested = Promise.withResolvers<void>();
 	const transcriptOverlays: unknown[] = [];
 	const hub = new AgentHubOverlayComponent({
+		settings: Settings.isolated(),
 		observers: new SessionObserverRegistry(),
 		hubKeys: [],
-		onDone: () => {
+		onDone: reason => {
 			doneCalls++;
-			done.resolve();
+			doneReasons.push(reason);
+			done.resolve(reason);
 		},
 		requestRender: () => renderRequested.resolve(),
 		registry: agents,
@@ -91,10 +96,35 @@ function makeHub(focusAgent: (id: string) => Promise<void>) {
 		agents,
 		hub,
 		doneCalls: () => doneCalls,
+		doneReasons: () => doneReasons,
 		done: done.promise,
 		renderRequested: renderRequested.promise,
 		transcriptOverlays,
 	};
+}
+
+const ROSTER_ENTRY_PATTERN = /^(?:❯| ) \S /u;
+
+function renderedRosterPanel(hub: AgentHubOverlayComponent, width: number): string[] {
+	const lines = hub.render(width).map(line => Bun.stripANSI(line));
+	const divider = lines.find(line => line.includes("┬"))?.indexOf("┬") ?? -1;
+	if (divider < 3) throw new Error("Expected side-by-side Agent Hub roster");
+	return lines.flatMap(line => {
+		if (!line.startsWith("│ ") || !line.endsWith(" │")) return [];
+		const splitDivider = line.lastIndexOf(" │ ");
+		if (splitDivider < 3) return [];
+		return [line.slice(2, splitDivider).trimEnd()];
+	});
+}
+
+function renderedRosterEntries(hub: AgentHubOverlayComponent, width: number): string[] {
+	return renderedRosterPanel(hub, width).filter(line => ROSTER_ENTRY_PATTERN.test(line));
+}
+
+function renderedRosterEntry(hub: AgentHubOverlayComponent, label: string, width: number): string {
+	const entries = renderedRosterEntries(hub, width).filter(entry => entry.includes(label));
+	expect(entries).toHaveLength(1);
+	return entries[0]!;
 }
 
 describe("Agent hub Enter activation", () => {
@@ -126,9 +156,9 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("f focuses the selected live subagent and closes the hub", async () => {
+	it("f focuses the selected live subagent and closes the hub without restoring editor focus", async () => {
 		const focusedIds: string[] = [];
-		const { hub, doneCalls, done } = makeHub(async id => {
+		const { hub, doneCalls, doneReasons, done } = makeHub(async id => {
 			focusedIds.push(id);
 		});
 
@@ -137,6 +167,7 @@ describe("Agent hub Enter activation", () => {
 
 		expect(focusedIds).toEqual([AGENT_ID]);
 		expect(doneCalls()).toBe(1);
+		expect(doneReasons()).toEqual(["preserve-focus"]);
 		hub.dispose();
 	});
 
@@ -158,6 +189,15 @@ describe("Agent hub Enter activation", () => {
 		registerMain(agents, { displayName: "Primary" });
 		registerMain(agents, { id: "top-level:review", displayName: "Review session", sessionTitle: "Review session" });
 		registerWorker(agents, "top-level:review");
+		agents.register({
+			id: "top-level:review/advisor",
+			displayName: "Review advisor",
+			kind: "advisor",
+			parentId: "top-level:review",
+			session: null,
+			sessionFile: null,
+			status: "parked",
+		});
 		const switched: string[] = [];
 		const transcriptOverlays: unknown[] = [];
 		const hub = new AgentHubOverlayComponent({
@@ -181,11 +221,12 @@ describe("Agent hub Enter activation", () => {
 		});
 
 		try {
-			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(rendered).toContain(AGENT_ID);
-			expect(rendered).not.toContain("Primary");
-			expect(rendered).not.toContain("Review session");
-			expect(rendered).not.toContain("Main:");
+			const roster = renderedRosterEntries(hub, 120).join("\n");
+			expect(roster).toContain(AGENT_ID);
+			expect(roster).not.toContain("Primary");
+			expect(roster).not.toContain("Review session");
+			expect(roster).not.toContain("Main:");
+			expect(roster).not.toContain("Review advisor");
 
 			hub.handleInput("\r");
 			expect(transcriptOverlays).toHaveLength(1);
@@ -195,17 +236,21 @@ describe("Agent hub Enter activation", () => {
 		}
 	});
 
-	it("p switches from a child to its owning Main runtime", async () => {
+	it("p switches from a child to its owning Main runtime without restoring editor focus", async () => {
 		const agents = new AgentRegistry();
 		registerMain(agents, { displayName: "Primary" });
 		registerMain(agents, { id: "top-level:review", displayName: "Review session", sessionTitle: "Review session" });
 		registerWorker(agents, "top-level:review");
 		const switched: string[] = [];
-		const done = Promise.withResolvers<void>();
+		const doneReasons: Array<"preserve-focus" | undefined> = [];
+		const done = Promise.withResolvers<"preserve-focus" | undefined>();
 		const hub = new AgentHubOverlayComponent({
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
-			onDone: () => done.resolve(),
+			onDone: reason => {
+				doneReasons.push(reason);
+				done.resolve(reason);
+			},
 			requestRender: () => {},
 			registry: agents,
 			irc: new IrcBus(agents),
@@ -221,6 +266,7 @@ describe("Agent hub Enter activation", () => {
 		await done.promise;
 
 		expect(switched).toEqual(["top-level:review"]);
+		expect(doneReasons).toEqual(["preserve-focus"]);
 		hub.dispose();
 	});
 
@@ -233,6 +279,7 @@ describe("Agent hub Enter activation", () => {
 		const agents = new AgentRegistry();
 		registerMain(agents, { sessionFile });
 		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
 			onDone: () => {},
@@ -244,10 +291,9 @@ describe("Agent hub Enter activation", () => {
 		});
 		await hub.persistedSubagentsReady;
 
-		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-		expect(rendered).toContain("Worker");
-		expect(rendered).toContain("parked");
-		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
+		const workerEntry = renderedRosterEntry(hub, AGENT_ID, 120);
+		expect(workerEntry).toContain(AGENT_ID);
+		expect(renderedRosterEntries(hub, 120).filter(entry => entry.includes(AGENT_ID))).toHaveLength(1);
 		hub.dispose();
 	});
 
@@ -280,17 +326,11 @@ describe("Agent hub Enter activation", () => {
 			sessionFile: secondarySessionFile,
 		});
 		await hub.persistedSubagentsReady;
-
-		expect(agents.get("Worker")).toMatchObject({
-			parentId: "top-level:review",
-			sessionFile: workerSessionFile,
-			status: "parked",
-		});
-		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-		expect(rendered).toContain("Worker");
-		expect(rendered).not.toContain("Review session");
-		expect(rendered).not.toContain("Main:");
-		expect(rendered).not.toContain("4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f");
+		const roster = renderedRosterEntries(hub, 120).join("\n");
+		expect(roster).toContain(AGENT_ID);
+		expect(roster).not.toContain("Review session");
+		expect(roster).not.toContain("Main:");
+		expect(roster).not.toContain("4b1d4df0-0ae0-4ff8-8f25-d35a5ba13e2f");
 		hub.dispose();
 	});
 
@@ -321,6 +361,228 @@ describe("Agent hub Enter activation", () => {
 
 		expect(agents.get("Worker")).toBeUndefined();
 		hub.dispose();
+	});
+
+	it("stops persisted discovery when the Hub is disposed", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-disposed-scan-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		await Bun.write(sessionFile, "");
+		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), "");
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			sessionFile,
+		});
+
+		hub.dispose();
+		await hub.persistedSubagentsReady;
+
+		expect(agents.get("Worker")).toBeUndefined();
+	});
+
+	it("restores nested parent lineage after restart", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-persisted-tree-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const parentSessionFile = path.join(tempDir.path(), "main", "Parent.jsonl");
+		const childSessionFile = path.join(tempDir.path(), "main", "Parent", "Child.jsonl");
+		await Bun.write(sessionFile, "");
+		await Bun.write(parentSessionFile, "");
+		await Bun.write(childSessionFile, "");
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			sessionFile,
+		});
+		await hub.persistedSubagentsReady;
+		agents.updateMetadata("Parent", { displayName: "Parent task" });
+		agents.updateMetadata("Child", { displayName: "Child task" });
+		expect(agents.get("Parent")?.parentId).toBe("Main");
+		expect(agents.get("Child")?.parentId).toBe("Parent");
+		hub.handleInput("t");
+		expect(renderedRosterEntry(hub, "Child task", 120)).toContain("└── Child task");
+		hub.dispose();
+	});
+
+	it("restores saved task metadata and timestamps without expanding a roster entry", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-persisted-metadata-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+		const createdAt = "2026-07-30T01:13:37.835Z";
+		const lastActivity = new Date("2026-07-30T01:15:00.000Z");
+		await Bun.write(sessionFile, "");
+		await Bun.write(
+			workerSessionFile,
+			[
+				JSON.stringify({ type: "session", version: 3, id: "worker-session", timestamp: createdAt, cwd: TEST_CWD }),
+				JSON.stringify({
+					type: "session_init",
+					id: "init",
+					parentId: null,
+					timestamp: createdAt,
+					systemPrompt: "system",
+					task: "Complete the assignment below, thoroughly:\n\n# Target\nInspect dependency boundaries and report unsafe coupling.\n\n# Change\nRead the implementation.",
+					tools: ["read"],
+				}),
+			].join("\n"),
+		);
+		await fs.utimes(workerSessionFile, lastActivity, lastActivity);
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			sessionFile,
+		});
+		await hub.persistedSubagentsReady;
+		expect(agents.get(AGENT_ID)).toMatchObject({
+			activity: "Inspect dependency boundaries and report unsafe coupling.",
+			createdAt: Date.parse(createdAt),
+			lastActivity: lastActivity.getTime(),
+			status: "parked",
+		});
+		expect(renderedRosterEntry(hub, AGENT_ID, 120)).toContain(AGENT_ID);
+		hub.dispose();
+	});
+
+	it("restores persisted role, model, usage, and artifact history in the inspector", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-persisted-usage-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+		const artifactBase = workerSessionFile.slice(0, -".jsonl".length);
+		const createdAt = "2026-07-30T01:13:30.000Z";
+		const lastActivity = new Date("2026-07-30T01:15:00.000Z");
+		await Bun.write(sessionFile, "");
+		await Bun.write(
+			workerSessionFile,
+			[
+				JSON.stringify({ type: "session", version: 3, id: "worker-session", timestamp: createdAt, cwd: TEST_CWD }),
+				JSON.stringify({
+					type: "model_change",
+					id: "model",
+					parentId: null,
+					timestamp: createdAt,
+					model: "openai-codex/gpt-5.6-luna",
+				}),
+				JSON.stringify({
+					type: "session_init",
+					id: "init",
+					parentId: "model",
+					timestamp: createdAt,
+					systemPrompt: `base prompt\n\nROLE\n====\n${getBundledAgent("scout")?.systemPrompt}`,
+					task: "Inspect persisted telemetry.",
+					tools: ["read", "grep"],
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "assistant",
+					parentId: "init",
+					timestamp: lastActivity.toISOString(),
+					message: {
+						role: "assistant",
+						timestamp: lastActivity.getTime(),
+						content: [
+							{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "src/a.ts" } },
+							{ type: "toolCall", id: "grep-call", name: "grep", arguments: { pattern: "needle" } },
+						],
+						usage: {
+							input: 100,
+							output: 25,
+							cacheRead: 200,
+							cacheWrite: 10,
+							totalTokens: 335,
+							cost: { input: 0.01, output: 0.1, cacheRead: 0.01, cacheWrite: 0.003, total: 0.123 },
+						},
+					},
+				}),
+			].join("\n"),
+		);
+		await Bun.write(`${artifactBase}.md`, "saved output");
+		await Bun.write(`${artifactBase}.patch`, "saved patch");
+		await fs.utimes(workerSessionFile, lastActivity, lastActivity);
+		const agents = new AgentRegistry();
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			sessionFile,
+		});
+		await hub.persistedSubagentsReady;
+
+		expect(agents.get("Worker")?.history).toMatchObject({
+			resolvedModel: "openai-codex/gpt-5.6-luna",
+			readOnly: true,
+			outputPath: `${artifactBase}.md`,
+			patchPath: `${artifactBase}.patch`,
+			metrics: { tokens: 135, requests: 1, tools: 2, cost: 0.123, durationMs: 90_000 },
+		});
+		const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+		expect(rendered).toContain("SMOL");
+		expect(rendered).toContain("$0.123");
+		expect(rendered).toContain("1m30s");
+		expect(rendered).toContain("1 req");
+		expect(rendered).toContain("2 tools");
+		expect(rendered).toContain("135 tok");
+		expect(rendered).toContain("read-only");
+		hub.dispose();
+	});
+
+	it("yields to a macrotask while streaming a large session", async () => {
+		vi.useFakeTimers();
+		using tempDir = TempDir.createSync("@omp-agent-hub-responsive-");
+		const sessionFile = path.join(tempDir.path(), "session.jsonl");
+		const entry = JSON.stringify({
+			type: "message",
+			id: "entry",
+			parentId: null,
+			timestamp: "2026-07-30T01:13:30.000Z",
+			message: { role: "user", content: [{ type: "text", text: "small" }] },
+		});
+		await Bun.write(sessionFile, `${entry}\n`.repeat(8_193));
+		let complete = false;
+		let yieldedBeforeComplete = false;
+		let visited = 0;
+		const visit = visitEntriesFromFileStream(
+			sessionFile,
+			() => {
+				visited++;
+				if (visited !== 8_192) return;
+				setTimeout(() => {
+					if (!complete) yieldedBeforeComplete = true;
+				}, 0);
+			},
+			{ yieldEveryBytes: 0, yieldEveryEntries: 8_192 },
+		).finally(() => {
+			complete = true;
+		});
+		try {
+			for (let i = 0; i < 20_000 && visited < 8_192 && !complete; i++) await Promise.resolve();
+			expect(visited).toBeGreaterThanOrEqual(8_192);
+			vi.runOnlyPendingTimers();
+			await visit;
+			expect(yieldedBeforeComplete).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it("does not generically revive active or tombstoned Vibe children copied by a post-exit fork", async () => {
 		using tempDir = TempDir.createSync("@omp-agent-hub-vibe-fork-");
@@ -366,6 +628,7 @@ describe("Agent hub Enter activation", () => {
 		const agents = new AgentRegistry();
 		registerMain(agents, { sessionFile: fork.newSessionFile });
 		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
 			observers: new SessionObserverRegistry(),
 			hubKeys: [],
 			onDone: () => {},
@@ -430,7 +693,6 @@ describe("Agent hub Enter activation", () => {
 		expect(showOverlay).toHaveBeenCalledWith(
 			capturedHub,
 			expect.objectContaining({
-				anchor: "top-left",
 				width: "100%",
 				maxHeight: "100%",
 				margin: 0,
@@ -440,21 +702,59 @@ describe("Agent hub Enter activation", () => {
 		expect(editorContainer.clear).not.toHaveBeenCalled();
 		expect(editorContainer.addChild).not.toHaveBeenCalled();
 		expect(focusTargets[0]).toBe(capturedHub);
-		const tableLines = Bun.stripANSI(capturedHub.render(120).join("\n")).split("\n");
-		const columnHeader = tableLines.find(
-			line =>
-				["Agent", "Status", "Duration", "Model"].every(column => line.includes(column)) && line.includes("Last up"),
-		);
-		expect(columnHeader).toBeDefined();
-		expect(tableLines.filter(line => line.includes(AGENT_ID))).toHaveLength(1);
+		expect(renderedRosterEntries(capturedHub, 120).filter(entry => entry.includes(AGENT_ID))).toHaveLength(1);
 
 		capturedHub.handleInput("\r");
 
 		expect(overlays).toHaveLength(2);
 		expect(focusAgentSession).not.toHaveBeenCalled();
 		expect(overlayHide).not.toHaveBeenCalled();
-		expect(focusTargets.at(-1)).not.toBe(approvalPrompt);
+		expect(focusTargets).not.toContain(approvalPrompt);
 		expect(requestRender).toHaveBeenCalled();
+	});
+
+	it("selector controller preserves the focused subagent when f closes the Hub", async () => {
+		AgentRegistry.resetGlobalForTests();
+		const agents = AgentRegistry.global();
+		registerWorker(agents);
+		let capturedHub: AgentHubOverlayComponent | undefined;
+		const closed = Promise.withResolvers<void>();
+		const editor = { id: "editor" };
+		const focusedSession = { id: "focused-subagent-session" };
+		const focusTargets: unknown[] = [];
+		const setFocus = (target: unknown) => {
+			focusTargets.push(target);
+		};
+		const ctx = {
+			keybindings: { getKeys: () => [] },
+			ui: {
+				showOverlay: (component: unknown) => {
+					capturedHub = component as AgentHubOverlayComponent;
+					return { hide: () => closed.resolve(), setHidden() {}, isHidden: () => false };
+				},
+				setFocus,
+				requestRender() {},
+			},
+			editor,
+			editorContainer: { children: [editor], clear() {}, addChild() {} },
+			collabGuest: undefined,
+			focusAgentSession: async (id: string) => {
+				if (id !== AGENT_ID) throw new Error(`Unexpected agent ${id}`);
+				setFocus(focusedSession);
+			},
+			session: { getToolByName: () => undefined, extensionRunner: undefined },
+			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null },
+			hideThinkingBlock: false,
+		};
+		const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+
+		controller.showAgentHub(new SessionObserverRegistry());
+		if (!capturedHub) throw new Error("Expected Agent Hub overlay");
+		capturedHub.handleInput("f");
+		await closed.promise;
+
+		expect(focusTargets.at(-1)).toBe(focusedSession);
+		expect(focusTargets).not.toContain(editor);
 	});
 
 	it("propagates an explicit mouse-tracking choice through the Hub and its transcript overlay", () => {
@@ -556,11 +856,16 @@ describe("Agent hub overlay mounting and close tap", () => {
 
 	function setup(agents: AgentRegistry, sessionFile: string | null = null) {
 		let shown: AgentHubOverlayComponent | undefined;
+		let overlayOptions: Record<string, unknown> | undefined;
+		const shownReady = Promise.withResolvers<AgentHubOverlayComponent>();
 		const editor = {};
 		const focusTargets: unknown[] = [];
 		const overlayHide = vi.fn();
-		const showOverlay = vi.fn((component: unknown) => {
-			shown = component as AgentHubOverlayComponent;
+		const showOverlay = vi.fn((component: unknown, options: Record<string, unknown>) => {
+			const hub = component as AgentHubOverlayComponent;
+			shown = hub;
+			overlayOptions = options;
+			shownReady.resolve(hub);
 			return { hide: overlayHide, setHidden: vi.fn(), isHidden: () => false };
 		});
 		const ctx = {
@@ -589,37 +894,94 @@ describe("Agent hub overlay mounting and close tap", () => {
 			controller,
 			editor,
 			shown: () => shown,
+			shownReady: shownReady.promise,
+			overlayOptions: () => overlayOptions,
 			focusTargets,
 			showOverlay,
 			overlayHide,
 		};
 	}
 
-	it("mounts a Main-only Agent Hub fullscreen, renders its empty state, and restores focus on Escape", () => {
+	it("requireContent leaves a Main-only Agent Hub unmounted", () => {
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "Main",
+			displayName: "Main",
+			kind: "main",
+			session: null,
+			sessionFile: null,
+			status: "running",
+		});
+		const { controller, shown } = setup(agents);
+
+		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
+
+		expect(shown()).toBeUndefined();
+	});
+
+	it("the explicit Main-only hub renders its empty state and restores editor focus on Escape", () => {
 		const agents = new AgentRegistry();
 		registerMain(agents);
-		const { controller, editor, shown, focusTargets, showOverlay, overlayHide } = setup(agents);
+		const { controller, editor, shown, focusTargets, overlayHide } = setup(agents);
 
 		controller.showAgentHub(new SessionObserverRegistry());
 
 		const hub = shown();
-		if (!hub) throw new Error("Expected Agent Hub overlay");
-		expect(showOverlay).toHaveBeenCalledWith(
-			hub,
-			expect.objectContaining({
-				anchor: "top-left",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-				fullscreen: true,
-			}),
-		);
-		expect(focusTargets).toEqual([hub]);
-		expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("No tasks yet");
+		expect(hub).toBeDefined();
+		expect(Bun.stripANSI(hub!.render(120).join("\n"))).toContain("No tasks yet");
+		hub!.handleInput("\x1b");
 
-		hub.handleInput("\x1b");
 		expect(overlayHide).toHaveBeenCalledTimes(1);
 		expect(focusTargets.at(-1)).toBe(editor);
+	});
+
+	it("requireContent opens the hub once a subagent exists", () => {
+		const agents = new AgentRegistry();
+		registerWorker(agents);
+		const { controller, shown } = setup(agents);
+
+		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
+
+		expect(shown()).toBeDefined();
+		shown()!.dispose();
+	});
+
+	it("requireContent opens the hub after persisted subagents load", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-require-content-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+		await Bun.write(sessionFile, "");
+		await Bun.write(workerSessionFile, "");
+		const agents = new AgentRegistry();
+		const { controller, shown, shownReady } = setup(agents, sessionFile);
+
+		controller.showAgentHub(new SessionObserverRegistry(), { requireContent: true });
+
+		expect(shown()).toBeUndefined();
+		const shownHub = await shownReady;
+		expect(shownHub).toBeDefined();
+		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
+		shownHub!.dispose();
+	});
+
+	it("the explicit hub opens fullscreen before persisted subagents load", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-explicit-");
+		const sessionFile = path.join(tempDir.path(), "main.jsonl");
+		await Bun.write(sessionFile, "");
+		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), "");
+		const agents = new AgentRegistry();
+		const { controller, shown, overlayOptions } = setup(agents, sessionFile);
+
+		controller.showAgentHub(new SessionObserverRegistry());
+
+		const hub = shown();
+		expect(hub).toBeDefined();
+		expect(overlayOptions()).toMatchObject({ width: "100%", maxHeight: "100%", margin: 0, fullscreen: true });
+		expect(agents.get("Worker")).toBeUndefined();
+		expect(Bun.stripANSI(hub!.render(120).join("\n"))).toContain("Loading saved agents");
+		await hub!.persistedSubagentsReady;
+		expect(agents.get("Worker")?.status).toBe("parked");
+		hub!.dispose();
 	});
 
 	it("armCloseTap lets a single ← dismiss the hub the opening ←← raised", () => {
@@ -661,6 +1023,7 @@ describe("Agent hub data refresh coalescing", () => {
 		const observers = new SessionObserverRegistry();
 		const requestRender = vi.fn();
 		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
 			observers,
 			hubKeys: [],
 			onDone: () => {},
@@ -699,6 +1062,122 @@ describe("Agent hub data refresh coalescing", () => {
 		} finally {
 			hub.dispose();
 			vi.useRealTimers();
+		}
+	});
+
+	it("refreshes direct-session fallback stats on the age cadence, not paints or heartbeats", async () => {
+		vi.useFakeTimers();
+		const agents = new AgentRegistry();
+		const observers = new SessionObserverRegistry();
+		const requestRender = vi.fn();
+		let inputTokens = 100;
+		let assistantMessages = 1;
+		const getSessionStats = vi.fn(() => ({
+			sessionFile: undefined,
+			sessionId: "sdk-agent",
+			userMessages: 1,
+			assistantMessages,
+			toolCalls: 2,
+			toolResults: 2,
+			totalMessages: 6,
+			tokens: {
+				input: inputTokens,
+				output: 50,
+				reasoning: 0,
+				cacheRead: 20,
+				cacheWrite: 0,
+				total: inputTokens + 70,
+			},
+			premiumRequests: 0,
+			cost: 0.1,
+		}));
+		agents.register({
+			id: "SdkAgent",
+			displayName: "SDK agent",
+			kind: "sub",
+			parentId: "Main",
+			session: { getSessionStats, subscribe: () => () => {} } as unknown as AgentSession,
+			status: "running",
+		});
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers,
+			hubKeys: [],
+			onDone: () => {},
+			requestRender,
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+		});
+
+		try {
+			await hub.persistedSubagentsReady;
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			for (let i = 0; i < 4; i++) hub.render(120);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("150 tok");
+
+			inputTokens = 400;
+			assistantMessages = 2;
+			agents.setActivity("SdkAgent", "heartbeat");
+			vi.advanceTimersByTime(100);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("150 tok");
+
+			vi.advanceTimersByTime(4_899);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			vi.advanceTimersByTime(1);
+			expect(getSessionStats).toHaveBeenCalledTimes(2);
+			const refreshed = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(refreshed).toContain("450 tok");
+			expect(refreshed).toContain("2 req");
+			expect(refreshed).toContain("1/1");
+			expect(refreshed).toContain("measured");
+			hub.render(120);
+			expect(getSessionStats).toHaveBeenCalledTimes(2);
+		} finally {
+			hub.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("counts shared fallback session usage once across parent and descendant rows", () => {
+		const agents = new AgentRegistry();
+		const getSessionStats = vi.fn(() => ({
+			tokens: { input: 100, output: 40, cacheRead: 10, cacheWrite: 10, total: 160 },
+			assistantMessages: 1,
+			toolCalls: 2,
+			cost: 0.1,
+			contextUsage: undefined,
+		}));
+		const session = { getSessionStats } as unknown as AgentSession;
+		agents.register({ id: "Parent", displayName: "Parent", kind: "sub", session, status: "idle" });
+		agents.register({
+			id: "Child",
+			displayName: "Child",
+			kind: "sub",
+			parentId: "Parent",
+			session,
+			status: "idle",
+		});
+		const hub = new AgentHubOverlayComponent({
+			settings: Settings.isolated(),
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry: agents,
+			irc: new IrcBus(agents),
+			focusAgent: async () => {},
+		});
+		try {
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered).toContain("150 tok");
+			expect(rendered).toContain("1/2");
+			expect(rendered).toContain("measured");
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+		} finally {
+			hub.dispose();
 		}
 	});
 });

@@ -168,7 +168,8 @@ await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TER
 				expected: string;
 			};
 			expect(resolved.id).toBe("warp");
-			expect(resolved.imageProtocol).toBe(resolved.expected);
+			// Warp for Windows lacks Kitty graphics support.
+			expect(resolved.imageProtocol).toBe(process.platform === "win32" ? null : resolved.expected);
 		} finally {
 			await fs.rm(probeDir, { recursive: true, force: true });
 		}
@@ -176,7 +177,11 @@ await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TER
 
 	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
 		const warp = getTerminalInfo("warp");
-		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
+		// Warp lacks Kitty graphics on Windows hosts, including WSL.
+		const windowsHost =
+			process.platform === "win32" ||
+			(process.platform === "linux" && Boolean(Bun.env.WSL_DISTRO_NAME || Bun.env.WSL_INTEROP));
+		expect(warp.imageProtocol).toBe(windowsHost ? null : ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
 		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
@@ -188,9 +193,9 @@ await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TER
 		const linux = getTerminalInfo("warp", "linux", {});
 		const windows = getTerminalInfo("warp", "win32", {});
 
-		expect(resolveWarpImageProtocol("darwin")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("linux")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("win32")).toBeNull();
+		expect(resolveWarpImageProtocol("darwin", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("linux", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("win32", {})).toBeNull();
 		expect(mac.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(linux.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(windows.imageProtocol).toBeNull();

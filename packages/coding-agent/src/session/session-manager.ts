@@ -219,6 +219,13 @@ async function findMostRecentRecoverableSession(
 function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
 	return new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime();
 }
+/**
+ * Leaf-preserving custom entries remain real tree children for append-only
+ * history, but do not replace the active semantic branch leaf.
+ */
+function isLeafPreservingCustomEntry(entry: SessionEntry): entry is CustomEntry & { preserveLeaf: true } {
+	return entry.type === "custom" && entry.preserveLeaf === true;
+}
 
 /**
  * Maintains the derived views over a session's entry list: id lookup, the
@@ -248,7 +255,7 @@ class SessionEntryIndex {
 
 	insert(entry: SessionEntry): void {
 		this.#entriesById.set(entry.id, entry);
-		this.#leaf = entry.id;
+		this.#leaf = isLeafPreservingCustomEntry(entry) ? entry.parentId : entry.id;
 
 		const bucket = this.#children.get(entry.parentId);
 		if (bucket) bucket.push(entry);
@@ -1127,8 +1134,9 @@ export class SessionManager {
 		if (batch?.collecting) batch.entryIds.add(entry.id);
 		if (batch && !batch.collecting) {
 			batch.externalLeafChanged = true;
-			batch.externalLeafId = entry.id;
+			batch.externalLeafId = this.#index.leafId();
 		}
+
 		this.#appendToSessionFile(entry);
 		if (batch) batch.deferredNotifications.push(entry);
 		else this.#notifyEntryAppended(entry);
@@ -2080,9 +2088,16 @@ export class SessionManager {
 	 * Append a model change as a child of the current leaf, then advance the leaf.
 	 * @param model Model in "provider/modelId" format
 	 * @param role Optional role (default: "default")
+	 * @param resolvedModelIsFallback Whether this transition selected a retry-fallback model
 	 */
-	appendModelChange(model: string, role?: string): string {
-		const entry: ModelChangeEntry = { type: "model_change", ...this.#freshEntryFields(), model, role };
+	appendModelChange(model: string, role?: string, resolvedModelIsFallback = false): string {
+		const entry: ModelChangeEntry = {
+			type: "model_change",
+			...this.#freshEntryFields(),
+			model,
+			role,
+			resolvedModelIsFallback,
+		};
 		this.#recordEntry(entry);
 		return entry.id;
 	}
@@ -2092,6 +2107,10 @@ export class SessionManager {
 		task: string;
 		agentDisplayName?: string;
 		tools: string[];
+		agent?: string;
+		modelRole?: string;
+		resolvedModel?: string;
+		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
 		restrictToolNames?: boolean;
@@ -2141,6 +2160,26 @@ export class SessionManager {
 
 	appendCustomEntry(customType: string, data?: unknown): string {
 		const entry: CustomEntry = { type: "custom", customType, data, ...this.#freshEntryFields() };
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/**
+	 * Append custom metadata under an explicit parent without changing the
+	 * active semantic leaf. The marker survives reload so index rebuilds retain
+	 * the same selected branch.
+	 */
+	appendCustomEntryToBranch(customType: string, data: unknown, parentId: string | null): string {
+		if (parentId !== null && !this.#index.has(parentId)) throw new Error(`Entry ${parentId} not found`);
+		const entry: CustomEntry = {
+			type: "custom",
+			customType,
+			data,
+			id: generateId(this.#index),
+			parentId,
+			timestamp: nowIso(),
+			preserveLeaf: true,
+		};
 		this.#recordEntry(entry);
 		return entry.id;
 	}
@@ -2601,6 +2640,9 @@ export class SessionManager {
 			task: string;
 			agentDisplayName?: string;
 			tools: string[];
+			agent?: string;
+			modelRole?: string;
+			resolvedModel?: string;
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
 			restrictToolNames?: boolean;
@@ -2622,6 +2664,9 @@ export class SessionManager {
 			task: string;
 			agentDisplayName?: string;
 			tools: string[];
+			agent?: string;
+			modelRole?: string;
+			resolvedModel?: string;
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
 			restrictToolNames?: boolean;
@@ -2636,6 +2681,9 @@ export class SessionManager {
 					task: entry.task,
 					agentDisplayName: entry.agentDisplayName,
 					tools: entry.tools,
+					agent: entry.agent,
+					modelRole: entry.modelRole,
+					resolvedModel: entry.resolvedModel,
 					outputSchema: entry.outputSchema,
 					outputSchemaMode: entry.outputSchemaMode,
 					restrictToolNames: entry.restrictToolNames,

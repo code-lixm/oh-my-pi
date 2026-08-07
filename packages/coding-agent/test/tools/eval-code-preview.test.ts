@@ -114,14 +114,14 @@ describe("eval renderer: jsonOutputs with completed cells", () => {
 		);
 		const rendered = Bun.stripANSI(component.render(120).join("\n"));
 		const lines = rendered.split("\n");
-		const bottom = lines.findIndex(line => line.includes(theme.boxRound.bottomRight));
+		const lastOutputRow = lines.findLastIndex(line => line.includes("stdout after"));
 
-		expect(bottom).toBeGreaterThan(-1);
+		expect(lastOutputRow).toBeGreaterThan(-1);
 		expect(rendered).toContain(`display[1]: ${JSON.stringify(payload)}`);
 		expect(rendered.match(/onlyInOutput/g)?.length ?? 0).toBe(1);
 		expect(rendered.match(/"thistle-wren-7"/g)?.length ?? 0).toBe(1);
-		expect(lines.slice(0, bottom + 1).join("\n")).toContain(`display[1]: ${JSON.stringify(payload)}`);
-		expect(lines.slice(bottom + 1).join("\n")).not.toContain("quasarLatchKey");
+		expect(lines.slice(0, lastOutputRow + 1).join("\n")).toContain(`display[1]: ${JSON.stringify(payload)}`);
+		expect(lines.slice(lastOutputRow + 1).join("\n")).not.toContain("quasarLatchKey");
 	});
 
 	it("renders a legacy single json output tree without display labels when no cells exist", () => {

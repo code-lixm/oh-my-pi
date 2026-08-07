@@ -259,7 +259,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		}
 	});
 
-	it("delivers hidden nextTurn stop reactions through the next LLM call without exposing them in the visible queue", async () => {
+	it("counts hidden nextTurn stop reactions as pending while keeping editable queues empty until delivery", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		let firstStream: AssistantMessageEventStream | undefined;
 		const callMessages: Message[][] = [];
@@ -314,7 +314,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			{ deliverAs: "nextTurn", triggerTurn: true },
 		);
 
-		expect(session.queuedMessageCount).toBe(0);
+		expect(session.queuedMessageCount).toBe(1);
 		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
 
 		firstStream?.push({ type: "done", reason: "stop", message: createAssistantMessage("Done") });

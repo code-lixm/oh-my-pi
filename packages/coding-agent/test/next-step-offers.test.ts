@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { type NextStepOffer, NextStepOfferStore } from "@oh-my-pi/pi-coding-agent/session/next-step-offers";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -90,6 +91,38 @@ describe("structured next-step offer lifecycle", () => {
 		expect(selected.offer).toEqual(OFFERS[1]);
 		expect(selected.userMessage).toContain("Build the local CLI");
 		expect(resumed.resolveBareNumber("2")).toBeUndefined();
+	});
+
+	it("keeps forced invalidation on a selected skill leaf across reload without reviving its ancestor offer", async () => {
+		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "active"));
+		identity.sessionId = manager.getSessionId();
+		const store = createStore(manager);
+
+		manager.appendMessage({ role: "user", content: "anchor", timestamp: clock.now });
+		record(store, "final-on-ancestor");
+		const customTargetId = manager.appendCustomMessageEntry(
+			SKILL_PROMPT_MESSAGE_TYPE,
+			"<skill>Apply the selected workflow.</skill>",
+			true,
+			{ name: "workflow", path: "/skills/workflow/SKILL.md", lineCount: 1 },
+			"user",
+		);
+
+		// This creates an ordinary inactive child before returning to the semantic leaf.
+		store.invalidate();
+		manager.branch(customTargetId);
+		store.invalidate({ forcePersist: true });
+
+		expect(manager.getLeafId()).toBe(customTargetId);
+		await manager.flush();
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+
+		const resumedManager = await SessionManager.open(sessionFile, tempDir.path());
+		expect(resumedManager.getLeafId()).toBe(customTargetId);
+
+		const resumed = createStore(resumedManager);
+		expect(resumed.resolveBareNumber("1")).toBeUndefined();
 	});
 
 	it("records at most three structured choices and clears an earlier offer when a later final has none", () => {

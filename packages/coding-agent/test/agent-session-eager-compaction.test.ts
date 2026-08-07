@@ -22,6 +22,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 // turn must carry the gated reminders again (reminder-only — never a forced tool_choice).
 
 const CONTINUE_MARKER = "Resume work on the user's most recent intent";
+const TODO_INIT_MARKER = "You MUST include the `todo` `init` op in your first tool-call message.";
 
 type ObservedPromptCall = {
 	toolChoice: string | undefined;
@@ -354,7 +355,7 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		const continuation = await runToContinuation(session, waitForCall);
 
 		// `always` keeps the strong forced wording in the reminder text...
-		expect(continuation.messageTexts.some(text => text.includes("You MUST call"))).toBe(true);
+		expect(continuation.messageTexts.some(text => text.includes(TODO_INIT_MARKER))).toBe(true);
 		// ...but post-compaction never attaches the forced todo tool_choice.
 		expect(continuation.toolChoice).toBeUndefined();
 	});
@@ -379,7 +380,7 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 
 		expect(session.getTodoPhases().length).toBeGreaterThan(0);
 		expect(continuation.messageTexts.some(text => text.includes("Consider calling"))).toBe(false);
-		expect(continuation.messageTexts.some(text => text.includes("You MUST call"))).toBe(false);
+		expect(continuation.messageTexts.some(text => text.includes(TODO_INIT_MARKER))).toBe(false);
 	});
 
 	it("resets Codex provider history after successful auto-compaction", async () => {

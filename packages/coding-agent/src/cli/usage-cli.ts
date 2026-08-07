@@ -18,7 +18,7 @@ import {
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber, getProjectDir, sanitizeText } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { tSettingsUi } from "../i18n/settings-locale";

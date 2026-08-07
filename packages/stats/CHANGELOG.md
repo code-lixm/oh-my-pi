@@ -9,6 +9,12 @@
 ### Fixed
 
 - Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Optimized package dependencies by replacing `date-fns` with `@oh-my-pi/pi-utils/dates` and removing unused test dependencies.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

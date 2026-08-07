@@ -1,7 +1,12 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
 import { EvalExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/eval-execution";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 
@@ -249,11 +254,18 @@ describe("BashExecutionComponent #clampDisplayLine", () => {
 });
 describe("BashExecutionComponent rounded legend frame", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+	let previousBorderStyle: OutputBlockBorderStyle;
 
 	beforeEach(async () => {
+		previousBorderStyle = getOutputBlockBorderStyle();
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
+		setOutputBlockBorderStyle("full");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
 	});
 
 	it("renders one unified rounded legend frame without standalone DynamicBorder rows", async () => {
@@ -302,11 +314,18 @@ describe("BashExecutionComponent rounded legend frame", () => {
 });
 describe("BashExecutionComponent streaming rebuild invariant", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+	let previousBorderStyle: OutputBlockBorderStyle;
 
 	beforeEach(async () => {
+		previousBorderStyle = getOutputBlockBorderStyle();
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
+		setOutputBlockBorderStyle("full");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
 	});
 
 	it("appended output appears in the same rounded legend frame as the initial running state", async () => {
@@ -352,11 +371,18 @@ describe("BashExecutionComponent streaming rebuild invariant", () => {
 });
 describe("EvalExecutionComponent streaming rebuild invariant", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
+	let previousBorderStyle: OutputBlockBorderStyle;
 
 	beforeEach(async () => {
+		previousBorderStyle = getOutputBlockBorderStyle();
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
+		setOutputBlockBorderStyle("full");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
 	});
 
 	it("appended output appears in the same rounded legend frame as the initial running state", async () => {

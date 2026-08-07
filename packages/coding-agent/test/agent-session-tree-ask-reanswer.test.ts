@@ -5,7 +5,7 @@
  * leaf onto the old answer. `navigateTree()` instead hands back the original
  * questions (`reopenAsk`) so the caller can re-open the picker, then a
  * follow-up call with `reanswerAskResult` branches a *new* sibling toolResult
- * off the same `ask` toolCall — leaving the original answer's branch intact.
+ * under the stale result's direct parent, preserving the original answer's branch.
  *
  * The two-phase protocol is opt-in via `allowAskReopen`: only the
  * interactive `/tree` selector understands `reopenAsk`, so every other
@@ -118,9 +118,11 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 
 			sessionManager.appendMessage(userMsg("please deploy"));
 			const askCallId = "ask-call-1";
-			const askCallEntryId = sessionManager.appendMessage(
-				toolCallMsg(askCallId, "ask", { questions: ORIGINAL_QUESTIONS }),
-			);
+			sessionManager.appendMessage(toolCallMsg(askCallId, "ask", { questions: ORIGINAL_QUESTIONS }));
+			const toolExecutionStartEntryId = sessionManager.appendCustomEntry("tool_execution_start", {
+				toolCallId: askCallId,
+				toolName: "ask",
+			});
 			const tr1Id = sessionManager.appendMessage(
 				toolResultMsg(askCallId, "ask", "User selected: staging", staleAnswerResult().details),
 			);
@@ -140,10 +142,12 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 			// (b) sibling, not mutation: a fresh entry, and the old one is untouched.
 			expect(newLeafId).not.toBe(tr1Id);
 			const newEntry = sessionManager.getEntry(newLeafId!);
-			expect(newEntry?.parentId).toBe(askCallEntryId);
 			const originalEntry = sessionManager.getEntry(tr1Id);
-			expect(originalEntry).toBeDefined();
-			expect(originalEntry?.parentId).toBe(askCallEntryId);
+			if (!originalEntry) throw new Error("Expected original toolResult entry");
+			const staleResultParentId = originalEntry.parentId;
+			if (!staleResultParentId) throw new Error("Expected stale toolResult parent");
+			expect(staleResultParentId).toBe(toolExecutionStartEntryId);
+			expect(newEntry?.parentId).toBe(staleResultParentId);
 			if (originalEntry?.type === "message" && originalEntry.message.role === "toolResult") {
 				expect(originalEntry.message.details).toEqual(staleAnswerResult().details);
 			} else {
@@ -151,7 +155,7 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 			}
 			// The original branch (tr1 -> a2) is still fully reachable.
 			expect(sessionManager.getEntry(a2Id)?.parentId).toBe(tr1Id);
-			const siblingIds = sessionManager.getChildren(askCallEntryId).map(e => e.id);
+			const siblingIds = sessionManager.getChildren(staleResultParentId).map(e => e.id);
 			expect(siblingIds).toContain(tr1Id);
 			expect(siblingIds).toContain(newLeafId!);
 
@@ -329,6 +333,10 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 			const askCallEntryId = sessionManager.appendMessage(
 				toolCallMsg(askCallId, "ask", { questions: ORIGINAL_QUESTIONS }),
 			);
+			const toolExecutionStartEntryId = sessionManager.appendCustomEntry("tool_execution_start", {
+				toolCallId: askCallId,
+				toolName: "ask",
+			});
 			const tr1Id = sessionManager.appendMessage(
 				toolResultMsg(askCallId, "ask", "User selected: staging", staleAnswerResult().details),
 			);
@@ -352,6 +360,7 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 			// drop the fact that staging was ever chosen.
 			expect(capturedEntryIds[0]).toContain(tr1Id);
 			expect(capturedEntryIds[0]).not.toContain(askCallEntryId);
+			expect(capturedEntryIds[0]).not.toContain(toolExecutionStartEntryId);
 		} finally {
 			await ctx.cleanup();
 		}
@@ -419,9 +428,11 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 
 			sessionManager.appendMessage(userMsg("please deploy"));
 			const askCallId = "ask-call-1";
-			const askCallEntryId = sessionManager.appendMessage(
-				toolCallMsg(askCallId, "ask", { questions: ORIGINAL_QUESTIONS }),
-			);
+			sessionManager.appendMessage(toolCallMsg(askCallId, "ask", { questions: ORIGINAL_QUESTIONS }));
+			const toolExecutionStartEntryId = sessionManager.appendCustomEntry("tool_execution_start", {
+				toolCallId: askCallId,
+				toolName: "ask",
+			});
 			const tr1Id = sessionManager.appendMessage(
 				toolResultMsg(askCallId, "ask", "User selected: staging", staleAnswerResult().details),
 			);
@@ -445,15 +456,20 @@ describe("AgentSession tree navigation onto an ask toolResult", () => {
 			const newLeafId = sessionManager.getLeafId();
 			expect(newLeafId).not.toBe(tr1Id);
 			const newEntry = sessionManager.getEntry(newLeafId!);
-			expect(newEntry?.parentId).toBe(askCallEntryId);
+			const originalEntry = sessionManager.getEntry(tr1Id);
+			const staleResultParentId = originalEntry?.parentId;
+			if (!staleResultParentId) throw new Error("Expected stale toolResult parent");
+			expect(staleResultParentId).toBe(toolExecutionStartEntryId);
+			expect(newEntry?.parentId).toBe(staleResultParentId);
 			if (newEntry?.type === "message" && newEntry.message.role === "toolResult") {
 				expect(newEntry.message.details).toEqual(newAnswerResult().details);
 			} else {
 				throw new Error("expected the new leaf to be a toolResult entry");
 			}
 			// The original (stale) answer's branch is still reachable.
-			const originalEntry = sessionManager.getEntry(tr1Id);
-			expect(originalEntry?.parentId).toBe(askCallEntryId);
+			const siblingIds = sessionManager.getChildren(staleResultParentId).map(e => e.id);
+			expect(siblingIds).toContain(tr1Id);
+			expect(siblingIds).toContain(newLeafId!);
 		} finally {
 			await ctx.cleanup();
 		}

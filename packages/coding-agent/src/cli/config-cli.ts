@@ -8,7 +8,7 @@
 import * as fs from "node:fs/promises";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { APP_NAME, getAgentDbPath, getAgentDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import {
 	getDefault,
 	getEnumValues,

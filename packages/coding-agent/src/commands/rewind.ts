@@ -6,7 +6,7 @@
  * restores so the live `AgentSession` conversation adapter can be used.
  */
 import { getAgentDir, getProjectDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Args, Command, Flags } from "../cli/command-runtime";
 import { Settings } from "../config/settings";
 import type {

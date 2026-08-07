@@ -377,7 +377,7 @@ describe("SelectorController Jobs Hub mounting", () => {
 			expect(overlayOptions).toHaveLength(1);
 			expect(overlayOptions[0]).toEqual(
 				expect.objectContaining({
-					anchor: "top-left",
+					anchor: "bottom-center",
 					width: "100%",
 					maxHeight: "100%",
 					margin: 0,

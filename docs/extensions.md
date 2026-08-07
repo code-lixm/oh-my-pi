@@ -70,7 +70,7 @@ Important constraint from `loader.ts`:
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  const { z } = pi.zod;
+  const z = pi.zod;
 
   pi.setLabel("Safety + Utilities");
 
@@ -134,9 +134,9 @@ In interactive mode, `input` handlers run before the built-in first-message auto
 Also exposed:
 
 - `pi.logger`
-- `pi.arktype` (the ArkType `Type` runtime; this is not ArkType's `type(...)` schema builder)
-- `pi.zod` (injected `zod/v4` module for Zod-authored tool parameter schemas)
-- `pi.typebox` (zod-backed compatibility shim for legacy TypeBox-style schemas)
+- `pi.arktype` (the omptype `type(...)` schema builder)
+- `pi.zod` (Zod-compatible builder backed by omptype)
+- `pi.typebox` (legacy TypeBox-compatible shim)
 - `pi.pi` (package exports)
 
 ### Message delivery semantics
@@ -304,7 +304,7 @@ Current runtime note: `ExtensionRunner.emitResourcesDiscover(...)` is implemente
 
 ## Tool authoring details
 
-`registerTool` uses `ToolDefinition` from `types.ts`. Its `parameters` field accepts ArkType or Zod schemas; the injected TypeBox compatibility shim remains available for legacy extensions.
+`registerTool` uses `ToolDefinition` from `types.ts`. Its `parameters` field accepts omptype schemas; the injected TypeBox compatibility shim remains available for legacy extensions.
 
 Current `execute` signature:
 
@@ -341,7 +341,7 @@ are already approved as, and delegation depth is guarded against accidental self
 Template:
 
 ```ts
-const { z } = pi.zod;
+const z = pi.zod;
 
 pi.registerTool({
   name: "my_tool",

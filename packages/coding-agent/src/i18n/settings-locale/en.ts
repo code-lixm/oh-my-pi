@@ -1306,6 +1306,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Set {envVars} in your environment, or add a key in config.",
 	"Shared advisor instructions": "Shared advisor instructions",
 	"Shared instructions": "Shared instructions",
+	"Shared Language Servers": "Shared Language Servers",
 	"Sharing session...": "Sharing session...",
 	"Show images inline in terminal": "Show images inline in terminal",
 	"Show last 50 log entries": "Show last 50 log entries",
@@ -1317,6 +1318,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Space/Enter toggle · n note": "Space/Enter toggle · n note",
 	"Spend a saved rate-limit reset:": "Spend a saved rate-limit reset:",
 	"Spend eligible saved resets without prompting.": "Spend eligible saved resets without prompting.",
+	"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.":
+		"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.",
 	"Spending 1 saved reset for {accountLabel}…": "Spending 1 saved reset for {accountLabel}…",
 	"Start a new session, then re-submit the prompt": "Start a new session, then re-submit the prompt",
 	"Standard symbols (default)": "Standard symbols (default)",
@@ -1765,6 +1768,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Enable the bash tool for shell command execution": "Enable the bash tool for shell command execution",
 	"Enable the browser tool for scripted Chromium automation (puppeteer)":
 		"Enable the browser tool for scripted Chromium automation (puppeteer)",
+	"Enable the scriptable host-desktop control tool (screenshots, input, accessibility)":
+		"Enable the scriptable host-desktop control tool (screenshots, input, accessibility)",
 	"Enable the checkpoint and rewind tools for context checkpointing":
 		"Enable the checkpoint and rewind tools for context checkpointing",
 	"Enable the debug tool for DAP-based debugging": "Enable the debug tool for DAP-based debugging",
@@ -1780,6 +1785,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis":
 		"Enable the tts tool for on-device (Kokoro) or xAI Grok Voice speech-file synthesis",
 	"Enable the web_search tool for live web results": "Enable the web_search tool for live web results",
+	"Enable OMP-native security scan planning, execution, and the read-only security:// resource namespace":
+		"Enable OMP-native security scan planning, execution, and the read-only security:// resource namespace",
 	"Encrypted Blob": "Encrypted Blob",
 	"Endpoint routing strategy for google-antigravity providers (chat, search, image, discovery)":
 		"Endpoint routing strategy for google-antigravity providers (chat, search, image, discovery)",
@@ -1852,6 +1859,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Headless? Paste the redirect URL or code with /login <value>.":
 		"Headless? Paste the redirect URL or code with /login <value>.",
 	"Hide Secrets": "Hide Secrets",
+	"Hide Tool Activity": "Hide Tool Activity",
+	"Hide model-initiated tool calls and results from the transcript":
+		"Hide model-initiated tool calls and results from the transcript",
 	"Hindsight API URL": "Hindsight API URL",
 	"Hindsight Auto Recall": "Hindsight Auto Recall",
 	"Hindsight Auto Retain": "Hindsight Auto Retain",
@@ -2317,6 +2327,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"SearXNG Endpoint": "SearXNG Endpoint",
 	"Seconds to wait while idle before compacting": "Seconds to wait while idle before compacting",
 	"Seconds to wait while idle before showing the recap": "Seconds to wait while idle before showing the recap",
+	Security: "Security",
 	"Select the edit tool variant (replace, patch, hashline, or apply_patch)":
 		"Select the edit tool variant (replace, patch, hashline, or apply_patch)",
 	Services: "Services",
@@ -3060,6 +3071,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live per-family tiers; pick a value to apply it to the advisor model's family.",
 	"Session-title model: online (the TINY role from /models, else @smol) by default, or a local on-device model":
 		"Session-title model: online (the TINY role from /models, else @smol) by default, or a local on-device model",
+	"Share one language server per project across omp instances via the daemon broker (falls back to private servers when unavailable)":
+		"Share one language server per project across omp instances via the daemon broker (falls back to private servers when unavailable)",
 	"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)":
 		"Share viewer/upload base used by /share (encrypted blob upload + viewer; links are <base>/<id>#<key>)",
 	"Shared bank, retains tagged with project:<cwd>. Recall surfaces project + untagged global memories together":
@@ -3098,8 +3111,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"When a Gemini reasoning stream emits many consecutive planning headers without calling a tool, interrupt it and inject a reminder to issue a tool call (requires Loop Guard)",
 	"When a paste reaches this many lines, offer a menu to wrap it in a code block, wrap it in XML tags, or save it to a file. 0 disables the menu (large pastes still collapse to a [Paste] marker).":
 		"When a paste reaches this many lines, offer a menu to wrap it in a code block, wrap it in XML tags, or save it to a file. 0 disables the menu (large pastes still collapse to a [Paste] marker).",
-	"When a turn is blocked by the Codex weekly limit on the active account and no other account is available, run the conservative saved-reset check. unset asks before spending the first eligible reset, yes spends eligible resets without prompting, and no disables the check entirely. Requires retries enabled.":
-		"When a turn is blocked by the Codex weekly limit on the active account and no other account is available, run the conservative saved-reset check. unset asks before spending the first eligible reset, yes spends eligible resets without prompting, and no disables the check entirely. Requires retries enabled.",
 	"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it":
 		"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
 	"When on, auto-run one capture turn at stop (uses extra tokens). Off = passive reminder on your next turn.":
@@ -4318,8 +4329,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout":
 		"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
 	"xd:// Tools": "xd:// Tools",
-	"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Disable to expose every enabled tool top-level.":
-		"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Disable to expose every enabled tool top-level.",
+	"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Sessions without a granted write tool skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.":
+		"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Sessions without a granted write tool skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.",
 	"DM `{agentId}` via `hub` send to coordinate while it runs; use `hub` only to inspect (`jobs`), wait, or cancel a stuck task.":
 		"DM `{agentId}` via `hub` send to coordinate while it runs; use `hub` only to inspect (`jobs`), wait, or cancel a stuck task.",
 	"Use `hub` to inspect (`jobs`), wait, or cancel a stuck task.":
@@ -4859,6 +4870,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Web Search Provider Order": "Web Search Provider Order",
 	"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward":
 		"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward",
+	"Web Search Timeout": "Web Search Timeout",
+	"Hard timeout for each provider's search transport before web_search advances to the next fallback, in seconds (maximum 300)":
+		"Hard timeout for each provider's search transport before web_search advances to the next fallback, in seconds (maximum 300)",
 	"Image Provider Order": "Image Provider Order",
 	"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order":
 		"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order",
@@ -5024,8 +5038,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)":
 		"OpenAI's native web_search (uses ChatGPT OAuth via /login openai-codex)",
 	xAI: "xAI",
-	"Grok web search via xAI Responses API (requires XAI_API_KEY)":
-		"Grok web search via xAI Responses API (requires XAI_API_KEY)",
+	"Grok web search via xAI Responses API (uses SuperGrok/X Premium+ OAuth via /login xai-oauth, or XAI_API_KEY)":
+		"Grok web search via xAI Responses API (uses SuperGrok/X Premium+ OAuth via /login xai-oauth, or XAI_API_KEY)",
 	"Z.AI": "Z.AI",
 	"Calls Z.AI webSearchPrime MCP": "Calls Z.AI webSearchPrime MCP",
 	"Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP":
@@ -5197,6 +5211,12 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Browser CDP URL": "Browser CDP URL",
 	"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.":
 		"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.",
+	"Browser Relay": "Browser Relay",
+	"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.":
+		"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
+	"Browser Relay URL": "Browser Relay URL",
+	"omp browser relay endpoint (default http://127.0.0.1:9224).":
+		"omp browser relay endpoint (default http://127.0.0.1:9224).",
 	"Auto Thinking Ceiling": "Auto Thinking Ceiling",
 	"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.":
 		"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.",

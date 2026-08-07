@@ -10,7 +10,7 @@
  */
 
 import { getProjectDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { sayHelp as commandHelp } from "../cli/command-help";
 import { Args, Command, Flags } from "../cli/command-runtime";
 import { Settings, settings } from "../config/settings";

@@ -15,8 +15,8 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 const MAIN = "Main";
-const WORKER = "Worker";
-
+const WORKER = "task-internal-worker";
+const WORKER_LABEL = "Reviewer";
 let previousLocale = getSettingsUiLocale();
 
 beforeAll(async () => {
@@ -62,7 +62,7 @@ function registerWorker(
 ): void {
 	registry.register({
 		id: WORKER,
-		displayName: WORKER,
+		displayName: WORKER_LABEL,
 		kind: "sub",
 		parentId: MAIN,
 		session,
@@ -88,8 +88,26 @@ function createHub(
 	});
 }
 
-function rendered(hub: AgentHubOverlayComponent): string {
-	return Bun.stripANSI(hub.render(120).join("\n"));
+const ROSTER_ENTRY_PATTERN = /^(?:❯| ) \S /u;
+
+function renderedRosterPanel(hub: AgentHubOverlayComponent, width = 120): string[] {
+	const lines = hub.render(width).map(line => Bun.stripANSI(line));
+	const divider = lines.find(line => line.includes("┬"))?.indexOf("┬") ?? -1;
+	if (divider < 3) throw new Error("Expected side-by-side Agent Hub roster");
+	return lines.flatMap(line => {
+		if (!line.startsWith("│ ") || line[divider] !== "│") return [];
+		return [line.slice(2, divider - 1).trimEnd()];
+	});
+}
+
+function renderedRosterEntries(hub: AgentHubOverlayComponent, width = 120): string[] {
+	return renderedRosterPanel(hub, width).filter(line => ROSTER_ENTRY_PATTERN.test(line));
+}
+
+function renderedRosterEntry(hub: AgentHubOverlayComponent, label: string, width = 120): string {
+	const entries = renderedRosterEntries(hub, width).filter(entry => entry.includes(label));
+	expect(entries).toHaveLength(1);
+	return entries[0]!;
 }
 
 function waitForStatus(registry: AgentRegistry, id: string, status: "idle"): Promise<void> {
@@ -125,10 +143,10 @@ describe("Agent Hub table actions", () => {
 		try {
 			await hub.persistedSubagentsReady;
 			hub.handleInput("m");
-			expect(rendered(hub)).toContain("m → Worker:");
+			expect(renderedRosterPanel(hub).join("\n")).toContain("m → Reviewer:");
 
 			for (const character of "please check the receipt") hub.handleInput(character);
-			expect(rendered(hub)).toContain("please check the receipt");
+			expect(renderedRosterPanel(hub).join("\n")).toContain("please check the receipt");
 
 			hub.handleInput("\r");
 			await expect(delivered.promise).resolves.toMatchObject({
@@ -136,7 +154,7 @@ describe("Agent Hub table actions", () => {
 				to: WORKER,
 				body: "please check the receipt",
 			});
-			expect(rendered(hub)).not.toContain("m → Worker:");
+			expect(renderedRosterPanel(hub).join("\n")).not.toContain("m → Reviewer:");
 		} finally {
 			hub.dispose();
 			await lifecycle.dispose();
@@ -179,8 +197,8 @@ describe("Agent Hub table actions", () => {
 			await becameIdle;
 			vi.advanceTimersByTime(100);
 
-			expect(rendered(hub)).toContain("Worker");
-			expect(rendered(hub)).toContain("idle");
+			const entry = renderedRosterEntry(hub, WORKER_LABEL);
+			expect(entry).toContain("idle");
 		} finally {
 			hub.dispose();
 			await lifecycle.dispose();
@@ -205,8 +223,8 @@ describe("Agent Hub table actions", () => {
 			expect(registry.get(WORKER)?.session).toBeNull();
 			vi.advanceTimersByTime(100);
 
-			expect(rendered(hub)).toContain("Worker");
-			expect(rendered(hub)).toContain("aborted");
+			const entry = renderedRosterEntry(hub, WORKER_LABEL);
+			expect(entry).toContain("Stopped");
 		} finally {
 			hub.dispose();
 			await lifecycle.dispose();

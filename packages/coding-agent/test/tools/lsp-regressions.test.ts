@@ -1298,16 +1298,20 @@ describe("lsp regressions", () => {
 		expect(theme).toBeDefined();
 		const uiTheme = theme!;
 		const renderOptions: RenderResultOptions = { expanded: false, isPartial: false };
+		const unsafeSymbol = "foo\tbar\nbaz\u0007";
 
 		const call = renderCall(
-			{ action: "definition", file: "src/example.ts", line: 10, symbol: "foo\tbar\nbaz" },
+			{ action: "definition", file: "src/example.ts", line: 10, symbol: unsafeSymbol },
 			renderOptions,
 			uiTheme,
 		);
-		const callText = sanitizeText(call.render(120).join("\n"));
-		const normalizedCallText = callText.replace(/\s+/g, " ");
-		expect(normalizedCallText).toContain("foo bar baz");
-		expect(callText).not.toContain("\t");
+		const rawCallText = call.render(120).join("\n");
+		const callText = sanitizeText(rawCallText);
+		const callHeader = callText.split("\n").find(line => line.includes("foo")) ?? "";
+		expect(callHeader.replace(/ +/g, " ")).toContain("(foo bar baz)");
+		expect(rawCallText).not.toContain("\t");
+		expect(rawCallText).not.toContain("\u0007");
+
 		const result = renderResult(
 			{
 				content: [{ type: "text", text: "No definition found" }],
@@ -1318,17 +1322,19 @@ describe("lsp regressions", () => {
 						action: "definition",
 						file: "src/example.ts",
 						line: 10,
-						symbol: "foo\tbar\nbaz",
+						symbol: unsafeSymbol,
 					},
 				},
 			},
 			renderOptions,
 			uiTheme,
 		);
-		const resultText = sanitizeText(result.render(120).join("\n"));
-		const normalizedResultText = resultText.replace(/\s+/g, " ");
-		expect(normalizedResultText).toContain("symbol: foo bar baz");
-		expect(resultText).not.toContain("\t");
+		const rawResultText = result.render(120).join("\n");
+		const resultText = sanitizeText(rawResultText);
+		const resultHeader = resultText.split("\n").find(line => line.includes("foo")) ?? "";
+		expect(resultHeader.replace(/ +/g, " ")).toContain("(foo bar baz)");
+		expect(rawResultText).not.toContain("\t");
+		expect(rawResultText).not.toContain("\u0007");
 	});
 
 	it("sanitizes tabs in rendered diagnostic output", async () => {

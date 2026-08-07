@@ -1,5 +1,12 @@
-import { LRUCache } from "lru-cache/raw";
-import { Lexer, Marked, type Token, Tokenizer, type TokenizerAndRendererExtension, type Tokens } from "marked";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import {
+	Lexer,
+	Marked,
+	type Token,
+	Tokenizer,
+	type TokenizerAndRendererExtension,
+	type Tokens,
+} from "@oh-my-pi/pi-utils/marked";
 import { latexToBlock } from "../latex-block";
 import { inlineMathSpanEnd, isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
 import type { MouseRoutable, SgrMouseEvent } from "../mouse";
@@ -2431,12 +2438,17 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 
 			previousLineWasOsc66 = false;
 			if (literalCodeRow) {
-				// Framed/plain code rows pre-size themselves to the Markdown content width
-				// and own their background. Preserve that styling while applying the same
-				// outer gutter as prose; bypassing both margins made assistant fences start
-				// one cell left of the surrounding body.
+				// Framed/plain code rows pre-size themselves to the Markdown content width.
+				// Keep the outer gutters, then replay a parent background so syntax
+				// highlighting resets cannot leave holes in terminal-adaptive bubbles.
 				const lineWithMargins = leftMargin + line + rightMargin;
-				contentLines.push(lineWithMargins + padding(Math.max(0, signature.width - visibleWidth(lineWithMargins))));
+				if (bgFn) {
+					contentLines.push(applyBackgroundToLine(lineWithMargins, signature.width, bgFn));
+				} else {
+					contentLines.push(
+						lineWithMargins + padding(Math.max(0, signature.width - visibleWidth(lineWithMargins))),
+					);
+				}
 				continue;
 			}
 			const lineWithMargins = leftMargin + line + rightMargin;

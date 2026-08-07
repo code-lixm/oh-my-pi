@@ -170,6 +170,27 @@ function narrowAccessResult<T>(
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
+	/**
+	 * Mount a primary fullscreen menu through the one polished modal path shared
+	 * by Settings, Model Hub, Agent Hub, and Jobs Hub.
+	 */
+	#showFullscreenMenu(
+		component: Component,
+		mouseTracking = this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+	): OverlayHandle {
+		const handle = this.ctx.ui.showOverlay(component, {
+			anchor: "bottom-center",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+			mouseTracking,
+		});
+		this.ctx.ui.setFocus(component);
+		this.ctx.ui.requestRender();
+		return handle;
+	}
+
 	#defaultRoleMutationTail = Promise.resolve();
 
 	async #acquireDefaultRoleMutation(): Promise<() => void> {
@@ -306,16 +327,7 @@ export class SelectorController {
 					},
 				},
 			);
-			overlayHandle = this.ctx.ui.showOverlay(selector, {
-				anchor: "bottom-center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-				fullscreen: true,
-				mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
-			});
-			this.ctx.ui.setFocus(selector);
-			this.ctx.ui.requestRender();
+			overlayHandle = this.#showFullscreenMenu(selector);
 		});
 	}
 
@@ -1267,16 +1279,7 @@ export class SelectorController {
 				initialProviderId: hubOptions.initialProviderId,
 			},
 		);
-		overlayHandle = this.ctx.ui.showOverlay(hub, {
-			anchor: "bottom-center",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
-		});
-		this.ctx.ui.setFocus(hub);
-		this.ctx.ui.requestRender();
+		overlayHandle = this.#showFullscreenMenu(hub);
 	}
 
 	/** /login round-trip for a locked provider; reopen the hub on that provider only after a successful login. */
@@ -2319,30 +2322,34 @@ export class SelectorController {
 		});
 	}
 
-	showAgentHub(observers: SessionObserverRegistry, options?: { armCloseTap?: boolean }): void {
+	showAgentHub(
+		observers: SessionObserverRegistry,
+		options?: { requireContent?: boolean; armCloseTap?: boolean },
+	): void {
 		const hubKeys = [
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
 		];
 		const mouseTracking = this.ctx.settings?.get("tui.mouseInput") ?? false;
-		let hub: AgentHubOverlayComponent | undefined;
+		const hubRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
 		let overlayHandle: OverlayHandle | undefined;
+		let closed = false;
 
-		// Keep the live hub on the alternate screen. Mounting it in the editor
-		// slot constrains the table to the prompt area and makes the transcript
-		// move whenever agent progress changes; a fullscreen overlay leaves the
-		// conversation untouched and gives Escape a clean return boundary.
-		const done = () => {
-			hub?.dispose();
+		const done = (reason?: "preserve-focus") => {
+			if (closed) return;
+			closed = true;
+			hub.dispose();
 			overlayHandle?.hide();
-			if (!this.ctx.focusedAgentId) this.focusActiveEditorArea();
+			// A gated empty Hub may never have been mounted. Restoring editor
+			// focus in that case would steal focus from a menu opened meanwhile.
+			// Focus-transfer actions deliberately leave the target session focused.
+			if (overlayHandle && reason !== "preserve-focus") this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
 
-		const hubRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
-
-		hub = new AgentHubOverlayComponent({
+		const hub = new AgentHubOverlayComponent({
 			observers,
+			settings: this.ctx.settings,
 			hubKeys,
 			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
 			onDone: done,
@@ -2377,19 +2384,26 @@ export class SelectorController {
 			openImage: image => openRichContentImage(this.ctx, image),
 		});
 
-		overlayHandle = this.ctx.ui.showOverlay(hub, {
-			anchor: "top-left",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
-			mouseTracking,
-		});
-		this.ctx.ui.setFocus(hub);
-		// When the hub was raised by the editor's double-← gesture, prime its own
-		// close detector so the next single ← dismisses it (issue #4780).
-		if (options?.armCloseTap) hub.armCloseTap();
-		this.ctx.ui.requestRender();
+		const showReadyHub = () => {
+			if (closed) return;
+			// The double-← gesture stays inert when neither live nor persisted
+			// subagents are available, so wait for discovery before making the gate.
+			if (options?.requireContent && hub.isEmpty) {
+				done();
+				return;
+			}
+
+			// Prime the detector before the first frame when the editor's double-←
+			// gesture opened the hub, so the next single ← dismisses it.
+			if (options?.armCloseTap) hub.armCloseTap();
+			overlayHandle = this.#showFullscreenMenu(hub, mouseTracking);
+		};
+
+		if (options?.requireContent && hub.isEmpty) {
+			void hub.persistedSubagentsReady.then(showReadyHub);
+		} else {
+			showReadyHub();
+		}
 	}
 
 	showJobsHub(): void {
@@ -2428,15 +2442,6 @@ export class SelectorController {
 			// durable agent identity.
 			cancelJob: async job => manager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
 		});
-		overlayHandle = this.ctx.ui.showOverlay(hub, {
-			anchor: "top-left",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get("tui.mouseInput") ?? false,
-		});
-		this.ctx.ui.setFocus(hub);
-		this.ctx.ui.requestRender();
+		overlayHandle = this.#showFullscreenMenu(hub);
 	}
 }

@@ -26,6 +26,7 @@ function createContext() {
 	const ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
+		settings: { get: () => false },
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),

@@ -5083,4 +5083,28 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Use a trusted native sidecar when eligible; otherwise use the generic system prompt":
 		"符合条件时使用可信原生 sidecar，否则使用通用系统提示词",
 	shadow: "影子模式",
+	"Hide Tool Activity": "隐藏工具活动",
+	"Hide model-initiated tool calls and results from the transcript": "从会话记录中隐藏由模型发起的工具调用及其结果",
+	"Shared Language Servers": "共享语言服务器",
+	"Share one language server per project across omp instances via the daemon broker (falls back to private servers when unavailable)":
+		"通过守护进程代理，让多个 omp 实例按项目共享一个语言服务器；不可用时回退到实例私有服务器",
+	"Enable the scriptable host-desktop control tool (screenshots, input, accessibility)":
+		"启用可编程的宿主桌面控制工具（截图、输入和辅助功能）",
+	Security: "安全",
+	"Enable OMP-native security scan planning, execution, and the read-only security:// resource namespace":
+		"启用 OMP 原生安全扫描规划、执行，以及只读 security:// 资源命名空间",
+	"Browser Relay": "浏览器中继",
+	"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.":
+		"通过 omp 浏览器中继控制你自己的 Chrome 标签页。使用 `omp browser-relay install` 一次性安装扩展；浏览器工具需要时会自动启动中继服务器。其优先级高于浏览器 CDP URL；可设置 PI_BROWSER_RELAY=0 或 PI_BROWSER_RELAY=1 覆盖。",
+	"Browser Relay URL": "浏览器中继 URL",
+	"omp browser relay endpoint (default http://127.0.0.1:9224).": "omp 浏览器中继端点（默认 http://127.0.0.1:9224）。",
+	"Mount rarely-used (discoverable) tools under xd:// device URLs driven via read/write instead of shipping their schemas on every request. Sessions without a granted write tool skip mounting and expose every tool top-level. Disable to expose every enabled tool top-level.":
+		"将很少使用（可发现）的工具挂载到通过 read/write 驱动的 xd:// 设备 URL 下，避免每次请求都携带其 schema。未获准使用 write 工具的会话会跳过挂载，并在顶层暴露所有工具。关闭后会在顶层暴露所有已启用工具。",
+	"Grok web search via xAI Responses API (uses SuperGrok/X Premium+ OAuth via /login xai-oauth, or XAI_API_KEY)":
+		"通过 xAI Responses API 使用 Grok 网页搜索（使用 /login xai-oauth 获取 SuperGrok/X Premium+ OAuth，或使用 XAI_API_KEY）",
+	"Web Search Timeout": "网页搜索超时",
+	"Hard timeout for each provider's search transport before web_search advances to the next fallback, in seconds (maximum 300)":
+		"每个提供商搜索传输的硬超时；超时后 web_search 会继续下一个回退，单位为秒（最大 300）",
+	"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.":
+		"自动使用已保存的 Codex 速率限制重置次数：当回合卡住、当前账号的 5h 或每周额度已耗尽且没有其他账号可接管时恢复该账号，并抢救即将过期的额度。unset 会在首次使用前询问，yes 不询问直接使用，no 会关闭这两项检查。",
 };

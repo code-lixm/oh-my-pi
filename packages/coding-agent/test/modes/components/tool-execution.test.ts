@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type Component, Image, ImageProtocol, TERMINAL, Text } from "@oh-my-pi/pi-tui";
 import { Settings, settings } from "../../../src/config/settings";
@@ -6,6 +6,11 @@ import { renderMCPResult } from "../../../src/mcp/render";
 import type { MCPToolDetails } from "../../../src/mcp/tool-bridge";
 import { ToolExecutionComponent, type ToolExecutionUi } from "../../../src/modes/components/tool-execution";
 import { getThemeByName, setThemeInstance, theme } from "../../../src/modes/theme/theme";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "../../../src/tui/output-block";
 
 class BoldTypeErrorComponent implements Component {
 	render(_width: number): readonly string[] {
@@ -217,6 +222,18 @@ describe("MCP result Markdown rendering", () => {
  */
 describe("Hub and Todo bypass central toolDetailMaxLines truncation", () => {
 	const manyLines = Array.from({ length: 20 }, (_, i) => `output line ${i + 1}`);
+	const renderWidth = 80;
+	const accentRailPad = "▌".padEnd(renderWidth);
+	let previousBorderStyle: OutputBlockBorderStyle;
+
+	beforeEach(() => {
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setOutputBlockBorderStyle("accent");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
+	});
 
 	function renderCollapsedResult(toolName: string, content: string[]): readonly string[] {
 		const fakeTool: AgentTool = {
@@ -237,15 +254,21 @@ describe("Hub and Todo bypass central toolDetailMaxLines truncation", () => {
 			resetDisplay() {},
 		});
 		component.updateResult({ content: [{ type: "text", text: content.join("\n") }] }, false);
-		return component.render(80);
+		return component.render(renderWidth);
+	}
+
+	function expectAccentBreathingRows(plainLines: readonly string[]): void {
+		expect(plainLines[0]).toBe(accentRailPad);
+		expect(plainLines.at(-1)).toBe(accentRailPad);
 	}
 
 	it("hub result is fully visible when collapsed, not capped by toolDetailMaxLines", () => {
 		const lines = renderCollapsedResult("hub", manyLines);
 		const plainLines = lines.map(line => Bun.stripANSI(line));
 
-		// All 20 content lines must be present (header + 20 lines = 21 total)
-		expect(plainLines).toHaveLength(21);
+		// The shared accent surface adds top and bottom rail-only breathing rows.
+		expect(plainLines).toHaveLength(manyLines.length + 3);
+		expectAccentBreathingRows(plainLines);
 		// No omission marker should appear (would indicate truncation)
 		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(false);
 		// Verify all content lines are present (use some() to handle renderer prefixes)
@@ -258,8 +281,9 @@ describe("Hub and Todo bypass central toolDetailMaxLines truncation", () => {
 		const lines = renderCollapsedResult("todo", manyLines);
 		const plainLines = lines.map(line => Bun.stripANSI(line));
 
-		// All 20 content lines must be present (header + 20 lines = 21 total)
-		expect(plainLines).toHaveLength(21);
+		// The shared accent surface adds top and bottom rail-only breathing rows.
+		expect(plainLines).toHaveLength(manyLines.length + 3);
+		expectAccentBreathingRows(plainLines);
 		// No omission marker should appear (would indicate truncation)
 		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(false);
 		// Verify all content lines are present (use some() to handle renderer prefixes)
@@ -274,8 +298,9 @@ describe("Hub and Todo bypass central toolDetailMaxLines truncation", () => {
 		const plainLines = lines.map(line => Bun.stripANSI(line));
 		const joined = plainLines.join("\n");
 
-		// Collapsed bash results are capped (header + up to 3 budget rows + layout)
-		expect(plainLines.length).toBeLessThanOrEqual(5);
+		// The collapsed result budget plus the accent breathing rows is exact.
+		expect(plainLines).toHaveLength(7);
+		expectAccentBreathingRows(plainLines);
 		// Omission marker MUST appear for centrally-limited tools
 		expect(plainLines.some(line => line.includes("…") && line.includes("lines omitted"))).toBe(true);
 		// First and last output lines are preserved

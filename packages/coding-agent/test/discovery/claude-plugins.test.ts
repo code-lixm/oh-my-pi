@@ -689,9 +689,13 @@ describe("listClaudePluginRoots", () => {
 			providers: ["native", "claude-plugins"],
 		});
 
-		expect(result.items.map(server => server.name)).toEqual(["context7"]);
-		expect(result.items[0]?._source.provider).toBe("native");
-		expect(result.all.find(server => server.name === "context7:context7")?._shadowed).toBe(true);
+		const visibleContext7 = result.items.filter(server => server.name === "context7");
+		expect(visibleContext7).toHaveLength(1);
+		expect(visibleContext7[0]?._source.provider).toBe("native");
+
+		const pluginAliases = result.all.filter(server => server.name === "context7:context7");
+		expect(pluginAliases).toHaveLength(1);
+		expect(pluginAliases[0]?._shadowed).toBe(true);
 	});
 
 	test("resolves relative path-like command and cwd against the plugin config directory", async () => {

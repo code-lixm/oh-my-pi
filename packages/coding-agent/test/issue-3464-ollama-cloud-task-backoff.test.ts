@@ -90,7 +90,7 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("uses the default fallback chain for a configured task role with no task chain", async () => {
+	it("uses the default fallback chain after exhausting a configured task role with no task chain", async () => {
 		const primary = requireModel("anthropic", "claude-sonnet-4-5");
 		const fallback = requireModel("openai", "gpt-4o-mini");
 		const requestedModels: string[] = [];
@@ -113,7 +113,7 @@ describe("issue #3464: ollama-cloud task backoff", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
-			"retry.maxRetries": 1,
+			"retry.maxRetries": 0,
 			"retry.fallbackChains": { default: [`${fallback.provider}/${fallback.id}`] },
 		});
 		settings.setModelRole("task", `${primary.provider}/${primary.id}`);

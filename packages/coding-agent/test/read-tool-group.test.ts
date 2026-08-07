@@ -333,11 +333,11 @@ describe("ReadToolGroupComponent", () => {
 			.filter(index => index >= 0);
 
 		expect(firstUsageIndex).toBe(onePathIndex + 1);
-		expect(lines[firstUsageIndex]?.startsWith(`   ${themeModule.theme.tree.vertical}  `)).toBe(true);
+		expect(lines[firstUsageIndex]?.startsWith(`${themeModule.theme.tree.vertical}  `)).toBe(true);
 		expect(twoPathIndex).toBeGreaterThan(firstUsageIndex);
 		expect(threePathIndex).toBeGreaterThan(twoPathIndex);
 		expect(parallelUsageIndices).toEqual([threePathIndex + 1]);
-		expect(lines[parallelUsageIndices[0]!]?.startsWith("      ")).toBe(true);
+		expect(lines[parallelUsageIndices[0]!]?.startsWith("   ")).toBe(true);
 	});
 
 	it("splits a single selector-delimited read argument into child rows", () => {

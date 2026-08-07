@@ -31,13 +31,13 @@ import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { formatBytes, formatDuration } from "../tools/render-utils";
+import { isReadOnlyAgent } from "./read-only-policy";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import {
 	type AgentDefinition,
 	type AgentProgress,
 	canSpawnAtDepth,
 	getTaskSchema,
-	isReadOnlyAgent,
 	type SingleResult,
 	type TaskItem,
 	type TaskParams,
@@ -108,6 +108,7 @@ export { loadBundledAgents as BUNDLED_AGENTS } from "./agents";
 export { discoverCommands, expandCommand, getCommand } from "./commands";
 export { discoverAgents, getAgent } from "./discovery";
 export { AgentOutputManager } from "./output-manager";
+export * from "./read-only-policy";
 export type {
 	AgentDefinition,
 	AgentProgress,
@@ -120,8 +121,6 @@ export type {
 	TaskToolDetails,
 } from "./types";
 export {
-	isReadOnlyAgent,
-	READ_ONLY_TOOL_NAMES,
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
@@ -855,6 +854,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					id: agentId,
 					agent: agentType,
 					agentSource,
+					modelRole: policy.modelRole,
 					status: "pending",
 					startedAtMs: queuedAtMs,
 					activity: {
@@ -1184,17 +1184,21 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						() => buildDetails() as unknown as Record<string, unknown>,
 					);
 					const forwardSyncProgress: AgentToolUpdateCallback<TaskToolDetails> = async update => {
+						if (runSignal.aborted) return;
 						const nextProgress = update.details?.progress?.[0];
 						if (nextProgress) {
-							// Async job lifecycle is tracked separately by `markRunning()`.
-							// Agent progress stays pending until the child emits `agent_start`.
+							// Agent progress tracks the child lifecycle independently of the
+							// async-job state: leave it queued/pending until the child emits
+							// `agent_start`, while retaining the resolved role and live metrics.
 							progress.status = nextProgress.status;
 							progress.startedAtMs ??= nextProgress.startedAtMs;
 							if (nextProgress.completedAtMs === undefined) delete progress.completedAtMs;
 							else progress.completedAtMs = nextProgress.completedAtMs;
 							progress.durationMs = nextProgress.durationMs;
+							progress.modelRole = nextProgress.modelRole ?? progress.modelRole;
 							progress.resolvedModel = nextProgress.resolvedModel;
-							progress.resolvedModelIsFallback = nextProgress.resolvedModelIsFallback;
+							progress.resolvedModelIsFallback =
+								nextProgress.resolvedModelIsFallback ?? progress.resolvedModelIsFallback;
 							progress.tokens = nextProgress.tokens;
 							progress.requests = nextProgress.requests;
 							progress.contextTokens = nextProgress.contextTokens;
@@ -1270,9 +1274,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const resultText = singleResult ? singleResult.output || singleResult.stderr : undefined;
 					if (progress.resultText === undefined && resultText) progress.resultText = resultText;
 					progress.retryState = undefined;
+					progress.modelRole = singleResult?.modelRole ?? progress.modelRole;
 					if (singleResult?.resolvedModel) {
 						progress.resolvedModel = singleResult.resolvedModel;
-						progress.resolvedModelIsFallback = singleResult.resolvedModelIsFallback;
+						progress.resolvedModelIsFallback =
+							singleResult.resolvedModelIsFallback ?? progress.resolvedModelIsFallback;
 					} else {
 						delete progress.resolvedModel;
 						delete progress.resolvedModelIsFallback;

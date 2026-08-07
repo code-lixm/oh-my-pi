@@ -1,5 +1,5 @@
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { APP_NAME, CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils/dirs";
-import chalk from "chalk";
 import { tSettingsUi } from "../i18n/settings-locale";
 
 export function getExtraHelpText(): string {

@@ -42,6 +42,21 @@ function encodeRelativeSessionDirName(prefix: string, relative: string): string 
 	return encoded ? (prefix.endsWith("-") ? `${prefix}${encoded}` : `${prefix}-${encoded}`) : prefix;
 }
 
+/**
+ * Derive the short-lived hashed session dir name used by 17.2.5-17.2.8.
+ * The cwd-derived directory is canonical for writes, but compatibility scans
+ * keep this historical bucket in place so concurrent older clients stay safe.
+ */
+function encodeHashedSessionDirName(canonicalCwd: string, scope: "home" | "tmp" | "abs"): string {
+	const normalized = canonicalCwd.replaceAll("\\", "/");
+	const readable = path
+		.basename(canonicalCwd)
+		.replace(/[^a-zA-Z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(-80);
+	const digest = Bun.SHA256.hash(normalized, "hex");
+	return `${scope}-${readable || "project"}-${digest}`;
+}
 function getDefaultSessionDirName(cwd: string): {
 	encodedDirName: string;
 	hashedDirName: string;
@@ -55,31 +70,19 @@ function getDefaultSessionDirName(cwd: string): {
 	const canonicalTempRoot = resolveEquivalentPath(tempRoot);
 	const homeRelative = path.relative(canonicalHome, canonicalCwd);
 	const tempRelative = path.relative(canonicalTempRoot, canonicalCwd);
-	let scope: "home" | "tmp" | "abs";
 	let encodedDirName: string;
+	let scope: "home" | "tmp" | "abs";
 	if (homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))) {
-		scope = "home";
 		encodedDirName = encodeRelativeSessionDirName("-", homeRelative);
+		scope = "home";
 	} else if (tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))) {
-		scope = "tmp";
 		encodedDirName = encodeRelativeSessionDirName("-tmp", tempRelative);
+		scope = "tmp";
 	} else {
-		scope = "abs";
 		encodedDirName = encodeLegacyAbsoluteSessionDirName(canonicalCwd);
+		scope = "abs";
 	}
-
-	// PR #7397 briefly used portable, collision-resistant directory names before
-	// 17.2.9 restored the legacy cwd-derived scheme. Keep deriving that exact
-	// historical name so sessions written by develop remain locally discoverable.
-	const normalized = canonicalCwd.replaceAll("\\", "/");
-	const readable = path
-		.basename(canonicalCwd)
-		.replace(/[^a-zA-Z0-9._-]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(-80);
-	const digest = Bun.SHA256.hash(normalized, "hex");
-	const hashedDirName = `${scope}-${readable || "project"}-${digest}`;
-	return { encodedDirName, hashedDirName, resolvedCwd };
+	return { encodedDirName, hashedDirName: encodeHashedSessionDirName(canonicalCwd, scope), resolvedCwd };
 }
 
 /**

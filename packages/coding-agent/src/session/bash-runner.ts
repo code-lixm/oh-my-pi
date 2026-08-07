@@ -50,8 +50,8 @@ export interface BashRunnerHost {
 	/**
 	 * Optional hook fired right before a user-initiated bash command runs.
 	 * Used to capture a workspace checkpoint so the command can be undone.
-	 * Must NOT throw — failures are logged and the command proceeds without
-	 * the checkpoint.
+	 * May reject to veto execution when checkpoint policy requires a successful
+	 * boundary; the rejection propagates and Bash is not executed.
 	 */
 	beforeUserBash?(command: string, options: { excludeFromContext: boolean }): Promise<void>;
 	/**
@@ -88,16 +88,10 @@ export class BashRunner {
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
 		const host = this.#host;
-		if (host.beforeUserBash) {
-			try {
-				await host.beforeUserBash(command, { excludeFromContext });
-			} catch (error) {
-				logger.warn("user_bash boundary hook failed", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
 		try {
+			if (host.beforeUserBash) {
+				await host.beforeUserBash(command, { excludeFromContext });
+			}
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_bash")) {
 				const hookResult = await extensionRunner.emitUserBash({

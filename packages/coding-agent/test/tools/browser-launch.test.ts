@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	chromiumExecutableProbeForTest,
 	stealthIgnoreDefaultArgsForTest,
 	systemChromiumCandidatesForTest,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
@@ -97,11 +99,52 @@ describe("system Chromium candidates", () => {
 });
 
 describe("browser executable selection", () => {
+	it.skipIf(process.platform === "win32")(
+		"rejects executable wrappers that are not Chromium-family browsers",
+		async () => {
+			const tempDir = TempDir.createSync("@browser-probe-");
+			try {
+				const wrapper = path.join(tempDir.path(), "google-chrome");
+				const chromium = path.join(tempDir.path(), "chromium");
+				const nonExecutable = path.join(tempDir.path(), "not-executable");
+				await Bun.write(wrapper, "#!/bin/sh\necho browser bridge\n");
+				await Bun.write(chromium, "#!/bin/sh\necho Chromium 123.0\n");
+				await Bun.write(nonExecutable, "#!/bin/sh\necho Chromium 123.0\n");
+				fs.chmodSync(wrapper, 0o755);
+				fs.chmodSync(chromium, 0o755);
+				fs.chmodSync(nonExecutable, 0o644);
+
+				await expect(chromiumExecutableProbeForTest(wrapper)).resolves.toBe(false);
+				await expect(chromiumExecutableProbeForTest(chromium)).resolves.toBe(true);
+				await expect(chromiumExecutableProbeForTest(nonExecutable)).resolves.toBe(false);
+			} finally {
+				await tempDir.remove();
+			}
+		},
+	);
+
+	it.skipIf(process.platform === "win32")("rejects wrappers that hang during the version probe", async () => {
+		const tempDir = TempDir.createSync("@browser-probe-hanging-");
+		try {
+			const hangingWrapper = path.join(tempDir.path(), "google-chrome");
+			await Bun.write(hangingWrapper, "#!/bin/sh\nsleep 60\n");
+			fs.chmodSync(hangingWrapper, 0o755);
+
+			const startedAt = performance.now();
+			await expect(chromiumExecutableProbeForTest(hangingWrapper)).resolves.toBe(false);
+			expect(performance.now() - startedAt).toBeLessThan(5000);
+		} finally {
+			await tempDir.remove();
+		}
+	});
+
 	it("honors PUPPETEER_EXECUTABLE_PATH before a detected Windows system Chrome", async () => {
 		const tempDir = TempDir.createSync("@browser-executable-");
 		try {
 			const override = path.join(tempDir.path(), "chrome-headless-shell.exe");
 			const systemChrome = path.join(tempDir.path(), "Google\\Chrome\\Application\\chrome.exe");
+			const outputPath = path.join(tempDir.path(), "probe-output");
+			const stderrPath = path.join(tempDir.path(), "probe-stderr");
 			await Bun.write(override, "override");
 			await Bun.write(systemChrome, "system");
 
@@ -109,18 +152,20 @@ describe("browser executable selection", () => {
 				env: {
 					...process.env,
 					OMP_BROWSER_PROBE_PLATFORM: "win32",
+					OMP_BROWSER_PROBE_OUTPUT: outputPath,
 					ProgramFiles: tempDir.path(),
 					"ProgramFiles(x86)": path.join(tempDir.path(), "missing-x86"),
 					LOCALAPPDATA: path.join(tempDir.path(), "missing-local"),
 					PUPPETEER_EXECUTABLE_PATH: override,
 				},
-				stdout: "pipe",
-				stderr: "pipe",
+				stdout: "ignore",
+				stderr: Bun.file(stderrPath),
 			});
-			const stderr = new TextDecoder().decode(result.stderr);
+			const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, "utf8") : "";
+			const output = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
 
 			expect(result.exitCode, stderr).toBe(0);
-			expect(new TextDecoder().decode(result.stdout)).toBe(override);
+			expect(output).toBe(override);
 		} finally {
 			await tempDir.remove();
 		}

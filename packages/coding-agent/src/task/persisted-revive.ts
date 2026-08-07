@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
-
 import type { ModelRegistry } from "../config/model-registry";
+import { extractExplicitThinkingSelector, formatModelSelectorValue } from "../config/model-resolver";
+import { formatModelRoleAlias } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
@@ -85,6 +86,20 @@ export function createPersistedSubagentReviverFactory(
 			if (!parent) return undefined;
 			current = parent;
 		}
+		const subagentSettings = createSubagentSettings(
+			ctx.settings,
+			init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
+		);
+		const persistedRolePattern =
+			init.modelRole && init.modelRole !== "default"
+				? formatModelSelectorValue(
+						formatModelRoleAlias(init.modelRole),
+						extractExplicitThinkingSelector(init.resolvedModel, subagentSettings),
+					)
+				: undefined;
+		const persistedModelPattern = persistedRolePattern
+			? [persistedRolePattern, ...(init.resolvedModel ? [init.resolvedModel] : [])]
+			: init.resolvedModel;
 		return async expectedRef => {
 			// Re-open fresh on every revive: park closes the writer, so this takes
 			// the single-writer lock cleanly and restores the full message history.
@@ -102,10 +117,9 @@ export function createPersistedSubagentReviverFactory(
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
 				modelRegistry: ctx.modelRegistry,
-				settings: createSubagentSettings(
-					ctx.settings,
-					init.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
-				),
+				...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
+				modelPatternAuthFallback: init.resolvedModel,
+				settings: subagentSettings,
 				taskRequestConcurrency: ctx.session.taskRequestConcurrency,
 				taskRunnableConcurrency: ctx.session.taskRunnableConcurrency,
 				sessionManager: reopened,
@@ -162,6 +176,8 @@ export function createPersistedSubagentReviverFactory(
 			attachIrcWakeTurnMonitor(session, {
 				id: ref.id,
 				agent: wakeAgent,
+				modelOverride: persistedModelPattern,
+				modelRole: init.modelRole,
 				eventBus: ctx.eventBus,
 				sessionFile,
 				outputSchema: init.outputSchema,

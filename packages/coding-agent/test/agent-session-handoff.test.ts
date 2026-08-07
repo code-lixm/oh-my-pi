@@ -1355,7 +1355,7 @@ describe("AgentSession handoff", () => {
 
 		expect(session.autoCompactionEnabled).toBe(false);
 		session.setAutoCompactionEnabled(true);
-		expect(session.settings.get("compaction.strategy")).toBe("snapcompact");
+		expect(session.settings.get("compaction.strategy")).toBe("context-full");
 		expect(session.autoCompactionEnabled).toBe(true);
 	});
 

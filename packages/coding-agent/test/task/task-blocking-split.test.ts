@@ -157,9 +157,11 @@ describe("task per-item blocking split", () => {
 
 		expect(result.details?.results.map(r => r.id)).toEqual(["ScoutOne"]);
 		expect(result.details?.async?.state).toBe("running");
+		// Scheduler registration makes the job running, while the child
+		// AgentProgress remains pending until that child emits `agent_start`.
 		const progressById = new Map(result.details?.progress?.map(p => [p.id, p.status]));
 		expect(progressById.get("ScoutOne")).toBe("completed");
-		expect(progressById.get("WorkerOne")).toBe("running");
+		expect(progressById.get("WorkerOne")).toBe("pending");
 		expect(manager.getJob("WorkerOne")!.status).toBe("running");
 
 		gates.get("WorkerOne")!.resolve();

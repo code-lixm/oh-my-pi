@@ -50,8 +50,11 @@ export interface NextStepOfferStoreOptions {
 /** Narrow SessionManager surface required by the offer lifecycle. */
 export interface NextStepOfferSessionManager {
 	appendCustomEntry(customType: string, data?: unknown): string;
+	appendCustomEntryToBranch(customType: string, data: unknown, parentId: string | null): string;
 	ensureOnDisk?(): Promise<void>;
 	getBranch(): SessionEntry[];
+	getEntries(): SessionEntry[];
+	getLeafId(): string | null;
 }
 
 interface PersistedActiveOfferState {
@@ -177,14 +180,6 @@ function parsePersistedState(value: unknown): PersistedOfferState | undefined {
 	}
 }
 
-function branchAnchor(entries: readonly SessionEntry[]): string {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry?.type === "message") return entry.id;
-	}
-	return entries.at(-1)?.id ?? "";
-}
-
 function sameIdentity(left: NextStepOfferIdentity, right: NextStepOfferIdentity): boolean {
 	return left.sessionId === right.sessionId && left.branchId === right.branchId && left.modelId === right.modelId;
 }
@@ -202,7 +197,7 @@ export class NextStepOfferStore {
 	readonly #now: () => number;
 	#active: ActiveOfferState | undefined;
 	#staged: NextStepOffer[] | undefined;
-	#loadedAnchor: string | undefined;
+	#loadedLeaf: string | null | undefined;
 
 	constructor(options: NextStepOfferStoreOptions) {
 		this.#sessionManager = options.sessionManager;
@@ -211,13 +206,18 @@ export class NextStepOfferStore {
 		this.refresh();
 	}
 
-	/** Reload active state from the current branch's append-only custom entries. */
+	/** Reload active state from records belonging to the selected semantic branch. */
 	refresh(): void {
-		const entries = this.#sessionManager.getBranch();
-		this.#loadedAnchor = branchAnchor(entries);
+		const branch = this.#sessionManager.getBranch();
+		const branchIds = new Set(branch.map(entry => entry.id));
+		const leafId = this.#sessionManager.getLeafId();
+		this.#loadedLeaf = leafId;
 		this.#active = undefined;
-		for (const entry of entries) {
+		for (const entry of this.#sessionManager.getEntries()) {
 			if (entry.type !== "custom" || entry.customType !== NEXT_STEP_OFFER_CUSTOM_TYPE) continue;
+			const attachedToBranch =
+				entry.preserveLeaf === true && (entry.parentId === null ? leafId === null : branchIds.has(entry.parentId));
+			if (!branchIds.has(entry.id) && !attachedToBranch) continue;
 			const state = parsePersistedState(entry.data);
 			// A malformed record is fail-closed: it must not revive an earlier offer.
 			if (!state || state.active === false) {
@@ -282,7 +282,7 @@ export class NextStepOfferStore {
 		};
 		const entryId = this.#appendState(state);
 		this.#active = { ...state, offers: offers.map(cloneOffer), identity: cloneIdentity(identity), entryId };
-		this.#loadedAnchor = branchAnchor(this.#sessionManager.getBranch());
+		this.#loadedLeaf = this.#sessionManager.getLeafId();
 	}
 
 	/** Invalidate an active offer because the user sent a substantive non-selection turn. */
@@ -334,8 +334,7 @@ export class NextStepOfferStore {
 	}
 
 	#refreshIfBranchChanged(): void {
-		const anchor = branchAnchor(this.#sessionManager.getBranch());
-		if (anchor !== this.#loadedAnchor) this.refresh();
+		if (this.#sessionManager.getLeafId() !== this.#loadedLeaf) this.refresh();
 	}
 
 	#isActiveForCurrentIdentity(active: ActiveOfferState): boolean {
@@ -354,8 +353,14 @@ export class NextStepOfferStore {
 		return true;
 	}
 
-	#appendState(state: PersistedOfferState): string {
-		const entryId = this.#sessionManager.appendCustomEntry(NEXT_STEP_OFFER_CUSTOM_TYPE, state);
+	#appendState(state: PersistedOfferState, preserveLeaf = false): string {
+		const entryId = preserveLeaf
+			? this.#sessionManager.appendCustomEntryToBranch(
+					NEXT_STEP_OFFER_CUSTOM_TYPE,
+					state,
+					this.#sessionManager.getLeafId(),
+				)
+			: this.#sessionManager.appendCustomEntry(NEXT_STEP_OFFER_CUSTOM_TYPE, state);
 		const persisted = this.#sessionManager.ensureOnDisk?.();
 		if (persisted) void persisted.catch(() => {});
 		return entryId;
@@ -366,11 +371,14 @@ export class NextStepOfferStore {
 		const active = this.#active;
 		this.#active = undefined;
 		if (!persist || (!active && !forcePersist)) return;
-		this.#appendState({
-			v: NEXT_STEP_OFFER_STATE_VERSION,
-			active: false,
-		} satisfies PersistedInactiveOfferState);
-		this.#loadedAnchor = branchAnchor(this.#sessionManager.getBranch());
+		this.#appendState(
+			{
+				v: NEXT_STEP_OFFER_STATE_VERSION,
+				active: false,
+			} satisfies PersistedInactiveOfferState,
+			forcePersist,
+		);
+		this.#loadedLeaf = this.#sessionManager.getLeafId();
 	}
 }
 

@@ -4,7 +4,7 @@
  * defined in `aggregator.ts`.
  */
 
-import { format } from "date-fns";
+import { format } from "@oh-my-pi/pi-utils/dates";
 import { t } from "../locale/catalog";
 import type { TimeRange } from "../types";
 
@@ -21,7 +21,7 @@ export interface RangeMeta {
 	bucketMs: number;
 	/** Number of buckets the server is expected to return for this range. */
 	bucketCount: number;
-	/** date-fns format string for x-axis labels and tooltip headings. */
+	/** Date format string for x-axis labels and tooltip headings. */
 	tickFormat: string;
 }
 

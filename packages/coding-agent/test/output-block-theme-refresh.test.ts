@@ -34,7 +34,6 @@ function buildOptions(width: number): OutputBlockOptions {
 	return {
 		header: "Tool",
 		state: "success",
-		applyBg: true,
 		sections: [{ lines: ["done"] }],
 		width,
 	};

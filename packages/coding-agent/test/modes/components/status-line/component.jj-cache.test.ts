@@ -11,9 +11,10 @@ import * as git from "../../../../src/utils/git";
 import * as jj from "../../../../src/utils/jj";
 
 // Minimal session the git-only status line render path touches: state.messages
-// (token-rate scan), model window, streaming flag, and the async-job snapshot.
-// The `git` segment reads none of these — they only keep #buildStatusLine from
-// throwing while it renders the single segment under test.
+// (token-rate scan), model window, streaming flag, and the scalar
+// `getVisibleAsyncJobCount()` accessor. The `git` segment reads none of these —
+// they only keep #buildStatusLine from throwing while it renders the single
+// segment under test.
 function makeSession(): AgentSession {
 	const model = { contextWindow: 128000 } as const;
 	return {
@@ -23,6 +24,7 @@ function makeSession(): AgentSession {
 		isStreaming: false,
 		sessionFile: undefined,
 		getAsyncJobSnapshot: () => null,
+		getVisibleAsyncJobCount: () => 0,
 		getContextUsage: () => ({ tokens: 0, contextWindow: 128000 }),
 	} as unknown as AgentSession;
 }

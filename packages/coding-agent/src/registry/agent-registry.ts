@@ -15,6 +15,13 @@ import type { AgentActivityState } from "./agent-activity";
 
 export const MAIN_AGENT_ID = "Main";
 
+/** Sidecar marker retained beside a child transcript after an explicit kill. */
+export const AGENT_TOMBSTONE_SUFFIX = ".tombstone";
+
+export function getAgentTombstonePath(sessionFile: string): string {
+	return `${sessionFile}${AGENT_TOMBSTONE_SUFFIX}`;
+}
+
 /**
  * - `running`: a turn owns a runnable slot and is in flight.
  * - `waiting`: a live turn temporarily released its slot while blocking on
@@ -25,6 +32,8 @@ export const MAIN_AGENT_ID = "Main";
  * - `aborted`: hard-killed, terminal.
  */
 export type AgentStatus = "running" | "waiting" | "idle" | "parked" | "aborted";
+/** Provenance of a displayed duration: active runtime, transcript span, or unavailable. */
+export type AgentDurationKind = "active" | "span" | "unknown";
 /**
  * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
  * - `advisor`: a passive review transcript persisted like a subagent for usage
@@ -32,6 +41,35 @@ export type AgentStatus = "running" | "waiting" | "idle" | "parked" | "aborted";
  *   agent-facing rosters (`hub`, `history://`) and not messageable/revivable.
  */
 export type AgentKind = "main" | "sub" | "advisor";
+
+/** Persisted per-agent totals reconstructed from the child session transcript. */
+export interface AgentMetricsSummary {
+	tokens: number;
+	requests: number;
+	tools: number;
+	cost: number;
+	durationMs: number;
+	durationKind?: AgentDurationKind;
+	contextTokens?: number;
+	contextWindow?: number;
+}
+
+/** Historical identity and telemetry that remain available after the live session is disposed. */
+export interface AgentHistorySummary {
+	agent?: string;
+	modelRole?: string;
+	resolvedModel?: string;
+	/** Whether the last resolved model was selected by retry fallback routing. */
+	resolvedModelIsFallback?: boolean;
+	metrics?: AgentMetricsSummary;
+	readOnly?: boolean;
+	/** Durable task output artifact, when the executor wrote one. */
+	outputPath?: string;
+	/** Captured isolated-worktree patch, when patch capture succeeded. */
+	patchPath?: string;
+	/** Isolated branch identity, when branch-mode capture succeeded. */
+	branchName?: string;
+}
 
 export interface AgentRef {
 	id: string;
@@ -52,6 +90,8 @@ export interface AgentRef {
 	activity?: string;
 	/** Structured current activity shared by local and remote observer surfaces. */
 	activityState?: AgentActivityState;
+	/** Persisted identity and telemetry restored after the live observer is gone. */
+	history?: AgentHistorySummary;
 }
 /**
  * Stable navigation order shared by Agent Hub and focused-agent cycling.
@@ -97,8 +137,8 @@ export type AgentRefExpectation = AgentRef | AgentSession;
 export type RegistryEvent =
 	| { type: "registered"; ref: AgentRef }
 	| { type: "status_changed"; ref: AgentRef }
-	| { type: "removed"; ref: AgentRef }
-	| { type: "metadata_changed"; ref: AgentRef };
+	| { type: "metadata_changed"; ref: AgentRef }
+	| { type: "removed"; ref: AgentRef };
 
 type RegistryListener = (event: RegistryEvent) => void;
 
@@ -113,6 +153,14 @@ export interface RegisterInput {
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
+	/** Last persisted task summary, when restoring a historical agent. */
+	activity?: string;
+	/** Original registration timestamp, when known from persisted history. */
+	createdAt?: number;
+	/** Last transcript activity timestamp, when known from persisted history. */
+	lastActivity?: number;
+	/** Persisted identity and telemetry restored after the live observer is gone. */
+	history?: AgentHistorySummary;
 }
 
 export class AgentRegistry {
@@ -154,11 +202,13 @@ export class AgentRegistry {
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
-			createdAt: now,
-			lastActivity: input.activityState?.lastActivityAtMs ?? now,
+			createdAt: input.createdAt ?? now,
+			lastActivity: input.lastActivity ?? input.activityState?.lastActivityAtMs ?? now,
 			sessionTitle: input.sessionTitle,
 			sessionId: input.sessionId,
+			activity: input.activity,
 			activityState: input.activityState,
+			history: input.history,
 		};
 		const replaced = this.#refs.get(ref.id);
 		this.#adjustRunningSubagentCount(replaced, -1);
@@ -178,6 +228,18 @@ export class AgentRegistry {
 		const current = this.#refs.get(input.id);
 		if (expected === null) return current ? undefined : this.register(input);
 		return current === expected && current.status === "parked" && !current.session ? current : undefined;
+	}
+
+	/** Attach transcript-derived identity and telemetry without changing lifecycle state. */
+	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || (expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile)) return false;
+		const definedHistory = Object.fromEntries(
+			Object.entries(history).filter(([, value]) => value !== undefined),
+		) as AgentHistorySummary;
+		ref.history = { ...ref.history, ...definedHistory };
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
 	}
 
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
@@ -236,7 +298,7 @@ export class AgentRegistry {
 			changed = true;
 		}
 		if (!changed) return true;
-		ref.lastActivity = Date.now();
+		if (metadata.activityState) ref.lastActivity = metadata.activityState.lastActivityAtMs;
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}

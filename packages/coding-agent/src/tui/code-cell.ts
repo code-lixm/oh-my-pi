@@ -132,7 +132,11 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const normalizedCode = replaceTabs(code ?? "");
 	const rawCodeLines = sanitizeTerminalLines(normalizedCode);
 	const middle = options.codeMiddle === true && !expanded && rawCodeLines.length > codeMaxLines;
-	const visibleSourceLines = middle ? Math.max(2, codeMaxLines - 1) : Math.min(rawCodeLines.length, codeMaxLines);
+	const visibleSourceLines = expanded
+		? rawCodeLines.length
+		: middle
+			? Math.max(2, codeMaxLines - 1)
+			: Math.min(rawCodeLines.length, codeMaxLines);
 	const hiddenCodeLines = rawCodeLines.length - visibleSourceLines;
 	const tail = options.codeTail === true && !expanded && hiddenCodeLines > 0;
 	const startIndex = tail ? rawCodeLines.length - visibleSourceLines : 0;

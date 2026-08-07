@@ -443,7 +443,7 @@ export interface InteractiveModeContext {
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
-	showAgentHub(options?: { armCloseTap?: boolean }): void;
+	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	showJobsHub(): void;
 	resetObserverRegistry(): void;
 

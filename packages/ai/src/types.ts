@@ -1,6 +1,8 @@
 export * from "@oh-my-pi/pi-catalog/effort";
 export * from "@oh-my-pi/pi-catalog/types";
 
+import type { Type } from "@oh-my-pi/omptype";
+
 import type {
 	DeleteArgs,
 	DeleteResult,
@@ -44,7 +46,6 @@ import type {
 	ThinkingBudgets,
 	Usage,
 } from "@oh-my-pi/pi-catalog/types";
-import type { ZodType, z } from "zod/v4";
 import type { ApiKey } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
@@ -1146,24 +1147,25 @@ export interface CursorExecHandlers {
  * emits this shape). Distinguished from arktype at runtime.
  */
 export type TJsonSchema = Record<string, unknown>;
-type InferredSchema = { readonly infer: unknown };
+
+/**
+ * Erased omptype schema surface. The full {@link Type} interface has concrete
+ * input/output generics, so builder results are not safely assignable across
+ * instantiations. Every current omptype and Ark-compatible builder exposes
+ * `infer`, which retains the parameter type needed here.
+ */
+type OmpSchema = Pick<Type, "infer">;
 
 /**
  * Schema type accepted by the {@link Tool} interface.
  *
- * Canonical authoring uses Zod or ArkType. Extension compat may supply a JSON
- * Schema object (including TypeBox static schema objects).
+ * Canonical authoring uses omptype. Extension compat may supply a JSON Schema
+ * object (including TypeBox static schema objects).
  */
-export type TSchema = ZodType | InferredSchema | TJsonSchema;
+export type TSchema = OmpSchema | TJsonSchema;
 
 /** Resolve parameter types for tool execution / handlers. */
-export type Static<S> = S extends ZodType
-	? z.infer<S>
-	: S extends InferredSchema
-		? S["infer"]
-		: S extends { static: infer T }
-			? T
-			: unknown;
+export type Static<S> = S extends OmpSchema ? S["infer"] : S extends { static: infer T } ? T : unknown;
 
 export interface ToolCallExample<TArgs = Record<string, unknown>> {
 	caption?: string;

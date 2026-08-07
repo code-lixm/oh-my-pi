@@ -43,6 +43,7 @@ function makeSessionWithLastMessage(
 		},
 		getPrewalkState: () => (prewalkArmed ? { target: { id: "cheap-model", provider: "openai" } } : undefined),
 		getAsyncJobSnapshot: () => undefined,
+		getVisibleAsyncJobCount: () => 0,
 		isAdvisorActive: () => false,
 		getAdvisorStatusOverview: () => ({
 			configured: advisorCost > 0,

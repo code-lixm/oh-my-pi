@@ -83,6 +83,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
 import {
 	$env,
+	APP_NAME,
 	escapeXmlText,
 	formatDuration,
 	getAgentDbPath,
@@ -127,6 +128,7 @@ import type {
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolInfo,
 	TreePreparation,
 	TurnEndEvent,
 	TurnStartEvent,
@@ -521,6 +523,7 @@ export class AgentSession {
 	#unsubscribeBeforeModelCall?: () => void;
 	#lastWorkspaceBoundaryMessage: AgentMessage | undefined;
 	#cancelExitRecorder?: () => void;
+	#cancelFatalRecoveryHint?: () => void;
 	#exitRecorded = false;
 	#runMarkerSessionFile: string | undefined;
 	#unsubscribeAppendOnly?: () => void;
@@ -1202,7 +1205,8 @@ export class AgentSession {
 			this.#pendingNextTurnMessages.push(card);
 			return;
 		}
-		this.agent.appendMessage(card);
+		// `message_end` is the single append/persistence boundary for external cards;
+		// pre-appending here would record this same advisor event twice.
 		this.agent.emitExternalEvent({ type: "message_start", message: card });
 		this.agent.emitExternalEvent({ type: "message_end", message: card });
 	}
@@ -1403,6 +1407,7 @@ export class AgentSession {
 			syncAfterModelChange: previousEditMode => this.#tools.syncAfterModelChange(previousEditMode),
 			setModelWithProviderSessionReset: model => this.#setModelWithProviderSessionReset(model),
 			clearActiveRetryFallback: () => this.#recovery.clearActiveRetryFallback(),
+			abortRetry: () => this.#recovery.abortRetry(),
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
 			magicKeywordEnabled: keyword => this.#magicKeywordEnabled(keyword),
 			emit: event => this.#emit(event),
@@ -1780,6 +1785,14 @@ export class AgentSession {
 		});
 		this.#cancelExitRecorder = postmortem.register(`agent-session:${this.sessionManager.getSessionId()}`, reason => {
 			this.#recordSessionExit(reason);
+		});
+		this.#cancelFatalRecoveryHint = postmortem.registerFatalRecoveryHint(() => {
+			const sessionId = this.sessionManager.getSessionId();
+			if (!sessionId || !this.sessionManager.getSessionFile()) return undefined;
+			return {
+				label: this.#agentId ?? (this.#agentKind === "main" ? "Main" : "Agent"),
+				command: `${APP_NAME} --resume ${sessionId}`,
+			};
 		});
 
 		const advisorsHost: SessionAdvisorsHost = {
@@ -2481,21 +2494,23 @@ export class AgentSession {
 		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
 	}
 
-	#recoverInterruptedPreviousRun(): void {
+	#recoverInterruptedPreviousRun(): SessionContext | undefined {
 		const model = this.model;
-		if (!model) return;
+		if (!model) return undefined;
 		const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
 		});
-		if (!interruptedTurnAbort) return;
+		if (!interruptedTurnAbort) return undefined;
 		this.sessionManager.appendMessage(interruptedTurnAbort);
-		this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+		const sessionContext = this.buildDisplaySessionContext();
+		this.agent.replaceMessages(sessionContext.messages);
 		logger.warn("Recovered session with an unclosed process run", {
 			sessionFile: this.sessionManager.getSessionFile(),
 			error: interruptedTurnAbort.errorMessage,
 		});
+		return sessionContext;
 	}
 
 	#recordSessionRunStart(): void {
@@ -4490,6 +4505,8 @@ export class AgentSession {
 		this.#recordSessionExit(options.reason ?? "dispose");
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
+		this.#cancelFatalRecoveryHint?.();
+		this.#cancelFatalRecoveryHint = undefined;
 		try {
 			await emitSessionShutdownEvent(this.#extensionRunner);
 		} catch (error) {
@@ -4908,6 +4925,11 @@ export class AgentSession {
 	/** Names of every registered tool. */
 	getAllToolNames(): string[] {
 		return this.#tools.getAllToolNames();
+	}
+
+	/** Full metadata for every registered tool, including source provenance (backs `getAllTools()`). */
+	getAllToolInfos(): ToolInfo[] {
+		return this.#tools.getAllToolInfos();
 	}
 
 	/** Installs and activates the ephemeral vibe tool set. */
@@ -7450,9 +7472,10 @@ export class AgentSession {
 	}
 
 	#extractRewindReport(messages: AgentMessage[]): string | undefined {
-		if (!this.#checkpointState) return undefined;
+		const checkpointState = this.#checkpointState;
+		if (!checkpointState) return undefined;
 		if (this.#pendingRewindReport) return this.#pendingRewindReport;
-		for (let i = messages.length - 1; i >= 0; i--) {
+		for (let i = messages.length - 1; i >= checkpointState.checkpointMessageCount; i--) {
 			const message = messages[i];
 			if (message?.role !== "toolResult" || message.isError) continue;
 			const semanticResult = semanticToolResult(message.toolName, message);
@@ -8220,38 +8243,56 @@ export class AgentSession {
 				this.#closeAllProviderSessions("session reload");
 			}
 
-			// Restore model if saved
-			const targetModelStrings = getRestorableSessionModels(
-				sessionContext.models,
-				this.sessionManager.getLastModelChangeRole(),
-			);
-			if (targetModelStrings.length > 0) {
-				let match: Model | undefined;
-				for (const targetModelStr of targetModelStrings) {
-					const resolved = resolveModelOverride([targetModelStr], this.#modelRegistry, this.settings);
-					if (!resolved.model) continue;
-					match = resolved.model;
-					break;
+			// Prefer durable session choices over settings. A session with no durable
+			// model_change is legacy, so its assistant-inferred model follows a
+			// resolvable configured default instead.
+			const lastModelChangeRole = this.sessionManager.getLastModelChangeRole();
+			const durableSessionModelStrings =
+				lastModelChangeRole === undefined
+					? []
+					: getRestorableSessionModels(
+							sessionContext.models,
+							lastModelChangeRole,
+							sessionContext.inferredDefaultModel,
+						);
+			const configuredDefaultModel = this.settings.getModelRole("default");
+			const inferredLegacyModelStrings =
+				lastModelChangeRole === undefined
+					? getRestorableSessionModels(
+							sessionContext.models,
+							lastModelChangeRole,
+							sessionContext.inferredDefaultModel,
+						)
+					: [];
+			const resolveRestoredModel = (selectors: readonly string[]): Model | undefined => {
+				for (const selector of selectors) {
+					const resolved = resolveModelOverride([selector], this.#modelRegistry, this.settings);
+					if (resolved.model) return resolved.model;
 				}
-				if (match) {
-					const currentModel = this.model;
-					const shouldResetProviderState =
-						switchingToDifferentSession ||
-						(currentModel !== undefined &&
-							(currentModel.provider !== match.provider ||
-								currentModel.id !== match.id ||
-								currentModel.api !== match.api));
-					if (shouldResetProviderState) {
-						await this.#setModelWithProviderSessionReset(match);
-					} else {
-						this.agent.setModel(match);
-					}
+				return undefined;
+			};
+			const match = resolveRestoredModel([
+				...durableSessionModelStrings,
+				...(configuredDefaultModel ? [configuredDefaultModel] : []),
+				...inferredLegacyModelStrings,
+			]);
+			if (match) {
+				const currentModel = this.model;
+				const shouldResetProviderState =
+					switchingToDifferentSession ||
+					(currentModel !== undefined &&
+						(currentModel.provider !== match.provider ||
+							currentModel.id !== match.id ||
+							currentModel.api !== match.api));
+				if (shouldResetProviderState) {
+					await this.#setModelWithProviderSessionReset(match);
+				} else {
+					this.agent.setModel(match);
 				}
 			}
 
 			if (switchingToDifferentSession) {
-				this.#recoverInterruptedPreviousRun();
-				sessionContext = this.buildDisplaySessionContext();
+				sessionContext = this.#recoverInterruptedPreviousRun() ?? sessionContext;
 			}
 
 			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
@@ -8525,7 +8566,8 @@ export class AgentSession {
 			this.isEvalRunning ||
 			this.isCompacting ||
 			this.isGeneratingHandoff ||
-			this.isRetrying
+			this.isRetrying ||
+			this.hasPostPromptWork
 		) {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
@@ -8556,7 +8598,8 @@ export class AgentSession {
 			this.isEvalRunning ||
 			this.isCompacting ||
 			this.isGeneratingHandoff ||
-			this.isRetrying
+			this.isRetrying ||
+			this.hasPostPromptWork
 		) {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}

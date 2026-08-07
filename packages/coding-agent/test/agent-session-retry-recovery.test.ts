@@ -23,7 +23,7 @@ import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/sess
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 

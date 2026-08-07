@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
+import { resolveAgentModelPatterns, resolveAgentModelSource, resolveExplicitModelRole } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -27,7 +27,6 @@ import vibeTurnResultTemplate from "../prompts/tools/vibe-turn-result.md" with {
 import vibeTurnResultTemplateZh from "../prompts/tools/vibe-turn-result.zh-CN.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import type { SessionEntry } from "../session/session-entries";
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
@@ -147,6 +146,7 @@ interface VibeRestoreCandidate {
 interface ResolvedVibeWorker {
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
+	modelRole?: string;
 }
 
 interface VibeTurn {
@@ -168,6 +168,7 @@ interface VibeRecord {
 	childSessionFile?: string;
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
+	modelRole?: string;
 	state: VibeSessionState;
 	createdAt: number;
 	lastActivityAt: number;
@@ -365,11 +366,12 @@ function parseLifecycleEvent(value: unknown): VibeLifecycleEvent | undefined {
 	return undefined;
 }
 
-/** Child ids claimed by any valid Vibe spawn event, independent of current parent scope. */
-export function persistedVibeChildIds(entries: Iterable<SessionEntry>): Set<string> {
+/** Child ids claimed by valid Vibe spawn records from untrusted persisted JSON. */
+export function persistedVibeChildIds(entries: Iterable<unknown>): Set<string> {
 	const ids = new Set<string>();
-	for (const entry of entries) {
-		if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
+	for (const value of entries) {
+		const entry = objectRecord(value);
+		if (entry?.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 		const event = parseLifecycleEvent(entry.data);
 		if (
 			event?.action === "spawn" &&
@@ -492,15 +494,17 @@ export class VibeSessionRegistry {
 			throw new ToolError(`Bundled agent "${agentName}" for vibe cli "${cli}" is unavailable.`);
 		}
 		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
+		const modelResolution = {
+			settingsOverride: agentModelOverrides[agentName],
+			agentModel: agent.model,
+			settings: session.settings,
+			activeModelPattern: session.getActiveModelString?.(),
+			fallbackModelPattern: session.getModelString?.(),
+		};
 		return {
 			agent,
-			modelOverride: resolveAgentModelPatterns({
-				settingsOverride: agentModelOverrides[agentName],
-				agentModel: agent.model,
-				settings: session.settings,
-				activeModelPattern: session.getActiveModelString?.(),
-				fallbackModelPattern: session.getModelString?.(),
-			}),
+			modelOverride: resolveAgentModelPatterns(modelResolution),
+			modelRole: resolveExplicitModelRole(resolveAgentModelSource(modelResolution), session.settings),
 		};
 	}
 
@@ -892,7 +896,7 @@ export class VibeSessionRegistry {
 				existing.sessionFile === childSessionFile &&
 				(existing.status === "idle" || existing.status === "parked");
 			const blockedByCollision = Boolean(existing && !existingIsResumable);
-			const { agent, modelOverride } = this.#resolveWorker(session, spawn.cli);
+			const { agent, modelOverride, modelRole } = this.#resolveWorker(session, spawn.cli);
 			if (!existing) {
 				AgentRegistry.global().register({
 					id: spawn.id,
@@ -913,6 +917,7 @@ export class VibeSessionRegistry {
 				childSessionFile,
 				agent,
 				modelOverride,
+				modelRole,
 				state: "idle",
 				createdAt: spawn.createdAt,
 				lastActivityAt: candidate.lastActivityAt,
@@ -947,7 +952,7 @@ export class VibeSessionRegistry {
 			throw new ToolError("Vibe mode has exited; enter Vibe mode again before spawning a worker.");
 		}
 		const manager = this.#manager(session);
-		const { agent, modelOverride } = this.#resolveWorker(session, args.cli);
+		const { agent, modelOverride, modelRole } = this.#resolveWorker(session, args.cli);
 		if (!session.agentOutputManager) {
 			session.agentOutputManager = new AgentOutputManager(session.getArtifactsDir ?? (() => null));
 		}
@@ -971,6 +976,7 @@ export class VibeSessionRegistry {
 			childSessionFile,
 			agent,
 			modelOverride,
+			modelRole,
 			state: "starting",
 			createdAt,
 			lastActivityAt: createdAt,
@@ -1421,6 +1427,7 @@ export class VibeSessionRegistry {
 			taskDepth: session.taskDepth ?? 0,
 			detached: true,
 			modelOverride: record.modelOverride,
+			modelRole: record.modelRole,
 			parentActiveModelPattern: session.getActiveModelString?.(),
 			thinkingLevel: record.agent.thinkingLevel,
 			sessionFile,
@@ -1513,6 +1520,7 @@ export class VibeSessionRegistry {
 								agent: record.agent,
 								message,
 								description: `vibe ${record.cli} session`,
+								modelRole: record.modelRole,
 								signal,
 								onProgress,
 								eventBus: session.eventBus,

@@ -17,6 +17,7 @@ import {
 	formatModelStringWithRouting,
 	resolveAgentPrewalkPattern,
 	resolveConfiguredModelPatterns,
+	resolveExplicitModelRole,
 	resolveModelOverride,
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
@@ -65,12 +66,12 @@ import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
+import { isReadOnlyAgent } from "./read-only-policy";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "./request-concurrency";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
 	type AgentDefinition,
 	type AgentProgress,
-	isReadOnlyAgent,
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
 	oneLineLabel,
@@ -195,11 +196,28 @@ function resolveSubagentRetryFallbackCandidates(
 	return candidates;
 }
 
-function resolveSubagentDefaultRetryFallbackChain(
+/**
+ * Chain a single-model subagent inherits when its own model patterns supply no
+ * fallbacks of their own. The child is pinned to a `subagent:<id>` role whose
+ * chain shadows every configured role chain (see
+ * {@link installSubagentRetryFallbackChain}), so a role-alias request (`@smol`)
+ * MUST inherit that role's chain — otherwise the pin silently re-routes the
+ * child onto the `default` role's chain. The caller captures that semantic role
+ * before model-pattern expansion; concrete patterns cannot safely recover it.
+ * Explicit model selectors keep inheriting `default`: they carry no role
+ * identity, and a role that happens to be assigned the same model must not
+ * capture the child's fallback routing.
+ */
+function resolveSubagentInheritedRetryFallbackChain(
 	settings: Settings,
 	modelRegistry: ModelRegistry,
+	modelRole: string | undefined,
 ): string[] | undefined {
-	const fallbackChain = settings.get("retry.fallbackChains")?.default;
+	const configuredChains = settings.get("retry.fallbackChains");
+	// An explicitly emptied role chain means "no fallbacks", not "inherit
+	// default" — mirrors expandDefaultRetryFallbackChains.
+	const fallbackChain =
+		(modelRole !== undefined ? configuredChains?.[modelRole] : undefined) ?? configuredChains?.default;
 	if (
 		!Array.isArray(fallbackChain) ||
 		fallbackChain.length === 0 ||
@@ -218,11 +236,11 @@ function installSubagentRetryFallbackChain(args: {
 	settings: Settings;
 	id: string;
 	candidates: SubagentRetryFallbackCandidate[];
-	defaultFallbackChain: string[] | undefined;
+	inheritedFallbackChain: string[] | undefined;
 	model: Model<Api> | undefined;
 	authFallbackUsed: boolean;
 }): string | undefined {
-	const { settings, id, candidates, defaultFallbackChain, model, authFallbackUsed } = args;
+	const { settings, id, candidates, inheritedFallbackChain, model, authFallbackUsed } = args;
 	if (!model || authFallbackUsed || candidates.length === 0) return undefined;
 
 	const selectedIndex = candidates.findIndex(
@@ -231,8 +249,8 @@ function installSubagentRetryFallbackChain(args: {
 	if (selectedIndex < 0) return undefined;
 	const fallbackSelectors = candidates.slice(selectedIndex + 1).map(candidate => candidate.selector);
 	const existingFallbackChains = settings.get("retry.fallbackChains");
-	// A single explicit model may reuse a configured default chain, but never an implicit parent fallback.
-	const fallbackChain = fallbackSelectors.length > 0 ? fallbackSelectors : defaultFallbackChain;
+	// A single configured model may reuse its role's (or the default) configured chain, but never an implicit parent fallback.
+	const fallbackChain = fallbackSelectors.length > 0 ? fallbackSelectors : inheritedFallbackChain;
 	if (
 		!Array.isArray(fallbackChain) ||
 		fallbackChain.length === 0 ||
@@ -358,6 +376,8 @@ export interface ExecutorOptions {
 	 */
 	detached?: boolean;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	/**
 	 * Active model selector of the parent session, used as an auth-aware fallback
 	 * if the resolved subagent model has no working credentials. See #985.
@@ -911,6 +931,8 @@ interface RunMonitorArgs {
 	/** Parent settings for tiny-model label generation. */
 	settings?: Settings;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	eventBus?: EventBus;
@@ -1039,6 +1061,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		cost: 0,
 		durationMs: 0,
 		modelOverride: args.modelOverride,
+		modelRole: args.modelRole,
 	};
 
 	const setActivity = (phase: AgentActivityState["phase"], label: string, detail?: string): void => {
@@ -2260,6 +2283,8 @@ interface FinalizeRunArgs {
 	task: string;
 	assignment?: string;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
 	outputSchemaSource?: StructuredSubagentSchemaSource;
@@ -2279,7 +2304,7 @@ interface FinalizeRunArgs {
  * event.
  */
 async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
-	const { monitor, done, index, id, agent, task, assignment, signal, modelOverride } = args;
+	const { monitor, done, index, id, agent, task, assignment, signal, modelOverride, modelRole } = args;
 	const progress = monitor.progress;
 	let exitCode = done.exitCode;
 	let stderr = done.error ?? "";
@@ -2415,6 +2440,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		contextTokens: progress.contextTokens,
 		contextWindow: progress.contextWindow,
 		modelOverride,
+		modelRole,
 		resolvedModel: progress.resolvedModel,
 		resolvedModelIsFallback: progress.resolvedModelIsFallback,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
@@ -2436,6 +2462,8 @@ export interface IrcWakeTurnMonitorOptions {
 	agent: AgentDefinition;
 	description?: string;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	eventBus?: EventBus;
 	parentToolCallId?: string;
 	/** Fallback session file when the registry ref carries none. */
@@ -2480,6 +2508,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			task: ircTask,
 			description: options.description,
 			modelOverride: options.modelOverride,
+			modelRole: options.modelRole,
 			eventBus: options.eventBus,
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
@@ -2537,6 +2566,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					agent,
 					task: ircTask,
 					modelOverride: options.modelOverride,
+					modelRole: options.modelRole,
 					outputSchema: options.outputSchema,
 					outputSchemaMode: options.outputSchemaMode,
 					outputSchemaSource: options.outputSchemaSource,
@@ -2582,7 +2612,7 @@ export async function finalizeSubagentLifecycle(args: {
 	const registry = AgentRegistry.global();
 	const ref = registry.get(args.id);
 	const ownsRef = Boolean(ref && ref.session === args.session);
-	const cleanupDeadlineAt = args.cleanupDeadlineAt ?? Date.now() + 5000;
+	const cleanupDeadlineAt = args.cleanupDeadlineAt ?? Date.now() + TASK_ABORT_CLEANUP_GRACE_MS;
 	const disposeSession = async (): Promise<void> => {
 		const disposal = args.session.dispose();
 		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
@@ -2607,14 +2637,38 @@ export async function finalizeSubagentLifecycle(args: {
 		args.abortKind === "budget" && args.keepAlive && !args.isolated && args.reviveSession !== null;
 	if (args.aborted && !resumableAbort) {
 		if (ref && ownsRef) {
-			// Terminal hard kill: mark `aborted` and detach the session before
-			// disposing so the ref satisfies the AgentRef invariant (session null
-			// when aborted) — ensureLive/hub focus must treat it as terminal, never
-			// route into the disposed session.
-			registry.setStatus(args.id, "aborted", ref);
-			registry.detachSession(args.id, ref);
+			// Route hard kills through the lifecycle owner so the terminal
+			// decision is durable and a restart cannot rediscover the transcript
+			// as a revivable parked agent.
+			const releaseCompletion: Promise<void> = AgentLifecycleManager.global()
+				.release(args.id, ref, { tombstone: true })
+				.then(
+					() => {},
+					async error => {
+						logger.warn("runSubagent: failed to persist kill tombstone", { id: args.id, error: String(error) });
+						registry.setStatus(args.id, "aborted", ref);
+						registry.detachSession(args.id, ref);
+						await disposeSession();
+					},
+				);
+			try {
+				await untilAborted(
+					AbortSignal.timeout(Math.max(0, cleanupDeadlineAt - Date.now())),
+					() => releaseCompletion,
+				);
+			} catch (error) {
+				if (Date.now() >= cleanupDeadlineAt) {
+					args.onCleanupDeferred?.(releaseCompletion);
+				} else {
+					logger.warn("runSubagent: hard-abort lifecycle cleanup failed", {
+						id: args.id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		} else {
+			await disposeSession();
 		}
-		await disposeSession();
 		return;
 	}
 
@@ -2664,6 +2718,8 @@ export interface FollowUpTurnOptions {
 	message: string;
 	index?: number;
 	description?: string;
+	/** Explicit pre-expansion model role alias retained from the original run. */
+	modelRole?: string;
 	/** Structured-output state retained from the original invocation. */
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -2703,6 +2759,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		agent,
 		task: message,
 		description: options.description,
+		modelRole: options.modelRole,
 		signal,
 		onProgress: options.onProgress,
 		eventBus: options.eventBus,
@@ -2754,6 +2811,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		id,
 		agent,
 		task: message,
+		modelRole: options.modelRole,
 		outputSchema: options.outputSchema,
 		outputSchemaMode: options.outputSchemaMode,
 		outputSchemaSource: options.outputSchemaSource,
@@ -2780,12 +2838,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		id,
 		worktree,
 		modelOverride,
+		modelRole,
 		thinkingLevel,
 		outputSchema,
 		enableLsp,
 		signal,
 		onProgress,
 	} = options;
+	const settings = options.settings ?? Settings.isolated();
+	const effectiveModelRole = modelRole ?? resolveExplicitModelRole(modelOverride ?? agent.model, settings);
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
@@ -2809,6 +2870,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			tokens: 0,
 			requests: 0,
 			modelOverride,
+			modelRole: effectiveModelRole,
 			error: "Cancelled before start",
 			aborted: true,
 			abortReason: "Cancelled before start",
@@ -2821,7 +2883,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		subtaskSessionFile = path.join(options.artifactsDir, `${id}.jsonl`);
 	}
 
-	const settings = options.settings ?? Settings.isolated();
 	const subagentSettings = createSubagentSettings(
 		settings,
 		{
@@ -2903,6 +2964,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		modelRegistry: options.modelRegistry,
 		settings,
 		modelOverride,
+		modelRole: effectiveModelRole,
 		signal,
 		onProgress,
 		eventBus: options.eventBus,
@@ -2936,6 +2998,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			agent,
 			description: options.description,
 			modelOverride,
+			modelRole: effectiveModelRole,
 			eventBus: options.eventBus,
 			parentToolCallId: options.parentToolCallId,
 			sessionFile: subtaskSessionFile,
@@ -3013,9 +3076,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			checkAbort();
 
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
-			const defaultRetryFallbackChain =
+			const inheritedRetryFallbackChain =
 				configuredModelPatterns.length === 1
-					? resolveSubagentDefaultRetryFallbackChain(subagentSettings, modelRegistry)
+					? resolveSubagentInheritedRetryFallbackChain(subagentSettings, modelRegistry, effectiveModelRole)
 					: undefined;
 			const {
 				model,
@@ -3050,7 +3113,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				settings: subagentSettings,
 				id,
 				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
-				defaultFallbackChain: defaultRetryFallbackChain,
+				inheritedFallbackChain: inheritedRetryFallbackChain,
 				model,
 				authFallbackUsed,
 			});
@@ -3195,7 +3258,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelPatternFallbackRole:
 					model || modelOverride === undefined ? undefined : `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
 				modelPatternDefaultFallbackChain:
-					model || modelOverride === undefined ? undefined : defaultRetryFallbackChain,
+					model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
 				thinkingLevel: effectiveThinkingLevel,
 				thinkingLevelCeiling: spawnEffortCeiling,
 				toolNames,
@@ -3329,6 +3392,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				task,
 				agentDisplayName: options.displayName ?? agent.name,
 				tools: session.getActiveToolNames(),
+				agent: agent.name,
+				modelRole: effectiveModelRole,
+				resolvedModel: progress.resolvedModel,
+				readOnly: isReadOnlyAgent(agent),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
 				outputSchema,
@@ -3378,7 +3445,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 							session.sessionManager.appendLabelChange(targetId, label);
 						},
 						getActiveTools: () => session.getEnabledToolNames(),
-						getAllTools: () => session.getAllToolNames(),
+						getAllTools: () => session.getAllToolInfos(),
 						setActiveTools: (toolNames: string[]) =>
 							session.setActiveToolsByName(toolNames.filter(name => !isParentOwnedTool(name))),
 						getCommands: () => getSessionSlashCommands(session),
@@ -3590,7 +3657,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const done = await runSubagent();
 	monitor.finish();
 
-	return finalizeRunResult({
+	const result = await finalizeRunResult({
 		monitor,
 		done,
 		index,
@@ -3599,6 +3666,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		task,
 		assignment,
 		modelOverride,
+		modelRole: effectiveModelRole,
 		outputSchema,
 		outputSchemaMode: options.outputSchemaMode,
 		outputSchemaSource: options.outputSchemaSource,
@@ -3610,4 +3678,6 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		sessionFile: subtaskSessionFile,
 		startTime,
 	});
+	AgentRegistry.global().setHistory(id, { outputPath: result.outputPath });
+	return result;
 }

@@ -433,6 +433,7 @@ export class TurnRecovery {
 			: fallback.originalSelector;
 		if (currentSelector !== originalSelector.raw) {
 			await this.#host.setModelWithProviderSessionReset(primaryModel);
+			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(primaryModel));
 		}
 		if (this.#activeRetryFallback !== fallback || this.#host.isDisposed()) return false;
 		const currentThinkingLevel = this.#host.configuredThinkingLevel();
@@ -1448,6 +1449,7 @@ export class TurnRecovery {
 		}
 		if (this.#host.model() !== candidate) return false;
 		this.#host.setTransientThinkingLevel(nextThinkingLevel);
+		this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
 		if (!this.#activeRetryFallback) {
 			this.#activeRetryFallback = {
 				role,
@@ -1564,6 +1566,7 @@ export class TurnRecovery {
 		const baseSelector = formatModelStringWithRouting(baseModel);
 		const currentThinkingLevel = this.#host.configuredThinkingLevel();
 		await this.#host.setModelWithProviderSessionReset(baseModel);
+		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
 		if (!this.#activeRetryFallback) {
 			this.#activeRetryFallback = {
 				originalSelector: currentSelector,
@@ -1837,6 +1840,12 @@ export class TurnRecovery {
 
 		await this.#recordPendingRecoveredRetryError(message, id, { switchedCredential, switchedModel, delayMs });
 
+		// Register before notifying listeners: an explicit model switch from an
+		// auto_retry_start handler must be able to cancel this pending retry.
+		const retryAbortController = new AbortController();
+		this.#retryAbortController?.abort();
+		this.#retryAbortController = retryAbortController;
+
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_start",
 			attempt: switchedModel ? 1 : this.#retryAttempt,
@@ -1858,9 +1867,6 @@ export class TurnRecovery {
 		this.#maybeInjectThinkingLoopRedirect(id);
 
 		// Wait with exponential backoff (abortable).
-		const retryAbortController = new AbortController();
-		this.#retryAbortController?.abort();
-		this.#retryAbortController = retryAbortController;
 		try {
 			await scheduler.wait(delayMs, { signal: retryAbortController.signal });
 		} catch {

@@ -36,7 +36,7 @@ function makeSession(fetchUsageReports: (signal?: AbortSignal) => Promise<unknow
 			}),
 			getSessionName: () => "test",
 		},
-		getAsyncJobSnapshot: () => ({ running: [] }),
+		getVisibleAsyncJobCount: () => 0,
 		getContextUsage: () => undefined,
 		contextUsageRevision: 0,
 	} as unknown as AgentSession;

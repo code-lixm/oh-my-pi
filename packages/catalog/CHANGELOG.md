@@ -6,6 +6,16 @@
 
 - Added fail-closed trusted Codex prompt profiles from official model discovery, preserving exact model provenance, typed model messages, composition hashes, source/ETag metadata, and canonical vendor digests.
 - Added the `bedrock-mantle` provider with authenticated model discovery for OpenAI GPT-5.4, GPT-5.5, and GPT-5.6 models served through Amazon Bedrock's Responses endpoint ([#7080](https://github.com/can1357/oh-my-pi/pull/7080) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+## [17.2.10] - 2026-08-06
+
+### Changed
+
+- Removed the zod dependency by migrating GitLab Duo Workflow discovery schemas to omptype.
+
+### Fixed
+
+- Corrected thinking-effort tiers for deepseek-v4-flash to include the low tier alongside high and max.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
-import xterm from "@xterm/headless";
+import xterm from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../../src/config/settings";
 import { getThemeByName, setThemeInstance, type Theme } from "../../src/modes/theme/theme";
 import { BashInteractiveOverlayComponent } from "../../src/tools/bash-interactive";

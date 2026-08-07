@@ -13,8 +13,9 @@
  * existing display conventions (e.g. `~/.omp/...`). JSON output preserves
  * the facade's absolute paths verbatim.
  */
+
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
-import chalk from "chalk";
 import type {
 	CodeGraphCacheIdentity,
 	CodeGraphIndexEntry,

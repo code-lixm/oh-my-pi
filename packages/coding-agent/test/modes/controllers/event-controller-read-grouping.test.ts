@@ -82,7 +82,7 @@ function createFixture() {
 		init: vi.fn(async () => {}),
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn(), imageBudget: undefined },
+		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), imageBudget: undefined },
 		chatContainer,
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),

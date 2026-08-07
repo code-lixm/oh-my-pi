@@ -72,14 +72,18 @@ describe("AgentSession bash session ownership", () => {
 
 	function createGatedBashRunner() {
 		const completion = Promise.withResolvers<{ result: typeof bashResult }>();
-		const emitUserBash = vi.fn(() => completion.promise);
+		const userBashStarted = Promise.withResolvers<void>();
+		const emitUserBash = vi.fn(() => {
+			userBashStarted.resolve();
+			return completion.promise;
+		});
 		const extensionRunner = {
 			hasHandlers: vi.fn((eventType: string) => eventType === "user_bash"),
 			emitUserBash,
 			emit: vi.fn().mockResolvedValue(undefined),
 			emitBeforeAgentStart: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
-		return { completion, emitUserBash, extensionRunner };
+		return { completion, userBashStarted, emitUserBash, extensionRunner };
 	}
 
 	async function seedPersistedSession(): Promise<string> {
@@ -182,11 +186,12 @@ describe("AgentSession bash session ownership", () => {
 
 	it("releases the bash owner when session transition preparation fails", async () => {
 		const sessionDir = path.join(tempDir.path(), "sessions");
-		const { completion, emitUserBash, extensionRunner } = createGatedBashRunner();
+		const { completion, userBashStarted, emitUserBash, extensionRunner } = createGatedBashRunner();
 		createSession(SessionManager.create(tempDir.path(), sessionDir), extensionRunner);
 		await seedPersistedSession();
 		const oldSessionId = session.sessionId;
 		const bashPromise = session.executeBash("old-session-command");
+		await userBashStarted.promise;
 		expect(emitUserBash).toHaveBeenCalledTimes(1);
 		vi.spyOn(session.sessionManager, "flush").mockRejectedValueOnce(new Error("synthetic flush failure"));
 
@@ -207,12 +212,13 @@ describe("AgentSession bash session ownership", () => {
 		"records a late bash result in its original session after %s",
 		async transition => {
 			const sessionDir = path.join(tempDir.path(), "sessions");
-			const { completion, emitUserBash, extensionRunner } = createGatedBashRunner();
+			const { completion, userBashStarted, emitUserBash, extensionRunner } = createGatedBashRunner();
 			createSession(SessionManager.create(tempDir.path(), sessionDir), extensionRunner);
 			const oldSessionFile = await seedPersistedSession();
 			const oldSessionId = session.sessionId;
 
 			const bashPromise = session.executeBash("old-session-command");
+			await userBashStarted.promise;
 			expect(emitUserBash).toHaveBeenCalledTimes(1);
 
 			switch (transition) {
@@ -349,7 +355,7 @@ describe("AgentSession bash session ownership", () => {
 
 	it("keeps a late bash result on the branch where it started", async () => {
 		const sessionDir = path.join(tempDir.path(), "sessions");
-		const { completion, extensionRunner } = createGatedBashRunner();
+		const { completion, userBashStarted, extensionRunner } = createGatedBashRunner();
 		createSession(SessionManager.create(tempDir.path(), sessionDir), extensionRunner);
 		await session.prompt("first prompt");
 		await session.waitForIdle();
@@ -364,6 +370,7 @@ describe("AgentSession bash session ownership", () => {
 		if (!originalLeafId) throw new Error("Expected original branch leaf");
 
 		const bashPromise = session.executeBash("old-branch-command");
+		await userBashStarted.promise;
 		await session.navigateTree(firstUserEntry.id);
 		const navigatedLeafId = firstUserEntry.parentId;
 		expect(session.sessionManager.getLeafId()).toBe(navigatedLeafId);

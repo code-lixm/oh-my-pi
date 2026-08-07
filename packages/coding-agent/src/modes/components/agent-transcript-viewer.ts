@@ -96,6 +96,7 @@ const POLL_MS = 250;
 
 const SENTINEL_BYTES = 4096;
 const FIXED_HEADER_ROWS = 1;
+const FIXED_FOOTER_ROWS = 1;
 const MIN_NAVIGATION_TITLE_WIDTH = 12;
 
 /** Sanitize wire-delivered error text for a single TUI row: tabs/newlines → spaces, strip controls,
@@ -627,7 +628,8 @@ export class AgentTranscriptViewer implements Component {
 		const ref = this.deps.registry.get(this.#agentId);
 		const observed = this.#observed();
 		const headerLine = this.#headerLine(ref, observed, innerWidth);
-		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - 2);
+		const footerLine = this.#footerLine(innerWidth);
+		const viewportHeight = Math.max(3, termHeight - FIXED_HEADER_ROWS - FIXED_FOOTER_ROWS - 2);
 		const transcriptLines = this.#builder.isEmpty
 			? [` ${theme.fg("dim", this.#placeholder(Math.max(1, contentWidth - 1)))}`]
 			: this.#builder.container.render(contentWidth);
@@ -648,8 +650,21 @@ export class AgentTranscriptViewer implements Component {
 		lines.push(...new DynamicBorder().render(width));
 		lines.push(` ${truncateToWidth(headerLine, innerWidth)}`);
 		for (const row of this.#scrollView.render(width)) lines.push(row);
+		lines.push(` ${footerLine}`);
 		lines.push(...new DynamicBorder().render(width));
 		return lines;
+	}
+
+	#footerLine(width: number): string {
+		const separator = theme.fg("dim", theme.sep.dot);
+		const controls = [
+			rawKeyHint("Esc/←←", tSettingsUi("Agent Hub")),
+			rawKeyHint("Alt+K", tSettingsUi("previous")),
+			rawKeyHint("Alt+J", tSettingsUi("next")),
+			rawKeyHint("j/k/g/G", tSettingsUi("scroll")),
+			rawKeyHint(this.deps.expandKeys[0] ?? "ctrl+o", tSettingsUi("expand")),
+		];
+		return truncateToWidth(controls.join(separator), Math.max(1, width));
 	}
 
 	#headerLine(ref: AgentRef | undefined, observed: ObservableSession | undefined, width: number): string {
@@ -664,7 +679,17 @@ export class AgentTranscriptViewer implements Component {
 			this.#metadataValue("Status", this.#statusValue(ref, observed, progress)),
 		].filter((value): value is string => value !== undefined);
 		const separator = theme.fg("dim", theme.sep.dot);
-		const minimumNavigationWidth = visibleWidth(previous) + visibleWidth(next) + 2 + MIN_NAVIGATION_TITLE_WIDTH;
+		const ids = this.#visibleAgentIds();
+		const index = ids.indexOf(this.#agentId);
+		const ordinal = `${index >= 0 ? index + 1 : 1}/${Math.max(1, ids.length)}`;
+		const name =
+			sanitizeViewerText(
+				ref?.displayName ?? observed?.label ?? observed?.description ?? this.#agentId,
+				Math.max(1, width),
+			) || "—";
+		const title = [theme.fg("dim", ordinal), theme.bold(name)].join(separator);
+		const minimumNavigationWidth =
+			visibleWidth(previous) + visibleWidth(next) + 2 + Math.max(MIN_NAVIGATION_TITLE_WIDTH, visibleWidth(title));
 
 		// Keep task identity, both cycle controls, and current status while dropping
 		// progressively less essential metadata for narrow terminal widths.
@@ -677,29 +702,10 @@ export class AgentTranscriptViewer implements Component {
 
 		const metadataText = metadata.join(separator);
 		const metadataWidth = metadataText ? visibleWidth(metadataText) + visibleWidth(separator) : 0;
-		const navigation = this.#navigationLine(ref, observed, Math.max(1, width - metadataWidth), previous, next);
+		const navigation = this.#centerWithControls(previous, title, next, Math.max(1, width - metadataWidth));
 		return metadataText
 			? truncateToWidth(`${navigation}${separator}${metadataText}`, Math.max(1, width))
 			: navigation;
-	}
-
-	#navigationLine(
-		ref: AgentRef | undefined,
-		observed: ObservableSession | undefined,
-		width: number,
-		previous: string,
-		next: string,
-	): string {
-		const ids = this.#visibleAgentIds();
-		const index = ids.indexOf(this.#agentId);
-		const ordinal = `${index >= 0 ? index + 1 : 1}/${Math.max(1, ids.length)}`;
-		const name =
-			sanitizeViewerText(
-				observed?.description ?? observed?.label ?? ref?.displayName ?? this.#agentId,
-				Math.max(1, width),
-			) || "—";
-		const title = [theme.fg("dim", ordinal), theme.bold(name)].join(theme.fg("dim", theme.sep.dot));
-		return this.#centerWithControls(previous, title, next, width);
 	}
 
 	#centerWithControls(left: string, title: string, right: string, width: number): string {

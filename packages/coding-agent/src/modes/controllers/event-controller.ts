@@ -1674,10 +1674,9 @@ export class EventController {
 		// message_end; consume the completion instead of recreating/updating UI.
 		if (this.#retractedToolCallIds.delete(event.toolCallId)) return;
 		const dispatch = writeDeviceDispatch(event.toolName, event.result);
+		const isPeerHubDispatch = dispatch?.tool === "hub" && isHubPeerCommunicationArgs(dispatch.args);
 		const hiddenPeerCommunicationDispatch =
-			!settings.get("display.showAgentCommunication") &&
-			dispatch?.tool === "hub" &&
-			isHubPeerCommunicationArgs(dispatch.args);
+			isPeerHubDispatch && !this.ctx.settings.get("display.showAgentCommunication");
 		// A synthetic aborted/error completion (agent-loop's placeholder for a
 		// never-run call on a terminal error/abort) settles the card in place so a
 		// terminal failure stays visible. Remember it so `#handleAutoRetryStart`
@@ -1855,30 +1854,50 @@ export class EventController {
 				typeof details.title === "string" &&
 				typeof details.planExists === "boolean"
 			) {
-				await this.ctx.handlePlanApproval({
-					planFilePath: details.planFilePath,
-					title: details.title,
-					planExists: details.planExists,
-				});
+				// Dispatch the approval WITHOUT blocking the serialized event
+				// dispatch chain. `handlePlanApproval` -> `#approvePlan` awaits
+				// `session.prompt` for the ENTIRE approved-execution turn; awaiting
+				// it here (this handler runs inside `#runSerialized`) would hold the
+				// single dispatch link for the whole run, so the run's own
+				// agent_start / message_start / tool / coalesced message_update
+				// events queue behind it on `#dispatchTail` and the chat stays blank
+				// until execution finishes (issue #7684, follow-up to #5688 which
+				// only closed the overlay). Detaching frees the link the moment this
+				// handler returns; the approval overlay and the turn's live events
+				// then render. The approval flow surfaces its own failures via
+				// `showError`, so only an unexpected rejection is logged here.
+				void this.ctx
+					.handlePlanApproval({
+						planFilePath: details.planFilePath,
+						title: details.title,
+						planExists: details.planExists,
+					})
+					.catch(err => {
+						logger.warn("Plan approval dispatch failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
 			}
 		}
 	}
 	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
-		// A non-terminal settle (`isTerminal: false`) schedules a continuation. Its
-		// public event can arrive after that continuation has already marked the
-		// session streaming, so this MUST run before the stale-terminal guard below:
-		// `#emit` invokes this async listener synchronously up to this first await,
-		// giving the queued continuation the pending model before its next turn.
+		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not
+		// the end of the run. Apply a deferred model switch before its continuation
+		// starts, then mount panels only while this settle remains quiescent; a
+		// terminal settle performs the same panel flush through #finishAgentEnd.
 		if (event.isTerminal === false) {
 			await this.ctx.flushPendingModelSwitch();
+			if (this.ctx.session.isStreaming) return;
+			this.ctx.flushPendingCommandOutput();
 			return;
 		}
 
 		// A superseded terminal agent_end belongs to a turn that has already been
-		// replaced. Its teardown must not stop the loader owned by the live turn.
+		// replaced. It must not tear down the live turn or mount deferred panels
+		// into its growing transcript.
 		if (this.ctx.session.isStreaming) return;
-		this.#syncTerminalTitleState();
 
+		this.#syncTerminalTitleState();
 		await this.#finishAgentEnd(event);
 	}
 

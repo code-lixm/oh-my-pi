@@ -13,7 +13,7 @@ import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
-import { TaskRequestConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
+import { TaskRequestConcurrency, TaskRunnableConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -55,6 +55,7 @@ type IrcWakeObserver = (records: CustomMessage[]) => ((error?: unknown) => void 
 interface RevivedSessionHandle {
 	session: AgentSession;
 	observer: () => IrcWakeObserver | undefined;
+	emit(event: AgentSessionEvent): void;
 }
 
 function createRevivedSession(
@@ -62,6 +63,7 @@ function createRevivedSession(
 	onSubscribe?: (listener: (event: AgentSessionEvent) => void) => void,
 ): RevivedSessionHandle {
 	let observer: IrcWakeObserver | undefined;
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const session = {
 		getMountedXdevToolNames: () => [],
 		setActiveToolsByName: async (names: string[]) => {
@@ -69,17 +71,29 @@ function createRevivedSession(
 		},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			onSubscribe?.(listener);
-			return () => {};
+			listeners.add(listener);
+			return () => listeners.delete(listener);
 		},
 		setIrcWakeTurnObserver: (next: IrcWakeObserver | undefined) => {
 			observer = next;
 		},
 		getLastAssistantMessage: () => undefined,
 	} as unknown as AgentSession;
-	return { session, observer: () => observer };
+	return {
+		session,
+		observer: () => observer,
+		emit: event => {
+			for (const listener of listeners) listener(event);
+		},
+	};
 }
 
-async function createPersistedSession(cwd: string, restrictToolNames?: boolean): Promise<string> {
+async function createPersistedSession(
+	cwd: string,
+	restrictToolNames?: boolean,
+	modelRole?: string,
+	resolvedModel?: string,
+): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
 	if (!sessionFile) throw new Error("Expected a persisted session file");
@@ -88,6 +102,8 @@ async function createPersistedSession(cwd: string, restrictToolNames?: boolean):
 		task: "persisted task",
 		tools: ["read", "yield"],
 		restrictToolNames,
+		modelRole,
+		resolvedModel: resolvedModel ?? (modelRole ? "anthropic/claude-sonnet-4-5" : undefined),
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -110,13 +126,21 @@ async function createPersistedSession(cwd: string, restrictToolNames?: boolean):
 	return sessionFile;
 }
 
-function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurrency, eventBus?: EventBus) {
+function createFactory(
+	cwd: string,
+	options: {
+		taskRequestConcurrency?: TaskRequestConcurrency;
+		taskRunnableConcurrency?: TaskRunnableConcurrency;
+		eventBus?: EventBus;
+	} = {},
+) {
 	const parentSession = {
 		sessionManager: {
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
 		},
-		taskRequestConcurrency,
+		taskRequestConcurrency: options.taskRequestConcurrency,
+		taskRunnableConcurrency: options.taskRunnableConcurrency,
 		get sessionFile() {
 			return path.join(cwd, "parent.jsonl");
 		},
@@ -127,7 +151,7 @@ function createFactory(cwd: string, taskRequestConcurrency?: TaskRequestConcurre
 		modelRegistry: { authStorage: {} } as ModelRegistry,
 		settings: Settings.isolated(),
 		enableLsp: true,
-		eventBus,
+		eventBus: options.eventBus,
 	});
 }
 
@@ -204,11 +228,12 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
 	});
 
-	it("reuses the parent's shared request limiter when reviving a parked child", async () => {
-		const cwd = makeTempDir("@pi-revive-shared-limiter-");
+	it("reuses the parent's shared request and runnable limiters when reviving a parked child", async () => {
+		const cwd = makeTempDir("@pi-revive-shared-limiters-");
 		const sessionFile = await createPersistedSession(cwd);
 		registerRoot();
-		const sharedLimiter = new TaskRequestConcurrency(() => 1);
+		const sharedRequestLimiter = new TaskRequestConcurrency(() => 1);
+		const sharedRunnableScheduler = new TaskRunnableConcurrency(() => 1);
 		let capturedOptions: CreateAgentSessionOptions | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			capturedOptions = options;
@@ -216,11 +241,53 @@ describe("persisted subagent revival", () => {
 		});
 
 		const ref = createRef(sessionFile);
-		const reviver = await createFactory(cwd, sharedLimiter)(ref);
+		const reviver = await createFactory(cwd, {
+			taskRequestConcurrency: sharedRequestLimiter,
+			taskRunnableConcurrency: sharedRunnableScheduler,
+		})(ref);
 		if (!reviver) throw new Error("Expected a persisted reviver");
 		await reviver(ref);
 
-		expect(capturedOptions?.taskRequestConcurrency).toBe(sharedLimiter);
+		expect(capturedOptions?.taskRequestConcurrency).toBe(sharedRequestLimiter);
+		expect(capturedOptions?.taskRunnableConcurrency).toBe(sharedRunnableScheduler);
+	});
+
+	it("restores a persisted custom model role with its explicit effort before reopening the session", async () => {
+		const cwd = makeTempDir("@pi-custom-role-revive-");
+		const sessionFile = await createPersistedSession(cwd, false, "reviewer", "anthropic/claude-sonnet-4-5:high");
+		registerRoot();
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.modelPattern).toEqual(["@reviewer:high", "anthropic/claude-sonnet-4-5:high"]);
+		expect(capturedOptions?.modelPatternAuthFallback).toBe("anthropic/claude-sonnet-4-5:high");
+	});
+
+	it("pins the persisted concrete model when the default role is revived", async () => {
+		const cwd = makeTempDir("@pi-default-role-revive-");
+		const sessionFile = await createPersistedSession(cwd, false, "default");
+		registerRoot();
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.modelPattern).toBe("anthropic/claude-sonnet-4-5");
+		expect(capturedOptions?.modelPatternAuthFallback).toBe("anthropic/claude-sonnet-4-5");
 	});
 
 	it("derives depth and status transitions from a secondary top-level parent chain", async () => {
@@ -289,7 +356,7 @@ describe("persisted subagent revival", () => {
 		registerRoot();
 		AgentLifecycleManager.resetGlobalForTests();
 		const cwd = makeTempDir("@pi-revive-frames-");
-		const sessionFile = await createPersistedSession(cwd);
+		const sessionFile = await createPersistedSession(cwd, false, "review-fast");
 		MCPManager.setInstance({ getTools: () => [] } as unknown as MCPManager);
 		let handle: RevivedSessionHandle | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
@@ -305,7 +372,7 @@ describe("persisted subagent revival", () => {
 		});
 		rpcRegistry.setSubscriptionLevel("progress");
 		const ref = createRef(sessionFile);
-		const reviver = await createFactory(cwd, undefined, eventBus)(ref);
+		const reviver = await createFactory(cwd, { eventBus })(ref);
 		if (!reviver) throw new Error("Expected a persisted reviver");
 		await reviver(ref);
 
@@ -321,6 +388,7 @@ describe("persisted subagent revival", () => {
 			timestamp: Date.now(),
 		};
 		const finish = observer?.([record]);
+		handle?.emit({ type: "agent_start" } as AgentSessionEvent);
 		await finish?.();
 		await terminal.promise;
 
@@ -328,6 +396,12 @@ describe("persisted subagent revival", () => {
 			type: "subagent_lifecycle",
 			payload: { id: ref.id, status: "started" },
 		});
+		const progressFrame = frames.find(
+			(frame): frame is Extract<RpcSubagentFrame, { type: "subagent_progress" }> =>
+				frame.type === "subagent_progress",
+		);
+		expect(progressFrame?.payload.progress.modelRole).toBe("review-fast");
+		expect(progressFrame?.payload.progress.modelOverride).toEqual(["@review-fast", "anthropic/claude-sonnet-4-5"]);
 		const last = frames.at(-1);
 		expect(last?.type).toBe("subagent_lifecycle");
 		if (last?.type !== "subagent_lifecycle") throw new Error("expected terminal lifecycle frame");

@@ -35,10 +35,15 @@ import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/sett
 
 const MAIN_LABEL = "INTERNAL_MAIN_SHOULD_NOT_RENDER";
 const RUNNING = "RUNNING_HUB_AGENT";
+const RUNNING_LABEL = "Build";
 const WAITING = "WAITING_HUB_AGENT";
+const WAITING_LABEL = "Review";
 const COMPLETED = "COMPLETED_PARKED_HUB_AGENT";
+const COMPLETED_LABEL = "Archive";
 const ADVISOR = "ADVISOR_HUB_AGENT";
+const ADVISOR_LABEL = "Advisor";
 const METADATA_AGENT = "FIXED_COLUMN_METADATA_AGENT";
+const METADATA_LABEL = "Metrics";
 const TRANSCRIPT_TIMESTAMP = "2025-01-02T03:04:05.000Z";
 
 let previousLocale = getSettingsUiLocale();
@@ -66,16 +71,28 @@ function makeHub(options: {
 	});
 }
 
-function renderHub(hub: AgentHubOverlayComponent): string {
-	return Bun.stripANSI(hub.render(120).join("\n"));
+const ROSTER_ENTRY_PATTERN = /^(?:❯| ) \S /u;
+
+function renderedRosterPanel(hub: AgentHubOverlayComponent, width = 120): string[] {
+	const lines = hub.render(width).map(line => Bun.stripANSI(line));
+	const divider = lines.find(line => line.includes("┬"))?.indexOf("┬") ?? -1;
+	if (divider < 3) throw new Error("Expected side-by-side Agent Hub roster");
+	return lines.flatMap(line => {
+		if (!line.startsWith("│ ") || !line.endsWith(" │")) return [];
+		const splitDivider = line.lastIndexOf(" │ ");
+		if (splitDivider < 3) return [];
+		return [line.slice(2, splitDivider).trimEnd()];
+	});
 }
 
-function hubRow(hub: AgentHubOverlayComponent, id: string): string {
-	const row = renderHub(hub)
-		.split("\n")
-		.find(line => line.includes(id));
-	if (!row) throw new Error(`Expected Hub row for ${id}`);
-	return row;
+function renderedRosterEntries(hub: AgentHubOverlayComponent, width = 120): string[] {
+	return renderedRosterPanel(hub, width).filter(line => ROSTER_ENTRY_PATTERN.test(line));
+}
+
+function hubRow(hub: AgentHubOverlayComponent, label: string): string {
+	const entries = renderedRosterEntries(hub).filter(entry => entry.includes(label));
+	if (entries.length !== 1) throw new Error(`Expected one Hub row for ${label}, found ${entries.length}`);
+	return entries[0]!;
 }
 
 function makeViewer(options: {
@@ -119,11 +136,17 @@ function registerMain(registry: AgentRegistry): void {
 
 function registerParticipant(
 	registry: AgentRegistry,
-	{ id, kind, status, sessionFile }: { id: string; kind: AgentKind; status: AgentStatus; sessionFile: string | null },
+	{
+		id,
+		label,
+		kind,
+		status,
+		sessionFile,
+	}: { id: string; label: string; kind: AgentKind; status: AgentStatus; sessionFile: string | null },
 ): void {
 	registry.register({
 		id,
-		displayName: id,
+		displayName: label,
 		kind,
 		parentId: MAIN_AGENT_ID,
 		session: status === "parked" || status === "aborted" ? null : fakeSession(),
@@ -242,17 +265,29 @@ describe("Agent Hub redesign", () => {
 	it("lists only subagent rows in the Hub", async () => {
 		const registry = new AgentRegistry();
 		registerMain(registry);
-		registerParticipant(registry, { id: ADVISOR, kind: "advisor", status: "parked", sessionFile: null });
-		registerParticipant(registry, { id: COMPLETED, kind: "sub", status: "parked", sessionFile: null });
+		registerParticipant(registry, {
+			id: ADVISOR,
+			label: ADVISOR_LABEL,
+			kind: "advisor",
+			status: "parked",
+			sessionFile: null,
+		});
+		registerParticipant(registry, {
+			id: COMPLETED,
+			label: COMPLETED_LABEL,
+			kind: "sub",
+			status: "parked",
+			sessionFile: null,
+		});
 		const hub = makeHub({ registry });
 
 		try {
 			await hub.persistedSubagentsReady;
-			const rendered = renderHub(hub);
+			const roster = renderedRosterEntries(hub).join("\n");
 
-			expect(rendered).toContain(COMPLETED);
-			expect(rendered).not.toContain(MAIN_LABEL);
-			expect(rendered).not.toContain(ADVISOR);
+			expect(roster).toContain(COMPLETED_LABEL);
+			expect(roster).not.toContain(MAIN_LABEL);
+			expect(roster).not.toContain(ADVISOR_LABEL);
 		} finally {
 			hub.dispose();
 		}
@@ -267,13 +302,19 @@ describe("Agent Hub redesign", () => {
 
 		const registry = new AgentRegistry();
 		registerMain(registry);
-		registerParticipant(registry, { id: COMPLETED, kind: "sub", status: "parked", sessionFile: null });
+		registerParticipant(registry, {
+			id: COMPLETED,
+			label: COMPLETED_LABEL,
+			kind: "sub",
+			status: "parked",
+			sessionFile: null,
+		});
 		const observers = new SessionObserverRegistry();
 		vi.spyOn(observers, "getSessions").mockReturnValue([
 			{
 				id: COMPLETED,
 				kind: "subagent",
-				label: COMPLETED,
+				label: COMPLETED_LABEL,
 				status: "completed",
 				lastUpdate: completedAtMs,
 				progress: completedProgress(COMPLETED, startedAtMs, durationMs),
@@ -283,9 +324,9 @@ describe("Agent Hub redesign", () => {
 
 		try {
 			await hub.persistedSubagentsReady;
-			const first = renderHub(hub);
+			const first = hubRow(hub, COMPLETED_LABEL);
 			setSystemTime(completedAtMs + 7_200_000);
-			const later = renderHub(hub);
+			const later = hubRow(hub, COMPLETED_LABEL);
 
 			expect(first).toContain("1h2m");
 			expect(later).toBe(first);
@@ -300,7 +341,13 @@ describe("Agent Hub redesign", () => {
 		setSystemTime(startedAtMs);
 		const registry = new AgentRegistry();
 		registerMain(registry);
-		registerParticipant(registry, { id: METADATA_AGENT, kind: "sub", status: "running", sessionFile: null });
+		registerParticipant(registry, {
+			id: METADATA_AGENT,
+			label: METADATA_LABEL,
+			kind: "sub",
+			status: "running",
+			sessionFile: null,
+		});
 		const observers = new SessionObserverRegistry();
 		let progress: AgentProgress = {
 			...completedProgress(METADATA_AGENT, startedAtMs, 3_723_000),
@@ -312,7 +359,7 @@ describe("Agent Hub redesign", () => {
 			{
 				id: METADATA_AGENT,
 				kind: "subagent",
-				label: METADATA_AGENT,
+				label: METADATA_LABEL,
 				status: "active",
 				lastUpdate: Date.now(),
 				progress,
@@ -320,14 +367,13 @@ describe("Agent Hub redesign", () => {
 		]);
 		const hub = makeHub({ registry, observers });
 		const positions = (
-			rendered: string,
+			rendered: readonly string[],
 			values: { status: string; duration: string; model: string; lastUpdate: string },
 		) => {
-			const lines = rendered.split("\n");
-			const columns = lines.find(line =>
+			const columns = rendered.find(line =>
 				["Status", "Duration", "Model", "Last up…"].every(column => line.includes(column)),
 			);
-			const row = lines.find(line => line.includes(METADATA_AGENT));
+			const row = rendered.find(line => line.includes(METADATA_LABEL));
 			if (!columns || !row) throw new Error("Expected fixed metadata header and agent row");
 			return {
 				header: {
@@ -348,7 +394,7 @@ describe("Agent Hub redesign", () => {
 		try {
 			await hub.persistedSubagentsReady;
 			setSystemTime(startedAtMs + 3_723_000);
-			const first = positions(renderHub(hub), {
+			const first = positions(renderedRosterPanel(hub), {
 				status: "Running",
 				duration: "1h2m",
 				model: "short-model",
@@ -374,7 +420,7 @@ describe("Agent Hub redesign", () => {
 				},
 			};
 			setSystemTime(startedAtMs + 359_999_000);
-			const later = positions(renderHub(hub), {
+			const later = positions(renderedRosterPanel(hub), {
 				status: "Waiting for user",
 				duration: "4d3h",
 				model: "intentionally",
@@ -391,7 +437,13 @@ describe("Agent Hub redesign", () => {
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
 		const registry = new AgentRegistry();
 		registerMain(registry);
-		registerParticipant(registry, { id: COMPLETED, kind: "sub", status: "parked", sessionFile: null });
+		registerParticipant(registry, {
+			id: COMPLETED,
+			label: COMPLETED_LABEL,
+			kind: "sub",
+			status: "parked",
+			sessionFile: null,
+		});
 		const observers = new SessionObserverRegistry();
 		const progress: AgentProgress = {
 			...completedProgress(COMPLETED, startedAtMs, 5_000),
@@ -401,7 +453,7 @@ describe("Agent Hub redesign", () => {
 			{
 				id: COMPLETED,
 				kind: "subagent",
-				label: COMPLETED,
+				label: COMPLETED_LABEL,
 				status: "completed",
 				lastUpdate: startedAtMs + 5_000,
 				progress,
@@ -412,14 +464,14 @@ describe("Agent Hub redesign", () => {
 
 		try {
 			await hub.persistedSubagentsReady;
-			const hubEntry = hubRow(hub, COMPLETED);
+			const hubEntry = hubRow(hub, COMPLETED_LABEL);
 			const lines = Bun.stripANSI(viewer.render(120).join("\n")).split("\n");
 			const header = lines[1];
 			if (!header) throw new Error("Expected compact transcript header");
 			const body = lines.slice(2, -1).join("\n");
 
 			expect(header).toContain("Alt+K");
-			expect(header).toContain("COMPLETED");
+			expect(header).toContain(COMPLETED_LABEL);
 			expect(header).toContain("Alt+J");
 			expect(header).toContain("Model: provider/short-model");
 			expect(header).toContain("Duration: 5s");
@@ -438,13 +490,14 @@ describe("Agent Hub redesign", () => {
 			const id = `FAILED_${lifecycleStatus.toUpperCase()}_STATUS`;
 			const registry = new AgentRegistry();
 			registerMain(registry);
-			registerParticipant(registry, { id, kind: "sub", status: lifecycleStatus, sessionFile: null });
+			const label = "Failure";
+			registerParticipant(registry, { id, label, kind: "sub", status: lifecycleStatus, sessionFile: null });
 			const observers = new SessionObserverRegistry();
 			vi.spyOn(observers, "getSessions").mockReturnValue([
 				{
 					id,
 					kind: "subagent",
-					label: id,
+					label,
 					status: "failed",
 					lastUpdate: startedAtMs + 5_000,
 					progress: { ...completedProgress(id, startedAtMs, 5_000), status: "failed" },
@@ -455,7 +508,7 @@ describe("Agent Hub redesign", () => {
 
 			try {
 				await hub.persistedSubagentsReady;
-				expect(hubRow(hub, id)).toContain("Failed");
+				expect(hubRow(hub, label)).toContain("Failed");
 				expect(viewerHeader(viewer)).toContain("Status: failed");
 			} finally {
 				viewer.dispose();
@@ -469,14 +522,15 @@ describe("Agent Hub redesign", () => {
 			const id = `LIFECYCLE_${lifecycleStatus.toUpperCase()}_STATUS`;
 			const registry = new AgentRegistry();
 			registerMain(registry);
-			registerParticipant(registry, { id, kind: "sub", status: lifecycleStatus, sessionFile: null });
+			const label = "State";
+			registerParticipant(registry, { id, label, kind: "sub", status: lifecycleStatus, sessionFile: null });
 			const observers = new SessionObserverRegistry();
 			const hub = makeHub({ registry, observers });
 			const viewer = makeViewer({ agentId: id, registry, observers });
 
 			try {
 				await hub.persistedSubagentsReady;
-				const hubEntry = hubRow(hub, id);
+				const hubEntry = hubRow(hub, label);
 				expect(hubEntry).toContain(lifecycleStatus);
 				expect(hubEntry).not.toContain("Completed");
 				expect(viewerHeader(viewer)).toContain(`Status: ${lifecycleStatus}`);
@@ -492,13 +546,14 @@ describe("Agent Hub redesign", () => {
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
 		const registry = new AgentRegistry();
 		registerMain(registry);
-		registerParticipant(registry, { id, kind: "sub", status: "aborted", sessionFile: null });
+		const label = "Halted";
+		registerParticipant(registry, { id, label, kind: "sub", status: "aborted", sessionFile: null });
 		const observers = new SessionObserverRegistry();
 		vi.spyOn(observers, "getSessions").mockReturnValue([
 			{
 				id,
 				kind: "subagent",
-				label: id,
+				label,
 				status: "completed",
 				lastUpdate: startedAtMs + 5_000,
 				progress: completedProgress(id, startedAtMs, 5_000),
@@ -509,7 +564,7 @@ describe("Agent Hub redesign", () => {
 
 		try {
 			await hub.persistedSubagentsReady;
-			const hubEntry = hubRow(hub, id);
+			const hubEntry = hubRow(hub, label);
 			expect(hubEntry).toContain("Stopped");
 			expect(hubEntry).not.toContain("Completed");
 			const header = viewerHeader(viewer);
@@ -634,6 +689,7 @@ describe("Agent Hub redesign", () => {
 		registerMain(registry);
 		registerParticipant(registry, {
 			id: ADVISOR,
+			label: ADVISOR_LABEL,
 			kind: "advisor",
 			status: "parked",
 			sessionFile: writeTranscript(dir, ADVISOR),
@@ -641,6 +697,7 @@ describe("Agent Hub redesign", () => {
 		setSystemTime(registeredAtMs + 1_000);
 		registerParticipant(registry, {
 			id: COMPLETED,
+			label: COMPLETED_LABEL,
 			kind: "sub",
 			status: "idle",
 			sessionFile: writeTranscript(dir, COMPLETED),
@@ -648,6 +705,7 @@ describe("Agent Hub redesign", () => {
 		setSystemTime(registeredAtMs + 2_000);
 		registerParticipant(registry, {
 			id: WAITING,
+			label: WAITING_LABEL,
 			kind: "sub",
 			status: "waiting",
 			sessionFile: writeTranscript(dir, WAITING),
@@ -655,6 +713,7 @@ describe("Agent Hub redesign", () => {
 		setSystemTime(registeredAtMs + 3_000);
 		registerParticipant(registry, {
 			id: RUNNING,
+			label: RUNNING_LABEL,
 			kind: "sub",
 			status: "running",
 			sessionFile: writeTranscript(dir, RUNNING),
@@ -679,14 +738,20 @@ describe("Agent Hub redesign", () => {
 		try {
 			await hub.persistedSubagentsReady;
 			terminalRows = 40;
-			const fixtureIds = [RUNNING, WAITING, ADVISOR, COMPLETED] as const;
-			const roster = renderHub(hub);
-			const hubOrder = roster
-				.split("\n")
-				.flatMap(line => fixtureIds.filter(id => line.includes(id)))
+			const fixtures = [
+				{ id: RUNNING, label: RUNNING_LABEL },
+				{ id: WAITING, label: WAITING_LABEL },
+				{ id: ADVISOR, label: ADVISOR_LABEL },
+				{ id: COMPLETED, label: COMPLETED_LABEL },
+			] as const;
+			const hubOrder = renderedRosterEntries(hub)
+				.flatMap(entry => fixtures.filter(fixture => entry.includes(fixture.label)).map(fixture => fixture.id))
 				.filter((id, index, ids) => ids.indexOf(id) === index);
-
-			expect(hubOrder).toEqual([RUNNING, WAITING, COMPLETED]);
+			expect(hubOrder.map(id => fixtures.find(fixture => fixture.id === id)?.label)).toEqual([
+				RUNNING_LABEL,
+				WAITING_LABEL,
+				COMPLETED_LABEL,
+			]);
 
 			terminalRows = 12;
 			const first = hubOrder[0]!;

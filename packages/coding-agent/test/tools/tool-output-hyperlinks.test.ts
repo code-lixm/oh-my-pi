@@ -117,7 +117,7 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 		// the `src` prefix (`/proj/src/src/...`).
 		const projectRoot = path.resolve("/tmp/omp-project");
 		const srcRoot = path.join(projectRoot, "src");
-		const interactiveModePath = path.join(srcRoot, "interactive-mode.ts");
+		const fileLocation = { path: "src/interactive-mode.ts", lineNumbers: [12] };
 		const result = {
 			content: [{ type: "text", text: "" }],
 			details: {
@@ -126,19 +126,18 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 				cwd: projectRoot,
 				searchPath: srcRoot,
 				scopePath: "src",
-				displayContent: ["# src/", "## interactive-mode.ts#abcd", "*12│const needle = true;"].join("\n"),
+				fileLocations: [fileLocation],
 			},
 		};
 		const rendered = grepToolRenderer
 			.renderResult(result as never, { expanded: true, isPartial: false }, theme, { pattern: "needle" })
 			.render(240)
 			.join("\n");
-		const interactiveModeUri = url.pathToFileURL(path.resolve(interactiveModePath)).href;
-		const interactiveModeLineUri = new URL(interactiveModeUri);
+		const interactiveModeLineUri = url.pathToFileURL(path.resolve(result.details.cwd, fileLocation.path));
 		interactiveModeLineUri.searchParams.set("line", "12");
 		const uris = extractLinkUris(rendered);
-		expect(uris).toContain(interactiveModeUri);
-		expect(uris).toContain(interactiveModeLineUri.href);
+		const lineTargetUri = uris.find(uri => new URL(uri).searchParams.get("line") === "12");
+		expect(lineTargetUri).toBe(interactiveModeLineUri.href);
 		expect(uris.some(uri => uri.includes("/src/src/"))).toBe(false);
 	});
 

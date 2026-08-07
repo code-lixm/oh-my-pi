@@ -71,7 +71,7 @@ function makeStatusLineComponent(options?: {
 			}),
 			getSessionName: () => "token-rate-test",
 		},
-		getAsyncJobSnapshot: () => ({ running: [] }),
+		getVisibleAsyncJobCount: () => 0,
 		getContextUsage: () => undefined,
 		contextUsageRevision: 0,
 		modelRegistry: { isUsingOAuth: () => false },

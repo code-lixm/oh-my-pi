@@ -12,6 +12,7 @@ import {
 	getSessionsDir,
 	getTerminalSessionsDir,
 	removeSyncWithRetries,
+	resolveEquivalentPath,
 	Snowflake,
 	setAgentDir,
 } from "@oh-my-pi/pi-utils";
@@ -181,12 +182,20 @@ describe("SessionManager temp cwd session dirs", () => {
 			.replace(/[/\\:]/g, "-")}--`;
 	}
 
+	function clearTerminalBreadcrumb(): void {
+		const terminalId = getTerminalId();
+		if (!terminalId) return;
+		fs.rmSync(path.join(getTerminalSessionsDir(), terminalId), { force: true });
+	}
+
 	beforeEach(() => {
 		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-dir-test-"));
 		setAgentDir(testAgentDir);
+		clearTerminalBreadcrumb();
 	});
 
 	afterEach(() => {
+		clearTerminalBreadcrumb();
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
 		} else {
@@ -224,6 +233,67 @@ describe("SessionManager temp cwd session dirs", () => {
 		expect(fs.existsSync(legacyDir)).toBe(false);
 		expect(path.dirname(sessionFile)).toBe(expectedDir);
 		expect(fs.existsSync(path.join(expectedDir, "carried.jsonl"))).toBe(true);
+	});
+
+	it("keeps hashed-scheme sessions in place while list, continue, and id resume find them", async () => {
+		const tempCwd = path.join(testAgentDir, `hashed-cwd-${Snowflake.next()}`);
+		fs.mkdirSync(tempCwd, { recursive: true });
+
+		const canonicalCwd = resolveEquivalentPath(path.resolve(tempCwd));
+		const normalized = canonicalCwd.replaceAll("\\", "/");
+		const readable = path
+			.basename(canonicalCwd)
+			.replace(/[^a-zA-Z0-9._-]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(-80);
+		const digest = Bun.SHA256.hash(normalized, "hex");
+		const hashedDir = path.join(getSessionsDir(), `tmp-${readable || "project"}-${digest}`);
+		const hashedSessionFile = path.join(hashedDir, "2026-01-01T00-00-00-000Z_develop-hashed-session.jsonl");
+		const sessionId = "develop-hashed-session";
+		fs.mkdirSync(hashedDir, { recursive: true });
+		fs.writeFileSync(
+			hashedSessionFile,
+			`${[
+				JSON.stringify({
+					type: "session",
+					id: sessionId,
+					timestamp: "2026-01-01T00:00:00.000Z",
+					cwd: canonicalCwd,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "develop-user-turn",
+					parentId: null,
+					timestamp: "2026-01-01T00:00:01.000Z",
+					message: { role: "user", content: "resume the develop session", timestamp: 0 },
+				}),
+			].join("\n")}\n`,
+		);
+
+		const session = SessionManager.create(tempCwd);
+		const canonicalSessionFile = session.getSessionFile();
+		if (!canonicalSessionFile) throw new Error("Expected session file path");
+		await session.close();
+
+		const expectedDir = path.join(getSessionsDir(), expectedTempSessionDirName(tempCwd));
+		expect(path.dirname(canonicalSessionFile)).toBe(expectedDir);
+		expect(fs.existsSync(hashedDir)).toBe(true);
+		expect(fs.existsSync(hashedSessionFile)).toBe(true);
+
+		clearTerminalBreadcrumb();
+		const listed = await SessionManager.list(tempCwd, expectedDir);
+		expect(listed).toContainEqual(expect.objectContaining({ id: sessionId, path: hashedSessionFile }));
+
+		const continued = await SessionManager.continueRecent(tempCwd, expectedDir);
+		try {
+			expect(continued.getSessionFile()).toBe(hashedSessionFile);
+		} finally {
+			await continued.close();
+		}
+
+		clearTerminalBreadcrumb();
+		const match = await resolveResumableSession(sessionId.slice(0, 8), tempCwd, expectedDir);
+		expect(match).toMatchObject({ scope: "local", session: { id: sessionId, path: hashedSessionFile } });
 	});
 });
 

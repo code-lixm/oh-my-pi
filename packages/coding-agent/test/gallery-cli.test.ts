@@ -82,12 +82,19 @@ describe("gallery harness", () => {
 		// (regression guard for tool-execution's custom-branch fallback label).
 		const task = resolveFixture("task");
 		expect(task.customRendered).toBe(true);
-		const lines = await renderGalleryState("task", task, "error", 100);
-		const stripped = lines.map(line => Bun.stripANSI(line).trim());
-		// The framed result header carries the label inside the box border...
-		expect(stripped.some(line => line.startsWith(theme.boxRound.topLeft) && line.includes("Task"))).toBe(true);
-		// ...but no standalone "Task" label line precedes it.
-		expect(stripped).not.toContain("Task");
+		const previousBorderStyle = getOutputBlockBorderStyle();
+
+		try {
+			setOutputBlockBorderStyle("full");
+			const lines = await renderGalleryState("task", task, "error", 100);
+			const stripped = lines.map(line => Bun.stripANSI(line).trim());
+			// The framed result header carries the label inside the box border...
+			expect(stripped.some(line => line.startsWith(theme.boxRound.topLeft) && line.includes("Task"))).toBe(true);
+			// ...but no standalone "Task" label line precedes it.
+			expect(stripped).not.toContain("Task");
+		} finally {
+			setOutputBlockBorderStyle(previousBorderStyle);
+		}
 	});
 
 	it("renders curated failed states as failures", async () => {

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { getProjectDir, isEnoent, prompt, readImageMetadata } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { selectPrompt } from "../prompts/prompt-locale";
 import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };
 import imageDimensionNoteZh from "../prompts/tools/image-dimension-note.zh-CN.md" with { type: "text" };

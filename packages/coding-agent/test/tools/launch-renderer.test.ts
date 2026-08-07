@@ -4,12 +4,17 @@
  * bare `✓ Launch` + raw text" render — plus per-op body rules (logs strip the
  * LLM-facing `[name: state; cursor=N]` suffix, list caps collapsed rows).
  */
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-coding-agent/launch/protocol";
 import { renderTerminalOutput } from "@oh-my-pi/pi-coding-agent/launch/terminal-output";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { hubToolRenderer, type LaunchToolDetails } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 
 async function theme() {
@@ -36,6 +41,17 @@ const daemon = (overrides: Partial<DaemonSnapshot>): DaemonSnapshot => ({
 });
 
 describe("hub launch rendering", () => {
+	let previousBorderStyle: OutputBlockBorderStyle;
+
+	beforeEach(() => {
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setOutputBlockBorderStyle("full");
+	});
+
+	afterEach(() => {
+		setOutputBlockBorderStyle(previousBorderStyle);
+	});
+
 	it("is registered with merged call/result so the pending header is replaced, not stacked", () => {
 		expect(Object.is(toolRenderers.hub.renderResult, hubToolRenderer.renderResult)).toBe(true);
 		expect(toolRenderers.hub.mergeCallAndResult).toBe(true);

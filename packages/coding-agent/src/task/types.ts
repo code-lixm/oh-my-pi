@@ -383,33 +383,6 @@ export interface AgentDefinition {
 	filePath?: string;
 }
 
-// Built-in tools whose approval tier is "read" (see tool classes' `approval`).
-// Hub is deliberately absent: its process routes can execute arbitrary binaries.
-// An agent is read-only iff its declared tools are a non-empty subset of this table.
-// Fail-safe: any unknown tool makes the agent not read-only.
-export const READ_ONLY_TOOL_NAMES: Readonly<Record<string, true>> = {
-	read: true,
-	grep: true,
-	glob: true,
-	web_search: true,
-	codegraph: true,
-	ast_grep: true,
-	yield: true,
-	ask: true,
-	todo: true,
-	recall: true,
-	reflect: true,
-	retain: true,
-	memory_edit: true,
-	inspect_image: true,
-	checkpoint: true,
-	rewind: true,
-};
-
-export function isReadOnlyAgent(agent: AgentDefinition): boolean {
-	return !!agent.tools?.length && agent.tools.every(tool => Object.hasOwn(READ_ONLY_TOOL_NAMES, tool));
-}
-
 /** Details extracted from a subagent `yield` tool call for final-result assembly and task rendering. */
 export interface YieldItem {
 	data?: unknown;
@@ -475,6 +448,8 @@ export interface AgentProgress {
 	/** True while tokensPerSecond describes an in-flight assistant request; false means the last completed request. */
 	tokensPerSecondLive?: boolean;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
@@ -544,6 +519,8 @@ export interface SingleResult {
 	/** Model's context window in tokens, when known. */
 	contextWindow?: number;
 	modelOverride?: string | string[];
+	/** Explicit pre-expansion model role alias selected for this run. */
+	modelRole?: string;
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Omitted from tool-result JSON when undefined to keep wire payloads small. */
 	resolvedModel?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */

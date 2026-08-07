@@ -87,6 +87,9 @@ export const tinyModelsHelp = {
 } satisfies CommandMetadata;
 
 export const tokenHelp = { description: "Get the API key or OAuth token for a provider" } satisfies CommandMetadata;
+export const codegraphHelp = {
+	description: "Manage project-out CodeGraph indexes (~/.omp/codegraph/v1/indexes)",
+} satisfies CommandMetadata;
 
 export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",

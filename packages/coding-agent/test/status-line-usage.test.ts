@@ -168,7 +168,7 @@ function makeComponent(
 				},
 			},
 		},
-		getAsyncJobSnapshot: () => ({ running: [] }),
+		getVisibleAsyncJobCount: () => 0,
 		getContextUsage: () => undefined,
 	} as unknown as ConstructorParameters<typeof StatusLineComponent>[0]);
 	component.updateSettings({

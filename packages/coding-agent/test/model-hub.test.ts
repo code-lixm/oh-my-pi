@@ -560,8 +560,7 @@ describe("ModelHub", () => {
 				expect(settings.getProjectModelRole("default")).toBe(selector);
 
 				const projectDefault = createHub({ models: [model], scoped: true, settings });
-				const projectDefaultLines = projectDefault.hub.render(220).map(line => stripVTControlCharacters(line));
-				expect(projectDefaultLines.find(line => line.includes("○ smol"))).toBeDefined();
+				expect(normalize(projectDefault.hub.render(220))).toContain("○ smol");
 				projectDefault.hub.handleInput("\n");
 				projectDefault.hub.handleInput("\n");
 				expect(projectDefault.onUnassign).toHaveBeenCalledWith("default", "project");
@@ -599,8 +598,7 @@ describe("ModelHub", () => {
 			const model = makeModel("test", "claude-haiku-4.5");
 			const settings = Settings.isolated({ modelRoleStorage: "project" });
 			const { hub, onAssign, onUnassign } = createHub({ models: [model], scoped: true, settings });
-			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
-			expect(lines.find(line => line.includes("○ smol"))).toBeDefined();
+			expect(normalize(hub.render(220))).toContain("○ smol");
 
 			hub.handleInput("\n");
 			hub.handleInput(DOWN);

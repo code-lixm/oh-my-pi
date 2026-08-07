@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
@@ -15,7 +15,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { splitAssistantMessageToolTimeline } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { getSegmenter } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
@@ -143,8 +147,16 @@ const toolUi = {
 };
 
 describe("streaming reveal", () => {
+	let previousBorderStyle: OutputBlockBorderStyle;
+
+	beforeEach(() => {
+		previousBorderStyle = getOutputBlockBorderStyle();
+		setOutputBlockBorderStyle("accent");
+	});
+
 	afterEach(() => {
 		vi.useRealTimers();
+		setOutputBlockBorderStyle(previousBorderStyle);
 	});
 
 	it("slices at grapheme boundaries without mutating the target message", () => {
@@ -395,31 +407,27 @@ describe("streaming reveal", () => {
 	});
 
 	it("keeps exactly one plain separator between snapped thinking and an accent tool block", () => {
-		const previousBorderStyle = getOutputBlockBorderStyle();
+		const { controller } = makeController();
+		const assistant = new AssistantMessageComponent();
+		const timeline = splitBeforeToolsTimeline(makeThinkingToolCallMessage());
+		controller.begin(assistant, timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
 
-		try {
-			setOutputBlockBorderStyle("accent");
-			const { controller } = makeController();
-			const assistant = new AssistantMessageComponent();
-			const timeline = splitBeforeToolsTimeline(makeThinkingToolCallMessage());
-			controller.begin(assistant, timeline.beforeTools, { snapToEnd: timeline.hasToolCalls });
+		const tool = new ToolExecutionComponent("custom-tool", { path: "README.md" }, {}, undefined, toolUi);
+		tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 
-			const tool = new ToolExecutionComponent("custom-tool", { path: "README.md" }, {}, undefined, toolUi);
-			tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(assistant);
+		transcript.addChild(tool);
 
-			const transcript = new TranscriptContainer();
-			transcript.addChild(assistant);
-			transcript.addChild(tool);
+		const lines = renderPlainLines(transcript);
+		const thinkingIndex = lineIndexContaining(lines, "planning");
+		const toolIndex = lineIndexContaining(lines, "custom-tool");
 
-			const lines = renderPlainLines(transcript);
-			const thinkingIndex = lineIndexContaining(lines, "planning");
-			const toolIndex = lineIndexContaining(lines, "custom-tool");
-
-			expect(toolIndex).toBeGreaterThan(thinkingIndex);
-			expect(lines.slice(thinkingIndex + 1, toolIndex)).toEqual([""]);
-		} finally {
-			setOutputBlockBorderStyle(previousBorderStyle);
-		}
+		expect(toolIndex).toBeGreaterThan(thinkingIndex);
+		const accentIndex = lines.findIndex((line, index) => index > thinkingIndex && line === "▌");
+		expect(accentIndex).toBeGreaterThan(thinkingIndex);
+		expect(lines.slice(thinkingIndex + 1, accentIndex)).toEqual([""]);
+		expect(lines.slice(accentIndex, toolIndex)).toEqual(["▌"]);
 	});
 
 	it("passes the bound component to requestRender on each smooth tick", () => {

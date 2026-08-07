@@ -14,12 +14,13 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 function createContext() {
 	const streamState = { isStreaming: false };
 	const loader = { stop: vi.fn() };
+	const flushPendingCommandOutput = vi.fn();
 	const ctx = {
 		isInitialized: true,
 		settings: { get: () => false },
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
-		flushPendingCommandOutput: vi.fn(),
+		flushPendingCommandOutput,
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map<string, unknown>(),
 		hideThinkingBlock: false,
@@ -47,7 +48,7 @@ function createContext() {
 	ctx.ensureLoadingAnimation = vi.fn(() => {
 		ctx.loadingAnimation ??= loader as unknown as typeof ctx.loadingAnimation;
 	});
-	return { ctx, streamState, loader };
+	return { ctx, streamState, loader, flushPendingCommandOutput };
 }
 
 const AGENT_START = { type: "agent_start" } as unknown as AgentSessionEvent;
@@ -94,6 +95,25 @@ describe("EventController superseded agent_end", () => {
 		expect(TERMINAL.sendNotification).not.toHaveBeenCalled();
 	});
 
+	it("does not flush queued command panels when a stale non-terminal agent_end lands after the resumed turn's agent_start", async () => {
+		const { ctx, streamState, flushPendingCommandOutput } = createContext();
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent(AGENT_START);
+		streamState.isStreaming = true;
+		await controller.handleEvent(AGENT_START);
+
+		flushPendingCommandOutput.mockClear();
+
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [],
+			isTerminal: false,
+		} as unknown as AgentSessionEvent);
+
+		expect(flushPendingCommandOutput).not.toHaveBeenCalled();
+	});
+
 	it("tears the loader down on the live turn's own final agent_end", async () => {
 		const { ctx, streamState, loader } = createContext();
 		const controller = new EventController(ctx);
@@ -108,5 +128,25 @@ describe("EventController superseded agent_end", () => {
 
 		expect(loader.stop).toHaveBeenCalledTimes(1);
 		expect(ctx.loadingAnimation).toBeUndefined();
+	});
+
+	it("flushes queued command panels at a non-terminal settle", async () => {
+		const { ctx, streamState } = createContext();
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent(AGENT_START);
+		// An async fan-out settles the loop without ending the run. `isStreaming`
+		// is already false here, so any command issued now mounts immediately —
+		// panels queued during the turn have to mount too, or they render out of
+		// order whenever the terminal settle finally lands.
+		streamState.isStreaming = false;
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [],
+			isTerminal: false,
+		} as unknown as AgentSessionEvent);
+
+		expect(ctx.flushPendingModelSwitch).toHaveBeenCalled();
+		expect(ctx.flushPendingCommandOutput).toHaveBeenCalled();
 	});
 });

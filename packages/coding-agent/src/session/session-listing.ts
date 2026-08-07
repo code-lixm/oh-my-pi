@@ -2,7 +2,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, procmgr, toError } from "@oh-my-pi/pi-utils";
-import { LRUCache } from "lru-cache/raw";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { SESSION_RUN_START_CUSTOM_TYPE, SESSION_RUN_STOP_CUSTOM_TYPE } from "./exit-diagnostics";
 import { computeCompatibleSessionDirs, resolveManagedSessionRoot } from "./session-paths";

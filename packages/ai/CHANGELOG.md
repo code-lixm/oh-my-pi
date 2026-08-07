@@ -5,6 +5,12 @@
 ### Added
 
 - Added optional Codex native-prompt sidecars with Full/Lite role ordering, fingerprint-partitioned prompt caches, stable session/thread identity, and complete generic-prompt fallback.
+## [17.2.10] - 2026-08-06
+
+### Breaking Changes
+
+- Removed the `zod` dependency and `z`/`ZodType` re-exports. Tool schemas now use `omptype` `type()` schemas, with Zod-style authoring still available via `@oh-my-pi/omptype/zod`.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

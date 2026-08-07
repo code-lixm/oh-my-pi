@@ -65,6 +65,8 @@ export interface SessionContext {
 	serviceTier?: ServiceTierByFamily;
 	/** Model roles: { default: "provider/modelId", small: "provider/modelId", ... } */
 	models: Record<string, string>;
+	/** Default model inferred from legacy assistant metadata rather than a durable model_change. */
+	inferredDefaultModel?: string;
 	/** Names of TTSR rules that have been injected this session */
 	injectedTtsrRules: string[];
 	/** Active mode (e.g. "plan") or "none" if no special mode is active */
@@ -80,10 +82,11 @@ export interface SessionContext {
 	cacheMissExplainedAt?: boolean[];
 }
 
-/** Lists explicitly persisted session model selectors to try on restore, in fallback order. */
+/** Lists candidates for a persisted model role, excluding an inferred default when requested. */
 export function getRestorableSessionModels(
 	models: Readonly<Record<string, string>>,
 	lastModelChangeRole: string | undefined,
+	inferredDefaultModel?: string,
 ): string[] {
 	const defaultModel = models.default;
 	if (
@@ -95,8 +98,10 @@ export function getRestorableSessionModels(
 	}
 
 	const roleModel = models[lastModelChangeRole];
-	if (!roleModel) return defaultModel ? [defaultModel] : [];
-	if (!defaultModel || roleModel === defaultModel) return [roleModel];
+	if (!roleModel) {
+		return defaultModel && defaultModel !== inferredDefaultModel ? [defaultModel] : [];
+	}
+	if (!defaultModel || roleModel === defaultModel || defaultModel === inferredDefaultModel) return [roleModel];
 	return [roleModel, defaultModel];
 }
 
@@ -236,6 +241,13 @@ export function buildSessionContext(
 	const injectedTtsrRulesSet = new Set<string>();
 	let mode = "none";
 	let modeData: Record<string, unknown> | undefined;
+	// Track whether an explicit `model_change` with role="default" has been
+	// seen on this path. Once a user (or the agent itself) records an
+	// explicit default, later assistant-message inference must not overwrite
+	// it: temporary fallbacks and server-side downgrades can tag assistant
+	// messages with a model that was never the user's durable selection.
+	let hasExplicitDefaultModel = false;
+	let inferredDefaultModel: string | undefined;
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -246,9 +258,22 @@ export function buildSessionContext(
 			if (entry.model) {
 				const role = entry.role ?? "default";
 				models[role] = entry.model;
+				if (role === "default") {
+					hasExplicitDefaultModel = true;
+					inferredDefaultModel = undefined;
+				}
 			}
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
+		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			// Legacy sessions predate explicit model_change entries. Infer their
+			// default without allowing later fallback responses to clobber an
+			// explicit selection.
+			if (!hasExplicitDefaultModel) {
+				const inferredModel = `${entry.message.provider}/${entry.message.model}`;
+				models.default = inferredModel;
+				inferredDefaultModel = inferredModel;
+			}
 		} else if (entry.type === "compaction") {
 			compaction = entry;
 		} else if (entry.type === "ttsr_injection") {
@@ -557,6 +582,7 @@ export function buildSessionContext(
 		configuredThinkingLevel,
 		serviceTier,
 		models,
+		...(inferredDefaultModel === undefined ? {} : { inferredDefaultModel }),
 		injectedTtsrRules,
 		mode,
 		modeData,

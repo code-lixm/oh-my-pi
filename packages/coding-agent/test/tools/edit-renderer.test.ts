@@ -17,7 +17,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { Text, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 
 beforeAll(async () => {
 	resetSettingsForTest();

@@ -31,8 +31,8 @@ import {
 	relativeLuminance,
 	rgbToHex,
 } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
-import { LRUCache } from "lru-cache/raw";
+import chalk from "@oh-my-pi/pi-utils/chalk";
+import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 // Embed theme JSON files at build time
 import darkThemeJson from "./dark.json" with { type: "json" };
 import { defaultThemes } from "./defaults";

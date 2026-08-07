@@ -55,6 +55,7 @@ export interface ModelControlsHost {
 	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	clearActiveRetryFallback(): void;
+	abortRetry(): void;
 	clearInheritedProviderPromptCacheKey(): void;
 	magicKeywordEnabled(keyword: "orchestrate" | "ultrathink" | "workflow"): boolean;
 	emit(event: AgentSessionEvent): void;
@@ -215,6 +216,7 @@ export class ModelControls {
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
+		this.#host.abortRetry();
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
@@ -260,6 +262,7 @@ export class ModelControls {
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
+		this.#host.abortRetry();
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 

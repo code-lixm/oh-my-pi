@@ -15,7 +15,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";

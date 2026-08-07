@@ -8,6 +8,11 @@ import { EDIT_MODE_STRATEGIES } from "@oh-my-pi/pi-coding-agent/edit";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { theme as activeTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
+import {
+	getOutputBlockBorderStyle,
+	type OutputBlockBorderStyle,
+	setOutputBlockBorderStyle,
+} from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
@@ -36,6 +41,7 @@ type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
 type TerminalEnvSnapshot = Record<TerminalEnvKey, { bun: string | undefined; process: string | undefined }>;
 
 let terminalEnvSnapshot: TerminalEnvSnapshot | undefined;
+let previousBorderStyle: OutputBlockBorderStyle;
 
 function restoreEnvValue(env: Record<string, string | undefined>, key: TerminalEnvKey, value: string | undefined) {
 	if (value === undefined) {
@@ -67,13 +73,20 @@ function restoreTerminalEnv(snapshot: TerminalEnvSnapshot | undefined) {
 }
 
 beforeEach(() => {
+	previousBorderStyle = getOutputBlockBorderStyle();
+	setOutputBlockBorderStyle("full");
 	terminalEnvSnapshot = neutralizeTerminalEnv();
 });
 
 afterEach(() => {
-	restoreTerminalEnv(terminalEnvSnapshot);
-	terminalEnvSnapshot = undefined;
+	try {
+		restoreTerminalEnv(terminalEnvSnapshot);
+	} finally {
+		terminalEnvSnapshot = undefined;
+		setOutputBlockBorderStyle(previousBorderStyle);
+	}
 });
+
 describe("streaming edit preview height (stable, full tail window)", () => {
 	const oldBlock = ["function foo() {", "  const x = 1;", "  return x;", "}"].join("\n");
 	const tail = ["", "function bar() {", "  return 2;", "}", "", "function baz() {", "  return 3;", "}", ""].join("\n");

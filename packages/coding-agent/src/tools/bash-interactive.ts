@@ -11,8 +11,8 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import type * as XtermModule from "@xterm/headless";
-import type { Terminal as XtermTerminalType } from "@xterm/headless";
+import type * as XtermModule from "@oh-my-pi/pi-utils/vterm";
+import type { Terminal as XtermTerminalType } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../config/settings";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
@@ -38,13 +38,13 @@ function normalizeCaptureChunk(chunk: string): string {
 // source of truth for the final captured output.
 const MAX_LIVE_WRITE_QUEUE_CHUNKS = 512;
 
-// @xterm/headless is only needed once an interactive PTY session actually starts,
+// The virtual terminal is only needed once an interactive PTY session actually starts,
 // so it is loaded lazily (and memoized) instead of weighing down CLI startup.
 let xtermTerminalCtor: typeof XtermModule.Terminal | undefined;
 
 async function loadXtermTerminal(): Promise<typeof XtermModule.Terminal> {
 	if (!xtermTerminalCtor) {
-		const mod = (await import("@xterm/headless")) as typeof XtermModule & { default?: typeof XtermModule };
+		const mod = (await import("@oh-my-pi/pi-utils/vterm")) as typeof XtermModule & { default?: typeof XtermModule };
 		xtermTerminalCtor = (mod.default ?? mod).Terminal;
 	}
 	return xtermTerminalCtor;
@@ -263,7 +263,7 @@ export class BashInteractiveOverlayComponent implements Component {
 		this.#terminal.resize(innerWidth, maxContentRows);
 		const buffer = this.#terminal.buffer.active;
 		const rows = readTerminalRows(this.#terminal, buffer.viewportY, maxContentRows);
-		if (buffer.type === "normal") {
+		if (buffer === this.#terminal.buffer.normal) {
 			while (rows.length > 1 && rows.at(-1) === "") rows.pop();
 		}
 		return rows.map(line =>

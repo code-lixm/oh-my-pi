@@ -31,6 +31,8 @@ import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 const TS = new Date().toISOString();
+const ADVISOR_ID = "advisor-internal-session";
+const ADVISOR_LABEL = "Review advisor";
 
 function buildJsonl(): string {
 	const usage = {
@@ -218,8 +220,8 @@ function messageLine(id: string, content: string): string {
 function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
 	const agents = new AgentRegistry();
 	agents.register({
-		id: "Main/advisor",
-		displayName: "advisor",
+		id: ADVISOR_ID,
+		displayName: ADVISOR_LABEL,
 		kind: "advisor",
 		parentId: "Main",
 		session: null,
@@ -227,7 +229,7 @@ function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
 		status: "parked",
 	});
 	return new AgentTranscriptViewer({
-		agentId: "Main/advisor",
+		agentId: ADVISOR_ID,
 		registry: agents,
 		ui: ui ?? ({ requestRender: () => {}, requestComponentRender: () => {} } as never),
 		cwd: "/tmp",
@@ -301,7 +303,7 @@ describe("AgentTranscriptViewer", () => {
 			viewer.render(80); // populate the scroll view before navigating
 			viewer.handleInput("g"); // scroll to top so the first message is visible
 			const lines = viewer.render(80).map(l => Bun.stripANSI(l));
-			const titleLine = lines.find(l => l.includes("advisor") && l.includes("Alt+K"));
+			const titleLine = lines.find(l => l.includes(ADVISOR_LABEL) && l.includes("Alt+K"));
 			const bodyLine = lines.find(l => l.includes("PROMPTMARKER"));
 			expect(titleLine).toBeDefined();
 			expect(bodyLine).toBeDefined();
@@ -322,7 +324,7 @@ describe("AgentTranscriptViewer", () => {
 
 			expect(bodyIndex).toBeGreaterThanOrEqual(0);
 			expect(headerRows).toHaveLength(1);
-			expect(header).toContain("advisor");
+			expect(header).toContain(ADVISOR_LABEL);
 			expect(header).toContain("Alt+K");
 			expect(header).toContain("Alt+J");
 			expect(header).toContain("Model:");
