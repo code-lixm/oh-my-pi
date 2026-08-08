@@ -333,9 +333,10 @@ export class EventController {
 		if (!this.#hubActivityGroup?.canAppend) {
 			this.#hubActivityGroup = new HubActivityGroupComponent();
 			this.#hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
-			this.#hubActivityGroup.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(this.#hubActivityGroup);
 		}
+		this.#hubActivityGroup.setToolActivityVisible(!this.ctx.hideToolActivity);
+		this.#hubActivityGroup.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
 		return this.#hubActivityGroup;
 	}
 
@@ -345,6 +346,7 @@ export class EventController {
 			return;
 		}
 		component.setToolActivityVisible(!this.ctx.hideToolActivity);
+		component.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
 		this.#hubActivityGroup = component;
 	}
 
@@ -1492,6 +1494,22 @@ export class EventController {
 			this.ctx.ui.requestRender();
 			return;
 		}
+		if (
+			!settings.get("display.showAgentCommunication") &&
+			isHubPeerCommunicationToolCall(event.toolName, event.args)
+		) {
+			const pending = this.ctx.pendingTools.get(event.toolCallId);
+			if (pending) {
+				if (this.ctx.chatContainer.isBlockUncommitted(pending)) this.ctx.chatContainer.removeChild(pending);
+				pending.seal();
+				this.ctx.pendingTools.delete(event.toolCallId);
+				this.#toolTimelineComponents.delete(event.toolCallId);
+			}
+			this.#toolArgsReveal.finish(event.toolCallId);
+			this.ctx.ui.requestRender();
+			return;
+		}
+
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
 			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
@@ -1504,21 +1522,6 @@ export class EventController {
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 				}
-				this.ctx.ui.requestRender();
-				return;
-			}
-			if (
-				!settings.get("display.showAgentCommunication") &&
-				isHubPeerCommunicationToolCall(event.toolName, event.args)
-			) {
-				const pending = this.ctx.pendingTools.get(event.toolCallId);
-				if (pending) {
-					if (this.ctx.chatContainer.isBlockUncommitted(pending)) this.ctx.chatContainer.removeChild(pending);
-					pending.seal();
-					this.ctx.pendingTools.delete(event.toolCallId);
-					this.#toolTimelineComponents.delete(event.toolCallId);
-				}
-				this.#toolArgsReveal.finish(event.toolCallId);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -1609,6 +1612,9 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		const component = this.ctx.pendingTools.get(event.toolCallId);
 		if (component) {
+			if (component instanceof HubActivityGroupComponent) {
+				component.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
+			}
 			const asyncState = (event.partialResult.details as { async?: { state?: string } } | undefined)?.async?.state;
 			const isFinalAsyncState = asyncState === "completed" || asyncState === "failed";
 			// A final async snapshot is terminal only for a parked background
@@ -1753,6 +1759,9 @@ export class EventController {
 			if (component) {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const renderResult = { ...event.result, isError: event.isError };
+				if (component instanceof HubActivityGroupComponent) {
+					component.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
+				}
 				if (
 					event.toolName === "hub" &&
 					component instanceof HubActivityGroupComponent &&
@@ -2190,24 +2199,68 @@ export class EventController {
 		this.ctx.ui.requestRender();
 	}
 
+	/**
+	 * Resolve a retry-fallback chain key to a user-friendly label. Chain keys
+	 * can be role names ("default", "advisor"), model selectors
+	 * ("openai-proxy/gpt-5.6-terra:max"), or wildcards ("openai-proxy/*").
+	 * When the key is a model selector, reverse-lookup the configured model
+	 * roles to find a readable role name; fall back to the raw key.
+	 */
+	#resolveRoleLabel(role: string): string {
+		if (!role.includes("/")) return role;
+		const modelRoles = this.ctx.settings?.getModelRoles?.();
+		if (modelRoles) {
+			for (const [roleName, selector] of Object.entries(modelRoles)) {
+				if (selector === role) return roleName;
+			}
+		}
+		return role;
+	}
+
 	async #handleRetryFallbackApplied(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>,
 	): Promise<void> {
-		this.ctx.showWarning(tSettingsUi("Fallback: {from} -> {to}", { from: event.from, to: event.to }));
+		const { from, to, role } = event;
+		if (role && role !== "default") {
+			this.ctx.showWarning(
+				tSettingsUi("Fallback ({role}): {from} -> {to}", { role: this.#resolveRoleLabel(role), from, to }),
+			);
+		} else {
+			this.ctx.showWarning(tSettingsUi("Fallback: {from} -> {to}", { from, to }));
+		}
 	}
 
 	async #handleRetryFallbackSucceeded(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>,
 	): Promise<void> {
-		this.ctx.showStatus(tSettingsUi("Fallback succeeded on {model}", { model: event.model }));
+		const { model, role } = event;
+		if (role && role !== "default") {
+			this.ctx.showStatus(
+				tSettingsUi("Fallback ({role}) succeeded on {model}", {
+					role: this.#resolveRoleLabel(role),
+					model,
+				}),
+			);
+		} else {
+			this.ctx.showStatus(tSettingsUi("Fallback succeeded on {model}", { model }));
+		}
 	}
 
 	async #handleRetryFallbackRestored(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_restored" }>,
 	): Promise<void> {
-		this.ctx.showStatus(
-			tSettingsUi("Primary endpoint recovered: {from} -> {to}", { from: event.from, to: event.to }),
-		);
+		const { from, to, role } = event;
+		if (role && role !== "default") {
+			this.ctx.showStatus(
+				tSettingsUi("Primary endpoint ({role}) recovered: {from} -> {to}", {
+					role: this.#resolveRoleLabel(role),
+					from,
+					to,
+				}),
+			);
+		} else {
+			this.ctx.showStatus(tSettingsUi("Primary endpoint recovered: {from} -> {to}", { from, to }));
+		}
 	}
 
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {

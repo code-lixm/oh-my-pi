@@ -253,9 +253,7 @@ describe("AgentSession retry fallback", () => {
 			irc: new IrcBus(registry),
 		});
 		try {
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain(
-				`fallback → ${secondFallback.provider}/${secondFallback.id}`,
-			);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback \u2192");
 		} finally {
 			hub.dispose();
 		}
