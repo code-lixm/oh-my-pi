@@ -32,6 +32,7 @@ export function getAgentTombstonePath(sessionFile: string): string {
  * - `aborted`: hard-killed, terminal.
  */
 export type AgentStatus = "running" | "waiting" | "idle" | "parked" | "aborted";
+export type AgentTerminalStatus = Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
 /** Provenance of a displayed duration: active runtime, transcript span, or unavailable. */
 export type AgentDurationKind = "active" | "span" | "unknown";
 /**
@@ -77,6 +78,8 @@ export interface AgentRef {
 	kind: AgentKind;
 	parentId?: string;
 	status: AgentStatus;
+	/** Last authoritative task outcome; independent from the live/idle/parked runtime lifecycle. */
+	terminalStatus?: AgentTerminalStatus;
 	/** Null exactly when parked/aborted. */
 	session: AgentSession | null;
 	sessionFile: string | null;
@@ -153,6 +156,8 @@ export interface RegisterInput {
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
+	/** Last authoritative task outcome restored or mirrored for observer surfaces. */
+	terminalStatus?: AgentTerminalStatus;
 	/** Last persisted task summary, when restoring a historical agent. */
 	activity?: string;
 	/** Original registration timestamp, when known from persisted history. */
@@ -200,6 +205,7 @@ export class AgentRegistry {
 			kind: input.kind,
 			parentId: input.parentId,
 			status: input.status ?? "running",
+			terminalStatus: input.status === "aborted" ? "aborted" : input.terminalStatus,
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
 			createdAt: input.createdAt ?? now,
@@ -249,14 +255,38 @@ export class AgentRegistry {
 		// generation must never transition the tombstone back to a live status.
 		if (ref.status === "aborted") return status === "aborted";
 		if (ref.status === status) return true;
+		const previousStatus = ref.status;
 		this.#adjustRunningSubagentCount(ref, -1);
 		ref.status = status;
 		this.#adjustRunningSubagentCount(ref, 1);
+		// A fresh run clears the prior task outcome. Hard kill records the runtime
+		// tombstone and task outcome atomically; idle/parked retain the last result.
+		if (status === "running" && (previousStatus === "idle" || previousStatus === "parked")) {
+			delete ref.terminalStatus;
+		} else if (status === "aborted") {
+			ref.terminalStatus = "aborted";
+		}
 		// A non-running ref must not advertise an active roster gist, but its
 		// structured last activity remains useful to parked/restored observers.
 		if (status !== "running") ref.activity = undefined;
 		ref.lastActivity = status !== "running" && ref.activityState ? ref.activityState.lastActivityAtMs : Date.now();
 		this.#emit({ type: "status_changed", ref });
+		return true;
+	}
+
+	/** Record or clear the task outcome without conflating it with runtime lifecycle. */
+	setTerminalStatus(
+		id: string,
+		terminalStatus: AgentTerminalStatus | undefined,
+		expected?: AgentRefExpectation,
+	): boolean {
+		const ref = this.#refs.get(id);
+		if (ref?.kind !== "sub" || !this.#matchesExpected(ref, expected)) return false;
+		if (ref.status === "aborted" && terminalStatus !== "aborted") return false;
+		if (ref.terminalStatus === terminalStatus) return true;
+		if (terminalStatus === undefined) delete ref.terminalStatus;
+		else ref.terminalStatus = terminalStatus;
+		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
 

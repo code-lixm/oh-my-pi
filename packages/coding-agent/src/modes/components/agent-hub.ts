@@ -138,9 +138,6 @@ const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["
 
 const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Two-pane mode needs a useful roster and a readable inspector. */
-const SPLIT_MIN_WIDTH = 96;
-const DETAIL_MIN_WIDTH = 34;
 /** Result of one host-backed transcript read for the Agent Hub viewer. */
 export interface AgentHubRemoteTranscript {
 	text: string;
@@ -603,6 +600,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			progressStatus: progress?.status,
 			observedStatus: observed?.status,
 			registryStatus: ref.status,
+			terminalStatus: ref.terminalStatus,
 		});
 		if (terminalStatus === "failed") return "failed";
 		if (terminalStatus === "aborted") return "stopped";
@@ -747,10 +745,10 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		return lines;
 	}
 
-	#splitRosterWidth(width: number): number | undefined {
-		if (width < SPLIT_MIN_WIDTH) return undefined;
-		const rosterWidth = Math.min(HUB_FIXED_COLUMNS_MIN_WIDTH, width - DETAIL_MIN_WIDTH - 7);
-		return splitBodyWidth(width, rosterWidth) >= DETAIL_MIN_WIDTH ? rosterWidth : undefined;
+	#splitRosterWidth(_width: number): number | undefined {
+		// The Hub is intentionally a flat roster. Details are opened as a
+		// fullscreen transcript, not rendered beside the list.
+		return undefined;
 	}
 
 	#footer(showingNarrowDetails: boolean, availableWidth: number): string {

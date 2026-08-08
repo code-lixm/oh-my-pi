@@ -177,9 +177,10 @@ export class SelectorController {
 	#showFullscreenMenu(
 		component: Component,
 		mouseTracking = this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+		anchor: "top-center" | "bottom-center" = "bottom-center",
 	): OverlayHandle {
 		const handle = this.ctx.ui.showOverlay(component, {
-			anchor: "bottom-center",
+			anchor,
 			width: "100%",
 			maxHeight: "100%",
 			margin: 0,
@@ -2442,6 +2443,6 @@ export class SelectorController {
 			// durable agent identity.
 			cancelJob: async job => manager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
 		});
-		overlayHandle = this.#showFullscreenMenu(hub);
+		overlayHandle = this.#showFullscreenMenu(hub, undefined, "top-center");
 	}
 }

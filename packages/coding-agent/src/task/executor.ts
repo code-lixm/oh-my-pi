@@ -2398,6 +2398,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		: undefined;
 	monitor.beginFinalization();
 	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	AgentRegistry.global().setTerminalStatus(id, progress.status);
 	progress.completedAtMs ??= Date.now();
 	monitor.scheduleProgress(true);
 	monitor.completeFinalization();

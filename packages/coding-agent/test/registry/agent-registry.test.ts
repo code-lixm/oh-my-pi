@@ -125,3 +125,36 @@ describe("AgentRegistry running subagent count", () => {
 		expect(registry.getRunningSubagentCount()).toBe(1);
 	});
 });
+describe("AgentRegistry terminal status", () => {
+	it("retains the task outcome through idle and parked, then clears it for a fresh run", () => {
+		const registry = new AgentRegistry();
+		const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+
+		expect(registry.setTerminalStatus(worker.id, "completed", worker)).toBe(true);
+		expect(registry.setStatus(worker.id, "idle", worker)).toBe(true);
+		expect(worker.status).toBe("idle");
+		expect(worker.terminalStatus).toBe("completed");
+
+		expect(registry.setStatus(worker.id, "parked", worker)).toBe(true);
+		expect(worker.status).toBe("parked");
+		expect(worker.terminalStatus).toBe("completed");
+
+		expect(registry.setStatus(worker.id, "running", worker)).toBe(true);
+		expect(worker.status).toBe("running");
+		expect(worker.terminalStatus).toBeUndefined();
+	});
+
+	it("pins a hard-aborted generation to the aborted terminal outcome", () => {
+		const registry = new AgentRegistry();
+		const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+
+		expect(registry.setTerminalStatus(worker.id, "completed", worker)).toBe(true);
+		expect(registry.setStatus(worker.id, "aborted", worker)).toBe(true);
+		expect(worker.status).toBe("aborted");
+		expect(worker.terminalStatus).toBe("aborted");
+		expect(registry.setTerminalStatus(worker.id, "failed", worker)).toBe(false);
+		expect(registry.setStatus(worker.id, "running", worker)).toBe(false);
+		expect(worker.status).toBe("aborted");
+		expect(worker.terminalStatus).toBe("aborted");
+	});
+});

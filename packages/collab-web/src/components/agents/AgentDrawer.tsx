@@ -1,4 +1,4 @@
-import type { AgentSnapshot, SessionEntry, SubagentProgressPayload } from "@oh-my-pi/pi-wire";
+import type { AgentSnapshot, SessionEntry, SubagentLifecyclePayload, SubagentProgressPayload } from "@oh-my-pi/pi-wire";
 import { OctagonX, RotateCcw, SendHorizontal, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -7,6 +7,7 @@ import { fmtCost, fmtDuration, fmtTokens } from "../../lib/format";
 import { decideTranscriptPoll } from "../../lib/transcript-poll";
 import type { TranscriptProps } from "../transcript/Transcript";
 import { Transcript } from "../transcript/Transcript";
+import { resolveAgentDisplayStatus } from "./agent-status";
 
 const EMPTY_TOOLS: TranscriptProps["activeTools"] = new Map();
 const POLL_MS = 1200;
@@ -14,6 +15,7 @@ const POLL_MS = 1200;
 export function AgentDrawer(props: {
 	agent: AgentSnapshot;
 	progress?: SubagentProgressPayload;
+	lifecycle?: SubagentLifecyclePayload;
 	client: GuestClient;
 	/** View-link guests: hide kill/revive/chat (the host rejects them anyway). */
 	readOnly?: boolean;
@@ -21,7 +23,7 @@ export function AgentDrawer(props: {
 	host?: TranscriptProps["host"];
 	onClose(): void;
 }): ReactNode {
-	const { agent, progress, client, readOnly, host, onClose } = props;
+	const { agent, progress, lifecycle, client, readOnly, host, onClose } = props;
 	const [entries, setEntries] = useState<readonly SessionEntry[]>([]);
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
@@ -100,6 +102,7 @@ export function AgentDrawer(props: {
 	};
 
 	const p = progress?.progress;
+	const status = resolveAgentDisplayStatus(agent, progress, lifecycle);
 	const model = p?.resolvedModel;
 	const ctxPct =
 		p?.contextTokens !== undefined && p.contextWindow
@@ -111,7 +114,7 @@ export function AgentDrawer(props: {
 			<header className="ag-drawer-head">
 				<div className="ag-drawer-title">
 					<span className="ag-drawer-name">{agent.displayName}</span>
-					<span className={`ag-chip ag-chip--${agent.status}`}>{agent.status}</span>
+					<span className={`ag-chip ag-chip--${status}`}>{status}</span>
 					{model ? <span className="ag-chip ag-chip--model">{model}</span> : null}
 				</div>
 				<div className="ag-drawer-actions">
@@ -175,7 +178,7 @@ export function AgentDrawer(props: {
 							stream={null}
 							streamDone={false}
 							activeTools={EMPTY_TOOLS}
-							working={agent.status === "running" && fetchError === null}
+							working={status === "running" && fetchError === null}
 							host={host}
 						/>
 						{fetchError !== null ? (

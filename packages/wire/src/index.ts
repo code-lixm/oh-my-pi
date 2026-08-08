@@ -236,6 +236,7 @@ export interface SessionState {
 	participants: Participant[];
 	isAborting?: boolean;
 }
+export type AgentTerminalStatus = "completed" | "failed" | "aborted";
 
 export interface AgentSnapshot {
 	id: string;
@@ -243,6 +244,8 @@ export interface AgentSnapshot {
 	kind: "main" | "sub";
 	parentId?: string;
 	status: "running" | "waiting" | "idle" | "parked" | "aborted";
+	/** Last authoritative task outcome, distinct from the live runtime lifecycle. */
+	terminalStatus?: AgentTerminalStatus;
 	/** Whether the host has a transcript file for this agent (gates remote transcript fetch). */
 	hasSessionFile: boolean;
 	createdAt: number;

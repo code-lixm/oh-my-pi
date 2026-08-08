@@ -92,11 +92,11 @@ const ROSTER_ENTRY_PATTERN = /^(?:❯| ) \S /u;
 
 function renderedRosterPanel(hub: AgentHubOverlayComponent, width = 120): string[] {
 	const lines = hub.render(width).map(line => Bun.stripANSI(line));
-	const divider = lines.find(line => line.includes("┬"))?.indexOf("┬") ?? -1;
-	if (divider < 3) throw new Error("Expected side-by-side Agent Hub roster");
 	return lines.flatMap(line => {
-		if (!line.startsWith("│ ") || line[divider] !== "│") return [];
-		return [line.slice(2, divider - 1).trimEnd()];
+		if (!line.startsWith("│ ") || !line.endsWith(" │")) return [];
+		const splitDivider = line.lastIndexOf(" │ ");
+		const end = splitDivider >= 3 ? splitDivider : line.length - 2;
+		return [line.slice(2, end).trimEnd()];
 	});
 }
 

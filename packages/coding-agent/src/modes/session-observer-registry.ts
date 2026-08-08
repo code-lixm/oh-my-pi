@@ -1,4 +1,4 @@
-import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
 import { getPersistedAgentSnapshot } from "../registry/persisted-agent-snapshot";
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
@@ -183,46 +183,72 @@ export class SessionObserverRegistry {
 		sessions.splice(start, 0, session);
 	}
 
-	#collectPersistedParkedSessions(registry: AgentRegistry): ObservableSession[] | undefined {
+	#collectPersistedDetachedSession(registry: AgentRegistry, ref: AgentRef): ObservableSession | undefined {
 		const mainSessionFile = this.#sessions.get("main")?.sessionFile;
-		if (!mainSessionFile) return undefined;
+		if (
+			!mainSessionFile ||
+			ref.kind !== "sub" ||
+			(ref.status !== "parked" && ref.status !== "aborted") ||
+			this.#sessions.has(ref.id) ||
+			resolveTopLevelAgent(registry, ref.id)?.sessionFile !== mainSessionFile
+		) {
+			return undefined;
+		}
+		const snapshot = getPersistedAgentSnapshot(ref);
+		const observation = snapshot?.observations.get(ref.id);
+		const parentTerminalStatus =
+			observation?.status === "completed" || observation?.status === "failed" || observation?.status === "aborted"
+				? observation.status
+				: undefined;
+		const terminalStatus =
+			ref.status === "aborted"
+				? "aborted"
+				: (ref.terminalStatus ?? parentTerminalStatus ?? snapshot?.terminalStatus);
+		const observedStatus = terminalStatus ?? observation?.status;
+		if (!observedStatus) return undefined;
+		const status =
+			observedStatus === "completed" || observedStatus === "failed" || observedStatus === "aborted"
+				? observedStatus
+				: observedStatus === "pending" || observedStatus === "running"
+					? "active"
+					: undefined;
+		const lastUpdate = observation?.lastUpdate ?? observation?.activityState?.lastActivityAtMs ?? ref.lastActivity;
+		if (!status || lastUpdate === undefined) return undefined;
+		const sortOrder = this.#ensureSortOrder(ref.id);
+		this.#ensureParentSortOrder(observation?.parentToolCallId, sortOrder);
+		const progress =
+			observation?.progress && terminalStatus !== undefined
+				? { ...observation.progress, status: terminalStatus }
+				: observation?.progress;
+		return {
+			id: ref.id,
+			kind: "subagent",
+			label: observation?.description ?? ref.displayName,
+			agent: observation?.agent,
+			description: observation?.description,
+			status,
+			sessionFile: ref.sessionFile ?? undefined,
+			parentToolCallId: observation?.parentToolCallId,
+			index: observation?.index,
+			lastUpdate,
+			startedAtMs: progress?.startedAtMs,
+			completedAtMs: progress?.completedAtMs,
+			progress,
+			resolvedModel: observation?.resolvedModel,
+			resolvedModelIsFallback: observation?.resolvedModelIsFallback,
+			retryState: observation?.retryState,
+			retryFailure: observation?.retryFailure,
+		};
+	}
 
+	#collectPersistedDetachedSessions(registry: AgentRegistry): ObservableSession[] | undefined {
+		if (!this.#sessions.get("main")?.sessionFile) return undefined;
 		let sessions: ObservableSession[] | undefined;
 		for (const ref of registry.list()) {
-			if (ref.kind !== "sub" || ref.status !== "parked" || this.#sessions.has(ref.id)) continue;
-			if (resolveTopLevelAgent(registry, ref.id)?.sessionFile !== mainSessionFile) continue;
-			const observation = getPersistedAgentSnapshot(ref)?.observations.get(ref.id);
-			if (!observation?.status) continue;
-			const status =
-				observation.status === "completed" || observation.status === "failed" || observation.status === "aborted"
-					? observation.status
-					: observation.status === "pending" || observation.status === "running"
-						? "active"
-						: undefined;
-			const lastUpdate = observation.lastUpdate ?? observation.activityState?.lastActivityAtMs;
-			if (!status || lastUpdate === undefined) continue;
-			const sortOrder = this.#ensureSortOrder(ref.id);
-			this.#ensureParentSortOrder(observation.parentToolCallId, sortOrder);
+			const session = this.#collectPersistedDetachedSession(registry, ref);
+			if (!session) continue;
 			if (!sessions) sessions = [];
-			sessions.push({
-				id: ref.id,
-				kind: "subagent",
-				label: observation.description ?? ref.displayName,
-				agent: observation.agent,
-				description: observation.description,
-				status,
-				sessionFile: ref.sessionFile ?? undefined,
-				parentToolCallId: observation.parentToolCallId,
-				index: observation.index,
-				lastUpdate,
-				startedAtMs: observation.progress?.startedAtMs,
-				completedAtMs: observation.progress?.completedAtMs,
-				progress: observation.progress,
-				resolvedModel: observation.resolvedModel,
-				resolvedModelIsFallback: observation.resolvedModelIsFallback,
-				retryState: observation.retryState,
-				retryFailure: observation.retryFailure,
-			});
+			sessions.push(session);
 		}
 		return sessions;
 	}
@@ -243,16 +269,20 @@ export class SessionObserverRegistry {
 		this.#notifyListeners(MAIN_CHANGE);
 	}
 
-	/** Return one tracked session without copying or sorting the registry. */
+	/** Return one tracked or parked/persisted session without sorting the registry. */
 	getSession(id: string): ObservableSession | undefined {
-		return this.#sessions.get(id);
+		const tracked = this.#sessions.get(id);
+		if (tracked) return tracked;
+		const registry = this.#ensureAgentRegistrySubscription();
+		const ref = registry.get(id);
+		return ref ? this.#collectPersistedDetachedSession(registry, ref) : undefined;
 	}
 
 	getSessions(): ObservableSession[] {
 		const registry = this.#ensureAgentRegistrySubscription();
 		// Persisted snapshots can be refreshed without an AgentRegistry event, so scan
-		// parked refs on demand and only cache the fully in-memory tracked rows.
-		const persistedSessions = this.#collectPersistedParkedSessions(registry);
+		// parked/aborted refs on demand and only cache the fully in-memory tracked rows.
+		const persistedSessions = this.#collectPersistedDetachedSessions(registry);
 		const sessions = this.#getSortedTrackedSessions();
 		if (!persistedSessions) return sessions.slice();
 
@@ -304,6 +334,8 @@ export class SessionObserverRegistry {
 				const payload = data as SubagentLifecyclePayload;
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
+				const agentRegistry = this.#ensureAgentRegistrySubscription();
+				agentRegistry.setTerminalStatus(payload.id, payload.status === "started" ? undefined : payload.status);
 				this.#invalidateSortedSessions();
 
 				const sortOrder = this.#ensureSortOrder(payload.id);
@@ -373,6 +405,12 @@ export class SessionObserverRegistry {
 				// lifecycle generation is terminal, only a new `started` lifecycle event
 				// may reopen it; a late progress snapshot must never resurrect or rewrite it.
 				if (existing && existing.status !== "active" && status !== existing.status) return;
+				const agentRegistry = this.#ensureAgentRegistrySubscription();
+				if (snapshot.status === "completed" || snapshot.status === "failed" || snapshot.status === "aborted") {
+					agentRegistry.setTerminalStatus(id, snapshot.status);
+				} else if (!existing || existing.status === "active") {
+					agentRegistry.setTerminalStatus(id, undefined);
+				}
 
 				const sortOrder = this.#ensureSortOrder(id);
 				this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);

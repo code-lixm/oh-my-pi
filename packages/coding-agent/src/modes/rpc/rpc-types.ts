@@ -214,7 +214,7 @@ export interface RpcSubagentSnapshot {
 	resolvedModelIsFallback?: AgentProgress["resolvedModelIsFallback"];
 	retryState?: AgentProgress["retryState"];
 	retryFailure?: AgentProgress["retryFailure"];
-	terminalStatus?: Extract<AgentProgress["status"], "failed" | "aborted">;
+	terminalStatus?: Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
 	parentToolCallId?: string;
 }
 

@@ -581,6 +581,7 @@ export class CollabHost {
 					kind: ref.kind,
 					parentId: ref.parentId,
 					status: ref.status,
+					terminalStatus: ref.terminalStatus,
 					hasSessionFile: !!ref.sessionFile,
 					createdAt: ref.createdAt,
 					lastActivity: ref.lastActivity,

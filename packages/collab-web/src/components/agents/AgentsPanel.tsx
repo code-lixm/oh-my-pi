@@ -7,6 +7,7 @@ import type {
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { fmtCost, fmtDuration, fmtTokens, relTime } from "../../lib/format";
+import { type AgentDisplayStatus, resolveAgentDisplayStatus } from "./agent-status";
 import "./agents.css";
 
 /** Re-render tick so running-tool durations and relative times stay live. */
@@ -32,19 +33,20 @@ function toolStartMs(p: AgentProgress): number | null {
 }
 
 function activityLine(
-	agent: AgentSnapshot,
+	status: AgentDisplayStatus,
 	p: AgentProgress | undefined,
 	lc: SubagentLifecyclePayload | undefined,
 	now: number,
 ): string {
+	if (status === "completed" || status === "failed" || status === "aborted") return status;
 	if (p?.currentTool) {
 		const start = toolStartMs(p);
 		if (start !== null) return `${p.currentTool} · ${fmtDuration(Math.max(0, now - start))}`;
 		return p.currentTool;
 	}
 	if (p?.lastIntent) return p.lastIntent;
-	if (lc) return lc.status;
-	return agent.status;
+	if (lc) return lc.status === "started" ? "running" : lc.status;
+	return status;
 }
 
 function AgentRow(props: {
@@ -57,6 +59,7 @@ function AgentRow(props: {
 }): ReactNode {
 	const { agent, payload, lifecycle, selected, now, onSelect } = props;
 	const p = payload?.progress;
+	const status = resolveAgentDisplayStatus(agent, payload, lifecycle);
 	return (
 		<button
 			type="button"
@@ -64,11 +67,11 @@ function AgentRow(props: {
 			onClick={() => onSelect(selected ? null : agent.id)}
 		>
 			<span className="ag-row-head">
-				<span className={`ag-dot ag-dot--${agent.status}`} />
+				<span className={`ag-dot ag-dot--${status}`} />
 				<span className="ag-row-name">{agent.displayName}</span>
 				<span className="ag-chip">{agent.kind}</span>
 			</span>
-			<span className="ag-row-activity">{activityLine(agent, p, lifecycle, now)}</span>
+			<span className="ag-row-activity">{activityLine(status, p, lifecycle, now)}</span>
 			<span className="ag-row-meta">
 				{p ? <span>{fmtTokens(p.tokens)} tok</span> : null}
 				{p ? <span>{fmtCost(p.cost)}</span> : null}
@@ -93,13 +96,15 @@ export function AgentsPanel(props: {
 		const subs: AgentSnapshot[] = [];
 		for (const agent of agents) (agent.kind === "main" ? mains : subs).push(agent);
 		subs.sort((a, b) => {
-			const ar = a.status === "running" ? 0 : 1;
-			const br = b.status === "running" ? 0 : 1;
+			const aStatus = resolveAgentDisplayStatus(a, progress.get(a.id), lifecycle.get(a.id));
+			const bStatus = resolveAgentDisplayStatus(b, progress.get(b.id), lifecycle.get(b.id));
+			const ar = aStatus === "running" ? 0 : 1;
+			const br = bStatus === "running" ? 0 : 1;
 			if (ar !== br) return ar - br;
 			return b.lastActivity - a.lastActivity;
 		});
 		return { mains, subs };
-	}, [agents]);
+	}, [agents, lifecycle, progress]);
 
 	return (
 		<div className="ag-panel">

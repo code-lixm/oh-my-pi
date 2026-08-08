@@ -453,7 +453,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("renders one compact task row per agent with details confined to the inspector", async () => {
+	it("renders one compact flat task row per agent", async () => {
 		geometry = stubStdoutGeometry(160);
 		setSettingsUiLocale("en");
 		const agents = new AgentRegistry();
@@ -580,7 +580,8 @@ describe("Agent hub row ordering", () => {
 			const runningIndex = rosterRows.findIndex(row => row.label === "Charlie");
 			for (let index = selectedIndex; index < runningIndex; index++) hub.handleInput("j");
 			for (let index = selectedIndex; index > runningIndex; index--) hub.handleInput("k");
-			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("LONG_TASK_DETAIL_MARKER");
+			expect(Bun.stripANSI(hub.render(160).join("\n"))).not.toContain("LONG_TASK_DETAIL_MARKER");
+			expect(Bun.stripANSI(hub.render(160).join("\n"))).not.toContain("┬");
 
 			setSettingsUiLocale("zh-CN");
 			expect(renderedRosterEntry(hub, "Alpha", 160)).toContain("未开始");

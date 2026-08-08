@@ -195,6 +195,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	#expanded = false;
 	#toolActivityVisible = true;
 	#finalized = false;
+	#peerCommunicationVisible = true;
 	#sealed = false;
 	#customSequence = 0;
 	#settledRows = 0;
@@ -332,6 +333,12 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#invalidate();
 	}
 
+	setPeerCommunicationVisible(visible: boolean): void {
+		if (this.#peerCommunicationVisible === visible) return;
+		this.#peerCommunicationVisible = visible;
+		this.#invalidate();
+	}
+
 	appendIrcEvent(event: HubIrcActivityEvent, settled = true): string | undefined {
 		if (!this.canAppend) return undefined;
 		const id = `irc:${this.#customSequence++}`;
@@ -449,8 +456,9 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	}
 
 	#entryLines(entry: HubActivityEntry, expanded: boolean): string[] {
+		if (entry.kind === "tool" && !this.#peerCommunicationVisible && isHubPeerCommunicationArgs(entry.args)) return [];
 		if (entry.kind === "tool" && (entry.hidden || !this.#toolActivityVisible)) return [];
-		if (entry.kind !== "tool") return this.#ircLines(entry, expanded);
+		if (entry.kind !== "tool") return this.#peerCommunicationVisible ? this.#ircLines(entry, expanded) : [];
 		const op = entry.args.op;
 		if (op === "send") return this.#sendLines(entry, expanded);
 		if (op === "wait") return this.#waitLines(entry, expanded);

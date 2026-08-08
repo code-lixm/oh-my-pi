@@ -192,10 +192,12 @@ export class RpcSubagentRegistry {
 						? getPersistedAgentSnapshot(ref)?.observations.get(snapshot.id)?.progress
 						: undefined;
 				const progress = snapshot.progress ?? persistedProgress;
+				const metadata = this.#mirrorMetadata(snapshot.id, progress, snapshot);
 				return {
 					...snapshot,
 					...(snapshot.progress === undefined && progress !== undefined ? { progress } : {}),
-					...this.#mirrorMetadata(snapshot.id, progress, snapshot),
+					...metadata,
+					...(metadata.terminalStatus === undefined ? {} : { status: metadata.terminalStatus }),
 				};
 			})
 			.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
@@ -230,6 +232,14 @@ export class RpcSubagentRegistry {
 		if (ref?.kind !== "sub" || ref.session !== null) return undefined;
 		const persisted = getPersistedAgentSnapshot(ref);
 		const observation = persisted?.observations.get(ref.id);
+		const parentTerminalStatus =
+			observation?.status === "completed" || observation?.status === "failed" || observation?.status === "aborted"
+				? observation.status
+				: undefined;
+		const terminalStatus =
+			ref.status === "aborted"
+				? "aborted"
+				: (ref.terminalStatus ?? parentTerminalStatus ?? persisted?.terminalStatus);
 		if (
 			!observation ||
 			observation.id !== ref.id ||
@@ -242,21 +252,26 @@ export class RpcSubagentRegistry {
 			return undefined;
 		}
 		const sessionFile = observation.sessionFile ?? ref.sessionFile ?? undefined;
+		const status = terminalStatus ?? observation.status;
+		const progress =
+			observation.progress && terminalStatus !== undefined
+				? { ...observation.progress, status: terminalStatus }
+				: observation.progress;
 		const snapshot: RpcSubagentSnapshot = {
 			id: observation.id,
 			index: observation.index,
 			agent: observation.agent,
 			agentSource: observation.agentSource,
-			status: observation.status,
+			status,
 			lastUpdate: observation.lastUpdate,
 			...(observation.description === undefined ? {} : { description: observation.description }),
 			...(observation.task === undefined ? {} : { task: observation.task }),
 			...(observation.assignment === undefined ? {} : { assignment: observation.assignment }),
 			...(sessionFile === undefined ? {} : { sessionFile }),
 			...(observation.parentToolCallId === undefined ? {} : { parentToolCallId: observation.parentToolCallId }),
-			...(observation.progress === undefined ? {} : { progress: observation.progress }),
+			...(progress === undefined ? {} : { progress }),
 		};
-		return { ...snapshot, ...this.#mirrorMetadata(ref.id, observation.progress, snapshot) };
+		return { ...snapshot, ...this.#mirrorMetadata(ref.id, progress, snapshot) };
 	}
 
 	#mirrorMetadata(id: string, progress: AgentProgress | undefined, existing: RpcSubagentSnapshot | undefined) {
@@ -286,10 +301,14 @@ export class RpcSubagentRegistry {
 			existing?.resolvedModelIsFallback;
 		const retryState = progress?.retryState ?? observation?.retryState ?? existing?.retryState;
 		const retryFailure = progress?.retryFailure ?? observation?.retryFailure ?? existing?.retryFailure;
+		const parentTerminalStatus =
+			observation?.status === "completed" || observation?.status === "failed" || observation?.status === "aborted"
+				? observation.status
+				: undefined;
 		const terminalStatus =
-			persisted?.terminalStatus ??
-			(observation?.status === "failed" || observation?.status === "aborted" ? observation.status : undefined) ??
-			existing?.terminalStatus;
+			ref?.status === "aborted"
+				? "aborted"
+				: (ref?.terminalStatus ?? parentTerminalStatus ?? persisted?.terminalStatus ?? existing?.terminalStatus);
 		return {
 			...(sessionTitle === undefined ? {} : { sessionTitle }),
 			...(sessionId === undefined ? {} : { sessionId }),

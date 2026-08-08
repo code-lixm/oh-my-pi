@@ -81,6 +81,9 @@ function applyPersistedSnapshot(
 ): void {
 	const metadata = snapshotMetadata(ref, snapshot, overwrite);
 	if (Object.keys(metadata).length > 0) registry.updateMetadata(ref.id, metadata, ref);
+	if (snapshot.terminalStatus !== undefined || overwrite) {
+		registry.setTerminalStatus(ref.id, snapshot.terminalStatus, ref);
+	}
 	const activity = ref.activityState;
 	if (activity && (metadata.activityState === activity || (overwrite && snapshot.activityState === activity))) {
 		// Register/updateMetadata use wall time for live refs. A restored snapshot
@@ -518,6 +521,7 @@ async function registerPersistedSubagentsFromDir(
 						: {}),
 				},
 				status: tombstoned ? "aborted" : "parked",
+				terminalStatus: snapshot.terminalStatus,
 				...(snapshot.sessionTitle ? { sessionTitle: snapshot.sessionTitle } : {}),
 				...(snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
 				...(snapshot.activityState ? { activityState: snapshot.activityState } : {}),

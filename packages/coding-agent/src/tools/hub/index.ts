@@ -73,9 +73,13 @@ export { createIrcMessageCard, isIrcEnabled } from "./messaging";
 export * from "./types";
 
 const hubSchema = type({
+	// Keep the explicit `op` contract while accepting the legacy shorthand used by
+	// a few model/provider adapters: `{ to, message }` means `send`.
 	op: type(
 		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
-	).describe("hub operation"),
+	)
+		.default("send")
+		.describe("hub operation"),
 	"to?": type("string").describe('send: recipient agent id or "all"'),
 	"message?": type("string").describe("send: message body"),
 	"replyTo?": type("string").describe("send: message id being answered"),

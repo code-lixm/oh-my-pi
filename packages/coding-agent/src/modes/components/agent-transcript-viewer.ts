@@ -736,6 +736,7 @@ export class AgentTranscriptViewer implements Component {
 			progressStatus: progress?.status,
 			observedStatus: observed?.status,
 			registryStatus: ref?.status,
+			terminalStatus: ref?.terminalStatus,
 		});
 		if (terminalStatus) return renderAgentStatusBadge(terminalStatus) || undefined;
 		if (ref?.status) return renderAgentStatusBadge(ref.status) || undefined;
@@ -801,6 +802,7 @@ export class AgentTranscriptViewer implements Component {
 				progressStatus: progress?.status,
 				observedStatus: observed?.status,
 				registryStatus: ref?.status,
+				terminalStatus: ref?.terminalStatus,
 			}) !== undefined ||
 			ref?.status === "idle" ||
 			ref?.status === "parked"

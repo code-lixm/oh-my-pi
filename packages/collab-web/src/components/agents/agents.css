@@ -114,6 +114,14 @@
 	animation: ag-pulse 1.6s ease-out infinite;
 }
 
+.ag-dot--completed {
+	background: var(--ok);
+}
+
+.ag-dot--failed {
+	background: var(--err);
+}
+
 .ag-dot--parked {
 	background: var(--warn);
 }
@@ -149,6 +157,16 @@
 .ag-chip--running {
 	border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 	color: var(--ok);
+}
+
+.ag-chip--completed {
+	border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+	color: var(--ok);
+}
+
+.ag-chip--failed {
+	border-color: color-mix(in srgb, var(--err) 35%, transparent);
+	color: var(--err);
 }
 
 .ag-chip--parked {

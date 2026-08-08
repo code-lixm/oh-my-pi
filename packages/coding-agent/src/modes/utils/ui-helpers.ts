@@ -347,6 +347,7 @@ export class UiHelpers {
 				hubActivityGroup.setExpanded(this.ctx.toolOutputExpanded);
 				this.ctx.chatContainer.addChild(hubActivityGroup);
 			}
+			hubActivityGroup.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
 			return hubActivityGroup;
 		};
 		let pendingUsage: Usage | undefined;

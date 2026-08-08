@@ -44,8 +44,10 @@ export function resolveAgentTerminalStatus(options: {
 	progressStatus?: AgentProgress["status"];
 	observedStatus?: "active" | "completed" | "failed" | "aborted";
 	registryStatus?: AgentStatus;
+	terminalStatus?: AgentTerminalStatus;
 }): AgentTerminalStatus | undefined {
 	if (options.registryStatus === "aborted") return "aborted";
+	if (options.terminalStatus) return options.terminalStatus;
 	if (
 		options.progressStatus === "completed" ||
 		options.progressStatus === "failed" ||

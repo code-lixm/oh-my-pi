@@ -340,6 +340,43 @@ describe("EventController hub activity cluster", () => {
 		expect(renderText(chatContainer)).not.toContain("ready");
 	});
 
+	it("hides a peer roster when communication is disabled before completion", async () => {
+		settings.set("display.showAgentCommunication", true);
+		const { controller, chatContainer } = createLiveFixture();
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-list-toggle",
+			toolName: "hub",
+			args: { op: "list" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		settings.set("display.showAgentCommunication", false);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "hub-list-toggle",
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "1 peer" }],
+				details: {
+					op: "list",
+					peers: [
+						{
+							id: "Worker",
+							displayName: "TOGGLE_PEER_MARKER",
+							kind: "sub",
+							status: "running",
+							unread: 0,
+							lastActivity: 1_700_000_000_100,
+						},
+					],
+				},
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(renderText(chatContainer)).not.toContain("TOGGLE_PEER_MARKER");
+	});
+
 	it("keeps peer roster snapshots out of the transcript", async () => {
 		const { controller, chatContainer } = createLiveFixture();
 		const peers = [
@@ -501,6 +538,7 @@ describe("EventController hub activity cluster", () => {
 	});
 	it("hides grouped Hub tool rows while retaining IRC entries when tool activity is hidden", async () => {
 		settings.set("display.showHubProcessActivity", true);
+		settings.set("display.showAgentCommunication", true);
 		const { controller, chatContainer, pendingTools } = createLiveFixture(undefined, true);
 		const toolCallId = "hidden-hub-job";
 		const toolMarker = "HIDDEN_HUB_JOB_MARKER";

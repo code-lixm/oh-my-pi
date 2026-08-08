@@ -5,6 +5,7 @@
 ### Changed
 
 - Extended collaboration agent snapshots with the `waiting` status for live agents that temporarily release their runnable slot while blocked on child or peer work.
+- Extended collaboration agent snapshots with an optional `terminalStatus`, separating completed/failed/aborted task outcomes from live runtime lifecycle states.
 
 ## [16.3.0] - 2026-07-02
 

@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import {
 	type AgentProgress,
 	type SubagentEventPayload,
@@ -22,11 +23,12 @@ import {
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { removeSyncWithRetries, TempDir } from "@oh-my-pi/pi-utils";
 
 const tempPaths: string[] = [];
 
 afterEach(() => {
+	AgentRegistry.resetGlobalForTests();
 	for (const tempPath of tempPaths.splice(0)) {
 		removeSyncWithRetries(tempPath);
 	}
@@ -51,6 +53,94 @@ function createProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 		durationMs: 0,
 		...overrides,
 	};
+}
+
+type RpcTerminalStatus = Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
+type RpcParentObservationStatus = "pending" | "running" | RpcTerminalStatus;
+
+async function writePersistedRpcSubagentFixture(
+	tempDir: TempDir,
+	id: string,
+	parentStatus: RpcParentObservationStatus | undefined,
+	childTerminalStatus: RpcTerminalStatus,
+): Promise<string> {
+	const sessionFile = tempDir.join("main.jsonl");
+	const childSessionFile = tempDir.join("main", `${id}.jsonl`);
+	const timestamp = "2026-08-07T00:00:00.000Z";
+	const timestampMs = Date.parse(timestamp);
+	await fs.promises.mkdir(path.dirname(childSessionFile), { recursive: true });
+
+	const sessionHeader = (sessionId: string) => ({
+		type: "session",
+		version: 3,
+		id: sessionId,
+		timestamp,
+		cwd: tempDir.path(),
+	});
+	const parentEntries: unknown[] = [sessionHeader("main-session")];
+	if (parentStatus !== undefined) {
+		parentEntries.push({
+			type: "message",
+			id: `task-${id}`,
+			parentId: null,
+			timestamp,
+			message: {
+				role: "toolResult",
+				toolCallId: `task-call-${id}`,
+				toolName: "task",
+				content: [{ type: "text", text: "Task progress" }],
+				details: {
+					progress: [
+						createProgress({
+							id,
+							status: parentStatus,
+							task: `Task ${id}`,
+							assignment: `Assignment ${id}`,
+							description: `Description ${id}`,
+						}),
+					],
+					results: [],
+				},
+				isError: false,
+				timestamp: timestampMs,
+			},
+		});
+	}
+
+	const childTerminalMessage =
+		childTerminalStatus === "failed"
+			? {
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					errorMessage: "child failed",
+					timestamp: timestampMs,
+				}
+			: {
+					role: "toolResult",
+					toolCallId: `yield-call-${id}`,
+					toolName: "yield",
+					content: [{ type: "text", text: "Child result" }],
+					details:
+						childTerminalStatus === "completed"
+							? { status: "success" }
+							: { status: "aborted", type: ["findings"] },
+					isError: false,
+					timestamp: timestampMs,
+				};
+	await Bun.write(sessionFile, `${parentEntries.map(entry => JSON.stringify(entry)).join("\n")}\n`);
+	const childEntries: unknown[] = [
+		sessionHeader(`${id}-session`),
+		{
+			type: "message",
+			id: `terminal-${id}`,
+			parentId: null,
+			timestamp,
+			message: childTerminalMessage,
+		},
+	];
+	await Bun.write(childSessionFile, `${childEntries.map(entry => JSON.stringify(entry)).join("\n")}\n`);
+	return sessionFile;
 }
 
 function createRegistryWithSnapshot(): RpcSubagentRegistry {
@@ -84,6 +174,76 @@ function createSessionChangeSession(options: SessionChangeStubOptions): RpcSessi
 }
 
 describe("RPC subagent registry", () => {
+	test.each([
+		{ parentStatus: "pending", childTerminalStatus: "completed" },
+		{ parentStatus: "pending", childTerminalStatus: "failed" },
+		{ parentStatus: "pending", childTerminalStatus: "aborted" },
+		{ parentStatus: "running", childTerminalStatus: "completed" },
+		{ parentStatus: "running", childTerminalStatus: "failed" },
+		{ parentStatus: "running", childTerminalStatus: "aborted" },
+	] as const)(
+		"uses persisted $childTerminalStatus over $parentStatus observation",
+		async ({ parentStatus, childTerminalStatus }) => {
+			AgentRegistry.resetGlobalForTests();
+			using tempDir = TempDir.createSync("@omp-rpc-subagent-terminal-");
+			const id = `${parentStatus}-${childTerminalStatus}`;
+			const sessionFile = await writePersistedRpcSubagentFixture(tempDir, id, parentStatus, childTerminalStatus);
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "Main",
+				kind: "main",
+				session: null,
+				sessionFile,
+				status: "idle",
+			});
+			const registry = new RpcSubagentRegistry(new EventBus(), () => {});
+			try {
+				await registry.hydratePersisted(sessionFile);
+				const snapshot = registry.getSubagents()[0];
+
+				expect(snapshot?.status).toBe(childTerminalStatus);
+				expect(snapshot?.terminalStatus).toBe(childTerminalStatus);
+				expect(snapshot?.progress?.status).toBe(childTerminalStatus);
+			} finally {
+				registry.dispose();
+				AgentRegistry.resetGlobalForTests();
+			}
+		},
+	);
+
+	test.each([
+		{ parentStatus: "completed", childTerminalStatus: "failed" },
+		{ parentStatus: "failed", childTerminalStatus: "completed" },
+		{ parentStatus: "aborted", childTerminalStatus: "completed" },
+	] as const)(
+		"uses parent $parentStatus over conflicting persisted $childTerminalStatus",
+		async ({ parentStatus, childTerminalStatus }) => {
+			AgentRegistry.resetGlobalForTests();
+			using tempDir = TempDir.createSync("@omp-rpc-subagent-parent-terminal-");
+			const id = `${parentStatus}-over-${childTerminalStatus}`;
+			const sessionFile = await writePersistedRpcSubagentFixture(tempDir, id, parentStatus, childTerminalStatus);
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "Main",
+				kind: "main",
+				session: null,
+				sessionFile,
+				status: "idle",
+			});
+			const registry = new RpcSubagentRegistry(new EventBus(), () => {});
+			try {
+				await registry.hydratePersisted(sessionFile);
+				const snapshot = registry.getSubagents()[0];
+
+				expect(snapshot?.status).toBe(parentStatus);
+				expect(snapshot?.terminalStatus).toBe(parentStatus);
+				expect(snapshot?.progress?.status).toBe(parentStatus);
+			} finally {
+				registry.dispose();
+				AgentRegistry.resetGlobalForTests();
+			}
+		},
+	);
 	test("defaults subagent frame emission to off while tracking snapshots", () => {
 		const eventBus = new EventBus();
 		const frames: RpcSubagentFrame[] = [];

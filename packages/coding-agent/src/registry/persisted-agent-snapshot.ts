@@ -67,7 +67,8 @@ export interface PersistedAgentSessionSnapshot {
 	activityState?: AgentActivityState;
 	resolvedModel?: string;
 	resolvedModelIsFallback?: boolean;
-	terminalStatus?: Extract<AgentProgress["status"], "failed" | "aborted">;
+	/** Terminal task outcome recovered from this transcript's own yield/assistant records. */
+	terminalStatus?: Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
 	observations: ReadonlyMap<string, PersistedAgentObservation>;
 	/** Complete parsed entries only when supplied by an already-live SessionManager. */
 	entries: readonly SessionEntry[];
@@ -89,6 +90,20 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+function terminalYieldStatus(message: Record<string, unknown>): PersistedAgentSessionSnapshot["terminalStatus"] {
+	if (message.toolName !== "yield" || message.isError !== false) return undefined;
+	const details = objectRecord(message.details);
+	if (!details) return undefined;
+	if (details.status === "aborted") return "aborted";
+	if (details.status !== "success") return undefined;
+	const type = details.type;
+	// A non-empty string array is an incremental yield; only a string (or an
+	// omitted/null terminal type) completes the task. Aborted yields are terminal
+	// regardless of their type because the runtime uses that status directly.
+	if (Array.isArray(type)) return undefined;
+	if (type !== undefined && type !== null && typeof type !== "string") return undefined;
+	return "completed";
 }
 
 function latestSessionInit(entries: readonly unknown[]): Record<string, unknown> | undefined {
@@ -329,15 +344,21 @@ function ownSessionMetadata(
 		}
 		if (entry.type !== "message") continue;
 		const message = objectRecord(entry.message);
-		if (message?.role !== "assistant") continue;
+		if (!message) continue;
+		if (message.role === "toolResult") {
+			const yieldStatus = terminalYieldStatus(message);
+			if (yieldStatus) terminalStatus = yieldStatus;
+			continue;
+		}
+		if (message.role !== "assistant") continue;
 		const model = nonEmptyString(message.model);
 		if (model) {
 			const provider = nonEmptyString(message.provider);
 			resolvedModel = model.includes("/") ? model : provider ? `${provider}/${model}` : model;
 			resolvedModelIsFallback = undefined;
 		}
-		if (message.stopReason === "aborted") terminalStatus = "aborted";
-		else if (message.stopReason === "error") terminalStatus = "failed";
+		if (message.stopReason === "error") terminalStatus = "failed";
+		else if (message.stopReason === "aborted" && terminalStatus !== "completed") terminalStatus = "aborted";
 	}
 	return {
 		activityState: lastToolActivity(entries),
@@ -538,8 +559,14 @@ export function mergePersistedAgentSnapshot(
 	const displayName = child.displayName ?? parent?.displayName;
 	const resolvedModel = parent?.resolvedModel ?? child.resolvedModel;
 	const resolvedModelIsFallback = parent?.resolvedModelIsFallback ?? child.resolvedModelIsFallback;
-	const terminalStatus =
-		parent?.status === "failed" || parent?.status === "aborted" ? parent.status : child.terminalStatus;
+	const parentTerminalStatus =
+		parent?.status === "completed" || parent?.status === "failed" || parent?.status === "aborted"
+			? parent.status
+			: undefined;
+	// Parent finalization includes merge/schema/isolation outcomes that the child
+	// transcript cannot observe. It wins whenever it is explicitly terminal;
+	// child evidence only repairs stale pending/running/missing parent metadata.
+	const terminalStatus = parentTerminalStatus ?? child.terminalStatus;
 	const observations = new Map(child.observations);
 	if (parent) observations.set(parent.id, parent);
 	return {

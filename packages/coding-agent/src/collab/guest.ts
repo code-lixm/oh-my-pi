@@ -621,6 +621,7 @@ export class CollabGuestLink {
 			if (this.agentRegistry.get(snap.id)) {
 				this.agentRegistry.setStatus(snap.id, snap.status);
 				this.agentRegistry.updateMetadata(snap.id, metadata);
+				this.agentRegistry.setTerminalStatus(snap.id, snap.terminalStatus);
 			} else {
 				this.agentRegistry.register({
 					id: snap.id,
@@ -628,6 +629,7 @@ export class CollabGuestLink {
 					parentId: snap.parentId,
 					session: null,
 					status: snap.status,
+					terminalStatus: snap.terminalStatus,
 					...metadata,
 				});
 			}

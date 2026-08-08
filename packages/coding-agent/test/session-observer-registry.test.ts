@@ -4,7 +4,14 @@ import {
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { rememberPersistedAgentSnapshot } from "@oh-my-pi/pi-coding-agent/registry/persisted-agent-snapshot";
+import {
+	mergePersistedAgentSnapshot,
+	type PersistedAgentObservation,
+	type PersistedAgentSessionSnapshot,
+	rememberPersistedAgentSnapshot,
+	snapshotPersistedSessionEntries,
+} from "@oh-my-pi/pi-coding-agent/registry/persisted-agent-snapshot";
+import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import {
 	type AgentProgress,
 	type SubagentLifecyclePayload,
@@ -63,6 +70,58 @@ function lifecyclePayload(
 	};
 }
 
+const TRANSCRIPT_TIMESTAMP = "2026-08-07T00:00:00.000Z";
+const TRANSCRIPT_TIMESTAMP_MS = Date.parse(TRANSCRIPT_TIMESTAMP);
+
+function yieldEntry(
+	id: string,
+	details: { status: "success" | "aborted"; type?: string | string[] },
+	isError = false,
+): SessionMessageEntry {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: TRANSCRIPT_TIMESTAMP,
+		message: {
+			role: "toolResult",
+			toolCallId: `${id}-call`,
+			toolName: "yield",
+			content: [{ type: "text", text: "Result submitted." }],
+			details,
+			isError,
+			timestamp: TRANSCRIPT_TIMESTAMP_MS,
+		},
+	};
+}
+
+function assistantErrorEntry(id: string): SessionMessageEntry {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: TRANSCRIPT_TIMESTAMP,
+		message: {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-test",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "subagent execution failed",
+			timestamp: TRANSCRIPT_TIMESTAMP_MS,
+		},
+	};
+}
+
 async function createSessionFixture(
 	tempDir: TempDir,
 	childId: string,
@@ -91,7 +150,8 @@ function registerMain(sessionFile: string): void {
 function registerParkedChild(
 	id: string,
 	sessionFile: string,
-	observation: { status?: AgentProgress["status"]; lastUpdate: number },
+	observation: Pick<PersistedAgentObservation, "status" | "lastUpdate">,
+	snapshot?: PersistedAgentSessionSnapshot,
 ): void {
 	const ref = AgentRegistry.global().register({
 		id,
@@ -102,10 +162,13 @@ function registerParkedChild(
 		sessionFile,
 		status: "parked",
 	});
-	rememberPersistedAgentSnapshot(ref, {
-		observations: new Map([[id, { id, ...observation }]]),
-		entries: [],
-	});
+	rememberPersistedAgentSnapshot(
+		ref,
+		snapshot ?? {
+			observations: new Map([[id, { id, ...observation }]]),
+			entries: [],
+		},
+	);
 }
 
 describe("SessionObserverRegistry change payloads", () => {
@@ -292,6 +355,236 @@ describe("SessionObserverRegistry persisted parked observations", () => {
 
 	afterEach(() => {
 		AgentRegistry.resetGlobalForTests();
+	});
+
+	it.each([
+		{
+			name: "a regular final yield",
+			parentStatus: "pending",
+			terminalStatus: "completed",
+			entries: () => [
+				yieldEntry("incremental-yield", { status: "success", type: ["findings"] }),
+				yieldEntry("final-yield", { status: "success" }),
+			],
+		},
+		{
+			name: "an aborted yield with an incremental result type",
+			parentStatus: "running",
+			terminalStatus: "aborted",
+			entries: () => [yieldEntry("aborted-yield", { status: "aborted", type: ["findings"] })],
+		},
+		{
+			name: "an assistant error stop reason",
+			parentStatus: "pending",
+			terminalStatus: "failed",
+			entries: () => [assistantErrorEntry("assistant-error")],
+		},
+	] as const)(
+		"restores $terminalStatus from $name over $parentStatus parent progress by id",
+		async ({ parentStatus, terminalStatus, entries }) => {
+			using tempDir = TempDir.createSync("@omp-session-observer-terminal-");
+			const id = `terminal-${terminalStatus}`;
+			const fixture = await createSessionFixture(tempDir, id);
+			const parent: PersistedAgentObservation = {
+				id,
+				status: parentStatus,
+				lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+				progress: progressPayload(id, parentStatus, 0).progress,
+			};
+			const childSnapshot = snapshotPersistedSessionEntries(entries());
+
+			expect(childSnapshot.terminalStatus).toBe(terminalStatus);
+			const mergedSnapshot = mergePersistedAgentSnapshot(childSnapshot, parent);
+			expect(mergedSnapshot.terminalStatus).toBe(terminalStatus);
+
+			registerMain(fixture.mainSessionFile);
+			registerParkedChild(id, fixture.childSessionFile, parent, mergedSnapshot);
+			const observers = new SessionObserverRegistry();
+
+			try {
+				observers.setMainSession(fixture.mainSessionFile);
+				expect(observers.getSession(id)).toMatchObject({
+					id,
+					kind: "subagent",
+					status: terminalStatus,
+					progress: { status: terminalStatus },
+				});
+			} finally {
+				observers.dispose();
+			}
+		},
+	);
+	it.each([
+		{
+			name: "a parked ref terminal failure over a completed child snapshot",
+			refStatus: "parked",
+			refTerminalStatus: "failed",
+			expectedStatus: "failed",
+		},
+		{
+			name: "a hard-aborted ref over conflicting terminal evidence",
+			refStatus: "aborted",
+			refTerminalStatus: "failed",
+			expectedStatus: "aborted",
+		},
+	] as const)(
+		"prefers the registered $refStatus/$refTerminalStatus over a completed child snapshot",
+		async ({ refStatus, refTerminalStatus, expectedStatus }) => {
+			using tempDir = TempDir.createSync("@omp-session-observer-ref-terminal-");
+			const id = `ref-${refStatus}-${expectedStatus}`;
+			const fixture = await createSessionFixture(tempDir, id);
+			const parent: PersistedAgentObservation = {
+				id,
+				status: "pending",
+				lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+				progress: progressPayload(id, "pending", 0).progress,
+			};
+			const childSnapshot = snapshotPersistedSessionEntries([yieldEntry("completed-child", { status: "success" })]);
+			const mergedSnapshot = mergePersistedAgentSnapshot(childSnapshot, parent);
+
+			registerMain(fixture.mainSessionFile);
+			registerParkedChild(id, fixture.childSessionFile, parent, mergedSnapshot);
+			const ref = AgentRegistry.global().get(id);
+			if (!ref) throw new Error(`Expected parked ref ${id} to be registered`);
+			ref.status = refStatus;
+			ref.terminalStatus = refTerminalStatus;
+			const observers = new SessionObserverRegistry();
+
+			try {
+				observers.setMainSession(fixture.mainSessionFile);
+				expect(observers.getSession(id)).toMatchObject({
+					id,
+					kind: "subagent",
+					status: expectedStatus,
+					progress: { status: expectedStatus },
+				});
+			} finally {
+				observers.dispose();
+			}
+		},
+	);
+
+	it.each([
+		{
+			name: "a completed parent over a failed child transcript",
+			parentStatus: "completed",
+			childTerminalStatus: "failed",
+			entries: () => [assistantErrorEntry("failed-child")],
+		},
+		{
+			name: "a failed parent over a completed child transcript",
+			parentStatus: "failed",
+			childTerminalStatus: "completed",
+			entries: () => [yieldEntry("completed-child", { status: "success" })],
+		},
+		{
+			name: "an aborted parent over a completed child transcript",
+			parentStatus: "aborted",
+			childTerminalStatus: "completed",
+			entries: () => [yieldEntry("completed-child", { status: "success" })],
+		},
+	] as const)(
+		"uses $parentStatus parent finalization over $childTerminalStatus child evidence from $name",
+		async ({ parentStatus, childTerminalStatus, entries }) => {
+			using tempDir = TempDir.createSync("@omp-session-observer-parent-terminal-");
+			const id = `parent-${parentStatus}-over-${childTerminalStatus}`;
+			const fixture = await createSessionFixture(tempDir, id);
+			const parent: PersistedAgentObservation = {
+				id,
+				status: parentStatus,
+				lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+				progress: progressPayload(id, parentStatus, 0).progress,
+			};
+			const childSnapshot = snapshotPersistedSessionEntries(entries());
+
+			expect(childSnapshot.terminalStatus).toBe(childTerminalStatus);
+			const mergedSnapshot = mergePersistedAgentSnapshot(childSnapshot, parent);
+			expect(mergedSnapshot.terminalStatus).toBe(parentStatus);
+
+			registerMain(fixture.mainSessionFile);
+			registerParkedChild(id, fixture.childSessionFile, parent, mergedSnapshot);
+			const observers = new SessionObserverRegistry();
+
+			try {
+				observers.setMainSession(fixture.mainSessionFile);
+				expect(observers.getSession(id)).toMatchObject({
+					id,
+					status: parentStatus,
+					progress: { status: parentStatus },
+				});
+			} finally {
+				observers.dispose();
+			}
+		},
+	);
+
+	it("does not promote an incremental yield without terminal evidence to completed", async () => {
+		using tempDir = TempDir.createSync("@omp-session-observer-incremental-");
+		const id = "incremental-only";
+		const fixture = await createSessionFixture(tempDir, id);
+		const parent: PersistedAgentObservation = {
+			id,
+			status: "pending",
+			lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+			progress: progressPayload(id, "pending", 0).progress,
+		};
+		const childSnapshot = snapshotPersistedSessionEntries([
+			yieldEntry("incremental-yield", { status: "success", type: ["findings"] }),
+		]);
+
+		expect(childSnapshot.terminalStatus).toBeUndefined();
+		const mergedSnapshot = mergePersistedAgentSnapshot(childSnapshot, parent);
+		expect(mergedSnapshot.terminalStatus).toBeUndefined();
+
+		registerMain(fixture.mainSessionFile);
+		registerParkedChild(id, fixture.childSessionFile, parent, mergedSnapshot);
+		const observers = new SessionObserverRegistry();
+
+		try {
+			observers.setMainSession(fixture.mainSessionFile);
+			expect(observers.getSessions().find(candidate => candidate.id === id)).toMatchObject({
+				id,
+				status: "active",
+				progress: { status: "pending" },
+			});
+		} finally {
+			observers.dispose();
+		}
+	});
+
+	it("ignores an error-marked aborted yield while restoring a pending parked child", async () => {
+		using tempDir = TempDir.createSync("@omp-session-observer-error-yield-");
+		const id = "error-marked-yield";
+		const fixture = await createSessionFixture(tempDir, id);
+		const parent: PersistedAgentObservation = {
+			id,
+			status: "pending",
+			lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+			progress: progressPayload(id, "pending", 0).progress,
+		};
+		const childSnapshot = snapshotPersistedSessionEntries([
+			yieldEntry("error-yield", { status: "aborted", type: ["findings"] }, true),
+		]);
+
+		expect(childSnapshot.terminalStatus).toBeUndefined();
+		const mergedSnapshot = mergePersistedAgentSnapshot(childSnapshot, parent);
+		expect(mergedSnapshot.terminalStatus).toBeUndefined();
+
+		registerMain(fixture.mainSessionFile);
+		registerParkedChild(id, fixture.childSessionFile, parent, mergedSnapshot);
+		const observers = new SessionObserverRegistry();
+
+		try {
+			observers.setMainSession(fixture.mainSessionFile);
+			expect(observers.getSession(id)).toMatchObject({
+				id,
+				kind: "subagent",
+				status: "active",
+				progress: { status: "pending" },
+			});
+		} finally {
+			observers.dispose();
+		}
 	});
 
 	it.each([

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed guest Agent Drawer and AgentsPanel rows showing stale lifecycle or idle states after late joins and terminal updates; both now use the host's authoritative `terminalStatus` consistently.
+
 ## [17.2.10] - 2026-08-06
 
 ### Changed

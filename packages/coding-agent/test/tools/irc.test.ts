@@ -679,6 +679,11 @@ describe("IRC", () => {
 	});
 
 	describe("HubTool", () => {
+		it("defaults a legacy message call without op to send", () => {
+			const tool = new HubTool(makeToolSession(new AgentRegistry(), "0-Main"));
+			const parsed = tool.parameters({ to: "0-Sub", message: "ping" });
+			expect(parsed).toMatchObject({ op: "send", to: "0-Sub", message: "ping" });
+		});
 		it("isIrcEnabled returns false for a top-level session that cannot spawn tasks", () => {
 			const settings = Settings.isolated();
 			// Depth 0 with spawning gated off: no peers exist or can be created.
