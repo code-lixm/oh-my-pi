@@ -37,6 +37,9 @@ export const completionsHelp = {
 export const completeHelp = { hidden: true } satisfies CommandMetadata;
 
 export const configHelp = { description: "Manage configuration settings" } satisfies CommandMetadata;
+export const syncHelp = {
+	description: "Synchronize encrypted configuration through S3-compatible storage",
+} satisfies CommandMetadata;
 
 export const dryBalanceHelp = {
 	description: "Dry-run OAuth account balancing across random session ids",

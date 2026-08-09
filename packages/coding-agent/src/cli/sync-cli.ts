@@ -1,6 +1,11 @@
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { getAgentDbPath, getAgentDir } from "@oh-my-pi/pi-utils";
 import {
+	DEFAULT_SYNC_BOOTSTRAP_PASSPHRASE_ENV,
+	exportSyncBootstrap,
+	importSyncBootstrap,
+} from "../config-sync/bootstrap";
+import {
 	DEFAULT_SYNC_PASSPHRASE_ENV,
 	getSyncConflictPath,
 	loadSyncProfile,
@@ -14,14 +19,15 @@ import {
 	resolveConfigurationConflict,
 	synchronizeConfiguration,
 } from "../config-sync/service";
-import type { SyncProfile } from "../config-sync/types";
+import type { ConfigConflictDocument, SyncProfile } from "../config-sync/types";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 
-export type SyncAction = "init" | "push" | "pull" | "status" | "conflict" | "resolve" | "gc";
+export type SyncAction = "init" | "push" | "pull" | "status" | "conflict" | "resolve" | "gc" | "bootstrap";
 
 export interface SyncCommandArgs {
 	action: SyncAction;
 	target?: string;
+	file?: string;
 	flags: {
 		bucket?: string;
 		prefix?: string;
@@ -34,6 +40,7 @@ export interface SyncCommandArgs {
 		sessionTokenEnv?: string;
 		passphraseEnv?: string;
 		dryRun?: boolean;
+		adopt?: boolean;
 		apply?: boolean;
 		json?: boolean;
 		ours?: boolean;
@@ -53,7 +60,11 @@ export async function runSyncCommand(args: SyncCommandArgs): Promise<void> {
 		case "pull": {
 			const mode = args.action === "push" ? "push" : "pull";
 			output = await withAuthStorage(agentDir, authStorage =>
-				synchronizeConfiguration(agentDir, authStorage, { mode, dryRun: args.flags.dryRun }),
+				synchronizeConfiguration(agentDir, authStorage, {
+					mode,
+					dryRun: args.flags.dryRun,
+					adopt: args.flags.adopt,
+				}),
 			);
 			break;
 		}
@@ -75,6 +86,20 @@ export async function runSyncCommand(args: SyncCommandArgs): Promise<void> {
 			if (args.flags.apply && args.flags.dryRun) throw new Error("Choose either --apply or --dry-run");
 			output = await garbageCollectConfiguration(agentDir, args.flags.apply !== true);
 			break;
+		case "bootstrap": {
+			if (args.target !== "export" && args.target !== "import") {
+				throw new Error("`omp sync bootstrap` requires `export` or `import`");
+			}
+			if (!args.file) throw new Error("`omp sync bootstrap` requires a bundle file path");
+			const passphraseEnv = args.flags.passphraseEnv ?? DEFAULT_SYNC_BOOTSTRAP_PASSPHRASE_ENV;
+			const passphrase = process.env[passphraseEnv];
+			if (!passphrase) throw new Error(`Set ${passphraseEnv} before using sync bootstrap`);
+			output =
+				args.target === "export"
+					? await exportSyncBootstrap(agentDir, args.file, passphrase)
+					: await importSyncBootstrap(agentDir, args.file, passphrase, args.flags.dryRun === true);
+			break;
+		}
 	}
 	renderOutput(output, args.flags.json === true);
 }
@@ -83,7 +108,7 @@ async function initializeSync(
 	agentDir: string,
 	args: SyncCommandArgs,
 ): Promise<{ profile: SyncProfile; writerId: string }> {
-	const existing = await loadSyncProfile(agentDir);
+	const existing = await loadSyncProfile(agentDir, undefined, { allowDisabled: true });
 	const bucket = args.flags.bucket ?? existing?.bucket;
 	if (!bucket) throw new Error("`omp sync init` requires --bucket");
 	const profile: SyncProfile = {
@@ -117,9 +142,21 @@ async function withAuthStorage<T>(agentDir: string, run: (authStorage: AuthStora
 	}
 }
 
+interface ConfigConflictSummary {
+	format: ConfigConflictDocument["format"];
+	formatVersion: ConfigConflictDocument["formatVersion"];
+	createdAt: string;
+	baseRevisionId?: string;
+	remoteRevisionIds: string[];
+	conflicts: Array<{ kind: "file" | "auth"; key: string }>;
+}
+
 async function showConflict(agentDir: string, editor: boolean): Promise<unknown> {
 	const conflictPath = getSyncConflictPath(agentDir);
-	if (!editor) return { path: conflictPath, conflict: await Bun.file(conflictPath).json() };
+	if (!editor) {
+		const conflict = (await Bun.file(conflictPath).json()) as ConfigConflictDocument;
+		return { path: conflictPath, conflict: summarizeConflict(conflict) };
+	}
 	const editorCommand = getEditorCommand();
 	if (!editorCommand) throw new Error("No editor configured. Set $VISUAL or $EDITOR");
 	const original = await Bun.file(conflictPath).text();
@@ -129,6 +166,16 @@ async function showConflict(agentDir: string, editor: boolean): Promise<unknown>
 		await Bun.write(conflictPath, edited);
 	}
 	return { path: conflictPath, edited: edited !== null };
+}
+function summarizeConflict(conflict: ConfigConflictDocument): ConfigConflictSummary {
+	return {
+		format: conflict.format,
+		formatVersion: conflict.formatVersion,
+		createdAt: conflict.createdAt,
+		baseRevisionId: conflict.baseRevisionId,
+		remoteRevisionIds: conflict.remoteRevisionIds,
+		conflicts: conflict.conflicts.map(entry => ({ kind: entry.kind, key: entry.key })),
+	};
 }
 
 function renderOutput(value: unknown, json: boolean): void {

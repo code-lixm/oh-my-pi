@@ -13,7 +13,10 @@ import { assertConfigSnapshot, decryptConfigBundle, encryptConfigSnapshot, hashS
 import { parseSyncProfile } from "./profile";
 import { CONFIG_BUNDLE_VERSION, type ConfigFileEntry, type ConfigSnapshot, type EncryptedConfigBundle } from "./types";
 
-const SINGLE_FILES = ["mcp.json", "RULES.md", "sync.yml"] as const;
+const SYNCED_SINGLE_FILES = ["mcp.json", "RULES.md"] as const;
+// Accepted only when importing an older encrypted bundle. New snapshots keep
+// S3 profile settings in config.yml and never publish the legacy second source.
+const ALLOWED_SINGLE_FILES = [...SYNCED_SINGLE_FILES, "sync.yml"] as const;
 const CONFIG_CANDIDATES = [...MAIN_CONFIG_FILENAMES] as const;
 const MODEL_CANDIDATES = ["models.yml", "models.yaml"] as const;
 const DIRECTORY_RULES = {
@@ -42,11 +45,9 @@ export async function collectConfigSnapshot(agentDir: string, authStorage: AuthS
 	if (selectedConfig) files.push(await readEntry(agentDir, selectedConfig));
 	const selectedModels = await firstExisting(agentDir, MODEL_CANDIDATES);
 	if (selectedModels) files.push(await readEntry(agentDir, selectedModels));
-	for (const relativePath of SINGLE_FILES) {
+	for (const relativePath of SYNCED_SINGLE_FILES) {
 		if (!(await regularFileExists(path.join(agentDir, relativePath)))) continue;
-		const entry = await readEntry(agentDir, relativePath);
-		if (relativePath === "sync.yml") parseSyncProfile(YAML.parse(decodeEntry(entry).toString("utf8")));
-		files.push(entry);
+		files.push(await readEntry(agentDir, relativePath));
 	}
 	for (const [directory, accepts] of Object.entries(DIRECTORY_RULES)) {
 		files.push(...(await collectDirectory(agentDir, directory, accepts)));
@@ -240,7 +241,7 @@ function assertAllowedRelativePath(relativePath: string): void {
 	}
 	if (CONFIG_CANDIDATES.includes(relativePath as (typeof CONFIG_CANDIDATES)[number])) return;
 	if (MODEL_CANDIDATES.includes(relativePath as (typeof MODEL_CANDIDATES)[number])) return;
-	if ((SINGLE_FILES as readonly string[]).includes(relativePath)) return;
+	if ((ALLOWED_SINGLE_FILES as readonly string[]).includes(relativePath)) return;
 	const [root, ...rest] = segments;
 	const accepts = DIRECTORY_RULES[root as keyof typeof DIRECTORY_RULES];
 	if (!accepts || rest.length === 0 || !accepts(rest.join("/")))
@@ -306,7 +307,7 @@ async function listExistingAllowedFiles(agentDir: string): Promise<string[]> {
 	}
 	for (const candidate of MODEL_CANDIDATES)
 		if (await regularFileExists(path.join(agentDir, candidate))) snapshot.push(await readEntry(agentDir, candidate));
-	for (const relativePath of SINGLE_FILES)
+	for (const relativePath of ALLOWED_SINGLE_FILES)
 		if (await regularFileExists(path.join(agentDir, relativePath)))
 			snapshot.push(await readEntry(agentDir, relativePath));
 	for (const [directory, accepts] of Object.entries(DIRECTORY_RULES)) {

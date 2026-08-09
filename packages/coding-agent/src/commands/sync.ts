@@ -1,14 +1,15 @@
 import { Args, Command, Flags, renderCommandHelp } from "../cli/command-runtime";
 import { runSyncCommand, type SyncAction, type SyncCommandArgs } from "../cli/sync-cli";
 
-const ACTIONS: SyncAction[] = ["init", "status", "push", "pull", "conflict", "resolve", "gc"];
+const ACTIONS: SyncAction[] = ["init", "status", "push", "pull", "conflict", "resolve", "gc", "bootstrap"];
 
 export default class Sync extends Command {
 	static description = "Synchronize encrypted OMP configuration through S3-compatible storage";
 
 	static args = {
 		action: Args.string({ description: "Sub-command", required: false, options: ACTIONS }),
-		target: Args.string({ description: "Conflict key for resolve", required: false }),
+		target: Args.string({ description: "Conflict key, or bootstrap export/import", required: false }),
+		file: Args.string({ description: "Bootstrap bundle file path", required: false }),
 	};
 
 	static flags = {
@@ -28,6 +29,7 @@ export default class Sync extends Command {
 		ours: Flags.boolean({ description: "Resolve with the local value" }),
 		theirs: Flags.boolean({ description: "Resolve with the remote value" }),
 		"dry-run": Flags.boolean({ description: "Preview without changing local or remote state" }),
+		adopt: Flags.boolean({ description: "Explicitly adopt the remote configuration on first pull" }),
 		apply: Flags.boolean({ description: "Apply config sync garbage collection" }),
 		editor: Flags.boolean({ description: "Open the conflict document in $VISUAL or $EDITOR" }),
 	};
@@ -36,7 +38,10 @@ export default class Sync extends Command {
 		"omp sync init --bucket omp-config --prefix personal/default",
 		"omp sync push",
 		"omp sync pull",
+		"omp sync pull --adopt",
 		"omp sync status --json",
+		"omp sync bootstrap export ~/omp-sync-bootstrap.json",
+		"omp sync bootstrap import ~/omp-sync-bootstrap.json --dry-run",
 		"omp sync resolve settings/config.yml --ours",
 		"omp sync gc --dry-run",
 		"omp sync gc --apply",
@@ -51,6 +56,7 @@ export default class Sync extends Command {
 		await runSyncCommand({
 			action: args.action as SyncAction,
 			target: args.target,
+			file: args.file,
 			flags: {
 				json: flags.json,
 				endpoint: flags.endpoint,
@@ -66,6 +72,7 @@ export default class Sync extends Command {
 				ours: flags.ours,
 				theirs: flags.theirs,
 				dryRun: flags["dry-run"],
+				adopt: flags.adopt,
 				apply: flags.apply,
 				editor: flags.editor,
 			},

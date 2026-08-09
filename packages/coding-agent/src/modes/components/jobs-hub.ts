@@ -20,6 +20,8 @@ import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
 
 const REFRESH_MS = 1_000;
+const CLOSE_DOUBLE_TAP_MIN_GAP_MS = 40;
+const CLOSE_DOUBLE_TAP_MAX_GAP_MS = 500;
 const JOBS_WIDE_MIN_WIDTH = 120;
 const JOB_TYPE_WIDTH = 8;
 const JOB_STATUS_WIDTH = 14;
@@ -129,6 +131,10 @@ export class JobsHubOverlayComponent extends Container {
 	#rows: JobRow[] = [];
 	#rowAtScreenLine = new Map<number, number>();
 	#timer: NodeJS.Timeout | undefined;
+	#lastLeftTapTime = 0;
+	#lastRightTapTime = 0;
+	#leftTapCount = 0;
+	#rightTapCount = 0;
 
 	constructor(private readonly deps: JobsHubDeps) {
 		super();
@@ -169,6 +175,10 @@ export class JobsHubOverlayComponent extends Container {
 			this.deps.onDone();
 			return;
 		}
+		if (matchesKey(data, "left") || matchesKey(data, "right")) {
+			if (this.#detectCloseDoubleTap(matchesKey(data, "left") ? "left" : "right")) this.deps.onDone();
+			return;
+		}
 		if (matchesKey(data, "enter") || data === "\r" || data === "\n") {
 			if (this.#rows[this.#selected]) {
 				this.#detail = !this.#detail;
@@ -196,6 +206,29 @@ export class JobsHubOverlayComponent extends Container {
 			else this.#selected = Math.max(0, this.#selected - 1);
 			this.deps.requestRender();
 		}
+	}
+
+	#detectCloseDoubleTap(direction: "left" | "right"): boolean {
+		const now = Date.now();
+		const lastTapTime = direction === "left" ? this.#lastLeftTapTime : this.#lastRightTapTime;
+		const sinceLast = now - lastTapTime;
+		if (direction === "left") this.#lastLeftTapTime = now;
+		else this.#lastRightTapTime = now;
+		if (sinceLast >= CLOSE_DOUBLE_TAP_MAX_GAP_MS) {
+			if (direction === "left") this.#leftTapCount = 1;
+			else this.#rightTapCount = 1;
+			return false;
+		}
+		const count = direction === "left" ? ++this.#leftTapCount : ++this.#rightTapCount;
+		if (count !== 2 || sinceLast < CLOSE_DOUBLE_TAP_MIN_GAP_MS) return false;
+		if (direction === "left") {
+			this.#leftTapCount = 0;
+			this.#lastLeftTapTime = 0;
+		} else {
+			this.#rightTapCount = 0;
+			this.#lastRightTapTime = 0;
+		}
+		return true;
 	}
 
 	#handleMouseInput(data: string): void {
@@ -368,7 +401,7 @@ export class JobsHubOverlayComponent extends Container {
 		const primary = [
 			rawKeyHint("j/k", tSettingsUi("select")),
 			rawKeyHint("Enter", tSettingsUi("open details")),
-			rawKeyHint("Esc", tSettingsUi("close")),
+			rawKeyHint("Esc/←←/→→", tSettingsUi("close")),
 		].join(separator);
 		if (!this.#rows[this.#selected]) return [clamp(primary)];
 
@@ -422,15 +455,6 @@ export class JobsHubOverlayComponent extends Container {
 			const suffix = `  ${theme.fg("muted", `[${type}]`)}${theme.sep.dot}${status}`;
 			const labelWidth = Math.max(8, max - 3 - visibleWidth(suffix));
 			entry.push(` ${cursor} ${fixedCell(theme.bold(oneLine(label, labelWidth)), labelWidth)}${suffix}`);
-			const metadata = [
-				theme.fg("dim", model),
-				theme.fg("dim", duration),
-				job.ownerId ? theme.fg("dim", `← ${owner}`) : undefined,
-				job.lastProgressAt ? theme.fg("dim", lastUpdate) : undefined,
-			]
-				.filter((value): value is string => value !== undefined)
-				.join(theme.sep.dot);
-			entry.push(`   ${truncateToWidth(metadata, Math.max(1, max - 3))}`);
 		}
 
 		if (!selected) return entry;
@@ -452,7 +476,7 @@ export class JobsHubOverlayComponent extends Container {
 		const lines = [
 			...new DynamicBorder().render(width),
 			` ${truncateToWidth(`${theme.fg("accent", tSettingsUi("Job Details"))}${theme.fg("dim", `${theme.sep.dot}${job.id}`)}`, inner)}`,
-			` ${truncateToWidth(`${rawKeyHint("j/k", tSettingsUi("scroll"))}${theme.sep.dot}${rawKeyHint("Enter/Esc", tSettingsUi("back"))}${theme.sep.dot}${rawKeyHint("f", tSettingsUi("focus agent"))}${theme.sep.dot}${rawKeyHint("x", tSettingsUi("cancel job"))}`, inner)}`,
+			` ${truncateToWidth(`${rawKeyHint("j/k", tSettingsUi("scroll"))}${theme.sep.dot}${rawKeyHint("Enter/Esc", tSettingsUi("back"))}${theme.sep.dot}${rawKeyHint("←←/→→", tSettingsUi("close"))}${theme.sep.dot}${rawKeyHint("f", tSettingsUi("focus agent"))}${theme.sep.dot}${rawKeyHint("x", tSettingsUi("cancel job"))}`, inner)}`,
 			detailLine(tSettingsUi("Status"), statusLabel(job), inner),
 			detailLine(tSettingsUi("Type"), job.type, inner),
 			detailLine(tSettingsUi("Duration"), jobDuration(job), inner),

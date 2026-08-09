@@ -122,6 +122,34 @@ function createLiveFixture(focusedAgentId?: string, hideToolActivity = false) {
 	return { controller: new EventController(ctx), chatContainer, pendingTools, showSubagentFeedback };
 }
 
+async function completeHubWait(controller: EventController, toolCallId: string, body: string): Promise<void> {
+	await controller.handleEvent({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: "hub",
+		args: { op: "wait", from: "AuthLoader" },
+	} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+	await controller.handleEvent({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: "hub",
+		result: {
+			content: [{ type: "text", text: "Reply received" }],
+			details: {
+				op: "wait",
+				waited: {
+					id: `irc-${toolCallId}`,
+					from: "AuthLoader",
+					to: "Main",
+					body,
+					ts: 1_700_000_000_100,
+				},
+			},
+		},
+		isError: false,
+	} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+}
+
 function hubGroups(container: TranscriptContainer): HubActivityGroupComponent[] {
 	return container.children.filter(
 		(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
@@ -258,53 +286,32 @@ describe("EventController hub activity cluster", () => {
 		expect(rendered).toContain("FOCUSED_VISIBLE_PATH");
 		expect(rendered).not.toContain("FOCUSED_HUB_PROCESS_MARKER");
 	});
-	it("routes wait(from) replies to showSubagentFeedback without a card when process activity is enabled", async () => {
-		settings.set("display.showHubProcessActivity", true);
-		const { controller, chatContainer, pendingTools, showSubagentFeedback } = createLiveFixture();
 
-		await controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: HUB_WAIT_ID,
-			toolName: "hub",
-			args: { op: "wait", from: "AuthLoader" },
-		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+	it("keeps Hub wait feedback hidden while agent communication uses its default disabled setting", async () => {
+		const { controller, chatContainer, showSubagentFeedback } = createLiveFixture();
 
+		await completeHubWait(controller, "hub-wait-hidden-by-default", "HIDDEN_HUB_FEEDBACK_MARKER");
+
+		expect(showSubagentFeedback).not.toHaveBeenCalled();
 		expect(chatContainer.children).toHaveLength(0);
-		expect(pendingTools.has(HUB_WAIT_ID)).toBe(false);
-		expect(renderText(chatContainer)).not.toContain("pending");
+		expect(renderText(chatContainer)).not.toContain("HIDDEN_HUB_FEEDBACK_MARKER");
+	});
+	it("routes wait(from) replies to showSubagentFeedback only when agent communication is explicitly enabled", async () => {
+		settings.set("display.showAgentCommunication", true);
+		const { controller, showSubagentFeedback } = createLiveFixture();
 
-		await controller.handleEvent({
-			type: "tool_execution_end",
-			toolCallId: HUB_WAIT_ID,
-			toolName: "hub",
-			result: {
-				content: [{ type: "text", text: "Reply received" }],
-				details: {
-					op: "wait",
-					waited: {
-						id: "irc-wait-1",
-						from: "AuthLoader",
-						to: "Main",
-						body: "ready now",
-						ts: 1_700_000_000_100,
-					},
-				},
-			},
-			isError: false,
-		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+		await completeHubWait(controller, HUB_WAIT_ID, "ready now");
 
 		expect(showSubagentFeedback).toHaveBeenCalledWith({
 			agentId: "AuthLoader",
 			text: "ready now",
 			timestamp: 1_700_000_000_100,
 		});
-		expect(chatContainer.children).toHaveLength(0);
-		expect(pendingTools.has(HUB_WAIT_ID)).toBe(false);
-		expect(renderText(chatContainer)).not.toContain("ready now");
 	});
 
-	it("dedupes inbox feedback and keeps the transcript free of IRC body rows", async () => {
-		const { controller, chatContainer, showSubagentFeedback } = createLiveFixture();
+	it("dedupes inbox feedback when agent communication is enabled", async () => {
+		settings.set("display.showAgentCommunication", true);
+		const { controller, showSubagentFeedback } = createLiveFixture();
 
 		await controller.handleEvent({
 			type: "tool_execution_start",
@@ -337,9 +344,6 @@ describe("EventController hub activity cluster", () => {
 			text: "ready",
 			timestamp: 2,
 		});
-		expect(hubGroups(chatContainer)).toHaveLength(0);
-		expect(renderText(chatContainer)).not.toContain("ping");
-		expect(renderText(chatContainer)).not.toContain("ready");
 	});
 
 	it("hides a peer roster when communication is disabled before completion", async () => {

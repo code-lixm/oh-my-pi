@@ -5246,6 +5246,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Result submitted (schema validation overridden after {count} failed attempt(s)).",
 	"Result submitted (schema validation overridden).": "Result submitted (schema validation overridden).",
 	"Task aborted: {error}": "Task aborted: {error}",
+	"Task {agentId} started{description}": "Task {agentId} started{description}",
+	"Task {agentId} completed{description}": "Task {agentId} completed{description}",
+	"Task {agentId} failed{description}": "Task {agentId} failed{description}",
+	"Task {agentId} aborted{description}": "Task {agentId} aborted{description}",
 	Communication: "Communication",
 	"Next-Step Offers": "Next-Step Offers",
 	"Record up to three structured, user-selectable next-step offers after successful final responses.":
@@ -5273,4 +5277,42 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Use a trusted native sidecar when eligible; otherwise use the generic system prompt":
 		"Use a trusted native sidecar when eligible; otherwise use the generic system prompt",
 	shadow: "shadow",
+	Sync: "Sync",
+	"S3 Storage": "S3 Storage",
+	Credentials: "Credentials",
+	Automation: "Automation",
+	"Enable Configuration Sync": "Enable Configuration Sync",
+	"Synchronize encrypted OMP configuration through S3-compatible storage.":
+		"Synchronize encrypted OMP configuration through S3-compatible storage.",
+	"S3 Endpoint": "S3 Endpoint",
+	"Optional S3-compatible endpoint URL. Leave empty for AWS S3.":
+		"Optional S3-compatible endpoint URL. Leave empty for AWS S3.",
+	"S3 Bucket": "S3 Bucket",
+	"Bucket that stores encrypted configuration revisions.": "Bucket that stores encrypted configuration revisions.",
+	"S3 Region": "S3 Region",
+	"Optional S3 region used by the storage client.": "Optional S3 region used by the storage client.",
+	"Object Prefix": "Object Prefix",
+	"S3 object-key prefix that isolates this configuration archive.":
+		"S3 object-key prefix that isolates this configuration archive.",
+	"Virtual-Hosted-Style URLs": "Virtual-Hosted-Style URLs",
+	"Address the bucket as a hostname instead of using path-style S3 URLs.":
+		"Address the bucket as a hostname instead of using path-style S3 URLs.",
+	"Local Encryption Key": "Local Encryption Key",
+	"Encryption key stored only in this device's local secret file; it is never written to config.yml or uploaded to S3.":
+		"Encryption key stored only in this device's local secret file; it is never written to config.yml or uploaded to S3.",
+	"Fallback Passphrase Environment Variable": "Fallback Passphrase Environment Variable",
+	"Fallback environment variable for older installations; the variable name is stored in config.yml, but its value is never stored or uploaded.":
+		"Fallback environment variable for older installations; the variable name is stored in config.yml, but its value is never stored or uploaded.",
+	"Access Key ID Environment Variable": "Access Key ID Environment Variable",
+	"Optional environment variable containing the S3 access key ID.":
+		"Optional environment variable containing the S3 access key ID.",
+	"Secret Access Key Environment Variable": "Secret Access Key Environment Variable",
+	"Optional environment variable containing the S3 secret access key.":
+		"Optional environment variable containing the S3 secret access key.",
+	"Session Token Environment Variable": "Session Token Environment Variable",
+	"Optional environment variable containing a temporary S3 session token.":
+		"Optional environment variable containing a temporary S3 session token.",
+	"Automatic Push": "Automatic Push",
+	"Push configuration after successful global settings persistence.":
+		"Push configuration after successful global settings persistence.",
 };

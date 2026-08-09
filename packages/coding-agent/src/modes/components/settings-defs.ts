@@ -25,16 +25,17 @@ import {
 	type SubmenuOption,
 	TAB_GROUPS,
 } from "../../config/settings-schema";
+import { LOCAL_SYNC_PASSPHRASE_SETTING_PATH } from "../../config-sync/local-secret";
 import { getSettingsUiLocale, type SettingsUiLocale, tSettingsUi } from "../../i18n/settings-locale";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UI Definition Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type SettingValue = boolean | string;
+export type SettingDefPath = SettingPath | typeof LOCAL_SYNC_PASSPHRASE_SETTING_PATH;
 
-interface BaseSettingDef {
-	path: SettingPath;
+interface BaseSettingDef<P extends SettingDefPath = SettingPath> {
+	path: P;
 	label: string;
 	description: string;
 	tab: SettingTab;
@@ -80,6 +81,12 @@ export interface TextInputSettingDef extends BaseSettingDef {
 	secret: boolean;
 }
 
+export interface LocalSecretSettingDef extends BaseSettingDef<typeof LOCAL_SYNC_PASSPHRASE_SETTING_PATH> {
+	type: "text";
+	secret: true;
+	localSecret: true;
+}
+
 export interface NumberInputSettingDef extends BaseSettingDef {
 	type: "number";
 	min?: number;
@@ -103,6 +110,7 @@ export type SettingDef =
 	| EnumSettingDef
 	| SubmenuSettingDef
 	| TextInputSettingDef
+	| LocalSecretSettingDef
 	| NumberInputSettingDef
 	| ProviderLimitsSettingDef
 	| MultiSelectSettingDef;
@@ -267,6 +275,21 @@ export function getAllSettingDefs(): SettingDef[] {
 	for (const tab of SETTING_TABS) {
 		for (const path of getPathsForTab(tab)) {
 			const def = pathToSettingDef(path);
+			if (tab === "sync" && path === "sync.passphraseEnv") {
+				defs.push({
+					path: LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
+					label: tSettingsUi("Local Encryption Key"),
+					description: tSettingsUi(
+						"Encryption key stored only in this device's local secret file; it is never written to config.yml or uploaded to S3.",
+					),
+					tab: "sync",
+					group: "Credentials",
+					groupLabel: tSettingsUi("Credentials"),
+					type: "text",
+					secret: true,
+					localSecret: true,
+				});
+			}
 			if (def) defs.push(def);
 		}
 	}
@@ -295,7 +318,7 @@ export function getSettingsForTab(tab: SettingTab): SettingDef[] {
 }
 
 /** Get a setting definition by path */
-export function getSettingDef(path: SettingPath): SettingDef | undefined {
+export function getSettingDef(path: SettingDefPath): SettingDef | undefined {
 	return getAllSettingDefs().find(def => def.path === path);
 }
 

@@ -92,7 +92,8 @@ export type SettingTab =
 	| "shell"
 	| "tools"
 	| "tasks"
-	| "providers";
+	| "providers"
+	| "sync";
 
 /** Tab display metadata - icon is resolved via theme.symbol() */
 export type TabMetadata = { label: string; icon: `tab.${string}` };
@@ -109,6 +110,7 @@ export const SETTING_TABS: SettingTab[] = [
 	"tools",
 	"tasks",
 	"providers",
+	"sync",
 ];
 
 /** Tab display metadata - icon is a symbol key from theme.ts (tab.*) */
@@ -123,6 +125,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 	tools: { label: tSettingsUi("Tools"), icon: "tab.tools" },
 	tasks: { label: tSettingsUi("Tasks"), icon: "tab.tasks" },
 	providers: { label: tSettingsUi("Providers"), icon: "tab.providers" },
+	sync: { label: tSettingsUi("Sync"), icon: "tab.sync" },
 };
 
 /**
@@ -164,6 +167,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
 	providers: ["Services", "Network", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+	sync: ["S3 Storage", "Credentials", "Automation"],
 };
 
 /** Status line segment identifiers */
@@ -6490,6 +6494,127 @@ export const SETTINGS_SCHEMA = {
 			),
 		},
 	},
+
+	// ────────────────────────────────────────────────────────────────────────
+	// Encrypted configuration sync (S3-compatible storage)
+	// ────────────────────────────────────────────────────────────────────────
+	"sync.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("Enable Configuration Sync"),
+			description: tSettingsUi("Synchronize encrypted OMP configuration through S3-compatible storage."),
+		},
+	},
+	"sync.endpoint": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("S3 Endpoint"),
+			description: tSettingsUi("Optional S3-compatible endpoint URL. Leave empty for AWS S3."),
+		},
+	},
+	"sync.bucket": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("S3 Bucket"),
+			description: tSettingsUi("Bucket that stores encrypted configuration revisions."),
+		},
+	},
+	"sync.region": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("S3 Region"),
+			description: tSettingsUi("Optional S3 region used by the storage client."),
+		},
+	},
+	"sync.prefix": {
+		type: "string",
+		default: "omp-config",
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("Object Prefix"),
+			description: tSettingsUi("S3 object-key prefix that isolates this configuration archive."),
+		},
+	},
+	"sync.virtualHostedStyle": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("S3 Storage"),
+			label: tSettingsUi("Virtual-Hosted-Style URLs"),
+			description: tSettingsUi("Address the bucket as a hostname instead of using path-style S3 URLs."),
+		},
+	},
+	"sync.passphraseEnv": {
+		type: "string",
+		default: "OMP_CONFIG_SYNC_PASSPHRASE",
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("Credentials"),
+			label: tSettingsUi("Fallback Passphrase Environment Variable"),
+			description: tSettingsUi(
+				"Fallback environment variable for older installations; the variable name is stored in config.yml, but its value is never stored or uploaded.",
+			),
+		},
+	},
+	"sync.accessKeyIdEnv": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("Credentials"),
+			label: tSettingsUi("Access Key ID Environment Variable"),
+			description: tSettingsUi("Optional environment variable containing the S3 access key ID."),
+		},
+	},
+	"sync.secretAccessKeyEnv": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("Credentials"),
+			label: tSettingsUi("Secret Access Key Environment Variable"),
+			description: tSettingsUi("Optional environment variable containing the S3 secret access key."),
+		},
+	},
+	"sync.sessionTokenEnv": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("Credentials"),
+			label: tSettingsUi("Session Token Environment Variable"),
+			description: tSettingsUi("Optional environment variable containing a temporary S3 session token."),
+		},
+	},
+	"sync.autoPush": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "sync",
+			group: tSettingsUi("Automation"),
+			label: tSettingsUi("Automatic Push"),
+			description: tSettingsUi("Push configuration after successful global settings persistence."),
+		},
+	},
+	// Reserved for the existing profile format. Retention policy is not exposed
+	// until config-sync GC consumes these values.
+	"sync.retention.revisions": { type: "number", default: undefined },
+	"sync.retention.days": { type: "number", default: undefined },
+	"sync.retention.inactiveWriterDays": { type: "number", default: undefined },
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6773,6 +6898,23 @@ export interface GcSettings {
 	retainNewestPerCwd: number;
 }
 
+export interface SyncSettings {
+	enabled: boolean;
+	endpoint: string | undefined;
+	bucket: string | undefined;
+	region: string | undefined;
+	prefix: string;
+	virtualHostedStyle: boolean;
+	passphraseEnv: string;
+	accessKeyIdEnv: string | undefined;
+	secretAccessKeyEnv: string | undefined;
+	sessionTokenEnv: string | undefined;
+	autoPush: boolean;
+	"retention.revisions": number | undefined;
+	"retention.days": number | undefined;
+	"retention.inactiveWriterDays": number | undefined;
+}
+
 /** Map group prefix -> typed settings interface */
 export interface GroupTypeMap {
 	compaction: CompactionSettings;
@@ -6796,6 +6938,7 @@ export interface GroupTypeMap {
 	codexResets: CodexResetsSettings;
 	gc: GcSettings;
 	workspaceCheckpoint: WorkspaceCheckpointSettings;
+	sync: SyncSettings;
 }
 
 export type GroupPrefix = keyof GroupTypeMap;

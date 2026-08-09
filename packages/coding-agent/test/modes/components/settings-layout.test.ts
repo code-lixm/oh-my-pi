@@ -7,14 +7,16 @@ import {
 	SETTINGS_SCHEMA,
 	type SettingPath,
 	TAB_GROUPS,
+	TAB_METADATA,
 } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { getSettingsForTab } from "@oh-my-pi/pi-coding-agent/modes/components/settings-defs";
-import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
+import { LOCAL_SYNC_PASSPHRASE_SETTING_PATH } from "../../../src/config-sync/local-secret";
+import { getSettingsUiLocale, setSettingsUiLocale, tSettingsUi } from "../../../src/i18n/settings-locale";
 import { SETTINGS_EN_MESSAGES } from "../../../src/i18n/settings-locale/en";
 import { SETTINGS_ZH_CN_MESSAGES } from "../../../src/i18n/settings-locale/zh-CN";
 
 interface TranslationRef {
-	path: SettingPath;
+	path: SettingPath | typeof LOCAL_SYNC_PASSPHRASE_SETTING_PATH;
 	kind: "group" | "label" | "description" | "option label" | "option description" | "enum value";
 	key: string;
 }
@@ -26,12 +28,28 @@ const SETTINGS_UI_MESSAGES = {
 
 const PLACEHOLDER_PATTERN = /\{(\w+)\}/g;
 
+function getSyncControls() {
+	return getSettingsForTab("sync").map(def => ({
+		path: def.path,
+		type: def.type,
+		label: def.label,
+		group: def.groupLabel,
+		...(def.type === "text" ? { secret: def.secret } : {}),
+	}));
+}
+
 let previousLocale = getSettingsUiLocale();
 
 function collectTranslationRefs(): TranslationRef[] {
 	const refs: TranslationRef[] = [];
 	for (const tab of SETTING_TABS) {
 		for (const def of getSettingsForTab(tab)) {
+			if (def.path === LOCAL_SYNC_PASSPHRASE_SETTING_PATH) {
+				refs.push({ path: def.path, kind: "label", key: def.label });
+				refs.push({ path: def.path, kind: "description", key: def.description });
+				continue;
+			}
+
 			const ui = getUi(def.path);
 			if (!ui) throw new Error(`Missing ui metadata for ${def.path}`);
 
@@ -216,7 +234,9 @@ describe("settings layout", () => {
 	it("hides advisor dependent settings when advisor is disabled", () => {
 		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);
-		const defs = getSettingsForTab("model").filter(def => advisorDependentPathSet.has(def.path));
+		const defs = getSettingsForTab("model").filter(
+			def => def.path !== LOCAL_SYNC_PASSPHRASE_SETTING_PATH && advisorDependentPathSet.has(def.path),
+		);
 
 		expect(defs.map(def => def.path)).toEqual(advisorDependentPaths);
 		for (const def of defs) {
@@ -299,6 +319,119 @@ describe("settings layout", () => {
 			{ value: "0", label: "已禁用" },
 			{ value: "30", label: "30 秒" },
 			{ value: "60", label: "60 秒" },
+		]);
+	});
+
+	it("exposes the S3 configuration sync tab with its English controls and groups", () => {
+		expect(SETTING_TABS).toContain("sync");
+		expect(tSettingsUi(TAB_METADATA.sync.label)).toBe("Sync");
+		expect(getSyncControls()).toEqual([
+			{ path: "sync.enabled", type: "boolean", label: "Enable Configuration Sync", group: "S3 Storage" },
+			{ path: "sync.endpoint", type: "text", label: "S3 Endpoint", group: "S3 Storage", secret: false },
+			{ path: "sync.bucket", type: "text", label: "S3 Bucket", group: "S3 Storage", secret: false },
+			{ path: "sync.region", type: "text", label: "S3 Region", group: "S3 Storage", secret: false },
+			{ path: "sync.prefix", type: "text", label: "Object Prefix", group: "S3 Storage", secret: false },
+			{
+				path: "sync.virtualHostedStyle",
+				type: "boolean",
+				label: "Virtual-Hosted-Style URLs",
+				group: "S3 Storage",
+			},
+			{
+				path: LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
+				type: "text",
+				label: "Local Encryption Key",
+				group: "Credentials",
+				secret: true,
+			},
+			{
+				path: "sync.passphraseEnv",
+				type: "text",
+				label: "Fallback Passphrase Environment Variable",
+				group: "Credentials",
+				secret: false,
+			},
+			{
+				path: "sync.accessKeyIdEnv",
+				type: "text",
+				label: "Access Key ID Environment Variable",
+				group: "Credentials",
+				secret: false,
+			},
+			{
+				path: "sync.secretAccessKeyEnv",
+				type: "text",
+				label: "Secret Access Key Environment Variable",
+				group: "Credentials",
+				secret: false,
+			},
+			{
+				path: "sync.sessionTokenEnv",
+				type: "text",
+				label: "Session Token Environment Variable",
+				group: "Credentials",
+				secret: false,
+			},
+			{ path: "sync.autoPush", type: "boolean", label: "Automatic Push", group: "Automation" },
+		]);
+	});
+
+	it("localizes the S3 configuration sync tab, controls, and groups in Simplified Chinese", () => {
+		setSettingsUiLocale("zh-CN");
+
+		expect(tSettingsUi(TAB_METADATA.sync.label)).toBe("同步");
+		expect(getSyncControls().map(({ path, label, group }) => ({ path, label, group }))).toEqual([
+			{ path: "sync.enabled", label: "启用配置同步", group: "S3 存储" },
+			{ path: "sync.endpoint", label: "S3 端点", group: "S3 存储" },
+			{ path: "sync.bucket", label: "S3 存储桶", group: "S3 存储" },
+			{ path: "sync.region", label: "S3 区域", group: "S3 存储" },
+			{ path: "sync.prefix", label: "对象前缀", group: "S3 存储" },
+			{ path: "sync.virtualHostedStyle", label: "虚拟主机样式 URL", group: "S3 存储" },
+			{ path: LOCAL_SYNC_PASSPHRASE_SETTING_PATH, label: "本机加密密钥", group: "凭据" },
+			{ path: "sync.passphraseEnv", label: "备用口令环境变量", group: "凭据" },
+			{ path: "sync.accessKeyIdEnv", label: "Access Key ID 环境变量", group: "凭据" },
+			{ path: "sync.secretAccessKeyEnv", label: "Secret Access Key 环境变量", group: "凭据" },
+			{ path: "sync.sessionTokenEnv", label: "Session Token 环境变量", group: "凭据" },
+			{ path: "sync.autoPush", label: "自动推送", group: "自动化" },
+		]);
+	});
+
+	it("keeps S3 profile fields configurable while sync is disabled without masking environment-variable names", () => {
+		Settings.instance.set("sync.enabled", false);
+		const controls = getSyncControls();
+
+		expect(controls.map(control => control.path)).toEqual([
+			"sync.enabled",
+			"sync.endpoint",
+			"sync.bucket",
+			"sync.region",
+			"sync.prefix",
+			"sync.virtualHostedStyle",
+			LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
+			"sync.passphraseEnv",
+			"sync.accessKeyIdEnv",
+			"sync.secretAccessKeyEnv",
+			"sync.sessionTokenEnv",
+			"sync.autoPush",
+		]);
+		expect(
+			controls
+				.filter(control =>
+					[
+						LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
+						"sync.passphraseEnv",
+						"sync.accessKeyIdEnv",
+						"sync.secretAccessKeyEnv",
+						"sync.sessionTokenEnv",
+					].includes(control.path),
+				)
+				.map(({ path, type, secret }) => ({ path, type, secret })),
+		).toEqual([
+			{ path: LOCAL_SYNC_PASSPHRASE_SETTING_PATH, type: "text", secret: true },
+			{ path: "sync.passphraseEnv", type: "text", secret: false },
+			{ path: "sync.accessKeyIdEnv", type: "text", secret: false },
+			{ path: "sync.secretAccessKeyEnv", type: "text", secret: false },
+			{ path: "sync.sessionTokenEnv", type: "text", secret: false },
 		]);
 	});
 });

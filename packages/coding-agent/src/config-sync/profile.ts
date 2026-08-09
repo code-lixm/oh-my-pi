@@ -4,9 +4,19 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { YAML } from "bun";
+import { Settings } from "../config/settings";
+import { SETTINGS_SCHEMA, type SettingPath } from "../config/settings-schema";
+import { readLocalSyncPassphrase } from "./local-secret";
 import { CONFIG_SYNC_VERSION, type SyncProfile, type SyncState } from "./types";
 
 export const DEFAULT_SYNC_PASSPHRASE_ENV = "OMP_CONFIG_SYNC_PASSPHRASE";
+
+const SYNC_SETTING_PATHS = (Object.keys(SETTINGS_SCHEMA) as SettingPath[]).filter(path => path.startsWith("sync."));
+
+/** Any explicit sync.* value makes config.yml authoritative over legacy sync.yml. */
+export function hasSettingsSyncProfile(settings: Settings): boolean {
+	return SYNC_SETTING_PATHS.some(path => settings.isConfigured(path));
+}
 
 export function getSyncProfilePath(agentDir: string): string {
 	return path.join(agentDir, "sync.yml");
@@ -119,7 +129,47 @@ function assertExactKeys(record: Record<string, unknown>, allowed: readonly stri
 	if (unknown !== undefined) throw new Error(`${label} contains unsupported field ${unknown}`);
 }
 
-export async function loadSyncProfile(agentDir: string): Promise<SyncProfile | null> {
+export interface LoadSyncProfileOptions {
+	allowDisabled?: boolean;
+}
+
+export async function loadSyncProfile(
+	agentDir: string,
+	settings?: Settings,
+	options: LoadSyncProfileOptions = {},
+): Promise<SyncProfile | null> {
+	const resolvedSettings = settings ?? (await Settings.loadReadOnly({ agentDir, cwd: agentDir }));
+	// Any explicit `config.yml` sync value selects the settings-backed profile.
+	// Explicit disablement or an incomplete profile then resolves to unconfigured;
+	// it never splices missing values from legacy `sync.yml`.
+	if (hasSettingsSyncProfile(resolvedSettings)) {
+		if (!resolvedSettings.get("sync.enabled") && options.allowDisabled !== true) return null;
+		const bucket = resolvedSettings.get("sync.bucket")?.trim();
+		if (!bucket) return null;
+		const retentionValues = {
+			revisions: resolvedSettings.get("sync.retention.revisions"),
+			days: resolvedSettings.get("sync.retention.days"),
+			inactiveWriterDays: resolvedSettings.get("sync.retention.inactiveWriterDays"),
+		};
+		const hasRetention = Object.values(retentionValues).some(value => value !== undefined);
+		return parseSyncProfile({
+			formatVersion: CONFIG_SYNC_VERSION,
+			endpoint: resolvedSettings.get("sync.endpoint"),
+			bucket,
+			region: resolvedSettings.get("sync.region"),
+			prefix: resolvedSettings.get("sync.prefix"),
+			virtualHostedStyle: resolvedSettings.get("sync.virtualHostedStyle"),
+			passphraseEnv: resolvedSettings.get("sync.passphraseEnv"),
+			accessKeyIdEnv: resolvedSettings.get("sync.accessKeyIdEnv"),
+			secretAccessKeyEnv: resolvedSettings.get("sync.secretAccessKeyEnv"),
+			sessionTokenEnv: resolvedSettings.get("sync.sessionTokenEnv"),
+			autoPush: resolvedSettings.get("sync.autoPush"),
+			retention: hasRetention ? retentionValues : undefined,
+		});
+	}
+
+	// Backward compatibility for profiles created before `/settings` owned S3
+	// configuration. `saveSyncProfile` writes only the canonical settings form.
 	try {
 		return parseSyncProfile(YAML.parse(await Bun.file(getSyncProfilePath(agentDir)).text()));
 	} catch (error) {
@@ -127,8 +177,13 @@ export async function loadSyncProfile(agentDir: string): Promise<SyncProfile | n
 		throw error;
 	}
 }
+export async function isSyncProfileEnabled(agentDir: string, settings?: Settings): Promise<boolean> {
+	const resolvedSettings = settings ?? (await Settings.loadReadOnly({ agentDir, cwd: agentDir }));
+	if (!hasSettingsSyncProfile(resolvedSettings)) return true;
+	return resolvedSettings.get("sync.enabled") === true;
+}
 
-async function writeAtomically(filePath: string, content: string): Promise<void> {
+export async function writeSyncLocalFileAtomically(filePath: string, content: string): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 	try {
 		await fs.writeFile(tempPath, content, { encoding: "utf8", mode: 0o600 });
@@ -139,11 +194,33 @@ async function writeAtomically(filePath: string, content: string): Promise<void>
 	}
 }
 
-export async function saveSyncProfile(agentDir: string, profile: SyncProfile): Promise<void> {
+export interface SaveSyncProfileOptions {
+	enabled?: boolean;
+}
+
+export async function saveSyncProfile(
+	agentDir: string,
+	profile: SyncProfile,
+	options: SaveSyncProfileOptions = {},
+): Promise<void> {
 	const normalized = parseSyncProfile(profile);
-	const filePath = getSyncProfilePath(agentDir);
-	await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-	await withFileLock(filePath, async () => writeAtomically(filePath, YAML.stringify(normalized, null, 2)));
+	const settings = await Settings.loadIsolated({ agentDir, cwd: agentDir });
+	settings.set("sync.enabled", options.enabled ?? true);
+	settings.set("sync.endpoint", normalized.endpoint);
+	settings.set("sync.bucket", normalized.bucket);
+	settings.set("sync.region", normalized.region);
+	settings.set("sync.prefix", normalized.prefix);
+	settings.set("sync.virtualHostedStyle", normalized.virtualHostedStyle === true);
+	settings.set("sync.passphraseEnv", normalized.passphraseEnv);
+	settings.set("sync.accessKeyIdEnv", normalized.accessKeyIdEnv);
+	settings.set("sync.secretAccessKeyEnv", normalized.secretAccessKeyEnv);
+	settings.set("sync.sessionTokenEnv", normalized.sessionTokenEnv);
+	settings.set("sync.autoPush", normalized.autoPush === true);
+	settings.set("sync.retention.revisions", normalized.retention?.revisions);
+	settings.set("sync.retention.days", normalized.retention?.days);
+	settings.set("sync.retention.inactiveWriterDays", normalized.retention?.inactiveWriterDays);
+	await settings.flush();
+	settings.cancelPendingSaves();
 }
 
 function parseSyncState(value: unknown): SyncState {
@@ -176,12 +253,17 @@ export async function saveSyncState(agentDir: string, state: SyncState): Promise
 	const normalized = parseSyncState(state);
 	const filePath = getSyncStatePath(agentDir);
 	await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-	await withFileLock(filePath, async () => writeAtomically(filePath, `${JSON.stringify(normalized, null, 2)}\n`));
+	await withFileLock(filePath, async () =>
+		writeSyncLocalFileAtomically(filePath, `${JSON.stringify(normalized, null, 2)}\n`),
+	);
 }
 
-export function requireSyncPassphrase(profile: SyncProfile): string {
-	const passphrase = process.env[profile.passphraseEnv];
-	if (!passphrase)
-		throw new Error(`Set ${profile.passphraseEnv} before exporting, importing, or syncing configuration`);
-	return passphrase;
+export function requireSyncPassphrase(agentDir: string, profile: SyncProfile): string {
+	const localPassphrase = readLocalSyncPassphrase(agentDir);
+	if (localPassphrase) return localPassphrase;
+	const environmentPassphrase = process.env[profile.passphraseEnv];
+	if (environmentPassphrase) return environmentPassphrase;
+	throw new Error(
+		`Set a local encryption key in /settings → Sync or set ${profile.passphraseEnv} before syncing configuration`,
+	);
 }

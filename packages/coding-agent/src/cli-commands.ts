@@ -87,6 +87,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.configHelp,
 	},
 	{
+		name: "sync",
+		load: () => loadCommand(() => import("./commands/sync")),
+		help: commandHelp.syncHelp,
+	},
+	{
 		name: "codegraph",
 		load: () => loadCommand(() => import("./commands/codegraph")),
 		help: commandHelp.codegraphHelp,

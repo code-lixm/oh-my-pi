@@ -934,10 +934,9 @@ export class EventController {
 	}
 
 	#surfaceIrcMessage(message: CustomMessage): void {
-		if (this.ctx.settings?.get?.("display.showAgentCommunication") ?? false) {
-			const card = createIrcCustomMessageCard(message, () => this.ctx.toolOutputExpanded, theme);
-			if (card) this.ctx.present(card);
-		}
+		if (!(this.ctx.settings?.get?.("display.showAgentCommunication") ?? false)) return;
+		const card = createIrcCustomMessageCard(message, () => this.ctx.toolOutputExpanded, theme);
+		if (card) this.ctx.present(card);
 
 		const details = message.details as
 			| { from?: string; to?: string; message?: string; body?: string; ts?: number }
@@ -951,6 +950,7 @@ export class EventController {
 	}
 
 	#surfaceHubResultFeedback(details: unknown): void {
+		if (!this.ctx.settings.get("display.showAgentCommunication")) return;
 		const result = details as
 			| {
 					waited?: { from: string; body: string; ts?: number } | null;

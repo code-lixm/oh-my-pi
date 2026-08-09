@@ -223,7 +223,7 @@ describe("EventController irc_message feedback routing", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("hides IRC cards while agent communication is disabled even when Hub process activity is enabled", async () => {
+	it("keeps IRC cards and feedback hidden while agent communication is disabled even when Hub process activity is enabled", async () => {
 		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(false, true);
 		const controller = new EventController(ctx);
 
@@ -234,11 +234,11 @@ describe("EventController irc_message feedback routing", () => {
 
 		expect(chatContainer.children).toHaveLength(0);
 		expect(renderTranscript(chatContainer)).not.toContain("Ready 1");
-		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 1", timestamp: 1 });
+		expect(showSubagentFeedback).not.toHaveBeenCalled();
 	});
 
-	it("renders an IRC transcript card when agent communication is enabled even when Hub process activity is disabled", async () => {
-		const { ctx, chatContainer } = createIrcContext(true, false);
+	it("renders IRC cards and feedback when agent communication is explicitly enabled even when Hub process activity is disabled", async () => {
+		const { ctx, chatContainer, showSubagentFeedback } = createIrcContext(true, false);
 		const controller = new EventController(ctx);
 
 		await controller.handleEvent({
@@ -250,6 +250,7 @@ describe("EventController irc_message feedback routing", () => {
 		const transcriptText = renderTranscript(chatContainer);
 		expect(transcriptText).toContain("0-Main");
 		expect(transcriptText).toContain("Ready 1");
+		expect(showSubagentFeedback).toHaveBeenCalledWith({ agentId: "0-Main", text: "Ready 1", timestamp: 1 });
 	});
 
 	it("dedupes duplicate IRC signatures before surfacing feedback", async () => {

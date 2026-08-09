@@ -2,6 +2,7 @@ import type { AuthCredential, AuthStorageData } from "@oh-my-pi/pi-ai";
 
 export const CONFIG_BUNDLE_VERSION = 1 as const;
 export const CONFIG_SYNC_VERSION = 1 as const;
+export const SYNC_BOOTSTRAP_BUNDLE_VERSION = 1 as const;
 
 export interface ConfigFileEntry {
 	/** Path relative to the active user agent directory. */
@@ -53,6 +54,34 @@ export interface SyncProfile {
 		inactiveWriterDays?: number;
 	};
 }
+export interface SyncBootstrapCredentials {
+	accessKeyId?: string;
+	secretAccessKey?: string;
+	sessionToken?: string;
+}
+
+export interface SyncBootstrapPayload {
+	formatVersion: typeof SYNC_BOOTSTRAP_BUNDLE_VERSION;
+	createdAt: string;
+	profile: SyncProfile;
+	credentials: SyncBootstrapCredentials;
+}
+
+export interface EncryptedSyncBootstrapBundle {
+	format: "omp-sync-bootstrap-bundle";
+	formatVersion: typeof SYNC_BOOTSTRAP_BUNDLE_VERSION;
+	encryption: ConfigBundleEncryption;
+	ciphertext: string;
+}
+
+export interface SyncPendingAdoption {
+	format: "omp-sync-pending-adoption";
+	formatVersion: typeof SYNC_BOOTSTRAP_BUNDLE_VERSION;
+	createdAt: string;
+	bucket: string;
+	prefix: string;
+	autoPush: boolean;
+}
 
 export interface SyncState {
 	formatVersion: typeof CONFIG_SYNC_VERSION;
@@ -100,6 +129,7 @@ export interface ConfigConflictEntry {
 	local: ConfigFileEntry | AuthCredential[] | null;
 	remote: ConfigFileEntry | AuthCredential[] | null;
 }
+export type ConfigConflictSummaryEntry = Pick<ConfigConflictEntry, "kind" | "key">;
 
 export interface ConfigConflictDocument {
 	format: "omp-config-conflict";

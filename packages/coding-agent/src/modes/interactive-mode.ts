@@ -50,6 +50,7 @@ import {
 	logger,
 	postmortem,
 	prompt,
+	sanitizeText,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -126,6 +127,7 @@ import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { formatTaskId } from "../task/render";
+import { oneLineLabel, type SubagentLifecyclePayload, TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../task/types";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
@@ -481,6 +483,22 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+
+function formatSubagentLifecycleNotice(payload: SubagentLifecyclePayload): string {
+	const agentId = oneLineLabel(sanitizeText(payload.id));
+	const description = payload.description?.trim();
+	const suffix = description ? ` ${theme.sep.dot} ${oneLineLabel(sanitizeText(description))}` : "";
+	switch (payload.status) {
+		case "started":
+			return tSettingsUi("Task {agentId} started{description}", { agentId, description: suffix });
+		case "completed":
+			return tSettingsUi("Task {agentId} completed{description}", { agentId, description: suffix });
+		case "failed":
+			return tSettingsUi("Task {agentId} failed{description}", { agentId, description: suffix });
+		case "aborted":
+			return tSettingsUi("Task {agentId} aborted{description}", { agentId, description: suffix });
+	}
+}
 
 /** Build the anchored HUD for active detached subagents. */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
@@ -918,6 +936,9 @@ export class InteractiveMode implements InteractiveModeContext {
 					return;
 				}
 				this.#handleMcpConnectionStatusEvent(data);
+			}),
+			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+				this.showStatus(formatSubagentLifecycleNotice(data as SubagentLifecyclePayload));
 			}),
 		);
 	}

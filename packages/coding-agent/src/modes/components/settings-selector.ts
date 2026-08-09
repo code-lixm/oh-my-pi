@@ -60,13 +60,24 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
+import {
+	LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
+	readLocalSyncPassphrase,
+	writeLocalSyncPassphrase,
+} from "../../config-sync/local-secret";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
-import { clearSettingDefsCache, getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
+import {
+	clearSettingDefsCache,
+	getSettingDef,
+	getSettingsForTab,
+	type SettingDef,
+	type SettingDefPath,
+} from "./settings-defs";
 import { SnapcompactShapePreview } from "./snapcompact-shape-preview";
 import { readCustomStatusLinePresets } from "./status-line/custom-presets";
 import { getPreset } from "./status-line/presets";
@@ -817,7 +828,7 @@ export class SettingsSelectorComponent implements Component {
 			[],
 			10,
 			getSettingsListTheme(),
-			(id, newValue) => this.#onSearchSettingChange(id as SettingPath, newValue),
+			(id, newValue) => this.#onSearchSettingChange(id as SettingDefPath, newValue),
 			() => this.callbacks.onCancel(),
 			{
 				layout: "flat",
@@ -904,7 +915,7 @@ export class SettingsSelectorComponent implements Component {
 	#endSearch(jumpToSelection: boolean): void {
 		if (!this.#searchList) return;
 		const selected = jumpToSelection ? this.#searchList.getSelectedItem() : undefined;
-		const selectedDef = selected ? getSettingDef(selected.id as SettingPath) : undefined;
+		const selectedDef = selected ? getSettingDef(selected.id as SettingDefPath) : undefined;
 		const targetTab: SettingTab | "plugins" = selectedDef?.tab ?? this.#preSearchTabId;
 
 		this.#searchQuery = "";
@@ -942,22 +953,22 @@ export class SettingsSelectorComponent implements Component {
 
 	#syncTabBarToSelection(item: SettingItem | undefined): void {
 		if (!this.#searchList || !item) return;
-		const def = getSettingDef(item.id as SettingPath);
+		const def = getSettingDef(item.id as SettingDefPath);
 		if (def) this.#tabBar.setActiveById(def.tab);
 	}
 
 	/** Value-change dispatch for the search result list (any tab's setting). */
-	#onSearchSettingChange(path: SettingPath, newValue: string): void {
+	#onSearchSettingChange(path: SettingDefPath, newValue: string): void {
 		const def = getSettingDef(path);
 		if (!def) return;
 		if (def.type === "boolean") {
 			const boolValue = newValue === tSettingsUi("On");
-			settings.set(path, boolValue as never);
-			this.callbacks.onChange(path, boolValue);
+			settings.set(def.path, boolValue as never);
+			this.callbacks.onChange(def.path, boolValue);
 		} else if (def.type === "enum") {
 			const rawValue = parseValueFromLabel(def, newValue);
-			settings.set(path, rawValue as never);
-			this.callbacks.onChange(path, rawValue);
+			settings.set(def.path, rawValue as never);
+			this.callbacks.onChange(def.path, rawValue);
 		}
 		if (path === "displayLanguage") {
 			clearSettingDefsCache();
@@ -1068,10 +1079,14 @@ export class SettingsSelectorComponent implements Component {
 	 * Get the current value for a setting.
 	 */
 	#getCurrentValue(def: SettingDef): unknown {
+		if (def.path === LOCAL_SYNC_PASSPHRASE_SETTING_PATH) {
+			return readLocalSyncPassphrase(settings.getAgentDir());
+		}
 		return settings.get(def.path);
 	}
 
 	#isChanged(def: SettingDef, currentValue: unknown): boolean {
+		if (def.path === LOCAL_SYNC_PASSPHRASE_SETTING_PATH) return currentValue !== undefined;
 		const defaultValue: unknown = getDefault(def.path);
 		if (Array.isArray(currentValue) && Array.isArray(defaultValue)) {
 			return (
@@ -1244,6 +1259,19 @@ export class SettingsSelectorComponent implements Component {
 			this.#textInputActive = false;
 			done(value);
 		};
+		if (def.path === LOCAL_SYNC_PASSPHRASE_SETTING_PATH) {
+			return new TextInputSubmenu(
+				def.label,
+				def.description,
+				readLocalSyncPassphrase(settings.getAgentDir()) ?? "",
+				true,
+				value => {
+					writeLocalSyncPassphrase(settings.getAgentDir(), value);
+					wrappedDone(value ? "••••••••" : "");
+				},
+				() => wrappedDone(),
+			);
+		}
 		return new TextInputSubmenu(
 			def.label,
 			def.description,
@@ -1353,7 +1381,7 @@ export class SettingsSelectorComponent implements Component {
 		return this.#formatTextInputEditValue(def.path, value);
 	}
 
-	#formatTextInputEditValue(_path: SettingPath, value: unknown): string {
+	#formatTextInputEditValue(_path: SettingDefPath, value: unknown): string {
 		if (value === undefined || value === null) return "";
 		if (typeof value === "object") return JSON.stringify(value);
 		return String(value);
@@ -1413,22 +1441,20 @@ export class SettingsSelectorComponent implements Component {
 				const def = defs.find(d => d.path === id);
 				if (!def) return;
 
-				const path = def.path;
-
 				if (def.type === "boolean") {
 					const boolValue = parseValueFromLabel(def, newValue) === "true";
-					settings.set(path, boolValue as never);
-					this.callbacks.onChange(path, boolValue);
+					settings.set(def.path, boolValue as never);
+					this.callbacks.onChange(def.path, boolValue);
 
 					if (tabId === "appearance") {
 						this.#triggerStatusLinePreview();
 					}
 				} else if (def.type === "enum") {
 					const rawValue = parseValueFromLabel(def, newValue);
-					settings.set(path, rawValue as never);
-					this.callbacks.onChange(path, rawValue);
+					settings.set(def.path, rawValue as never);
+					this.callbacks.onChange(def.path, rawValue);
 
-					if (path === "displayLanguage") {
+					if (def.path === "displayLanguage") {
 						clearSettingDefsCache();
 						cachedSidebarWidth = undefined;
 						cachedSidebarWidthLocale = undefined;

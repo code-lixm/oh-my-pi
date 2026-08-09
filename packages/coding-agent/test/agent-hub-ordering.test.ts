@@ -1021,13 +1021,24 @@ describe("Agent hub row ordering", () => {
 		const hub = makeHub(agents, { observers });
 
 		try {
-			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
+			const frame = hub.render(160).map(line => Bun.stripANSI(line));
+			const rendered = frame.join("\n");
 			expect(rendered).toContain("2/3 measured");
+			expect(rendered).toContain("2/2 timed");
 			expect(rendered).toContain("$0.580");
 			expect(rendered).toContain("3.7K tok");
 			expect(rendered).toContain("8 req");
 			expect(rendered).toContain("12 tools");
 			expect(rendered).toContain("2m11s active agent time");
+			const reportingLine = frame.findIndex(line => line.includes("2/2 timed") && line.includes("2/3 measured"));
+			const firstRosterLine = frame.findIndex(line => line.includes("Running metrics"));
+			expect(reportingLine).toBeGreaterThanOrEqual(0);
+			expect(firstRosterLine).toBeGreaterThan(reportingLine);
+			const footer = frame.at(-2) ?? "";
+			expect(footer).toContain("j/k:select");
+			expect(footer).not.toContain("measured");
+			expect(footer).not.toContain("timed");
+			expect(footer).not.toContain("$0.580");
 			const running = renderedRosterEntry(hub, "Running metrics", 160);
 			expect(running).toContain("6.5s ac…");
 			expect(running).not.toContain("Run checks");

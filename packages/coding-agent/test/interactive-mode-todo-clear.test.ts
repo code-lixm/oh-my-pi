@@ -111,6 +111,42 @@ describe("InteractiveMode todo HUD persistence", () => {
 		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
 	}
 
+	async function expectLifecycleStatusNotices(
+		displayLanguage: "en" | "zh-CN",
+		expectedPhrases: Record<"started" | "completed" | "failed" | "aborted", string>,
+	): Promise<void> {
+		await createMode(-1, displayLanguage);
+		await mode.init({ suppressWelcomeIntro: true });
+		for (const testCase of [
+			{ status: "started", agentId: "LifecycleStarted" },
+			{ status: "completed", agentId: "LifecycleCompleted" },
+			{ status: "failed", agentId: "LifecycleFailed" },
+			{ status: "aborted", agentId: "LifecycleAborted" },
+		] as const) {
+			const detailFragment = `LIFECYCLE_DETAIL_${testCase.status.toUpperCase()}`;
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: testCase.agentId,
+				index: 0,
+				agent: "task",
+				agentSource: "bundled",
+				description: `first line\n${detailFragment}`,
+				status: testCase.status,
+				detached: true,
+			});
+
+			const matchingLines = mode.chatContainer
+				.render(120)
+				.flatMap(line => line.split("\n"))
+				.map(line => Bun.stripANSI(line))
+				.filter(line => line.includes(testCase.agentId) || line.includes(detailFragment));
+			expect(matchingLines, testCase.status).toHaveLength(1);
+			const [statusLine] = matchingLines;
+			if (!statusLine) throw new Error(`Expected ${testCase.status} lifecycle status line`);
+			expect(statusLine).toContain(expectedPhrases[testCase.status]);
+			expect(statusLine).toContain(`first line ${detailFragment}`);
+		}
+	}
+
 	it("hides terminal-only todos instantly without mutating session history", async () => {
 		await createMode(0);
 		const phases: TodoPhase[] = [
@@ -373,6 +409,24 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(scopedRender).toHaveBeenCalledTimes(1);
 		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
 		expect(fullRender).not.toHaveBeenCalled();
+	});
+
+	it("surfaces all lifecycle states as single-line English status notifications", async () => {
+		await expectLifecycleStatusNotices("en", {
+			started: "Task LifecycleStarted started",
+			completed: "Task LifecycleCompleted completed",
+			failed: "Task LifecycleFailed failed",
+			aborted: "Task LifecycleAborted aborted",
+		});
+	});
+
+	it("surfaces all lifecycle states as single-line zh-CN status notifications", async () => {
+		await expectLifecycleStatusNotices("zh-CN", {
+			started: "任务 LifecycleStarted 已开始",
+			completed: "任务 LifecycleCompleted 已完成",
+			failed: "任务 LifecycleFailed 失败",
+			aborted: "任务 LifecycleAborted 已中止",
+		});
 	});
 });
 

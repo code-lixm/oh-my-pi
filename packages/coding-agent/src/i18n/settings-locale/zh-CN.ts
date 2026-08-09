@@ -5069,6 +5069,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"结果已提交（在 {count} 次失败后已跳过结构校验）。",
 	"Result submitted (schema validation overridden).": "结果已提交（已跳过结构校验）。",
 	"Task aborted: {error}": "任务已中止：{error}",
+	"Task {agentId} started{description}": "任务 {agentId} 已开始{description}",
+	"Task {agentId} completed{description}": "任务 {agentId} 已完成{description}",
+	"Task {agentId} failed{description}": "任务 {agentId} 失败{description}",
+	"Task {agentId} aborted{description}": "任务 {agentId} 已中止{description}",
 	Communication: "沟通",
 	"Next-Step Offers": "后续操作建议",
 	"Record up to three structured, user-selectable next-step offers after successful final responses.":
@@ -5117,4 +5121,37 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"每个提供商搜索传输的硬超时；超时后 web_search 会继续下一个回退，单位为秒（最大 300）",
 	"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.":
 		"自动使用已保存的 Codex 速率限制重置次数：当回合卡住、当前账号的 5h 或每周额度已耗尽且没有其他账号可接管时恢复该账号，并抢救即将过期的额度。unset 会在首次使用前询问，yes 不询问直接使用，no 会关闭这两项检查。",
+	Sync: "同步",
+	"S3 Storage": "S3 存储",
+	Credentials: "凭据",
+	Automation: "自动化",
+	"Enable Configuration Sync": "启用配置同步",
+	"Synchronize encrypted OMP configuration through S3-compatible storage.":
+		"通过兼容 S3 的存储同步加密后的 OMP 配置。",
+	"S3 Endpoint": "S3 端点",
+	"Optional S3-compatible endpoint URL. Leave empty for AWS S3.": "可选的兼容 S3 的端点 URL；使用 AWS S3 时留空。",
+	"S3 Bucket": "S3 存储桶",
+	"Bucket that stores encrypted configuration revisions.": "用于保存加密配置修订的存储桶。",
+	"S3 Region": "S3 区域",
+	"Optional S3 region used by the storage client.": "存储客户端使用的可选 S3 区域。",
+	"Object Prefix": "对象前缀",
+	"S3 object-key prefix that isolates this configuration archive.": "用于隔离此配置归档的 S3 对象键前缀。",
+	"Virtual-Hosted-Style URLs": "虚拟主机样式 URL",
+	"Address the bucket as a hostname instead of using path-style S3 URLs.":
+		"将存储桶作为主机名访问，而不是使用路径样式的 S3 URL。",
+	"Local Encryption Key": "本机加密密钥",
+	"Encryption key stored only in this device's local secret file; it is never written to config.yml or uploaded to S3.":
+		"仅存储在本机密钥文件中的配置同步加密密钥；不会写入 config.yml 或上传到 S3。",
+	"Fallback Passphrase Environment Variable": "备用口令环境变量",
+	"Fallback environment variable for older installations; the variable name is stored in config.yml, but its value is never stored or uploaded.":
+		"旧安装的备用环境变量；变量名会写入 config.yml，但变量值不会保存或上传。",
+	"Access Key ID Environment Variable": "Access Key ID 环境变量",
+	"Optional environment variable containing the S3 access key ID.": "保存 S3 access key ID 的可选环境变量。",
+	"Secret Access Key Environment Variable": "Secret Access Key 环境变量",
+	"Optional environment variable containing the S3 secret access key.": "保存 S3 secret access key 的可选环境变量。",
+	"Session Token Environment Variable": "Session Token 环境变量",
+	"Optional environment variable containing a temporary S3 session token.":
+		"保存临时 S3 session token 的可选环境变量。",
+	"Automatic Push": "自动推送",
+	"Push configuration after successful global settings persistence.": "全局设置成功持久化后推送配置。",
 };

@@ -5,6 +5,8 @@
 ### Added
 
 - Added encrypted cross-device configuration synchronization through Bun S3, with portable PBKDF2/AES-GCM bundles, immutable publication DAGs, three-way conflict resolution, auth migration through `AuthStorage`, automatic push after settings persistence, and explicit garbage collection.
+- Added a dedicated localized `/settings → Sync` module for S3-compatible configuration sync, with a masked device-local encryption key that never enters `config.yml` or S3, environment-variable credential fallbacks, atomic profile persistence, explicit enable/auto-push controls, and read-only `sync.yml` compatibility that no longer republishes the legacy file.
+- Added encrypted S3 bootstrap export/import for portable cross-device sync credentials, with private `.env` persistence, disabled-on-import pending adoption, explicit `pull --adopt`, and a lineage-validated first-push guard.
 - Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed project-path-and-branch indexes under `~/.omp/codegraph/`; it combines non-blocking background initialization with persistent progress, optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, automatic TTL/orphan/per-project/global storage governance, graph-first agent guidance, and safe `omp codegraph status|list|clear|clear-all|prune` management without writing `.codegraph` into source repositories.
 - Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
 - Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
@@ -77,6 +79,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed configuration-sync conflict commands and service results exposing API/OAuth credential values; stdout and JSON now contain only conflict kinds, keys, revision IDs, and the private conflict-document path.
 - Fixed `/btw` branch promotion racing deferred post-prompt continuations, which could drop queued work or branch from a stale leaf; promotion now refuses while post-prompt work is pending and revalidates the authorized session and leaf before transition.
 - Fixed `omp -r` reporting no current-folder sessions after 17.2.9 restored legacy session directory names by merging the canonical and short-lived develop hashed buckets in place without renaming active session files.
 - Fixed the Agent Hub table header to keep its title left-aligned and actions right-aligned on one row, restored compact one-line wide rows and two-line narrow rows without standalone task descriptions, and promoted queued scheduler activity into a localized status-column state.
@@ -97,6 +100,7 @@
 - Fixed the Poimandres status-line HUD mixing geometric Unicode model, path, and mode icons into the configured Nerd preset; both dark and light variants now use one consistent Nerd glyph set while retaining their navigation, thinking, and Markdown markers.
 - Fixed empty Glob results rendering “No files found” as a second standalone warning row; the empty result now appears as a root-level tree child matching other search-tool result layouts.
 - Fixed the Jobs Hub using a preview-block list unrelated to the Agent Hub table and both directional hub gestures refusing to open empty centers; Jobs now share the fullscreen table language, while empty Jobs and Agent centers remain discoverable with explicit empty states.
+- Fixed Agent and Jobs Hub follow-up interaction details: aggregate timing and measured counts remain in the Agent Hub header, each Jobs Hub row stays single-line at narrow widths, `Esc` plus deliberate `←←`/`→→` close gestures work inside Jobs Hub, disabled agent communication no longer reaches Main feedback surfaces, and task lifecycle transitions appear as localized ordinary status notifications.
 - Fixed the documented `--sandbox` launch flag surviving help, startup-directory handling, and regression coverage while being dropped by the runtime argv parser during the upstream merge; it now again creates and enters `~/.omp/sandbox` (or `--cwd`) before initialization.
 - Fixed the zh-CN main system prompt omitting conditional Computer Use and dynamic `xd://` guidance and lagging behind the English risk-proportional verification and cleanup contract.
 - Fixed the `hindsight` memory-backend choice being mistranslated as the generic Chinese phrase “事后回顾”; the zh-CN settings UI now preserves the Hindsight product name.

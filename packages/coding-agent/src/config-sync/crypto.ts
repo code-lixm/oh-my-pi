@@ -1,7 +1,13 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import type { ConfigBundleEncryption, ConfigSnapshot, EncryptedConfigBundle } from "./types";
-import { CONFIG_BUNDLE_VERSION } from "./types";
+import type {
+	ConfigBundleEncryption,
+	ConfigSnapshot,
+	EncryptedConfigBundle,
+	EncryptedSyncBootstrapBundle,
+	SyncBootstrapPayload,
+} from "./types";
+import { CONFIG_BUNDLE_VERSION, SYNC_BOOTSTRAP_BUNDLE_VERSION } from "./types";
 
 const AES_GCM_ALGORITHM = "AES-GCM";
 const AES_KEY_BITS = 256;
@@ -44,70 +50,49 @@ export async function encryptConfigSnapshot(
 	passphrase: string,
 ): Promise<EncryptedConfigBundle> {
 	assertConfigSnapshot(snapshot);
-	const passphraseBytes = encodePassphrase(passphrase);
-	const salt = new Uint8Array(PBKDF2_SALT_BYTES);
-	const iv = new Uint8Array(GCM_IV_BYTES);
-	crypto.getRandomValues(salt);
-	crypto.getRandomValues(iv);
-
-	const encryption: ConfigBundleEncryption = {
-		algorithm: "AES-256-GCM",
-		kdf: "PBKDF2-SHA-256",
-		iterations: CONFIG_BUNDLE_PBKDF2_ITERATIONS,
-		salt: encodeBase64(salt),
-		iv: encodeBase64(iv),
-	};
-	const key = await deriveKey(passphraseBytes, salt, encryption.iterations);
-	const plaintext = TEXT_ENCODER.encode(stableJson(snapshot));
-	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: AES_GCM_ALGORITHM, iv }, key, plaintext));
-
+	const encrypted = await encryptJsonValue(snapshot, passphrase);
 	return {
 		format: "omp-config-bundle",
 		formatVersion: CONFIG_BUNDLE_VERSION,
-		encryption,
-		ciphertext: encodeBase64(ciphertext),
+		...encrypted,
 	};
 }
 
 /** Decrypt and validate a portable configuration bundle. */
 export async function decryptConfigBundle(bundle: EncryptedConfigBundle, passphrase: string): Promise<ConfigSnapshot> {
 	assertEncryptedConfigBundle(bundle);
-	const passphraseBytes = encodePassphrase(passphrase);
-	const salt = decodeBase64(bundle.encryption.salt, "PBKDF2 salt");
-	const iv = decodeBase64(bundle.encryption.iv, "AES-GCM IV");
-	const ciphertext = decodeBase64(bundle.ciphertext, "ciphertext");
-	if (salt.byteLength !== PBKDF2_SALT_BYTES) {
-		throw new Error(`Invalid PBKDF2 salt length: expected ${PBKDF2_SALT_BYTES} bytes`);
-	}
-	if (iv.byteLength !== GCM_IV_BYTES) {
-		throw new Error(`Invalid AES-GCM IV length: expected ${GCM_IV_BYTES} bytes`);
-	}
-	if (ciphertext.byteLength <= GCM_TAG_BYTES) {
-		throw new Error("Encrypted config bundle ciphertext is too short");
-	}
-
-	const key = await deriveKey(passphraseBytes, salt, bundle.encryption.iterations);
-	let plaintext: Uint8Array;
-	try {
-		plaintext = new Uint8Array(
-			await crypto.subtle.decrypt(
-				{ name: AES_GCM_ALGORITHM, iv: asStrictBufferSource(iv) },
-				key,
-				asStrictBufferSource(ciphertext),
-			),
-		);
-	} catch {
-		throw new Error("Unable to decrypt config bundle: invalid passphrase or authenticated ciphertext");
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(TEXT_DECODER.decode(plaintext));
-	} catch {
-		throw new Error("Decrypted config bundle does not contain valid JSON");
-	}
+	const parsed = await decryptJsonValue(bundle.encryption, bundle.ciphertext, passphrase, "config bundle");
 	assertConfigSnapshot(parsed);
 	return parsed;
+}
+/** Encrypt the S3 bootstrap payload without including the repository passphrase. */
+export async function encryptSyncBootstrapPayload(
+	payload: SyncBootstrapPayload,
+	passphrase: string,
+): Promise<EncryptedSyncBootstrapBundle> {
+	const encrypted = await encryptJsonValue(payload, passphrase);
+	return {
+		format: "omp-sync-bootstrap-bundle",
+		formatVersion: SYNC_BOOTSTRAP_BUNDLE_VERSION,
+		...encrypted,
+	};
+}
+
+export async function decryptSyncBootstrapPayload(bundle: unknown, passphrase: string): Promise<unknown> {
+	assertEncryptedSyncBootstrapBundle(bundle);
+	return decryptJsonValue(bundle.encryption, bundle.ciphertext, passphrase, "sync bootstrap bundle");
+}
+
+export function assertEncryptedSyncBootstrapBundle(value: unknown): asserts value is EncryptedSyncBootstrapBundle {
+	if (!isRecord(value)) throw new Error("Encrypted sync bootstrap bundle must be an object");
+	if (value.format !== "omp-sync-bootstrap-bundle") throw new Error("Unsupported sync bootstrap bundle format");
+	if (value.formatVersion !== SYNC_BOOTSTRAP_BUNDLE_VERSION) {
+		throw new Error(`Unsupported sync bootstrap bundle version: ${String(value.formatVersion)}`);
+	}
+	assertBundleEncryption(value.encryption, "Sync bootstrap bundle");
+	if (typeof value.ciphertext !== "string") {
+		throw new Error("Sync bootstrap bundle ciphertext must be a base64 string");
+	}
 }
 
 /** Reject malformed bundle metadata before expensive PBKDF2 work begins. */
@@ -117,22 +102,7 @@ export function assertEncryptedConfigBundle(value: unknown): asserts value is En
 	if (value.formatVersion !== CONFIG_BUNDLE_VERSION) {
 		throw new Error(`Unsupported config bundle version: ${String(value.formatVersion)}`);
 	}
-	if (!isRecord(value.encryption)) throw new Error("Config bundle encryption metadata must be an object");
-	const encryption = value.encryption;
-	if (encryption.algorithm !== "AES-256-GCM" || encryption.kdf !== "PBKDF2-SHA-256") {
-		throw new Error("Unsupported config bundle encryption algorithm");
-	}
-	if (
-		typeof encryption.iterations !== "number" ||
-		!Number.isSafeInteger(encryption.iterations) ||
-		encryption.iterations < PBKDF2_MIN_ITERATIONS ||
-		encryption.iterations > PBKDF2_MAX_ITERATIONS
-	) {
-		throw new Error("Config bundle PBKDF2 iteration count is outside the accepted range");
-	}
-	if (typeof encryption.salt !== "string" || typeof encryption.iv !== "string") {
-		throw new Error("Config bundle encryption values must be base64 strings");
-	}
+	assertBundleEncryption(value.encryption, "Config bundle");
 	if (typeof value.ciphertext !== "string") throw new Error("Config bundle ciphertext must be a base64 string");
 }
 
@@ -168,6 +138,86 @@ export function assertConfigSnapshot(value: unknown): asserts value is ConfigSna
 		} else {
 			assertAuthCredential(credentialEntry, provider);
 		}
+	}
+}
+function assertBundleEncryption(value: unknown, label: string): asserts value is ConfigBundleEncryption {
+	if (!isRecord(value)) throw new Error(`${label} encryption metadata must be an object`);
+	if (value.algorithm !== "AES-256-GCM" || value.kdf !== "PBKDF2-SHA-256") {
+		throw new Error(`Unsupported ${label.toLowerCase()} encryption algorithm`);
+	}
+	if (
+		typeof value.iterations !== "number" ||
+		!Number.isSafeInteger(value.iterations) ||
+		value.iterations < PBKDF2_MIN_ITERATIONS ||
+		value.iterations > PBKDF2_MAX_ITERATIONS
+	) {
+		throw new Error(`${label} PBKDF2 iteration count is outside the accepted range`);
+	}
+	if (typeof value.salt !== "string" || typeof value.iv !== "string") {
+		throw new Error(`${label} encryption values must be base64 strings`);
+	}
+}
+
+async function encryptJsonValue(
+	value: unknown,
+	passphrase: string,
+): Promise<{ encryption: ConfigBundleEncryption; ciphertext: string }> {
+	const passphraseBytes = encodePassphrase(passphrase);
+	const salt = new Uint8Array(PBKDF2_SALT_BYTES);
+	const iv = new Uint8Array(GCM_IV_BYTES);
+	crypto.getRandomValues(salt);
+	crypto.getRandomValues(iv);
+	const encryption: ConfigBundleEncryption = {
+		algorithm: "AES-256-GCM",
+		kdf: "PBKDF2-SHA-256",
+		iterations: CONFIG_BUNDLE_PBKDF2_ITERATIONS,
+		salt: encodeBase64(salt),
+		iv: encodeBase64(iv),
+	};
+	const key = await deriveKey(passphraseBytes, salt, encryption.iterations);
+	const plaintext = TEXT_ENCODER.encode(stableJson(value));
+	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: AES_GCM_ALGORITHM, iv }, key, plaintext));
+	return { encryption, ciphertext: encodeBase64(ciphertext) };
+}
+
+async function decryptJsonValue(
+	encryption: ConfigBundleEncryption,
+	ciphertextValue: string,
+	passphrase: string,
+	description: string,
+): Promise<unknown> {
+	const passphraseBytes = encodePassphrase(passphrase);
+	const salt = decodeBase64(encryption.salt, "PBKDF2 salt");
+	const iv = decodeBase64(encryption.iv, "AES-GCM IV");
+	const ciphertext = decodeBase64(ciphertextValue, "ciphertext");
+	if (salt.byteLength !== PBKDF2_SALT_BYTES) {
+		throw new Error(`Invalid PBKDF2 salt length: expected ${PBKDF2_SALT_BYTES} bytes`);
+	}
+	if (iv.byteLength !== GCM_IV_BYTES) {
+		throw new Error(`Invalid AES-GCM IV length: expected ${GCM_IV_BYTES} bytes`);
+	}
+	if (ciphertext.byteLength <= GCM_TAG_BYTES) {
+		throw new Error(`Encrypted ${description} ciphertext is too short`);
+	}
+
+	const key = await deriveKey(passphraseBytes, salt, encryption.iterations);
+	let plaintext: Uint8Array;
+	try {
+		plaintext = new Uint8Array(
+			await crypto.subtle.decrypt(
+				{ name: AES_GCM_ALGORITHM, iv: asStrictBufferSource(iv) },
+				key,
+				asStrictBufferSource(ciphertext),
+			),
+		);
+	} catch {
+		throw new Error(`Unable to decrypt ${description}: invalid passphrase or authenticated ciphertext`);
+	}
+
+	try {
+		return JSON.parse(TEXT_DECODER.decode(plaintext));
+	} catch {
+		throw new Error(`Decrypted ${description} does not contain valid JSON`);
 	}
 }
 

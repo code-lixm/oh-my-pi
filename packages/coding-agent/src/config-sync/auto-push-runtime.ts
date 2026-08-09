@@ -1,7 +1,8 @@
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { Settings } from "../config/settings";
 import { installConfigSyncAutoPushRunner } from "./auto-push";
-import { loadSyncProfile } from "./profile";
+import { hasSettingsSyncProfile, loadSyncProfile } from "./profile";
 import { synchronizeConfiguration } from "./service";
 
 const queues = new Map<string, Promise<void>>();
@@ -28,7 +29,11 @@ export function queueConfigSyncAutoPush(agentDir: string): void {
 }
 
 async function runAutoPush(agentDir: string): Promise<void> {
-	const profile = await loadSyncProfile(agentDir);
+	const settings = await Settings.loadReadOnly({ agentDir, cwd: agentDir });
+	if (hasSettingsSyncProfile(settings)) {
+		if (!settings.get("sync.enabled") || !settings.get("sync.autoPush")) return;
+	}
+	const profile = await loadSyncProfile(agentDir, settings);
 	if (!profile?.autoPush) return;
 	const store = await SqliteAuthCredentialStore.open(getAgentDbPath(agentDir));
 	const authStorage = new AuthStorage(store);

@@ -14,8 +14,8 @@ let localeBeforeTest = getSettingsUiLocale();
 
 type InputListener = (data: string) => { consume: boolean } | undefined;
 
-function renderHub(hub: JobsHubOverlayComponent): string {
-	return Bun.stripANSI(hub.render(120).join("\n"));
+function renderHub(hub: JobsHubOverlayComponent, width = 120): string {
+	return Bun.stripANSI(hub.render(width).join("\n"));
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -136,7 +136,7 @@ describe("AsyncJobManager Jobs Hub snapshots", () => {
 });
 
 describe("Jobs Hub overlay", () => {
-	it("renders wide single-line table rows without inline previews and keeps output in details", async () => {
+	it("renders wide and narrow single-line job rows without inline previews and keeps output in details", async () => {
 		vi.useFakeTimers();
 		const stdoutRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
 		Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => 16 });
@@ -194,6 +194,16 @@ describe("Jobs Hub overlay", () => {
 					label,
 				).toHaveLength(1);
 			}
+			const narrowList = renderHub(hub, 60);
+			const narrowListLines = narrowList.split("\n");
+			for (const label of ["BASH_LABEL_MARKER", "TASK_LABEL_MARKER"]) {
+				expect(
+					narrowListLines.filter(line => line.includes(label)),
+					label,
+				).toHaveLength(1);
+			}
+			expect(narrowList).not.toContain("BASH_LIVE_TAIL_MARKER");
+			expect(narrowList).not.toContain("TASK_WORK_MARKER");
 			const taskRow = firstListLines.find(line => line.includes("TASK_LABEL_MARKER"));
 			if (!taskRow) throw new Error("Expected task table row");
 			expect(taskRow).toContain("MODEL_MARKER");
@@ -336,6 +346,41 @@ describe("Jobs Hub overlay", () => {
 			hub.dispose();
 			manager.cancelAll();
 			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
+	it("closes for human-paced double arrows and ignores terminal input bursts", async () => {
+		vi.useFakeTimers();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const cases = [
+			{ name: "human-paced left pair", key: "\x1b[D", timestamps: [1_000, 1_200], expectedCloses: 1 },
+			{ name: "human-paced right pair", key: "\x1b[C", timestamps: [2_000, 2_200], expectedCloses: 1 },
+			{ name: "immediate left burst", key: "\x1b[D", timestamps: [3_000, 3_000, 3_000, 3_000], expectedCloses: 0 },
+			{ name: "immediate right burst", key: "\x1b[C", timestamps: [4_000, 4_000, 4_000, 4_000], expectedCloses: 0 },
+		] as const;
+
+		try {
+			for (const testCase of cases) {
+				let closeCount = 0;
+				const hub = new JobsHubOverlayComponent({
+					manager,
+					onDone() {
+						closeCount++;
+					},
+					requestRender() {},
+				});
+				try {
+					for (const timestamp of testCase.timestamps) {
+						setSystemTime(timestamp);
+						hub.handleInput(testCase.key);
+					}
+					expect(closeCount, testCase.name).toBe(testCase.expectedCloses);
+				} finally {
+					hub.dispose();
+				}
+			}
+		} finally {
 			await manager.dispose({ timeoutMs: 0 });
 		}
 	});
