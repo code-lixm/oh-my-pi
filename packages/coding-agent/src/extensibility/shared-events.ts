@@ -346,7 +346,8 @@ export interface AutoRetryStartEvent {
 	errorId?: number;
 }
 
-export interface RecoveredRetryError {
+/** Persisted retry error whose transcript presentation changed when the retry saga settled. */
+export interface RetryErrorUpdate {
 	entryId: string;
 	persistenceKey?: string;
 	note: string;
@@ -359,7 +360,7 @@ export interface AutoRetryEndEvent {
 	success: boolean;
 	attempt: number;
 	finalError?: string;
-	recoveredErrors?: RecoveredRetryError[];
+	retryErrors?: RetryErrorUpdate[];
 }
 
 // ============================================================================

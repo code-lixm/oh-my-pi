@@ -1237,6 +1237,7 @@ export class EventController {
 						content.name,
 						renderArgs,
 						{
+							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
 							snapshots: getFileSnapshotStore(this.ctx.viewSession),
 							clipboard: getEditClipboard(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
@@ -1547,6 +1548,7 @@ export class EventController {
 				event.toolName,
 				event.args,
 				{
+					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(event.toolName),
 					snapshots: getFileSnapshotStore(this.ctx.viewSession),
 					clipboard: getEditClipboard(this.ctx.viewSession),
 					showImages: settings.get("terminal.showImages"),
@@ -2173,21 +2175,21 @@ export class EventController {
 			this.ctx.retryLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
-		if (event.success) {
-			let appliedRecovered = false;
-			for (const recovered of event.recoveredErrors ?? []) {
-				const component = this.#takeRetrySupersededAssistantComponent(recovered.persistenceKey);
-				if (!component) continue;
-				component.applyRetryRecovery(recovered.retryRecovery);
-				if (this.#pinnedErrorComponent === component) this.#pinnedErrorComponent = undefined;
-				appliedRecovered = true;
+		let clearedPinnedComponent = false;
+		for (const retryError of event.retryErrors ?? []) {
+			const component = this.#takeRetrySupersededAssistantComponent(retryError.persistenceKey);
+			if (!component) continue;
+			component.applyRetryRecovery(retryError.retryRecovery);
+			if (this.#pinnedErrorComponent === component) {
+				this.#pinnedErrorComponent = undefined;
+				clearedPinnedComponent = true;
 			}
-			if (appliedRecovered || (event.recoveredErrors?.length ?? 0) > 0) {
-				this.ctx.clearPinnedError();
-			}
-			this.#clearRetrySupersededAssistantComponents();
-		} else {
-			this.#clearRetrySupersededAssistantComponents();
+		}
+		// Retry updates describe superseded attempts. A terminal non-retryable or
+		// budget-exhausted error may have pinned a different, newer component.
+		if (clearedPinnedComponent) this.ctx.clearPinnedError();
+		this.#clearRetrySupersededAssistantComponents();
+		if (!event.success) {
 			this.ctx.showError(
 				tSettingsUi("Retry failed after {attempt} attempts: {finalError}", {
 					attempt: event.attempt,

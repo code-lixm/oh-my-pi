@@ -540,7 +540,9 @@ describe("Agent hub Enter activation", () => {
 		expect(rendered).toContain("1 req");
 		expect(rendered).toContain("2 tools");
 		expect(rendered).toContain("135 tok");
-		expect(rendered).toContain("read-only");
+		hub.handleInput("\t");
+		const inspectorText = Bun.stripANSI(hub.render(120).join("\n"));
+		expect(inspectorText).toContain("read-only");
 		hub.dispose();
 	});
 

@@ -172,10 +172,12 @@ export interface AgentHubDeps {
 	irc?: IrcBus;
 	/** TUI handle for transcript components; tests omit it and get a render-only stub. */
 	ui?: TUI;
-	/** Tool lookup for transcript renderers (labels, custom render functions). */
-	getTool?: (name: string) => AgentTool | undefined;
-	/** Extension message renderers for custom messages in the transcript. */
-	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	/** Tool lookup scoped to the target agent transcript. */
+	getTool?: (agentId: string, name: string) => AgentTool | undefined;
+	/** Whether the target agent's active registry entry came from a built-in factory. */
+	isBuiltInTool?: (agentId: string, name: string) => boolean;
+	/** Extension message renderers scoped to the target agent transcript. */
+	getMessageRenderer?: (agentId: string, customType: string) => MessageRenderer | undefined;
 	/** Resolve snapshot state for the selected live local agent. */
 	getSnapshots?: (agentId: string) => SnapshotStore | undefined;
 	/** Resolve the edit register for the selected live local agent. */
@@ -282,8 +284,9 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 	// Transcript-viewer launch deps (passed through to AgentTranscriptViewer).
 	#ui: TUI;
-	#getTool: ((name: string) => AgentTool | undefined) | undefined;
-	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
+	#getTool: ((agentId: string, name: string) => AgentTool | undefined) | undefined;
+	#isBuiltInTool: ((agentId: string, name: string) => boolean) | undefined;
+	#getMessageRenderer: ((agentId: string, customType: string) => MessageRenderer | undefined) | undefined;
 	#getSnapshots: ((agentId: string) => SnapshotStore | undefined) | undefined;
 	#getClipboard: ((agentId: string) => Clipboard | undefined) | undefined;
 	#cwd: string;
@@ -324,6 +327,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				requestComponentRender: () => deps.requestRender(),
 			} as unknown as TUI);
 		this.#getTool = deps.getTool;
+		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
 		this.#getSnapshots = deps.getSnapshots;
 		this.#getClipboard = deps.getClipboard;
@@ -460,6 +464,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			observers: this.#observers,
 			ui: this.#ui,
 			getTool: this.#getTool,
+			isBuiltInTool: this.#isBuiltInTool,
 			getMessageRenderer: this.#getMessageRenderer,
 			getSnapshots: this.#getSnapshots,
 			getClipboard: this.#getClipboard,

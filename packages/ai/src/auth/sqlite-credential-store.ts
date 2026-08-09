@@ -220,6 +220,26 @@ function resolveRowCredentialIdentityKey(provider: string, row: AuthRow): string
 	return credential?.type === "oauth" ? resolveCredentialIdentityKey(provider, credential) : null;
 }
 
+/**
+ * An identity scoped only by an organization identifies a shared subscription,
+ * not a member within it. A base identifier that merely repeats the org id
+ * (such as Codex's shared workspace account id) is equally non-discriminating.
+ * These active rows may still use the one-way replacement upgrade, but their
+ * disabled tombstones are too ambiguous to hard-delete.
+ */
+function isAmbiguousOrgOnlyIdentityKey(provider: string, identityKey: string | null): boolean {
+	if ((provider !== "anthropic" && provider !== "openai-codex") || identityKey === null) return false;
+	const identifiers = identityKey.split("|");
+	const orgIdentifier = identifiers.find(identifier => identifier.startsWith("org:"));
+	if (orgIdentifier === undefined) return false;
+	const orgId = orgIdentifier.slice("org:".length);
+	return !identifiers.some(identifier => {
+		const isMemberIdentity =
+			identifier.startsWith("email:") || identifier.startsWith("account:") || identifier.startsWith("project:");
+		return isMemberIdentity && identifier.slice(identifier.indexOf(":") + 1) !== orgId;
+	});
+}
+
 function matchesReplacementCredential(
 	provider: string,
 	existing: AuthCredential | null,
@@ -1374,11 +1394,13 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		try {
 			let hasActiveApiKey = false;
 			const activeIdentityKeys = new Set<string>();
+			const activeOAuthCredentials: AuthCredential[] = [];
 			for (const row of activeRows) {
 				if (row.credential.type === "api_key") {
 					hasActiveApiKey = true;
 					continue;
 				}
+				activeOAuthCredentials.push(row.credential);
 				const identityKey = resolveCredentialIdentityKey(provider, row.credential);
 				if (identityKey) activeIdentityKeys.add(identityKey);
 			}
@@ -1391,9 +1413,28 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 					continue;
 				}
 				const identityKey = resolveRowCredentialIdentityKey(provider, row);
+				// An org-only key (including a base that repeats `org:<id>`) is a
+				// subscription scope, not a member identity. Keep its tombstone even when
+				// an active member-scoped login arrives: it cannot prove that it is that member.
+				if (isAmbiguousOrgOnlyIdentityKey(provider, identityKey)) continue;
 				if (identityKey && activeIdentityKeys.has(identityKey)) {
 					this.#hardDeleteStmt.run(row.id);
+					continue;
 				}
+				// Exact key equality misses a tombstone whose key predates a format
+				// the active row now uses (pre-org `<b>` vs `<b>|org:<o>`). An active
+				// credential that WOULD have replaced this row had it still been
+				// active supersedes its tombstone too, so mirror the replacement
+				// matcher rather than restating a weaker rule. The one-way upgrade
+				// and shared-workspace guards in matchesReplacementCredential carry
+				// over, so this never over-deletes another member's or subscription's
+				// row.
+				const disabledCredential = deserializeCredential(row);
+				if (disabledCredential === null) continue;
+				const superseded = activeOAuthCredentials.some(active =>
+					matchesReplacementCredential(provider, disabledCredential, identityKey, active),
+				);
+				if (superseded) this.#hardDeleteStmt.run(row.id);
 			}
 		} catch {
 			// Best-effort cleanup; don't let it break the main operation

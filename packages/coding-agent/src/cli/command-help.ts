@@ -22,6 +22,8 @@ export const browserRelayHelp = {
 	description: "Run the local CDP relay that lets the browser tool drive your own Chrome tabs",
 } satisfies CommandMetadata;
 
+export const checkpointHelp = { description: "Create a workspace checkpoint" } satisfies CommandMetadata;
+
 export const cleanseHelp = {
 	description: "Detect and fix project diagnostics with weighted parallel subagents",
 } satisfies CommandMetadata;
@@ -66,11 +68,21 @@ export const readHelp = {
 	description: "Show what the read tool will return for a path, URL, or internal URI",
 } satisfies CommandMetadata;
 
+export const redoHelp = { description: "Redo the most recently undone workspace restore" } satisfies CommandMetadata;
+
+export const rewindHelp = {
+	description: "List, preview, or apply a restore to a workspace checkpoint",
+} satisfies CommandMetadata;
+
 export const sayHelp = {
 	description: "Synthesize text with the local TTS engine and play it through the speakers",
 } satisfies CommandMetadata;
 
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
+
+export const shareHelp = {
+	description: "Share a saved session via an encrypted link (same as /share)",
+} satisfies CommandMetadata;
 
 export const setupHelp = {
 	description: "Run onboarding setup or install dependencies for optional features",
@@ -94,6 +106,8 @@ export const codegraphHelp = {
 export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",
 } satisfies CommandMetadata;
+
+export const undoHelp = { description: "Undo the most recent workspace restore transaction" } satisfies CommandMetadata;
 
 export const updateHelp = { description: "Check for and install updates" } satisfies CommandMetadata;
 

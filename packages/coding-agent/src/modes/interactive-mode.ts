@@ -3362,6 +3362,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			entries,
 			ui: this.ui,
 			getTool: name => this.session.getToolByName(name),
+			isBuiltInTool: name => this.session.hasBuiltInTool(name),
 			getMessageRenderer: type => this.session.extensionRunner?.getMessageRenderer(type),
 			cwd: this.sessionManager.getCwd(),
 			hideThinkingBlock: () => this.effectiveHideThinkingBlock,

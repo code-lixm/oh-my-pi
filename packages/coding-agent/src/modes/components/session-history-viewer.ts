@@ -25,6 +25,8 @@ export interface SessionHistoryViewerDeps {
 	entries: SessionMessageEntry[];
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
+	/** Whether `name` is built in for the session whose history is being rebuilt. */
+	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
@@ -93,6 +95,7 @@ export class SessionHistoryViewer implements Component {
 		this.#builder = new ChatTranscriptBuilder({
 			ui: deps.ui,
 			getTool: deps.getTool,
+			isBuiltInTool: deps.isBuiltInTool,
 			getMessageRenderer: deps.getMessageRenderer,
 			cwd: deps.cwd,
 			hideThinkingBlock: deps.hideThinkingBlock,

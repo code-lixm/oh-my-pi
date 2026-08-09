@@ -6,6 +6,14 @@
 
 - Added fail-closed trusted Codex prompt profiles from official model discovery, preserving exact model provenance, typed model messages, composition hashes, source/ETag metadata, and canonical vendor digests.
 - Added the `bedrock-mantle` provider with authenticated model discovery for OpenAI GPT-5.4, GPT-5.5, and GPT-5.6 models served through Amazon Bedrock's Responses endpoint ([#7080](https://github.com/can1357/oh-my-pi/pull/7080) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+## [17.2.11] - 2026-08-07
+
+### Fixed
+
+- Increased the default stream idle-timeout floor on Amazon Bedrock to 900 seconds for reasoning and adaptive-thinking models (such as Claude) to prevent premature watchdog timeouts during long reasoning stretches.
+- Fixed Devin model families (including SWE-1.7, Claude 5, Gemini 3.6 Flash, Kimi K3, Grok 4.5, and Inkling) to correctly group as logical models with reasoning-effort routing instead of separate wire variants.
+- Added missing context-window and output-token limits for dynamically discovered Alibaba Token Plan models.
+
 ## [17.2.10] - 2026-08-06
 
 ### Changed

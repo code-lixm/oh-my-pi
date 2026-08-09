@@ -182,6 +182,7 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
 			cwd: process.cwd(),
 			requestRender: () => {},
+			isBuiltInTool: () => true,
 		});
 		const messages = [...readTurn(), ...readTurn("r2", "src/bar.ts", 2121, SECOND_USAGE_TS)];
 		builder.rebuild(
@@ -315,6 +316,7 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
 			cwd: process.cwd(),
 			requestRender: () => {},
+			isBuiltInTool: () => true,
 		});
 		try {
 			builder.rebuild(

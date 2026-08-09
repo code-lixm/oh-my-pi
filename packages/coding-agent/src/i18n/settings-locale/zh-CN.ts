@@ -4713,6 +4713,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Web Search Provider Order": "Web Search 提供方顺序",
 	"Prioritized providers for the web_search tool; unlisted providers retain their default order afterward":
 		"web_search 工具的提供方优先顺序；未列出的提供方随后保持默认顺序",
+	"Enable the Exa web search provider": "启用 Exa Web 搜索提供方",
 	"Image Provider Order": "图像提供方顺序",
 	"Prioritized providers for image generation; unlisted providers follow the active session provider and the built-in order":
 		"图像生成的提供方优先顺序；未列出的提供方按当前会话提供方和内置顺序排列",
@@ -4750,6 +4751,12 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Always select the next eligible configured fallback": "始终选择下一个符合条件的已配置回退模型",
 	"Fail closed": "失败时关闭",
 	"Do not spend reserve quota or select a fallback": "不消耗保留配额，也不选择回退模型",
+	"Fallback Revert Policy": "回退恢复策略",
+	"When to return to the primary model after a fallback": "回退后何时恢复主模型",
+	"Probe primary": "探测主模型",
+	"Probe the primary and restore it at a safe boundary once healthy": "探测主模型，并在其恢复健康后于安全边界切回",
+	"Cooldown expiry": "冷却到期",
+	"Stay on the fallback model until manually changed": "继续使用回退模型，直到手动切换",
 	"Error Notification": "错误通知",
 	"Notify when the agent stops with an error": "代理因错误停止时发送通知",
 	"Hindsight API Token": "Hindsight API Token",

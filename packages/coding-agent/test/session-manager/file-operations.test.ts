@@ -464,26 +464,48 @@ describe("SessionManager legacy session migration persistence", () => {
 	});
 
 	it("honors a fresh /new boundary instead of recovering an older transcript", async () => {
-		const session = SessionManager.create(tempDir, tempDir);
-		session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
-		session.appendMessage(makeAssistantMessage());
-		await session.flush();
+		const previousTermSessionId = process.env.TERM_SESSION_ID;
+		const terminalSessionId = `omp-fresh-new-boundary-${Snowflake.next()}`;
+		process.env.TERM_SESSION_ID = terminalSessionId;
+		let session: SessionManager | undefined;
+		let resumed: SessionManager | undefined;
 
-		const previousSessionFile = session.getSessionFile();
-		if (!previousSessionFile) throw new Error("Expected persisted session file");
-
-		const freshSessionFile = await session.newSession();
-		expect(freshSessionFile).toBeDefined();
-		expect(fs.existsSync(freshSessionFile!)).toBe(false);
-
-		const resumed = await SessionManager.continueRecent(tempDir, tempDir);
 		try {
+			clearTerminalBreadcrumb();
+			session = SessionManager.create(tempDir, tempDir);
+			session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
+			session.appendMessage(makeAssistantMessage());
+			await session.flush();
+
+			const previousSessionFile = session.getSessionFile();
+			if (!previousSessionFile) throw new Error("Expected persisted session file");
+
+			const freshSessionFile = await session.newSession();
+			expect(freshSessionFile).toBeDefined();
+			expect(fs.existsSync(freshSessionFile!)).toBe(false);
+
+			resumed = await SessionManager.continueRecent(tempDir, tempDir);
 			expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
 			expect(JSON.stringify(resumed.getEntries())).not.toContain("hello");
 			expect(resumed.getEntries()).toHaveLength(0);
 		} finally {
-			await resumed.close();
-			await session.close();
+			try {
+				await resumed?.close();
+			} finally {
+				try {
+					await session?.close();
+				} finally {
+					try {
+						clearTerminalBreadcrumb();
+					} finally {
+						if (previousTermSessionId === undefined) {
+							delete process.env.TERM_SESSION_ID;
+						} else {
+							process.env.TERM_SESSION_ID = previousTermSessionId;
+						}
+					}
+				}
+			}
 		}
 	});
 

@@ -88,6 +88,7 @@ function createLiveFixture(focusedAgentId?: string, hideToolActivity = false) {
 	const showSubagentFeedback = vi.fn();
 	const sessionStub = {
 		getToolByName: () => undefined,
+		hasBuiltInTool: (name: string) => name === "hub",
 		extensionRunner: undefined,
 		isTtsrAbortPending: false,
 		retryAttempt: 0,
@@ -142,6 +143,7 @@ function createRebuildFixture() {
 	const builder = new ChatTranscriptBuilder({
 		ui: mockTui,
 		getTool: () => undefined,
+		isBuiltInTool: name => name === "hub" || name === "ask",
 		getMessageRenderer: () => undefined,
 		cwd: process.cwd(),
 		hideThinkingBlock: () => false,

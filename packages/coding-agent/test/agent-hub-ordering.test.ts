@@ -15,6 +15,7 @@ import {
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { TUI } from "@oh-my-pi/pi-tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
@@ -73,16 +74,14 @@ const ROSTER_ROW_PATTERN = /^(❯| ) \S+ /u;
 const TREE_PREFIX_PATTERN = /^(?:… )?(?:(?:│| ) {3})*(?:├── |└── )/u;
 
 /**
- * Parse the left roster cell from either a single-pane or side-by-side Hub
- * frame. The frame is de-styled before inspecting its chrome, so the caller
- * never depends on theme escape sequences. Requiring the row cursor and
- * status glyph excludes the roster header, footer, and right-hand inspector.
+ * Parse one flat Agent Hub roster row without depending on theme escape
+ * sequences. Requiring the row cursor and status glyph excludes the roster
+ * summary and footer chrome.
  */
 function parseRosterCell(raw: string): ParsedRosterCell | undefined {
 	const frame = Bun.stripANSI(raw);
 	if (!frame.startsWith("│ ") || !frame.endsWith(" │")) return undefined;
-	const splitDivider = frame.lastIndexOf(" │ ");
-	const text = frame.slice(2, splitDivider >= 0 ? splitDivider : frame.length - 2).trimEnd();
+	const text = frame.slice(2, -2).trimEnd();
 	const match = ROSTER_ROW_PATTERN.exec(text);
 	if (!match) return undefined;
 	return { raw, text, selected: match[1] === "❯" };
@@ -104,9 +103,9 @@ function displayLabelInRosterCell(cell: string, labels: readonly string[]): stri
 }
 
 /**
- * Find physical roster rows by caller-facing display label, never by a clipped
- * internal session id. `parseRosterCell` deliberately reads only the left
- * pane, so an inspector or header cannot be mistaken for a roster entry.
+ * Find physical flat-roster rows by caller-facing display label, never by a
+ * clipped internal session id. The cursor/status prefix excludes summary and
+ * footer chrome from the result.
  */
 function renderedAgentRows(hub: AgentHubOverlayComponent, labels: readonly string[], width = 120): RenderedAgentRow[] {
 	const rows: RenderedAgentRow[] = [];
@@ -408,7 +407,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("sanitizes task details before they reach the terminal", () => {
+	it("sanitizes compact roster content without rendering task details as extra rows", () => {
 		geometry = stubStdoutGeometry(80);
 		const agents = new AgentRegistry();
 		agents.register({
@@ -434,20 +433,19 @@ describe("Agent hub row ordering", () => {
 
 		const hub = makeHub(agents, { observers });
 		try {
-			for (const line of hub.render(80)) {
+			const output = hub.render(80).join("\n");
+			for (const line of output.split("\n")) {
 				const cleanLine = Bun.stripANSI(line);
 				expect(cleanLine).not.toMatch(/[\t\r\n]/u);
 				expect(visibleWidth(line)).toBeLessThanOrEqual(80);
 			}
-
-			hub.handleInput("\t");
-			const detailOutput = hub.render(80).join("\n");
-			expect(detailOutput).not.toContain("\x1b[2J");
-			expect(detailOutput).not.toContain("\t");
-			expect(detailOutput).not.toContain("\u0007");
-			const details = Bun.stripANSI(detailOutput);
-			expect(details).toContain("CONTROL_MARKER");
-			expect(details).toContain("dangerous args");
+			expect(output).not.toContain("\x1b[2J");
+			expect(output).not.toContain("\t");
+			expect(output).not.toContain("\u0007");
+			const roster = Bun.stripANSI(output);
+			expect(roster).toContain("CONTROL_MARKER");
+			expect(roster).not.toContain("Complete the assignment below");
+			expect(hub.render(80).filter(parseRosterCell)).toHaveLength(1);
 		} finally {
 			hub.dispose();
 		}
@@ -625,7 +623,7 @@ describe("Agent hub row ordering", () => {
 			hub.dispose();
 		}
 	});
-	it("uses mouse to select while f performs the explicit live focus action", async () => {
+	it("uses whole-row mouse selection while f performs the explicit live focus action", async () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
@@ -659,7 +657,7 @@ describe("Agent hub row ordering", () => {
 			expect(alphaRow).toBeDefined();
 			const alphaLine = alphaRow!.line;
 			hub.handleInput(`\x1b[<0;110;${alphaLine + 1}M`);
-			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Beta");
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Alpha");
 			expect(focused).toEqual([]);
 			hub.handleInput(leftClick(alphaLine + 1));
 			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Alpha");
@@ -712,7 +710,7 @@ describe("Agent hub row ordering", () => {
 				expect(entry).toContain("Guest reviewer");
 				expect(entry).toContain("Running");
 			}
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → openai/gpt-4o");
+			expect(renderedRosterEntry(hub, "Guest reviewer", 120)).toContain("fallback → openai…");
 		} finally {
 			hub.dispose();
 		}
@@ -745,7 +743,7 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("Fast Agent");
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → fireworks/kimi-k2");
+			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("fallback → firewo…");
 		} finally {
 			hub.dispose();
 		}
@@ -872,7 +870,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("renders aggregate usage and inspector history without inventing change attribution", () => {
+	it("renders aggregate usage in flat rows without surfacing inspector-only history", () => {
 		geometry = stubStdoutGeometry(140);
 		geometry.setRows(28);
 		const agents = new AgentRegistry();
@@ -925,20 +923,28 @@ describe("Agent hub row ordering", () => {
 		try {
 			const rendered = Bun.stripANSI(hub.render(140).join("\n"));
 			expect(rendered).toContain("1 running");
-			expect(rendered).toContain("$0.213 · 2m14s active · 12 req · 27 tools · 18K tok");
-			expect(rendered).toContain("Security Reviewer");
-			expect(rendered).toContain("read · src/session/agent-session.ts");
-			expect(rendered).toContain("31K/128K 24%");
-			expect(rendered).toContain("Output /tmp/Reviewer.md");
-			expect(rendered).toContain("Patch /tmp/Reviewer.patch");
-			expect(rendered).toContain("Branch omp/task/Reviewer");
-			expect(rendered).not.toContain("per-agent LoC");
-			expect(renderedRosterEntry(hub, "Security Reviewer", 140)).not.toContain("Review the session lifecycle");
+			expect(rendered).toContain("$0.213 · 2m14s active agent time · 12 req · 27 tools · 18K tok");
+			const row = renderedRosterEntry(hub, "Security Reviewer", 140);
+			expect(row).toContain("Security Reviewer");
+			expect(row).toContain("read");
+			expect(row).toContain("Running");
+			expect(row).toContain("2m14s a…");
+			expect(row).toContain("gpt-5.4");
+			expect(row).not.toContain("Review the session lifecycle");
+			for (const hiddenDetail of [
+				"src/session/agent-session.ts",
+				"31K/128K 24%",
+				"/tmp/Reviewer.md",
+				"/tmp/Reviewer.patch",
+				"omp/task/Reviewer",
+			]) {
+				expect(rendered).not.toContain(hiddenDetail);
+			}
 		} finally {
 			hub.dispose();
 		}
 	});
-	it("shows measured usage in aggregate and selected-agent inspector budgets", () => {
+	it("shows measured usage in aggregate and bounded roster duration cells", () => {
 		geometry = stubStdoutGeometry(160);
 		geometry.setRows(32);
 		const agents = new AgentRegistry();
@@ -1013,7 +1019,6 @@ describe("Agent hub row ordering", () => {
 		];
 		stubObservedSessions(observers, snapshots);
 		const hub = makeHub(agents, { observers });
-		const labels = ["Running metrics", "Completed metrics", "Historical metrics"];
 
 		try {
 			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
@@ -1023,29 +1028,18 @@ describe("Agent hub row ordering", () => {
 			expect(rendered).toContain("8 req");
 			expect(rendered).toContain("12 tools");
 			expect(rendered).toContain("2m11s active agent time");
-			expect(renderedRosterEntry(hub, "Running metrics", 160)).not.toContain("Run checks");
-			expect(renderedRosterEntry(hub, "Running metrics", 160)).not.toContain("$0.123");
-			expect(rendered).toContain("$0.123 · 6.5s active · 3 req · 4 tools · 1.2K tok");
-
-			let rows = renderedAgentRows(hub, labels, 160);
-			let selectedIndex = rows.findIndex(row => row.selected);
-			let targetIndex = rows.findIndex(row => row.label === "Completed metrics");
-			expect(selectedIndex).toBeGreaterThanOrEqual(0);
-			expect(targetIndex).toBeGreaterThanOrEqual(0);
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			const completedDetails = Bun.stripANSI(hub.render(160).join("\n"));
-			expect(completedDetails).toContain("$0.457 · 2m5s active · 5 req · 8 tools · 2.5K tok");
-
-			rows = renderedAgentRows(hub, labels, 160);
-			selectedIndex = rows.findIndex(row => row.selected);
-			targetIndex = rows.findIndex(row => row.label === "Historical metrics");
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			const historicalDetails = Bun.stripANSI(hub.render(160).join("\n"));
-			expect(renderedRosterEntry(hub, "Historical metrics", 160)).toContain("Restored task");
-			expect(historicalDetails).toContain("not reported");
-			expect(historicalDetails).not.toContain("$0.000");
+			const running = renderedRosterEntry(hub, "Running metrics", 160);
+			expect(running).toContain("6.5s ac…");
+			expect(running).not.toContain("Run checks");
+			expect(running).not.toContain("$0.123");
+			const completed = renderedRosterEntry(hub, "Completed metrics", 160);
+			expect(completed).toContain("2m5s ac…");
+			expect(completed).not.toContain("$0.457");
+			const historical = renderedRosterEntry(hub, "Historical metrics", 160);
+			expect(historical).toContain("Restored task");
+			expect(historical).not.toContain("$0.000");
+			expect(rendered).not.toContain("$0.123 · 6.5s active · 3 req · 4 tools · 1.2K tok");
+			expect(rendered).not.toContain("$0.457 · 2m5s active · 5 req · 8 tools · 2.5K tok");
 		} finally {
 			hub.dispose();
 		}
@@ -1109,34 +1103,22 @@ describe("Agent hub row ordering", () => {
 		];
 		stubObservedSessions(observers, snapshots);
 		const hub = makeHub(agents, { observers });
-		const labels = ["Incomplete telemetry", "Non-finite telemetry"];
 
 		try {
-			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("0/2 measured");
-			let rows = renderedAgentRows(hub, labels, 160);
-			let selectedIndex = rows.findIndex(row => row.selected);
-			let targetIndex = rows.findIndex(row => row.label === "Incomplete telemetry");
-			expect(selectedIndex).toBeGreaterThanOrEqual(0);
-			expect(targetIndex).toBeGreaterThanOrEqual(0);
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			expect(Bun.stripANSI(hub.render(160).join("\n"))).toContain("not reported");
-
-			rows = renderedAgentRows(hub, labels, 160);
-			selectedIndex = rows.findIndex(row => row.selected);
-			targetIndex = rows.findIndex(row => row.label === "Non-finite telemetry");
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			const nonFiniteDetails = Bun.stripANSI(hub.render(160).join("\n"));
-			expect(nonFiniteDetails).toContain("not reported");
-			expect(renderedRosterEntry(hub, "Non-finite telemetry", 160)).not.toContain("$0.000");
+			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(rendered).toContain("Usage —");
+			expect(rendered).toContain("0/2 measured");
+			for (const label of ["Incomplete telemetry", "Non-finite telemetry"]) {
+				expect(renderedRosterEntry(hub, label, 160)).toContain(label);
+			}
+			expect(rendered).not.toContain("$0.000");
 			expect(getSessionStats).not.toHaveBeenCalled();
 		} finally {
 			hub.dispose();
 		}
 	});
-	it("shows configured role text beside a resolved model but not for an explicit selector", () => {
-		geometry = stubStdoutGeometry(80);
+	it("shows configured role text in the fixed model column but not for an explicit selector", () => {
+		geometry = stubStdoutGeometry(160);
 		const agents = new AgentRegistry();
 		agents.register({ id: "role-agent-internal", displayName: "Role Agent", kind: "sub", session: null });
 		agents.register({ id: "explicit-agent-internal", displayName: "Explicit Agent", kind: "sub", session: null });
@@ -1198,32 +1180,21 @@ describe("Agent hub row ordering", () => {
 				modelTags: { rapid: { name: "Quick", color: "warning" } },
 			}),
 		});
-		const labels = ["Role Agent", "Explicit Agent"];
 
 		try {
-			let rows = renderedAgentRows(hub, labels, 80);
-			let selectedIndex = rows.findIndex(row => row.selected);
-			let targetIndex = rows.findIndex(row => row.label === "Role Agent");
-			expect(selectedIndex).toBeGreaterThanOrEqual(0);
-			expect(targetIndex).toBeGreaterThanOrEqual(0);
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			hub.handleInput("\t");
-			const roleDetails = Bun.stripANSI(hub.render(80).join("\n"));
-			expect(roleDetails).toContain("Quick");
-			expect(roleDetails).toContain("gpt-4o");
-			expect(roleDetails.indexOf("Quick")).toBeLessThan(roleDetails.indexOf("gpt-4o"));
-
-			hub.handleInput("\t");
-			rows = renderedAgentRows(hub, labels, 80);
-			selectedIndex = rows.findIndex(row => row.selected);
-			targetIndex = rows.findIndex(row => row.label === "Explicit Agent");
-			for (let step = (targetIndex - selectedIndex + rows.length) % rows.length; step > 0; step--)
-				hub.handleInput("j");
-			hub.handleInput("\t");
-			const explicitDetails = Bun.stripANSI(hub.render(80).join("\n"));
-			expect(explicitDetails).toContain("gpt-4o");
-			expect(explicitDetails).not.toContain("Quick");
+			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
+			expect(rendered).toContain("Status");
+			expect(rendered).toContain("Duration");
+			expect(rendered).toContain("Model");
+			expect(rendered).toContain("Last up…");
+			const role = renderedRosterEntry(hub, "Role Agent", 160);
+			expect(role).toContain("Quick");
+			expect(role).toContain("gpt-4o");
+			expect(role.indexOf("Quick")).toBeLessThan(role.indexOf("gpt-4o"));
+			const explicit = renderedRosterEntry(hub, "Explicit Agent", 160);
+			expect(explicit).toContain("gpt-4o");
+			expect(explicit).not.toContain("Quick");
+			for (const line of hub.render(160)) expect(visibleWidth(line)).toBeLessThanOrEqual(160);
 		} finally {
 			hub.dispose();
 		}
@@ -1364,11 +1335,11 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("opens the selected-agent inspector as a narrow-terminal fallback", () => {
+	it("keeps narrow roster rows compact and opens the selected transcript fullscreen", () => {
 		geometry = stubStdoutGeometry(80);
 		geometry.setRows(16);
 		const agents = new AgentRegistry();
-		agents.register({ id: "NarrowAgent", displayName: "Narrow Agent", kind: "sub", session: null });
+		agents.register({ id: "NarrowAgent", displayName: "Narrow Agent", kind: "sub", session: {} as AgentSession });
 		const observers = new SessionObserverRegistry();
 		stubObservedSessions(observers, [
 			{
@@ -1391,30 +1362,33 @@ describe("Agent hub row ordering", () => {
 				} as never,
 			},
 		]);
-		const hub = makeHub(agents, { observers });
+		let fullscreen = false;
+		const focused: unknown[] = [];
+		const ui = {
+			showOverlay(_component: unknown, options: { fullscreen?: boolean }) {
+				fullscreen = options.fullscreen === true;
+				return { hide() {}, setHidden() {}, isHidden: () => false };
+			},
+			setFocus(component: unknown) {
+				focused.push(component);
+			},
+			requestRender() {},
+			requestComponentRender() {},
+			terminal: { rows: 16 },
+		} as unknown as TUI;
+		const hub = makeHub(agents, { observers, ui });
 
 		try {
 			const roster = Bun.stripANSI(hub.render(80).join("\n"));
-			expect(roster).toContain("Tab");
-			expect(roster).toContain("Narrow Agent");
-
-			hub.handleInput("\t");
-			const detailsLines = hub.render(80);
-			const details = Bun.stripANSI(detailsLines.join("\n"));
-			expect(detailsLines[0]).toContain("Agent Hub · Narrow Agent");
-			expect(details).toContain("Usage");
-			expect(details).toContain("$0.0000 · 2.0s active · 2 req · 3 tools · 900 tok");
-			expect(details).not.toContain("Tab");
-			hub.handleInput("\x1b[6~");
-			const scrolledDetails = Bun.stripANSI(hub.render(80).join("\n"));
-			expect(scrolledDetails).toContain("Owner");
+			const rows = renderedAgentRows(hub, ["Narrow Agent"], 80);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]!.text).not.toContain("Inspect responsive behavior");
+			expect(roster).not.toContain("┬");
 			for (const line of hub.render(80)) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
 
-			hub.handleInput("\x1b");
-			const restoredRoster = Bun.stripANSI(hub.render(80).join("\n"));
-			expect(restoredRoster).toContain("Agent Hub");
-			expect(restoredRoster).toContain("Roster");
-			expect(restoredRoster).toContain("Tab");
+			hub.handleInput("\r");
+			expect(fullscreen).toBe(true);
+			expect(focused).toHaveLength(1);
 		} finally {
 			hub.dispose();
 		}

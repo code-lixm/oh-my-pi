@@ -176,6 +176,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		const sessionStub = {
 			retryAttempt: 0,
 			getToolByName: () => undefined,
+			hasBuiltInTool: () => true,
 			extensionRunner: undefined,
 			isTtsrAbortPending: false,
 		};
@@ -186,6 +187,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 			statusLine: { invalidate: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
 			toolOutputExpanded: false,
+			settings: { get: () => false },
 			effectiveHideThinkingBlock: false,
 			proseOnlyThinking: true,
 			pendingTools,
@@ -340,6 +342,7 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			session: {
 				retryAttempt: 0,
 				getToolByName: () => undefined,
+				hasBuiltInTool: () => true,
 				sessionManager: { getCwd: () => process.cwd() },
 				isStreaming: options.streaming === true,
 			},

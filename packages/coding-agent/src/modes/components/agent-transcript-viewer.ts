@@ -58,8 +58,11 @@ export interface AgentTranscriptViewerDeps {
 	/** Progress snapshot source for compact header metadata. */
 	observers?: SessionObserverRegistry;
 	ui: TUI;
-	getTool?: (name: string) => AgentTool | undefined;
-	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+	/** Tool lookup scoped to the target agent transcript. */
+	getTool?: (agentId: string, name: string) => AgentTool | undefined;
+	/** Whether the target agent's active registry entry came from a built-in factory. */
+	isBuiltInTool?: (agentId: string, name: string) => boolean;
+	getMessageRenderer?: (agentId: string, customType: string) => MessageRenderer | undefined;
 	/** Resolve snapshot state for a live local agent transcript. */
 	getSnapshots?: (agentId: string) => SnapshotStore | undefined;
 	/** Resolve the edit register for a live local agent transcript. */
@@ -208,8 +211,9 @@ export class AgentTranscriptViewer implements Component {
 		this.#agentId = deps.agentId;
 		this.#builder = new ChatTranscriptBuilder({
 			ui: deps.ui,
-			getTool: deps.getTool,
-			getMessageRenderer: deps.getMessageRenderer,
+			getTool: name => deps.getTool?.(this.#agentId, name),
+			isBuiltInTool: name => deps.isBuiltInTool?.(this.#agentId, name) ?? false,
+			getMessageRenderer: type => deps.getMessageRenderer?.(this.#agentId, type),
 			getSnapshots: () => deps.getSnapshots?.(this.#agentId),
 			getClipboard: () => deps.getClipboard?.(this.#agentId),
 			cwd: deps.cwd,

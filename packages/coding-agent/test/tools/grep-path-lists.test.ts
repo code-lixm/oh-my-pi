@@ -391,10 +391,10 @@ describe("tool path arrays", () => {
 		const rendered = Bun.stripANSI(viewer.render(120).join("\n"));
 		viewer.dispose();
 
-		// The hub chat now renders through grepToolRenderer.renderCall; the
-		// single-string `paths` arg shows up as the "in <paths>" scope meta on the
-		// pending call line (a completed result merges the call line away).
-		expect(rendered).toContain("in folder with spaces/");
+		// This parked transcript has unknown provenance, so it must conservatively use
+		// the generic renderer. Its single-string `paths` argument must retain the
+		// exact quoted value on the pending call line (a completed result merges it away).
+		expect(rendered).toContain('paths="folder with spaces/"');
 		await removeWithRetries(tmp);
 	});
 

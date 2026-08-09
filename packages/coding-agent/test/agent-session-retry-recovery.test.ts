@@ -8,7 +8,7 @@ import * as aiStream from "@oh-my-pi/pi-ai/stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { RecoveredRetryError } from "@oh-my-pi/pi-coding-agent/extensibility/shared-events";
+import type { RetryErrorUpdate } from "@oh-my-pi/pi-coding-agent/extensibility/shared-events";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
@@ -228,16 +228,16 @@ describe("AgentSession retry recovery", () => {
 		expect(new Set(requestedKeys)).toEqual(new Set(["anthropic-key-1", "anthropic-key-2"]));
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
-		expect(retryEndEvents[0].recoveredErrors).toHaveLength(1);
+		expect(retryEndEvents[0].retryErrors).toHaveLength(1);
 
 		const recoveredEntry = recoveredAssistantEntry(sessionManager);
 		const successfulEntry = successfulAssistantEntry(sessionManager, "recovered after credential switch");
-		const recoveredEvent = retryEndEvents[0].recoveredErrors?.[0];
+		const recoveredEvent = retryEndEvents[0].retryErrors?.[0];
 		if (!recoveredEvent) {
 			throw new Error("Expected a recovered error payload on auto_retry_end");
 		}
 		const recoveredMarker = recoveredEntry.message.retryRecovery;
-		if (!recoveredMarker) {
+		if (recoveredMarker?.status !== "recovered") {
 			throw new Error("Expected recovered marker on superseded assistant message");
 		}
 		expect(recoveredEvent.entryId).toBe(recoveredEntry.entry.id);
@@ -257,7 +257,7 @@ describe("AgentSession retry recovery", () => {
 				timestamp: successfulEntry.message.timestamp,
 			},
 		});
-		expect(Date.parse(recoveredEntry.message.retryRecovery?.recoveredAt ?? "")).not.toBeNaN();
+		expect(Date.parse(recoveredMarker.recoveredAt)).not.toBeNaN();
 
 		const modelContext = sessionManager.buildSessionContext();
 		expect(modelContext.messages.map(message => message.role)).toEqual(["user", "assistant"]);
@@ -278,7 +278,7 @@ describe("AgentSession retry recovery", () => {
 		).toBe(true);
 	});
 
-	it("leaves exhausted retries as terminal errors without recovery presentation", async () => {
+	it("collapses exhausted retries into one terminal error naming the spent budget", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
@@ -323,27 +323,139 @@ describe("AgentSession retry recovery", () => {
 
 		await session.prompt("Exhaust retry attempts");
 		await session.waitForIdle();
+		await sessionManager.flush();
 
 		expect(mock.calls).toHaveLength(2);
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: false, attempt: 1 });
-		expect(retryEndEvents[0].recoveredErrors).toBeUndefined();
+		expect(retryEndEvents[0].retryErrors).toHaveLength(1);
+		expect(retryEndEvents[0].retryErrors?.[0].retryRecovery).toMatchObject({
+			status: "superseded",
+			attempt: 1,
+		});
 
-		const terminalError = assistantEntries(sessionManager).at(-1)?.message;
-		if (!terminalError) {
-			throw new Error("Expected a terminal assistant error entry");
-		}
+		const errors = assistantEntries(sessionManager).filter(candidate => candidate.message.stopReason === "error");
+		expect(errors).toHaveLength(2);
+		expect(errors[0].message.retryRecovery).toMatchObject({ status: "superseded", attempt: 1 });
+		expect(resolveAssistantErrorPresentation(errors[0].message)).toEqual({ kind: "none" });
+
+		const terminalError = errors[1].message;
 		const terminalErrorText = terminalError.errorMessage;
 		if (!terminalErrorText) {
-			throw new Error("Expected a terminal assistant errorMessage");
+			throw new Error("Expected an aggregated terminal error message");
 		}
-		expect(terminalError).toMatchObject({ role: "assistant", stopReason: "error" });
 		expect(terminalError.retryRecovery).toBeUndefined();
+		expect(terminalErrorText).toBe(`Retry budget exhausted after 1 retry: ${RETRIABLE_SERVER_ERROR}`);
 		expect(resolveAssistantErrorPresentation(terminalError)).toEqual({
 			kind: "full",
 			text: terminalErrorText,
 			isError: true,
 		});
+
+		const visibleErrors = errors
+			.map(candidate => resolveAssistantErrorPresentation(candidate.message))
+			.filter(presentation => presentation.kind !== "none");
+		expect(visibleErrors).toHaveLength(1);
+		expect(sessionManager.buildSessionContext().messages.map(message => message.role)).toEqual(["user"]);
+	});
+
+	it("supersedes the first retry error when continuation ends in a non-retryable error", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
+
+		const terminalError = "invalid request: schema violation";
+		const mock = createMockModel({
+			responses: [
+				{ throw: RETRIABLE_SERVER_ERROR },
+				{
+					stopReason: "error",
+					errorMessage: terminalError,
+				},
+			],
+		});
+		const requestedContextRoles: string[][] = [];
+		const requestedAssistantErrors: Array<Array<string | undefined>> = [];
+		const agent = new Agent({
+			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedContextRoles.push(context.messages.map(message => message.role));
+				requestedAssistantErrors.push(
+					context.messages
+						.filter(
+							(message): message is Extract<(typeof context.messages)[number], { role: "assistant" }> =>
+								message.role === "assistant",
+						)
+						.map(message => message.errorMessage),
+				);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+		sessions.push(session);
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		await session.prompt("Retry once, then terminate on a non-retryable error");
+		await session.waitForIdle();
+		await sessionManager.flush();
+
+		expect(requestedContextRoles).toEqual([["user"], ["user"]]);
+		expect(requestedAssistantErrors[1]).toEqual([]);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({
+			success: false,
+			attempt: 1,
+			finalError: terminalError,
+		});
+		expect(retryEndEvents[0]?.retryErrors).toHaveLength(1);
+		expect(retryEndEvents[0]?.retryErrors?.[0]?.retryRecovery).toMatchObject({
+			status: "superseded",
+			attempt: 1,
+		});
+
+		const firstError = assistantEntries(sessionManager).find(
+			candidate => candidate.message.errorMessage === RETRIABLE_SERVER_ERROR,
+		);
+		if (!firstError) {
+			throw new Error("Expected the first retry error to be persisted");
+		}
+		expect(firstError.message.retryRecovery).toMatchObject({ status: "superseded", attempt: 1 });
+		const terminalEntry = assistantEntries(sessionManager).find(
+			candidate => candidate.message.errorMessage === terminalError,
+		);
+		if (!terminalEntry) {
+			throw new Error("Expected the terminal non-retryable error to be persisted");
+		}
+		expect(terminalEntry.message.stopReason).toBe("error");
+		expect(sessionManager.buildSessionContext().messages).not.toContainEqual(
+			expect.objectContaining({ role: "assistant", errorMessage: RETRIABLE_SERVER_ERROR }),
+		);
 	});
 
 	it("maps assistant error presentation for recovered, unrecovered, and silent abort turns", () => {
@@ -523,7 +635,7 @@ describe("AgentSession retry recovery", () => {
 			);
 			expect(components.length).toBe(3);
 
-			const recoveredErrors: RecoveredRetryError[] = messages.map((msg, i) => ({
+			const retryErrors: RetryErrorUpdate[] = messages.map((msg, i) => ({
 				entryId: `entry-${i}`,
 				persistenceKey: `assistant:${msg.timestamp}:anthropic:claude-sonnet-4-5::error`,
 				note: NOTE,
@@ -534,7 +646,7 @@ describe("AgentSession retry recovery", () => {
 				type: "auto_retry_end",
 				success: true,
 				attempt: 3,
-				recoveredErrors,
+				retryErrors,
 			} as Extract<AgentSessionEvent, { type: "auto_retry_end" }>);
 
 			const leaderRaw = components[0]!.render(120).join("\n");

@@ -1909,6 +1909,34 @@ export const SETTINGS_SCHEMA = {
 			),
 		},
 	},
+	"retry.fallbackRevertPolicy": {
+		type: "enum",
+		values: ["probe", "cooldown-expiry", "never"] as const,
+		default: "probe",
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Retry & Fallback"),
+			label: tSettingsUi("Fallback Revert Policy"),
+			description: tSettingsUi("When to return to the primary model after a fallback"),
+			options: [
+				{
+					value: "probe",
+					label: tSettingsUi("Probe primary"),
+					description: tSettingsUi("Probe the primary and restore it at a safe boundary once healthy"),
+				},
+				{
+					value: "cooldown-expiry",
+					label: tSettingsUi("Cooldown expiry"),
+					description: tSettingsUi("Return to the primary model after its suppression window ends"),
+				},
+				{
+					value: "never",
+					label: tSettingsUi("Never"),
+					description: tSettingsUi("Stay on the fallback model until manually changed"),
+				},
+			],
+		},
+	},
 
 	"providers.anthropic.serverSideFallback": {
 		type: "boolean",
@@ -6251,18 +6279,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "providers",
 			group: tSettingsUi("Services"),
 			label: tSettingsUi("Exa"),
-			description: tSettingsUi("Master toggle for all Exa search tools"),
-		},
-	},
-
-	"exa.enableSearch": {
-		type: "boolean",
-		default: true,
-		ui: {
-			tab: "providers",
-			group: tSettingsUi("Services"),
-			label: tSettingsUi("Exa Search"),
-			description: tSettingsUi("Enable Exa basic search, deep search, code search, and crawl tools"),
+			description: tSettingsUi("Enable the Exa web search provider"),
 		},
 	},
 
@@ -6276,28 +6293,6 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi(
 				"Minimum delay between Exa web search requests in milliseconds; set 0 to disable pacing",
 			),
-		},
-	},
-
-	"exa.enableResearcher": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "providers",
-			group: tSettingsUi("Services"),
-			label: tSettingsUi("Exa Researcher"),
-			description: tSettingsUi("Enable the Exa researcher tool for AI-powered deep research"),
-		},
-	},
-
-	"exa.enableWebsets": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "providers",
-			group: tSettingsUi("Services"),
-			label: tSettingsUi("Exa Websets"),
-			description: tSettingsUi("Enable Exa webset management and enrichment tools"),
 		},
 	},
 
@@ -6707,10 +6702,7 @@ export interface TtsrSettings {
 
 export interface ExaSettings {
 	enabled: boolean;
-	enableSearch: boolean;
 	searchDelayMs: number;
-	enableResearcher: boolean;
-	enableWebsets: boolean;
 }
 
 export interface StatusLineSettings {

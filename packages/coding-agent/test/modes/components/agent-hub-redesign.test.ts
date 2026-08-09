@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { InMemorySnapshotStore } from "@oh-my-pi/hashline";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -17,7 +16,6 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
@@ -29,7 +27,7 @@ import {
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION, type SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { Text, type TUI } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 
@@ -77,9 +75,7 @@ function renderedRosterPanel(hub: AgentHubOverlayComponent, width = 120): string
 	const lines = hub.render(width).map(line => Bun.stripANSI(line));
 	return lines.flatMap(line => {
 		if (!line.startsWith("│ ") || !line.endsWith(" │")) return [];
-		const splitDivider = line.lastIndexOf(" │ ");
-		const end = splitDivider >= 3 ? splitDivider : line.length - 2;
-		return [line.slice(2, end).trimEnd()];
+		return [line.slice(2, -2).trimEnd()];
 	});
 }
 
@@ -206,6 +202,85 @@ function writeTranscript(dir: string, id: string): string {
 	}
 	const file = path.join(dir, `${id}.jsonl`);
 	fs.writeFileSync(file, `${entries.join("\n")}\n`);
+	return file;
+}
+
+function writeToolTranscript(
+	dir: string,
+	id: string,
+	options: {
+		toolName: string;
+		arguments: Record<string, unknown>;
+		resultText: string;
+		customMessage?: { customType: string; content: string };
+	},
+): string {
+	const callId = `${id}-tool-call`;
+	const usage: Usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const entries: object[] = [
+		{
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id,
+			timestamp: TRANSCRIPT_TIMESTAMP,
+			cwd: "/tmp",
+		},
+		{
+			type: "message",
+			id: `${id}-tool-call-entry`,
+			parentId: null,
+			timestamp: TRANSCRIPT_TIMESTAMP,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: callId, name: options.toolName, arguments: options.arguments }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "test-model",
+				usage,
+				stopReason: "toolUse",
+				timestamp: 0,
+			},
+		},
+		{
+			type: "message",
+			id: `${id}-tool-result-entry`,
+			parentId: `${id}-tool-call-entry`,
+			timestamp: TRANSCRIPT_TIMESTAMP,
+			message: {
+				role: "toolResult",
+				toolCallId: callId,
+				toolName: options.toolName,
+				content: [{ type: "text", text: options.resultText }],
+				isError: false,
+				timestamp: 1,
+			},
+		},
+	];
+	if (options.customMessage) {
+		entries.push({
+			type: "message",
+			id: `${id}-custom-entry`,
+			parentId: null,
+			timestamp: TRANSCRIPT_TIMESTAMP,
+			message: {
+				role: "custom",
+				customType: options.customMessage.customType,
+				content: options.customMessage.content,
+				display: true,
+				attribution: "agent",
+				timestamp: 2,
+			},
+		});
+	}
+	const file = path.join(dir, `${id}.jsonl`);
+	fs.writeFileSync(file, `${entries.map(entry => JSON.stringify(entry)).join("\n")}\n`);
 	return file;
 }
 
@@ -574,106 +649,220 @@ describe("Agent Hub redesign", () => {
 		}
 	});
 
-	it("rebuilds a persisted hashline edit preview from the current agent snapshots", async () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-edit-preview-"));
+	it("renders an unknown persisted edit call through the generic transcript fallback", () => {
+		const callId = "persisted-unknown-edit";
+		const input = "PERSISTED_EDIT_GENERIC_ARGUMENT";
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: callId, name: "edit", arguments: { input } }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test-model",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 0,
+		};
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: callId,
+			toolName: "edit",
+			content: [{ type: "text", text: "PERSISTED_EDIT_GENERIC_RESULT" }],
+			isError: false,
+			timestamp: 1,
+		};
+		const entries: SessionMessageEntry[] = [
+			{
+				type: "message",
+				id: "persisted-edit-call-entry",
+				parentId: null,
+				timestamp: TRANSCRIPT_TIMESTAMP,
+				message: assistant,
+			},
+			{
+				type: "message",
+				id: "persisted-edit-result-entry",
+				parentId: "persisted-edit-call-entry",
+				timestamp: TRANSCRIPT_TIMESTAMP,
+				message: toolResult,
+			},
+		];
+		const builder = new ChatTranscriptBuilder({
+			ui: { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI,
+			cwd: process.cwd(),
+			requestRender: () => {},
+		});
+
 		try {
-			const file = path.join(dir, "persisted-edit.ts");
-			const sourceText = 'export const subject = "source";\nexport const value = "before";\n';
-			const driftedText = 'export const subject = "externally changed";\nexport const value = "before";\n';
-			fs.writeFileSync(file, sourceText);
-
-			const snapshots = new InMemorySnapshotStore();
-			const tag = snapshots.record(file, sourceText);
-			fs.writeFileSync(file, driftedText);
-
-			const callId = "persisted-hashline-edit";
-			const input = `[persisted-edit.ts#${tag}]\nPUT 2.=2:\n+export const value = "after";`;
-			const usage: Usage = {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
-			const assistant: AssistantMessage = {
-				role: "assistant",
-				content: [{ type: "toolCall", id: callId, name: "edit", arguments: { input } }],
-				api: "anthropic-messages",
-				provider: "anthropic",
-				model: "test-model",
-				usage,
-				stopReason: "toolUse",
-				timestamp: 0,
-			};
-			const toolResult: ToolResultMessage = {
-				role: "toolResult",
-				toolCallId: callId,
-				toolName: "edit",
-				content: [{ type: "text", text: "Persisted edit completed" }],
-				isError: false,
-				timestamp: 1,
-			};
-			const entries: SessionMessageEntry[] = [
-				{
-					type: "message",
-					id: "persisted-edit-call-entry",
-					parentId: null,
-					timestamp: TRANSCRIPT_TIMESTAMP,
-					message: assistant,
-				},
-				{
-					type: "message",
-					id: "persisted-edit-result-entry",
-					parentId: "persisted-edit-call-entry",
-					timestamp: TRANSCRIPT_TIMESTAMP,
-					message: toolResult,
-				},
-			];
-			const hashlineTool = { name: "edit", label: "Edit", mode: "hashline" } as unknown as AgentTool;
-			let currentStore = snapshots;
-			const builder = new ChatTranscriptBuilder({
-				ui: { requestRender() {}, requestComponentRender() {}, resetDisplay() {} } as unknown as TUI,
-				getTool: name => (name === "edit" ? hashlineTool : undefined),
-				getSnapshots: () => currentStore,
-				cwd: dir,
-				requestRender: () => {},
-			});
-
-			try {
-				builder.rebuild(entries);
-				const first = builder.container.children.find(
-					(component): component is ToolExecutionComponent => component instanceof ToolExecutionComponent,
-				);
-				if (!first) throw new Error("Expected the persisted edit to render as a tool execution component");
-				await first.whenPreviewSettled();
-				const firstRender = Bun.stripANSI(first.render(120).join("\n"));
-				const firstLines = firstRender.split("\n");
-
-				expect(firstLines.some(line => line.includes('export const value = "before";') && line.includes("-"))).toBe(
-					true,
-				);
-				expect(firstLines.some(line => line.includes('export const value = "after";') && line.includes("+"))).toBe(
-					true,
-				);
-				expect(firstRender).not.toContain("No changes would be made");
-
-				currentStore = new InMemorySnapshotStore();
-				builder.rebuild(entries);
-				const second = builder.container.children.find(
-					(component): component is ToolExecutionComponent => component instanceof ToolExecutionComponent,
-				);
-				if (!second) throw new Error("Expected the rebuilt edit to render as a tool execution component");
-				await second.whenPreviewSettled();
-				const secondRender = Bun.stripANSI(second.render(120).join("\n"));
-
-				expect(secondRender).toContain("Edit rejected");
-				expect(secondRender).toContain(`hash #${tag} is not from this session`);
-				expect(secondRender).not.toContain('export const value = "after";');
-			} finally {
-				builder.dispose();
-			}
+			builder.rebuild(entries);
+			const rendered = Bun.stripANSI(builder.container.render(120).join("\n"));
+			expect(rendered).toContain("edit");
+			expect(rendered).toContain(input);
+			expect(rendered).toContain("PERSISTED_EDIT_GENERIC_RESULT");
+			expect(rendered).not.toContain("Edit rejected");
+			expect(rendered).not.toContain("No changes would be made");
 		} finally {
+			builder.dispose();
+		}
+	});
+
+	it("routes fullscreen transcript callbacks to the selected live subagent", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-live-provenance-"));
+		const id = "LIVE_PROVENANCE_SUBAGENT";
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		registerParticipant(registry, {
+			id,
+			label: "Live provenance",
+			kind: "sub",
+			status: "running",
+			sessionFile: writeToolTranscript(dir, id, {
+				toolName: "hub",
+				arguments: { op: "list" },
+				resultText: "SUBAGENT_EXTENSION_HUB_RESULT",
+				customMessage: {
+					customType: "subagent-provenance-note",
+					content: "SUBAGENT_DEFAULT_CUSTOM_CONTENT",
+				},
+			}),
+		});
+		const extensionHubTool: AgentTool = {
+			name: "hub",
+			label: "Subagent Hub Extension",
+			description: "same-name extension tool",
+			parameters: { type: "object", additionalProperties: true },
+			async execute() {
+				return { content: [{ type: "text", text: "SUBAGENT_EXTENSION_HUB_RESULT" }] };
+			},
+		};
+		const toolLookups: Array<[string, string]> = [];
+		const provenanceLookups: Array<[string, string]> = [];
+		const messageRendererLookups: Array<[string, string]> = [];
+		const snapshotLookups: string[] = [];
+		const clipboardLookups: string[] = [];
+		let activeViewer: AgentTranscriptViewer | undefined;
+		let fullscreen = false;
+		const ui = {
+			showOverlay(component: unknown, options: { fullscreen?: boolean }) {
+				activeViewer = component as AgentTranscriptViewer;
+				fullscreen = options.fullscreen === true;
+				return { hide() {}, setHidden() {}, isHidden: () => false };
+			},
+			setFocus() {},
+			requestRender() {},
+			requestComponentRender() {},
+		} as unknown as TUI;
+		const hub = new AgentHubOverlayComponent({
+			observers: new SessionObserverRegistry(),
+			hubKeys: [],
+			onDone: () => {},
+			requestRender: () => {},
+			registry,
+			irc: new IrcBus(registry),
+			activeTopLevelId: MAIN_AGENT_ID,
+			ui,
+			getTool: (agentId, name) => {
+				toolLookups.push([agentId, name]);
+				return agentId === id && name === "hub" ? extensionHubTool : undefined;
+			},
+			isBuiltInTool: (agentId, name) => {
+				provenanceLookups.push([agentId, name]);
+				return agentId === MAIN_AGENT_ID && name === "hub";
+			},
+			getMessageRenderer: (agentId, customType) => {
+				messageRendererLookups.push([agentId, customType]);
+				return () => new Text(agentId === id ? "SUBAGENT_CUSTOM_RENDERER_MARKER" : "MAIN_RENDERER_LEAK", 0, 0);
+			},
+			getSnapshots: agentId => {
+				snapshotLookups.push(agentId);
+				return undefined;
+			},
+			getClipboard: agentId => {
+				clipboardLookups.push(agentId);
+				return undefined;
+			},
+		});
+		const viewer = (): AgentTranscriptViewer => {
+			if (!activeViewer) throw new Error("Agent Hub did not open a transcript viewer");
+			return activeViewer;
+		};
+
+		try {
+			await hub.persistedSubagentsReady;
+			hub.handleInput("\r");
+			const rendered = renderViewer(viewer());
+			expect(fullscreen).toBe(true);
+			expect(toolLookups).toEqual([[id, "hub"]]);
+			expect(provenanceLookups).toEqual([[id, "hub"]]);
+			expect(messageRendererLookups).toEqual([[id, "subagent-provenance-note"]]);
+			expect(snapshotLookups).toEqual([id]);
+			expect(clipboardLookups).toEqual([id]);
+			expect(rendered).toContain("Subagent Hub Extension");
+			expect(rendered).toContain("SUBAGENT_EXTENSION_HUB_RESULT");
+			expect(rendered).toContain("SUBAGENT_CUSTOM_RENDERER_MARKER");
+			expect(rendered).not.toContain("MAIN_RENDERER_LEAK");
+		} finally {
+			hub.dispose();
+			removeSyncWithRetries(dir);
+		}
+	});
+
+	it("uses conservative false and undefined fallbacks for parked transcript provenance", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-parked-provenance-"));
+		const id = "PARKED_PROVENANCE_SUBAGENT";
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		registerParticipant(registry, {
+			id,
+			label: "Parked provenance",
+			kind: "sub",
+			status: "parked",
+			sessionFile: writeToolTranscript(dir, id, {
+				toolName: "hub",
+				arguments: { op: "list" },
+				resultText: "PARKED_UNKNOWN_HUB_RESULT",
+				customMessage: {
+					customType: "parked-provenance-note",
+					content: "PARKED_GENERIC_CUSTOM_CONTENT",
+				},
+			}),
+		});
+		let activeViewer: AgentTranscriptViewer | undefined;
+		let fullscreen = false;
+		const ui = {
+			showOverlay(component: unknown, options: { fullscreen?: boolean }) {
+				activeViewer = component as AgentTranscriptViewer;
+				fullscreen = options.fullscreen === true;
+				return { hide() {}, setHidden() {}, isHidden: () => false };
+			},
+			setFocus() {},
+			requestRender() {},
+			requestComponentRender() {},
+		} as unknown as TUI;
+		const hub = makeHub({ registry, ui });
+		const viewer = (): AgentTranscriptViewer => {
+			if (!activeViewer) throw new Error("Agent Hub did not open a transcript viewer");
+			return activeViewer;
+		};
+
+		try {
+			await hub.persistedSubagentsReady;
+			hub.handleInput("\r");
+			const rendered = renderViewer(viewer());
+			expect(fullscreen).toBe(true);
+			expect(viewerHeader(viewer())).toContain("Status: parked");
+			expect(rendered).toContain("PARKED_UNKNOWN_HUB_RESULT");
+			expect(rendered).toContain("PARKED_GENERIC_CUSTOM_CONTENT");
+			expect(rendered).not.toContain("PARKED_CUSTOM_RENDERER_MARKER");
+		} finally {
+			hub.dispose();
 			removeSyncWithRetries(dir);
 		}
 	});

@@ -19,6 +19,7 @@ import {
 	streamAnthropic,
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { AnthropicMessagesClient } from "@oh-my-pi/pi-ai/providers/anthropic-client";
 import type { MessageCreateParamsStreaming } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import { claudeCodeVersion } from "@oh-my-pi/pi-ai/providers/claude-code-fingerprint";
 import { getEnvApiKey, streamSimple } from "@oh-my-pi/pi-ai/stream";
@@ -2233,6 +2234,100 @@ describe("Anthropic request fingerprint alignment", () => {
 				});
 
 				expect(options.defaultHeaders["X-Gateway-Key"]).toBeUndefined();
+			},
+		);
+	});
+
+	it("routes chat through ANTHROPIC_BASE_URL for the stock Anthropic provider (#7874)", async () => {
+		await withEnv(
+			{
+				CLAUDE_CODE_USE_FOUNDRY: undefined,
+				FOUNDRY_BASE_URL: undefined,
+				ANTHROPIC_BASE_URL: "https://my-gateway.example.com",
+				ANTHROPIC_CUSTOM_HEADERS: "x-api-key: gateway-key",
+			},
+			() => {
+				const options = buildAnthropicClientOptions({
+					model: ANTHROPIC_MODEL,
+					apiKey: "sk-ant-api-gateway-key",
+					extraBetas: [],
+					stream: true,
+					interleavedThinking: false,
+					dynamicHeaders: {},
+				});
+
+				// Chat no longer leaks a gateway-scoped key to api.anthropic.com.
+				expect(options.baseURL).toBe("https://my-gateway.example.com");
+				// A non-official gateway forwards ANTHROPIC_CUSTOM_HEADERS, so gateways
+				// that require x-api-key work without enabling Foundry mode.
+				expect(options.defaultHeaders["X-Api-Key"]).toBe("gateway-key");
+			},
+		);
+	});
+
+	it("sends gateway Authorization without leaking the original API key through the client", async () => {
+		await withEnv(
+			{
+				CLAUDE_CODE_USE_FOUNDRY: undefined,
+				FOUNDRY_BASE_URL: undefined,
+				ANTHROPIC_BASE_URL: "https://my-gateway.example.com",
+				ANTHROPIC_CUSTOM_HEADERS: "Authorization: Bearer gateway-token",
+			},
+			async () => {
+				let requestHeaders: Headers | undefined;
+				const options = buildAnthropicClientOptions({
+					model: ANTHROPIC_MODEL,
+					apiKey: "sk-ant-api-original",
+					extraBetas: [],
+					stream: true,
+					interleavedThinking: false,
+					dynamicHeaders: {},
+				});
+				const client = new AnthropicMessagesClient({
+					...options,
+					fetch: async (_input, init) => {
+						requestHeaders = new Headers(init?.headers);
+						return new Response("{}", { status: 200 });
+					},
+				});
+
+				await client.messages
+					.create({
+						model: ANTHROPIC_MODEL.id,
+						messages: [{ role: "user", content: "hello" }],
+						max_tokens: 16,
+						stream: true,
+					})
+					.asResponse();
+
+				expect(requestHeaders?.get("Authorization")).toBe("Bearer gateway-token");
+				expect(requestHeaders?.get("X-Api-Key")).toBeNull();
+			},
+		);
+	});
+
+	it("keeps an explicit non-official model.baseUrl ahead of ANTHROPIC_BASE_URL (#7874)", async () => {
+		const configuredModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			baseUrl: "https://configured.example.com",
+		});
+		await withEnv(
+			{
+				CLAUDE_CODE_USE_FOUNDRY: undefined,
+				FOUNDRY_BASE_URL: undefined,
+				ANTHROPIC_BASE_URL: "https://my-gateway.example.com",
+			},
+			() => {
+				const options = buildAnthropicClientOptions({
+					model: configuredModel,
+					apiKey: "sk-ant-api-test",
+					extraBetas: [],
+					stream: true,
+					interleavedThinking: false,
+					dynamicHeaders: {},
+				});
+
+				expect(options.baseURL).toBe("https://configured.example.com");
 			},
 		);
 	});

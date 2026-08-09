@@ -22,6 +22,13 @@
 ### Fixed
 
 - Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
+## [17.2.11] - 2026-08-07
+
+### Fixed
+
+- Fixed an issue where Herdr panes lost native terminal scrollback during TUI transcript replacements or resize redraws.
+- Fixed an issue inside tmux where explicit display resets retained stale light/dark palettes and leaked terminal capability bytes into the editor.
+
 ## [17.2.10] - 2026-08-06
 
 ### Fixed

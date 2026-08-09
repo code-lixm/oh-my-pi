@@ -45,7 +45,7 @@ function renderStripped(selector: TreeSelectorComponent, width = 120): string[] 
 }
 
 function visibleTreeRows(lines: readonly string[]): number {
-	return lines.filter(line => line.includes("user:node-")).length;
+	return lines.filter(line => line.includes("node-")).length;
 }
 
 describe("TreeSelectorComponent layout chrome", () => {

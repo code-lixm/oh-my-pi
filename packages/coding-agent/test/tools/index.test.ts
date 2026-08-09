@@ -184,36 +184,31 @@ describe("createTools", () => {
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
 	});
 
-	it("does not register codegraph for a non-git session by default", async () => {
+	it("keeps codegraph top-level and active for a non-git session by default", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "tools.xdev": true }),
 		});
 		const tools = await createTools(session);
 		const names = tools.map(tool => tool.name);
 
-		expect(names).not.toContain("codegraph");
+		expect(names).toContain("codegraph");
 		expect(session.xdev).toBeDefined();
 		const xdev = session.xdev!;
-		expect(xdev.tools.has("codegraph")).toBe(false);
-		expect(xdev.tools.has("lsp")).toBe(true);
-		expect(xdev.mountedNames.has("lsp")).toBe(true);
-		expect(xdev.builtInNames.has("lsp")).toBe(true);
-		expect(session.isToolActive?.("codegraph")).toBe(false);
+		expect(xdev.tools.has("codegraph")).toBe(true);
+		expect(xdev.mountedNames.has("codegraph")).toBe(false);
+		expect(xdev.builtInNames.has("codegraph")).toBe(true);
+		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 
-	it("does not register codegraph when a non-git session explicitly requests it", async () => {
+	it("keeps codegraph top-level and active when a non-git session explicitly requests it", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "tools.xdev": true }),
 		});
 		const tools = await createTools(session, ["codegraph"]);
 
-		expect(tools).toEqual([]);
-		expect(session.xdev).toBeDefined();
-		const xdev = session.xdev!;
-		expect(xdev.tools.size).toBe(0);
-		expect(xdev.mountedNames.has("codegraph")).toBe(false);
-		expect(xdev.builtInNames.has("codegraph")).toBe(false);
-		expect(session.isToolActive?.("codegraph")).toBe(false);
+		expect(tools.map(tool => tool.name)).toEqual(["codegraph"]);
+		expect(session.xdev).toBeUndefined();
+		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 
 	it("keeps codegraph top-level and out of xd:// for git sessions with a resolvable HEAD", async () => {
@@ -237,7 +232,7 @@ describe("createTools", () => {
 		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 
-	it("keeps codegraph available when a git session explicitly requests it under xdev", async () => {
+	it("keeps codegraph top-level and active when a git session explicitly requests it", async () => {
 		const cwd = await createGitWorkspaceWithHead();
 		const session = createTestSession({
 			cwd,
@@ -246,11 +241,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["codegraph"]);
 
 		expect(tools.map(tool => tool.name)).toEqual(["codegraph"]);
-		expect(session.xdev).toBeDefined();
-		const xdev = session.xdev!;
-		expect([...xdev.tools.keys()]).toEqual(["codegraph"]);
-		expect(xdev.mountedNames.has("codegraph")).toBe(false);
-		expect(xdev.builtInNames.has("codegraph")).toBe(true);
+		expect(session.xdev).toBeUndefined();
 		expect(session.isToolActive?.("codegraph")).toBe(true);
 	});
 

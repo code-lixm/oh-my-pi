@@ -103,13 +103,13 @@
 - Fixed Hindsight authentication and request failures being hidden in logs during automatic recall, retention, and mental-model loading; sessions now show an actionable `/settings` notice, explicit forced retains propagate failures, and API URL/token edits rebuild the live client immediately.
 - Fixed skipped-tool interrupt results remaining in English after switching `displayLanguage` to `zh-CN`; the synthetic result now uses localized prompt templates.
 - Fixed successful subagent `yield` submissions allowing later tool calls from the same assistant message to execute; `yield` now forms an exclusive transaction boundary while preserving earlier completed results.
-- Fixed subagent transcript edit and read cards rendering with incomplete arguments or Main-session state instead of the selected agent's snapshot and clipboard context.
+- Fixed fullscreen subagent transcripts resolving tools, built-in renderer provenance, custom message renderers, snapshots, and clipboard state from Main instead of the selected agent; parked transcripts now use a conservative generic fallback when provenance is unavailable.
 - Fixed Agent Hub task rows showing agent profile types instead of durable task names, mixing active and completed status colors, reordering continuously active peers on every update, and reserving a redundant footer inside subagent transcripts.
 - Fixed Agent Hub lifecycle and registry changes lagging behind progress updates, late running progress overwriting terminal states, large tables repeatedly scanning observer state, and same-named children from concurrent top-level sessions colliding in the process-global registry.
 - Fixed repeated `/resume` switches retaining stale live-runtime identities, losing session-scoped input and observer state on no-op or cancelled transitions, and mislabeling sessions owned by a live process as interrupted in other terminals.
 - Fixed single-file delete and move status rows inheriting the global accent rail, tint, and extra gutter; destructive Delete actions now render as compact bare rows with red action labels and delete glyphs.
 - Fixed fenced code in user-message bubbles rendering raw Markdown fences and dropping the bubble background on syntax-highlighted rows, and scoped terminal-palette contrast selection to terminal-adaptive themes so ordinary palette-index themes retain their prior text fallback.
-- Fixed explicitly read-only subagents inheriting Hub process supervision, which let scouts bypass their declared tool boundary with one-shot commands, and permanently hid Hub lifecycle plumbing from live and persisted subagent transcript views.
+- Fixed explicitly read-only subagents inheriting Hub process supervision, which let scouts bypass their declared tool boundary with one-shot commands, and hid built-in Hub lifecycle plumbing from live provenance-aware subagent transcript views.
 - Fixed interactive `/rewind` restores with `conversation` or `all` scope leaving the transcript on the abandoned branch until a later session reload; successful restores now clear transient UI state and rebuild the display from the restored conversation immediately.
 - Fixed checkpoint rewind previews to list affected paths and conflicts, repaint after asynchronous work, reject duplicate or stale plan application, protect files created after preview, honor subtree path filters, and preserve the selected scope and strategy in session history.
 - Fixed `omitThinking` being ignored unless `thinkingDisplay` was also `hidden`; provider requests now omit supported thinking summaries independently of transcript visibility.
@@ -192,6 +192,46 @@
 - Fixed ordinary user messages losing their configured `userMessageBg` after the initial turn, and accent tool cards painting their tint through the rightmost terminal column.
 - Fixed the working-loader shimmer band jumping several cells in a single render after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): the per-loader capped clock now caps the per-render wall delta to one normal render cycle (default 80 ms), discards the surplus, and tracks animation time separately from the wall clock so subsequent renders do not pay back the stall.
 - Fixed the advisor staleness caveat appended to notes when newer primary turns arrived after the reviewed transcript window being hard-coded in English: the markdown wrapper now goes through `tSettingsUi(...)` with a `zh-CN` translation, so the advisory and transcript reflect the active `displayLanguage` like the rest of the advisor chrome.
+## [17.2.11] - 2026-08-07
+
+### Added
+
+- Added support for the Agent Plugins 1.0.0 standard, enabling automatic discovery, validation, and secure execution of compliant plugin packages.
+- Added the `omp share <session>` command to share saved sessions by ID prefix or file path without launching the agent.
+- Added the `AGENT=1` environment variable to child processes spawned by `coding-agent` to allow downstream tools to detect agent-driven execution.
+
+### Changed
+
+- Consolidated Exa web-search configuration under `exa.enabled`, automatically migrating legacy `exa.enableSearch` values and removing obsolete Researcher and Websets settings.
+- Removed stale `computer.backend` values during configuration migration.
+- Updated documentation and error messages for the JavaScript/TypeScript debug adapter (`js-debug-adapter`) to clarify supported installation paths (Mason, standalone tarball, or `JS_DEBUG_DAP_SERVER`).
+
+### Fixed
+
+- Fixed an issue where `/reload-plugins` and the Agent Control Center failed to propagate updated agent definitions to existing tools without a restart.
+- Fixed legacy Pi extensions failing to load when calling `pi.unregisterProvider()`, ensuring provider replacements take effect immediately.
+- Fixed zero-width daemon readiness and wait regex matches being rejected by the hub wire decoder.
+- Fixed proxy model discovery preferring bundled catalog names over proxy-reported names, allowing `omp models refresh` to correctly update display names.
+- Fixed Windows compiled binary builds failing due to backslash-separated paths in `Bun.Glob.scan` producing invalid JavaScript in virtual modules.
+- Fixed the Ctrl+O (`app.tools.expand`) shortcut not expanding truncated tool output when a tool-approval prompt or selection dialog had keyboard focus.
+- Improved `omp commit` error reporting when pre-commit or commit-msg hooks fail, displaying the hook's own message and exiting non-zero cleanly instead of printing bundled source code.
+- Fixed `omp commit --push` exiting with code 0 without pushing when the working tree is already clean; it now correctly pushes existing commits.
+- Fixed `omp commit` exiting with code 0 when the commit agent failed and fell back to a mechanical commit; it now exits non-zero to indicate the fallback was used.
+- Fixed strict output schemas being rejected when native JSON Schema definition maps contain `ref` or applicator branches use `properties` without `type`.
+- Fixed shell syntax extraction in `cd <path> && ...` commands to prevent redirects, extra arguments, or shell expansions from being incorrectly absorbed into the structured working directory path.
+- Applied reason-specific backoff to transient rate-limit retries and consolidated exhausted retry errors.
+- Fixed session-tree rows rendering as empty bullets for bookkeeping entries (such as title changes, credential pins, and mode changes); these are now hidden by default and properly labeled in `all` mode.
+- Fixed extension and custom tools inheriting same-named built-in TUI renderers, which could overwrite successful results with incorrect status text.
+- Fixed prewalk lifecycle handling to prevent plan injection on rejected same-model/same-effort arms, ensure consumed plan nudges do not return after context rebuilds, and prevent settings-enabled prewalk from implicitly re-arming restored sessions.
+- Fixed the todo completion reminder interrupting pauses when waiting for non-English questions (such as Chinese, Japanese, Korean, or Spanish prompts ending in `？` or `?`).
+- Normalized resolved file paths in read summaries, PDF image handles, and notebook errors to prevent agents from learning malformed paths.
+- Fixed a bug where a per-turn `before_agent_start` system prompt override was silently dropped during base-prompt rebuilds.
+- Fixed ACP `session/load` and `session/resume` failing with `ACP session not found` for sessions created under the legacy hashed project-directory scheme by falling back to a global ID scan.
+- Fixed `vault://<name>?op=...` commands targeting the active vault instead of the named vault in Obsidian CLI queries.
+- Fixed the status-line `session_name` segment to honor the `statusLine.sessionAccent` setting, falling back to the theme's accent color when disabled.
+- Fixed automatic `agent.continue()` paths failing to run context-fit maintenance when reverting to a smaller-context model after a cooldown expiry.
+- Fixed `/handoff` reporting "Handoff cancelled" for actual generation or stream timeout errors, ensuring the real error is surfaced.
+
 ## [17.2.10] - 2026-08-06
 
 ### Breaking Changes

@@ -2333,6 +2333,10 @@ export class SelectorController {
 		];
 		const mouseTracking = this.ctx.settings?.get("tui.mouseInput") ?? false;
 		const hubRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
+		// Each fullscreen transcript resolves tools against its own live AgentRef.
+		// A parked/persisted-only target has no authoritative registry provenance,
+		// so its callbacks deliberately return undefined/false instead of borrowing Main.
+		const targetSession = (agentId: string) => hubRegistry.get(agentId)?.session ?? undefined;
 		let overlayHandle: OverlayHandle | undefined;
 		let closed = false;
 
@@ -2358,14 +2362,15 @@ export class SelectorController {
 			registry: hubRegistry,
 			remote: this.ctx.collabGuest?.hubRemote,
 			ui: this.ctx.ui,
-			getTool: name => this.ctx.session.getToolByName(name),
-			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
+			getTool: (agentId, name) => targetSession(agentId)?.getToolByName(name),
+			isBuiltInTool: (agentId, name) => targetSession(agentId)?.hasBuiltInTool(name) ?? false,
+			getMessageRenderer: (agentId, type) => targetSession(agentId)?.extensionRunner?.getMessageRenderer(type),
 			getSnapshots: id => {
-				const session = hubRegistry.get(id)?.session;
+				const session = targetSession(id);
 				return session ? getFileSnapshotStore(session) : undefined;
 			},
 			getClipboard: id => {
-				const session = hubRegistry.get(id)?.session;
+				const session = targetSession(id);
 				return session ? getEditClipboard(session) : undefined;
 			},
 			cwd: this.ctx.sessionManager.getCwd(),

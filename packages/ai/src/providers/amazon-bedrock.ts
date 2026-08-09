@@ -40,7 +40,7 @@ import {
 } from "../utils/block-symbols";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
-import { armPreResponseTimeout, getStreamFirstEventTimeoutMs } from "../utils/idle-iterator";
+import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs } from "../utils/idle-iterator";
 import { toolWireSchema } from "../utils/schema/wire";
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
@@ -395,8 +395,11 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 			// Direct callers that bypass `register-builtins` (which installs the
 			// iterator-level first-event watchdog) still need a pre-response
 			// timer, otherwise a Bedrock/proxy that accepts the POST and never
-			// sends headers would hang forever.
-			const firstEventTimeoutMs = options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs();
+			// sends headers would hang forever. Resolve the same caller > env >
+			// model-compat > default chain as the iterator layer so Bedrock's
+			// reasoning-model idle floor also protects time-to-first-byte.
+			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
+			const firstEventTimeoutMs = options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
 			// Clear the pre-response timer the instant headers arrive (below): an
 			// absolute `AbortSignal.timeout` would keep aborting the actively
 			// streaming body, not just a stalled time-to-first-byte (issue #2422).

@@ -324,6 +324,10 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		gate.resolve();
+		// Let the extension handler's resolved promise settle before fake timers
+		// advance the runner's timeout budget.
+		await Promise.resolve();
+		await Promise.resolve();
 		vi.runAllTimers();
 		await Promise.resolve();
 		await compactPromise;
@@ -1008,9 +1012,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await withTimeout(reminderDone, 1000, "Todo reminder timed out");
 		vi.advanceTimersByTime(100);
-		await Promise.resolve();
-		await Promise.resolve();
-
+		await session.waitForIdle();
 		expect(getRuntimeSignals()).toContain("todo:1/3");
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		await session.waitForIdle();

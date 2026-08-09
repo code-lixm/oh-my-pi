@@ -30,7 +30,7 @@ import {
 	toolDetailMaxLines,
 	truncateMiddleLines,
 } from "../../tools/render-utils";
-import { type FirstResultViewportRepaint, toolRenderers } from "../../tools/renderers";
+import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
 import {
@@ -369,6 +369,8 @@ export interface ToolExecutionOptions {
 	/** Session-persistent edit clipboard register, forked per preview frame. */
 	clipboard?: Clipboard;
 	showImages?: boolean; // default: true (only used if terminal supports images)
+	/** Allow the name-keyed renderer registry only when the active tool is the built-in implementation. */
+	useBuiltInRenderer?: boolean;
 	editFuzzyThreshold?: number;
 	editAllowFuzzy?: boolean;
 	/** Live-region probe used to settle detached task progress once the block
@@ -461,6 +463,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	// forcing the common image-free result to re-shape on every resize tick.
 	#renderedImageCount = 0;
 	#tool?: AgentTool;
+	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
 	#cwd: string;
 	#result?: {
@@ -549,6 +552,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		super();
 		this.#toolName = toolName;
 		this.#toolLabel = tool?.label ?? toolName;
+		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
 		this.#editFuzzyThreshold = options.editFuzzyThreshold;
 		this.#editAllowFuzzy = options.editAllowFuzzy;
@@ -574,12 +578,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			accentMode ? 0 : 1,
 		);
 
-		// Use Box for custom tools or built-in tools that have renderers. Only
-		// accent-mode instances need the surface wrapper; preserving the original
-		// direct child topology preserves the established full/none layout.
-		const hasRenderer = toolName in toolRenderers;
+		// Use Box for custom tools or built-in tools with active rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
-		this.#usesContentBox = hasCustomRenderer || hasRenderer;
+		this.#usesContentBox = hasCustomRenderer || this.#renderer !== undefined;
 		const accentColor = (): ThemeColor =>
 			this.#isBenignSkip() ? "borderMuted" : this.#result?.isError ? "error" : "borderMuted";
 		if (this.#usesContentBox) {
@@ -852,12 +853,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const isStreamingArgs = !this.#argsComplete && (isEditLikeToolName(this.#toolName) || this.#toolName === "write");
 		const isBackgroundAsyncRunning =
 			(this.#result?.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
-		const renderer = toolRenderers[this.#toolName] as
-			| {
-					animatedPendingPreview?: boolean | ((args: unknown) => boolean);
-					animatedPartialResult?: boolean | ((args: unknown) => boolean);
-			  }
-			| undefined;
+		const renderer = this.#renderer;
 		const pendingAnimation = renderer?.animatedPendingPreview;
 		const partialAnimation = renderer?.animatedPartialResult;
 		const pendingCallConsumesSpinner =
@@ -1167,7 +1163,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 	#rendererFlag(name: "forceResultViewportRepaintOnSettle"): boolean {
 		const toolValue = (this.#tool as Record<string, unknown> | undefined)?.[name];
-		const rendererValue = toolRenderers[this.#toolName]?.[name];
+		const rendererValue = this.#renderer?.[name];
 		return toolValue === true || (toolValue === undefined && rendererValue === true);
 	}
 
@@ -1182,8 +1178,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (this.#result !== undefined) return false;
 		const toolValue = (this.#tool as { forceFirstResultViewportRepaint?: FirstResultViewportRepaint } | undefined)
 			?.forceFirstResultViewportRepaint;
-		const value =
-			toolValue !== undefined ? toolValue : toolRenderers[this.#toolName]?.forceFirstResultViewportRepaint;
+		const value = toolValue !== undefined ? toolValue : this.#renderer?.forceFirstResultViewportRepaint;
 		if (typeof value === "function") return value(this.#args, this.#renderState);
 		return value === true;
 	}
@@ -1350,9 +1345,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			this.#contentBox.setPaddingX(customFramed || borderlessMode ? 0 : 1);
 			this.#contentBox.setPaddingY(customFramed || accentMode ? 0 : 1);
 			this.#contentBox.setBgFn(customFramed || accentMode ? undefined : stateBgFn);
-		} else if (this.#toolName in toolRenderers) {
-			// Built-in tools with renderers
-			const renderer = toolRenderers[this.#toolName];
+		} else if (this.#renderer) {
+			// The active registry entry is a built-in tool with a rich renderer.
+			const renderer = this.#renderer;
 
 			// Clean up previous multi-file boxes
 			for (const box of this.#multiFileBoxes) {

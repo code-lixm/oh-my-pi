@@ -14,6 +14,9 @@ import { type ConfiguredThinkingLevel, concreteThinkingLevel } from "../thinking
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
 
+/** Policy controlling fallback-primary restoration. */
+export type RetryFallbackRevertPolicy = "probe" | "cooldown-expiry" | "never";
+
 /** Parsed model selector used by retry fallback resolution. */
 export interface RetryFallbackSelector {
 	raw: string;
@@ -48,6 +51,10 @@ export interface ActiveRetryFallbackState {
 	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
 	/** Last temporary fallback selector, used to preserve an intervening user change. */
 	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
+	/** Prevent automatic restoration after a semantic or usage-driven fallback. */
+	pinned: boolean;
+	/** Whether this fallback has completed at least one provider turn. */
+	hasCompletedFallbackTurn: boolean;
 }
 
 export const FALLBACK_RECOVERY_PROBE_INTERVAL_MS = 60_000;
@@ -139,6 +146,12 @@ export function getRetryFallbackChains(settings: Settings): RetryFallbackChains 
 	const configuredChains = settings.get("retry.fallbackChains");
 	if (!configuredChains || typeof configuredChains !== "object") return {};
 	return expandDefaultRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()));
+}
+
+/** Returns the configured fallback-primary restoration policy. */
+export function getRetryFallbackRevertPolicy(settings: Settings): RetryFallbackRevertPolicy {
+	const policy = settings.get("retry.fallbackRevertPolicy");
+	return policy === "cooldown-expiry" || policy === "never" ? policy : "probe";
 }
 
 /** Validates configured fallback chains and reports each warning. */

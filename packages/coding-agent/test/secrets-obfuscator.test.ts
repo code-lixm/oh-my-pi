@@ -20,18 +20,43 @@ import {
 import {
 	deobfuscateAgentMessages,
 	deobfuscateToolArguments,
-	obfuscateMessages,
 	obfuscateProviderContext,
 	obfuscateToolArguments,
+} from "@oh-my-pi/pi-coding-agent/secrets/message-transform";
+import {
+	obfuscateMessages,
+	regexHasUnresolvableShortMatchFallback,
 	type SecretEntry,
 	SecretObfuscator,
 	sanitizeSecretFriendlyName,
-	secretEntriesNeedPlaceholderKey,
 	secretEntryNeedsPlaceholderKey,
-	stripPendingSecretPlaceholderSuffix,
 } from "@oh-my-pi/pi-coding-agent/secrets/obfuscator";
+import {
+	secretEntriesNeedPlaceholderKey,
+	stripPendingSecretPlaceholderSuffix,
+} from "@oh-my-pi/pi-coding-agent/secrets/placeholder";
 import { compileSecretRegex } from "@oh-my-pi/pi-coding-agent/secrets/regex";
 import { getActiveProfile, getAgentDir, setProfile } from "@oh-my-pi/pi-utils/dirs";
+
+describe("legacy secrets/obfuscator deep-path exports", () => {
+	it("keeps split helpers behaviorally available through the legacy path", () => {
+		const secret = "DEEP_PATH_SECRET_12345";
+		const entry: SecretEntry = { type: "plain", content: secret, mode: "obfuscate" };
+		const obfuscator = new SecretObfuscator([entry], "K".repeat(43));
+		const messages: Message[] = [{ role: "user", content: `use ${secret}`, timestamp: 1 }];
+
+		const [obfuscatedMessage] = obfuscateMessages(obfuscator, messages);
+		if (!obfuscatedMessage || typeof obfuscatedMessage.content !== "string") {
+			throw new Error("Expected an obfuscated user text message");
+		}
+
+		expect(obfuscatedMessage.content).not.toContain(secret);
+		expect(obfuscator.deobfuscate(obfuscatedMessage.content)).toBe(`use ${secret}`);
+		expect(sanitizeSecretFriendlyName("legacy path-name")).toBe("LEGACYPATHNAME");
+		expect(secretEntryNeedsPlaceholderKey(entry)).toBe(true);
+		expect(regexHasUnresolvableShortMatchFallback(/[\s\S]/g)).toBe(true);
+	});
+});
 
 describe("compileSecretRegex", () => {
 	it("adds global flag when not provided", () => {

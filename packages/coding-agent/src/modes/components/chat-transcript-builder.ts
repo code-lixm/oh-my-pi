@@ -64,6 +64,8 @@ import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user
 export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
+	/** Whether `name` is built in for this transcript's owning session. Unknown provenance disables name-keyed built-in renderers. */
+	isBuiltInTool?: (name: string) => boolean;
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	/** Resolve snapshot state for the transcript currently being rebuilt. */
 	getSnapshots?: () => SnapshotStore | undefined;
@@ -409,17 +411,19 @@ export class ChatTranscriptBuilder {
 
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
-			this.#resolveWaitingPoll(content.name);
+			const useBuiltInRenderer = this.deps.isBuiltInTool?.(content.name) ?? false;
+			this.#resolveWaitingPoll(useBuiltInRenderer ? content.name : undefined);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			// This builder backs parked/advisor/subagent viewers, where Hub lifecycle
-			// plumbing is never user-facing even when Main debugging opts into it.
-			if (content.name === "hub") {
+			// plumbing is never user-facing. A same-name extension remains visible:
+			// name-keyed built-in behavior is allowed only with owning-session provenance.
+			if (content.name === "hub" && useBuiltInRenderer) {
 				appendAssistantSegment(afterToolSegment);
 				continue;
 			}
 
-			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+			if (content.name === "read" && useBuiltInRenderer && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
@@ -449,8 +453,8 @@ export class ChatTranscriptBuilder {
 				{
 					snapshots: this.deps.getSnapshots?.(),
 					clipboard: this.deps.getClipboard?.(),
-					// Stable ids and Kitty placeholder cells keep images anchored
-					// while the transcript viewport scrolls and reflows.
+					useBuiltInRenderer,
+					// Stable ids and Kitty placeholder cells keep images anchored while the transcript viewport scrolls and reflows.
 					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
@@ -492,7 +496,9 @@ export class ChatTranscriptBuilder {
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
 		const pending = this.#pendingTools.get(message.toolCallId);
-		const isReadGroupResult = message.toolName === "read" && (!pending || pending instanceof ReadToolGroupComponent);
+		const isReadGroupResult =
+			message.toolName === "read" &&
+			(pending instanceof ReadToolGroupComponent || (!pending && this.#readArgs.has(message.toolCallId)));
 		if (isReadGroupResult) {
 			let component = pending;
 			if (!component) {

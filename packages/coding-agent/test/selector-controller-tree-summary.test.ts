@@ -73,11 +73,16 @@ function createHarness(summaryChoice = "No summary"): TreeSummaryHarness {
 		},
 		ui: {
 			terminal: { rows: 40 },
+			showOverlay: vi.fn((component: unknown, _options: unknown) => {
+				selector = component as { handleInput(key: string): void };
+				return { hide: vi.fn() };
+			}),
 			setFocus: vi.fn(),
 			requestRender: vi.fn(),
 			requestComponentRender: vi.fn(),
 		},
 		editorContainer: {
+			children: [],
 			clear: vi.fn(),
 			addChild: vi.fn(),
 		},
@@ -103,10 +108,6 @@ function createHarness(summaryChoice = "No summary"): TreeSummaryHarness {
 		},
 	} as unknown as InteractiveModeContext;
 	const controller = new SelectorController(ctx);
-	controller.showSelector = create => {
-		const result = create(() => {});
-		selector = result.component as { handleInput(key: string): void };
-	};
 	return {
 		controller,
 		navigateTree,

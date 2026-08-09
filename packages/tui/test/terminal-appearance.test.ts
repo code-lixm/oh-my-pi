@@ -47,6 +47,7 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 		Object.defineProperty(process.stdin, "setRawMode", { value: vi.fn(), configurable: true });
 		previousHeadless = setTerminalHeadless(false);
+		delete Bun.env.TMUX;
 	});
 
 	afterEach(() => {
@@ -417,9 +418,245 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
 		terminal.refreshAppearance?.();
 
-		expect(writes).toContain("\x1bPtmux;\x1b\x1b]11;?\x07\x1b\x1b[c\x1b\\");
+		expect(writes).toContain("\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\");
 
 		terminal.stop();
+	});
+
+	it("reads tmux's refreshed cache without passing a DA1 reply through tmux", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, received, queryCount } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport?.((appearance, token) => reports.push({ appearance, token }));
+		const beforeRefresh = queryCount();
+
+		const token = 42;
+		terminal.refreshAppearance?.(token);
+		expect(queryCount()).toBe(beforeRefresh);
+
+		// A fragmented outer DA1 reply can be decoded by tmux as an Alt+[ key
+		// followed by printable capability bytes. Wait for the OSC 11 response to
+		// reach tmux's cache, then query that cache directly with a local sentinel.
+		vi.advanceTimersByTime(99);
+		expect(queryCount()).toBe(beforeRefresh);
+		vi.advanceTimersByTime(1);
+		expect(queryCount()).toBe(beforeRefresh + 1);
+
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		const detected = terminal.appearance;
+		terminal.stop();
+
+		expect(detected).toBe("light");
+		expect(reports).toEqual([{ appearance: "light", token }]);
+		expect(received).toEqual([]);
+	});
+
+	it("reports a same-color tmux refresh after two cache reads", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, received, queryCount } = setupTerminal();
+
+		// A verified light baseline makes the first same-color cache observation
+		// ambiguous: tmux may still be serving its pre-passthrough cache.
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		const changes: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport((appearance, token) => reports.push({ appearance, token }));
+		terminal.onAppearanceChange((appearance, token) => changes.push({ appearance, token }));
+		changes.length = 0; // Ignore the subscriber replay of the verified baseline.
+
+		const token = 51;
+		const directQueriesBeforeRefresh = queryCount();
+		terminal.refreshAppearance(token);
+
+		vi.advanceTimersByTime(100); // cache read #1
+		const directQueriesAfterRead1 = queryCount();
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		const reportsAfterRead1 = [...reports];
+
+		vi.advanceTimersByTime(100); // cache read #2
+		const directQueriesAfterRead2 = queryCount();
+		process.stdin.emit("data", "\x1b[?1;2c");
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		const reportsBeforeFinalGrace = [...reports];
+
+		vi.advanceTimersByTime(100); // final consensus grace
+		const appearance = terminal.appearance;
+		terminal.stop();
+		const timersAfterStop = vi.getTimerCount();
+
+		expect(directQueriesAfterRead1).toBe(directQueriesBeforeRefresh + 1);
+		expect(directQueriesAfterRead2).toBe(directQueriesBeforeRefresh + 2);
+		expect(reportsAfterRead1).toEqual([]);
+		expect(reportsBeforeFinalGrace).toEqual([]);
+		expect(reports).toEqual([{ appearance: "light", token }]);
+		expect(changes).toEqual([]);
+		expect(appearance).toBe("light");
+		expect(received).toEqual([]);
+		expect(timersAfterStop).toBe(0);
+	});
+
+	it("reports a tmux refresh when startup appearance remains unknown", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, received, queryCount } = setupTerminal();
+
+		// Let startup's unanswered OSC 11 probe settle without inventing a baseline.
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		vi.advanceTimersByTime(100);
+		const startupAppearance = terminal.appearance;
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport((appearance, token) => reports.push({ appearance, token }));
+
+		const token = 52;
+		const directQueriesBeforeRefresh = queryCount();
+		terminal.refreshAppearance(token);
+		vi.advanceTimersByTime(100); // cache read #1
+		const directQueriesAfterRead = queryCount();
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+
+		const appearance = terminal.appearance;
+		terminal.stop();
+		const timersAfterStop = vi.getTimerCount();
+
+		expect(startupAppearance).toBeUndefined();
+		expect(directQueriesAfterRead).toBe(directQueriesBeforeRefresh + 1);
+		expect(reports).toEqual([{ appearance: "light", token }]);
+		expect(appearance).toBe("light");
+		expect(received).toEqual([]);
+		expect(timersAfterStop).toBe(0);
+	});
+
+	it("does not bind conflicting tmux cache reads to a refresh token", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, received, queryCount } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport((appearance, token) => reports.push({ appearance, token }));
+
+		const token = 53;
+		const directQueriesBeforeRefresh = queryCount();
+		terminal.refreshAppearance(token);
+		vi.advanceTimersByTime(100); // read #1 receives a stale pre-refresh value.
+		const directQueriesAfterRead1 = queryCount();
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+
+		vi.advanceTimersByTime(100); // read #2 disagrees with the stale response.
+		const directQueriesAfterRead2 = queryCount();
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		const reportsBeforeFinalGrace = [...reports];
+
+		vi.advanceTimersByTime(100);
+		const appearance = terminal.appearance;
+		terminal.stop();
+		const timersAfterStop = vi.getTimerCount();
+
+		expect(directQueriesAfterRead1).toBe(directQueriesBeforeRefresh + 1);
+		expect(directQueriesAfterRead2).toBe(directQueriesBeforeRefresh + 2);
+		expect(reportsBeforeFinalGrace).toEqual([]);
+		expect(reports).toEqual([]);
+		expect(appearance).toBe("light");
+		expect(received).toEqual([]);
+		expect(timersAfterStop).toBe(0);
+	});
+
+	it("quarantines late tmux replies before starting a queued refresh", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, received, writes, queryCount } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const reports: Array<{ appearance: string; token: number | undefined }> = [];
+		terminal.onAppearanceReport((appearance, token) => reports.push({ appearance, token }));
+		const tmuxQueryCount = () => writes.filter(write => write === "\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\").length;
+
+		const firstToken = 54;
+		const queuedToken = 55;
+		terminal.refreshAppearance(firstToken);
+		terminal.refreshAppearance(queuedToken);
+		const tmuxQueriesAfterQueue = tmuxQueryCount();
+
+		vi.advanceTimersByTime(100); // first refresh's cache read
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		const reportsAfterFirstRefresh = [...reports];
+
+		// This is an old outer-terminal reply after the first cycle has settled.
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		const receivedAfterLateReply = [...received];
+		const reportsAfterLateReply = [...reports];
+
+		vi.advanceTimersByTime(99);
+		const tmuxQueriesDuringQuarantine = tmuxQueryCount();
+		vi.advanceTimersByTime(1); // release the queued tmux refresh
+		const tmuxQueriesAfterQuarantine = tmuxQueryCount();
+
+		vi.advanceTimersByTime(100); // queued refresh cache read #1
+		const directQueriesAfterQueuedRead1 = queryCount();
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		const reportsAfterQueuedRead1 = [...reports];
+
+		vi.advanceTimersByTime(100); // queued refresh cache read #2
+		process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+		process.stdin.emit("data", "\x1b[?1;2c");
+		const reportsBeforeQueuedFinalGrace = [...reports];
+		vi.advanceTimersByTime(100);
+
+		const appearance = terminal.appearance;
+		terminal.stop();
+		const timersAfterStop = vi.getTimerCount();
+
+		expect(tmuxQueriesAfterQueue).toBe(1);
+		expect(reportsAfterFirstRefresh).toEqual([{ appearance: "dark", token: firstToken }]);
+		expect(receivedAfterLateReply).toEqual([]);
+		expect(reportsAfterLateReply).toEqual([{ appearance: "dark", token: firstToken }]);
+		expect(tmuxQueriesDuringQuarantine).toBe(1);
+		expect(tmuxQueriesAfterQuarantine).toBe(2);
+		expect(directQueriesAfterQueuedRead1).toBe(3);
+		expect(reportsAfterQueuedRead1).toEqual([{ appearance: "dark", token: firstToken }]);
+		expect(reportsBeforeQueuedFinalGrace).toEqual([{ appearance: "dark", token: firstToken }]);
+		expect(reports).toEqual([
+			{ appearance: "dark", token: firstToken },
+			{ appearance: "light", token: queuedToken },
+		]);
+		expect(appearance).toBe("light");
+		expect(received).toEqual([]);
+		expect(timersAfterStop).toBe(0);
+	});
+
+	it("cancels a pending tmux appearance cache read during teardown", () => {
+		vi.useFakeTimers();
+		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
+		const { terminal, queryCount, sentinelCount } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b]11;rgb:0000/0000/0000\x07");
+		for (let i = 0; i < 7; i++) process.stdin.emit("data", "\x1b[?1;2c");
+		const directQueriesBeforeRefresh = queryCount();
+		const directSentinelsBeforeRefresh = sentinelCount();
+
+		terminal.refreshAppearance?.();
+		expect(vi.getTimerCount()).toBe(1);
+		terminal.stop();
+		expect(vi.getTimerCount()).toBe(0);
+		vi.advanceTimersByTime(100);
+
+		expect(queryCount()).toBe(directQueriesBeforeRefresh);
+		expect(sentinelCount()).toBe(directSentinelsBeforeRefresh);
 	});
 
 	it("refreshAppearance() re-evaluates a changed background through the callback pipeline", () => {

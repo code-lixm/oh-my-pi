@@ -57,6 +57,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.browserRelayHelp,
 	},
 	{
+		name: "checkpoint",
+		load: () => loadCommand(() => import("./commands/checkpoint")),
+		help: commandHelp.checkpointHelp,
+	},
+	{
 		name: "cleanse",
 		load: () => loadCommand(() => import("./commands/cleanse")),
 		help: commandHelp.cleanseHelp,
@@ -137,6 +142,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.sayHelp,
 	},
 	{
+		name: "share",
+		load: () => import("./commands/share").then(m => m.default),
+		help: commandHelp.shareHelp,
+	},
+	{
 		name: "setup",
 		load: () => loadCommand(() => import("./commands/setup")),
 		help: commandHelp.setupHelp,
@@ -152,6 +162,16 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.readHelp,
 	},
 	{
+		name: "redo",
+		load: () => loadCommand(() => import("./commands/redo")),
+		help: commandHelp.redoHelp,
+	},
+	{
+		name: "rewind",
+		load: () => loadCommand(() => import("./commands/rewind")),
+		help: commandHelp.rewindHelp,
+	},
+	{
 		name: "ssh",
 		load: () => loadCommand(() => import("./commands/ssh")),
 		help: commandHelp.sshHelp,
@@ -160,6 +180,11 @@ export const commands: CommandEntry[] = [
 		name: "stats",
 		load: () => loadCommand(() => import("./commands/stats")),
 		help: commandHelp.statsHelp,
+	},
+	{
+		name: "undo",
+		load: () => loadCommand(() => import("./commands/undo")),
+		help: commandHelp.undoHelp,
 	},
 	{
 		name: "update",

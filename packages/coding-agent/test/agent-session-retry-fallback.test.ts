@@ -3068,14 +3068,26 @@ describe("AgentSession retry fallback", () => {
 		]);
 		expect(retryStartEvents).toHaveLength(1);
 		expect(retryStartEvents[0]?.attempt).toBe(1);
-		expect(retryEndEvents).toEqual([
-			{
-				type: "auto_retry_end",
-				success: false,
+		expect(retryEndEvents).toHaveLength(1);
+		const [retryEndEvent] = retryEndEvents;
+		if (!retryEndEvent) throw new Error("Expected a classifier-refusal retry end event");
+		expect(retryEndEvent).toMatchObject({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 1,
+			finalError: refusalMessage,
+		});
+		const retryErrors = retryEndEvent.retryErrors;
+		if (!retryErrors) throw new Error("Expected classifier-refusal retry error aggregation");
+		expect(retryErrors).toHaveLength(1);
+		expect(retryErrors[0]).toMatchObject({
+			retryRecovery: {
+				kind: "auto-retry",
+				recovery: "plain",
+				status: "superseded",
 				attempt: 1,
-				finalError: refusalMessage,
 			},
-		]);
+		});
 	});
 
 	it("uses Google retry hints in quota errors before quota backoff", async () => {
@@ -3977,7 +3989,263 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(fallbackModel.id);
 	});
 
-	it("keeps a routed fallback on the next user turn", async () => {
+	it("re-checks context before a cooldown-expiry revert onto a smaller-window model in the auto-continue path", async () => {
+		// Regression for #7952: a cooldown-expiry revert reverts the model at a
+		// turn boundary. The user-prompt path re-checks context after the revert
+		// (runPrePromptCompactionIfNeeded), but the automatic agent.continue()
+		// path did not — so reverting onto a model whose window is smaller than
+		// the accumulated context sent a predictably oversized request. Here the
+		// small primary (4000-token window) fell back to a large-window model,
+		// accumulated context past 4000 while there, then the cooldown expired and
+		// a queued follow-up drained through the auto-continue path.
+		const modelsConfigPath = path.join(tempDir.path(), "revert-overflow-models.json");
+		await Bun.write(
+			modelsConfigPath,
+			JSON.stringify({
+				providers: {
+					openai: {
+						modelOverrides: {
+							"gpt-4o-mini": { contextWindow: 4000, contextPromotionTarget: "openai/gpt-4o" },
+							"gpt-4o": { contextWindow: 1_000_000 },
+						},
+					},
+				},
+			}),
+		);
+		modelRegistry = new ModelRegistry(authStorage, modelsConfigPath);
+
+		const primaryModel = modelRegistry.find("openai", "gpt-4o-mini");
+		const fallbackModel = modelRegistry.find("openai", "gpt-4o");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected override models to resolve");
+		}
+		expect(primaryModel.contextWindow).toBe(4000);
+		expect(fallbackModel.contextWindow).toBe(1_000_000);
+
+		// ~15k estimated tokens: over the primary's 4000 window (80% => 3200) but
+		// far under the fallback's (800k), so it sits on the fallback without
+		// compaction and only overflows once the window shrinks on revert.
+		const bigText = "lorem ipsum ".repeat(5000);
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		let primaryAttempts = 0;
+		let fallbackTurns = 0;
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (model.id === primaryModel.id && primaryAttempts === 0) {
+					primaryAttempts += 1;
+					mock.push({ throw: "rate limit exceeded retry-after-ms=200" });
+				} else if (model.id === fallbackModel.id && fallbackTurns === 0) {
+					fallbackTurns += 1;
+					mock.push({ content: [bigText] });
+				} else {
+					mock.push({ content: ["ok"] });
+				}
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": true,
+			"compaction.strategy": "context-full",
+			"compaction.thresholdPercent": 80,
+			"compaction.thresholdTokens": -1,
+			"contextPromotion.enabled": true,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+			"retry.fallbackRevertPolicy": "cooldown-expiry",
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		// Primary rate-limits, falls back to the large-window model, and that turn
+		// returns a large payload that grows context past the primary's window.
+		await session.prompt("Trigger fallback and grow context past the primary window");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		// Cooldown expires; a queued follow-up drains through the auto-continue
+		// (agent.continue) path, which reverts to the primary. The post-revert
+		// context check now runs there too: the accumulated context no longer fits
+		// the primary's 4000 window, so it promotes to the larger-window model
+		// instead of issuing the oversized request. Before the fix the session
+		// stayed on the reverted primary and received the over-window request.
+		now += 60_000;
+		await session.followUp("Please continue on the reverted primary");
+		await session.waitForIdle();
+
+		expect(session.model?.id).toBe(fallbackModel.id);
+		expect(requestedModels.at(-1)).toBe(`${fallbackModel.provider}/${fallbackModel.id}`);
+		// The 4000-window primary is only ever hit by the initial rate-limited
+		// request — never by an over-window continuation after the revert.
+		expect(requestedModels.filter(id => id === `${primaryModel.provider}/${primaryModel.id}`)).toHaveLength(1);
+	});
+
+	it("never restores or probes an active fallback after cooldown expiry", async () => {
+		let fakeTimersEnabled = false;
+		try {
+			const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+			if (!primaryModel || !fallbackModel) {
+				throw new Error("Expected bundled primary and fallback test models to exist");
+			}
+
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+			const requestedModels: string[] = [];
+			const requestedProbeModels: string[] = [];
+			const fallbackRestoredEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_restored" }>> = [];
+			const mock = createMockModel();
+			const probeMock = createMockModel({
+				provider: primaryModel.provider,
+				id: primaryModel.id,
+				responses: [{ content: ["pong"] }],
+			});
+			const flushMicrotasks = async (): Promise<void> => {
+				for (let turn = 0; turn < 32; turn += 1) await Promise.resolve();
+			};
+			const advanceTimers = async (ms: number): Promise<void> => {
+				vi.advanceTimersByTime(ms);
+				await flushMicrotasks();
+			};
+			const settleWithFakeTimers = async <T>(operation: Promise<T>, label: string): Promise<T> => {
+				let outcome: { value: T } | { error: unknown } | undefined;
+				void operation.then(
+					value => {
+						outcome = { value };
+					},
+					error => {
+						outcome = { error };
+					},
+				);
+				for (let turn = 0; turn < 1_000 && !outcome; turn += 1) {
+					await flushMicrotasks();
+					if (!outcome) {
+						await advanceTimers(20);
+						await scheduler.yield();
+					}
+				}
+				if (!outcome) throw new Error(`Timed out waiting for ${label}`);
+				if ("error" in outcome) throw outcome.error;
+				return outcome.value;
+			};
+			let primaryAttempts = 0;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const selector = `${model.provider}/${model.id}`;
+					requestedModels.push(selector);
+					if (selector === primarySelector) {
+						if (primaryAttempts++ === 0) {
+							mock.push({ throw: "rate limit exceeded retry-after-ms=200" });
+						} else {
+							mock.push({ content: ["Unexpected primary turn"] });
+						}
+					} else if (selector === fallbackSelector) {
+						mock.push({ content: ["Fallback turn completed"] });
+					} else {
+						throw new Error(`Unexpected model requested during never-policy fallback test: ${selector}`);
+					}
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 0,
+				"retry.maxRetries": 0,
+				"retry.fallbackChains": {
+					default: [fallbackSelector],
+				},
+				"retry.fallbackRevertPolicy": "never",
+			});
+			settings.setModelRole("default", primarySelector);
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+				sideStreamFn: (model, context, options) => {
+					const selector = `${model.provider}/${model.id}`;
+					requestedProbeModels.push(selector);
+					if (selector !== primarySelector) {
+						throw new Error(`Unexpected model requested for fallback probe: ${selector}`);
+					}
+					return probeMock.stream(probeMock, context, options);
+				},
+			});
+			session.subscribe(event => {
+				if (event.type === "retry_fallback_restored") fallbackRestoredEvents.push(event);
+			});
+
+			vi.useFakeTimers();
+			fakeTimersEnabled = true;
+			await settleWithFakeTimers(session.prompt("Trigger fallback under the never revert policy"), "fallback turn");
+			await settleWithFakeTimers(session.waitForIdle(), "fallback idle");
+			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
+			expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
+
+			// This exceeds both the failed primary's cooldown and the private probe cadence.
+			await advanceTimers(5 * 60_000);
+			await scheduler.yield();
+			await flushMicrotasks();
+			expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
+			expect(requestedProbeModels).toEqual([]);
+			expect(fallbackRestoredEvents).toEqual([]);
+			expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
+
+			await settleWithFakeTimers(session.prompt("Keep using the never-policy fallback"), "subsequent fallback turn");
+			await settleWithFakeTimers(session.waitForIdle(), "subsequent fallback idle");
+			expect(requestedModels).toEqual([primarySelector, fallbackSelector, fallbackSelector]);
+			expect(requestedProbeModels).toEqual([]);
+			expect(fallbackRestoredEvents).toEqual([]);
+			expect(session.model).toMatchObject({ provider: fallbackModel.provider, id: fallbackModel.id });
+		} finally {
+			try {
+				session?.beginDispose();
+			} finally {
+				if (fakeTimersEnabled) {
+					vi.clearAllTimers();
+					vi.useRealTimers();
+				}
+			}
+			try {
+				await session?.dispose();
+			} finally {
+				session = undefined;
+			}
+		}
+	});
+
+	it("restores routed fallback primaries after cooldown expiry", async () => {
 		const openRouterModel = getBundledModel("openrouter", "z-ai/glm-4.7");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
 		if (!openRouterModel || !fallbackModel) {

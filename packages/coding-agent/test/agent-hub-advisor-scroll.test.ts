@@ -10,8 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { SettingPath, SettingValue } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentHubRemote } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -841,14 +840,7 @@ describe("AgentTranscriptViewer", () => {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
-	it("hides Hub process cards in a parked subagent transcript even when enabled", () => {
-		const readSetting: Settings["get"] = settings.get.bind(settings);
-		const getSetting = vi
-			.spyOn(settings, "get")
-			.mockImplementation(<P extends SettingPath>(path: P): SettingValue<P> => {
-				if (path === "display.showHubProcessActivity") return true as SettingValue<P>;
-				return readSetting(path);
-			});
+	it("uses the generic fallback for an unknown parked Hub call", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-hub-history-"));
 		const file = path.join(dir, "__advisor.jsonl");
 		let viewer: AgentTranscriptViewer | undefined;
@@ -861,15 +853,14 @@ describe("AgentTranscriptViewer", () => {
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
 
-			expect(rendered).not.toContain("SUB_HUB_PROCESS");
-			expect(rendered).not.toContain("SUB_HUB_RESULT");
+			expect(rendered).toContain("SUB_HUB_PROCESS");
+			expect(rendered).toContain("SUB_HUB_RESULT");
 			expect(rendered).toContain("SUB_VISIBLE_TEXT");
 			expect(rendered).toContain("SUB_VISIBLE_AFTER_HUB");
 			expect(rendered).toContain("SUB_VISIBLE_BASH");
 			expect(rendered).toContain("SUB_VISIBLE_RESULT");
 		} finally {
 			viewer?.dispose();
-			getSetting.mockRestore();
 			removeSyncWithRetries(dir);
 		}
 	});

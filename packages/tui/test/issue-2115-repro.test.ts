@@ -14,6 +14,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 const MULTIPLEXER_ENV_KEYS = ["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"] as const;
+const ORIGINAL_HERDR_ENV = Bun.env.HERDR_ENV;
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -86,6 +87,10 @@ class ManualRenderScheduler implements RenderScheduler {
 	}
 }
 
+beforeEach(() => {
+	delete Bun.env.HERDR_ENV;
+});
+
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
 	let savedMultiplexerEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
@@ -102,6 +107,8 @@ describe("issue #2115: ConPTY large-session resume truncates at logical lines", 
 		}
 		savedMultiplexerEnv = {};
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+		if (ORIGINAL_HERDR_ENV === undefined) delete Bun.env.HERDR_ENV;
+		else Bun.env.HERDR_ENV = ORIGINAL_HERDR_ENV;
 		vi.restoreAllMocks();
 	});
 

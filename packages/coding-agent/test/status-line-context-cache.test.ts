@@ -68,6 +68,7 @@ function makeSession(opts: { messages: unknown[]; contextWindow?: number; usage?
 			getSessionName: () => "test",
 		},
 		getAsyncJobSnapshot: () => ({ running: [] }),
+		getVisibleAsyncJobCount: () => 0,
 		getContextUsage: () => {
 			calls++;
 			return usage;

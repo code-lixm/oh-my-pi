@@ -102,6 +102,7 @@ function createRebuildContext(transcript: SessionContext) {
 		viewSession: {
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
+			hasBuiltInTool: (name: string) => name === "todo",
 			extensionRunner: undefined,
 			sessionManager: { getEntries: vi.fn(() => []), getCwd: vi.fn(() => process.cwd()) },
 		},

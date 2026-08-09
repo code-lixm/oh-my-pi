@@ -16,7 +16,7 @@ import type { AgentActivityState } from "./agent-activity";
 export const MAIN_AGENT_ID = "Main";
 
 /** Sidecar marker retained beside a child transcript after an explicit kill. */
-export const AGENT_TOMBSTONE_SUFFIX = ".tombstone";
+const AGENT_TOMBSTONE_SUFFIX = ".tombstone";
 
 export function getAgentTombstonePath(sessionFile: string): string {
 	return `${sessionFile}${AGENT_TOMBSTONE_SUFFIX}`;
@@ -34,7 +34,7 @@ export function getAgentTombstonePath(sessionFile: string): string {
 export type AgentStatus = "running" | "waiting" | "idle" | "parked" | "aborted";
 export type AgentTerminalStatus = Extract<AgentProgress["status"], "completed" | "failed" | "aborted">;
 /** Provenance of a displayed duration: active runtime, transcript span, or unavailable. */
-export type AgentDurationKind = "active" | "span" | "unknown";
+type AgentDurationKind = "active" | "span" | "unknown";
 /**
  * - `main`/`sub`: the user-facing agent tree (driving agent + task subagents).
  * - `advisor`: a passive review transcript persisted like a subagent for usage

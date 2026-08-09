@@ -58,6 +58,7 @@ function makeSession() {
 		isFastModeEnabled: () => false,
 		getGoalModeState: () => null,
 		getAsyncJobSnapshot: () => ({ running: [] }),
+		getVisibleAsyncJobCount: () => 0,
 		modelRegistry: { isUsingOAuth: () => false },
 		sessionManager: {
 			getSessionName: () => "dispose-leak test",

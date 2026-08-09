@@ -1424,6 +1424,14 @@ export interface ExtensionAPI {
 	registerProvider(name: string, config: ProviderConfig): void;
 
 	/**
+	 * Unregister a provider previously registered by an extension.
+	 *
+	 * Removes extension-provided models and restores overridden built-in models.
+	 * Has no effect when the provider is not registered.
+	 */
+	unregisterProvider(name: string): void;
+
+	/**
 	 * Register or override a usage provider adapter for a provider.
 	 *
 	 * The config shape matches `UsageProvider` without its `id`; the host layers
@@ -1577,6 +1585,10 @@ export interface ExtensionRuntimeState {
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
 	/** Usage-provider registrations queued during extension loading, processed during session initialization */
 	pendingUsageProviderRegistrations: RuntimeUsageProviderRegistration[];
+	/** Queue a provider registration until initialization, then apply it immediately. */
+	registerProvider(name: string, config: ProviderConfig, sourceId: string): void;
+	/** Remove a queued or initialized provider registration. */
+	unregisterProvider(name: string, sourceId: string): void;
 }
 
 /** Action implementations for ExtensionAPI methods. */

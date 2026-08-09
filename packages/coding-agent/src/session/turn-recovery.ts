@@ -28,7 +28,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
 import type { Settings } from "../config/settings";
-import type { RecoveredRetryError } from "../extensibility/shared-events";
+import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -54,9 +54,11 @@ import {
 	findRetryFallbackCandidates,
 	formatRetryFallbackSelector,
 	getRetryFallbackChains,
+	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackChains,
 	type RetryFallbackResolutionContext,
+	type RetryFallbackRevertPolicy,
 	type RetryFallbackSelector,
 	resolveRetryFallbackChainKey,
 	validateRetryFallbackChains,
@@ -164,7 +166,7 @@ export interface TurnRecoveryOptions {
 	initialRetryFallback?: InitialRetryFallbackState;
 }
 
-type PendingRecoveredRetryError = {
+type PendingRetryError = {
 	entryId: string;
 	persistenceKey: string;
 	recovery: AssistantRetryRecoveryKind;
@@ -191,7 +193,7 @@ export class TurnRecovery {
 	#fallbackProbeAbortController: AbortController | undefined;
 	#fallbackRecoveryReady: ActiveRetryFallbackState | undefined;
 	#usageReserveApprovedSelector: string | undefined;
-	#pendingRecoveredRetryErrors: PendingRecoveredRetryError[] = [];
+	#pendingRetryErrors: PendingRetryError[] = [];
 	#usageLimitOutcomes = new WeakMap<AssistantMessage, Promise<UsageLimitOutcome>>();
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
@@ -203,6 +205,8 @@ export class TurnRecovery {
 			this.#activeRetryFallback = {
 				...options.initialRetryFallback,
 				lastAppliedFallbackThinkingLevel: host.configuredThinkingLevel(),
+				pinned: options.initialRetryFallback.pinned ?? false,
+				hasCompletedFallbackTurn: true,
 			};
 		}
 		this.#validateRetryFallbackChains();
@@ -243,23 +247,28 @@ export class TurnRecovery {
 		if (message.stopReason === "error" || message.stopReason === "aborted" || this.#isEmptyAssistantStop(message)) {
 			return;
 		}
+		const fallback = this.#activeRetryFallback;
+		const model = this.#host.model();
+		if (fallback && model) fallback.hasCompletedFallbackTurn = true;
 		if (this.#retrySagaAttempt !== 0) {
-			const model = this.#host.model();
-			if (this.#activeRetryFallback && model) {
+			if (fallback && model) {
 				await this.#host.emitSessionEvent({
 					type: "retry_fallback_succeeded",
 					model: formatRetryFallbackSelector(model, this.#host.thinkingLevel()),
-					role: this.#activeRetryFallback.role ?? "fireworks-fast",
+					role: fallback.role ?? "fireworks-fast",
 				});
 			}
-			const recoveredErrors = await this.#markPendingRecoveredRetryErrors(message);
+			const retryErrors = await this.#markPendingRetryErrors({
+				status: "recovered",
+				supersedingMessage: message,
+			});
 			await this.#host.emitSessionEvent({
 				type: "auto_retry_end",
 				success: true,
 				attempt: this.#retrySagaAttempt,
-				recoveredErrors,
+				retryErrors,
 			});
-			this.#clearPendingRecoveredRetryErrors();
+			this.#clearPendingRetryErrors();
 			this.#retryAttempt = 0;
 			this.#retrySagaAttempt = 0;
 		}
@@ -269,15 +278,17 @@ export class TurnRecovery {
 	async onErrorSettledWithoutRetry(message: AssistantMessage, compaction: RecoveryCompactionResult): Promise<void> {
 		if (message.stopReason !== "error" || this.#retrySagaAttempt === 0 || compaction.continuationScheduled) return;
 		const attempt = this.#retrySagaAttempt;
+		const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 		this.#retryAttempt = 0;
 		this.#retrySagaAttempt = 0;
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_end",
 			success: false,
 			attempt,
+			retryErrors,
 			finalError: message.errorMessage,
 		});
-		this.#clearPendingRecoveredRetryErrors();
+		this.#clearPendingRetryErrors();
 	}
 
 	/** Persists an otherwise skipped terminal empty error turn. */
@@ -318,42 +329,57 @@ export class TurnRecovery {
 	}
 
 	/** Applies a successful probe before the next provider stream starts. */
-	async restoreReadyFallbackAtSafeBoundary(): Promise<void> {
+	async restoreReadyFallbackAtSafeBoundary(): Promise<boolean> {
+		if (this.#getRetryFallbackRevertPolicy() !== "probe") return false;
 		if (
 			this.#host.isDisposed() ||
 			this.#host.agent.state.isStreaming ||
 			this.#host.isCompacting() ||
 			this.#host.abortInProgress()
 		) {
-			return;
+			return false;
 		}
-		await this.#restoreReadyFallbackPrimary();
+		return this.#restoreReadyFallbackPrimary();
 	}
 
-	async #restoreReadyFallbackPrimary(): Promise<void> {
+	async #restoreReadyFallbackPrimary(): Promise<boolean> {
 		const fallback = this.#fallbackRecoveryReady;
-		if (!fallback || this.#activeRetryFallback !== fallback) return;
+		if (
+			this.#getRetryFallbackRevertPolicy() !== "probe" ||
+			!fallback ||
+			fallback.pinned ||
+			this.#activeRetryFallback !== fallback
+		) {
+			return false;
+		}
 		this.#fallbackRecoveryReady = undefined;
 		try {
-			if (!(await this.#restoreFallbackPrimary(fallback, true))) this.#scheduleFallbackRecoveryProbe();
+			const restored = await this.#restoreFallbackPrimary(fallback, true);
+			if (!restored) this.#scheduleFallbackRecoveryProbe();
+			return restored;
 		} catch (error) {
 			logger.debug("Failed to restore healthy fallback primary", {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			this.#scheduleFallbackRecoveryProbe();
+			return false;
 		}
 	}
 
 	/** Keeps the active fallback across user turns until its primary passes a probe. */
-	async prepareForUserTurn(): Promise<void> {
-		await this.restoreReadyFallbackAtSafeBoundary();
+	async prepareForUserTurn(): Promise<boolean> {
+		if (this.#getRetryFallbackRevertPolicy() !== "probe") return false;
+		const restored = await this.restoreReadyFallbackAtSafeBoundary();
 		this.#scheduleFallbackRecoveryProbe();
+		return restored;
 	}
 
 	#scheduleFallbackRecoveryProbe(): void {
 		const fallback = this.#activeRetryFallback;
 		if (
 			!fallback ||
+			this.#getRetryFallbackRevertPolicy() !== "probe" ||
+			fallback.pinned ||
 			this.#host.isDisposed() ||
 			this.#fallbackRecoveryTimer ||
 			this.#fallbackProbeAbortController ||
@@ -369,7 +395,14 @@ export class TurnRecovery {
 	}
 
 	async #runFallbackRecoveryProbe(fallback: ActiveRetryFallbackState): Promise<void> {
-		if (this.#activeRetryFallback !== fallback || this.#host.isDisposed()) return;
+		if (
+			this.#getRetryFallbackRevertPolicy() !== "probe" ||
+			fallback.pinned ||
+			this.#activeRetryFallback !== fallback ||
+			this.#host.isDisposed()
+		) {
+			return;
+		}
 		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
 		if (!originalSelector) {
 			this.#scheduleFallbackRecoveryProbe();
@@ -391,7 +424,15 @@ export class TurnRecovery {
 		const timeout = setTimeout(() => controller.abort(), FALLBACK_RECOVERY_PROBE_TIMEOUT_MS);
 		try {
 			const healthy = await this.#host.probeModelConnectivity(primaryModel, controller.signal);
-			if (!healthy || this.#activeRetryFallback !== fallback || this.#host.isDisposed()) return;
+			if (
+				!healthy ||
+				this.#getRetryFallbackRevertPolicy() !== "probe" ||
+				fallback.pinned ||
+				this.#activeRetryFallback !== fallback ||
+				this.#host.isDisposed()
+			) {
+				return;
+			}
 			this.#host.modelRegistry.clearSuppressedSelector(originalSelector.raw);
 			if (this.#host.isStreaming() || this.#host.isCompacting() || this.#host.abortInProgress()) {
 				this.#fallbackRecoveryReady = fallback;
@@ -453,6 +494,68 @@ export class TurnRecovery {
 			});
 		}
 		return true;
+	}
+
+	/**
+	 * Restores a cooldown-expired primary without waiting for a connectivity probe.
+	 * The shared restoration primitive preserves the probe path's model, thinking,
+	 * event, and cleanup bookkeeping.
+	 */
+	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
+		const fallback = this.#activeRetryFallback;
+		if (
+			!fallback?.hasCompletedFallbackTurn ||
+			fallback.pinned ||
+			this.isRetrying ||
+			this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry"
+		) {
+			return false;
+		}
+
+		const originalSelector = parseRetryFallbackSelector(fallback.originalSelector, this.#host.modelRegistry);
+		if (!originalSelector) {
+			this.clearActiveRetryFallback();
+			return false;
+		}
+
+		const currentModel = this.#host.model();
+		if (!currentModel) return false;
+		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
+		if (currentSelector === originalSelector.raw) {
+			if (!this.isRetryFallbackSelectorSuppressed(originalSelector)) this.clearActiveRetryFallback();
+			return false;
+		}
+		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) return false;
+
+		const resolvedPrimary = resolveModelOverride(
+			[originalSelector.raw],
+			this.#host.modelRegistry,
+			this.#host.settings,
+		);
+		const primaryModel =
+			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
+		if (!primaryModel) return false;
+		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
+		if (!apiKey) return false;
+		if (
+			!fallback.hasCompletedFallbackTurn ||
+			fallback.pinned ||
+			this.isRetrying ||
+			this.#activeRetryFallback !== fallback ||
+			this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry"
+		) {
+			return false;
+		}
+
+		return this.#restoreFallbackPrimary(fallback, true);
+	}
+
+	/** Restores a fallback primary only through the configured recovery policy. */
+	async maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
+		const policy = this.#getRetryFallbackRevertPolicy();
+		if (policy === "probe") return this.restoreReadyFallbackAtSafeBoundary();
+		if (policy === "cooldown-expiry") return this.#maybeRestoreRetryFallbackPrimary();
+		return false;
 	}
 
 	/** Applies model fallback policy from live usage health before a turn starts. */
@@ -525,8 +628,8 @@ export class TurnRecovery {
 		}
 	}
 
-	#clearPendingRecoveredRetryErrors(): void {
-		this.#pendingRecoveredRetryErrors = [];
+	#clearPendingRetryErrors(): void {
+		this.#pendingRetryErrors = [];
 	}
 
 	/**
@@ -576,7 +679,7 @@ export class TurnRecovery {
 		return parts.join("; ");
 	}
 
-	async #recordPendingRecoveredRetryError(
+	async #recordPendingRetryError(
 		message: AssistantMessage,
 		id: number,
 		options: { switchedCredential: boolean; switchedModel: boolean; delayMs: number },
@@ -595,11 +698,11 @@ export class TurnRecovery {
 			break;
 		}
 		if (!branchEntry) return;
-		if (this.#pendingRecoveredRetryErrors.some(error => error.entryId === branchEntry.id)) return;
+		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
 		const rateLimited = AIError.is(id, AIError.Flag.UsageLimit);
 		const recovery = this.#retryRecoveryKind(id, options.switchedCredential, options.switchedModel, options.delayMs);
 		const note = this.#retryRecoveryNote(recovery, rateLimited);
-		this.#pendingRecoveredRetryErrors.push({
+		this.#pendingRetryErrors.push({
 			entryId: branchEntry.id,
 			persistenceKey,
 			recovery,
@@ -608,24 +711,17 @@ export class TurnRecovery {
 		});
 	}
 
-	async #markPendingRecoveredRetryErrors(supersedingMessage: AssistantMessage): Promise<RecoveredRetryError[]> {
-		if (this.#pendingRecoveredRetryErrors.length === 0) return [];
+	async #markPendingRetryErrors(
+		completion: { status: "recovered"; supersedingMessage: AssistantMessage } | { status: "superseded" },
+	): Promise<RetryErrorUpdate[]> {
+		if (this.#pendingRetryErrors.length === 0) return [];
 		const branch = this.#host.sessionManager.getBranch();
 		const branchById = new Map<string, SessionEntry>();
 		for (const entry of branch) {
 			branchById.set(entry.id, entry);
 		}
-		const recoveredAt = new Date().toISOString();
-		const supersededBy: AssistantRetryRecovery["supersededBy"] = {
-			timestamp: supersedingMessage.timestamp,
-			provider: supersedingMessage.provider,
-			model: supersedingMessage.model,
-		};
-		if (supersedingMessage.responseId) {
-			supersededBy.responseId = supersedingMessage.responseId;
-		}
-		const recoveredErrors: RecoveredRetryError[] = [];
-		for (const pending of this.#pendingRecoveredRetryErrors) {
+		const retryErrors: RetryErrorUpdate[] = [];
+		for (const pending of this.#pendingRetryErrors) {
 			let entry = branchById.get(pending.entryId);
 			if (entry?.type !== "message" || entry.message.role !== "assistant") {
 				entry = branch
@@ -639,27 +735,45 @@ export class TurnRecovery {
 					);
 			}
 			if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
-			const retryRecovery: AssistantRetryRecovery = {
-				kind: "auto-retry",
-				status: "recovered",
-				attempt: pending.attempt,
-				recoveredAt,
-				recovery: pending.recovery,
-				note: pending.note,
-				supersededBy,
-			};
+			let retryRecovery: AssistantRetryRecovery;
+			if (completion.status === "recovered") {
+				retryRecovery = {
+					kind: "auto-retry",
+					status: "recovered",
+					attempt: pending.attempt,
+					recoveredAt: new Date().toISOString(),
+					recovery: pending.recovery,
+					note: pending.note,
+					supersededBy: {
+						timestamp: completion.supersedingMessage.timestamp,
+						...(completion.supersedingMessage.responseId === undefined
+							? {}
+							: { responseId: completion.supersedingMessage.responseId }),
+						provider: completion.supersedingMessage.provider,
+						model: completion.supersedingMessage.model,
+					},
+				};
+			} else {
+				retryRecovery = {
+					kind: "auto-retry",
+					status: "superseded",
+					attempt: pending.attempt,
+					recovery: pending.recovery,
+					note: pending.note,
+				};
+			}
 			entry.message.retryRecovery = retryRecovery;
-			recoveredErrors.push({
+			retryErrors.push({
 				entryId: entry.id,
 				persistenceKey: pending.persistenceKey,
 				note: retryRecovery.note,
 				retryRecovery,
 			});
 		}
-		if (recoveredErrors.length > 0) {
+		if (retryErrors.length > 0) {
 			await this.#host.sessionManager.rewriteEntries();
 		}
-		return recoveredErrors;
+		return retryErrors;
 	}
 
 	async #handleEmptyAssistantStop(assistantMessage: AssistantMessage): Promise<boolean> {
@@ -691,7 +805,7 @@ export class TurnRecovery {
 				attempt: this.#retrySagaAttempt > 0 ? this.#retrySagaAttempt : attempts,
 				finalError,
 			});
-			this.#clearPendingRecoveredRetryErrors();
+			this.#clearPendingRetryErrors();
 			this.#retryAttempt = 0;
 			this.#retrySagaAttempt = 0;
 			this.resolveRetry();
@@ -1191,6 +1305,10 @@ export class TurnRecovery {
 		);
 	}
 
+	#getRetryFallbackRevertPolicy(): RetryFallbackRevertPolicy {
+		return getRetryFallbackRevertPolicy(this.#host.settings);
+	}
+
 	/** Clears fallback ownership after an explicit model change or session boundary. */
 	clearActiveRetryFallback(): void {
 		this.#activeRetryFallback = undefined;
@@ -1388,6 +1506,7 @@ export class TurnRecovery {
 		}
 		this.#usageReserveApprovedSelector = undefined;
 		return this.applyRetryFallbackCandidate(role, fallback.selector, currentSelector, {
+			pinFallback: true,
 			apiKey: fallback.apiKey,
 			signal,
 		});
@@ -1413,7 +1532,7 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { apiKey?: string; signal?: AbortSignal },
+		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal },
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1456,10 +1575,14 @@ export class TurnRecovery {
 				originalSelector: currentSelector,
 				originalThinkingLevel: currentThinkingLevel,
 				lastAppliedFallbackThinkingLevel: nextThinkingLevel,
+				pinned: options?.pinFallback === true,
+				hasCompletedFallbackTurn: false,
 			};
 		} else {
 			this.#activeRetryFallback.role ??= role;
 			this.#activeRetryFallback.lastAppliedFallbackThinkingLevel = nextThinkingLevel;
+			this.#activeRetryFallback.pinned = this.#activeRetryFallback.pinned || options?.pinFallback === true;
+			this.#activeRetryFallback.hasCompletedFallbackTurn = false;
 		}
 		await this.#host.emitSessionEvent({
 			type: "retry_fallback_applied",
@@ -1471,7 +1594,7 @@ export class TurnRecovery {
 		return true;
 	}
 
-	async #tryRetryModelFallback(currentSelector: string): Promise<boolean> {
+	async #tryRetryModelFallback(currentSelector: string, options?: { pinFallback?: boolean }): Promise<boolean> {
 		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
 		if (!role) return false;
 
@@ -1486,7 +1609,7 @@ export class TurnRecovery {
 			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 			if (!apiKey) continue;
-			return this.applyRetryFallbackCandidate(role, selector, currentSelector, { apiKey });
+			return this.applyRetryFallbackCandidate(role, selector, currentSelector, { ...options, apiKey });
 		}
 
 		return false;
@@ -1572,6 +1695,8 @@ export class TurnRecovery {
 				originalSelector: currentSelector,
 				originalThinkingLevel: currentThinkingLevel,
 				lastAppliedFallbackThinkingLevel: currentThinkingLevel,
+				pinned: false,
+				hasCompletedFallbackTurn: false,
 			};
 		}
 		await this.#host.emitSessionEvent({
@@ -1678,27 +1803,27 @@ export class TurnRecovery {
 
 		const errorMessage = message.errorMessage || "Unknown error";
 		const id = this.#classifyRetryMessage(message);
+		const rateLimitReason = parseRateLimitReason(errorMessage);
 		const staleOpenAIResponsesReplayError = AIError.is(id, AIError.Flag.StaleResponsesItem);
 		const recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
 		const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
 		let delayMs = staleOpenAIResponsesReplayError
 			? 0
 			: calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
-		// Concurrency caps shed-and-backoff (5s) rather than burning a sibling
-		// credential, so the usage-limit rotation branch below is deliberately
-		// skipped for them. Apply the reason-based backoff to the transient
-		// same-model retry path too — otherwise the default exponential base
-		// (≈500ms) re-hits the cap immediately and burns the retry budget while
-		// the concurrency slot stays occupied. A categorical 402 billing cap whose
-		// body merely mentions concurrency is still a usage limit (handled below),
-		// so gate on the flag matching the rotation decision.
+		// Transient rate/concurrency caps stay on the same credential, but must
+		// honor their reason-specific windows. The default exponential base
+		// (≈500ms, capped at 8s) otherwise re-hits the cap and burns the retry
+		// budget before either window can clear. An explicit provider
+		// retry-after is authoritative in both directions, so the heuristic
+		// window only applies when the error carries no parsed timing.
 		if (
 			!staleOpenAIResponsesReplayError &&
 			!AIError.is(id, AIError.Flag.UsageLimit) &&
-			parseRateLimitReason(errorMessage) === "CONCURRENT_LIMIT"
+			parsedRetryAfterMs === undefined &&
+			(rateLimitReason === "CONCURRENT_LIMIT" || rateLimitReason === "RATE_LIMIT_EXCEEDED")
 		) {
-			const concurrentBackoffMs = calculateRateLimitBackoffMs("CONCURRENT_LIMIT");
-			if (concurrentBackoffMs > delayMs) delayMs = concurrentBackoffMs;
+			const reasonBackoffMs = calculateRateLimitBackoffMs(rateLimitReason);
+			if (reasonBackoffMs > delayMs) delayMs = reasonBackoffMs;
 		}
 		let switchedCredential = false;
 		let switchedModel = false;
@@ -1757,7 +1882,7 @@ export class TurnRecovery {
 				if (!classifierRefusal) {
 					this.noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
 				}
-				switchedModel = await this.#tryRetryModelFallback(currentSelector);
+				switchedModel = await this.#tryRetryModelFallback(currentSelector, { pinFallback: classifierRefusal });
 			}
 			// Fireworks Fast→base is intrinsic but still waits for the same retry budget.
 			if (retryBudgetExhausted && !switchedModel && allowModelFallback && options?.fireworksFastFallback) {
@@ -1773,16 +1898,18 @@ export class TurnRecovery {
 
 		if (retryBudgetExhausted) {
 			if (!switchedModel) {
+				const attempt = this.#retryAttempt - 1;
+				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
 				await this.persistTerminalEmptyErrorTurn(message);
-				// Max retries exceeded and no fallback model to switch to: emit
-				// final failure and reset.
+				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 				await this.#host.emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt: this.#retrySagaAttempt - 1,
 					finalError: message.errorMessage,
+					retryErrors,
 				});
-				this.#clearPendingRecoveredRetryErrors();
+				this.#clearPendingRetryErrors();
 				this.#retryAttempt = 0;
 				this.#retrySagaAttempt = 0;
 				this.resolveRetry(); // Resolve so waitForRetry() completes
@@ -1800,13 +1927,15 @@ export class TurnRecovery {
 			// an announcement that never resolves.
 			if (this.#retrySagaAttempt > 1) {
 				await this.persistTerminalEmptyErrorTurn(message);
+				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 				await this.#host.emitSessionEvent({
 					type: "auto_retry_end",
 					success: false,
 					attempt: this.#retrySagaAttempt - 1,
 					finalError: errorMessage,
+					retryErrors,
 				});
-				this.#clearPendingRecoveredRetryErrors();
+				this.#clearPendingRetryErrors();
 			}
 			this.#retryAttempt = 0;
 			this.#retrySagaAttempt = 0;
@@ -1833,12 +1962,12 @@ export class TurnRecovery {
 				attempt,
 				finalError: `Provider requested ${delayMs}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
 			});
-			this.#clearPendingRecoveredRetryErrors();
+			this.#clearPendingRetryErrors();
 			this.resolveRetry();
 			return false;
 		}
 
-		await this.#recordPendingRecoveredRetryError(message, id, { switchedCredential, switchedModel, delayMs });
+		await this.#recordPendingRetryError(message, id, { switchedCredential, switchedModel, delayMs });
 
 		// Register before notifying listeners: an explicit model switch from an
 		// auto_retry_start handler must be able to cancel this pending retry.
@@ -1884,7 +2013,7 @@ export class TurnRecovery {
 				attempt,
 				finalError: "Retry cancelled",
 			});
-			this.#clearPendingRecoveredRetryErrors();
+			this.#clearPendingRetryErrors();
 			this.resolveRetry();
 			return false;
 		}
@@ -1952,13 +2081,15 @@ export class TurnRecovery {
 		this.#retrySagaAttempt = 0;
 		const localError = error instanceof Error ? error.message : String(error);
 		await this.persistTerminalEmptyErrorTurn(message);
+		const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_end",
 			success: false,
 			attempt,
+			retryErrors,
 			finalError: `Retry continuation failed locally: ${localError}. Original error: ${message.errorMessage ?? "Unknown error"}`,
 		});
-		this.#clearPendingRecoveredRetryErrors();
+		this.#clearPendingRetryErrors();
 		this.resolveRetry();
 	}
 

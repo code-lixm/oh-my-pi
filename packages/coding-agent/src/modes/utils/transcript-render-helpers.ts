@@ -218,14 +218,15 @@ function sanitizeRecoveredError(message: AssistantAgentMessage): string {
 
 /**
  * Resolve the turn-ending assistant error presentation, if any. Silent and
- * user-interrupt aborts yield no label. Recovered auto-retry errors collapse to
- * the original error text for a non-error strikethrough; terminal
- * errors keep the full red presentation.
+ * user-interrupt aborts yield no label. Recovered retry attempts display the
+ * original error text as a non-error strikethrough; superseded attempts are
+ * hidden while the final terminal error keeps its full presentation.
  */
 export function resolveAssistantErrorPresentation(
 	message: AssistantAgentMessage,
 	retryAttempt = 0,
 ): AssistantErrorPresentation {
+	if (message.retryRecovery?.status === "superseded") return { kind: "none" };
 	if (message.retryRecovery?.status === "recovered") {
 		return {
 			kind: "compact-recovered",

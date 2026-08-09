@@ -91,13 +91,13 @@ describe("issue #2325 / #7332: connectors terminate at `└─` and chain column
 		};
 
 		// b3 is the last sibling: its connector is `└─` at column 2.
-		expect(findRow("user:second review head")).toMatch(/^\s{2}└─ \S/);
+		expect(findRow("second review head")).toMatch(/^\s{2}└─ \S/);
 
 		// Chain rows under the `└─` head: the corner column (col 2) must stay
 		// blank — no `│` running down from the `└─` — and every chain row is
 		// anchored by `│` on the same column, one level right (below the head's
 		// content). Exact prefix: 5 spaces, `│`, 2 spaces, then content.
-		for (const needle of ["assistant:fix-asst", "user:fix it all", "assistant:rev-asst"]) {
+		for (const needle of ["fix-asst", "fix it all", "rev-asst"]) {
 			const row = findRow(needle);
 			expect(row).not.toMatch(/^\s{2}│/);
 			expect(row).toMatch(/^\s{5}│\s{2}\S/);
@@ -106,12 +106,12 @@ describe("issue #2325 / #7332: connectors terminate at `└─` and chain column
 		// The deeper branch point keeps stable columns: connectors sit directly
 		// below the chain content column (col 8), with nothing dangling in the
 		// outer corner columns.
-		expect(findRow("user:review the fixes")).toMatch(/^\s{8}├─ \S/);
-		expect(findRow("user:other thread")).toMatch(/^\s{8}└─ \S/);
+		expect(findRow("review the fixes")).toMatch(/^\s{8}├─ \S/);
+		expect(findRow("other thread")).toMatch(/^\s{8}└─ \S/);
 
 		// Continuations of the non-last grandchild ride its sibling line at the
 		// same column (col 8) — no drift back into outer columns.
-		for (const needle of ["user:all findings done", "user:still have findings"]) {
+		for (const needle of ["all findings done", "still have findings"]) {
 			const row = findRow(needle);
 			expect(row).toMatch(/^\s{8}│\s{5}\S/);
 		}
@@ -151,11 +151,11 @@ describe("issue #7332: single-child roots stay nested under the virtual root", (
 
 		// root1 is not on the active path: its head sits at the shared column 0
 		// (2-space cursor, no gutter prefix).
-		expect(findRow("user:root one head")).toMatch(/^\s{2}\S/);
+		expect(findRow("root one head")).toMatch(/^\s{2}\S/);
 
 		// Its linear descendants nest one level in; before the fix they collapsed
 		// back to the root's column.
-		for (const needle of ["assistant:root one reply", "user:root one follow"]) {
+		for (const needle of ["root one reply", "root one follow"]) {
 			expect(findRow(needle)).toMatch(/^\s{5}\S/);
 		}
 	});

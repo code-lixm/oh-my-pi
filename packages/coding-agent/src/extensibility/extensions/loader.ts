@@ -76,6 +76,15 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }> = [];
 	pendingUsageProviderRegistrations: RuntimeUsageProviderRegistration[] = [];
 
+	registerProvider(name: string, config: ProviderConfig, sourceId: string): void {
+		this.pendingProviderRegistrations.push({ name, config, sourceId });
+	}
+
+	unregisterProvider(name: string): void {
+		const remaining = this.pendingProviderRegistrations.filter(registration => registration.name !== name);
+		this.pendingProviderRegistrations.splice(0, this.pendingProviderRegistrations.length, ...remaining);
+	}
+
 	sendMessage(): void {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
@@ -293,7 +302,11 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	}
 
 	registerProvider(name: string, config: ProviderConfig): void {
-		this.runtime.pendingProviderRegistrations.push({ name, config, sourceId: this.extension.path });
+		this.runtime.registerProvider(name, config, this.extension.path);
+	}
+
+	unregisterProvider(name: string): void {
+		this.runtime.unregisterProvider(name, this.extension.path);
 	}
 
 	registerUsageProvider(name: string, config: UsageProviderConfig): void {
@@ -318,36 +331,81 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 	};
 }
 
-async function loadExtension(
-	extensionPath: string,
-	cwd: string,
-	eventBus: EventBus,
+/**
+ * Runs an extension factory with provider and usage-provider registration rollback
+ * on failure. Restores complete registration queues when the factory throws because
+ * an extension may unregister entries queued by an earlier extension.
+ */
+async function runExtensionFactory(
+	factory: ExtensionFactory,
+	api: ExtensionAPI,
 	runtime: IExtensionRuntime,
-): Promise<{ extension: Extension | null; error: string | null }> {
+): Promise<void> {
+	const providerRegistrationCheckpoint = [...runtime.pendingProviderRegistrations];
+	const usageProviderRegistrationCheckpoint = [...runtime.pendingUsageProviderRegistrations];
+
+	try {
+		await factory(api);
+	} catch (error) {
+		runtime.pendingProviderRegistrations.splice(
+			0,
+			runtime.pendingProviderRegistrations.length,
+			...providerRegistrationCheckpoint,
+		);
+		runtime.pendingUsageProviderRegistrations.splice(
+			0,
+			runtime.pendingUsageProviderRegistrations.length,
+			...usageProviderRegistrationCheckpoint,
+		);
+		throw error;
+	}
+}
+
+interface ImportedExtensionModule {
+	factory: ExtensionFactory | null;
+	resolvedPath: string;
+	error: string | null;
+}
+
+async function importExtensionModule(extensionPath: string, cwd: string): Promise<ImportedExtensionModule> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
-	const providerRegistrationCount = runtime.pendingProviderRegistrations.length;
-	const usageProviderRegistrationCount = runtime.pendingUsageProviderRegistrations.length;
 	try {
 		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
 		if (typeof factory !== "function") {
 			return {
-				extension: null,
+				factory: null,
+				resolvedPath,
 				error: `Extension does not export a valid factory function: ${extensionPath}`,
 			};
 		}
 
-		const extension = createExtension(extensionPath, resolvedPath);
+		return { factory, resolvedPath, error: null };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
+	}
+}
+
+async function bindExtension(
+	extensionPath: string,
+	imported: ImportedExtensionModule,
+	cwd: string,
+	eventBus: EventBus,
+	runtime: IExtensionRuntime,
+): Promise<{ extension: Extension | null; error: string | null }> {
+	const factory = imported.factory;
+	if (imported.error !== null || factory === null) {
+		return { extension: null, error: imported.error };
+	}
+	try {
+		const extension = createExtension(extensionPath, imported.resolvedPath);
 		const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
-		await withHostGuard(async () => {
-			await factory(api);
-		});
+		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
 
 		return { extension, error: null };
 	} catch (err) {
-		runtime.pendingProviderRegistrations.splice(providerRegistrationCount);
-		runtime.pendingUsageProviderRegistrations.splice(usageProviderRegistrationCount);
 		const message = err instanceof Error ? err.message : String(err);
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
@@ -363,22 +421,19 @@ export async function loadExtensionFromFactory(
 	runtime: IExtensionRuntime,
 	name = "<inline>",
 ): Promise<Extension> {
-	const providerRegistrationCount = runtime.pendingProviderRegistrations.length;
-	const usageProviderRegistrationCount = runtime.pendingUsageProviderRegistrations.length;
 	const extension = createExtension(name, name);
 	const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
-	try {
-		await factory(api);
-		return extension;
-	} catch (error) {
-		runtime.pendingProviderRegistrations.splice(providerRegistrationCount);
-		runtime.pendingUsageProviderRegistrations.splice(usageProviderRegistrationCount);
-		throw error;
-	}
+	await runExtensionFactory(factory, api, runtime);
+	return extension;
 }
 
 /**
  * Load extensions from paths.
+ *
+ * Module import (the dominant cold-start cost — file I/O plus module
+ * evaluation) runs concurrently across extensions; factory binding then runs
+ * sequentially in the original path order, so registration semantics
+ * (last-wins collisions, shared runtime flag defaults) stay deterministic.
  */
 export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
@@ -386,8 +441,11 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	const resolvedEventBus = eventBus ?? new EventBus();
 	const runtime = new ExtensionRuntime();
 
-	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+	const imported = await Promise.all(paths.map(extPath => importExtensionModule(extPath, cwd)));
+
+	for (let i = 0; i < paths.length; i++) {
+		const extPath = paths[i]!;
+		const { extension, error } = await bindExtension(extPath, imported[i]!, cwd, resolvedEventBus, runtime);
 
 		if (error) {
 			errors.push({ path: extPath, error });

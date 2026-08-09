@@ -30,6 +30,11 @@ export interface Skill {
 	 * prompt's `<skills>` listing.
 	 */
 	hide?: boolean;
+	/**
+	 * Filesystem-resolved plugin root for Agent Plugin skills (spec §4.1):
+	 * every `skill://` resource access must realpath-resolve within it.
+	 */
+	containRoot?: string;
 	/** Source metadata for display */
 	_source?: SourceMeta;
 }
@@ -107,6 +112,7 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: options.source,
+			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		})),
@@ -242,6 +248,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				filePath: capSkill.path,
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
+				...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 				_source: capSkill._source,
 			});
@@ -279,6 +286,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 					filePath: capSkill.path,
 					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 					source: "custom:user",
+					...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 					_source: { ...capSkill._source, providerName: "Custom" },
 				},
@@ -379,6 +387,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: `${capSkill._source.provider}:${capSkill.level}`,
+			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		});

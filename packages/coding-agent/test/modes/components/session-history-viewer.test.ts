@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { Text, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../src/config/settings";
 import { getSettingsUiLocale, type SettingsUiLocale, setSettingsUiLocale } from "../../../src/i18n/settings-locale";
 import {
@@ -8,6 +9,7 @@ import {
 	type SessionHistoryViewerDeps,
 } from "../../../src/modes/components/session-history-viewer";
 import { getThemeByName, setThemeInstance } from "../../../src/modes/theme/theme";
+import type { CustomMessage } from "../../../src/session/messages";
 import type { SessionMessageEntry } from "../../../src/session/session-entries";
 
 const SCROLLBAR_THUMB = "█";
@@ -175,6 +177,109 @@ describe("SessionHistoryViewer", () => {
 			}
 
 			expect(renderText(viewer, 80, 8)).toContain(SCROLLBAR_THUMB);
+		});
+	});
+
+	it("uses Main renderer callbacks for same-name extension tools and custom messages", () => {
+		withLocale("en", () => {
+			const callId = "main-extension-edit-call";
+			const extensionTool: AgentTool = {
+				name: "edit",
+				label: "Main Extension Edit",
+				description: "same-name extension tool",
+				parameters: { type: "object", additionalProperties: true },
+				async execute() {
+					return { content: [{ type: "text", text: "MAIN_EXTENSION_EDIT_RESULT" }] };
+				},
+			};
+			const assistant: AssistantMessage = {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: callId,
+						name: "edit",
+						arguments: { path: "main-extension-leak.ts", old_text: "before", new_text: "after" },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: assistantUsage,
+				stopReason: "toolUse",
+				timestamp: 1_735_689_600_000,
+			};
+			const toolResult: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: callId,
+				toolName: "edit",
+				content: [{ type: "text", text: "MAIN_EXTENSION_EDIT_RESULT" }],
+				details: { path: "main-extension-leak.ts" },
+				isError: false,
+				timestamp: 1_735_689_600_001,
+			};
+			const customMessage: CustomMessage = {
+				role: "custom",
+				customType: "main-history-provenance",
+				content: "MAIN_CUSTOM_DEFAULT_CONTENT",
+				display: true,
+				attribution: "agent",
+				timestamp: 1_735_689_600_002,
+			};
+			const toolLookups: string[] = [];
+			const builtInToolLookups: string[] = [];
+			const messageRendererLookups: string[] = [];
+			const viewer = makeViewer(
+				[
+					{
+						type: "message",
+						id: "main-extension-edit-entry",
+						parentId: null,
+						timestamp: "2025-01-01T00:00:00.000Z",
+						message: assistant,
+					},
+					{
+						type: "message",
+						id: "main-extension-edit-result-entry",
+						parentId: "main-extension-edit-entry",
+						timestamp: "2025-01-01T00:00:00.000Z",
+						message: toolResult,
+					},
+					{
+						type: "message",
+						id: "main-history-custom-entry",
+						parentId: null,
+						timestamp: "2025-01-01T00:00:00.000Z",
+						message: customMessage,
+					},
+				],
+				{
+					getTool: name => {
+						toolLookups.push(name);
+						return name === "edit" ? extensionTool : undefined;
+					},
+					isBuiltInTool: name => {
+						builtInToolLookups.push(name);
+						return false;
+					},
+					getMessageRenderer: customType => {
+						messageRendererLookups.push(customType);
+						return customType === "main-history-provenance"
+							? () => new Text("MAIN_CUSTOM_RENDERER_MARKER", 0, 0)
+							: undefined;
+					},
+				},
+			);
+			viewers.push(viewer);
+
+			const rendered = renderText(viewer, 120, 40);
+			expect(toolLookups).toEqual(["edit"]);
+			expect(builtInToolLookups).toEqual(["edit"]);
+			expect(messageRendererLookups).toEqual(["main-history-provenance"]);
+			expect(rendered).toContain("Main Extension Edit");
+			expect(rendered).toContain("MAIN_EXTENSION_EDIT_RESULT");
+			expect(rendered).toContain("MAIN_CUSTOM_RENDERER_MARKER");
+			expect(rendered).not.toContain("No changes were made to main-extension-leak.ts.");
 		});
 	});
 

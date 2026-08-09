@@ -68,8 +68,8 @@ function createFixture(
 		noteDisplayableThinkingContent: vi.fn(() => false),
 		chatContainer,
 		toolOutputExpanded: false,
-		session: { getToolByName: () => undefined },
-		viewSession: { getToolByName: () => undefined },
+		session: { getToolByName: () => undefined, hasBuiltInTool: () => true },
+		viewSession: { getToolByName: () => undefined, hasBuiltInTool: () => true },
 		sessionManager: { getCwd: () => process.cwd() },
 	} as unknown as InteractiveModeContext;
 

@@ -22,7 +22,15 @@ import type { TerminalAppearance, TerminalAppearanceRequestToken } from "@oh-my-
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
-const MULTIPLEXER_ENV_KEYS = ["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "TERM"] as const;
+const MULTIPLEXER_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"HERDR_ENV",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"TERM",
+] as const;
 const FULL_SCROLLBACK_CLEAR = "\x1b[H\x1b[3J";
 
 function countOccurrences(text: string, needle: string): number {
@@ -159,6 +167,17 @@ async function waitForThemeEpochToAdvance(previousEpoch: number): Promise<void> 
 	throw new Error(`Theme epoch did not advance from ${previousEpoch}`);
 }
 
+// Adaptive TUI backpressure uses real scheduling, so fake timers cannot observe the committed write.
+async function waitForCapturedWrite(writes: readonly string[], needle: string): Promise<void> {
+	const deadline = Date.now() + 1_000;
+	while (!writes.join("").includes(needle)) {
+		if (Date.now() >= deadline) {
+			throw new Error(`Timed out waiting for captured write containing ${JSON.stringify(needle)}`);
+		}
+		await Bun.sleep(5);
+	}
+}
+
 let originalMultiplexerEnv: Partial<Record<(typeof MULTIPLEXER_ENV_KEYS)[number], string | undefined>>;
 describe("InteractiveMode theme scrollback refresh", () => {
 	let tempDir: TempDir;
@@ -265,9 +284,9 @@ describe("InteractiveMode theme scrollback refresh", () => {
 		const writes = captureWrites(terminal);
 
 		await setTheme("light");
-		await terminal.waitForRender();
-
 		const lightUserBg = theme.getBgAnsi("userMessageBg");
+		await waitForCapturedWrite(writes, lightUserBg);
+
 		expect(lightUserBg).not.toBe(darkUserBg);
 		const commitWrites = writes.join("");
 		expect(commitWrites).not.toContain(FULL_SCROLLBACK_CLEAR);

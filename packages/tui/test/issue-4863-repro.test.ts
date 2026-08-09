@@ -71,6 +71,7 @@ function clearMultiplexerMarkers(): void {
 	if (isMultiplexerTerm(Bun.env.TERM)) Bun.env.TERM = "xterm-256color";
 	if (isMultiplexerTerm(process.env.TERM)) process.env.TERM = "xterm-256color";
 }
+const HERDR_ENV = process.env.HERDR_ENV;
 
 // A full paint clears the viewport with ED2 (`CSI 2 J`), or — when it also
 // clears native scrollback — homes the cursor and emits ED3 (`CSI H CSI 3 J`)
@@ -97,6 +98,10 @@ class LargeContent implements Component {
 	}
 }
 
+beforeEach(() => {
+	delete process.env.HERDR_ENV;
+});
+
 describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY", () => {
 	beforeEach(() => {
 		environmentSnapshot = captureEnvironment();
@@ -107,6 +112,8 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
 		if (environmentSnapshot) restoreEnvironment(environmentSnapshot);
 		environmentSnapshot = undefined;
+		if (HERDR_ENV === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = HERDR_ENV;
 		vi.restoreAllMocks();
 	});
 

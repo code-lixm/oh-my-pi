@@ -192,8 +192,8 @@ import {
 	deobfuscateSessionContext,
 	deobfuscateToolArguments,
 	obfuscateProviderContext,
-	type SecretObfuscator,
-} from "../secrets/obfuscator";
+} from "../secrets/message-transform";
+import type { SecretObfuscator } from "../secrets/obfuscator";
 import { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import {
 	AUTO_THINKING,
@@ -341,7 +341,7 @@ import {
 	type NextStepOfferIdentity,
 	type NextStepOfferStore,
 } from "./next-step-offers";
-import { PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
+import { isPrewalkPlanNudge, PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
 import {
 	isAdvisorCard,
 	isDisplayableQueuedMessage,
@@ -1243,8 +1243,8 @@ export class AgentSession {
 	/**
 	 * Arm prewalk outside the normal startup path so an explicit slash command starts immediately.
 	 */
-	armPrewalk(target: Model, thinkingLevel?: ConfiguredThinkingLevel): void {
-		this.#prewalk.arm(target, thinkingLevel);
+	armPrewalk(target: Model, thinkingLevel?: ConfiguredThinkingLevel): boolean {
+		return this.#prewalk.arm(target, thinkingLevel);
 	}
 
 	/** Validate the active plan artifact and shape an `xd://propose` result for review-mode hosts. */
@@ -3129,14 +3129,17 @@ export class AgentSession {
 			const persistMessageEnd = () => {
 				// Check if this is a hook/custom message
 				if (event.message.role === "hookMessage" || event.message.role === "custom") {
-					// Persist as CustomMessageEntry
-					this.sessionManager.appendCustomMessageEntry(
-						event.message.customType,
-						event.message.content,
-						event.message.display,
-						event.message.details,
-						event.message.attribution ?? "agent",
-					);
+					// Prewalk's plan nudge is a one-run steering instruction. Persisting it would
+					// resurrect the consumed prompt on resume, fork, or any context rebuild.
+					if (!isPrewalkPlanNudge(event.message)) {
+						this.sessionManager.appendCustomMessageEntry(
+							event.message.customType,
+							event.message.content,
+							event.message.display,
+							event.message.details,
+							event.message.attribution ?? "agent",
+						);
+					}
 					if (event.message.role === "custom" && event.message.customType === "ttsr-injection") {
 						this.#ttsr.markInjectedFromDetails(event.message.details);
 					}
@@ -3667,16 +3670,42 @@ export class AgentSession {
 						this.#skipAgentContinue("should-continue-false", options);
 						return;
 					}
+					let reverted = await this.#recovery.maybeRestoreRetryFallbackPrimary();
+					if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+						this.#skipAgentContinue("post-restore-unavailable", options);
+						return;
+					}
+					if (options?.shouldContinue && !options.shouldContinue()) {
+						this.#skipAgentContinue("should-continue-false", options);
+						return;
+					}
 					const queuedUserTurn = [...this.agent.peekSteeringQueue(), ...this.agent.peekFollowUpQueue()].some(
 						isUserQueuedMessage,
 					);
 					if (queuedUserTurn) {
 						this.#advisors.beginUserTurn();
-						await this.#recovery.prepareForUserTurn();
+						reverted = (await this.#recovery.prepareForUserTurn()) || reverted;
 					}
-					if (signal.aborted || this.#isDisposed) {
+					if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
 						this.#skipAgentContinue("post-preflight-unavailable", options);
 						return;
+					}
+					if (options?.shouldContinue && !options.shouldContinue()) {
+						this.#skipAgentContinue("should-continue-false", options);
+						return;
+					}
+					// A primary restore can drop the active window below the accumulated
+					// context. Mirror the user-prompt path before issuing a continuation.
+					if (reverted) {
+						await this.#maintenance.runPrePromptCompactionIfNeeded([]);
+						if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+							this.#skipAgentContinue("post-restore-unavailable", options);
+							return;
+						}
+						if (options?.shouldContinue && !options.shouldContinue()) {
+							this.#skipAgentContinue("should-continue-false", options);
+							return;
+						}
 					}
 					if (this.settings.get("retry.usageAwareFallback")) {
 						if (!(await this.#runQueuedUsageAwarePreflight(signal))) {
@@ -4166,7 +4195,7 @@ export class AgentSession {
 				success: event.success,
 				attempt: event.attempt,
 				finalError: event.finalError,
-				recoveredErrors: event.recoveredErrors,
+				retryErrors: event.retryErrors,
 			});
 		} else if (event.type === "ttsr_triggered") {
 			await this.#extensionRunner.emit({ type: "ttsr_triggered", rules: event.rules });
@@ -5087,7 +5116,11 @@ export class AgentSession {
 
 	/** Trigger idle compaction through the automatic maintenance flow. */
 	async runIdleCompaction(): Promise<void> {
-		await this.#maintenance.runIdleCompaction();
+		try {
+			await this.#maintenance.runIdleCompaction();
+		} finally {
+			if (!this.isCompacting) this.#drainStrandedQueuedMessages();
+		}
 	}
 
 	/** Toggle automatic compaction. */
@@ -5884,6 +5917,7 @@ export class AgentSession {
 				options?.synthetic !== true &&
 				options?.userInitiated !== false &&
 				(message.role === "user" || (message.role === "custom" && message.attribution === "user"));
+			await this.#recovery.maybeRestoreRetryFallbackPrimary();
 			if (startsUserTurn) {
 				this.#advisors.beginUserTurn();
 				await this.#recovery.prepareForUserTurn();
@@ -6042,11 +6076,13 @@ export class AgentSession {
 
 				if (result?.systemPrompt !== undefined) {
 					baseXdevCatalogDelivered = false;
-					this.agent.setSystemPrompt(result.systemPrompt);
+					this.#tools.setTurnSystemPromptOverride(result.systemPrompt);
 				} else {
+					this.#tools.clearTurnSystemPromptOverride();
 					this.agent.setSystemPrompt(beforeAgentStartSystemPrompt);
 				}
 			} else {
+				this.#tools.clearTurnSystemPromptOverride();
 				this.agent.setSystemPrompt(beforeAgentStartSystemPrompt);
 			}
 
@@ -6113,6 +6149,9 @@ export class AgentSession {
 				await this.#waitForPostPromptRecovery(generation);
 			}
 		} finally {
+			// The per-turn before_agent_start override lives only for this turn.
+			this.#tools.clearTurnSystemPromptOverride();
+			this.agent.setSystemPrompt(this.#tools.baseSystemPrompt);
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#endInFlight();
 		}

@@ -180,7 +180,7 @@ function saveTerminalEnv(): Record<string, string | undefined> {
 	// assertions deterministic on any dev machine while still restoring any
 	// explicit multiplexer setup after each test.
 	const saved: Record<string, string | undefined> = {};
-	for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID"]) {
+	for (const key of ["TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "HERDR_ENV"]) {
 		saved[key] = Bun.env[key];
 		delete Bun.env[key];
 	}
