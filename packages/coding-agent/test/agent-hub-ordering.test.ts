@@ -710,7 +710,7 @@ describe("Agent hub row ordering", () => {
 				expect(entry).toContain("Guest reviewer");
 				expect(entry).toContain("Running");
 			}
-			expect(renderedRosterEntry(hub, "Guest reviewer", 120)).toContain("fallback → openai…");
+			expect(renderedRosterEntry(hub, "Guest reviewer", 120)).toContain("fallback → openai/gpt-4o");
 		} finally {
 			hub.dispose();
 		}
@@ -743,7 +743,7 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("Fast Agent");
-			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("fallback → firewo…");
+			expect(renderedRosterEntry(hub, "Fast Agent", 120)).toContain("fallback → fireworks/kimi…");
 		} finally {
 			hub.dispose();
 		}
@@ -926,9 +926,9 @@ describe("Agent hub row ordering", () => {
 			expect(rendered).toContain("$0.213 · 2m14s active agent time · 12 req · 27 tools · 18K tok");
 			const row = renderedRosterEntry(hub, "Security Reviewer", 140);
 			expect(row).toContain("Security Reviewer");
-			expect(row).toContain("read");
+			expect(row).not.toContain("read");
 			expect(row).toContain("Running");
-			expect(row).toContain("2m14s a…");
+			expect(row).toContain("2m14s active");
 			expect(row).toContain("gpt-5.4");
 			expect(row).not.toContain("Review the session lifecycle");
 			for (const hiddenDetail of [
@@ -1040,11 +1040,11 @@ describe("Agent hub row ordering", () => {
 			expect(footer).not.toContain("timed");
 			expect(footer).not.toContain("$0.580");
 			const running = renderedRosterEntry(hub, "Running metrics", 160);
-			expect(running).toContain("6.5s ac…");
+			expect(running).toContain("6.5s active");
 			expect(running).not.toContain("Run checks");
 			expect(running).not.toContain("$0.123");
 			const completed = renderedRosterEntry(hub, "Completed metrics", 160);
-			expect(completed).toContain("2m5s ac…");
+			expect(completed).toContain("2m5s active");
 			expect(completed).not.toContain("$0.457");
 			const historical = renderedRosterEntry(hub, "Historical metrics", 160);
 			expect(historical).toContain("Restored task");

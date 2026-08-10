@@ -184,6 +184,7 @@ export class EventController {
 	// mid-retry blip or the final settle — only the retry lifecycle events
 	// (never deferred) can tell them apart.
 	#retryPending = false;
+	#retryCountdownTimer?: NodeJS.Timeout;
 	#idleCompactionTimer?: NodeJS.Timeout;
 	#idleRecapTimer?: NodeJS.Timeout;
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
@@ -314,6 +315,9 @@ export class EventController {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
 		}
+		this.#clearRetryCountdown();
+		this.ctx.retryLoader?.stop();
+		this.ctx.retryLoader = undefined;
 		this.#pendingMessageUpdate = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
@@ -819,6 +823,7 @@ export class EventController {
 		this.#pinnedErrorComponent?.setErrorPinned(false);
 		this.#pinnedErrorComponent = undefined;
 		this.ctx.clearPinnedError();
+		this.#clearRetryCountdown();
 		if (this.ctx.retryLoader) {
 			this.ctx.retryLoader.stop();
 			this.ctx.retryLoader = undefined;
@@ -1460,9 +1465,10 @@ export class EventController {
 				const leader = this.#errorAggregation?.leader ?? this.#lastAssistantComponent;
 				leader?.setErrorPinned(true);
 				this.#pinnedErrorComponent = leader;
-				const repeatCount = this.#errorAggregation?.repeatCount ?? 1;
-				const repeatSuffix = repeatCount > 1 ? ` × ${repeatCount}` : "";
-				this.ctx.showPinnedError(`${event.message.errorMessage}${repeatSuffix}`);
+				// Show only the latest error text — never an attempt-count
+				// aggregation, so a retrying model surfaces its newest failure
+				// instead of a cumulative ×N badge.
+				this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
@@ -2128,6 +2134,49 @@ export class EventController {
 		this.ctx.ui.requestRender();
 	}
 
+	#clearRetryCountdown(): void {
+		if (!this.#retryCountdownTimer) return;
+		clearTimeout(this.#retryCountdownTimer);
+		this.#retryCountdownTimer = undefined;
+	}
+
+	#formatRetryLoaderMessage(
+		event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>,
+		retryDeadlineMs: number,
+	): string {
+		const delaySeconds = Math.ceil(Math.max(0, retryDeadlineMs - performance.now()) / 1000);
+		const attemptText = tSettingsUi("{attempt}/{maxAttempts}", {
+			attempt: event.attempt,
+			maxAttempts: event.maxAttempts,
+		});
+		const errorText = event.model
+			? tSettingsUi("{model}: {error}", { model: event.model, error: event.errorMessage })
+			: event.errorMessage;
+		return tSettingsUi("Retry in {delaySeconds}s · {attemptText} · {errorText}{cancelHint}", {
+			delaySeconds,
+			attemptText,
+			errorText,
+			cancelHint: this.#maintenanceEscHint(),
+		});
+	}
+
+	#armRetryCountdown(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>, retryDeadlineMs: number): void {
+		this.#clearRetryCountdown();
+		const update = () => {
+			const loader = this.ctx.retryLoader;
+			if (!loader) return;
+			loader.setMessage(this.#formatRetryLoaderMessage(event, retryDeadlineMs));
+			const remainingMs = retryDeadlineMs - performance.now();
+			if (remainingMs <= 0) {
+				this.#retryCountdownTimer = undefined;
+				return;
+			}
+			this.#retryCountdownTimer = setTimeout(update, Math.min(1000, remainingMs));
+			this.#retryCountdownTimer.unref?.();
+		};
+		update();
+	}
+
 	async #handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): Promise<void> {
 		this.#retryPending = true;
 		this.#trackRetrySupersededAssistantComponent(this.#lastAssistantComponent);
@@ -2151,24 +2200,23 @@ export class EventController {
 			this.#pinnedErrorComponent = undefined;
 			this.ctx.clearPinnedError();
 		}
-		const delaySeconds = Math.round(event.delayMs / 1000);
+		this.#clearRetryCountdown();
+		this.ctx.retryLoader?.stop();
+		const retryDeadlineMs = performance.now() + event.delayMs;
 		this.ctx.retryLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
-			tSettingsUi("Retrying ({attempt}/{maxAttempts}) in {delaySeconds}s…{cancelHint}", {
-				attempt: event.attempt,
-				maxAttempts: event.maxAttempts,
-				delaySeconds,
-				cancelHint: this.#maintenanceEscHint(),
-			}),
+			this.#formatRetryLoaderMessage(event, retryDeadlineMs),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
+		this.#armRetryCountdown(event, retryDeadlineMs);
 		this.ctx.ui.requestRender();
 	}
 
 	async #handleAutoRetryEnd(event: Extract<AgentSessionEvent, { type: "auto_retry_end" }>): Promise<void> {
+		this.#clearRetryCountdown();
 		this.#retryPending = false;
 		if (this.ctx.retryLoader) {
 			this.ctx.retryLoader.stop();
@@ -2190,12 +2238,11 @@ export class EventController {
 		if (clearedPinnedComponent) this.ctx.clearPinnedError();
 		this.#clearRetrySupersededAssistantComponents();
 		if (!event.success) {
-			this.ctx.showError(
-				tSettingsUi("Retry failed after {attempt} attempts: {finalError}", {
-					attempt: event.attempt,
-					finalError: event.finalError || tSettingsUi("Unknown error"),
-				}),
-			);
+			// Show the concrete model error as plain text (latest per model),
+			// not an attempt-count aggregation. The error banner itself already
+			// surfaced the settled failure; the toast carries the model detail.
+			const finalError = event.finalError || tSettingsUi("Unknown error");
+			this.ctx.showStatus(finalError);
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.ctx.ui.requestRender();

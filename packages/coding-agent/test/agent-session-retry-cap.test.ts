@@ -41,15 +41,10 @@ function resolveInitialApiKey(
 }
 
 /**
- * Contract: when the provider asks us to wait longer than `retry.maxDelayMs`
- * and we have no credential/model fallback to switch to, the auto-retry
- * loop MUST fail fast — preserving the terminal error message in agent
- * state and skipping the long sleep entirely.
- *
- * Without this defense, an Anthropic `429 rate_limit_error` with
- * `retry-after-ms=11180000` (≈3 hours) pinned a subagent in the retry
- * sleep, leaving the parent task tool stuck on the review phase for hours
- * (see GitHub issue #607).
+ * Contract: a retryable provider wait remains eligible even when its
+ * `retry-after` exceeds `retry.maxDelayMs`. The retry loop preserves the
+ * provider delay and converges when a later attempt succeeds; the scheduler
+ * seam resolves that finite wait without sleeping in the test.
  */
 describe("AgentSession retry delay cap", () => {
 	let tempDir: TempDir;
@@ -78,17 +73,17 @@ describe("AgentSession retry delay cap", () => {
 		tempDir.removeSync();
 	});
 
-	it("bails immediately when retry-after exceeds retry.maxDelayMs", async () => {
+	it("retries a long retry-after beyond retry.maxDelayMs until the saga recovers", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
 		}
 
-		// 11.18M ms == ~3.1 hours, matching the report on the original incident.
 		const rateLimitError =
 			'429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} retry-after-ms=11180000';
-
-		const mock = createMockModel({ handler: () => ({ throw: rateLimitError }) });
+		const mock = createMockModel({
+			responses: [{ throw: rateLimitError }, { content: ["recovered after long retry-after"], stopReason: "stop" }],
+		});
 		const requestedModels: string[] = [];
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
@@ -108,6 +103,8 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -118,7 +115,6 @@ describe("AgentSession retry delay cap", () => {
 			modelRegistry,
 		});
 
-		// Spy after construction so the constructor's no-op work isn't intercepted.
 		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const retryStartEvents: AutoRetryStartEvent[] = [];
 		const retryEndEvents: AutoRetryEndEvent[] = [];
@@ -127,27 +123,19 @@ describe("AgentSession retry delay cap", () => {
 			if (event.type === "auto_retry_end") retryEndEvents.push(event);
 		});
 
-		await session.prompt("Trigger rate limit with long retry-after");
+		await session.prompt("Trigger a long retry-after that later recovers");
 		await session.waitForIdle();
 
-		// Only one model call: the auto-retry MUST NOT loop into a fresh attempt
-		// because the cap fired before scheduler.wait was even reached.
-		expect(requestedModels).toEqual([`${model.provider}/${model.id}`]);
-		expect(retryStartEvents).toHaveLength(0);
+		expect(requestedModels).toEqual([`${model.provider}/${model.id}`, `${model.provider}/${model.id}`]);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({ attempt: 1, delayMs: 11_180_000 });
+		expect(waitSpy.mock.calls.map(call => call[0])).toContain(11_180_000);
 		expect(retryEndEvents).toHaveLength(1);
-		expect(retryEndEvents[0]).toMatchObject({ success: false });
-		expect(retryEndEvents[0].finalError).toContain("exceeds retry.maxDelayMs");
-		expect(retryEndEvents[0].finalError).toContain("11180000");
-		// No multi-hour (or any) sleep — the cap path skips scheduler.wait entirely.
-		for (const call of waitSpy.mock.calls) {
-			expect(call[0]).toBeLessThanOrEqual(100);
-		}
-
-		// The terminal error stays as the last assistant message so the caller
-		// (interactive UI, parent task tool, SDK consumer) can act on it.
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+		expect(retryEndEvents).not.toContainEqual(expect.objectContaining({ success: false }));
 		const last = lastAssistant(session);
-		expect(last.stopReason).toBe("error");
-		expect(last.errorMessage).toContain("rate_limit_error");
+		expect(last.stopReason).toBe("stop");
+		expect(last.content).toContainEqual({ type: "text", text: "recovered after long retry-after" });
 		expect(session.isRetrying).toBe(false);
 	});
 
@@ -1637,7 +1625,7 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.stopReason).toBe("aborted");
 	});
 
-	it("caps repeated OpenRouter stream closes after streamed thinking at one retry", async () => {
+	it("retries repeated OpenRouter stream closes after streamed thinking until recovery", async () => {
 		const model = getBundledModel("openrouter", "~google/gemini-flash-latest");
 		if (!model) {
 			throw new Error("Expected bundled OpenRouter Gemini test model to exist");
@@ -1657,7 +1645,7 @@ describe("AgentSession retry delay cap", () => {
 					stopReason: "error",
 					errorMessage: "server_error: stream closed with reason: error",
 				},
-				{ content: ["must remain unused"] },
+				{ content: ["recovered after repeated OpenRouter stream close"], stopReason: "stop" },
 			],
 		});
 		const agent = new Agent({
@@ -1674,7 +1662,7 @@ describe("AgentSession retry delay cap", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
-			"retry.maxRetries": 10,
+			"retry.maxRetries": 1,
 			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -1693,17 +1681,20 @@ describe("AgentSession retry delay cap", () => {
 			if (event.type === "auto_retry_end") retryEndEvents.push(event);
 		});
 
-		await session.prompt("Trigger OpenRouter reasoning transition failure");
+		await session.prompt("Retry repeated OpenRouter reasoning stream closes");
 		await session.waitForIdle();
 
-		expect(mock.calls).toHaveLength(2);
-		expect(retryStartEvents).toHaveLength(1);
-		expect(retryStartEvents[0]).toMatchObject({ attempt: 1, maxAttempts: 1 });
+		expect(mock.calls).toHaveLength(3);
+		expect(retryStartEvents.map(event => event.attempt)).toEqual([1, 1]);
 		expect(retryEndEvents).toHaveLength(1);
-		expect(retryEndEvents[0]).toMatchObject({ success: false, attempt: 1 });
-		expect(lastAssistant(session).errorMessage).toBe(
-			"Retry budget exhausted after 1 retry: server_error: stream closed with reason: error",
-		);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 2 });
+		expect(retryEndEvents).not.toContainEqual(expect.objectContaining({ success: false }));
+		const last = lastAssistant(session);
+		expect(last.stopReason).toBe("stop");
+		expect(last.content).toContainEqual({
+			type: "text",
+			text: "recovered after repeated OpenRouter stream close",
+		});
 		expect(session.isRetrying).toBe(false);
 	});
 
@@ -1770,23 +1761,24 @@ describe("AgentSession retry delay cap", () => {
 	});
 
 	/**
-	 * Contract: when the provider returns `503 Service temporarily unavailable`
-	 * for every retry, the retry budget must exhaust cleanly so the session
-	 * settles into a usable state where the user can issue a follow-up prompt
-	 * and receive a normal response. A stalled "I can't do anything" session
-	 * violates the interactive-loop contract even if every single retry was
-	 * a legitimate transient failure.
+	 * Contract: retryable 503s keep the original request's saga alive after
+	 * its endpoint budget is spent. A finite later success must converge that
+	 * same saga without requiring the user to submit another prompt.
 	 */
-	it("recovers input after persistent 503 exhausts the retry budget", async () => {
+	it("continues persistent 503 retries past the endpoint budget until the same saga recovers", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
 		}
 
 		const error503 = "503 Service temporarily unavailable Service temporarily unavailable (type=api_error)";
-
-		const mock = createMockModel();
-		let attempts = 0;
+		const mock = createMockModel({
+			responses: [
+				{ throw: error503 },
+				{ throw: error503 },
+				{ content: ["recovered after persistent 503"], stopReason: "stop" },
+			],
+		});
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: {
@@ -1795,14 +1787,15 @@ describe("AgentSession retry delay cap", () => {
 				tools: [],
 				messages: [],
 			},
-			streamFn: (requestedModel, context, options) => {
-				attempts += 1;
-				mock.push({ throw: error503 });
-				return mock.stream(requestedModel, context, options);
-			},
+			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
 		});
 
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
 		session = new AgentSession({
@@ -1812,38 +1805,27 @@ describe("AgentSession retry delay cap", () => {
 			modelRegistry,
 		});
 
-		// Skip the retry sleep so the test only measures the contract under test,
-		// not the exponential backoff timing.
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
-
+		const retryStartEvents: AutoRetryStartEvent[] = [];
 		const retryEndEvents: AutoRetryEndEvent[] = [];
 		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStartEvents.push(event);
 			if (event.type === "auto_retry_end") retryEndEvents.push(event);
 		});
 
-		// First prompt: every retry returns 503.
-		await session.prompt("trigger persistent 503");
+		await session.prompt("Trigger persistent 503 recovery");
 		await session.waitForIdle();
 
-		expect(retryEndEvents.length).toBeGreaterThan(0);
-		const finalRetryEnd = retryEndEvents.at(-1)!;
-		expect(finalRetryEnd).toMatchObject({ success: false });
-		expect(attempts).toBeGreaterThan(settings.get("retry.maxRetries"));
-
-		// Session must be back in a state that accepts a follow-up prompt.
+		expect(mock.calls).toHaveLength(3);
+		expect(retryStartEvents.map(event => event.attempt)).toEqual([1, 1]);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 2 });
+		expect(retryEndEvents).not.toContainEqual(expect.objectContaining({ success: false }));
 		expect(session.agent.state.isStreaming).toBe(false);
-
-		// Switch the mock to a successful response and verify a second prompt
-		// completes normally — the user-visible "stuck forever" contract.
-		const beforeSecondPrompt = mock.calls.length;
-		mock.push({ content: ["recovered on second prompt"] });
-		await session.prompt("follow-up after 503 storm");
-		await session.waitForIdle();
-
-		expect(mock.calls.length).toBeGreaterThan(beforeSecondPrompt);
 		const last = lastAssistant(session);
 		expect(last.stopReason).toBe("stop");
-		expect(last.content).toContainEqual({ type: "text", text: "recovered on second prompt" });
+		expect(last.content).toContainEqual({ type: "text", text: "recovered after persistent 503" });
+		expect(session.isRetrying).toBe(false);
 	});
 
 	/**

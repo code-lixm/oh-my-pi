@@ -2115,21 +2115,26 @@ export class ModelRegistry {
 		);
 	}
 
-	/**
-	 * Check if a model selector is currently suppressed due to rate limits.
-	 */
-	isSelectorSuppressed(selector: string): boolean {
+	/** Return the active cooldown deadline for a model selector, clearing expired entries. */
+	getSelectorSuppressedUntil(selector: string): number | undefined {
 		const normalizedSelector = normalizeSuppressedSelector(
 			selector,
 			(provider, id) => this.find(provider, id) !== undefined,
 		);
 		const suppressedUntil = this.#suppressedSelectors.get(normalizedSelector);
-		if (!suppressedUntil) return false;
+		if (!suppressedUntil) return undefined;
 		if (suppressedUntil <= Date.now()) {
 			this.#suppressedSelectors.delete(normalizedSelector);
-			return false;
+			return undefined;
 		}
-		return true;
+		return suppressedUntil;
+	}
+
+	/**
+	 * Check if a model selector is currently suppressed due to rate limits.
+	 */
+	isSelectorSuppressed(selector: string): boolean {
+		return this.getSelectorSuppressedUntil(selector) !== undefined;
 	}
 
 	/**

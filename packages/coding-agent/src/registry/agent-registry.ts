@@ -185,6 +185,7 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
+	readonly #syntheticAbortedOutcomes = new WeakSet<AgentRef>();
 	#runningSubagentCount = 0;
 
 	#adjustRunningSubagentCount(ref: AgentRef | undefined, delta: 1 | -1): void {
@@ -205,7 +206,7 @@ export class AgentRegistry {
 			kind: input.kind,
 			parentId: input.parentId,
 			status: input.status ?? "running",
-			terminalStatus: input.status === "aborted" ? "aborted" : input.terminalStatus,
+			terminalStatus: input.terminalStatus ?? (input.status === "aborted" ? "aborted" : undefined),
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
 			createdAt: input.createdAt ?? now,
@@ -216,6 +217,9 @@ export class AgentRegistry {
 			activityState: input.activityState,
 			history: input.history,
 		};
+		if (input.terminalStatus === undefined && input.status === "aborted") {
+			this.#syntheticAbortedOutcomes.add(ref);
+		}
 		const replaced = this.#refs.get(ref.id);
 		this.#adjustRunningSubagentCount(replaced, -1);
 		this.#refs.set(ref.id, ref);
@@ -259,12 +263,15 @@ export class AgentRegistry {
 		this.#adjustRunningSubagentCount(ref, -1);
 		ref.status = status;
 		this.#adjustRunningSubagentCount(ref, 1);
-		// A fresh run clears the prior task outcome. Hard kill records the runtime
-		// tombstone and task outcome atomically; idle/parked retain the last result.
+		// A fresh run clears the prior task outcome. A lifecycle tombstone only
+		// supplies `aborted` when task execution has not already recorded an
+		// authoritative completed/failed/aborted outcome.
 		if (status === "running" && (previousStatus === "idle" || previousStatus === "parked")) {
 			delete ref.terminalStatus;
-		} else if (status === "aborted") {
+			this.#syntheticAbortedOutcomes.delete(ref);
+		} else if (status === "aborted" && ref.terminalStatus === undefined) {
 			ref.terminalStatus = "aborted";
+			this.#syntheticAbortedOutcomes.add(ref);
 		}
 		// A non-running ref must not advertise an active roster gist, but its
 		// structured last activity remains useful to parked/restored observers.
@@ -282,10 +289,17 @@ export class AgentRegistry {
 	): boolean {
 		const ref = this.#refs.get(id);
 		if (ref?.kind !== "sub" || !this.#matchesExpected(ref, expected)) return false;
-		if (ref.status === "aborted" && terminalStatus !== "aborted") return false;
+		if (
+			ref.status === "aborted" &&
+			terminalStatus !== "aborted" &&
+			(!expected || !this.#syntheticAbortedOutcomes.has(ref))
+		) {
+			return false;
+		}
 		if (ref.terminalStatus === terminalStatus) return true;
 		if (terminalStatus === undefined) delete ref.terminalStatus;
 		else ref.terminalStatus = terminalStatus;
+		this.#syntheticAbortedOutcomes.delete(ref);
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}

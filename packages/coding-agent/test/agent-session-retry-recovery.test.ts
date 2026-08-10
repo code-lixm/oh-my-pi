@@ -278,7 +278,7 @@ describe("AgentSession retry recovery", () => {
 		).toBe(true);
 	});
 
-	it("collapses exhausted retries into one terminal error naming the spent budget", async () => {
+	it("continues retryable 503s beyond the endpoint budget until the saga recovers", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
@@ -286,7 +286,11 @@ describe("AgentSession retry recovery", () => {
 		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
 
 		const mock = createMockModel({
-			responses: [{ throw: RETRIABLE_SERVER_ERROR }, { throw: RETRIABLE_SERVER_ERROR }],
+			responses: [
+				{ throw: RETRIABLE_SERVER_ERROR },
+				{ throw: RETRIABLE_SERVER_ERROR },
+				{ content: ["recovered after two 503 retries"], stopReason: "stop" },
+			],
 		});
 		const agent = new Agent({
 			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
@@ -316,47 +320,25 @@ describe("AgentSession retry recovery", () => {
 		});
 		sessions.push(session);
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryStartEvents: Extract<AgentSessionEvent, { type: "auto_retry_start" }>[] = [];
 		const retryEndEvents: AutoRetryEndEvent[] = [];
 		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStartEvents.push(event);
 			if (event.type === "auto_retry_end") retryEndEvents.push(event);
 		});
 
-		await session.prompt("Exhaust retry attempts");
+		await session.prompt("Retry 503s beyond endpoint budget");
 		await session.waitForIdle();
 		await sessionManager.flush();
 
-		expect(mock.calls).toHaveLength(2);
+		expect(mock.calls).toHaveLength(3);
+		expect(retryStartEvents.map(event => event.attempt)).toEqual([1, 1]);
 		expect(retryEndEvents).toHaveLength(1);
-		expect(retryEndEvents[0]).toMatchObject({ success: false, attempt: 1 });
-		expect(retryEndEvents[0].retryErrors).toHaveLength(1);
-		expect(retryEndEvents[0].retryErrors?.[0].retryRecovery).toMatchObject({
-			status: "superseded",
-			attempt: 1,
-		});
-
-		const errors = assistantEntries(sessionManager).filter(candidate => candidate.message.stopReason === "error");
-		expect(errors).toHaveLength(2);
-		expect(errors[0].message.retryRecovery).toMatchObject({ status: "superseded", attempt: 1 });
-		expect(resolveAssistantErrorPresentation(errors[0].message)).toEqual({ kind: "none" });
-
-		const terminalError = errors[1].message;
-		const terminalErrorText = terminalError.errorMessage;
-		if (!terminalErrorText) {
-			throw new Error("Expected an aggregated terminal error message");
-		}
-		expect(terminalError.retryRecovery).toBeUndefined();
-		expect(terminalErrorText).toBe(`Retry budget exhausted after 1 retry: ${RETRIABLE_SERVER_ERROR}`);
-		expect(resolveAssistantErrorPresentation(terminalError)).toEqual({
-			kind: "full",
-			text: terminalErrorText,
-			isError: true,
-		});
-
-		const visibleErrors = errors
-			.map(candidate => resolveAssistantErrorPresentation(candidate.message))
-			.filter(presentation => presentation.kind !== "none");
-		expect(visibleErrors).toHaveLength(1);
-		expect(sessionManager.buildSessionContext().messages.map(message => message.role)).toEqual(["user"]);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 2 });
+		expect(retryEndEvents).not.toContainEqual(expect.objectContaining({ success: false }));
+		const recovered = successfulAssistantEntry(sessionManager, "recovered after two 503 retries");
+		expect(recovered.message.stopReason).toBe("stop");
+		expect(session.isRetrying).toBe(false);
 	});
 
 	it("supersedes the first retry error when continuation ends in a non-retryable error", async () => {

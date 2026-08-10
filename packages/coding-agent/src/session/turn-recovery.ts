@@ -54,6 +54,7 @@ import {
 	findRetryFallbackCandidates,
 	formatRetryFallbackSelector,
 	getRetryFallbackChains,
+	getRetryFallbackEffectiveChain,
 	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackChains,
@@ -570,6 +571,8 @@ export class TurnRecovery {
 			allowModelFallback?: boolean;
 			fireworksFastFallback?: boolean;
 			preserveFailedTurn?: boolean;
+			/** Loop the fallback chain from its top instead of stopping when the retry budget is exhausted. */
+			endlessChainRetry?: boolean;
 		},
 	): Promise<boolean> {
 		return this.#handleRetryableError(message, options);
@@ -1599,7 +1602,8 @@ export class TurnRecovery {
 		if (!role) return false;
 
 		const ceiling = this.#host.thinkingLevelCeiling();
-		for (const selector of this.findRetryFallbackCandidates(role, currentSelector)) {
+		const candidates = this.findRetryFallbackCandidates(role, currentSelector);
+		for (const selector of candidates) {
 			if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
 			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -1613,6 +1617,68 @@ export class TurnRecovery {
 		}
 
 		return false;
+	}
+
+	/** Build a complete restart pass from the configured chain's true top. */
+	findRetryFallbackChainRestart(role: string, currentSelector: string): RetryFallbackSelector[] {
+		return getRetryFallbackEffectiveChain(
+			this.#getRetryFallbackResolutionContext(),
+			role,
+			currentSelector,
+			this.#host.model(),
+			true,
+		);
+	}
+
+	/** Select the first usable restart candidate, optionally reserving one that is still cooling down. */
+	async #tryRetryModelFallbackRestart(
+		currentSelector: string,
+		pinFallback: boolean,
+		allowSuppressed = false,
+	): Promise<{ switched: boolean; suppressionDelayMs?: number }> {
+		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
+		if (!role) return { switched: false };
+		const ceiling = this.#host.thinkingLevelCeiling();
+		for (const selector of this.findRetryFallbackChainRestart(role, currentSelector)) {
+			const suppressedUntil = this.#host.modelRegistry.getSelectorSuppressedUntil(selector.raw);
+			if (suppressedUntil !== undefined && !allowSuppressed) continue;
+			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+			if (!candidate) continue;
+			if (candidate === this.#host.model()) {
+				if (allowSuppressed && suppressedUntil !== undefined) {
+					return { switched: false, suppressionDelayMs: Math.max(0, suppressedUntil - Date.now()) };
+				}
+				continue;
+			}
+			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
+			if (!apiKey) continue;
+			const switched = await this.applyRetryFallbackCandidate(role, selector, currentSelector, {
+				pinFallback,
+				apiKey,
+			});
+			if (!switched) continue;
+			return {
+				switched: true,
+				...(suppressedUntil === undefined ? {} : { suppressionDelayMs: Math.max(0, suppressedUntil - Date.now()) }),
+			};
+		}
+		return { switched: false };
+	}
+
+	/** Remaining wait until the first selector in the active chain leaves cooldown. */
+	#retryFallbackSuppressionDelayMs(currentSelector: string): number | undefined {
+		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
+		const selectors = role ? this.findRetryFallbackChainRestart(role, currentSelector) : [];
+		let earliestUntil = this.#host.modelRegistry.getSelectorSuppressedUntil(currentSelector);
+		for (const selector of selectors) {
+			const suppressedUntil = this.#host.modelRegistry.getSelectorSuppressedUntil(selector.raw);
+			if (suppressedUntil !== undefined && (earliestUntil === undefined || suppressedUntil < earliestUntil)) {
+				earliestUntil = suppressedUntil;
+			}
+		}
+		return earliestUntil === undefined ? undefined : Math.max(0, earliestUntil - Date.now());
 	}
 
 	/** The active model when it is a Fireworks Fast (`-fast`) variant, else undefined. */
@@ -1772,6 +1838,8 @@ export class TurnRecovery {
 			allowModelFallback?: boolean;
 			fireworksFastFallback?: boolean;
 			preserveFailedTurn?: boolean;
+			/** Loop the fallback chain from its top instead of stopping when the retry budget is exhausted. */
+			endlessChainRetry?: boolean;
 		},
 	): Promise<boolean> {
 		const retrySettings = this.#host.settings.getGroup("retry");
@@ -1895,9 +1963,36 @@ export class TurnRecovery {
 			}
 		}
 		if (switchedModel) this.#retryAttempt = 0;
+		let retryBudgetRestarted = false;
 
 		if (retryBudgetExhausted) {
-			if (!switchedModel) {
+			const endlessRetry =
+				options?.endlessChainRetry === true && !classifierRefusal && currentSelector !== undefined;
+			if (!switchedModel && endlessRetry) {
+				const maySwitchModel = allowModelFallback && retrySettings.modelFallback;
+				let restart = maySwitchModel
+					? await this.#tryRetryModelFallbackRestart(currentSelector, false)
+					: { switched: false };
+				if (!restart.switched && maySwitchModel) {
+					// Every chain entry is cooling down. Reserve the chain's first
+					// different usable model now, then wait until its cooldown expires.
+					restart = await this.#tryRetryModelFallbackRestart(currentSelector, false, true);
+				}
+				if (restart.switched) {
+					switchedModel = true;
+					delayMs = restart.suppressionDelayMs ?? 0;
+				} else {
+					const suppressionDelayMs =
+						restart.suppressionDelayMs ??
+						(maySwitchModel ? this.#retryFallbackSuppressionDelayMs(currentSelector) : undefined);
+					if (suppressionDelayMs !== undefined && suppressionDelayMs > delayMs) {
+						delayMs = suppressionDelayMs;
+					}
+					retryBudgetRestarted = true;
+				}
+				this.#retryAttempt = 0;
+			}
+			if (!switchedModel && !retryBudgetRestarted) {
 				const attempt = this.#retryAttempt - 1;
 				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
 				await this.persistTerminalEmptyErrorTurn(message);
@@ -1912,10 +2007,9 @@ export class TurnRecovery {
 				this.#clearPendingRetryErrors();
 				this.#retryAttempt = 0;
 				this.#retrySagaAttempt = 0;
-				this.resolveRetry(); // Resolve so waitForRetry() completes
+				this.resolveRetry();
 				return false;
 			}
-			// The fallback model's fresh retry budget was initialized above.
 		}
 		if (classifierRefusal && !switchedModel) {
 			// A prior attempt in this saga already announced `auto_retry_start`
@@ -1951,7 +2045,14 @@ export class TurnRecovery {
 		// assistant error message is preserved in agent state so the caller
 		// can act on it.
 		const maxDelayMs = retrySettings.maxDelayMs;
-		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel) {
+		if (
+			maxDelayMs > 0 &&
+			delayMs > maxDelayMs &&
+			!switchedCredential &&
+			!switchedModel &&
+			!retryBudgetRestarted &&
+			options?.endlessChainRetry !== true
+		) {
 			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retrySagaAttempt;
 			this.#retryAttempt = 0;
@@ -1977,11 +2078,12 @@ export class TurnRecovery {
 
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_start",
-			attempt: switchedModel ? 1 : this.#retryAttempt,
+			attempt: switchedModel || retryBudgetRestarted ? 1 : this.#retryAttempt,
 			maxAttempts: maxRetries,
 			delayMs,
 			errorMessage,
 			errorId: message.errorId,
+			...(currentSelector ? { model: currentSelector } : {}),
 		});
 
 		// Resolved stream-stall tools have already emitted results. Keep that failed

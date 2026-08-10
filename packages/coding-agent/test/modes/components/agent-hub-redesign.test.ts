@@ -17,7 +17,7 @@ import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/compon
 import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
 	type AgentKind,
 	AgentRegistry,
@@ -136,7 +136,17 @@ function registerParticipant(
 		kind,
 		status,
 		sessionFile,
-	}: { id: string; label: string; kind: AgentKind; status: AgentStatus; sessionFile: string | null },
+		terminalStatus,
+		activity,
+	}: {
+		id: string;
+		label: string;
+		kind: AgentKind;
+		status: AgentStatus;
+		sessionFile: string | null;
+		terminalStatus?: "completed" | "failed" | "aborted";
+		activity?: string;
+	},
 ): void {
 	registry.register({
 		id,
@@ -146,6 +156,8 @@ function registerParticipant(
 		session: status === "parked" || status === "aborted" ? null : fakeSession(),
 		sessionFile,
 		status,
+		...(terminalStatus ? { terminalStatus } : {}),
+		...(activity ? { activity } : {}),
 	});
 }
 
@@ -506,6 +518,151 @@ describe("Agent Hub redesign", () => {
 		}
 	});
 
+	it("keeps fixed roster metadata columns aligned when a long agent label is clipped", async () => {
+		vi.useFakeTimers();
+		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
+		const id = "LONG_ROSTER_LABEL_FIXED_COLUMNS";
+		const label = "Long roster label that must remain bounded before METADATA_TAIL";
+		setSystemTime(startedAtMs);
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		registerParticipant(registry, { id, label, kind: "sub", status: "running", sessionFile: null });
+		const observers = new SessionObserverRegistry();
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id,
+				kind: "subagent",
+				label,
+				status: "active",
+				lastUpdate: startedAtMs,
+				progress: {
+					...completedProgress(id, startedAtMs, 3_723_000),
+					status: "running" as const,
+					completedAtMs: undefined,
+					resolvedModel: "provider/short-model",
+				},
+			},
+		]);
+		const hub = makeHub({ registry, observers });
+
+		try {
+			await hub.persistedSubagentsReady;
+			setSystemTime(startedAtMs + 3_723_000);
+			const roster = renderedRosterPanel(hub, 160);
+			const header = roster.find(line =>
+				["Status", "Duration", "Model", "Last up…"].every(column => line.includes(column)),
+			);
+			const row = roster.find(line => line.includes("Long roster label"));
+			if (!header || !row) throw new Error("Expected fixed metadata header and long-label agent row");
+
+			expect(row).not.toContain("METADATA_TAIL");
+			expect(row.indexOf("Running")).toBe(header.indexOf("Status"));
+			expect(row.indexOf("1h2m")).toBe(header.indexOf("Duration"));
+			expect(row.indexOf("short-model")).toBe(header.indexOf("Model"));
+			expect(row.indexOf("1h ago")).toBe(header.indexOf("Last up…"));
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("omits status-word activity candidates from roster title details", async () => {
+		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		const activityLabel = { id: "ACTIVITY_LABEL_STATUS_WORD", label: "Activity label source" };
+		const currentTool = { id: "CURRENT_TOOL_STATUS_WORD", label: "Current tool source" };
+		const lastIntent = { id: "LAST_INTENT_STATUS_WORD", label: "Last intent source" };
+		const storedActivity = { id: "STORED_ACTIVITY_STATUS_WORD", label: "Stored activity source" };
+		for (const agent of [activityLabel, currentTool, lastIntent, storedActivity]) {
+			registerParticipant(registry, {
+				...agent,
+				kind: "sub",
+				status: "running",
+				sessionFile: null,
+				...(agent === lastIntent ? { activity: "REF_AFTER_READ" } : {}),
+				...(agent === storedActivity ? { activity: "Idle" } : {}),
+			});
+		}
+		const observers = new SessionObserverRegistry();
+		vi.spyOn(observers, "getSessions").mockReturnValue([
+			{
+				id: activityLabel.id,
+				kind: "subagent",
+				label: activityLabel.label,
+				status: "active",
+				lastUpdate: startedAtMs,
+				progress: {
+					...completedProgress(activityLabel.id, startedAtMs, 0),
+					status: "running" as const,
+					completedAtMs: undefined,
+					activity: {
+						phase: "tool",
+						label: "Idle",
+						phaseStartedAtMs: startedAtMs,
+						lastActivityAtMs: startedAtMs,
+					},
+					currentTool: "WORK_AFTER_IDLE",
+				},
+			},
+			{
+				id: currentTool.id,
+				kind: "subagent",
+				label: currentTool.label,
+				status: "active",
+				lastUpdate: startedAtMs,
+				progress: {
+					...completedProgress(currentTool.id, startedAtMs, 0),
+					status: "running" as const,
+					completedAtMs: undefined,
+					currentTool: "yield",
+					lastIntent: "INTENT_AFTER_YIELD",
+				},
+			},
+			{
+				id: lastIntent.id,
+				kind: "subagent",
+				label: lastIntent.label,
+				status: "active",
+				lastUpdate: startedAtMs,
+				progress: {
+					...completedProgress(lastIntent.id, startedAtMs, 0),
+					status: "running" as const,
+					completedAtMs: undefined,
+					lastIntent: "read",
+				},
+			},
+			{
+				id: storedActivity.id,
+				kind: "subagent",
+				label: storedActivity.label,
+				status: "active",
+				lastUpdate: startedAtMs,
+				progress: {
+					...completedProgress(storedActivity.id, startedAtMs, 0),
+					status: "running" as const,
+					completedAtMs: undefined,
+				},
+			},
+		]);
+		const hub = makeHub({ registry, observers });
+
+		try {
+			await hub.persistedSubagentsReady;
+			for (const { label, expectedDetail, hiddenDetail } of [
+				{ label: activityLabel.label, expectedDetail: "WORK_AFTER_IDLE", hiddenDetail: "Idle" },
+				{ label: currentTool.label, expectedDetail: "INTENT_AFTER_YIELD", hiddenDetail: "yield" },
+				{ label: lastIntent.label, expectedDetail: "REF_AFTER_READ", hiddenDetail: "read" },
+				{ label: storedActivity.label, expectedDetail: undefined, hiddenDetail: "Idle" },
+			]) {
+				const row = hubRow(hub, label);
+				expect(row).not.toContain(hiddenDetail);
+				if (expectedDetail) expect(row).toContain(expectedDetail);
+			}
+		} finally {
+			hub.dispose();
+		}
+	});
+
 	it("shows a usable no-session placeholder beneath the compact transcript header", async () => {
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
 		const registry = new AgentRegistry();
@@ -645,6 +802,48 @@ describe("Agent Hub redesign", () => {
 			expect(header).not.toContain("Status: completed");
 		} finally {
 			viewer.dispose();
+			hub.dispose();
+		}
+	});
+
+	it("renders terminal outcomes independently from lifecycle state and aggregates their semantic buckets", async () => {
+		const registry = new AgentRegistry();
+		registerMain(registry);
+		const failed = { id: "FAILED_TERMINAL_ABORTED_LIFECYCLE", label: "Failure outcome" };
+		const stopped = { id: "STOPPED_TERMINAL_IDLE_LIFECYCLE", label: "Stopped outcome" };
+		registerParticipant(registry, {
+			...failed,
+			kind: "sub",
+			status: "aborted",
+			sessionFile: null,
+			terminalStatus: "failed",
+		});
+		registerParticipant(registry, {
+			...stopped,
+			kind: "sub",
+			status: "idle",
+			sessionFile: null,
+			terminalStatus: "aborted",
+		});
+		const observers = new SessionObserverRegistry();
+		vi.spyOn(observers, "getSessions").mockReturnValue([]);
+		const hub = makeHub({ registry, observers });
+
+		try {
+			await hub.persistedSubagentsReady;
+			const rendered = hub.render(160);
+			const plain = rendered.map(line => Bun.stripANSI(line)).join("\n");
+			const failedRow = rendered.find(line => Bun.stripANSI(line).includes(failed.label));
+			const stoppedRow = rendered.find(line => Bun.stripANSI(line).includes(stopped.label));
+			if (!failedRow || !stoppedRow) throw new Error("Expected terminal outcome rows");
+
+			expect(Bun.stripANSI(failedRow)).toContain("Failed");
+			expect(failedRow).toContain(theme.fg("error", "Failed"));
+			expect(Bun.stripANSI(stoppedRow)).toContain("Stopped");
+			expect(stoppedRow).toContain(theme.fg("muted", "Stopped"));
+			expect(plain).toContain("1 aborted");
+			expect(plain).toContain("1 idle");
+		} finally {
 			hub.dispose();
 		}
 	});

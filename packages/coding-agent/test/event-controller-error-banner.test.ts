@@ -7,7 +7,7 @@
  * `agent_start` via `ctx.clearPinnedError`. Aborts and normal stops must NOT
  * pin a banner.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -99,10 +99,11 @@ function createFixture(streamingMessage?: AssistantMessage) {
 			chatChildren.length = 0;
 		}),
 	};
+	const requestComponentRender = vi.fn();
 	const ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
-		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
+		ui: { requestRender: vi.fn(), requestComponentRender },
 		settings: { get: vi.fn(() => false) },
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
@@ -141,7 +142,15 @@ function createFixture(streamingMessage?: AssistantMessage) {
 	} as unknown as InteractiveModeContext;
 
 	const controller = new EventController(ctx);
-	return { controller, ctx, showPinnedError, clearPinnedError, streamingComponent, componentCalls };
+	return {
+		controller,
+		ctx,
+		showPinnedError,
+		clearPinnedError,
+		streamingComponent,
+		componentCalls,
+		requestComponentRender,
+	};
 }
 
 describe("EventController error banner", () => {
@@ -213,6 +222,54 @@ describe("EventController error banner", () => {
 			success: true,
 			attempt: 1,
 		} as Extract<AgentSessionEvent, { type: "auto_retry_end" }>);
+	});
+
+	it("renders the failed model and live retry countdown before auto_retry_end clears it", async () => {
+		let retryLoader: InteractiveModeContext["retryLoader"];
+		vi.useFakeTimers();
+		setSystemTime(1_000);
+		try {
+			setSettingsUiLocale("en");
+			const { controller, ctx, requestComponentRender } = createFixture();
+
+			await controller.handleEvent({
+				type: "auto_retry_start",
+				attempt: 1,
+				maxAttempts: 4,
+				delayMs: 3_000,
+				errorMessage: "quota exhausted",
+				model: "failed-model",
+			} as Extract<AgentSessionEvent, { type: "auto_retry_start" }>);
+
+			retryLoader = ctx.retryLoader;
+			if (!retryLoader) throw new Error("Expected retry loader after auto_retry_start");
+			let rendered = Bun.stripANSI(retryLoader.render(120).join("\n"));
+			expect(rendered).toContain("Retry in 3s");
+			expect(rendered).toContain("failed-model: quota exhausted");
+
+			vi.advanceTimersByTime(1_000);
+			rendered = Bun.stripANSI(retryLoader.render(120).join("\n"));
+			expect(rendered).toContain("Retry in 2s");
+			expect(rendered).not.toContain("Retry in 3s");
+
+			vi.advanceTimersByTime(1_000);
+			expect(Bun.stripANSI(retryLoader.render(120).join("\n"))).toContain("Retry in 1s");
+
+			await controller.handleEvent({
+				type: "auto_retry_end",
+				success: true,
+				attempt: 1,
+			} as Extract<AgentSessionEvent, { type: "auto_retry_end" }>);
+
+			expect(ctx.retryLoader).toBeUndefined();
+			requestComponentRender.mockClear();
+			vi.advanceTimersByTime(1_000);
+			expect(requestComponentRender).not.toHaveBeenCalled();
+		} finally {
+			retryLoader?.stop();
+			vi.useRealTimers();
+			setSystemTime();
+		}
 	});
 
 	it("does not pin a banner for a normal assistant stop", async () => {
@@ -496,34 +553,28 @@ describe("EventController working loader reconciliation", () => {
 });
 
 describe("ErrorBannerComponent", () => {
-	it("renders an English footer that says the current turn stopped, /retry can recover, and the next message closes the banner", () => {
+	it("renders an English banner that shows only the provider error without a manual /retry prompt", () => {
 		setSettingsUiLocale("en");
 		const errorMessage = "Output blocked by content filtering policy";
 		const banner = new ErrorBannerComponent(errorMessage);
 		const rendered = Bun.stripANSI(banner.render(120).join("\n"));
 
 		expect(rendered).toContain(errorMessage);
-		expect(rendered).toMatch(/(current|this) turn/i);
-		expect(rendered).toMatch(/stopp(?:ed|ing)/i);
-		expect(rendered).toContain("/retry");
-		expect(rendered).toMatch(/next message/i);
-		expect(rendered).toMatch(/dismiss|close/i);
-		expect(rendered).toMatch(/banner/i);
+		// The banner surfaces the raw error; retry now loops automatically, so no
+		// manual /retry prompt or "turn stopped" footer is shown.
+		expect(rendered).not.toContain("/retry");
+		expect(rendered).not.toMatch(/this turn has stopped/i);
 	});
 
-	it("renders a zh-CN footer with the same stop, /retry, and next-message dismissal contract while preserving the raw provider error", () => {
+	it("renders a zh-CN banner preserving the raw provider error without a manual /retry prompt", () => {
 		setSettingsUiLocale("zh-CN");
 		const errorMessage = "Output blocked by content filtering policy";
 		const banner = new ErrorBannerComponent(errorMessage);
 		const rendered = Bun.stripANSI(banner.render(120).join("\n"));
 
 		expect(rendered).toContain(errorMessage);
-		expect(rendered).toMatch(/当前|本轮/);
-		expect(rendered).toMatch(/已停止|停止|终止/);
-		expect(rendered).toContain("/retry");
-		expect(rendered).toMatch(/下一条消息/);
-		expect(rendered).toMatch(/关闭|收起/);
-		expect(rendered).toMatch(/提示|横幅/);
+		expect(rendered).not.toContain("/retry");
+		expect(rendered).not.toMatch(/本轮已停止|当前回合已停止/);
 	});
 
 	it("caps an oversized multi-line error to a few lines", () => {

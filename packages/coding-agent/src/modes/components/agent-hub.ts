@@ -91,11 +91,13 @@ const DATA_CHANGE_RENDER_COALESCE_MS = 100;
 const LEFT_TAP_WINDOW_MS = 500;
 
 const HUB_STATUS_WIDTH = 16;
-const HUB_DURATION_WIDTH = 8;
-const HUB_MODEL_WIDTH = 18;
+const HUB_DURATION_WIDTH = 12;
+const HUB_MODEL_WIDTH = 26;
 const HUB_ACTIVITY_WIDTH = 8;
 const HUB_COLUMN_GAP = " ";
 const HUB_MIN_AGENT_WIDTH = 21;
+/** Cap the agent-name column so Duration/Model columns stay readable on wide terminals. */
+const HUB_MAX_AGENT_WIDTH = 40;
 const HUB_FIXED_COLUMNS_MIN_WIDTH =
 	4 +
 	HUB_MIN_AGENT_WIDTH +
@@ -137,6 +139,24 @@ const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["
 };
 
 const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Activity labels that duplicate the Status column; the title row skips them. */
+const HUB_STATUS_WORDS = new Set([
+	"idle",
+	"yield",
+	"read",
+	"running",
+	"queued",
+	"waiting",
+	"parked",
+	"stopped",
+	"failed",
+	"completed",
+]);
+
+function isHubStatusWord(text: string): boolean {
+	return HUB_STATUS_WORDS.has(text.trim().toLowerCase());
+}
 
 /** Result of one host-backed transcript read for the Agent Hub viewer. */
 export interface AgentHubRemoteTranscript {
@@ -583,7 +603,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		}
 		this.#statusCounts = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
 		for (const ref of rosterRows) {
-			const status = this.#agentStatusFor(this.#taskStatus(ref, this.#observedById.get(ref.id)));
+			const taskStatus = this.#taskStatus(ref, this.#observedById.get(ref.id));
+			const status = this.#agentStatusFor(taskStatus);
 			this.#statusCounts[status]++;
 		}
 		this.#refreshAggregate();
@@ -638,12 +659,18 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			case "parked":
 				return "parked";
 			case "failed":
-			case "stopped":
 				return "aborted";
+			case "stopped":
 			case "idle":
 			case "completed":
 				return "idle";
 		}
+	}
+
+	#taskGlyph(taskStatus: HubTaskStatus): string {
+		if (taskStatus === "failed") return statusGlyph("aborted");
+		if (taskStatus === "stopped") return theme.fg("muted", theme.status.aborted);
+		return statusGlyph(this.#agentStatusFor(taskStatus));
 	}
 
 	#renderTaskStatus(status: HubTaskStatus): string {
@@ -702,7 +729,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			this.#observedById = this.#collectObserved(this.#rows);
 			this.#statusCounts = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
 			for (const ref of this.#rows) {
-				const status = this.#agentStatusFor(this.#taskStatus(ref, this.#observedById.get(ref.id)));
+				const taskStatus = this.#taskStatus(ref, this.#observedById.get(ref.id));
+				const status = this.#agentStatusFor(taskStatus);
 				this.#statusCounts[status]++;
 			}
 			this.#refreshAggregate();
@@ -953,15 +981,18 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 	#columnHeader(width: number): string {
 		const max = Math.max(1, width);
-		const nameWidth = Math.max(
-			HUB_MIN_AGENT_WIDTH,
-			max -
-				4 -
-				HUB_STATUS_WIDTH -
-				HUB_DURATION_WIDTH -
-				HUB_MODEL_WIDTH -
-				HUB_ACTIVITY_WIDTH -
-				HUB_COLUMN_GAP.length * 4,
+		const nameWidth = Math.min(
+			HUB_MAX_AGENT_WIDTH,
+			Math.max(
+				HUB_MIN_AGENT_WIDTH,
+				max -
+					4 -
+					HUB_STATUS_WIDTH -
+					HUB_DURATION_WIDTH -
+					HUB_MODEL_WIDTH -
+					HUB_ACTIVITY_WIDTH -
+					HUB_COLUMN_GAP.length * 4,
+			),
 		);
 		return theme.fg(
 			"dim",
@@ -1025,7 +1056,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			add(theme.bold(theme.fg("accent", label)));
 		};
 
-		add(`${statusGlyph(this.#agentStatusFor(taskStatus))} ${theme.bold(label)}`);
+		add(`${this.#taskGlyph(taskStatus)} ${theme.bold(label)}`);
 		if (label !== sanitizeDisplayText(ref.id)) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
 		const lifecycleDetails = [
 			metrics ? formatMetricDuration(metrics) : undefined,
@@ -1107,8 +1138,13 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				: "";
 		const taskStatus = this.#taskStatus(ref, observed);
 		const activity = selectAgentActivity(ref.activityState, observed?.progress);
-		const detail =
-			activity?.label ?? observed?.progress?.currentTool ?? observed?.progress?.lastIntent ?? ref.activity;
+		// Pure status words duplicate the Status column; skip them in every detail source.
+		const detail = [
+			activity?.label,
+			observed?.progress?.currentTool,
+			observed?.progress?.lastIntent,
+			ref.activity,
+		].find(candidate => candidate && !isHubStatusWord(candidate));
 		const label = this.#displayLabel(ref);
 		const styledLabel = selected ? theme.bold(theme.fg("accent", label)) : theme.bold(label);
 		const detailWidth = Math.max(1, Math.floor(max / 3));
@@ -1135,23 +1171,22 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				? formatAgentClockTime(completedAtMs)
 				: formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)));
 		let line: string;
-		const nameWidth = Math.max(
-			HUB_MIN_AGENT_WIDTH,
-			max -
-				4 -
-				HUB_STATUS_WIDTH -
-				HUB_DURATION_WIDTH -
-				HUB_MODEL_WIDTH -
-				HUB_ACTIVITY_WIDTH -
-				HUB_COLUMN_GAP.length * 4,
+		const nameWidth = Math.min(
+			HUB_MAX_AGENT_WIDTH,
+			Math.max(
+				HUB_MIN_AGENT_WIDTH,
+				max -
+					4 -
+					HUB_STATUS_WIDTH -
+					HUB_DURATION_WIDTH -
+					HUB_MODEL_WIDTH -
+					HUB_ACTIVITY_WIDTH -
+					HUB_COLUMN_GAP.length * 4,
+			),
 		);
-		const useFixedColumns =
-			this.#viewMode === "roster" &&
-			width >= HUB_FIXED_COLUMNS_MIN_WIDTH &&
-			visibleWidth(`${branch}${label}${unreadText}`) <= nameWidth &&
-			!(detail && !metrics && modelParts.length === 0);
+		const useFixedColumns = this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH;
 		if (useFixedColumns) {
-			line = `${cursor} ${statusGlyph(this.#agentStatusFor(taskStatus))} ${[
+			line = `${cursor} ${this.#taskGlyph(taskStatus)} ${[
 				fixedCell(agent, nameWidth),
 				fixedCell(this.#renderTaskStatus(taskStatus), HUB_STATUS_WIDTH),
 				fixedCell(theme.fg("dim", duration), HUB_DURATION_WIDTH),
@@ -1159,7 +1194,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				fixedCell(theme.fg("dim", age), HUB_ACTIVITY_WIDTH),
 			].join(HUB_COLUMN_GAP)}`;
 		} else {
-			line = `${cursor} ${statusGlyph(this.#agentStatusFor(taskStatus))} ${agent} ${theme.fg("dim", theme.sep.dot)} ${this.#renderTaskStatus(taskStatus)}`;
+			line = `${cursor} ${this.#taskGlyph(taskStatus)} ${agent} ${theme.fg("dim", theme.sep.dot)} ${this.#renderTaskStatus(taskStatus)}`;
 		}
 		const clipped = truncateToWidth(line.replace(/[\r\n]+/g, " "), max);
 		if (!selected && !hovered) return [clipped];

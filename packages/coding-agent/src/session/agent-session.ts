@@ -3453,8 +3453,8 @@ export class AgentSession {
 				const didRetry = await this.#recovery.handleRetryableError(
 					msg,
 					resolvedInterruptedToolTurn === "reasonless-abort"
-						? { allowModelFallback: false, preserveFailedTurn: true }
-						: { allowModelFallback: false },
+						? { allowModelFallback: false, preserveFailedTurn: true, endlessChainRetry: true }
+						: { allowModelFallback: false, endlessChainRetry: true },
 				);
 				if (didRetry) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -3475,7 +3475,10 @@ export class AgentSession {
 			// including hard router errors the generic retry classifier rejects — so
 			// run this gate before the standard retryability check.
 			if (this.#recovery.isFireworksFastFallbackEligible(msg)) {
-				const didRetry = await this.#recovery.handleRetryableError(msg, { fireworksFastFallback: true });
+				const didRetry = await this.#recovery.handleRetryableError(msg, {
+					fireworksFastFallback: true,
+					endlessChainRetry: true,
+				});
 				if (didRetry) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -3485,7 +3488,9 @@ export class AgentSession {
 			if (resumeResolvedStreamStall || this.#recovery.isRetryableError(msg)) {
 				const didRetry = await this.#recovery.handleRetryableError(
 					msg,
-					resumeResolvedStreamStall ? { preserveFailedTurn: true } : undefined,
+					resumeResolvedStreamStall
+						? { preserveFailedTurn: true, endlessChainRetry: true }
+						: { endlessChainRetry: true },
 				);
 				if (didRetry) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -4188,6 +4193,7 @@ export class AgentSession {
 				delayMs: event.delayMs,
 				errorMessage: event.errorMessage,
 				errorId: event.errorId,
+				model: event.model,
 			});
 		} else if (event.type === "auto_retry_end") {
 			await this.#extensionRunner.emit({

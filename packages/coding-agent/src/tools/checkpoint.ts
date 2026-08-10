@@ -82,15 +82,15 @@ export class CheckpointTool implements AgentTool<typeof checkpointSchema, Checkp
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<CheckpointToolDetails>> {
 		if (this.session.getCheckpointState?.()) {
-			throw new ToolError("Checkpoint already active.");
+			throw new ToolError(tSettingsUi("Checkpoint already active."));
 		}
 		const startedAt = new Date().toISOString();
 		return toolResult<CheckpointToolDetails>({ goal: params.goal, startedAt })
 			.text(
 				[
-					"Checkpoint created.",
-					`Goal: ${params.goal}`,
-					"Run your investigation, then call rewind with a concise report.",
+					tSettingsUi("Checkpoint created."),
+					tSettingsUi("Goal: {goal}", { goal: params.goal }),
+					tSettingsUi("Run your investigation, then call rewind with a concise report."),
 				].join("\n"),
 			)
 			.done();
@@ -126,17 +126,19 @@ export class RewindTool implements AgentTool<typeof rewindSchema, RewindToolDeta
 		if (!this.session.getCheckpointState?.()) {
 			if (this.session.getLastCompletedRewind?.()) {
 				throw new ToolError(
-					"Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.",
+					tSettingsUi(
+						"Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.",
+					),
 				);
 			}
-			throw new ToolError("No active checkpoint. Create a checkpoint before calling rewind.");
+			throw new ToolError(tSettingsUi("No active checkpoint. Create a checkpoint before calling rewind."));
 		}
 		const report = params.report.trim();
 		if (report.length === 0) {
-			throw new ToolError("Report cannot be empty.");
+			throw new ToolError(tSettingsUi("Report cannot be empty."));
 		}
 		return toolResult<RewindToolDetails>({ report, rewound: true })
-			.text(["Rewind requested.", "Report captured for context replacement."].join("\n"))
+			.text([tSettingsUi("Rewind requested."), tSettingsUi("Report captured for context replacement.")].join("\n"))
 			.done();
 	}
 }

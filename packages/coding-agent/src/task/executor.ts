@@ -1851,6 +1851,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					delayMs: event.delayMs,
 					errorMessage: event.errorMessage,
 					startedAtMs: Date.now(),
+					model: event.model,
 				};
 				progress.retryFailure = undefined;
 				setActivity("retrying", "Retrying request", `Attempt ${event.attempt} of ${event.maxAttempts}`);
@@ -2374,11 +2375,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		}
 	}
 
-	// Update final progress. A wall-clock timeout always wins: if the runtime
-	// limit fired we report aborted/failed regardless of whether a yield landed
-	// while we were tearing the session down. The yield data is still surfaced
-	// to the caller via `progress.extractedToolData`, but the exit status must
-	// reflect the timeout so on-call doesn't mistake a stuck run for success.
+	// Update final progress. Explicit operator/scheduler stops stay `aborted`
+	// (a neutral stopped outcome); runtime failures and agent-declared aborted
+	// yields are failures. The lifecycle may still tombstone the session after
+	// either outcome, so persist the task result before teardown.
 	const runtimeLimitExceeded = monitor.runtimeLimitExceeded();
 	if (runtimeLimitExceeded && exitCode === 0) {
 		exitCode = 1;
@@ -2396,9 +2396,13 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 						? monitor.resolveSignalAbortReason()
 						: monitor.resolveAbortReasonText()
 		: undefined;
+	const abortKind = monitor.abortKind();
+	const deliberateStop = abortKind === "signal" || abortKind === "terminate" || abortKind === "budget";
+	const abnormalAbort = wasAborted && (runtimeLimitExceeded || abortedViaYield || !deliberateStop);
 	monitor.beginFinalization();
-	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
-	AgentRegistry.global().setTerminalStatus(id, progress.status);
+	progress.status = wasAborted ? (abnormalAbort ? "failed" : "aborted") : exitCode === 0 ? "completed" : "failed";
+	const registry = AgentRegistry.global();
+	registry.setTerminalStatus(id, progress.status, registry.get(id));
 	progress.completedAtMs ??= Date.now();
 	monitor.scheduleProgress(true);
 	monitor.completeFinalization();
@@ -2446,6 +2450,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		resolvedModelIsFallback: progress.resolvedModelIsFallback,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
 		aborted: wasAborted,
+		abortOutcome: wasAborted ? (abnormalAbort ? "failed" : "cancelled") : undefined,
 		abortReason: finalAbortReason,
 		usage: monitor.hasUsage() ? monitor.accumulatedUsage : undefined,
 		outputPath,

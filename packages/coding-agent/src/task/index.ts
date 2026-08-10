@@ -1271,8 +1271,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					const singleResult = result.details?.results[0];
 					// A missing result means the sync path failed at the tool level
 					// (results: []) — treat it as a failure, not success.
-					const resultFailed = !singleResult || (singleResult.aborted ?? false) || singleResult.exitCode !== 0;
-					progress.status = singleResult?.aborted ? "aborted" : resultFailed ? "failed" : "completed";
+					const resultFailed =
+						!singleResult || singleResult.abortOutcome === "failed" || singleResult.exitCode !== 0;
+					progress.status = singleResult?.aborted
+						? singleResult.abortOutcome === "failed"
+							? "failed"
+							: "aborted"
+						: resultFailed
+							? "failed"
+							: "completed";
 					const completedAtMs = progress.completedAtMs ?? Date.now();
 					progress.completedAtMs = completedAtMs;
 					progress.durationMs =

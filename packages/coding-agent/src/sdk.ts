@@ -1083,6 +1083,7 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 					delayMs: event.delayMs,
 					errorMessage: event.errorMessage,
 					errorId: event.errorId,
+					model: event.model,
 				},
 				ctx,
 			),

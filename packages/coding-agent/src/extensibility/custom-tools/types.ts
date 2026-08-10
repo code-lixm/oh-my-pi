@@ -133,6 +133,7 @@ export type CustomToolSessionEvent =
 			delayMs: number;
 			errorMessage: string;
 			errorId?: number;
+			model?: string;
 	  }
 	| {
 			reason: "auto_retry_end";

@@ -4758,4 +4758,192 @@ describe("AgentSession retry fallback", () => {
 		expect(session.isRetrying).toBe(false);
 		expect(getLastAssistantMessage(session).stopReason).toBe("stop");
 	});
+	it("restarts an endless fallback chain from its top after the tail exhausts its retry budget", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const firstFallback = getBundledModel("openai", "gpt-4o-mini");
+		const secondFallback = getBundledModel("openai", "gpt-4o");
+		if (!primaryModel || !firstFallback || !secondFallback) {
+			throw new Error("Expected bundled models for endless fallback-chain retry to exist");
+		}
+
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const firstFallbackSelector = `${firstFallback.provider}/${firstFallback.id}`;
+		const secondFallbackSelector = `${secondFallback.provider}/${secondFallback.id}`;
+		const retryableError = "overloaded_error: provider returned error 503";
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				// Three bounded failures walk A → B → C. Any fourth request recovers,
+				// so a broken loop still settles and exposes its wrong selection below.
+				if (requestedModels.length <= 3) {
+					mock.push({ throw: retryableError });
+				} else {
+					mock.push({ content: ["Recovered after restarting the fallback chain"] });
+				}
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.modelFallback": true,
+			"retry.fallbackChains": {
+				default: [firstFallbackSelector, secondFallbackSelector],
+			},
+		});
+		settings.setModelRole("default", primarySelector);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("Restart the exhausted fallback chain from its top");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			primarySelector,
+			firstFallbackSelector,
+			secondFallbackSelector,
+			primarySelector,
+		]);
+		expect(getLastAssistantMessage(session).stopReason).toBe("stop");
+	});
+
+	it("keeps an endless reasonless-abort retry on its failed model when fallback is forbidden", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled primary and fallback models to exist");
+		}
+
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const mock = createMockModel({
+			responses: [
+				{ throw: "Request was aborted." },
+				{ throw: "Request was aborted." },
+				{ content: ["Recovered after the endless same-model retry"] },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": true,
+			"retry.fallbackChains": {
+				default: [fallbackSelector],
+			},
+		});
+		settings.setModelRole("default", primarySelector);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("Retry the reasonless abort after its first budget is spent");
+		await session.waitForIdle();
+
+		// Reasonless aborts call recovery with allowModelFallback:false. The
+		// configured chain proves that budget restart does not override that guard.
+		expect(requestedModels).toEqual([primarySelector, primarySelector, primarySelector]);
+		expect(fallbackAppliedEvents).toEqual([]);
+		expect(getLastAssistantMessage(session).stopReason).toBe("stop");
+	});
+
+	it("reports the just-failed selector in auto_retry_start after switching to a fallback", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled primary and fallback models to exist");
+		}
+
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
+		const retryableError = "overloaded_error: provider returned error 503";
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => {
+				const selector = `${requestedModel.provider}/${requestedModel.id}`;
+				requestedModels.push(selector);
+				if (selector === primarySelector) {
+					mock.push({ throw: retryableError });
+				} else if (selector === fallbackSelector) {
+					mock.push({ content: ["Recovered on the fallback"] });
+				} else {
+					throw new Error(`Unexpected model requested while recording the failed selector: ${selector}`);
+				}
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.modelFallback": true,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				default: [fallbackSelector],
+			},
+		});
+		settings.setModelRole("default", primarySelector);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const { retryStartEvents } = trackRetryEvents(session);
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("Fail over while preserving the failed selector in the retry event");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([primarySelector, fallbackSelector]);
+		expect(retryStartEvents).toEqual([expect.objectContaining({ model: primarySelector })]);
+		expect(getLastAssistantMessage(session).stopReason).toBe("stop");
+	});
 });

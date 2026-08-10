@@ -37,6 +37,7 @@ export type AgentSessionEvent =
 			delayMs: number;
 			errorMessage: string;
 			errorId?: number;
+			model?: string;
 	  }
 	| {
 			type: "auto_retry_end";

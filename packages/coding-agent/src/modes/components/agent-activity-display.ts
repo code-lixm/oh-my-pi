@@ -37,8 +37,9 @@ export type AgentTerminalStatus = Extract<AgentProgress["status"], "completed" |
 
 /**
  * Resolve the task outcome shared by Agent Hub and transcript surfaces.
- * Registry `idle`/`parked` are lifecycle states, not proof of success; an
- * explicit aborted tombstone still wins over stale observer/progress data.
+ * The explicit task outcome wins over the registry lifecycle tombstone:
+ * a failed/completed task may park or tear down through `aborted` lifecycle
+ * state without changing what the task actually did.
  */
 export function resolveAgentTerminalStatus(options: {
 	progressStatus?: AgentProgress["status"];
@@ -46,8 +47,8 @@ export function resolveAgentTerminalStatus(options: {
 	registryStatus?: AgentStatus;
 	terminalStatus?: AgentTerminalStatus;
 }): AgentTerminalStatus | undefined {
-	if (options.registryStatus === "aborted") return "aborted";
 	if (options.terminalStatus) return options.terminalStatus;
+	if (options.registryStatus === "aborted") return "aborted";
 	if (
 		options.progressStatus === "completed" ||
 		options.progressStatus === "failed" ||
@@ -165,14 +166,15 @@ function formatRetry(progress: AgentActivityDisplayProgress | undefined, now: nu
 	if (retry && isFiniteNumber(retry.attempt) && isFiniteNumber(retry.maxAttempts) && isFiniteNumber(retry.delayMs)) {
 		const startedAt = isFiniteNumber(retry.startedAtMs) ? retry.startedAtMs : now;
 		const remaining = Math.max(0, retry.delayMs - Math.max(0, now - startedAt));
-		return theme.fg(
-			"warning",
-			tSettingsUi("retry {attempt}/{max} · {delay}", {
-				attempt: retry.attempt,
-				max: retry.maxAttempts,
-				delay: formatDuration(remaining),
-			}),
-		);
+		const retryTiming = tSettingsUi("retry {attempt}/{max} · {delay}", {
+			attempt: retry.attempt,
+			max: retry.maxAttempts,
+			delay: formatDuration(remaining),
+		});
+		const errorText = retry.model
+			? tSettingsUi("{model}: {error}", { model: retry.model, error: retry.errorMessage })
+			: retry.errorMessage;
+		return theme.fg("warning", `${retryTiming}${theme.sep.dot}${previewLine(errorText, 80)}`);
 	}
 	const failed = progress?.retryFailure;
 	if (failed && isFiniteNumber(failed.attempt)) {

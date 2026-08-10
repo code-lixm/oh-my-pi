@@ -694,6 +694,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Result limit reached; narrow path or increase limit.": "Result limit reached; narrow path or increase limit.",
 	"Resumed session": "Resumed session",
 	"Resumed session in {cwd}": "Resumed session in {cwd}",
+	"Retry in {delaySeconds}s · {attemptText} · {errorText}{cancelHint}":
+		"Retry in {delaySeconds}s · {attemptText} · {errorText}{cancelHint}",
+	"{attempt}/{maxAttempts}": "{attempt}/{maxAttempts}",
+	"{model}: {error}": "{model}: {error}",
 	"Retry failed after {attempt} attempts: {finalError}": "Retry failed after {attempt} attempts: {finalError}",
 	"Save the text to a local://attachment file": "Save the text to a local://attachment file",
 	"Saved {lineCount} pasted lines to local://{name}": "Saved {lineCount} pasted lines to local://{name}",
@@ -1846,6 +1850,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)":
 		"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)",
 	Goal: "Goal",
+	"Goal: {goal}": "Goal: {goal}",
 	"Goal Continuation Modes": "Goal Continuation Modes",
 	"Goal Mode": "Goal Mode",
 	"Goal Status in Footer": "Goal Status in Footer",
@@ -1942,6 +1947,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"mode: {mode} (session override)": "mode: {mode} (session override)",
 	"configured: {mode}": "configured: {mode}",
 	"model: {model} ({capability})": "model: {model} ({capability})",
+	"inspect_image is now available: {model} has no native image input.":
+		"inspect_image is now available: {model} has no native image input.",
+	"inspect_image is now hidden: {model} supports image input natively. Override with /vision on.":
+		"inspect_image is now hidden: {model} supports image input natively. Override with /vision on.",
 	"inspect_image is unavailable in this session.": "inspect_image is unavailable in this session.",
 	"Vision mode: {mode}. {status}": "Vision mode: {mode}. {status}",
 	"Usage: /vision [on|off|auto|status]": "Usage: /vision [on|off|auto|status]",
@@ -3509,6 +3518,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"chat redirect": "chat redirect",
 	checkpointing: "checkpointing",
 	"checkpointing: {goal}": "checkpointing: {goal}",
+	"Checkpoint already active.": "Checkpoint already active.",
+	"Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.":
+		"Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.",
+	"Checkpoint created.": "Checkpoint created.",
 	"current HEAD": "current HEAD",
 	"discarding changes": "discarding changes",
 	"discarding: {reason}": "discarding: {reason}",
@@ -3519,6 +3532,13 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	expanded: "expanded",
 	failed: "failed",
 	"failed logs": "failed logs",
+	"No active checkpoint. Create a checkpoint before calling rewind.":
+		"No active checkpoint. Create a checkpoint before calling rewind.",
+	"Report cannot be empty.": "Report cannot be empty.",
+	"Report captured for context replacement.": "Report captured for context replacement.",
+	"Rewind requested.": "Rewind requested.",
+	"Run your investigation, then call rewind with a concise report.":
+		"Run your investigation, then call rewind with a concise report.",
 	"force-kill": "force-kill",
 	"gitignore:false": "gitignore:false",
 	image: "image",

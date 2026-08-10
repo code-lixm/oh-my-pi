@@ -469,6 +469,7 @@ export interface AgentProgress {
 		delayMs: number;
 		errorMessage: string;
 		startedAtMs: number;
+		model?: string;
 	};
 	/**
 	 * Terminal retry failure surfaced once the subagent gave up retrying
@@ -526,6 +527,8 @@ export interface SingleResult {
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
 	resolvedModelIsFallback?: boolean;
 	error?: string;
+	/** Whether an aborted run was a deliberate stop or an abnormal failure. */
+	abortOutcome?: "cancelled" | "failed";
 	aborted?: boolean;
 	abortReason?: string;
 	/** Aggregated usage from the subprocess, accumulated incrementally from message_end events. */

@@ -689,6 +689,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Result limit reached; narrow path or increase limit.": "已触及结果上限；请缩小路径范围或提高限制。",
 	"Resumed session": "会话已恢复",
 	"Resumed session in {cwd}": "已在 {cwd} 恢复会话",
+	"Retry in {delaySeconds}s · {attemptText} · {errorText}{cancelHint}":
+		"{delaySeconds}s 后重试 · {attemptText} · {errorText}{cancelHint}",
+	"{attempt}/{maxAttempts}": "{attempt}/{maxAttempts}",
+	"{model}: {error}": "{model}：{error}",
 	"Retry failed after {attempt} attempts: {finalError}": "重试 {attempt} 次后失败：{finalError}",
 	"Session compacted {times}": "会话已压缩 {times}",
 	"Session copied to clipboard": "会话已复制到剪贴板",
@@ -1785,6 +1789,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)":
 		"图标和符号使用的字形集（Unicode、Nerd Font 或 ASCII）",
 	Goal: "目标",
+	"Goal: {goal}": "目标：{goal}",
 	"Goal Continuation Modes": "目标续接模式",
 	"Goal Mode": "目标模式",
 	"Goal Status in Footer": "页脚中的目标状态",
@@ -1875,6 +1880,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"mode: {mode} (session override)": "模式：{mode}（会话覆盖）",
 	"configured: {mode}": "配置值：{mode}",
 	"model: {model} ({capability})": "模型：{model}（{capability}）",
+	"inspect_image is now available: {model} has no native image input.":
+		"inspect_image 现已可用：{model} 不支持原生图像输入。",
+	"inspect_image is now hidden: {model} supports image input natively. Override with /vision on.":
+		"inspect_image 已隐藏：{model} 原生支持图像输入。可通过 /vision on 覆盖。",
 	"inspect_image is unavailable in this session.": "当前会话无法使用 inspect_image。",
 	"Vision mode: {mode}. {status}": "视觉模式：{mode}。{status}",
 	"Usage: /vision [on|off|auto|status]": "用法：/vision [on|off|auto|status]",
@@ -3399,6 +3408,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"background jobs": "后台作业",
 	"cancel {id}": "取消 {id}",
 	checkpointing: "正在创建检查点",
+	"Checkpoint already active.": "已有活跃的检查点。",
+	"Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.":
+		"检查点已完成；请基于保留的 rewind 报告继续，而不是再次调用 rewind。",
+	"Checkpoint created.": "检查点已创建。",
 	exited: "已退出",
 	expanded: "已展开",
 	"gitignore:false": "gitignore:false",
@@ -3407,10 +3420,16 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"limit reached; narrow path or increase limit": "已达到限制；请缩小路径范围或提高限制",
 	"merge failed": "合并失败",
 	"no other agents": "没有其他代理",
+	"No active checkpoint. Create a checkpoint before calling rewind.":
+		"没有活跃的检查点。调用 rewind 前请先创建检查点。",
 	"options:{count}": "选项：{count}",
 	proposed: "已提议",
+	"Report cannot be empty.": "报告不能为空。",
+	"Report captured for context replacement.": "报告已捕获，用于替换上下文。",
+	"Rewind requested.": "已请求回退。",
 	retrying: "正在重试",
 	"running {language}": "正在运行 {language}",
+	"Run your investigation, then call rewind with a concise report.": "先进行调查，然后用一份简洁报告调用 rewind。",
 	"skip:": "跳过：",
 	"timed out": "已超时",
 	truncated: "已截断",

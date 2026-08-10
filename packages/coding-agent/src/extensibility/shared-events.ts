@@ -344,6 +344,8 @@ export interface AutoRetryStartEvent {
 	delayMs: number;
 	errorMessage: string;
 	errorId?: number;
+	/** Model selector being retried (provider/id), for model-specific error display. */
+	model?: string;
 }
 
 /** Persisted retry error whose transcript presentation changed when the retry saga settled. */

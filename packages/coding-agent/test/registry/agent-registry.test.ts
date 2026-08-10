@@ -144,17 +144,19 @@ describe("AgentRegistry terminal status", () => {
 		expect(worker.terminalStatus).toBeUndefined();
 	});
 
-	it("pins a hard-aborted generation to the aborted terminal outcome", () => {
-		const registry = new AgentRegistry();
-		const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+	it("preserves authoritative completed and failed outcomes when lifecycle tombstones a generation", () => {
+		for (const terminalStatus of ["completed", "failed"] as const) {
+			const registry = new AgentRegistry();
+			const worker = registerAgent(registry, { id: "Worker", kind: "sub", status: "running" });
+			const conflictingStatus = terminalStatus === "completed" ? "failed" : "completed";
 
-		expect(registry.setTerminalStatus(worker.id, "completed", worker)).toBe(true);
-		expect(registry.setStatus(worker.id, "aborted", worker)).toBe(true);
-		expect(worker.status).toBe("aborted");
-		expect(worker.terminalStatus).toBe("aborted");
-		expect(registry.setTerminalStatus(worker.id, "failed", worker)).toBe(false);
-		expect(registry.setStatus(worker.id, "running", worker)).toBe(false);
-		expect(worker.status).toBe("aborted");
-		expect(worker.terminalStatus).toBe("aborted");
+			expect(registry.setTerminalStatus(worker.id, terminalStatus, worker)).toBe(true);
+			expect(registry.setStatus(worker.id, "aborted", worker)).toBe(true);
+			expect(worker.status).toBe("aborted");
+			expect(worker.terminalStatus).toBe(terminalStatus);
+			expect(registry.setTerminalStatus(worker.id, conflictingStatus, worker)).toBe(false);
+			expect(registry.setStatus(worker.id, "running", worker)).toBe(false);
+			expect(worker.terminalStatus).toBe(terminalStatus);
+		}
 	});
 });

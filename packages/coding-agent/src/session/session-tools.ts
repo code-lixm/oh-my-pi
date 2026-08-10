@@ -10,6 +10,7 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
@@ -1138,8 +1139,13 @@ export class SessionTools {
 		this.#host.emitNotice(
 			"info",
 			after
-				? `inspect_image is now available: ${modelName} has no native image input.`
-				: `inspect_image is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
+				? tSettingsUi("inspect_image is now available: {model} has no native image input.", { model: modelName })
+				: tSettingsUi(
+						"inspect_image is now hidden: {model} supports image input natively. Override with /vision on.",
+						{
+							model: modelName,
+						},
+					),
 			"vision",
 		);
 	}

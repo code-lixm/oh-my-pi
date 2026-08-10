@@ -94,9 +94,10 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		enableLsp: false,
 	};
 
-	it("aborts a stalled subagent and surfaces a runtime-limit reason", async () => {
+	it("aborts a stalled subagent and reports failed final progress", async () => {
 		const settings = Settings.isolated({ "task.maxRuntimeMs": 50 });
 		const handle = createHangingSession();
+		const observedProgressStatuses: string[] = [];
 		mockCreateAgentSession(handle.session);
 
 		const startedAt = Date.now();
@@ -104,6 +105,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			...baseOptions,
 			id: "subagent-timeout",
 			settings,
+			onProgress: progress => observedProgressStatuses.push(progress.status),
 		});
 		const elapsedMs = Date.now() - startedAt;
 
@@ -111,10 +113,81 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.abortReason).toContain("runtime limit exceeded");
 		expect(result.abortReason).toContain("task.maxRuntimeMs=50");
+		expect(observedProgressStatuses.at(-1)).toBe("failed");
 		expect(handle.abortCalls()).toBeGreaterThanOrEqual(1);
 		// Sanity: must finish in roughly the configured window (allow generous slack
 		// for CI; the contract is "doesn't hang for hours", not "exactly 50 ms").
 		expect(elapsedMs).toBeLessThan(10_000);
+	});
+
+	it("reports a caller signal as aborted final progress", async () => {
+		const controller = new AbortController();
+		const handle = createHangingSession();
+		const prompt = handle.session.prompt;
+		const observedProgressStatuses: string[] = [];
+		handle.session.prompt = async (text, options) => {
+			controller.abort("operator stopped this task");
+			return prompt.call(handle.session, text, options);
+		};
+		mockCreateAgentSession(handle.session);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-signal-cancelled",
+			signal: controller.signal,
+			keepAlive: false,
+			onProgress: progress => observedProgressStatuses.push(progress.status),
+		});
+
+		expect(result.abortOutcome).toBe("cancelled");
+		expect(result.abortReason).toBe("operator stopped this task");
+		expect(observedProgressStatuses.at(-1)).toBe("aborted");
+	});
+
+	it("reports an aborted yield as failed final progress", async () => {
+		const observedProgressStatuses: string[] = [];
+		const session: Partial<AgentSession> = {
+			setIrcWakeTurnObserver: () => {},
+			state: { messages: [] } as never,
+			agent: { state: { systemPrompt: ["test"] } } as never,
+			extensionRunner: undefined as never,
+			sessionManager: { appendSessionInit: () => {} } as never,
+			getActiveToolNames: () => ["read", "yield"],
+			getEnabledToolNames: () => ["read", "yield"],
+			setActiveToolsByName: async () => {},
+			subscribe: (listener: (event: AgentSessionEvent) => void) => {
+				queueMicrotask(() => {
+					listener({
+						type: "tool_execution_end",
+						toolCallId: "tool-aborted-yield",
+						toolName: "yield",
+						result: {
+							content: [{ type: "text", text: "Task aborted: blocked by policy" }],
+							details: { status: "aborted", error: "blocked by policy" },
+						},
+						isError: false,
+					} as AgentSessionEvent);
+				});
+				return () => {};
+			},
+			prompt: async () => true,
+			waitForIdle: async () => {},
+			getLastAssistantMessage: () => undefined,
+			abort: async () => {},
+			dispose: async () => {},
+		};
+		mockCreateAgentSession(session as AgentSession);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-aborted-yield-progress",
+			keepAlive: false,
+			onProgress: progress => observedProgressStatuses.push(progress.status),
+		});
+
+		expect(result.abortOutcome).toBe("failed");
+		expect(result.abortReason).toBe("blocked by policy");
+		expect(observedProgressStatuses.at(-1)).toBe("failed");
 	});
 
 	it("does not abort early when the runtime budget is unlimited", async () => {
