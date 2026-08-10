@@ -10,11 +10,12 @@ import {
 	type ToolResultMessage,
 	type Usage,
 } from "@oh-my-pi/pi-ai";
-import { getSessionsDir, isEnoent, readLines } from "@oh-my-pi/pi-utils";
+import { getSessionsDir, isEnoent, readLines, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import type {
 	AgentType,
 	MessageStats,
 	SessionEntry,
+	SessionHeader,
 	SessionMessageEntry,
 	SessionServiceTierChangeEntry,
 	ToolCallStats,
@@ -26,6 +27,8 @@ import { computeUserMessageMetrics } from "./user-metrics";
 
 /** Basename of an advisor agent's transcript inside a session artifacts dir. */
 const ADVISOR_TRANSCRIPT_BASENAME = "__advisor.jsonl";
+/** Session headers are written first (after the fixed title slot); cap malformed-file scans. */
+const SESSION_HEADER_SCAN_BYTES = 64 * 1024;
 
 /**
  * Classify which agent produced a transcript from its path within the sessions
@@ -48,16 +51,50 @@ export function classifyAgentType(sessionPath: string): AgentType {
 }
 
 /**
- * Extract folder name from session filename.
- * Session files are named like: --work--pi--/timestamp_uuid.jsonl
- * The folder part uses -- as path separator.
+ * Extract the legacy folder key from a session filename when the file has no
+ * usable session header. This keeps malformed and pre-header transcripts
+ * visible while normal sessions use their persisted cwd below.
  */
 function extractFolderFromPath(sessionPath: string): string {
 	const sessionsDir = getSessionsDir();
 	const rel = path.relative(sessionsDir, sessionPath);
 	const projectDir = rel.split(path.sep)[0];
-	// Convert --work--pi-- to /work/pi
 	return projectDir.replace(/^--/, "/").replace(/--/g, "/");
+}
+
+function isSessionHeader(entry: SessionEntry): entry is SessionHeader {
+	return entry.type === "session" && "cwd" in entry && typeof entry.cwd === "string" && entry.cwd.length > 0;
+}
+
+function canonicalProjectFolder(cwd: string): string {
+	if (!path.isAbsolute(cwd)) return cwd;
+	return resolveEquivalentPath(cwd);
+}
+
+function extractProjectFolderFromBytes(bytes: Uint8Array, fallback: string): string {
+	let cursor = 0;
+	const limit = Math.min(bytes.length, SESSION_HEADER_SCAN_BYTES);
+	while (cursor < limit) {
+		const newline = bytes.indexOf(LF, cursor);
+		const hasNewline = newline !== -1 && newline < limit;
+		const lineEnd = hasNewline ? newline : limit;
+		const entry = parseJsonLine(bytes, cursor, lineEnd);
+		if (entry && isSessionHeader(entry)) return canonicalProjectFolder(entry.cwd);
+		if (!hasNewline) break;
+		cursor = newline + 1;
+	}
+	return fallback;
+}
+
+/** Resolve a persisted session's canonical project folder without parsing its full transcript. */
+export async function readSessionProjectFolder(sessionPath: string): Promise<string | undefined> {
+	try {
+		const bytes = await Bun.file(sessionPath).slice(0, SESSION_HEADER_SCAN_BYTES).bytes();
+		return extractProjectFolderFromBytes(bytes, "") || undefined;
+	} catch (err) {
+		if (!isEnoent(err)) throw err;
+		return undefined;
+	}
 }
 
 /**
@@ -379,7 +416,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		throw err;
 	}
 
-	const folder = extractFolderFromPath(sessionPath);
+	const folder = extractProjectFolderFromBytes(bytes, extractFolderFromPath(sessionPath));
 	const agentType = classifyAgentType(sessionPath);
 	const stats: MessageStats[] = [];
 	const userStats: UserMessageStats[] = [];

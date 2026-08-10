@@ -3,8 +3,8 @@ import * as fs from "node:fs/promises";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import type { GeneratedProvider } from "@oh-my-pi/pi-catalog/models";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { getConfigRootDir, getStatsDbPath } from "@oh-my-pi/pi-utils";
-import { classifyAgentType } from "./parser";
+import { getConfigRootDir, getStatsDbPath, logger } from "@oh-my-pi/pi-utils";
+import { classifyAgentType, readSessionProjectFolder } from "./parser";
 import type {
 	AgentType,
 	AgentTypeStats,
@@ -63,6 +63,7 @@ const PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY = "premium_requests_priority_v1";
 const AGENT_TYPE_BACKFILL_KEY = "agent_type_v1";
 const FORK_DEDUPE_KEY = "fork_dedupe_v1";
 const TOOL_CALLS_BACKFILL_KEY = "tool_calls_v1";
+const PROJECT_FOLDERS_BACKFILL_KEY = "project_folders_v2";
 function shouldResetBackfill(value: string | undefined): boolean {
 	return value !== BACKFILL_COMPLETE && value !== BACKFILL_PENDING;
 }
@@ -208,6 +209,10 @@ export async function initDb(): Promise<Database> {
 		AGENT_TYPE_BACKFILL_KEY,
 		messagesTableExisted ? BACKFILL_PENDING : BACKFILL_COMPLETE,
 	);
+	db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)").run(
+		PROJECT_FOLDERS_BACKFILL_KEY,
+		messagesTableExisted ? BACKFILL_PENDING : BACKFILL_COMPLETE,
+	);
 	db.run("CREATE INDEX IF NOT EXISTS idx_messages_timestamp_agent_type ON messages(timestamp, agent_type)");
 	// Each behavior-metric bump invalidates previously-ingested rows. We detect
 	// the stale schema by column name and drop the table; `IF NOT EXISTS` above
@@ -271,7 +276,68 @@ export async function initDb(): Promise<Database> {
 	backfillAgentType(db);
 	backfillMissingCatalogCosts(db);
 	backfillForkDuplicates(db);
+	await backfillProjectFolders(db);
 	return db;
+}
+
+interface StoredProjectFolderRow {
+	session_file: string;
+}
+
+interface ProjectFolderMigration {
+	sessionFile: string;
+	to: string;
+}
+
+/**
+ * Re-key historical stats that were grouped by physical session bucket names.
+ * Legacy bucket encoding can collide for different cwd values, so every
+ * transcript is resolved independently. The three denormalized stats tables
+ * update in one transaction so dashboards never observe a partial merge.
+ */
+async function backfillProjectFolders(database: Database): Promise<void> {
+	const state = database.prepare("SELECT value FROM meta WHERE key = ?").get(PROJECT_FOLDERS_BACKFILL_KEY) as
+		| { value: string }
+		| undefined;
+	if (state?.value === BACKFILL_COMPLETE) return;
+
+	const rows = database
+		.prepare(`
+			SELECT session_file FROM messages
+			UNION
+			SELECT session_file FROM user_messages
+			UNION
+			SELECT session_file FROM tool_calls
+		`)
+		.all() as StoredProjectFolderRow[];
+	const migrations: ProjectFolderMigration[] = [];
+	let migrationComplete = true;
+	for (const row of rows) {
+		try {
+			const canonicalFolder = await readSessionProjectFolder(row.session_file);
+			if (canonicalFolder) migrations.push({ sessionFile: row.session_file, to: canonicalFolder });
+		} catch (error) {
+			migrationComplete = false;
+			logger.warn("Unable to normalize stats project folder; migration remains pending", {
+				sessionFile: row.session_file,
+				error: String(error),
+			});
+		}
+	}
+
+	const updateMessages = database.prepare("UPDATE messages SET folder = ? WHERE session_file = ?");
+	const updateUserMessages = database.prepare("UPDATE user_messages SET folder = ? WHERE session_file = ?");
+	const updateToolCalls = database.prepare("UPDATE tool_calls SET folder = ? WHERE session_file = ?");
+	const settle = database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+	const apply = database.transaction((items: ProjectFolderMigration[]) => {
+		for (const migration of items) {
+			updateMessages.run(migration.to, migration.sessionFile);
+			updateUserMessages.run(migration.to, migration.sessionFile);
+			updateToolCalls.run(migration.to, migration.sessionFile);
+		}
+		if (migrationComplete) settle.run(PROJECT_FOLDERS_BACKFILL_KEY, BACKFILL_COMPLETE);
+	});
+	apply(migrations);
 }
 
 function hasBillableCost(cost: ModelCost): boolean {

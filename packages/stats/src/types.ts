@@ -13,7 +13,7 @@ export interface MessageStats {
 	sessionFile: string;
 	/** Entry ID within the session */
 	entryId: string;
-	/** Folder/project path (extracted from session filename) */
+	/** Canonical project path from the session header, with a legacy bucket fallback */
 	folder: string;
 	/** Model ID */
 	model: string;
@@ -87,7 +87,7 @@ export interface UserMessageStats {
 	sessionFile: string;
 	/** Entry ID within the session */
 	entryId: string;
-	/** Folder/project path */
+	/** Canonical project path from the session header, with a legacy bucket fallback */
 	folder: string;
 	/** Unix timestamp in ms */
 	timestamp: number;
@@ -139,7 +139,7 @@ export interface ToolCallStats {
 	entryId: string;
 	/** Provider-assigned tool call ID (unique within a session) */
 	toolCallId: string;
-	/** Folder/project path (extracted from session filename) */
+	/** Canonical project path from the session header, with a legacy bucket fallback */
 	folder: string;
 	/** Tool name */
 	toolName: string;

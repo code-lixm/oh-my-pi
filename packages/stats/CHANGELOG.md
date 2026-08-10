@@ -9,6 +9,8 @@
 ### Fixed
 
 - Localized the overview conversation-token metrics and agent breakdown copy while preserving the reconciled uncached input, cache read, cache write, and output totals.
+- Fixed one repository appearing as separate canonical and hashed projects by deriving project identity from each session header's normalized `cwd` and transactionally migrating historical message, behavior, and tool-call rows.
+
 ## [17.2.10] - 2026-08-06
 
 ### Changed
