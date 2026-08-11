@@ -1,11 +1,13 @@
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import type { ModelRegistry } from "../config/model-registry";
 import { extractExplicitThinkingSelector, formatModelSelectorValue } from "../config/model-resolver";
 import { formatModelRoleAlias } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
-import { AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, resolveTopLevelAgent } from "../registry/agent-registry";
+import { RlmChildRegistry } from "../registry/rlm-child-registry";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
@@ -33,6 +35,39 @@ export interface PersistedSubagentReviveContext {
 	 * the same lifecycle/progress frames a live run does.
 	 */
 	eventBus?: EventBus;
+}
+
+function deriveRlmArtifactsDir(ref: AgentRef | undefined): string | undefined {
+	if (!ref) return undefined;
+	const sessionFile = ref.sessionFile ?? ref.session?.sessionManager?.getSessionFile() ?? undefined;
+	if (ref.kind === "main") {
+		return (
+			ref.session?.sessionManager?.getArtifactsDir() ??
+			(sessionFile?.endsWith(".jsonl") ? sessionFile.slice(0, -".jsonl".length) : undefined)
+		);
+	}
+	return sessionFile ? path.dirname(sessionFile) : undefined;
+}
+async function resolveRlmRevivePaths(
+	ref: AgentRef,
+	registry: AgentRegistry,
+	sessionFile: string,
+): Promise<{ rlmArtifactsDir?: string; parentRlmArtifactsDir?: string }> {
+	if (!ref.parentId) return {};
+	const parentRef = registry.get(ref.parentId);
+	const parentRlmArtifactsDir = deriveRlmArtifactsDir(parentRef);
+	if (!parentRlmArtifactsDir) return {};
+	const parentRegistry = await RlmChildRegistry.open({
+		parentAgentId: ref.parentId,
+		parentSessionFile: parentRef?.sessionFile ?? parentRef?.session?.sessionManager?.getSessionFile() ?? null,
+		artifactsDir: parentRlmArtifactsDir,
+	});
+	try {
+		await parentRegistry.resolveDirectChild(ref.id);
+	} catch {
+		return {};
+	}
+	return { rlmArtifactsDir: path.dirname(sessionFile), parentRlmArtifactsDir };
 }
 
 /**
@@ -113,6 +148,7 @@ export function createPersistedSubagentReviverFactory(
 			const restrictToolNames = init.restrictToolNames === true;
 			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
+			const rlmRevivePaths = await resolveRlmRevivePaths(ref, registry, sessionFile);
 			const { session } = await createAgentSession({
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
@@ -127,6 +163,7 @@ export function createPersistedSubagentReviverFactory(
 				agentDisplayName: ref.displayName,
 				parentTaskPrefix: ref.id,
 				parentAgentId: ref.parentId,
+				...rlmRevivePaths,
 				expectedAgentRef: expectedRef,
 				taskDepth,
 				toolNames: init.tools,

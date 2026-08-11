@@ -17,6 +17,7 @@ import { findConfigFile } from "./config";
 import type { Personality, SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
+import { pythonSkillsPromptContribution } from "./extensibility/python-skills";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import { selectModelGuidance } from "./prompts/model-guidance";
@@ -46,6 +47,8 @@ import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type
 import systemPromptTemplateZh from "./prompts/system/system-prompt.zh-CN.md" with { type: "text" };
 import taskIntentPrompt from "./prompts/system/task-intent.md" with { type: "text" };
 import taskIntentPromptZh from "./prompts/system/task-intent.zh-CN.md" with { type: "text" };
+import { formatHarnessStateForPrompt } from "./refinement/prompt-renderer";
+import type { HarnessState } from "./refinement/types";
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
@@ -615,6 +618,10 @@ export interface BuildSystemPromptOptions {
 	toolNames?: string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
+	/** Optional continual-harness state rendered as a supplemental prompt block. */
+	harnessState?: HarnessState;
+	/** Approved, installed Python skill metadata for prompt rendering. */
+	pythonSkillMetadata?: unknown;
 	/** Already-loaded append prompt text; bypasses path resolution. */
 	resolvedAppendSystemPrompt?: string;
 	/** Inline full tool descriptors in the system prompt. Default: false */
@@ -727,6 +734,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		pythonSkillMetadata,
 		rules,
 		alwaysApplyRules,
 		intentField,
@@ -1041,6 +1049,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		data,
 	);
 	const systemPrompt = [rendered];
+	const harnessPrompt = formatHarnessStateForPrompt(options.harnessState);
+	const pythonSkillsPrompt = pythonSkillsPromptContribution.render({ pythonSkillMetadata });
+	if (harnessPrompt) systemPrompt.push(harnessPrompt.trim());
+	if (pythonSkillsPrompt) systemPrompt.push(pythonSkillsPrompt.trim());
 	if (!resolvedCustomPrompt) {
 		const modelGuidance = selectModelGuidance(model);
 		if (modelGuidance) systemPrompt.push(prompt.render(modelGuidance, data).trim());
@@ -1091,6 +1103,8 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		prompt.render(selectPrompt(codexNativeAdapterPrompt, codexNativeAdapterPromptZh), data).trim(),
 		nativeRuntimeFragment,
 		...behaviorPolicyFragments,
+		...(harnessPrompt ? [harnessPrompt.trim()] : []),
+		...(pythonSkillsPrompt ? [pythonSkillsPrompt.trim()] : []),
 	].filter(fragment => fragment.length > 0);
 	const contextualUserFragments = [
 		...contextFiles.map(file => file.content),
@@ -1103,7 +1117,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		profile: codexPromptProfile,
 		personality,
 		canonicalPromptMutated:
-			Boolean(systemPromptCustomization) || Boolean(resolvedCustomPrompt) || Boolean(resolvedAppendPrompt),
+			Boolean(systemPromptCustomization) ||
+			Boolean(resolvedCustomPrompt) ||
+			Boolean(resolvedAppendPrompt) ||
+			Boolean(harnessPrompt) ||
+			Boolean(pythonSkillsPrompt),
 		fallbackSystemPrompt: systemPrompt,
 		developerFragments: nativeDeveloperFragments,
 		contextualUserFragments,

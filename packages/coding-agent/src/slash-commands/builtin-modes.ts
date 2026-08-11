@@ -1,4 +1,6 @@
 import * as path from "node:path";
+import type { AutonomousController } from "../autonomous/controller";
+import type { AutonomousStatus } from "../autonomous/types";
 import {
 	expandRoleAlias,
 	formatModelString,
@@ -13,7 +15,7 @@ import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";
 import type { InspectImageMode } from "../utils/inspect-image-mode";
-import { commandConsumed, errorMessage, usage } from "./helpers/parse";
+import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { SlashCommandSpec } from "./types";
 
@@ -120,6 +122,115 @@ function shortDetail(value: string, limit = AUTOCOMPLETE_DETAIL_LIMIT): string {
 
 export function formatTokenCount(value: number): string {
 	return value.toLocaleString();
+}
+
+interface AutonomousControllerSession {
+	getAutonomousController?(): AutonomousController | undefined;
+}
+
+function getAutonomousController(session: AgentSession): AutonomousController | undefined {
+	return (session as unknown as AutonomousControllerSession).getAutonomousController?.();
+}
+
+function formatAutonomousStatus(status: AutonomousStatus): string {
+	const limits = status.limits;
+	const gateSummary = status.gates.commands.length > 0 ? status.gates.commands.join("; ") : tSettingsUi("none");
+	const failure = status.lastGateFailure
+		? tSettingsUi("Last gate failure: {command} ({exitText}, attempt {attempt}/{maxRetries}).", {
+				command: status.lastGateFailure.command,
+				exitText: status.lastGateFailure.exitText,
+				attempt: status.lastGateFailure.attempt,
+				maxRetries: status.gates.maxRetries,
+			})
+		: tSettingsUi("Last gate failure: none.");
+	return [
+		tSettingsUi("Autonomous mode is {status}.", {
+			status: tSettingsUi(status.enabled ? "enabled" : "disabled"),
+		}),
+		tSettingsUi(
+			"Continuations: {continuations}/{maxContinuations}; turns: {turns}/{maxTurns}; tokens: {tokens}/{maxTokens}.",
+			{
+				continuations: status.continuationsUsed,
+				maxContinuations: limits.maxContinuations,
+				turns: status.turnsUsed,
+				maxTurns: limits.maxTurns,
+				tokens: formatTokenCount(status.tokensUsed),
+				maxTokens: formatTokenCount(limits.maxTokens),
+			},
+		),
+		tSettingsUi("Timeout: {timeoutMs}ms; gates: {gates}.", {
+			timeoutMs: limits.timeoutMs,
+			gates: gateSummary,
+		}),
+		failure,
+	].join("\n");
+}
+
+function parseAutonomousCommandText(value: string): string {
+	const trimmed = value.trim();
+	if (
+		trimmed.length >= 2 &&
+		(trimmed.startsWith('"') || trimmed.startsWith("'")) &&
+		trimmed.at(0) === trimmed.at(-1)
+	) {
+		return trimmed.slice(1, -1).trim();
+	}
+	return trimmed;
+}
+
+function handleAutonomousCommand(session: AgentSession, args: string): string {
+	const controller = getAutonomousController(session);
+	if (!controller)
+		return tSettingsUi("Autonomous mode is not available yet. It will be enabled after integration wiring.");
+
+	const { verb, rest } = parseSubcommand(args);
+	try {
+		if (!verb || verb === "status") return formatAutonomousStatus(controller.status());
+		if (verb === "on") {
+			const gateCommand = parseAutonomousCommandText(rest);
+			if (gateCommand) controller.configure({ gates: { commands: [gateCommand] } });
+			controller.setEnabled(true);
+			return gateCommand
+				? tSettingsUi("Autonomous mode enabled with quality gate: {command}.", { command: gateCommand })
+				: tSettingsUi("Autonomous mode enabled.");
+		}
+		if (verb === "off") {
+			controller.setEnabled(false);
+			return tSettingsUi("Autonomous mode disabled.");
+		}
+		if (verb === "gate") {
+			const { verb: action, rest: commandText } = parseSubcommand(rest);
+			if (action === "clear" && !commandText) {
+				controller.configure({ gates: { commands: [] } });
+				return tSettingsUi("Autonomous quality gates cleared.");
+			}
+			if (action === "add") {
+				const command = parseAutonomousCommandText(commandText);
+				if (!command) return tSettingsUi("Usage: /autonomous gate add <command>");
+				const commands = controller.status().gates.commands;
+				controller.configure({ gates: { commands: [...commands, command] } });
+				return tSettingsUi("Autonomous quality gate added: {command}.", { command });
+			}
+		}
+		if (verb === "budget") {
+			const { verb: budgetType, rest: valueText } = parseSubcommand(rest);
+			const parsedBudget = Number(valueText.trim());
+			const value = Number.isSafeInteger(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined;
+			if (!value)
+				return tSettingsUi("Usage: /autonomous budget <continuations|turns|tokens|time> <positive integer>");
+			if (budgetType === "continuations") controller.configure({ maxContinuations: value });
+			else if (budgetType === "turns") controller.configure({ maxTurns: value });
+			else if (budgetType === "tokens") controller.configure({ maxTokens: value });
+			else if (budgetType === "time") controller.configure({ timeoutMs: value });
+			else return tSettingsUi("Usage: /autonomous budget <continuations|turns|tokens|time> <positive integer>");
+			return tSettingsUi("Autonomous {budgetType} budget set to {value}.", { budgetType, value });
+		}
+		return tSettingsUi(
+			"Usage: /autonomous [on [gate-command]|off|status|gate add <command>|gate clear|budget <continuations|turns|tokens|time> <n>]",
+		);
+	} catch (error) {
+		return tSettingsUi("Unable to configure autonomous mode: {error}", { error: errorMessage(error) });
+	}
 }
 
 export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -251,6 +362,35 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleGoalModeCommand(command.args || undefined);
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "autonomous",
+		description: "Control host-owned autonomous continuation and quality gates",
+		acpDescription: "Control autonomous continuation",
+		acpInputHint: "[on [gate-command]|off|status|gate|budget]",
+		subcommands: [
+			{ name: "on", description: "Enable autonomous continuation", usage: "[gate-command]" },
+			{ name: "off", description: "Disable autonomous continuation" },
+			{ name: "status", description: "Show autonomous budgets and gate status" },
+			{ name: "gate", description: "Add or clear quality gates", usage: "<add <command>|clear>" },
+			{ name: "budget", description: "Set a continuation, turn, token, or time budget", usage: "<type> <n>" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const controller = getAutonomousController(runtime.ctx.session);
+			if (!controller) return tSettingsUi("Autonomous: unavailable");
+			return tSettingsUi("Autonomous: {status}", {
+				status: tSettingsUi(controller.status().enabled ? "on" : "off"),
+			});
+		},
+		handle: async (command, runtime) => {
+			await runtime.output(handleAutonomousCommand(runtime.session, command.args));
+			return commandConsumed();
+		},
+		handleTui: (command, runtime) => {
+			runtime.ctx.showStatus(handleAutonomousCommand(runtime.ctx.session, command.args));
 			runtime.ctx.editor.setText("");
 		},
 	},

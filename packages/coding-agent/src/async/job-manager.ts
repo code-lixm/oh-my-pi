@@ -1,6 +1,12 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { AsyncJobDeliveryStatus } from "../task/types";
+import {
+	type AsyncCompletionDeliveryPolicy,
+	type AsyncJobType,
+	isManualCompletionDelivery,
+	RLM_JOB_TYPE,
+} from "./rlm-job-policy";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -33,8 +39,10 @@ interface PollEscalationState {
 
 export interface AsyncJob {
 	id: string;
-	type: "bash" | "task";
+	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
+	/** Completion routing is explicit so manual jobs never enter async-result delivery. */
+	completionDelivery: AsyncCompletionDeliveryPolicy;
 	startTime: number;
 	/** Time the job entered the manager, including jobs that start immediately. */
 	queuedAt?: number;
@@ -162,6 +170,11 @@ export interface AsyncJobRegisterOptions {
 	progressKey?: string;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
+	/**
+	 * `manual` persists settlement on the job row but never calls a delivery
+	 * sink or queues an `async-result`. RLM is the only current user of it.
+	 */
+	completionDelivery?: AsyncCompletionDeliveryPolicy;
 }
 
 /**
@@ -268,7 +281,7 @@ export class AsyncJobManager {
 	}
 
 	register(
-		type: "bash" | "task",
+		type: AsyncJobType,
 		label: string,
 		run: (ctx: {
 			jobId: string;
@@ -301,6 +314,11 @@ export class AsyncJobManager {
 		const abortController = new AbortController();
 		const startTime = Date.now();
 		const queued = options?.queued === true;
+		const completionDelivery: AsyncCompletionDeliveryPolicy =
+			type === RLM_JOB_TYPE ? "manual" : (options?.completionDelivery ?? "automatic");
+		if (type === RLM_JOB_TYPE && options?.completionDelivery === "automatic") {
+			throw new Error("RLM jobs must use manual completion delivery.");
+		}
 
 		const job: AsyncJob = {
 			id,
@@ -316,6 +334,7 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			queued,
+			completionDelivery,
 		};
 		this.#jobs.set(id, job);
 		this.#incrementRunningJob(job);
@@ -349,7 +368,8 @@ export class AsyncJobManager {
 				this.#settleRunningJob(job, "completed");
 				job.resultText = text;
 				job.endedAt = Date.now();
-				this.#enqueueDelivery(id, text);
+				if (isManualCompletionDelivery(job.completionDelivery)) this.#setDeliveryStatus(id, "manual");
+				else this.#enqueueDelivery(id, text);
 				this.#scheduleEviction(job);
 			} catch (error) {
 				await this.#prepareJobSettlement(job);
@@ -363,7 +383,8 @@ export class AsyncJobManager {
 				this.#settleRunningJob(job, "failed");
 				job.errorText = errorText;
 				job.endedAt = Date.now();
-				this.#enqueueDelivery(id, errorText);
+				if (isManualCompletionDelivery(job.completionDelivery)) this.#setDeliveryStatus(id, "manual");
+				else this.#enqueueDelivery(id, errorText);
 				this.#scheduleEviction(job);
 			}
 		})();
@@ -502,7 +523,8 @@ export class AsyncJobManager {
 		}
 		for (const jobId of uniqueJobIds) {
 			const job = this.#jobs.get(jobId);
-			if (!job || (job.status !== "completed" && job.status !== "failed")) continue;
+			if (!job || isManualCompletionDelivery(job.completionDelivery)) continue;
+			if (job.status !== "completed" && job.status !== "failed") continue;
 			if (
 				job.deliveryStatus !== "dead-letter" &&
 				!this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId)
@@ -531,7 +553,8 @@ export class AsyncJobManager {
 			if (!jobId) continue;
 			if (!this.#suppressedDeliveries.delete(jobId)) continue;
 			const job = this.#jobs.get(jobId);
-			if (!job || (job.status !== "completed" && job.status !== "failed")) continue;
+			if (!job || isManualCompletionDelivery(job.completionDelivery)) continue;
+			if (job.status !== "completed" && job.status !== "failed") continue;
 			const queued =
 				this.#deliveries.some(delivery => delivery.jobId === jobId) ||
 				this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
@@ -1117,11 +1140,17 @@ export class AsyncJobManager {
 	}
 
 	isDeliverySuppressed(jobId: string): boolean {
-		return this.#suppressedDeliveries.has(jobId) || this.#watchedJobs.has(jobId);
+		const job = this.#jobs.get(jobId);
+		return (
+			isManualCompletionDelivery(job?.completionDelivery ?? "automatic") ||
+			this.#suppressedDeliveries.has(jobId) ||
+			this.#watchedJobs.has(jobId)
+		);
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
 		const job = this.#jobs.get(jobId);
+		if (!job || isManualCompletionDelivery(job.completionDelivery)) return;
 		this.#setDeliveryStatus(jobId, "pending");
 		// A foreground snapshot or watcher consumes the result instead of auto-delivering it.
 		if (this.isDeliverySuppressed(jobId)) {
@@ -1133,7 +1162,7 @@ export class AsyncJobManager {
 			text,
 			attempt: 0,
 			nextAttemptAt: Date.now(),
-			ownerId: job?.ownerId,
+			ownerId: job.ownerId,
 		});
 		this.#ensureDeliveryLoop();
 	}

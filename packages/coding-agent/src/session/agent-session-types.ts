@@ -21,6 +21,7 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "../advisor";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
+import type { AutonomousConfig } from "../autonomous/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
@@ -30,8 +31,10 @@ import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
+import type { PythonSkillInstallationConfirmer } from "../extensibility/python-skill-trust";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
+import type { PrimeIntegrationProviders } from "../prime-integration/contracts";
 import type { AgentActivityState } from "../registry/agent-activity";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
@@ -148,6 +151,8 @@ export interface AgentSessionConfig {
 	prewalk?: Prewalk;
 	/** Force read-only plan mode at start, auto-approve, then switch to the target. */
 	planYolo?: PlanYolo;
+	/** Ephemeral CLI/runtime autonomous overrides; settings remain the fallback. */
+	autonomousConfig?: AutonomousConfig;
 	/** Initial per-family service tiers for the live session. */
 	serviceTierByFamily?: ServiceTierByFamily;
 	/** Prompt templates for expansion. */
@@ -160,6 +165,10 @@ export interface AgentSessionConfig {
 	skills?: Skill[];
 	/** Skill loading warnings already captured by the SDK. */
 	skillWarnings?: SkillWarning[];
+	/** Confirms Python skill package installation when `pythonSkills.trust = "prompt"`. */
+	pythonSkillConfirmer?: PythonSkillInstallationConfirmer;
+	/** Integration providers (scheduling/autonomous/refinement/rlm) built per-session by the SDK. */
+	primeProviders?: PrimeIntegrationProviders;
 	/** Whether runtime reloads may rediscover disk-backed skills. */
 	skillsReloadable?: boolean;
 	/** Custom TypeScript slash commands. */

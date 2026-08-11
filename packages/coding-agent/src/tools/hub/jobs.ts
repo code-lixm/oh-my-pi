@@ -1,3 +1,4 @@
+import type { AsyncJobType } from "../../async/rlm-job-policy";
 /**
  * Hub jobs half — lifecycle control for async background jobs (bash scripts,
  * subagents) owned by the calling agent: wait/cancel/snapshot plus the
@@ -145,7 +146,7 @@ function describeAgents(agents: AgentActivitySnapshot[]): string[] {
 
 interface TrackedJobLike {
 	id: string;
-	type: "bash" | "task";
+	type: AsyncJobType;
 	status: string;
 	label: string;
 	startTime: number;

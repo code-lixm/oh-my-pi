@@ -9,6 +9,7 @@ import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { PythonSkillStartOptions } from "../eval/py/skill-preload";
 import { checkRubyKernelAvailability } from "../eval/rb/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { Skill } from "../extensibility/skills";
@@ -21,6 +22,7 @@ import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { PlanModeState } from "../plan-mode/state";
+import type { RefinementController, RlmChildLifecycle } from "../prime-integration/contracts";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -32,9 +34,11 @@ import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
-import { canSpawnAtDepth, type StructuredSubagentSchemaMode } from "../task/types";
+import type { StructuredSubagentSchemaMode } from "../task/types";
+import { canSpawnAtDepth } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
-import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
+import type { InspectImageMode } from "../utils/inspect-image-mode";
+import { isInspectImageToolActive } from "../utils/inspect-image-mode";
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
@@ -42,8 +46,10 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
-import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
-import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
+import type { BuiltinToolName, HiddenToolName } from "./builtin-names";
+import { normalizeToolNames } from "./builtin-names";
+import type { CheckpointState, CompletedRewindState } from "./checkpoint";
+import { CheckpointTool, RewindTool } from "./checkpoint";
 import { CodeGraphTool } from "./codegraph";
 import type { CodeGraphCoverageLedger } from "./codegraph-coverage-ledger";
 import { ComputerTool } from "./computer";
@@ -65,12 +71,15 @@ import { MemoryRetainTool } from "./memory-retain";
 import { NextStepOfferTool } from "./next-step-offer";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
+import { RefineTool } from "./refine-tool";
 import type { PlanProposalHandler } from "./resolve";
 import { SecurityScanTool } from "./security-scan";
 import { SiyuanTool } from "./siyuan";
-import { type TodoPhase, TodoTool } from "./todo";
+import type { TodoPhase } from "./todo";
+import { TodoTool } from "./todo";
 import { WriteTool } from "./write";
-import { isMountableUnderXdev, type XdevState } from "./xdev";
+import type { XdevState } from "./xdev";
+import { isMountableUnderXdev } from "./xdev";
 import { YieldTool } from "./yield";
 
 export * from "../edit";
@@ -186,6 +195,14 @@ export interface ToolSession {
 	workspaceTree?: WorkspaceTree;
 	/** Pre-loaded skills */
 	skills?: readonly Skill[];
+	/**
+	/** Pre-loaded Python skill metadata for the eval Python kernel. May be a
+	 * promise when the session bootstraps the skill venv asynchronously;
+	 * backends await it before starting the kernel.
+	 */
+	pythonSkills?: PythonSkillStartOptions | Promise<PythonSkillStartOptions | undefined>;
+	/** RLM child lifecycle manager (04) for `__rlm__` eval bridge calls. */
+	getRlmLifecycle?: () => RlmChildLifecycle | undefined;
 	/** Rediscover live session skills after a tool mutates their backing files. */
 	refreshSkills?: () => Promise<void>;
 	/** Pre-loaded prompt templates */
@@ -281,6 +298,8 @@ export interface ToolSession {
 	agentLifecycle?: () => AgentLifecycleManager;
 	/** Get artifacts directory for artifact:// URLs */
 	getArtifactsDir?: () => string | null;
+	/** RLM registry directory owned by this session, independent of the shared ArtifactManager. */
+	getRlmArtifactsDir?: () => string | null;
 	/** Get the ArtifactManager backing this session (shared across parent + subagents). */
 	getArtifactManager?: () => ArtifactManager | null;
 	/** Allocate a new artifact path and ID for session-scoped truncated output. */
@@ -350,6 +369,8 @@ export interface ToolSession {
 	getGoalModeState?: () => GoalModeState | undefined;
 	/** Goal runtime for the active agent session. */
 	getGoalRuntime?: () => GoalRuntime | undefined;
+	/** Refinement controller for the active agent session. */
+	getRefinementController?: () => RefinementController | undefined;
 	/** Get cumulative session usage statistics (input/output tokens, cost). */
 	getUsageStatistics?: () => UsageStatistics;
 	/** Current per-turn token budget {total, spent, hard} for the eval `budget` helper. */
@@ -513,6 +534,11 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
 	yield: s => new YieldTool(s),
 	goal: s => new GoalTool(s),
+	refine: s =>
+		new RefineTool(
+			() => s.getRefinementController?.(),
+			() => s.settings.get("refinement.enabled"),
+		),
 };
 
 export type ToolName = BuiltinToolName;
@@ -530,6 +556,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			? normalizeToolNames(toolNames)
 			: undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
+	const refinementEnabled = session.settings.get("refinement.enabled");
+	const refinementToolActive = !restrictToolNames && refinementEnabled;
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {
 		requestedTools.push("goal");
@@ -657,6 +685,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			const goalState = session.getGoalModeState?.();
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
+		if (name === "refine") return refinementToolActive;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
@@ -721,6 +750,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 						.map(([name, factory]) => [name, factory] as const),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
+					...(refinementToolActive ? ([["refine", HIDDEN_TOOLS.refine]] as const) : []),
 				];
 
 	const activeToolNames = new Set(baseEntries.map(([name]) => name));

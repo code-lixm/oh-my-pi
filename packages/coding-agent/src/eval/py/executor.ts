@@ -32,7 +32,10 @@ import {
 	PythonKernel,
 } from "./kernel";
 import { resolveExplicitPythonRuntime } from "./runtime";
+import { type PythonSkillStartOptions, resolvePythonSkillInterpreter } from "./skill-preload";
 import { ensurePyToolBridge } from "./tool-bridge";
+
+export type { PythonSkillStartOptions } from "./skill-preload";
 
 export type PythonKernelMode = "session" | "per-call";
 
@@ -59,11 +62,10 @@ export interface PythonExecutorOptions {
 	kernelOwnerId?: string;
 	/** Kernel mode (session reuse vs per-call) */
 	kernelMode?: PythonKernelMode;
-	/**
-	 * Explicit interpreter path (`python.interpreter` resolved from the
-	 * session's settings). Skips automatic runtime discovery when set.
-	 */
+	/** Explicit eval interpreter; skill-backed eval prefers `pythonSkills.pythonPath`. */
 	interpreter?: string;
+	/** Trusted Python skill metadata or host-generated preload code. */
+	pythonSkills?: PythonSkillStartOptions;
 	/** Restart the kernel before executing */
 	reset?: boolean;
 	/** Session file path for accessing task outputs */
@@ -138,10 +140,10 @@ export interface PythonResult {
 // ---------------------------------------------------------------------------
 // Session bookkeeping
 //
-// One PythonKernel subprocess per (session id, cwd, interpreter) tuple. The
-// runner mutates process-global cwd/sys.path during execution, so cross-directory
-// work must never share a live kernel. Multiple agent owners can still register against
-// the same tuple; the kernel stays alive until the last owner detaches.
+// One PythonKernel subprocess per (session id, cwd, interpreter, optional Python
+// skill runtime generation) tuple. The runner mutates process-global cwd/sys.path
+// during execution, so cross-directory work must never share a live kernel. Multiple
+// agent owners can still register against the same identity; the kernel stays alive until the last owner detaches.
 // ---------------------------------------------------------------------------
 
 interface SessionKernelReplacement {
@@ -207,7 +209,8 @@ async function startKernel(cwd: string, options: PythonExecutorOptions): Promise
 		env: buildManagedKernelEnv(options),
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
-		interpreter: options.interpreter,
+		interpreter: resolvePythonSkillInterpreter(options.pythonSkills, options.interpreter),
+		pythonSkills: options.pythonSkills,
 	});
 }
 
@@ -329,7 +332,7 @@ async function executeWithKernel(
 
 async function ensureKernelAvailable(cwd: string, options: PythonExecutorOptions): Promise<void> {
 	const availability = await waitForPromiseWithCancellation(
-		checkPythonKernelAvailability(cwd, options.interpreter),
+		checkPythonKernelAvailability(cwd, resolvePythonSkillInterpreter(options.pythonSkills, options.interpreter)),
 		options,
 		PythonExecutionCancelledError,
 	);
@@ -364,9 +367,11 @@ async function executePerCall(code: string, cwd: string, options: PythonExecutor
 const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutorOptions, PythonResult, PythonSession>({
 	languageLabel: "Python",
 	cancelledErrorClass: PythonExecutionCancelledError,
-	buildSessionKey: (sessionId, cwd, interpreter) => {
+	buildSessionKey: (sessionId, cwd, interpreter, options) => {
 		const normalizedCwd = normalizeKernelSessionCwd(cwd);
-		return `${sessionId}\0${normalizedCwd}\0${normalizeExplicitInterpreter(normalizedCwd, interpreter)}`;
+		const baseKey = `${sessionId}\0${normalizedCwd}\0${normalizeExplicitInterpreter(normalizedCwd, interpreter)}`;
+		const runtimeId = options.pythonSkills?.runtimeId;
+		return runtimeId === undefined ? baseKey : `${baseKey}\0python-skills:${runtimeId}`;
 	},
 	createSession: session => ({ ...session, generation: 0 }),
 	startKernel,
@@ -403,6 +408,7 @@ export async function executePython(code: string, options?: PythonExecutorOption
 		...(options ?? {}),
 		cwd,
 		deadlineMs,
+		interpreter: resolvePythonSkillInterpreter(options?.pythonSkills, options?.interpreter),
 	};
 
 	try {

@@ -282,7 +282,8 @@ function parseCompleteProgress(value: unknown): AgentProgress | undefined {
 		deliveryStatus === "pending" ||
 		deliveryStatus === "delivering" ||
 		deliveryStatus === "delivered" ||
-		deliveryStatus === "dead-letter"
+		deliveryStatus === "dead-letter" ||
+		deliveryStatus === "manual"
 	) {
 		progress.deliveryStatus = deliveryStatus;
 	}

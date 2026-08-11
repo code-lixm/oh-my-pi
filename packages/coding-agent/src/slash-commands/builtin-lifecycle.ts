@@ -4,6 +4,9 @@ import { setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
+import type { HarnessState } from "../refinement/types";
+import { normalizeHeartbeatDeliveryMode, parseHeartbeatInput } from "../scheduling/parser";
+import type { ScheduleJob } from "../scheduling/types";
 import type { FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
@@ -23,6 +26,266 @@ function formatFreshSessionResult(result: FreshSessionResult): string {
 	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
 	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
 }
+
+const SCHEDULE_TEXT_PREVIEW_CHARS = 180;
+
+const SCHEDULE_JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function compactScheduleText(value: string): string {
+	const compact = value.replace(/\s+/g, " ").trim();
+	return compact.length > SCHEDULE_TEXT_PREVIEW_CHARS
+		? `${compact.slice(0, SCHEDULE_TEXT_PREVIEW_CHARS - 3)}...`
+		: compact;
+}
+
+function formatRefinementCounts(state: HarnessState): string {
+	return (Object.keys(state.entries) as Array<keyof typeof state.entries>)
+		.map(kind => {
+			let local = 0;
+			let global = 0;
+			for (const entry of Object.values(state.entries[kind])) {
+				if (entry.scope === "global") global++;
+				else local++;
+			}
+			return `${kind}=local:${local},global:${global}`;
+		})
+		.join(" ");
+}
+
+function formatScheduleJob(job: ScheduleJob): string {
+	return [
+		tSettingsUi("[{id}] {source} {status}", {
+			id: job.id,
+			source: tSettingsUi(job.source),
+			status: tSettingsUi(job.status),
+		}),
+		`scope=session:${job.sessionId}`,
+		`label=${compactScheduleText(job.label ?? "—")}`,
+		`schedule=${compactScheduleText(job.schedule.expression)}`,
+		`delivery=${job.deliveryMode ?? (job.source === "cron" ? "follow_up" : "steer")}`,
+		`nextRun=${job.nextRunAt ?? "—"}`,
+		`lastRun=${job.lastRunAt ?? "—"}`,
+		`runCount=${job.runCount}`,
+		`lastError=${compactScheduleText(job.lastError ?? "—")}`,
+		`prompt=${compactScheduleText(job.prompt)}`,
+	].join(" · ");
+}
+
+function localizeLifecycleError(error: unknown): string {
+	const message = errorMessage(error);
+	const scheduleNotFoundPrefix = "Schedule not found: ";
+	if (message.startsWith(scheduleNotFoundPrefix)) {
+		return tSettingsUi("Schedule not found: {id}", { id: message.slice(scheduleNotFoundPrefix.length) });
+	}
+	const refinementNotFoundPrefix = "Refinement ";
+	const refinementNotFoundSuffix = " was not found";
+	if (message.startsWith(refinementNotFoundPrefix) && message.endsWith(refinementNotFoundSuffix)) {
+		return tSettingsUi("Refinement {id} was not found", {
+			id: message.slice(refinementNotFoundPrefix.length, -refinementNotFoundSuffix.length),
+		});
+	}
+	const schedulingDisabledSuffix = " scheduling is disabled";
+	if (message.endsWith(schedulingDisabledSuffix)) {
+		return tSettingsUi("{source} scheduling is disabled", {
+			source: tSettingsUi(message.slice(0, -schedulingDisabledSuffix.length)),
+		});
+	}
+	return tSettingsUi(message);
+}
+
+function parseScheduleAndPrompt(input: string): { schedule: string; prompt: string } {
+	const separator = /\s+--\s+/.exec(input);
+	if (!separator || separator.index === undefined) {
+		throw new Error(tSettingsUi("Usage: /schedule add <schedule> -- <prompt>"));
+	}
+	const schedule = input.slice(0, separator.index).trim();
+	const prompt = input.slice(separator.index + separator[0].length).trim();
+	if (!schedule || !prompt) throw new Error(tSettingsUi("Usage: /schedule add <schedule> -- <prompt>"));
+	return { schedule, prompt };
+}
+
+function parseScheduleJobId(value: string, usageText: string): string {
+	const id = value.trim();
+	if (!SCHEDULE_JOB_ID_PATTERN.test(id)) throw new Error(usageText);
+	return id;
+}
+
+async function handleHeartbeatCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const scheduling = runtime.session.getScheduleRuntime();
+	if (!scheduling) return usage(tSettingsUi("Heartbeat scheduling is unavailable in this session."), runtime);
+	try {
+		const parsed = parseHeartbeatInput(command.text, {
+			defaultInterval: runtime.settings.get("heartbeat.defaultInterval"),
+			defaultDeliveryMode: normalizeHeartbeatDeliveryMode(runtime.settings.get("heartbeat.defaultDeliveryMode")),
+		});
+		if (parsed.action === "create") {
+			if (!runtime.settings.get("heartbeat.enabled") && !runtime.settings.isConfigured("heartbeat.enabled")) {
+				runtime.settings.set("heartbeat.enabled", true);
+			}
+			const job = await scheduling.setHeartbeat({
+				instruction: parsed.instruction ?? "",
+				interval: parsed.interval,
+				deliveryMode: parsed.deliveryMode,
+			});
+			await runtime.output(tSettingsUi("Heartbeat scheduled: {job}", { job: formatScheduleJob(job) }));
+			return commandConsumed();
+		}
+		if (parsed.action === "status") {
+			const jobs = (await scheduling.list({ includeInactive: true })).filter(job => job.source === "heartbeat");
+			await runtime.output(
+				jobs.length > 0 ? jobs.map(formatScheduleJob).join("\n") : tSettingsUi("No heartbeat is configured."),
+			);
+			return commandConsumed();
+		}
+		const job = await scheduling.manageHeartbeat(parsed.action);
+		await runtime.output(job ? formatScheduleJob(job) : tSettingsUi("No heartbeat is configured."));
+		return commandConsumed();
+	} catch (error) {
+		return usage(localizeLifecycleError(error), runtime);
+	}
+}
+
+async function handleScheduleCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const scheduling = runtime.session.getScheduleRuntime();
+	if (!scheduling) return usage(tSettingsUi("Scheduling is unavailable in this session."), runtime);
+	const [verb = "list", ...tail] = command.args.trim().split(/\s+/);
+	const rest = tail.join(" ").trim();
+	try {
+		if (verb === "list" || verb === "status") {
+			const jobs = await scheduling.list({ includeInactive: true, source: "cron" });
+			await runtime.output(
+				jobs.length > 0 ? jobs.map(formatScheduleJob).join("\n") : tSettingsUi("No scheduled prompts."),
+			);
+			return commandConsumed();
+		}
+		if (verb === "add") {
+			const parsed = parseScheduleAndPrompt(rest);
+			const job = await scheduling.createSchedule(parsed);
+			await runtime.output(tSettingsUi("Scheduled prompt created: {job}", { job: formatScheduleJob(job) }));
+			return commandConsumed();
+		}
+		if (verb === "pause" || verb === "resume" || verb === "cancel") {
+			const id = parseScheduleJobId(rest, tSettingsUi("Usage: /schedule {verb} <id>", { verb }));
+			const job = await scheduling.manageSchedule(id, verb);
+			await runtime.output(job ? formatScheduleJob(job) : tSettingsUi("Schedule not found: {id}", { id }));
+			return commandConsumed();
+		}
+		if (verb === "update") {
+			const [unvalidatedId = "", ...updateParts] = rest.split(/\s+/);
+			if (!unvalidatedId || updateParts.length === 0) {
+				return usage(tSettingsUi("Usage: /schedule update <id> <schedule> -- <prompt>"), runtime);
+			}
+			const id = parseScheduleJobId(
+				unvalidatedId,
+				tSettingsUi("Usage: /schedule update <id> <schedule> -- <prompt>"),
+			);
+			const parsed = parseScheduleAndPrompt(updateParts.join(" "));
+			const job = await scheduling.updateSchedule({ id, ...parsed });
+			await runtime.output(tSettingsUi("Scheduled prompt updated: {job}", { job: formatScheduleJob(job) }));
+			return commandConsumed();
+		}
+		return usage(tSettingsUi("Usage: /schedule <add|list|pause|resume|cancel|update> ..."), runtime);
+	} catch (error) {
+		return usage(localizeLifecycleError(error), runtime);
+	}
+}
+
+async function handleRefineCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const controller = runtime.session.getRefinementController();
+	if (!controller || !runtime.settings.get("refinement.enabled")) {
+		return usage(tSettingsUi("Continual harness is disabled. Enable refinement.enabled first."), runtime);
+	}
+	const tokens = command.args.trim().split(/\s+/).filter(Boolean);
+	let scope: "local" | "global" | undefined;
+	const remaining = tokens.filter(token => {
+		if (token === "--global") {
+			scope = "global";
+			return false;
+		}
+		if (token === "--local") {
+			scope = "local";
+			return false;
+		}
+		return true;
+	});
+	const operation = remaining[0] === "status" || remaining[0] === "rollback" ? remaining.shift() : "refine";
+	try {
+		if (operation === "status") {
+			if (remaining.length > 0) return usage(tSettingsUi("Usage: /refine status"), runtime);
+			const state = await controller.getState();
+			const counts = formatRefinementCounts(state);
+			const recent = state.refinements
+				.slice(-5)
+				.map(refinement =>
+					tSettingsUi("{id}: {scope}: {summary}", {
+						id: `${refinement.scope}:${refinement.id}`,
+						scope: tSettingsUi(refinement.scope),
+						summary: refinement.summary,
+					}),
+				)
+				.join("\n");
+			await runtime.output(
+				tSettingsUi("Continual harness: {counts}", { counts }) +
+					(recent ? `\n${tSettingsUi("Recent refinements:")}\n${recent}` : ""),
+			);
+			return commandConsumed();
+		}
+		if (operation === "rollback") {
+			const resultId = remaining[0];
+			if (!resultId || remaining.length !== 1) {
+				return usage(tSettingsUi("Usage: /refine rollback <result-id> [--local|--global]"), runtime);
+			}
+			await controller.rollback(undefined, resultId, scope);
+			await runtime.output(tSettingsUi("Rollback completed: {id}", { id: resultId }));
+			return commandConsumed();
+		}
+		await controller.refine(undefined, { instructions: remaining.join(" ") || undefined, scope });
+		await runtime.output(tSettingsUi("Refinement completed and the supplemental prompt was refreshed."));
+		return commandConsumed();
+	} catch (error) {
+		return usage(localizeLifecycleError(error), runtime);
+	}
+}
+
+async function handleHeartbeatsCommand(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const scheduling = runtime.session.getScheduleRuntime();
+	if (!scheduling) return usage(tSettingsUi("Heartbeat scheduling is unavailable in this session."), runtime);
+	if (command.args.trim() && command.args.trim() !== "list")
+		return usage(tSettingsUi("Usage: /heartbeats [list]"), runtime);
+	try {
+		const jobs = (await scheduling.list({ includeInactive: true })).filter(job => job.source !== "cron");
+		await runtime.output(
+			jobs.length > 0 ? jobs.map(formatScheduleJob).join("\n") : tSettingsUi("No heartbeats are configured."),
+		);
+		return commandConsumed();
+	} catch (error) {
+		return usage(localizeLifecycleError(error), runtime);
+	}
+}
+
+export const refinementSlashCommand: SlashCommandSpec = {
+	name: "refine",
+	description: "Review the trajectory and update the continual harness",
+	allowArgs: true,
+	acpInputHint: "[status|rollback <id>] [--local|--global] [instructions]",
+	subcommands: [
+		{ name: "status", description: "Show harness entry counts and recent refinements" },
+		{ name: "rollback", description: "Rollback a refinement", usage: "<result-id> [--local|--global]" },
+	],
+	handle: handleRefineCommand,
+};
 
 export const shutdownHandlerTui = (
 	_command: ParsedSlashCommand,
@@ -72,6 +335,43 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			await runtime.ctx.handleSSHCommand(command.text);
 		},
 	},
+	{
+		name: "heartbeat",
+		description: "Manage persisted heartbeat prompts for the current session",
+		allowArgs: true,
+		acpInputHint: "[status|pause|resume|clear|--every <interval> <instruction>]",
+		subcommands: [
+			{ name: "status", description: "Show the current heartbeat" },
+			{ name: "pause", description: "Pause the current heartbeat" },
+			{ name: "resume", description: "Resume the current heartbeat" },
+			{ name: "clear", description: "Remove the current heartbeat" },
+		],
+		handle: handleHeartbeatCommand,
+	},
+	{
+		name: "heartbeats",
+		description: "List persisted heartbeat prompts for the current session",
+		allowArgs: true,
+		acpInputHint: "[list]",
+		subcommands: [{ name: "list", description: "List user and RLM heartbeats" }],
+		handle: handleHeartbeatsCommand,
+	},
+	{
+		name: "schedule",
+		description: "Manage persisted scheduled prompts for the current session",
+		allowArgs: true,
+		acpInputHint: "<add|list|pause|resume|cancel|update> ...",
+		subcommands: [
+			{ name: "add", description: "Create a scheduled prompt", usage: "<schedule> -- <prompt>" },
+			{ name: "list", description: "List scheduled prompts" },
+			{ name: "pause", description: "Pause a schedule", usage: "<id>" },
+			{ name: "resume", description: "Resume a schedule", usage: "<id>" },
+			{ name: "cancel", description: "Cancel a schedule", usage: "<id>" },
+			{ name: "update", description: "Update a schedule", usage: "<id> <schedule> -- <prompt>" },
+		],
+		handle: handleScheduleCommand,
+	},
+	refinementSlashCommand,
 	{
 		name: "new",
 		description: "Start a new session",

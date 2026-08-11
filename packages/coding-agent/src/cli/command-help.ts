@@ -51,6 +51,10 @@ export const galleryHelp = {
 
 export const gcHelp = { description: "Run storage garbage collection" } satisfies CommandMetadata;
 
+export const daemonHelp = {
+	description: "Manage the background session daemon (start, status, stop, create, list, prompt, cancel)",
+} satisfies CommandMetadata;
+
 export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
 
 export const grievancesHelp = {

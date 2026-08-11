@@ -23,6 +23,7 @@ import {
 	resolveExplicitPythonRuntime,
 	resolvePythonRuntime,
 } from "./runtime";
+import { buildSkillPreloadCode, type PythonSkillStartOptions, resolvePythonSkillInterpreter } from "./skill-preload";
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "./spawn-options";
 
 export type {
@@ -141,8 +142,13 @@ async function probePythonKernelAvailability(cwd: string, interpreter?: string):
 	}
 }
 
+export interface PythonKernelStartOptions extends KernelStartOptions {
+	/** Trusted Python skill metadata or host-generated preload code. */
+	pythonSkills?: PythonSkillStartOptions;
+}
+
 export class PythonKernel extends BaseKernel {
-	private constructor(id: string) {
+	constructor(id: string) {
 		super(id, {
 			languageName: "Python",
 			traceIpc: TRACE_IPC,
@@ -161,12 +167,13 @@ export class PythonKernel extends BaseKernel {
 		});
 	}
 
-	static async start(options: KernelStartOptions): Promise<PythonKernel> {
+	static async start(options: PythonKernelStartOptions): Promise<PythonKernel> {
+		const interpreter = resolvePythonSkillInterpreter(options.pythonSkills, options.interpreter);
 		const availability = await logger.time(
 			"PythonKernel.start:availabilityCheck",
 			checkPythonKernelAvailability,
 			options.cwd,
-			options.interpreter,
+			interpreter,
 		);
 		if (!availability.ok) {
 			throw new Error(availability.reason ?? "Python kernel unavailable");
@@ -175,8 +182,8 @@ export class PythonKernel extends BaseKernel {
 		let runtime = availability.runtime;
 		if (!runtime) {
 			const { env: shellEnv } = (await Settings.init()).getShellConfig();
-			runtime = options.interpreter
-				? resolveExplicitPythonRuntime(options.interpreter, options.cwd, filterEnv(shellEnv))
+			runtime = interpreter
+				? resolveExplicitPythonRuntime(interpreter, options.cwd, filterEnv(shellEnv))
 				: resolvePythonRuntime(options.cwd, filterEnv(shellEnv));
 		}
 		const spawnEnv: Record<string, string> = {};
@@ -214,6 +221,11 @@ export class PythonKernel extends BaseKernel {
 			const initScript = buildInitScript(options.cwd, options.env);
 			await kernel.executeWithBudget(initScript, startup.signal, startupBudget, "Python kernel init");
 			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude");
+			const preloadCode =
+				options.pythonSkills?.preloadCode ?? buildSkillPreloadCode(options.pythonSkills?.metadata ?? []);
+			if (preloadCode.trim()) {
+				await kernel.executeWithBudget(preloadCode, startup.signal, startupBudget, "Python skill preload");
+			}
 			return kernel;
 		} catch (err) {
 			await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }).catch(() => {});

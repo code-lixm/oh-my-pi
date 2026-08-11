@@ -16,6 +16,7 @@ import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { RlmChildRegistry } from "../registry/rlm-child-registry";
 import type { TaskEffort } from "../thinking";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
@@ -93,6 +94,25 @@ export interface StructuredSubagentRequest {
 	/** Per-spawn thinking effort mapped onto the resolved model's supported range; overrides the agent's default selector. */
 	effort?: TaskEffort;
 	identity?: StructuredSubagentIdentity;
+	/**
+	 * Caller-owned absolute artifacts/session directory. RLM reserves the
+	 * child's session directory at admission time so its handle is stable
+	 * before the child starts; when present the child session file must be
+	 * supplied explicitly via {@link sessionFile}. Host-only — never reachable
+	 * from eval cell arguments.
+	 */
+	artifactsDir?: string;
+	/** Immediate parent RLM registry directory; present only for RLM-owned child invocations. */
+	parentRlmArtifactsDir?: string;
+	/** Live immediate-parent registry, preserving current in-memory sibling state. */
+	parentRlmRegistry?: RlmChildRegistry;
+	/**
+	 * Explicit absolute child session file inside {@link artifactsDir}.
+	 * Required whenever a caller-owned directory is supplied, so the caller
+	 * controls the exact transcript path it advertises in its own durable
+	 * registry. Host-only.
+	 */
+	sessionFile?: string;
 	index?: number;
 	parentToolCallId?: string;
 	detached?: boolean;
@@ -348,12 +368,27 @@ interface ArtifactLease {
 async function leaseArtifacts(
 	session: ToolSession,
 	invocationKind: StructuredSubagentRequest["invocationKind"],
+	callerOwnedDir?: string,
+	explicitSessionFile?: string,
 ): Promise<ArtifactLease> {
+	if (callerOwnedDir) {
+		const artifactsDir = path.resolve(callerOwnedDir);
+		await fs.mkdir(artifactsDir, { recursive: true });
+		if (!explicitSessionFile) {
+			throw new Error("A caller-owned artifacts directory requires an explicit sessionFile");
+		}
+		const sessionFile = path.resolve(explicitSessionFile);
+		const sessionDir = path.dirname(sessionFile);
+		if (sessionDir !== artifactsDir) {
+			throw new Error("Caller-owned sessionFile must live inside the caller-owned artifacts directory");
+		}
+		return { sessionFile, artifactsDir, temporary: false, unregister: undefined };
+	}
 	const sessionFile = session.getSessionFile();
 	if (sessionFile) {
 		const artifactsDir = sessionFile.slice(0, -6);
 		await fs.mkdir(artifactsDir, { recursive: true });
-		return { sessionFile, artifactsDir, temporary: false, unregister: undefined };
+		return { sessionFile: null, artifactsDir, temporary: false, unregister: undefined };
 	}
 	const artifactsDir = path.join(
 		os.tmpdir(),
@@ -419,6 +454,7 @@ function buildExecutorOptions(
 		sessionFile: lease.sessionFile,
 		persistArtifacts: !lease.temporary,
 		artifactsDir: lease.artifactsDir,
+		rlmArtifactsDir: lease.artifactsDir,
 		enableLsp: policy.enableLsp,
 		enableIrc: policy.enableIrc,
 		maxRuntimeMs: request.maxRuntimeMs,
@@ -449,8 +485,10 @@ function buildExecutorOptions(
 		parentTelemetry: session.getTelemetry?.(),
 		parentEvalSessionId: request.shareEvalSession === false ? undefined : (session.getEvalSessionId?.() ?? undefined),
 		parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
+		parentRlmArtifactsDir: request.parentRlmArtifactsDir,
 		parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 		beforeIsolatedMerge: session.beforeIsolatedMerge,
+		parentRlmRegistry: request.parentRlmRegistry,
 		afterIsolatedMerge: session.afterIsolatedMerge,
 		isTaskMutatorActive: session.isTaskMutatorActive,
 	};
@@ -553,7 +591,12 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
  */
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
 	const policy = await resolveEffectiveSubagentPolicy(request);
-	const lease = await leaseArtifacts(request.session, request.invocationKind);
+	const lease = await leaseArtifacts(
+		request.session,
+		request.invocationKind,
+		request.artifactsDir,
+		request.sessionFile,
+	);
 	let changesApplied: boolean | null = null;
 	let mergeSummary = "";
 	let requiresRecoveryArtifacts = false;

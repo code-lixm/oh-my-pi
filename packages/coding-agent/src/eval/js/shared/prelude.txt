@@ -125,6 +125,47 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 		return node;
 	};
 
+	const rlm = async (prompt, opts, ...rest) => {
+		const o = optionsArg("rlm", opts, rest, ["name", "model"], "{ name, model }");
+		for (const key of Object.keys(o)) {
+			if (key !== "name" && key !== "model") throw new TypeError(`Unknown rlm() argument: ${key}`);
+		}
+		return await globalThis.__omp_call_tool__("__rlm__", {
+			op: "run",
+			prompt,
+			...(o.name === undefined ? {} : { name: o.name }),
+			...(o.model === undefined ? {} : { model: o.model }),
+		});
+	};
+	rlm.list_subagents = async () => await globalThis.__omp_call_tool__("__rlm__", { op: "list_subagents" });
+	rlm.delete_subagent = async target =>
+		await globalThis.__omp_call_tool__("__rlm__", { op: "delete_subagent", target });
+
+	const agent_message = {
+		list_agents: async () => await globalThis.__omp_call_tool__("__rlm__", { op: "agent_message.list_agents" }),
+		send: async (message, opts, ...rest) => {
+			const o = optionsArg(
+				"agent_message.send",
+				opts,
+				rest,
+				["receiver_role", "receiver_name", "target"],
+				"{ receiver_role, receiver_name, target }",
+			);
+			for (const key of Object.keys(o)) {
+				if (key !== "receiver_role" && key !== "receiver_name" && key !== "target") {
+					throw new TypeError(`Unknown agent_message.send() argument: ${key}`);
+				}
+			}
+			return await globalThis.__omp_call_tool__("__rlm__", {
+				op: "agent_message.send",
+				message,
+				...(o.receiver_role === undefined ? {} : { receiver_role: o.receiver_role }),
+				...(o.receiver_name === undefined ? {} : { receiver_name: o.receiver_name }),
+				...(o.target === undefined ? {} : { target: o.target }),
+			});
+		},
+	};
+
 	// Pool ceiling mirrors the task tool's `task.maxConcurrency` setting so an
 	// eval fan-out runs as wide as a `task` batch would. 0 (and any non-finite
 	// reply) means unbounded — run every item at once.
@@ -282,6 +323,8 @@ if (!globalThis.__omp_js_prelude_loaded__) {
 	globalThis.completion = completion;
 	globalThis.output = output;
 	globalThis.agent = agent;
+	globalThis.rlm = rlm;
+	globalThis.agent_message = agent_message;
 	globalThis.parallel = parallel;
 	globalThis.pipeline = pipeline;
 	globalThis.log = log;

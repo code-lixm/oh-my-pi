@@ -588,6 +588,55 @@ function agent(prompt::String; agent="task", label=nothing, schema=nothing, sche
     return node
 end
 
+function rlm(prompt::String; name=nothing, model=nothing)
+    args = Dict{String, Any}("op" => "run", "prompt" => prompt)
+    if name !== nothing
+        args["name"] = name
+    end
+    if model !== nothing
+        args["model"] = model
+    end
+    return __omp_call_bridge("__rlm__", args)
+end
+
+module Rlm
+    function list_subagents()
+        return Main.__omp_call_bridge("__rlm__", Dict{String, Any}("op" => "list_subagents"))
+    end
+
+    function delete_subagent(target)
+        return Main.__omp_call_bridge("__rlm__", Dict{String, Any}("op" => "delete_subagent", "target" => target))
+    end
+end
+
+module AgentMessage
+    function list_agents()
+        return Main.__omp_call_bridge("__rlm__", Dict{String, Any}("op" => "agent_message.list_agents"))
+    end
+
+    function send(message; receiver_role="parent", receiver_name=nothing, target=nothing)
+        args = Dict{String, Any}("op" => "agent_message.send", "message" => message)
+        if receiver_role !== nothing
+            args["receiver_role"] = receiver_role
+        end
+        if receiver_name !== nothing
+            args["receiver_name"] = receiver_name
+        end
+        if target !== nothing
+            args["target"] = target
+        end
+        return Main.__omp_call_bridge("__rlm__", args)
+    end
+end
+
+function rlm_list()
+    return Rlm.list_subagents()
+end
+
+function rlm_delete(child_id)
+    return Rlm.delete_subagent(child_id)
+end
+
 function Base.log(message::AbstractString)
     Main.emit_frame(Dict(
         "type" => "display",

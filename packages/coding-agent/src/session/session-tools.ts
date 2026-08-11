@@ -86,6 +86,8 @@ interface SessionToolsOptions {
 	skillWarnings?: SkillWarning[];
 	skillsSettings?: SkillsSettings;
 	skillsReloadable?: boolean;
+	/** Rebuilds Python skill runtime state from the newly discovered skill snapshot. */
+	reloadPythonSkills?: (skills: readonly Skill[]) => Promise<void>;
 }
 
 export interface MountedMCPToolRouteSource {
@@ -218,12 +220,14 @@ export class SessionTools {
 	 */
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#mcpRefreshTail: Promise<void> = Promise.resolve();
+	#skillsRefreshTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#ensureWriteRegistered: SessionToolsOptions["ensureWriteRegistered"];
+	#reloadPythonSkills: SessionToolsOptions["reloadPythonSkills"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -254,6 +258,7 @@ export class SessionTools {
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
 		this.#skillsReloadable = options.skillsReloadable ?? true;
+		this.#reloadPythonSkills = options.reloadPythonSkills;
 		this.#promptModelKey = this.#currentPromptModelKey();
 	}
 
@@ -908,8 +913,14 @@ export class SessionTools {
 		};
 	}
 
-	/** Rediscovers reloadable skills and refreshes prompt metadata. */
+	/** Rediscovers reloadable skills and atomically rebuilds dependent prompt state. */
 	async refreshSkills(): Promise<void> {
+		const refresh = this.#skillsRefreshTail.then(() => this.#refreshSkills());
+		this.#skillsRefreshTail = refresh.catch(() => {});
+		return await refresh;
+	}
+
+	async #refreshSkills(): Promise<void> {
 		resetCapabilities();
 		if (this.#skillsReloadable) {
 			const skillsSettings = this.#host.settings.getGroup("skills");
@@ -926,6 +937,7 @@ export class SessionTools {
 				setActiveSkills(this.#skills);
 			}
 		}
+		await this.#reloadPythonSkills?.([...this.#skills]);
 		await this.refreshBaseSystemPrompt();
 		this.#host.notifyCommandMetadataChanged();
 	}

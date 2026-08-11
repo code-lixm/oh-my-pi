@@ -8,6 +8,7 @@ import {
 	resetRegisteredArtifactDirsForTests,
 } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
 import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
@@ -42,6 +43,7 @@ function session(
 		isolationMode?: "none" | "worktree";
 		isolationApply?: boolean;
 		modelRoles?: Record<string, string>;
+		sessionFile?: string | null;
 	} = {},
 ): ToolSession {
 	return {
@@ -55,7 +57,7 @@ function session(
 			...(options.modelRoles ? { modelRoles: options.modelRoles } : {}),
 			...(options.isolationApply !== undefined ? { "task.isolation.apply": options.isolationApply } : {}),
 		}),
-		getSessionFile: () => null,
+		getSessionFile: () => options.sessionFile ?? null,
 		getSessionSpawns: () => "*",
 		getPlanModeState: () => (options.planMode ? { enabled: true } : undefined),
 	} as unknown as ToolSession;
@@ -298,6 +300,30 @@ describe("structured subagent primitive", () => {
 		});
 		expect(path.basename(settled.artifactsDir)).toStartWith("omp-task-");
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
+	});
+	it("opens ordinary persistent children in their own parent sidecar session file", async () => {
+		mockDiscovery();
+		const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-structured-subagent-parent-"));
+		const parentSessionFile = path.join(parentDir, "parent.jsonl");
+		const childId = "persistent-child";
+		const expectedChildSessionFile = path.join(parentSessionFile.slice(0, -".jsonl".length), `${childId}.jsonl`);
+		await fs.writeFile(parentSessionFile, "");
+		let openedSessionFile: string | undefined;
+		vi.spyOn(SessionManager, "open").mockImplementation(async sessionFile => {
+			openedSessionFile = sessionFile;
+			throw new Error("stop after opening child session");
+		});
+
+		try {
+			await runStructuredSubagent(
+				request({ session: session({ sessionFile: parentSessionFile }), identity: { id: childId } }),
+			);
+
+			expect(openedSessionFile).toBe(expectedChildSessionFile);
+			expect(openedSessionFile).not.toBe(parentSessionFile);
+		} finally {
+			await fs.rm(parentDir, { recursive: true, force: true });
+		}
 	});
 	it("uses identical non-plan LSP and IRC policy for task and eval invocations", async () => {
 		mockDiscovery();

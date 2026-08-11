@@ -1,3 +1,4 @@
+import type { AsyncJobType } from "../../async/rlm-job-policy";
 /**
  * Shared types for the hub tool — the merged agent-coordination surface
  * covering peer messaging (IRC bus), background-job control, and supervised
@@ -57,7 +58,7 @@ export interface JobConcurrencySnapshot {
 /** Background-job row surfaced by `wait`/`cancel`/`jobs` results. */
 export interface JobSnapshot {
 	id: string;
-	type: "bash" | "task";
+	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	durationMs: number;

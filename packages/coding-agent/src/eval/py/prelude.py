@@ -671,3 +671,61 @@ if "__omp_prelude_loaded__" not in globals():
                 return "<budget unavailable>"
 
     budget = _Budget()
+
+
+def rlm(prompt, *, name=None, model=None):
+    """Spawn a child agent and return an admission handle immediately."""
+    args = {"op": "run", "prompt": prompt}
+    if name is not None:
+        args["name"] = name
+    if model is not None:
+        args["model"] = model
+    res = _bridge_call("__rlm__", args)
+    if isinstance(res, dict):
+        return {
+            "rlm_child_id": res.get("rlm_child_id"),
+            "name": res.get("name"),
+            "session_dir": res.get("session_dir"),
+            "model": res.get("model"),
+        }
+    return res
+
+
+def _rlm_list_subagents():
+    return _bridge_call("__rlm__", {"op": "list_subagents"})
+
+
+def _rlm_delete_subagent(target):
+    return _bridge_call("__rlm__", {"op": "delete_subagent", "target": target})
+
+
+rlm.list_subagents = _rlm_list_subagents
+rlm.delete_subagent = _rlm_delete_subagent
+
+
+class _AgentMessage:
+    def list_agents(self):
+        return _bridge_call("__rlm__", {"op": "agent_message.list_agents"})
+
+    def send(self, message, receiver_role="parent", receiver_name=None, target=None):
+        args = {"op": "agent_message.send", "message": message}
+        if receiver_role is not None:
+            args["receiver_role"] = receiver_role
+        if receiver_name is not None:
+            args["receiver_name"] = receiver_name
+        if target is not None:
+            args["target"] = target
+        return _bridge_call("__rlm__", args)
+
+
+agent_message = _AgentMessage()
+
+
+def rlm_list():
+    """Compatibility alias for ``rlm.list_subagents()``."""
+    return rlm.list_subagents()
+
+
+def rlm_delete(child_id):
+    """Compatibility alias for ``rlm.delete_subagent(child_id)``."""
+    return rlm.delete_subagent(child_id)

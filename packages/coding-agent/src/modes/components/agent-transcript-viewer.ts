@@ -32,7 +32,7 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
-import type { AgentProgress } from "../../task";
+import type { AgentProgress, AsyncJobDeliveryStatus } from "../../task";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
@@ -122,7 +122,7 @@ interface TranscriptProgressSnapshot {
 	durationMs?: number;
 	resolvedModel?: string;
 	resultText?: string;
-	deliveryStatus?: "pending" | "delivering" | "delivered" | "dead-letter";
+	deliveryStatus?: AsyncJobDeliveryStatus;
 }
 
 function isFiniteNumber(value: unknown): value is number {

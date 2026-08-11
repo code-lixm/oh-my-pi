@@ -9,6 +9,7 @@ import {
 	executePython as executePythonCommand,
 	type PythonResult,
 } from "../eval/py/executor";
+import { type PythonSkillStartOptions, resolvePythonSkillInterpreter } from "../eval/py/skill-preload";
 import { disposeRubyKernelSessionsByOwner } from "../eval/rb/executor";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { ExtensionRunner } from "../extensibility/extensions";
@@ -24,6 +25,8 @@ export interface EvalRunnerHost {
 	extensionRunner(): ExtensionRunner | undefined;
 	isStreaming(): boolean;
 	appendSessionMessage(message: PythonExecutionMessage): void;
+	/** Python skill runtime options (installed skill venv) for kernel startup. */
+	getPythonSkillOptions?(): Promise<PythonSkillStartOptions | undefined>;
 }
 
 /** Owns user-initiated Python execution and retained eval-kernel lifecycle. */
@@ -73,12 +76,24 @@ export class EvalRunner {
 					cwd,
 					getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
 				});
+			let pythonSkills: PythonSkillStartOptions | undefined;
+			try {
+				pythonSkills = await this.#host.getPythonSkillOptions?.();
+			} catch (error) {
+				logger.warn("Failed to resolve Python skill options; continuing ordinary Python eval", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			const result = await executePythonCommand(code, {
 				cwd,
 				sessionId: namespacePythonSessionId(sessionId),
 				kernelOwnerId: this.#kernelOwnerId,
 				kernelMode: this.#host.settings.get("python.kernelMode"),
-				interpreter: this.#host.settings.get("python.interpreter")?.trim() || undefined,
+				interpreter: resolvePythonSkillInterpreter(
+					pythonSkills,
+					this.#host.settings.get("python.interpreter")?.trim() || undefined,
+				),
+				pythonSkills,
 				onChunk,
 				signal: abortController.signal,
 			});

@@ -39,8 +39,9 @@ import {
 	formatAdvisorContextPrompt,
 	loadAdvisorTranscriptCosts,
 } from "./advisor";
-import { AsyncJobManager } from "./async";
+import { AsyncJobManager, RLM_JOB_POLICY, RLM_JOB_TYPE } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
+import type { AutonomousConfig } from "./autonomous/types";
 import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
@@ -74,6 +75,7 @@ import { disposeAllJuliaKernelSessions, disposeJuliaKernelSessionsByOwner } from
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
 import { disposeAllRubyKernelSessions, disposeRubyKernelSessionsByOwner } from "./eval/rb/executor";
+import { createRlmLifecycle } from "./eval/rlm-bridge";
 import { defaultEvalSessionId } from "./eval/session-id";
 import {
 	type CustomCommandsLoadResult,
@@ -96,6 +98,7 @@ import {
 	type ToolDefinition,
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
+import type { PythonSkillInstallationConfirmer } from "./extensibility/python-skill-trust";
 import {
 	loadSkills as loadSkillsInternal,
 	type Skill,
@@ -105,6 +108,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
+import { IrcBus } from "./irc/bus";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
@@ -120,14 +124,18 @@ import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } fr
 import { createSessionMemoryRuntimeContext, resolveMemoryBackend } from "./memory-backend";
 import { MEMORY_BACKEND_TOOL_NAMES } from "./memory-backend/tool-names";
 import type { MnemopiSessionState } from "./mnemopi/state";
+import type { PrimeIntegrationProviders } from "./prime-integration/contracts";
 import { selectPrompt } from "./prompts/prompt-locale";
 import { formatSkippedToolResult } from "./prompts/skipped-tool-result";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
 import mcpXdevGuidanceTemplateZh from "./prompts/system/mcp-xdev-guidance.zh-CN.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import lateDiagnosticTemplateZh from "./prompts/tools/lsp-late-diagnostic.zh-CN.md" with { type: "text" };
+import { loadHarnessState, mergeHarnessStates } from "./refinement/state";
+import type { HarnessState } from "./refinement/types";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
+import { RlmChildRegistry, type RlmSettlement } from "./registry/rlm-child-registry";
 import {
 	buildSecretObfuscator,
 	deobfuscateSessionContext,
@@ -180,6 +188,7 @@ import {
 	wrapStreamFnWithTaskConcurrency,
 } from "./task/request-concurrency";
 import { isScoutSpawnable } from "./task/spawn-policy";
+import { runStructuredSubagent } from "./task/structured-subagent";
 import type { StructuredSubagentSchemaMode } from "./task/types";
 import {
 	AUTO_THINKING,
@@ -400,6 +409,8 @@ export interface CreateAgentSessionOptions {
 	prewalk?: Prewalk;
 	/** Force read-only plan mode at start, auto-approve on the model's first resolve call, then switch to execute. */
 	planYolo?: PlanYolo;
+	/** Ephemeral autonomous configuration supplied by CLI/runtime callers. */
+	autonomousConfig?: AutonomousConfig;
 
 	/** Provider-facing system prompt override. Replaces the fully rendered default blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
@@ -425,6 +436,8 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
+	/** Live immediate-parent RLM registry for an actively spawned direct child. */
+	parentRlmRegistry?: RlmChildRegistry;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -476,6 +489,8 @@ export interface CreateAgentSessionOptions {
 
 	/** Skills. Default: discovered from multiple locations */
 	skills?: Skill[];
+	/** Confirms Python skill installation before the session prepares its dedicated venv. */
+	pythonSkillConfirmer?: PythonSkillInstallationConfirmer;
 	/** Rules. Default: discovered from multiple locations */
 	rules?: Rule[];
 	/** Context files (AGENTS.md content). Default: discovered walking up from cwd */
@@ -552,6 +567,10 @@ export interface CreateAgentSessionOptions {
 	 * top-level "Main" session, which has no parent.
 	 */
 	parentAgentId?: string;
+	/** This session's RLM registry directory, independent of an adopted parent ArtifactManager. @internal */
+	rlmArtifactsDir?: string;
+	/** Immediate parent's RLM registry directory for nested family resolution. @internal */
+	parentRlmArtifactsDir?: string;
 	/** Inherited eval executor session id for subagents sharing parent eval state. */
 	parentEvalSessionId?: string;
 	/** Root-session subagent request limiter inherited by nested and revived agents. */
@@ -881,6 +900,8 @@ export interface BuildSystemPromptOptions {
 	tools?: Tool[];
 	skills?: Skill[];
 	contextFiles?: Array<{ path: string; content: string }>;
+	/** Trusted Python-backed skill metadata rendered into the system prompt. */
+	pythonSkillMetadata?: unknown;
 	cwd?: string;
 	customPrompt?: string;
 	appendPrompt?: string;
@@ -919,6 +940,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		cwd: options.cwd,
 		customPrompt: options.customPrompt,
 		skills: options.skills,
+		pythonSkillMetadata: options.pythonSkillMetadata,
 		contextFiles: options.contextFiles,
 		appendSystemPrompt: options.appendPrompt,
 		inlineToolDescriptors: options.inlineToolDescriptors,
@@ -1779,6 +1801,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get skills() {
 				return session?.skills ?? skills;
 			},
+			get pythonSkills() {
+				return session?.getPythonSkillOptions();
+			},
+			getRlmLifecycle: () => session?.getRlmLifecycle(),
 			refreshSkills: () => session.refreshSkills(),
 			rules: allRules,
 			eventBus,
@@ -1815,6 +1841,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getPlanModeState: () => session?.getPlanModeState(),
+			getRefinementController: () => session?.getRefinementController(),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
@@ -1910,6 +1937,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// which collapses to the parent's dir for subagents (they adopt the
 		// parent's ArtifactManager) so one lookup hits everything.
 		const getArtifactsDir = () => sessionManager.getArtifactsDir();
+		const getRlmArtifactsDir = () =>
+			options.rlmArtifactsDir ?? sessionManager.getArtifactsDir() ?? path.join(agentDir, "rlm");
 		if (!options.parentTaskPrefix) {
 			setActiveSkills(skills);
 			// Include TTSR rules so `rule://<name>` can resolve them too. They are
@@ -1927,6 +1956,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			LocalProtocolHandler.setOverride(options.localProtocolOptions);
 		}
 		toolSession.getArtifactsDir = getArtifactsDir;
+		toolSession.getRlmArtifactsDir = getRlmArtifactsDir;
 		toolSession.localProtocolOptions = localProtocolOptions;
 		toolSession.agentOutputManager = new AgentOutputManager(
 			getArtifactsDir,
@@ -2996,6 +3026,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? `${appendPrompt}\n\n${options.appendSystemPrompt}`
 					: options.appendSystemPrompt;
 			}
+			const harnessState: HarnessState | undefined = settings.get("refinement.enabled")
+				? mergeHarnessStates(
+						await loadHarnessState(agentDir, "global"),
+						// Local harness state is session-scoped and lives beside the
+						// session artifacts; sessions without an artifact directory have
+						// no local harness and render only the global block.
+						sessionManager.getArtifactsDir()
+							? await loadHarnessState(sessionManager.getArtifactsDir()!, "local")
+							: undefined,
+					)
+				: undefined;
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
@@ -3005,6 +3046,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					: "",
 				resolvedCustomPrompt: options.customSystemPrompt,
 				skills: session?.skills ?? skills,
+				pythonSkillMetadata: session?.getPythonSkillPromptMetadata(),
 				contextFiles,
 				tools: promptTools,
 				toolNames,
@@ -3038,6 +3080,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				codexPromptMode: settings.get("providers.codex.nativePrompt"),
 				codexPromptProfile: promptModel?.codexPromptProfile,
 				progressUpdates: settings.get("communication.progressUpdates"),
+				harnessState,
 				nextSteps: settings.get("communication.nextSteps"),
 			});
 
@@ -3264,6 +3307,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
+			session.setPythonSkillConfirmer(
+				hasUI ? request => uiContext.confirm(request.title, request.message) : undefined,
+			);
 		};
 
 		const initialTools = initialToolNames
@@ -3502,6 +3548,162 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// A resumed session already has advisor turns on disk; without this the status
 		// line would restart its `(adv)` total at zero for the rest of the session.
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionManager.getSessionFile());
+		// Every live agent owns a distinct RLM lifecycle. In particular, a task or
+		// RLM child must never inherit the root bridge: its direct-child registry,
+		// owner-routed jobs, depth accounting, and family-message state all belong
+		// to the child's own agent id.
+		let rlmLifecycle: PrimeIntegrationProviders["rlm"];
+		let rlmRegistry: RlmChildRegistry | undefined;
+		const configuredRlmMaxDepth = settings.get("rlm.maxDepth");
+		// Zero disables the RLM surface; a negative depth is the documented
+		// unlimited sentinel and must still install a lifecycle.
+		if (configuredRlmMaxDepth !== 0) {
+			const artifactsDir = getRlmArtifactsDir() ?? path.join(agentDir, "rlm");
+			const parentSessionFile = sessionManager.getSessionFile();
+			const registry = await RlmChildRegistry.open({
+				parentAgentId: resolvedAgentId,
+				parentSessionFile: parentSessionFile ?? null,
+				artifactsDir,
+				cancelJob: (jobId, parentAgentId) =>
+					scopedAsyncJobManager?.cancel(jobId, { ownerId: parentAgentId }) ?? false,
+				isJobLive: jobId => scopedAsyncJobManager?.getJob(jobId) !== undefined,
+				rehydrateChild: child => {
+					if (!child.session_file) return Promise.resolve();
+					const terminalStatus =
+						child.run_status === "completed"
+							? "completed"
+							: child.run_status === "failed"
+								? "failed"
+								: child.run_status === "cancelled"
+									? "aborted"
+									: undefined;
+					agentRegistry.registerIfAvailable(
+						{
+							id: child.rlm_child_id,
+							displayName: child.name,
+							kind: "sub",
+							parentId: resolvedAgentId,
+							status: "parked",
+							terminalStatus,
+							session: null,
+							sessionFile: child.session_file,
+						},
+						null,
+					);
+					return Promise.resolve();
+				},
+				agentRegistry,
+				lifecycle: AgentLifecycleManager.global(),
+			});
+			rlmRegistry = registry;
+			// A nested RLM child keeps its own direct-child registry above, but its
+			// family view and first-reply marker belong to its parent's registry.
+			// Only the RLM bridge supplies parentRlmArtifactsDir, so ordinary task
+			// children never inherit a family registry accidentally. Admission is
+			// persisted before child creation; opening the known parent sidecar is
+			// therefore sufficient and avoids a publication-time reload race.
+			const parentRegistry =
+				options.parentRlmRegistry ??
+				(options.parentAgentId && options.parentAgentId !== resolvedAgentId && options.parentRlmArtifactsDir
+					? await RlmChildRegistry.open({
+							parentAgentId: options.parentAgentId,
+							parentSessionFile: null,
+							artifactsDir: options.parentRlmArtifactsDir,
+							agentRegistry,
+							lifecycle: AgentLifecycleManager.global(),
+						})
+					: undefined);
+			const maxTaskRecursionDepth = settings.get("task.maxRecursionDepth");
+			const maxDepth =
+				configuredRlmMaxDepth < 0
+					? maxTaskRecursionDepth !== undefined && maxTaskRecursionDepth >= 0
+						? maxTaskRecursionDepth
+						: -1
+					: maxTaskRecursionDepth !== undefined && maxTaskRecursionDepth >= 0
+						? Math.min(configuredRlmMaxDepth, maxTaskRecursionDepth)
+						: configuredRlmMaxDepth;
+			rlmLifecycle = createRlmLifecycle({
+				registry,
+				spawnSubagent: async (prompt, options) => {
+					const childSessionFile = path.join(options.sessionDir, `${options.rlmChildId}.jsonl`);
+					// Admission is durable before the job body reaches this callback.
+					// Publish running immediately before dispatch so message routing sees
+					// the reserved identity while the child is executing.
+					await options.publishRunning({
+						agentId: options.rlmChildId,
+						sessionFile: childSessionFile,
+					});
+					const execution = await runStructuredSubagent({
+						session: toolSession,
+						invocationKind: "task",
+						assignment: prompt,
+						artifactsDir: options.sessionDir,
+						sessionFile: childSessionFile,
+						parentRlmArtifactsDir: artifactsDir,
+						parentRlmRegistry: registry,
+						identity: { id: options.rlmChildId, label: options.name },
+						model: options.model,
+						keepAlive: true,
+						shareEvalSession: false,
+						retainArtifacts: true,
+						maxRuntimeMs: undefined,
+						signal: options.signal,
+					});
+					const child = execution.result;
+					const childError = child.abortReason?.trim() || child.error?.trim() || child.stderr.trim() || undefined;
+					const settlement: RlmSettlement = child.aborted
+						? { status: "cancelled", ...(childError === undefined ? {} : { error: childError }) }
+						: child.exitCode !== 0 || child.error !== undefined
+							? { status: "failed", ...(childError === undefined ? {} : { error: childError }) }
+							: { status: "completed" };
+					return {
+						agentId: child.id,
+						sessionDir: options.sessionDir,
+						sessionId: null,
+						sessionFile: childSessionFile,
+						model: child.resolvedModel ?? options.model,
+						settlement,
+					};
+				},
+				getDefaultModel: () => getActiveModelString(),
+				ownerAgentId: resolvedAgentId,
+				parentAgentId: options.parentAgentId,
+				currentDepth: taskDepth,
+				maxDepth,
+				listSiblings: parentRegistry ? () => parentRegistry.snapshotEntries() : undefined,
+				siblingRegistry: parentRegistry
+					? {
+							list: () => parentRegistry.snapshotEntries(),
+							get: childId => parentRegistry.snapshotEntries().find(entry => entry.rlm_child_id === childId),
+							awaitPublication: childId => parentRegistry.awaitPublication(childId),
+							refresh: () => parentRegistry.refresh(),
+						}
+					: undefined,
+				markParentReply: parentRegistry ? () => parentRegistry.markParentReply(resolvedAgentId) : undefined,
+				registerJob: scopedAsyncJobManager
+					? (label, run, jobOptions) =>
+							scopedAsyncJobManager!.register(RLM_JOB_TYPE, label, run, {
+								id: jobOptions.id,
+								ownerId: jobOptions.ownerId ?? resolvedAgentId,
+								agentId: jobOptions.id,
+								description: jobOptions.description,
+								completionDelivery: RLM_JOB_POLICY.completionDelivery,
+								queued: true,
+							})
+					: undefined,
+				sendToAgent: async (agentId, message, _mode) => {
+					const receipt = await IrcBus.global().send({
+						from: resolvedAgentId,
+						to: agentId,
+						body: message,
+					});
+					return receipt.outcome === "failed" ? "failed" : "delivered";
+				},
+			});
+			await registry.rehydrate({ retryTerminalNotices: false }).catch(error => {
+				logger.warn("RLM child registry rehydrate failed", { error: String(error) });
+			});
+		}
 		session = new AgentSession({
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
@@ -3513,6 +3715,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
 			initialRetryFallback,
 			prewalk: options.prewalk,
+			autonomousConfig: options.autonomousConfig,
+			primeProviders: { rlm: rlmLifecycle },
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
@@ -3545,6 +3749,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			customCommands: customCommandsResult.commands,
 			skills,
 			skillWarnings,
+			pythonSkillConfirmer: options.pythonSkillConfirmer,
 			skillsReloadable: options.skills === undefined,
 			skillsSettings: settings.getGroup("skills"),
 			modelRegistry,
@@ -3651,6 +3856,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
+		if (rlmRegistry) {
+			void rlmRegistry.retryPendingTerminalNotices().catch(error => {
+				logger.warn("RLM terminal notice retry failed", { error: String(error) });
+			});
+		}
 		// MCP notification bridge cleanup — assigned when the bridge is wired below,
 		// invoked from the dispose wrapper AND registered as a postmortem so both
 		// explicit-dispose (SDK embedders that reuse the process across sessions) and
@@ -3688,6 +3898,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					// begins — the lifecycle await below opens an async gap before
 					// AgentSession.dispose() would otherwise set its guards.
 					session.beginDispose();
+					if (rlmRegistry) {
+						await rlmRegistry.disposeDirectChildren().catch(error => {
+							logger.warn("RLM direct child disposal failed", { error: String(error) });
+						});
+					}
 					if (agentKind === "main" && options.ownsAgentLifecycle !== false) {
 						// The primary top-level runtime owns process-global park timers,
 						// adopted subagent sessions, and revivers. Additional interactive

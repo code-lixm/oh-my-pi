@@ -105,6 +105,12 @@ function parseMaxTimeSeconds(value: string): number {
 	);
 }
 
+function parsePositiveInteger(value: string, flag: string): number {
+	const parsed = Number(value);
+	if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+	throw new CliUsageError(`Invalid ${flag} value: ${JSON.stringify(value)}. Expected a positive integer.`);
+}
+
 /**
  * Setters for flags with string values. Most built-ins consume the next argv
  * token even when it starts with `-`; flags listed in
@@ -152,6 +158,17 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--max-time": (result, value) => {
 		result.maxTime = parseMaxTimeSeconds(value);
+	},
+	"--autonomous-gate": (result, value) => {
+		const command = value.trim();
+		if (!command) throw new CliUsageError("--autonomous-gate requires a non-empty command");
+		result.autonomousGates = [...(result.autonomousGates ?? []), command];
+	},
+	"--autonomous-max-turns": (result, value) => {
+		result.autonomousMaxTurns = parsePositiveInteger(value, "--autonomous-max-turns");
+	},
+	"--autonomous-max-tokens": (result, value) => {
+		result.autonomousMaxTokens = parsePositiveInteger(value, "--autonomous-max-tokens");
 	},
 	"--service-tier": (result, value) => {
 		if (!isServiceTierOpenAISettingValue(value)) {
@@ -312,6 +329,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-pty",
 	"--hide-thinking",
 	"--advisor",
+	"--autonomous",
 	"--prewalk",
 	"--no-prewalk",
 	"--plan-yolo",

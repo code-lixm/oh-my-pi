@@ -23,6 +23,8 @@ import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cl
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { runCliRuntime } from "./cli-runtime";
 import { CODEGRAPH_WORKER_ARG } from "./codegraph/worker-protocol";
+import { smokeTestDaemonSupervisor, startDaemonSupervisorFromEnvironment } from "./daemon/supervisor";
+import { startDaemonWorkerFromEnvironment } from "./daemon/worker";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
@@ -98,6 +100,7 @@ async function runSmokeTest(): Promise<void> {
 	await smokeTestTtsWorker();
 	await smokeTestMnemopiEmbedWorker();
 	await smokeTestDaemonBroker();
+	await smokeTestDaemonSupervisor();
 	await smokeTestLspMux();
 	await smokeTestTerminalOutputWorker();
 	process.stdout.write("smoke-test: ok\n");
@@ -111,6 +114,8 @@ const JS_EVAL_PROCESS_ARG = "__omp_worker_js_eval_process";
 const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+const DAEMON_WORKER_ARG = "__omp_worker_daemon";
+const DAEMON_SUPERVISOR_ARG = "__omp_worker_daemon_supervisor";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -158,6 +163,14 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === COMPUTER_WORKER_ARG) {
 		if (parentPort) installWorkerInbox(parentPort);
 		startComputerWorker();
+		return true;
+	}
+	if (arg === DAEMON_WORKER_ARG) {
+		await startDaemonWorkerFromEnvironment();
+		return true;
+	}
+	if (arg === DAEMON_SUPERVISOR_ARG) {
+		await startDaemonSupervisorFromEnvironment();
 		return true;
 	}
 	if (arg === JS_EVAL_WORKER_ARG) {

@@ -919,6 +919,27 @@ export async function buildSessionOptions(
 		autoApprove: parsed.autoApprove ?? false,
 	};
 	const restoringSession = Boolean(parsed.continue || parsed.resume || isForeignSessionImport(parsed));
+	if (restoringSession) {
+		options.autonomousConfig = {
+			...(parsed.autonomous !== undefined ? { enabled: parsed.autonomous } : {}),
+			...(parsed.autonomousMaxTurns !== undefined ? { maxTurns: parsed.autonomousMaxTurns } : {}),
+			...(parsed.autonomousMaxTokens !== undefined ? { maxTokens: parsed.autonomousMaxTokens } : {}),
+			...(parsed.autonomousGates !== undefined ? { gates: { commands: [...parsed.autonomousGates] } } : {}),
+		};
+	} else {
+		options.autonomousConfig = {
+			enabled: parsed.autonomous ?? activeSettings.get("autonomous.enabled"),
+			maxContinuations: activeSettings.get("autonomous.maxContinuations"),
+			maxTurns: parsed.autonomousMaxTurns ?? activeSettings.get("autonomous.maxTurns"),
+			maxTokens: parsed.autonomousMaxTokens ?? activeSettings.get("autonomous.maxTokens"),
+			timeoutMs: activeSettings.get("autonomous.timeoutMs"),
+			gates: {
+				commands: parsed.autonomousGates ?? [...activeSettings.get("autonomous.gate.commands")],
+				maxRetries: activeSettings.get("autonomous.gate.maxRetries"),
+				timeoutMs: activeSettings.get("autonomous.gate.timeoutMs"),
+			},
+		};
+	}
 	if (parsed.serviceTier !== undefined) {
 		options.openAIServiceTier = serviceTierSettingToTier(parsed.serviceTier) ?? null;
 	}

@@ -100,6 +100,9 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { type AsyncJob, AsyncJobManager } from "../async";
+import { createAutonomousProvider } from "../autonomous/continuation-hook";
+import { AutonomousController, createAutonomousRuntimeState, isAutonomousRuntimeState } from "../autonomous/controller";
+import type { AutonomousConfig, AutonomousRuntimeState } from "../autonomous/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
@@ -109,7 +112,9 @@ import type { Settings, SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged, onModelRolesChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
-import type { PythonResult } from "../eval/py/executor";
+import { disposeKernelSessionsByOwner, type PythonResult } from "../eval/py/executor";
+import { ensurePythonSkillVenv, readPythonSkillDependencies } from "../eval/py/skill-bootstrap";
+import type { PythonSkillStartOptions } from "../eval/py/skill-preload";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -138,6 +143,16 @@ import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { HookCommandContext } from "../extensibility/hooks/types";
+import {
+	confirmSkillInstallation,
+	type PythonSkillInstallationConfirmer,
+	type PythonSkillTrustMode,
+} from "../extensibility/python-skill-trust";
+import {
+	discoverPythonSkillsFromSkills,
+	type PythonBackedSkill,
+	type PythonSkillMetadata,
+} from "../extensibility/python-skills";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
@@ -159,6 +174,11 @@ import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
 import type { PlanModeState } from "../plan-mode/state";
+import type {
+	AutonomousContinuationProvider,
+	RefinementController,
+	RlmChildLifecycle,
+} from "../prime-integration/contracts";
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalModeContextPromptZh from "../prompts/goals/goal-mode-context.zh-CN.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
@@ -185,8 +205,18 @@ import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.
 import sideChannelNoToolsReminderZh from "../prompts/system/side-channel-no-tools.zh-CN.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import vibeModeActivePromptZh from "../prompts/system/vibe-mode-active.zh-CN.md" with { type: "text" };
+import { createRefinementController } from "../refinement/controller";
+import { planRefinement, reviewAutoRefinement } from "../refinement/refinement";
 import type { AgentActivityPhase, AgentActivityState } from "../registry/agent-activity";
 import { AgentRegistry } from "../registry/agent-registry";
+import { normalizeHeartbeatDeliveryMode, normalizeHeartbeatSchedule } from "../scheduling/parser";
+import { SessionScheduleRuntime } from "../scheduling/runtime";
+import {
+	SCHEDULED_JOBS_FILENAME,
+	type ScheduleDeliveryReceipt,
+	type ScheduleSessionBinding,
+	type ScheduleSource,
+} from "../scheduling/types";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -386,6 +416,7 @@ export * from "./agent-session-types";
 export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+const AUTONOMOUS_STATE_CUSTOM_TYPE = "omp.autonomous-state";
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
@@ -549,6 +580,17 @@ export class AgentSession {
 	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
+	#autonomousController: AutonomousController | undefined;
+	#autonomousProvider: AutonomousContinuationProvider | undefined;
+	#autonomousConfig: AutonomousConfig | undefined;
+	#scheduleRuntime: SessionScheduleRuntime | undefined;
+	#refinementController: RefinementController | undefined;
+	#pythonSkillOptions: PythonSkillStartOptions | undefined;
+	#pythonSkillPromptMetadata: PythonBackedSkill[] = [];
+	#pythonSkillConfirmer: PythonSkillInstallationConfirmer | undefined;
+	#pythonSkillsReady: Promise<void> | undefined;
+	#pythonSkillsGeneration = 0;
+	#rlmLifecycle: RlmChildLifecycle | undefined;
 	readonly #advisors: SessionAdvisors;
 	#goalTurnCounter = 0;
 	#planReferenceSent = false;
@@ -1337,6 +1379,7 @@ export class AgentSession {
 				this.agent.appendMessage(message);
 				this.sessionManager.appendMessage(message);
 			},
+			getPythonSkillOptions: () => this.getPythonSkillOptions(),
 		};
 		this.#eval = new EvalRunner(evalHost, {
 			kernelOwnerId: config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`,
@@ -1657,6 +1700,7 @@ export class AgentSession {
 			skillWarnings: config.skillWarnings,
 			skillsSettings: config.skillsSettings,
 			skillsReloadable: config.skillsReloadable,
+			reloadPythonSkills: skills => this.#reloadPythonSkills(skills),
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
@@ -1706,7 +1750,69 @@ export class AgentSession {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#autonomousConfig = config.autonomousConfig;
+		this.#pythonSkillConfirmer = config.pythonSkillConfirmer;
+		this.#rlmLifecycle = config.primeProviders?.rlm;
+		if (this.#agentKind === "main") {
+			const autonomousState = this.#resolveAutonomousState();
+			this.#autonomousController = new AutonomousController(autonomousState, state => {
+				this.sessionManager.appendCustomEntry(AUTONOMOUS_STATE_CUSTOM_TYPE, state);
+			});
+			this.#autonomousProvider = createAutonomousProvider(this.#autonomousController);
+
+			this.#scheduleRuntime = new SessionScheduleRuntime(this, {
+				heartbeatDefaults: {
+					defaultInterval: normalizeHeartbeatSchedule(this.settings.get("heartbeat.defaultInterval")),
+					defaultDeliveryMode: normalizeHeartbeatDeliveryMode(this.settings.get("heartbeat.defaultDeliveryMode")),
+				},
+				scheduleDefaultDeliveryMode: normalizeHeartbeatDeliveryMode(
+					this.settings.get("schedule.defaultDeliveryMode"),
+				),
+				isSourceEnabled: (source: ScheduleSource) =>
+					source === "cron" ? this.settings.get("schedule.enabled") : this.settings.get("heartbeat.enabled"),
+			});
+			void this.#scheduleRuntime.ready().catch(error => {
+				logger.warn("Failed to start session scheduling runtime", { error: String(error) });
+			});
+		}
+		if (this.#agentKind === "main" && config.memoryAgentDir) {
+			this.#refinementController = createRefinementController({
+				agentDir: config.memoryAgentDir,
+				// Local harness state is scoped to persisted session artifacts.
+				getLocalHarnessDir: () => this.sessionManager.getArtifactsDir() ?? undefined,
+				getMessages: () => this.agent.state.messages,
+				planWithLLM: async ({ messages, state, history, instructions, scope }) => {
+					const model = this.model;
+					if (!model) throw new Error("No active model is available for refinement");
+					const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+					if (!apiKey) throw new Error(`No API key found for ${model.provider}`);
+					return planRefinement(messages, state, history, model, apiKey, { instructions, scope });
+				},
+				reviewWithLLM: async ({ messages, state, history, reason, turnsSinceLastReview }) => {
+					const model = this.model;
+					if (!model) throw new Error("No active model is available for refinement review");
+					const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+					if (!apiKey) throw new Error(`No API key found for ${model.provider}`);
+					return reviewAutoRefinement(messages, state, history, model, apiKey, {
+						reason,
+						turnsSinceLastReview,
+					});
+				},
+				waitForIdle: () => this.waitForIdle(),
+				refreshBaseSystemPrompt: () => this.refreshBaseSystemPrompt(),
+				appendCustomEntry: (type, data) => this.sessionManager.appendCustomEntry(type, data),
+				isEnabled: () => this.settings.get("refinement.enabled"),
+				getAutoRefineTurns: () => this.settings.get("refinement.autoRefineTurns"),
+				getAutoRefineCooldownMs: () => this.settings.get("refinement.autoRefineCooldownMs"),
+				logWarning: (message, error) => logger.warn(message, { error: String(error) }),
+				disconnectFromAgent: () => this.#disconnectFromAgent(),
+				reconnectToAgent: () => this.#reconnectToAgent(),
+			});
+		}
 		this.#publishActivity(true);
+		if (this.settings.get("pythonSkills.trust") === "auto" || this.#pythonSkillConfirmer) {
+			void this.#ensurePythonSkillOptions();
+		}
 		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
@@ -1901,6 +2007,13 @@ export class AgentSession {
 			syncTodoPhasesFromBranch: () => this.#todo.syncFromBranch(),
 			resetAdvisorRuntimes: () => this.#advisors.resetAllRuntimes(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
+			onCompactionApplied: () => {
+				// Compaction rewrote the trajectory; the continual harness re-runs its
+				// gate on the new context (cooldown still applies inside the controller).
+				void this.#refinementController?.onCompaction().catch(error => {
+					logger.warn("Continual-harness review after compaction failed", { error: String(error) });
+				});
+			},
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),
@@ -3077,8 +3190,9 @@ export class AgentSession {
 			this.#streamingEditGuard.reset();
 			this.#ttsr.onTurnStart();
 		}
-
-		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
+		if (event.type === "turn_end") {
+			this.#ttsr.onTurnEnd();
+		}
 		// Finalize the tool-choice queue's in-flight yield after tools have executed.
 		// This must happen at turn_end (not message_end) because onInvoked handlers
 		// run during tool execution, which happens between message_end and turn_end.
@@ -3583,6 +3697,10 @@ export class AgentSession {
 				return;
 			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
+			if (!sessionStopWillContinue) {
+				await this.#refinementController?.drainScheduled();
+				await this.#refinementController?.onTurnEnd(this);
+			}
 			await emitAgentEndNotification(sessionStopWillContinue ? { willContinue: true } : undefined);
 		}
 	};
@@ -4047,25 +4165,45 @@ export class AgentSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (this.#agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) {
+		if (this.#agentKind === "sub") {
+			return false;
+		}
+		const hasExtensionHandlers = this.#extensionRunner?.hasHandlers("session_stop") ?? false;
+		const hasAutonomousProvider = this.#autonomousProvider?.state?.enabled ?? false;
+		if (!hasExtensionHandlers && !hasAutonomousProvider) {
 			return false;
 		}
 		const generation = this.#promptGeneration;
-		const result = await this.#extensionRunner.emitSessionStop({
-			messages,
-			turn_id: Math.max(0, this.#turnIndex - 1),
-			last_assistant_message: lastAssistantMessage,
-			session_id: this.sessionId,
-			session_file: this.sessionFile,
-			stop_hook_active: this.#sessionStopHookActive,
-			signal: this.#postPromptTasksAbortController.signal,
-		});
+		const result = hasExtensionHandlers
+			? await this.#extensionRunner!.emitSessionStop({
+					messages,
+					turn_id: Math.max(0, this.#turnIndex - 1),
+					last_assistant_message: lastAssistantMessage,
+					session_id: this.sessionId,
+					session_file: this.sessionFile,
+					stop_hook_active: this.#sessionStopHookActive,
+					signal: this.#postPromptTasksAbortController.signal,
+				})
+			: undefined;
 		if (this.#promptGeneration !== generation || this.#abortInProgress || this.#isDisposed) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
 		const additionalContext = this.#sessionStopContinuationContext(result);
-		if (!additionalContext) {
+		let autonomousContext: string | undefined;
+		const goalOwnsContinuation =
+			this.#goalModeState !== undefined &&
+			this.#goalModeState.goal.status !== "complete" &&
+			this.#goalModeState.goal.status !== "dropped";
+		if (!additionalContext && !goalOwnsContinuation && this.#autonomousProvider?.state?.enabled) {
+			const decision = await this.#autonomousProvider.checkContinuation(lastAssistantMessage, {
+				cwd: this.sessionManager?.getCwd() ?? undefined,
+				signal: this.#postPromptTasksAbortController.signal,
+			});
+			autonomousContext = decision.shouldContinue ? decision.continuationPrompt : undefined;
+		}
+		const effectiveContext = additionalContext ?? autonomousContext;
+		if (!effectiveContext) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
@@ -4083,7 +4221,7 @@ export class AgentSession {
 			{
 				role: "custom",
 				customType: "session-stop-continuation",
-				content: additionalContext,
+				content: effectiveContext,
 				display: false,
 				attribution: "agent",
 				timestamp: Date.now(),
@@ -4421,6 +4559,8 @@ export class AgentSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#scheduleRuntime?.dispose();
+		this.#refinementController?.clearScheduled();
 		this.#recovery.clearActiveRetryFallback();
 		this.#abortRunnableTurnWait(new Error("Session disposed"));
 		this.#queuedMessageDrainBlocked = false;
@@ -4768,6 +4908,16 @@ export class AgentSession {
 		this.#usageFallbackConfirmer = confirmer;
 	}
 
+	/**
+	 * Install the interactive decision surface for `pythonSkills.trust =
+	 * "prompt"`. Sessions without a confirmer fail closed — no package is
+	 * installed without explicit confirmation.
+	 */
+	setPythonSkillConfirmer(confirmer: PythonSkillInstallationConfirmer | undefined): void {
+		this.#pythonSkillConfirmer = confirmer;
+		if (confirmer) void this.#ensurePythonSkillOptions();
+	}
+
 	#allowQueuedMessageDrainRetry(): void {
 		this.#queuedMessageDrainBlocked = false;
 	}
@@ -4857,6 +5007,25 @@ export class AgentSession {
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming || this.#promptInFlightCount > 0;
+	}
+
+	/** True only when an idle scheduled delivery can safely initiate a new turn. */
+	get isReadyForScheduledDelivery(): boolean {
+		return (
+			!this.#isDisposed &&
+			!this.#abortInProgress &&
+			!this.isStreaming &&
+			!this.isCompacting &&
+			!this.isGeneratingHandoff &&
+			!this.isRetrying &&
+			!this.isBashRunning &&
+			!this.isEvalRunning &&
+			!this.hasPostPromptWork &&
+			!this.hasPendingBashMessages &&
+			!this.hasPendingPythonMessages &&
+			!this.agent.hasQueuedMessages() &&
+			this.#pendingNextTurnMessages.length === 0
+		);
 	}
 
 	get isAborting(): boolean {
@@ -5272,6 +5441,7 @@ export class AgentSession {
 		} else {
 			this.#planModeReminderCount = 0;
 			this.#planModeReminderAwaitingProgress = false;
+
 			// Drop any unconsumed forced decision so a post-plan execution turn
 			// does not inherit a stale `required` tool choice.
 			this.#toolChoiceQueue.removeByLabel("plan-mode-decision");
@@ -5302,6 +5472,238 @@ export class AgentSession {
 
 	get goalRuntime(): GoalRuntime {
 		return this.#goalRuntime;
+	}
+
+	getAutonomousController(): AutonomousController | undefined {
+		return this.#autonomousController;
+	}
+
+	getScheduleRuntime(): SessionScheduleRuntime | undefined {
+		return this.#scheduleRuntime;
+	}
+
+	/**
+	 * Python skill startup options once the dedicated skill venv is ready.
+	 * A reload may replace the active skill generation while preparation awaits;
+	 * retry until the returned options belong to the current generation.
+	 */
+	async getPythonSkillOptions(): Promise<PythonSkillStartOptions | undefined> {
+		while (true) {
+			const generation = this.#pythonSkillsGeneration;
+			await this.#ensurePythonSkillOptions();
+			if (generation === this.#pythonSkillsGeneration) return this.#pythonSkillOptions;
+		}
+	}
+
+	/** Python skill metadata rendered only after approved packages install successfully. */
+	getPythonSkillPromptMetadata(): readonly PythonBackedSkill[] {
+		return [...this.#pythonSkillPromptMetadata];
+	}
+
+	/** RLM child lifecycle injected by the SDK for this session. */
+	getRlmLifecycle(): RlmChildLifecycle | undefined {
+		return this.#rlmLifecycle;
+	}
+
+	#ensurePythonSkillOptions(): Promise<void> {
+		const existing = this.#pythonSkillsReady;
+		if (existing) return existing;
+		const generation = this.#pythonSkillsGeneration;
+		const task = this.#preparePythonSkillOptions([...this.#tools.skills], generation, true).catch(error => {
+			if (this.#canCommitPythonSkillsGeneration(generation)) {
+				logger.warn("Failed to prepare Python skill options", { error: String(error) });
+			}
+		});
+		if (generation === this.#pythonSkillsGeneration) this.#pythonSkillsReady = task;
+		return task;
+	}
+
+	/** Replace Python-skill state after SessionTools has atomically published a skill snapshot. */
+	async #reloadPythonSkills(skills: readonly Skill[]): Promise<void> {
+		const generation = this.#pythonSkillsGeneration + 1;
+		this.#pythonSkillsGeneration = generation;
+		this.#pythonSkillsReady = undefined;
+		this.#pythonSkillOptions = undefined;
+		this.#pythonSkillPromptMetadata = [];
+		const task = (async () => {
+			try {
+				await disposeKernelSessionsByOwner(this.#eval.getKernelOwnerId());
+			} catch (error) {
+				logger.warn("Failed to dispose Python skill kernels during reload", { error: String(error) });
+			}
+			if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+			await this.#preparePythonSkillOptions([...skills], generation, false);
+		})().catch(error => {
+			if (this.#canCommitPythonSkillsGeneration(generation)) {
+				logger.warn("Failed to rebuild Python skill options after reload", { error: String(error) });
+			}
+		});
+		this.#pythonSkillsReady = task;
+		await task;
+	}
+
+	/** Generation-CAS boundary for asynchronous discovery, trust, and venv work. */
+	#canCommitPythonSkillsGeneration(generation: number): boolean {
+		return !this.#isDisposed && generation === this.#pythonSkillsGeneration;
+	}
+
+	/**
+	 * Discover Python-backed skills, enforce the trust boundary, install them
+	 * into the dedicated skill venv, and expose validated metadata only after
+	 * installation succeeds. Failures degrade to Markdown skills per package.
+	 */
+	async #preparePythonSkillOptions(
+		skills: readonly Skill[],
+		generation: number,
+		refreshPrompt: boolean,
+	): Promise<void> {
+		if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+		if (this.settings.get("pythonSkills.enabled") !== true || skills.length === 0) return;
+		const trustMode = this.settings.get("pythonSkills.trust") as PythonSkillTrustMode;
+		if (trustMode === "off") return;
+		const discovered = await discoverPythonSkillsFromSkills([...skills]);
+		if (!this.#canCommitPythonSkillsGeneration(generation) || discovered.skills.length === 0) return;
+		const approved: PythonSkillMetadata[] = [];
+		for (const skill of discovered.skills) {
+			if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+			try {
+				const dependencies = await readPythonSkillDependencies(skill.python);
+				if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+				const confirmed = await confirmSkillInstallation(
+					skill,
+					dependencies,
+					trustMode,
+					this.#pythonSkillConfirmer,
+				);
+				if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+				if (confirmed) approved.push(skill.python);
+			} catch (error) {
+				logger.warn("Failed to inspect or confirm Python skill", {
+					skill: skill.name,
+					packagePath: skill.python.packagePath,
+					error: String(error),
+				});
+			}
+		}
+		if (approved.length === 0 || !this.#canCommitPythonSkillsGeneration(generation)) return;
+		const runtimeId = `python-skills:${generation}:${Snowflake.next()}`;
+		const installed = await ensurePythonSkillVenv(approved, {
+			onProgress: message => logger.debug("Python skill bootstrap", { message }),
+			signal: this.#postPromptTasksAbortController.signal,
+		});
+		if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+		if (installed.installedSkills.length === 0 || !installed.pythonPath) {
+			if (installed.installedSkills.length > 0) {
+				logger.warn("Python skill bootstrap returned no usable interpreter");
+			}
+			return;
+		}
+		const installedKeys = new Set(
+			installed.installedSkills.map(skill => `${skill.importName}\u0000${skill.packagePath}`),
+		);
+		const skillNamesByKey = new Map(
+			discovered.skills.map(skill => [`${skill.python.importName}\u0000${skill.python.packagePath}`, skill.name]),
+		);
+		const options: PythonSkillStartOptions = {
+			pythonPath: installed.pythonPath,
+			runtimeId,
+			metadata: installed.installedSkills.map(skill => ({
+				name: skillNamesByKey.get(`${skill.importName}\u0000${skill.packagePath}`),
+				importName: skill.importName,
+				packagePath: skill.packagePath,
+			})),
+		};
+		const promptMetadata = discovered.skills.filter(skill =>
+			installedKeys.has(`${skill.python.importName}\u0000${skill.python.packagePath}`),
+		);
+		if (!this.#canCommitPythonSkillsGeneration(generation)) return;
+		this.#pythonSkillOptions = options;
+		this.#pythonSkillPromptMetadata = promptMetadata;
+		if (installed.warnings.length > 0) {
+			logger.warn("Python skill bootstrap completed with warnings", {
+				warnings: installed.warnings.map(warning => warning.message),
+			});
+		}
+		if (refreshPrompt && promptMetadata.length > 0 && this.#canCommitPythonSkillsGeneration(generation)) {
+			await this.refreshBaseSystemPrompt();
+		}
+	}
+	getRefinementController(): RefinementController | undefined {
+		return this.#refinementController;
+	}
+
+	#configuredAutonomousState(): AutonomousRuntimeState {
+		const configured = this.#autonomousConfig;
+		const config: AutonomousConfig = {
+			enabled: configured?.enabled ?? this.settings.get("autonomous.enabled"),
+			maxContinuations: configured?.maxContinuations ?? this.settings.get("autonomous.maxContinuations"),
+			maxTurns: configured?.maxTurns ?? this.settings.get("autonomous.maxTurns"),
+			maxTokens: configured?.maxTokens ?? this.settings.get("autonomous.maxTokens"),
+			timeoutMs: configured?.timeoutMs ?? this.settings.get("autonomous.timeoutMs"),
+			gates: {
+				commands: configured?.gates?.commands ?? [...this.settings.get("autonomous.gate.commands")],
+				maxRetries: configured?.gates?.maxRetries ?? this.settings.get("autonomous.gate.maxRetries"),
+				timeoutMs: configured?.gates?.timeoutMs ?? this.settings.get("autonomous.gate.timeoutMs"),
+			},
+		};
+		return createAutonomousRuntimeState(config);
+	}
+
+	#resolveAutonomousState(): AutonomousRuntimeState {
+		const durable = this.#loadAutonomousState();
+		return durable ? this.#applyAutonomousConfigOverrides(durable) : this.#configuredAutonomousState();
+	}
+
+	#applyAutonomousConfigOverrides(durable: AutonomousRuntimeState): AutonomousRuntimeState {
+		const configured = this.#autonomousConfig;
+		if (!configured) return durable;
+		return {
+			...durable,
+			...(configured.enabled !== undefined ? { enabled: configured.enabled } : {}),
+			limits: {
+				...durable.limits,
+				...(configured.maxContinuations !== undefined ? { maxContinuations: configured.maxContinuations } : {}),
+				...(configured.maxTurns !== undefined ? { maxTurns: configured.maxTurns } : {}),
+				...(configured.maxTokens !== undefined ? { maxTokens: configured.maxTokens } : {}),
+				...(configured.timeoutMs !== undefined ? { timeoutMs: configured.timeoutMs } : {}),
+			},
+			...(configured.continuationPrompt !== undefined ? { continuationPrompt: configured.continuationPrompt } : {}),
+			gates: {
+				...durable.gates,
+				...(configured.gates?.commands !== undefined ? { commands: [...configured.gates.commands] } : {}),
+				...(configured.gates?.maxRetries !== undefined ? { maxRetries: configured.gates.maxRetries } : {}),
+				...(configured.gates?.timeoutMs !== undefined ? { timeoutMs: configured.gates.timeoutMs } : {}),
+			},
+		};
+	}
+
+	#loadAutonomousState(): AutonomousRuntimeState | undefined {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (
+				entry?.type === "custom" &&
+				entry.customType === AUTONOMOUS_STATE_CUSTOM_TYPE &&
+				isAutonomousRuntimeState(entry.data)
+			) {
+				return entry.data;
+			}
+		}
+		return undefined;
+	}
+
+	async #rebindPrimeSessionRuntimes(): Promise<void> {
+		this.#autonomousController?.replaceState(this.#resolveAutonomousState());
+		try {
+			await this.#scheduleRuntime?.rebind();
+		} catch (error) {
+			logger.warn("Failed to rebind session scheduling runtime", { error: String(error) });
+		}
+	}
+
+	#stopPrimeSessionRuntimes(): void {
+		this.#refinementController?.clearScheduled();
+		this.#scheduleRuntime?.stopForTransition();
 	}
 
 	markPlanReferenceSent(): void {
@@ -6649,8 +7051,17 @@ export class AgentSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
+			expectedScheduleBinding?: ScheduleSessionBinding;
+			scheduleReceipt?: ScheduleDeliveryReceipt;
 		},
 	): Promise<boolean> {
+		if (
+			options?.expectedScheduleBinding &&
+			!this.#scheduleRuntime?.isCurrentBinding(options.expectedScheduleBinding)
+		) {
+			if (options.scheduleReceipt) options.scheduleReceipt.outcome = "skipped";
+			return false;
+		}
 		const normalizedPayload = normalizeCustomMessagePayload<T>(message);
 		const details =
 			options?.queueChipText && options.deliverAs !== "nextTurn"
@@ -6671,6 +7082,13 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (
+			options?.expectedScheduleBinding &&
+			!this.#scheduleRuntime?.isCurrentBinding(options.expectedScheduleBinding)
+		) {
+			if (options.scheduleReceipt) options.scheduleReceipt.outcome = "skipped";
+			return false;
+		}
 		if (this.isStreaming) {
 			if (options?.deliverAs === "nextTurn") {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);
@@ -7086,18 +7504,24 @@ export class AgentSession {
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
 		this.#assertVibeSessionTransitionAllowed("start a new session");
+		this.#stopPrimeSessionRuntimes();
 		const previousSessionFile = this.sessionFile;
 
-		// Emit session_before_switch event with reason "new" (can be cancelled)
-		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_switch",
-				reason: "new",
-			})) as SessionBeforeSwitchResult | undefined;
-
-			if (result?.cancel) {
-				return false;
+		try {
+			// Emit session_before_switch event with reason "new" (can be cancelled)
+			if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
+				const result = (await this.#extensionRunner.emit({
+					type: "session_before_switch",
+					reason: "new",
+				})) as SessionBeforeSwitchResult | undefined;
+				if (result?.cancel) {
+					await this.#rebindPrimeSessionRuntimes();
+					return false;
+				}
 			}
+		} catch (error) {
+			await this.#rebindPrimeSessionRuntimes();
+			throw error;
 		}
 
 		this.#nextStepOffers.invalidate();
@@ -7177,6 +7601,7 @@ export class AgentSession {
 			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 			return true;
 		} finally {
+			await this.#rebindPrimeSessionRuntimes();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();
@@ -7200,17 +7625,23 @@ export class AgentSession {
 	 */
 	async fork(): Promise<boolean> {
 		this.#assertVibeSessionTransitionAllowed("fork the session");
+		this.#stopPrimeSessionRuntimes();
 		const previousSessionFile = this.sessionFile;
 
-		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_switch",
-				reason: "fork",
-			})) as SessionBeforeSwitchResult | undefined;
-
-			if (result?.cancel) {
-				return false;
+		try {
+			if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
+				const result = (await this.#extensionRunner.emit({
+					type: "session_before_switch",
+					reason: "fork",
+				})) as SessionBeforeSwitchResult | undefined;
+				if (result?.cancel) {
+					await this.#rebindPrimeSessionRuntimes();
+					return false;
+				}
 			}
+		} catch (error) {
+			await this.#rebindPrimeSessionRuntimes();
+			throw error;
 		}
 
 		this.#recordSessionRunStop("session_fork");
@@ -7248,6 +7679,7 @@ export class AgentSession {
 				const oldDirStat = await fs.promises.stat(oldArtifactDir);
 				if (oldDirStat.isDirectory()) {
 					await fs.promises.cp(oldArtifactDir, newArtifactDir, { recursive: true });
+					await fs.promises.rm(path.join(newArtifactDir, SCHEDULED_JOBS_FILENAME), { force: true });
 				}
 			} catch (err) {
 				if (!isEnoent(err)) {
@@ -7280,6 +7712,7 @@ export class AgentSession {
 			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 			return true;
 		} finally {
+			await this.#rebindPrimeSessionRuntimes();
 			if (advisorRecordersDetached) this.#advisors.reattachRecorderFeeds();
 		}
 	}
@@ -7287,7 +7720,12 @@ export class AgentSession {
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
-		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		this.#stopPrimeSessionRuntimes();
+		try {
+			await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		} finally {
+			await this.#rebindPrimeSessionRuntimes();
+		}
 	}
 
 	// =========================================================================
@@ -8175,17 +8613,23 @@ export class AgentSession {
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
-		// Emit session_before_switch event (can be cancelled)
-		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_switch",
-				reason: "resume",
-				targetSessionFile: sessionPath,
-			})) as SessionBeforeSwitchResult | undefined;
-
-			if (result?.cancel) {
-				return false;
+		this.#stopPrimeSessionRuntimes();
+		try {
+			// Emit session_before_switch event (can be cancelled)
+			if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
+				const result = (await this.#extensionRunner.emit({
+					type: "session_before_switch",
+					reason: "resume",
+					targetSessionFile: sessionPath,
+				})) as SessionBeforeSwitchResult | undefined;
+				if (result?.cancel) {
+					await this.#rebindPrimeSessionRuntimes();
+					return false;
+				}
 			}
+		} catch (error) {
+			await this.#rebindPrimeSessionRuntimes();
+			throw error;
 		}
 		this.#nextStepOffers.invalidate();
 
@@ -8411,6 +8855,7 @@ export class AgentSession {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
+			await this.#rebindPrimeSessionRuntimes();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -8469,6 +8914,7 @@ export class AgentSession {
 				});
 			}
 			this.#bash.finishSessionTransition(bashTransition, false);
+			await this.#rebindPrimeSessionRuntimes();
 			throw error;
 		}
 	}
@@ -8529,6 +8975,7 @@ export class AgentSession {
 		this.#cancelOwnAsyncJobs();
 		this.#abortAutolearnCapture();
 		await this.#drainAutolearnCapture();
+		this.#stopPrimeSessionRuntimes();
 
 		let sessionTransitioned = false;
 		let advisorRecordersDetached = false;
@@ -8582,6 +9029,7 @@ export class AgentSession {
 			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 			return { selectedText, selectedImages, cancelled: false };
 		} finally {
+			await this.#rebindPrimeSessionRuntimes();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();
@@ -8662,6 +9110,7 @@ export class AgentSession {
 		this.#cancelOwnAsyncJobs();
 		this.#abortAutolearnCapture();
 		await this.#drainAutolearnCapture();
+		this.#stopPrimeSessionRuntimes();
 
 		let sessionTransitioned = false;
 		let advisorRecordersDetached = false;
@@ -8713,6 +9162,7 @@ export class AgentSession {
 			this.#workspaceCheckpointCursor = await this.#workspaceCheckpoint.refreshCursor();
 			return { cancelled: false, sessionFile: this.sessionFile };
 		} finally {
+			await this.#rebindPrimeSessionRuntimes();
 			if (advisorRecordersDetached) {
 				if (sessionTransitioned) this.#advisors.resetSessionState();
 				else this.#advisors.reattachRecorderFeeds();

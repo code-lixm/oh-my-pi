@@ -10,6 +10,7 @@
  */
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob } from "../async";
+import type { AsyncJobType } from "../async/rlm-job-policy";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 
@@ -41,7 +42,7 @@ export interface AsyncResultEntry {
 
 type AsyncResultJobDetails = {
 	jobId: string;
-	type?: "bash" | "task";
+	type?: AsyncJobType;
 	label?: string;
 	durationMs?: number;
 };

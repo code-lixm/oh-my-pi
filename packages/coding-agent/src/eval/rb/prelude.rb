@@ -549,3 +549,57 @@ unless defined?($__omp_prelude_loaded) && $__omp_prelude_loaded
     $__omp_budget ||= OmpBudget.new
   end
 end
+
+
+def rlm(prompt, name: nil, model: nil)
+  args = { "op" => "run", "prompt" => prompt }
+  args["name"] = name unless name.nil?
+  args["model"] = model unless model.nil?
+  res = OmpBridge.call("__rlm__", args)
+  if res.is_a?(Hash)
+    {
+      "rlm_child_id" => res["rlm_child_id"],
+      "name" => res["name"],
+      "session_dir" => res["session_dir"],
+      "model" => res["model"],
+    }
+  else
+    res
+  end
+end
+
+module Rlm
+  module_function
+
+  def list_subagents
+    OmpBridge.call("__rlm__", "op" => "list_subagents")
+  end
+
+  def delete_subagent(target)
+    OmpBridge.call("__rlm__", "op" => "delete_subagent", "target" => target)
+  end
+end
+
+module AgentMessage
+  module_function
+
+  def list_agents
+    OmpBridge.call("__rlm__", "op" => "agent_message.list_agents")
+  end
+
+  def send(message, receiver_role: "parent", receiver_name: nil, target: nil)
+    args = { "op" => "agent_message.send", "message" => message }
+    args["receiver_role"] = receiver_role unless receiver_role.nil?
+    args["receiver_name"] = receiver_name unless receiver_name.nil?
+    args["target"] = target unless target.nil?
+    OmpBridge.call("__rlm__", args)
+  end
+end
+
+def rlm_list
+  Rlm.list_subagents
+end
+
+def rlm_delete(child_id)
+  Rlm.delete_subagent(child_id)
+end

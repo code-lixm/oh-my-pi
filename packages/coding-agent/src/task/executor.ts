@@ -44,6 +44,7 @@ import submitReminderTemplateZh from "../prompts/system/subagent-yield-reminder.
 import type { AgentActivityState } from "../registry/agent-activity";
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
+import type { RlmChildRegistry } from "../registry/rlm-child-registry";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AgentSession, AgentSessionEvent, Prewalk } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
@@ -494,6 +495,12 @@ export interface ExecutorOptions {
 	autoloadSkills?: Skill[];
 	/** Registry id of the spawning agent, forwarded to the child session. */
 	parentAgentId?: string;
+	/** RLM registry directory owned by this child, independent of its adopted ArtifactManager. */
+	rlmArtifactsDir?: string;
+	/** Immediate parent's RLM registry directory for nested family resolution. */
+	parentRlmArtifactsDir?: string;
+	/** Live immediate-parent registry for nested family resolution. */
+	parentRlmRegistry?: RlmChildRegistry;
 	/** Keep the finished subagent addressable for IRC/revival. */
 	keepAlive?: boolean;
 	/**
@@ -2883,11 +2890,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		};
 	}
 
-	// Set up artifact paths and write input file upfront if artifacts dir provided
-	let subtaskSessionFile: string | undefined;
-	if (options.artifactsDir) {
-		subtaskSessionFile = path.join(options.artifactsDir, `${id}.jsonl`);
-	}
+	// Caller-owned RLM artifacts reserve this exact JSONL path at admission.
+	// Preserve it rather than regenerating a sibling name in the executor.
+	const subtaskSessionFile =
+		options.sessionFile ?? (options.artifactsDir ? path.join(options.artifactsDir, `${id}.jsonl`) : undefined);
 
 	const subagentSettings = createSubagentSettings(
 		settings,
@@ -3307,6 +3313,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
+				rlmArtifactsDir: options.rlmArtifactsDir,
+				parentRlmArtifactsDir: options.parentRlmArtifactsDir,
+				parentRlmRegistry: options.parentRlmRegistry,
 				agentId: id,
 				agentDisplayName: options.displayName ?? agent.name,
 				expectedAgentRef,

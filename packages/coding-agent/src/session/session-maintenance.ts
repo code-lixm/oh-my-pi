@@ -240,6 +240,8 @@ export interface SessionMaintenanceHost {
 	syncTodoPhasesFromBranch(): void;
 	resetAdvisorRuntimes(): void;
 	rebaseAfterCompaction(): void;
+	/** Optional hook fired after a successful compaction rewrote the history (manual and automatic paths). */
+	onCompactionApplied?(): void;
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
 	getContextBreakdown(options?: {
 		contextWindow?: number;
@@ -912,6 +914,7 @@ export class SessionMaintenance {
 				details,
 				preserveData,
 			};
+			this.#host.onCompactionApplied?.();
 			options?.onComplete?.(compactionResult);
 			return compactionResult;
 		} catch (error) {
@@ -2770,6 +2773,7 @@ export class SessionMaintenance {
 			this.#host.resetPlanReference();
 			this.#host.resetAdvisorRuntimes();
 			this.#host.syncTodoPhasesFromBranch();
+			this.#host.onCompactionApplied?.();
 			if (codexCompaction) {
 				this.#host.resetCodexProviderAfterCompaction(codexCompaction);
 			} else {

@@ -24,7 +24,7 @@ export type StructuredSubagentSchemaSource = "caller" | "agent" | "session" | "n
 export type StructuredSubagentValidationStatus = "valid" | "invalid" | "unavailable";
 
 /** Durable lifecycle for an asynchronously delivered task result. */
-export type AsyncJobDeliveryStatus = "pending" | "delivering" | "delivered" | "dead-letter";
+export type AsyncJobDeliveryStatus = "pending" | "delivering" | "delivered" | "dead-letter" | "manual";
 
 /**
  * Parsed structured completion and its schema-validation metadata.

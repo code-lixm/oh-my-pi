@@ -107,6 +107,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.gcHelp,
 	},
 	{
+		name: "daemon",
+		load: () => loadCommand(() => import("./commands/daemon")),
+		help: commandHelp.daemonHelp,
+	},
+	{
 		name: "grep",
 		load: () => loadCommand(() => import("./commands/grep")),
 		help: commandHelp.grepHelp,

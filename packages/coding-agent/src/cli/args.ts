@@ -50,6 +50,15 @@ export interface Args {
 	serviceTier?: ServiceTierOpenAISettingValue;
 	hideThinking?: boolean;
 	advisor?: boolean;
+	/**
+	 * Explicit autonomous CLI overrides. Every field stays `undefined` until its
+	 * corresponding flag is supplied, so resume can retain durable state for
+	 * unspecified values.
+	 */
+	autonomous?: boolean;
+	autonomousGates?: string[];
+	autonomousMaxTurns?: number;
+	autonomousMaxTokens?: number;
 	continue?: boolean;
 	resume?: string | true;
 	fromClaude?: boolean;
@@ -259,6 +268,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.hideThinking = true;
 		} else if (arg === "--advisor") {
 			result.advisor = true;
+		} else if (arg === "--autonomous") {
+			result.autonomous = true;
 		} else if (arg === "--prewalk") {
 			result.prewalk = true;
 		} else if (arg === "--no-prewalk") {
