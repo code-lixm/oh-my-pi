@@ -82,6 +82,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed job-only `hub wait` activity cards being mislabeled as IRC/agent communication while `display.showAgentCommunication` was disabled; they now use the localized background-job header while real peer activity retains the IRC header.
 - Fixed configuration-sync conflict commands and service results exposing API/OAuth credential values; stdout and JSON now contain only conflict kinds, keys, revision IDs, and the private conflict-document path.
 - Fixed `/btw` branch promotion racing deferred post-prompt continuations, which could drop queued work or branch from a stale leaf; promotion now refuses while post-prompt work is pending and revalidates the authorized session and leaf before transition.
 - Fixed `omp -r` reporting no current-folder sessions after 17.2.9 restored legacy session directory names by merging the canonical and short-lived develop hashed buckets in place without renaming active session files.

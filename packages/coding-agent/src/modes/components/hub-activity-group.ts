@@ -422,11 +422,15 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const contentWidth = outputBlockContentWidth(width);
 		const renderExpanded = this.#finalized && this.#expanded;
 		const rows: string[] = [];
+		let headerKind: "irc" | "job" | undefined;
 		let stablePrefix = true;
 		let settledContentRows = 0;
 
 		for (const entry of this.#entries) {
 			const entryRows = this.#entryLines(entry, renderExpanded).map(line => truncateToWidth(line, contentWidth));
+			if (entryRows.length > 0 && headerKind === undefined) {
+				headerKind = entry.kind === "tool" && !isHubPeerCommunicationArgs(entry.args) ? "job" : "irc";
+			}
 			rows.push(...entryRows);
 			const settled =
 				entry.kind === "tool"
@@ -443,11 +447,16 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			return undefined;
 		}
 
-		// The top/header row is stable because it never includes a live count or age.
-		// The moving bottom border is deliberately excluded.
+		// Derive the stable header from the earliest visible row: job-only waits
+		// must not masquerade as peer communication when that activity is hidden.
+		// Later appended rows cannot rename a header that may already be in scrollback.
 		this.#settledRows = settledContentRows > 0 ? 1 + settledContentRows : 0;
+		const header =
+			headerKind === "job"
+				? renderStatusLine({ icon: "pending", title: tSettingsUi("Job"), titleColor: "muted" }, theme)
+				: renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC") }, theme);
 		return {
-			header: renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC") }, theme),
+			header,
 			sections: [{ lines: rows }],
 			borderColor: "borderMuted" as const,
 			applyBg: false,

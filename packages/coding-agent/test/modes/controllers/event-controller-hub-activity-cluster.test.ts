@@ -482,7 +482,8 @@ describe("EventController hub activity cluster", () => {
 		expect(rendered).not.toContain("No reply yet");
 	});
 
-	it("groups job-id waits from pending through running updates", async () => {
+	it("renders job-only waits under the Job title while peer communication is hidden", async () => {
+		settings.set("display.showAgentCommunication", false);
 		const { controller, chatContainer, pendingTools } = createLiveFixture();
 
 		await controller.handleEvent({
@@ -497,6 +498,8 @@ describe("EventController hub activity cluster", () => {
 		if (!group) throw new Error("expected grouped Hub job activity");
 		expect(pendingTools.get("hub-jobs-running")).toBe(group);
 		const pendingRendered = renderText(group);
+		expect(pendingRendered).toContain("Job");
+		expect(pendingRendered).not.toContain("IRC");
 		expect(pendingRendered).toContain("job-1");
 		expect(pendingRendered).toContain("pending");
 
@@ -517,6 +520,38 @@ describe("EventController hub activity cluster", () => {
 		const rendered = renderText(group);
 		expect(rendered).toContain("Build job");
 		expect(rendered).toContain("running");
+		expect(rendered).toContain("Job");
+		expect(rendered).not.toContain("IRC");
+	});
+
+	it("keeps the IRC title for peer Hub activity when communication is enabled", async () => {
+		settings.set("display.showAgentCommunication", true);
+		const { controller, chatContainer } = createLiveFixture();
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "hub-peer-title",
+			toolName: "hub",
+			args: { op: "send", to: "Worker", message: "PEER_ACTIVITY_MARKER" },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "hub-peer-title",
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "sent" }],
+				details: { op: "send", to: "Worker", receipts: [{ to: "Worker", outcome: "woken" }] },
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		const [group] = hubGroups(chatContainer);
+		if (!group) throw new Error("expected grouped peer Hub activity");
+		const rendered = renderText(group);
+		expect(rendered).toContain("IRC");
+		expect(rendered).not.toContain("Job");
+		expect(rendered).toContain("Worker");
+		expect(rendered).toContain("PEER_ACTIVITY_MARKER");
 	});
 
 	it("keeps peer inbox failures out of activity cards", async () => {
