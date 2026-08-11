@@ -5273,6 +5273,16 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Communication: "Communication",
 	"Next-Step Offers": "Next-Step Offers",
 	"Record up to three structured, user-selectable next-step offers after successful final responses.":
+	"Heartbeat": "Heartbeat",
+	"Enable Heartbeat": "Enable Heartbeat",
+	"Enable persisted heartbeat prompts for the current session": "Enable persisted heartbeat prompts for the current session",
+	"Default Interval": "Default Interval",
+	"Default interval used by /heartbeat when no interval is specified": "Default interval used by /heartbeat when no interval is specified",
+	"Delivery Mode": "Delivery Mode",
+	"Default delivery mode used by /heartbeat": "Default delivery mode used by /heartbeat",
+	"Schedule": "Schedule",
+	"Enable Scheduling": "Enable Scheduling",
+	"Enable persisted scheduled prompts for the current session": "Enable persisted scheduled prompts for the current session",
 		"Record up to three structured, user-selectable next-step offers after successful final responses.",
 	"Keep legacy final responses without structured next-step offers":
 		"Keep legacy final responses without structured next-step offers",
