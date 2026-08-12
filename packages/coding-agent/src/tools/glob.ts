@@ -52,6 +52,9 @@ const findSchema = type({
 	"hidden?": type("boolean").describe("include hidden files"),
 	"gitignore?": type("boolean").describe("respect gitignore"),
 	"limit?": type("number").describe("max results"),
+	"sort?": type('"mtime" | "path"').describe(
+		'sort order for results: "mtime" (default) ranks most-recently-modified first, matching current behavior; "path" sorts lexicographically, which lets the walk terminate earlier and enables directory caching — prefer "path" for broad scans over large trees',
+	),
 });
 
 export type GlobToolInput = typeof findSchema.infer;
@@ -160,7 +163,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<GlobToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<GlobToolDetails>> {
-		const { path: pathInput, limit, hidden, gitignore } = params;
+		const { path: pathInput, limit, hidden, gitignore, sort } = params;
 
 		return untilAborted(signal, async () => {
 			const formatScopePath = (targetPath: string): string => formatPathRelativeToCwd(targetPath, this.session.cwd);
@@ -274,6 +277,10 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const effectiveLimit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(requestedLimit)));
 			const includeHidden = hidden ?? true;
 			const useGitignore = gitignore ?? true;
+			// mtime ranking (default) preserves the historical result order;
+			// "path" sorting lets the walk terminate earlier and is eligible for
+			// the TTL'd walker cache (invalidated by write/delete/rename).
+			const sortByMtime = (sort ?? "mtime") === "mtime";
 			const timeoutMs = DEFAULT_GLOB_TIMEOUT_MS;
 			const timeoutSignal = AbortSignal.timeout(timeoutMs);
 			const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -443,7 +450,10 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 								path: target.searchPath,
 								hidden: includeHidden,
 								maxResults: effectiveLimit,
-								sortByMtime: true,
+								sortByMtime,
+								// Only the path-sorted walk may use the walker cache;
+								// mtime-sorted walks stay uncached to avoid behavior drift.
+								...(sortByMtime ? {} : { cache: true }),
 								gitignore: useGitignore,
 								// parseFindPattern explicitly prepends "**/" when the user's
 								// pattern begins with a glob (so `*.ts` becomes `**/*.ts`).
@@ -486,7 +496,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 				// instead of throwing — empty results after a multi-second wait force the
 				// caller to retry blind, which is the worst possible outcome.
 				const partial = onUpdateMatches.map((entry, index) => ({ p: entry, m: onUpdateMtimes[index] ?? 0 }));
-				partial.sort((a, b) => b.m - a.m);
+				if (sortByMtime) partial.sort((a, b) => b.m - a.m);
 				const sortedPaths = partial.map(entry => entry.p);
 				const seconds = timeoutMs % 1000 === 0 ? `${timeoutMs / 1000}` : (timeoutMs / 1000).toFixed(1);
 				// Walk cost tracks directory-tree size, not pattern specificity: a
@@ -501,8 +511,9 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			}
 
 			// Merge per-target results: native glob already ranks each target's own
-			// matches by mtime and caps them at the limit, so a global mtime re-sort
-			// plus dedup yields the correct top-N across all roots.
+			// matches (by mtime, or by path when sort:"path") and caps them at the
+			// limit, so a global re-sort plus dedup yields the correct top-N across
+			// all roots. Path-sorted walks keep the native (lexicographic) order.
 			const seen = new Set<string>();
 			const merged: Array<{ path: string; mtime: number }> = [];
 			for (const group of perTarget) {
@@ -512,7 +523,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					merged.push(entry);
 				}
 			}
-			merged.sort((a, b) => b.mtime - a.mtime);
+			if (sortByMtime) merged.sort((a, b) => b.mtime - a.mtime);
 			return buildResult(merged.map(entry => entry.path));
 		});
 	}
@@ -527,6 +538,8 @@ interface GlobRenderArgs {
 	/** Legacy pre-`path` argument name; kept so historical transcripts still render a scope. */
 	paths?: string | string[];
 	limit?: number;
+	/** Non-default sort mode; only "path" is surfaced (mtime is the default). */
+	sort?: "mtime" | "path";
 }
 
 function sanitizeGlobDisplay(value: string, singleLine = false): string {
@@ -586,6 +599,7 @@ export const globToolRenderer = {
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.limit !== undefined) meta.push(tSettingsUi("limit:{count}", { count: args.limit }));
+		if (args.sort === "path") meta.push(tSettingsUi("sort:path"));
 
 		const text = renderStatusLine(
 			{

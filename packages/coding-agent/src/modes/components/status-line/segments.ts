@@ -644,6 +644,24 @@ function pickUsageColor(item: StatusLineUsageItem): "muted" | "warning" | "error
 	return "muted";
 }
 
+function pickCompactUsageColor(percent: number): "muted" | "warning" | "error" {
+	if (percent >= 100) return "error";
+	if (percent >= 80) return "warning";
+	return "muted";
+}
+
+function formatUsageReset(value: number, unit: "m" | "h"): string {
+	if (unit === "m") {
+		if (value < 60) return `${value}m`;
+		const hours = Math.floor(value / 60);
+		const minutes = value % 60;
+		return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+	}
+	const days = Math.floor(value / 24);
+	const hours = value % 24;
+	return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
+}
+
 function formatUsageDuration(durationMs: number): string {
 	const minutes = Math.max(0, Math.round(durationMs / 60_000));
 	if (minutes < 60) return `${minutes}m`;
@@ -695,13 +713,20 @@ function formatUsageValue(item: StatusLineUsageItem): string {
 	return "?";
 }
 
+function usageDurationForSelection(item: StatusLineUsageItem): number {
+	if (item.windowId === "5h") return 5 * 3_600_000;
+	if (item.windowId === "7d") return 7 * 86_400_000;
+	if (item.windowId === "monthly" || item.windowId === "30d") return 30 * 86_400_000;
+	return item.durationMs ?? Number.MAX_SAFE_INTEGER;
+}
+
 function latestUsageItems(items: StatusLineUsageItem[]): StatusLineUsageItem[] {
 	const latestByScope = new Map<string, StatusLineUsageItem>();
 	for (const item of items) {
 		const scope = `${item.provider}\0${item.accountLabel ?? ""}\0${item.modelId ?? ""}\0${item.tier ?? ""}`;
 		const current = latestByScope.get(scope);
-		const itemDuration = item.durationMs ?? Number.MAX_SAFE_INTEGER;
-		const currentDuration = current?.durationMs ?? Number.MAX_SAFE_INTEGER;
+		const itemDuration = usageDurationForSelection(item);
+		const currentDuration = current ? usageDurationForSelection(current) : Number.MAX_SAFE_INTEGER;
 		const itemReset = item.resetsAt ?? Number.MAX_SAFE_INTEGER;
 		const currentReset = current?.resetsAt ?? Number.MAX_SAFE_INTEGER;
 		if (
@@ -771,6 +796,34 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const items = ctx.usage?.items ?? [];
+		const compact = ctx.usage;
+		if (
+			compact &&
+			(compact.preferCompact || items.length === 0) &&
+			(compact.fiveHour || compact.sevenDay || compact.monthly)
+		) {
+			const parts: string[] = [];
+			if (compact.tier)
+				parts.push(theme.fg("accent", truncateToWidth(sanitizeStatusText(compact.tier), TRUNCATE_LENGTHS.SHORT)));
+			const addWindow = (
+				label: string,
+				window: { percent: number; resetMinutes?: number; resetHours?: number },
+				resetValue: number | undefined,
+				resetUnit: "m" | "h",
+				floor = false,
+			): void => {
+				const percent = floor ? Math.floor(window.percent) : Math.round(window.percent);
+				const value = theme.fg(pickCompactUsageColor(window.percent), `${percent}%`);
+				const reset =
+					resetValue === undefined ? "" : theme.fg("muted", ` (${formatUsageReset(resetValue, resetUnit)})`);
+				parts.push(`${label} ${value}${reset}`);
+			};
+			if (compact.fiveHour) addWindow("5h", compact.fiveHour, compact.fiveHour.resetMinutes, "m");
+			if (compact.sevenDay) addWindow("7d", compact.sevenDay, compact.sevenDay.resetHours, "h");
+			if (compact.monthly) addWindow("mo", compact.monthly, compact.monthly.resetHours, "h", true);
+			const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
+			return { content, visible: content.length > 0 };
+		}
 		if (items.length === 0) return { content: "", visible: false };
 		const options = ctx.options.usage ?? {};
 		const displayItems = options.latestOnly ? latestUsageItems(items) : items;

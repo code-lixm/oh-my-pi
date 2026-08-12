@@ -1,7 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
+import {
+	type AssistantMessage,
+	resolveUsedFraction,
+	type UsageAmount,
+	type UsageLimit,
+	type UsageReport,
+} from "@oh-my-pi/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
@@ -1353,9 +1359,11 @@ export class StatusLineComponent implements Component {
 		const normalized = this.#normalizeUsageReports(reports, activeProvider, activeModelId, activeIdentity);
 		const resetSnapshot =
 			activeProvider === "openai-codex" ? this.#normalizeCodexResetSnapshot(reports, activeIdentity) : null;
+		const usageChanged = this.#cachedUsage !== normalized;
 		this.#cachedUsage = normalized;
 		this.#usageFetchedAt = Date.now();
 		this.#resetUsageRefreshTimer();
+		if (usageChanged) this.#onBranchChange?.();
 		this.#requestRender?.();
 		if (!resetSnapshot) return;
 		const contextKey = this.#formatUsageIdentityContextKey(activeProvider, activeIdentity);
@@ -1482,12 +1490,15 @@ export class StatusLineComponent implements Component {
 					: undefined;
 		const providerOrder = new Map(configuredProviders.map((provider, index) => [provider, index]));
 		const byKey = new Map<string, StatusLineUsageItem>();
+		let preferCompact = false;
 
 		for (const [reportIndex, reportValue] of reports.entries()) {
 			if (!reportValue || typeof reportValue !== "object") continue;
 			const report = reportValue as UsageReport;
-			if (typeof report.provider !== "string" || !Array.isArray(report.limits)) continue;
-			const provider = report.provider.toLowerCase();
+			const provider =
+				typeof report.provider === "string"
+					? report.provider.toLowerCase()
+					: (activeProvider?.toLowerCase() ?? "unknown");
 			if (selectedProviders && !selectedProviders.has(provider)) continue;
 			const metadata = report.metadata;
 			const metadataAccount =
@@ -1518,9 +1529,24 @@ export class StatusLineComponent implements Component {
 				) {
 					continue;
 				}
-				if (!limit.amount || typeof limit.amount !== "object" || typeof limit.amount.unit !== "string") continue;
+				const rawAmount = limit.amount as UsageAmount & { unit?: string };
+				if (!rawAmount || typeof rawAmount !== "object") continue;
 				const tier = typeof limit.scope?.tier === "string" && limit.scope.tier ? limit.scope.tier : undefined;
 				const windowId = limit.window?.id ?? limit.scope?.windowId;
+				const durationMs = limit.window?.durationMs;
+				const isBurstWindow = windowId === "5h" || windowId === "7d";
+				const isMonthlyWindow = windowId === "monthly" || windowId === "30d";
+				const hasBurstSpan =
+					typeof durationMs === "number" &&
+					(Math.abs(durationMs - 5 * 3_600_000) <= 60_000 || Math.abs(durationMs - 7 * 86_400_000) <= 60_000);
+				const compactShape =
+					isBurstWindow ||
+					hasBurstSpan ||
+					(provider === "cursor" && isMonthlyWindow && typeof rawAmount.unit !== "string");
+				if (typeof rawAmount.unit !== "string" && !compactShape) continue;
+				if (typeof rawAmount.unit !== "string" && compactShape) preferCompact = true;
+				const amount: UsageAmount =
+					typeof rawAmount.unit === "string" ? (rawAmount as UsageAmount) : { ...rawAmount, unit: "requests" };
 				const accountParts = [
 					limit.scope?.accountId ?? metadataAccount,
 					limit.scope?.projectId ?? metadataProject,
@@ -1529,7 +1555,11 @@ export class StatusLineComponent implements Component {
 				const uniqueAccountParts = [...new Set(accountParts)];
 				const accountLabel = uniqueAccountParts.join("/") || undefined;
 				const accountKey = uniqueAccountParts.join("\0") || `report:${reportIndex}`;
-				const baseKey = `${provider}\0${accountKey}\0${limitModelId ?? ""}\0${windowId ?? limit.id}`;
+				const windowKey =
+					provider === "cursor" && isMonthlyWindow
+						? `${windowId ?? limit.id ?? reportIndex}\0${limit.id ?? reportIndex}`
+						: (windowId ?? limit.id);
+				const baseKey = `${provider}\0${accountKey}\0${limitModelId ?? ""}\0${windowKey}`;
 				const untieredKey = `${baseKey}\0untiered`;
 				let key: string;
 				if (tier === undefined) {
@@ -1544,31 +1574,103 @@ export class StatusLineComponent implements Component {
 				byKey.set(key, {
 					provider,
 					accountLabel,
-					label: limit.window?.label ?? limit.label,
+					label: limit.window?.label ?? limit.label ?? limit.scope?.windowId ?? limit.id ?? provider,
 					tier,
 					modelId: limitModelId,
 					durationMs: limit.window?.durationMs,
 					windowId,
+					limitId: typeof limit.id === "string" ? limit.id : undefined,
 					usedFraction: resolveUsedFraction(limit),
 					resetsAt: limit.window?.resetsAt,
-					amount: limit.amount,
+					amount,
 					status: limit.status,
 				});
 			}
 		}
-
 		const items = [...byKey.values()];
+		const durationForSort = (item: StatusLineUsageItem): number => {
+			if (item.windowId === "5h") return 5 * 3_600_000;
+			if (item.windowId === "7d") return 7 * 86_400_000;
+			if (item.windowId === "monthly" || item.windowId === "30d") return 30 * 86_400_000;
+			return item.durationMs ?? Number.MAX_SAFE_INTEGER;
+		};
 		items.sort((left, right) => {
 			const providerDelta =
 				(providerOrder.get(left.provider) ?? Number.MAX_SAFE_INTEGER) -
 				(providerOrder.get(right.provider) ?? Number.MAX_SAFE_INTEGER);
 			if (providerDelta !== 0) return providerDelta;
-			const durationDelta =
-				(left.durationMs ?? Number.MAX_SAFE_INTEGER) - (right.durationMs ?? Number.MAX_SAFE_INTEGER);
+			const durationDelta = durationForSort(left) - durationForSort(right);
 			if (durationDelta !== 0) return durationDelta;
 			return left.label.localeCompare(right.label);
 		});
-		return items.length > 0 ? { items } : null;
+		const compactWindows: StatusLineUsageSummary = { items };
+		let fiveHourTier: string | undefined;
+		let sevenDayTier: string | undefined;
+		let monthlyTier: string | undefined;
+		let monthlyPriority = Number.POSITIVE_INFINITY;
+		const now = Date.now();
+		const cursorMonthlyPriority = (limitId: string | undefined): number => {
+			if (limitId === "cursor:usd:individual-auto") return 0;
+			if (limitId === "cursor:usd:individual-plan" || limitId === "cursor:usd:individual-overall") return 1;
+			if (limitId?.startsWith("cursor:usd:individual-")) return 2;
+			return 3;
+		};
+		for (const item of items) {
+			const fraction = item.usedFraction;
+			if (typeof fraction !== "number" || !Number.isFinite(fraction)) continue;
+			const durationMs = item.durationMs;
+			const windowClass =
+				item.windowId === "5h" || item.windowId === "7d"
+					? item.windowId
+					: durationMs !== undefined && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
+						? "5h"
+						: durationMs !== undefined && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
+							? "7d"
+							: undefined;
+			const preferUntiered = (currentTier: string | undefined): boolean =>
+				currentTier !== undefined && item.tier === undefined;
+			if (windowClass === "5h" && (compactWindows.fiveHour === undefined || preferUntiered(fiveHourTier))) {
+				compactWindows.fiveHour = {
+					percent: fraction * 100,
+					resetMinutes:
+						typeof item.resetsAt === "number"
+							? Math.max(0, Math.round((item.resetsAt - now) / 60_000))
+							: undefined,
+				};
+				fiveHourTier = item.tier;
+			}
+			if (windowClass === "7d" && (compactWindows.sevenDay === undefined || preferUntiered(sevenDayTier))) {
+				compactWindows.sevenDay = {
+					percent: fraction * 100,
+					resetHours:
+						typeof item.resetsAt === "number"
+							? Math.max(0, Math.round((item.resetsAt - now) / 3_600_000))
+							: undefined,
+				};
+				sevenDayTier = item.tier;
+			}
+			if (activeProvider?.toLowerCase() === "cursor" && (item.windowId === "monthly" || item.windowId === "30d")) {
+				const priority = cursorMonthlyPriority(item.limitId);
+				if (
+					compactWindows.monthly === undefined ||
+					priority < monthlyPriority ||
+					(priority === monthlyPriority && monthlyTier !== undefined && item.tier === undefined)
+				) {
+					compactWindows.monthly = {
+						percent: fraction * 100,
+						resetHours:
+							typeof item.resetsAt === "number"
+								? Math.max(0, Math.round((item.resetsAt - now) / 3_600_000))
+								: undefined,
+					};
+					monthlyTier = item.tier;
+					monthlyPriority = priority;
+				}
+			}
+		}
+		compactWindows.tier = fiveHourTier ?? sevenDayTier ?? monthlyTier;
+		compactWindows.preferCompact = preferCompact && items.every(item => item.amount.unit === "requests");
+		return items.length > 0 ? compactWindows : null;
 	}
 
 	/**

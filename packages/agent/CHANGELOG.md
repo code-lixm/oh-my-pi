@@ -15,6 +15,11 @@
 ### Fixed
 
 - Fixed terminal tool results allowing later calls from the same assistant message to start; not-yet-started calls now receive explicit synthetic results without executing.
+
+### Fixed
+
+- Fixed Cursor sessions re-executing settled tools when an owned dialect projector rebuilds toolCall blocks: `snapshotAssistantContentBlock` now copies `kCursorExecResolved` explicitly so agent-loop still skips already-settled calls.
+
 ## [17.2.10] - 2026-08-06
 
 ### Fixed

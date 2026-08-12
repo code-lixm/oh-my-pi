@@ -93,6 +93,7 @@ import {
 	FALLBACK_RECOVERY_PROBE_INTERVAL_MS,
 	FALLBACK_RECOVERY_PROBE_TIMEOUT_MS,
 	formatRetryFallbackSelector,
+	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackSelector,
 } from "./retry-fallback-chains";
@@ -449,8 +450,8 @@ export class SessionAdvisors {
 	}
 
 	/** Re-primes advisor transcript views after an in-conversation history rewrite. */
-	resetAllRuntimes(): void {
-		this.#resetAllAdvisorRuntimes();
+	resetAllRuntimes(reason?: string): void {
+		this.#resetAllAdvisorRuntimes(reason);
 	}
 
 	/** Whether live runtimes still match the resolved advisor configuration. */
@@ -566,7 +567,7 @@ export class SessionAdvisors {
 			a.agentUnsubscribe?.();
 			a.agentUnsubscribe = undefined;
 			this.#restoreAdvisorPrimaryAtSessionBoundary(a);
-			a.runtime.reset();
+			a.runtime.reset("conversation-boundary");
 			a.adviseTool.resetDeliveredNotes();
 			a.emissionGuard.reset();
 			this.#attachAdvisorRecorderFeed(a);
@@ -816,14 +817,22 @@ export class SessionAdvisors {
 				mcpResources: this.#advisorMcpResources,
 			});
 			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
-			const advisorStreamFn: StreamFn = (requestModel, context, options) =>
-				baseAdvisorStreamFn(
-					requestModel,
-					context,
-					requestModel.api === "openai-codex-responses"
-						? { ...options, codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS }
-						: options,
-				);
+			const advisorStreamFn: StreamFn = (requestModel, context, options) => {
+				if (requestModel.api === "openai-codex-responses") {
+					return baseAdvisorStreamFn(requestModel, context, {
+						...options,
+						codexSseMaxAttempts: ADVISOR_CODEX_SSE_MAX_ATTEMPTS,
+					});
+				}
+				if (
+					requestModel.api === "google-generative-ai" ||
+					requestModel.api === "google-gemini-cli" ||
+					requestModel.api === "google-vertex"
+				) {
+					return baseAdvisorStreamFn(requestModel, context, { ...options, acceptEmptyResponse: true });
+				}
+				return baseAdvisorStreamFn(requestModel, context, options);
+			};
 			const advisorAgent = new Agent({
 				initialState: {
 					systemPrompt,
@@ -863,8 +872,17 @@ export class SessionAdvisors {
 					let quarantined: string | undefined;
 					try {
 						quarantinedAdvisorOutput = undefined;
-						currentAdvisorInput = input;
-						await advisorAgent.prompt(input);
+						// Multi-message input (candidate 4) must serialize deterministically
+						// for quarantine source text; reuse the session history formatter
+						// rather than ad-hoc joins so all message kinds (text/tool/
+						// custom/structured) are preserved exactly as rendered.
+						currentAdvisorInput = Array.isArray(input)
+							? formatSessionHistoryMarkdown(input, { watchedRoles: true })
+							: input;
+						// Agent.prompt's overloads accept string OR AgentMessage[] but not
+						// the union, so narrow first; both branches intentionally identical.
+						if (Array.isArray(input)) await advisorAgent.prompt(input);
+						else await advisorAgent.prompt(input);
 						quarantined = quarantinedAdvisorOutput;
 					} finally {
 						quarantinedAdvisorOutput = undefined;
@@ -1096,8 +1114,8 @@ export class SessionAdvisors {
 	}
 
 	/** Re-prime every advisor's transcript view after an in-conversation history rewrite. */
-	#resetAllAdvisorRuntimes(): void {
-		for (const a of this.#advisors) a.runtime.reset();
+	#resetAllAdvisorRuntimes(reason?: string): void {
+		for (const a of this.#advisors) a.runtime.reset(reason);
 	}
 
 	#stopAdvisorRuntime(): void {
@@ -1186,6 +1204,7 @@ export class SessionAdvisors {
 	}
 
 	#scheduleAdvisorFallbackProbe(advisor: ActiveAdvisor): void {
+		if (getRetryFallbackRevertPolicy(this.#host.settings) !== "probe") return;
 		if (
 			!advisor.retryFallback ||
 			advisor.runtime.disposed ||
@@ -1203,6 +1222,7 @@ export class SessionAdvisors {
 	}
 
 	async #runAdvisorFallbackProbe(advisor: ActiveAdvisor): Promise<void> {
+		if (getRetryFallbackRevertPolicy(this.#host.settings) !== "probe") return;
 		const fallback = advisor.retryFallback;
 		if (!fallback || advisor.runtime.disposed || this.#host.isDisposed()) return;
 		const primary = this.#resolveAdvisorFallbackPrimary(advisor);
@@ -1241,6 +1261,7 @@ export class SessionAdvisors {
 	}
 
 	async #restoreReadyAdvisorFallback(advisor: ActiveAdvisor): Promise<void> {
+		if (getRetryFallbackRevertPolicy(this.#host.settings) !== "probe") return;
 		const fallback = advisor.retryFallback;
 		if (
 			!fallback ||
@@ -1284,37 +1305,44 @@ export class SessionAdvisors {
 		signal: AbortSignal,
 	): Promise<boolean> {
 		if (error instanceof AdvisorOutputQuarantinedError) return false;
-		const currentModel = advisor.agent.state.model;
 		const failedMessage = failedMessages.findLast(
 			(message): message is AssistantMessage => message.role === "assistant",
 		);
-		if (failedMessage?.content.some(block => block.type === "toolCall")) return false;
+		const assistantFailure = failedMessage?.stopReason === "error" ? failedMessage : undefined;
+		if (assistantFailure?.content.some(block => block.type === "toolCall")) return false;
 
-		const message = failedMessage?.errorMessage ?? (error instanceof Error ? error.message : String(error));
-		const errorId = failedMessage
+		const currentModel = advisor.agent.state.model;
+		const message = assistantFailure?.errorMessage ?? (error instanceof Error ? error.message : String(error));
+		const errorId = assistantFailure
 			? AIError.classifyMessage({
 					api: currentModel.api,
-					errorId: failedMessage.errorId,
+					errorId: assistantFailure.errorId,
 					errorMessage: message,
-					errorStatus: failedMessage.errorStatus,
+					errorStatus: assistantFailure.errorStatus,
 				})
-			: AIError.classify(error);
+			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (failedMessage && AIError.isContextOverflow(failedMessage, currentModel.contextWindow ?? 0)) return false;
-		const usageLimit =
-			AIError.is(errorId, AIError.Flag.UsageLimit) ||
-			AIError.isUsageLimit(error) ||
-			isUsageLimitOutcome(extractHttpStatusFromError(error), message);
 		if (
-			!failedMessage &&
-			!usageLimit &&
-			!AIError.retriable(errorId) &&
-			extractHttpStatusFromError(error) === undefined
+			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
+			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
 		) {
 			return false;
 		}
 
+		const accountPolicyDenial = AIError.is(errorId, AIError.Flag.AccountPolicy);
+		if (accountPolicyDenial) {
+			const switched = await this.#host.modelRegistry.authStorage.rotateSessionCredential(
+				currentModel.provider,
+				advisor.providerSessionId,
+				{ error: message, modelId: currentModel.id, signal },
+			);
+			if (switched) return true;
+		}
+
 		const retryAfterMs = extractRetryHint(undefined, message);
+		const usageLimit =
+			AIError.is(errorId, AIError.Flag.UsageLimit) ||
+			isUsageLimitOutcome(extractHttpStatusFromError(error), message);
 		if (usageLimit) {
 			const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
 				currentModel.provider,
@@ -1328,6 +1356,8 @@ export class SessionAdvisors {
 			);
 			if (outcome.switched) return true;
 		}
+		if (!assistantFailure && !accountPolicyDenial && !usageLimit) return false;
+
 		const retrySettings = this.#host.settings.getGroup("retry");
 		if (!retrySettings.enabled) return false;
 		advisor.retryAttempt++;

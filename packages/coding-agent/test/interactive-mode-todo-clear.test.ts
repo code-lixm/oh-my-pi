@@ -169,7 +169,49 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
-	it("hides terminal-only todos even when auto-clear is disabled", async () => {
+	/**
+	 * Auto-clear used to fire on any list holding a closed task, so a plan the
+	 * agent was mid-way through had its finished tasks deleted from the HUD's
+	 * copy: the phase counter reset, the checked row vanished, and the stage
+	 * renumbered — the panel reported no progress at all until the next `todo`
+	 * call restored the real snapshot. It may only fire on a settled list.
+	 */
+	const unfinishedPlan = (): TodoPhase[] => [
+		{
+			name: "Implementation",
+			tasks: [
+				{ content: "done task", status: "completed" },
+				{ content: "abandoned task", status: "abandoned" },
+				{ content: "current task", status: "in_progress" },
+			],
+		},
+	];
+
+	it("keeps an unfinished plan's progress when the auto-clear delay elapses", async () => {
+		await createMode(1);
+		vi.useFakeTimers();
+
+		mode.setTodos(unfinishedPlan());
+		vi.advanceTimersByTime(60_000);
+
+		const rendered = renderTodos(mode);
+		// Progress counts every closed task, abandoned included: the walking
+		// viewport hides both, so the counter is the only signal they existed.
+		expect(rendered).toContain("2/3");
+		expect(rendered).toContain("current task");
+	});
+
+	it("keeps an unfinished plan's progress when auto-clear is instant", async () => {
+		await createMode(0);
+
+		mode.setTodos(unfinishedPlan());
+
+		const rendered = renderTodos(mode);
+		expect(rendered).toContain("2/3");
+		expect(rendered).toContain("current task");
+	});
+
+	it("leaves closed todos visible when auto-clear is disabled", async () => {
 		await createMode(-1);
 		const phases: TodoPhase[] = [
 			{
@@ -192,7 +234,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(session.getTodoPhases()).toEqual(phases);
 	});
 
-	it("clears closed todos after the configured delay while keeping open todos visible", async () => {
+	it("keeps closed todos while the list still has open work", async () => {
 		await createMode(1);
 		vi.useFakeTimers();
 		mode.toggleTodoExpansion();
@@ -216,7 +258,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		);
 
 		vi.advanceTimersByTime(1);
-		expect(renderTodos(mode)).not.toContain("done task");
+		expect(renderTodos(mode)).toContain("done task");
 		expect(renderTodos(mode)).toContain("pending task");
 		expect((mode.todoContainer as Partial<NativeScrollbackLiveRegion>).getNativeScrollbackLiveRegionStart?.()).toBe(
 			0,
@@ -318,7 +360,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(task?.blocker).toBeUndefined();
 	});
 
-	it("uses only the todo root for set, toggle, and auto-clear repainting", async () => {
+	it("does not repaint or clear closed rows from an unfinished list", async () => {
 		await createMode(1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		await mode.init({ suppressWelcomeIntro: true });
@@ -352,9 +394,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		scopedRender.mockClear();
 		vi.advanceTimersByTime(1_000);
-		expect(renderTodos(mode)).not.toContain("completed cleanup");
-		expect(scopedRender).toHaveBeenCalledTimes(1);
-		expect(scopedRender).toHaveBeenLastCalledWith(mode.todoContainer);
+		expect(renderTodos(mode)).toContain("completed cleanup");
+		expect(scopedRender).not.toHaveBeenCalled();
 		expect(fullRender).not.toHaveBeenCalled();
 	});
 
@@ -497,16 +538,16 @@ describe("InteractiveMode todo HUD anchor", () => {
 		// Root header carries overall stage progression (on stage 1 of 2).
 		const root = lines.find(line => line.includes("Todos"));
 		expect(root).toContain("1/2");
-		// Small active lists stay fully visible: completed + active + pending all
-		// render together instead of hiding the completed row behind the cap.
+		// Active stage: highlighted header with its own task progress, expanded as a
+		// connector tree; the just-completed task stays as the lead row so progress
+		// is visible while the stage still has open work.
 		expect(lines.some(line => line.includes("I. Foundation") && line.includes("1/3"))).toBe(true);
-		const completedLine = lines.find(line => line.includes("first task"));
-		const inProgressLine = lines.find(line => line.includes("second task"));
-		const pendingLine = lines.find(line => line.includes("third task"));
-		expect(completedLine).toContain(theme.checkbox.checked);
-		expect(inProgressLine).toContain(theme.checkbox.unchecked);
-		expect(pendingLine).toContain(theme.checkbox.unchecked);
-		expect([completedLine, inProgressLine, pendingLine].filter(Boolean)).toHaveLength(3);
+		const secondLine = lines.find(line => line.includes("second task"));
+		expect(secondLine).toContain(theme.tree.branch);
+		expect(secondLine).toContain(theme.checkbox.unchecked);
+		expect(lines.some(line => line.includes("third task"))).toBe(true);
+		const firstLine = lines.find(line => line.includes("first task"));
+		expect(firstLine).toContain(theme.checkbox.checked);
 		// Upcoming stage: header with its own progress, but collapsed (no task rows).
 		expect(lines.some(line => line.includes("II. Verification") && line.includes("0/1"))).toBe(true);
 		expect(lines.some(line => line.includes("run tests"))).toBe(false);

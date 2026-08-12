@@ -31,6 +31,7 @@ import codexNativeRuntimePromptZh from "./prompts/system/codex-native-runtime.zh
 import completionHandoffPrompt from "./prompts/system/completion-handoff.md" with { type: "text" };
 import completionHandoffPromptZh from "./prompts/system/completion-handoff.zh-CN.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
+import computerSafetyPromptZh from "./prompts/system/computer-safety.zh-CN.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import customSystemPromptTemplateZh from "./prompts/system/custom-system-prompt.zh-CN.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
@@ -1058,7 +1059,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		if (modelGuidance) systemPrompt.push(prompt.render(modelGuidance, data).trim());
 	}
 	if (toolNames.includes("computer")) {
-		systemPrompt.push(computerSafetyPrompt.trim());
+		systemPrompt.push(selectPrompt(computerSafetyPrompt, computerSafetyPromptZh).trim());
 	}
 	const behaviorPolicyFragments = !resolvedCustomPrompt
 		? [

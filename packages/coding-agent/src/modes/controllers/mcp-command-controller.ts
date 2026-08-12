@@ -2229,7 +2229,6 @@ export class MCPCommandController {
 		const result = await this.ctx.mcpManager.discoverAndConnect({
 			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
 			filterExa: true,
-			filterBrowser: this.ctx.settings.get("browser.enabled") ?? false,
 		});
 		await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
 

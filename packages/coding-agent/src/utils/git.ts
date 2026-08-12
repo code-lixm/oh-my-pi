@@ -446,7 +446,7 @@ function ensureAvailable(): void {
  * indefinitely: a child killed by the deadline is reported as
  * {@link GIT_COMMAND_TIMEOUT_EXIT_CODE} rather than a successful exit.
  */
-function gitSpawnSyncText(
+export function gitSpawnSyncText(
 	cwd: string,
 	args: readonly string[],
 	timeoutMs: number = GIT_SPAWN_SYNC_TIMEOUT_MS,

@@ -6,6 +6,13 @@
  *                          project
  *   - list                — enumerate slots under the indexes root, or the
  *                          slots for one project under `--cwd`
+ *   - sync                — refresh the index for the current project on
+ *                          demand (also launched in the background by the
+ *                          opt-in git sync hooks)
+ *   - hooks-install       — install the opt-in git sync hooks
+ *                          (post-commit/post-merge/post-checkout)
+ *   - hooks-remove        — remove the opt-in git sync hooks
+ *   - hooks-status        — report whether the git sync hooks are installed
  *   - clear               — remove one slot (current project, `--cwd`, or
  *                          `--key`)
  *   - clear-all           — remove every slot belonging to the resolved
@@ -26,20 +33,45 @@
 import {
 	type CodeGraphClearAllOptions,
 	type CodeGraphClearOptions,
+	type CodeGraphHooksOptions,
 	type CodeGraphListOptions,
 	type CodeGraphPruneOptions,
 	type CodeGraphStatusOptions,
+	type CodeGraphSyncOptions,
 	runCodeGraphClear,
 	runCodeGraphClearAll,
+	runCodeGraphHooksInstall,
+	runCodeGraphHooksRemove,
+	runCodeGraphHooksStatus,
 	runCodeGraphList,
 	runCodeGraphPrune,
 	runCodeGraphStatus,
+	runCodeGraphSync,
 } from "../cli/codegraph-cli";
 import { Args, Command, Flags } from "../cli/command-runtime";
 
-type CodeGraphAction = "status" | "list" | "clear" | "clear-all" | "prune";
+type CodeGraphAction =
+	| "status"
+	| "list"
+	| "sync"
+	| "hooks-install"
+	| "hooks-remove"
+	| "hooks-status"
+	| "clear"
+	| "clear-all"
+	| "prune";
 
-const ACTIONS: CodeGraphAction[] = ["status", "list", "clear", "clear-all", "prune"];
+const ACTIONS: CodeGraphAction[] = [
+	"status",
+	"list",
+	"sync",
+	"hooks-install",
+	"hooks-remove",
+	"hooks-status",
+	"clear",
+	"clear-all",
+	"prune",
+];
 
 const BYTE_SIZE_RE = /^(\d+(?:\.\d+)?)\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)?$/i;
 const BYTE_MULTIPLIERS: Record<string, number> = {
@@ -123,7 +155,10 @@ export default class CodeGraph extends Command {
 		"# Inspect the resolved index for the current project\n  omp codegraph",
 		"# Inspect an explicit project root\n  omp codegraph status --cwd ~/work/foo",
 		"# List every slot under the indexes root\n  omp codegraph list --json",
-		"# List slots for the current project only\n  omp codegraph list --cwd .",
+		"# Refresh the index for the current project on demand\n  omp codegraph sync",
+		"# Install the git sync hooks (post-commit/post-merge/post-checkout)\n  omp codegraph hooks-install",
+		"# Remove the git sync hooks\n  omp codegraph hooks-remove",
+		"# Check whether the git sync hooks are installed\n  omp codegraph hooks-status",
 		"# Remove the current project's index\n  omp codegraph clear",
 		"# Remove every slot belonging to the current project\n  omp codegraph clear-all --dry-run",
 		"# Remove a specific index slot by key\n  omp codegraph clear --key <sha256-hex>",
@@ -144,6 +179,38 @@ export default class CodeGraph extends Command {
 					cwd: flags.cwd,
 				};
 				await runCodeGraphStatus(opts);
+				return;
+			}
+			case "sync": {
+				const opts: CodeGraphSyncOptions = {
+					json: Boolean(flags.json),
+					cwd: flags.cwd,
+				};
+				await runCodeGraphSync(opts);
+				return;
+			}
+			case "hooks-install": {
+				const opts: CodeGraphHooksOptions = {
+					json: Boolean(flags.json),
+					cwd: flags.cwd,
+				};
+				await runCodeGraphHooksInstall(opts);
+				return;
+			}
+			case "hooks-remove": {
+				const opts: CodeGraphHooksOptions = {
+					json: Boolean(flags.json),
+					cwd: flags.cwd,
+				};
+				await runCodeGraphHooksRemove(opts);
+				return;
+			}
+			case "hooks-status": {
+				const opts: CodeGraphHooksOptions = {
+					json: Boolean(flags.json),
+					cwd: flags.cwd,
+				};
+				await runCodeGraphHooksStatus(opts);
 				return;
 			}
 			case "list": {

@@ -13,6 +13,7 @@ import {
 	formatToolResultErrorPreview,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
+import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
 
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
@@ -21,7 +22,7 @@ import {
  * this field after every prompt to detect a failed turn.
  */
 export interface AdvisorAgent {
-	prompt(input: string): Promise<void>;
+	prompt(input: string | AgentMessage[]): Promise<void>;
 	abort(reason?: unknown): void;
 	reset(): void;
 	/**
@@ -231,13 +232,6 @@ const MAX_COALESCE_ROUNDS = 3;
  */
 const MAX_QUARANTINE_RETRIES = 2;
 
-const ADVISOR_RENDER_OPTIONS = {
-	includeToolIntent: true,
-	watchedRoles: true,
-	expandPrimaryContext: true,
-	expandEditDiffs: true,
-} as const;
-
 interface PendingDelta {
 	text: string;
 	rawMessages: AgentMessage[];
@@ -261,18 +255,38 @@ interface DeliveredMessage {
 
 function fingerprintMessage(message: AgentMessage): bigint | undefined {
 	try {
-		const stableMessage =
-			message.role === "assistant"
-				? {
-						...message,
-						content: message.content.map(part =>
-							part.type === "thinking" ? { ...part, durationMs: undefined } : part,
-						),
-					}
-				: message;
-		const serialized = JSON.stringify(stableMessage);
-		if (serialized === undefined) return undefined;
-		return Bun.hash.wyhash(serialized);
+		// Field-selective fingerprint: hash every top-level field the advisor
+		// renderer actually reads (mirrors AppendOnlyContextManager.#messageDigest,
+		// issue #3406). Unrendered metadata (timestamp, usage, provider internals)
+		// churns on provider round-trips and would otherwise trigger a full
+		// transcript replay for a no-op change. Rendered fields (from
+		// session-history-format.ts): role, content, customType, display, isError,
+		// toolResult: cancelled/exitCode/output, custom: details, plus the
+		// execution/branch/compaction/file-mention fields the formatter reads:
+		// excludeFromContext, command (bashExecution), code (pythonExecution),
+		// summary + fromId (branch/compaction), files (fileMention).
+		const m = message as unknown as Record<string, unknown>;
+		const payload = JSON.stringify({
+			r: m.role ?? null,
+			c: m.content ?? null,
+			toolCallId: m.toolCallId ?? null,
+			toolName: m.toolName ?? null,
+			err: m.isError ?? null,
+			ct: m.customType ?? null,
+			disp: m.display ?? null,
+			cancel: m.cancelled ?? null,
+			exit: m.exitCode ?? null,
+			out: m.output ?? null,
+			det: m.details ?? null,
+			xfc: m.excludeFromContext ?? null,
+			cmd: m.command ?? null,
+			code: m.code ?? null,
+			sum: m.summary ?? null,
+			from: m.fromId ?? null,
+			files: m.files ?? null,
+		});
+		if (payload === undefined) return undefined;
+		return Bun.hash.wyhash(payload);
 	} catch {
 		return undefined;
 	}
@@ -285,13 +299,21 @@ export class AdvisorRuntime {
 	 * allocation-free; fingerprints preserve identity across equivalent clones.
 	 */
 	#deliveredPrefix: DeliveredMessage[] = [];
-	/**
-	 * Last-shown body, keyed by primary-context customType (plan/goal mode rules,
-	 * approved plan). These prompts are re-injected verbatim every primary turn;
-	 * this lets {@link #renderDelta} collapse an unchanged copy to a one-line
-	 * marker so the advisor isn't re-fed the full ~1k-token rules each turn.
-	 */
+	/** Last-shown body, keyed by primary-context customType (plan/goal mode rules,
+	 *  approved plan). These prompts are re-injected verbatim every primary turn;
+	 *  this lets {@link #renderDelta} collapse an unchanged copy to a one-line
+	 *  marker so the advisor isn't re-fed the full ~1k-token rules each turn.
+	/** Cleared on every re-prime/seed and when a failed batch is dropped. */
 	#seenContext = new Map<string, string>();
+	/**
+	 * Snapshot of {@link #seenContext} taken by #prepareBatch before the
+	 * in-flight batch's first dedup mutation. Restored by
+	 * {@link #rollbackFailedTurn} when the turn fails and its rawMessages are
+	 * requeued, so first-time primary-context is re-delivered in full instead
+	 * of collapsing to "(unchanged — still in effect)" against an advisor
+	 * history that no longer contains it. Cleared on turn success.
+	 */
+	#seenContextInFlight: [string, string][] | undefined;
 	/** Incremented whenever the advisor loses context so queued raw deltas are re-rendered against fresh dedupe state. */
 	#renderRevision = 0;
 	/** Regex secret values observed in primary deltas and retained until advisor context resets. */
@@ -495,6 +517,7 @@ export class AdvisorRuntime {
 
 	#clearSeenContext(): void {
 		this.#seenContext.clear();
+		this.#seenContextInFlight = undefined;
 		this.#advisorRegexSecretValues.clear();
 		this.#renderRevision++;
 	}
@@ -510,7 +533,15 @@ export class AdvisorRuntime {
 		} catch {}
 	}
 
-	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean): void {
+	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean, reason?: string): void {
+		if (reason) {
+			logger.debug("advisor context reset", {
+				reason,
+				lastCount: this.#lastCount,
+				pending: this.#pending.length,
+				backlog: this.#backlog,
+			});
+		}
 		this.#lastCount = 0;
 		this.#deliveredPrefix = [];
 		this.#pending = [];
@@ -574,7 +605,11 @@ export class AdvisorRuntime {
 	 * post-compaction — transcript, giving the advisor fresh context instead of
 	 * leaving it blind to everything before the rewrite.
 	 */
-	reset(): void {
+	reset(reason = "external"): void {
+		// Step-1 observability (issue #7226): every re-prime logs its trigger so
+		// live investigations can attribute full-transcript replays (cached_tokens
+		// pinned at the instructions/tools boundary) to a concrete path instead of
+		// inferring it from payload markers after the fact.
 		this.#iterationAbort?.abort("advisor reset");
 		this.#epoch++;
 		this.#sessionTransitionPaused = false;
@@ -585,7 +620,7 @@ export class AdvisorRuntime {
 		this.#consecutiveQuarantines = 0;
 		this.#refusalModelsTried.clear();
 		this.#failureNotified = false;
-		this.#resetAdvisorContext(true, true);
+		this.#resetAdvisorContext(true, true, reason);
 	}
 
 	/**
@@ -614,10 +649,145 @@ export class AdvisorRuntime {
 		this.#includeThinking = true;
 	}
 
-	#formatRawDelta(rawMessages: AgentMessage[], wip = false): string | null {
+	// Candidate 4 (multi-message split): render the Session update as MULTIPLE
+	// user messages — one per source message — instead of one ever-growing user
+	// message. Provider prompt caches are prefix-based: a single user message
+	// whose text keeps growing invalidates the whole message on every turn, so
+	// cache_read stays pinned at the instructions/tools boundary (observed
+	// 14491 in production, 11066 in tests). Splitting into per-source user
+	// messages lets the provider cache each appended message (verified
+	// experimentally: cache_read 11066 → 11091 → 11112 vs pinned 11066).
+	//
+	/**
+	 * Shared obfuscation side effects for BOTH render paths (single-block
+	 * {@link #renderPreparedDelta} and multi-message
+	 * {@link #formatRawDeltaMessageChunks}): collect regex secret values from
+	 * primary-context custom messages and the rendered markdown, scrub the
+	 * advisor's own history, and refresh pending placeholder prefixes when new
+	 * secrets appear. Returns whether new secret values were discovered.
+	 * Idempotent across the two calls one drain makes for the same prepared
+	 * list: the second call discovers nothing new and skips the strip.
+	 */
+	#collectAdvisorSecrets(obfuscator: SecretObfuscator, delta: AgentMessage[], renderedMd: string): boolean {
+		let discoveredNewRegexSecretValue = false;
+		const addRegexValues = (text: string): void => {
+			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text) ?? []) {
+				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
+				this.#advisorRegexSecretValues.add(secretValue);
+				discoveredNewRegexSecretValue = true;
+			}
+		};
+		for (const message of delta) {
+			if (
+				message.role === "custom" &&
+				PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
+				typeof message.content === "string"
+			) {
+				addRegexValues(message.content);
+			}
+		}
+		addRegexValues(renderedMd);
+		scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
+		if (discoveredNewRegexSecretValue) {
+			this.#pending = this.#pending.map(delta => ({
+				...delta,
+				text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, this.#advisorRegexSecretValues),
+			}));
+		}
+		return discoveredNewRegexSecretValue;
+	}
+
+	/**
+	 * Map primary-context custom messages through the obfuscator. Shared by
+	 * both render paths so the byte-equivalence contract lives in one place.
+	 */
+	#obfuscatePrimaryContextMessages(obfuscator: SecretObfuscator, delta: AgentMessage[]): AgentMessage[] {
+		return delta.map(message =>
+			message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
+				? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
+				: message,
+		);
+	}
+
+	// Each source message is rendered INDEPENDENTLY via
+	// formatSessionHistoryMarkdown in chunked mode (shared toolResultIndex +
+	// consumedToolCallIds over the WHOLE delta), so a toolCall finds its
+	// toolResult across chunk boundaries and consecutive same-role collapsing
+	// is preserved. Concatenating the chunk texts with the same separator the
+	// old single-block render used yields byte-identical advisor context.
+	// Each chunk is delivered as its own user AgentMessage via a SINGLE
+	// Agent.prompt(AgentMessage[]) call, so the advisor model still runs ONCE
+	// per update (no per-message assistant turns).
+	#formatRawDeltaMessageChunks(preparedMessages: AgentMessage[], wip = false): AgentMessage[] | null {
+		// Consumes the ALREADY-prepared view from #prepareBatch: advisor custom
+		// messages are filtered and primary-context dedup is applied there, so
+		// splitting here never double-folds or leaks hidden messages.
+		const delta = preparedMessages;
+		if (delta.length === 0) return null;
+
+		const obfuscator = this.host.obfuscator;
+		// Side effects the pure renderer cannot own: collect secrets, scrub the
+		// advisor's own history and refresh pending placeholder prefixes (shared
+		// helper — see #collectAdvisorSecrets; idempotent for this drain's
+		// single-block pass over the same prepared list).
+		const probeMd = formatSessionHistoryMarkdown(delta, {
+			...ADVISOR_RENDER_OPTIONS,
+			includeThinking: this.#includeThinking,
+		});
+		if (obfuscator?.hasSecrets()) {
+			this.#collectAdvisorSecrets(obfuscator, delta, probeMd);
+		}
+
+		// Message-level obfuscation mirrors the old #formatRawDelta path EXACTLY:
+		// only primary-context custom messages are mapped (tool args, details.diff,
+		// structured fields), because the old path's contract is whole-delta text
+		// obfuscation as the final pass. Expanding to every role would mint
+		// different placeholders and break byte-equivalence with the old render.
+		const renderDelta = obfuscator?.hasSecrets() ? this.#obfuscatePrimaryContextMessages(obfuscator, delta) : delta;
+
+		const chunks = renderAdvisorDeltaChunks(renderDelta, {
+			wip,
+			includeThinking: this.#includeThinking,
+			obfuscator: obfuscator?.hasSecrets() ? obfuscator : undefined,
+			advisorRegexSecretValues: this.#advisorRegexSecretValues,
+		});
+		return chunks;
+	}
+
+	#formatRawDelta(rawMessages: AgentMessage[], wip = false, updateSeenContext = true): string | null {
 		const delta = rawMessages
 			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
-			.map(message => this.#dedupContextMessage(message));
+			.map(message =>
+				updateSeenContext ? this.#dedupContextMessage(message) : this.#dedupContextMessageReadOnly(message),
+			);
+		return this.#renderPreparedDelta(delta, wip);
+	}
+
+	/**
+	 * Preview variant of #dedupContextMessage: returns the collapse decision
+	 * WITHOUT advancing the live #seenContext map. Used by #renderDelta so the
+	 * preview text does not make the batch's first real delivery look like a
+	 * re-injection.
+	 */
+	#dedupContextMessageReadOnly(msg: AgentMessage): AgentMessage {
+		if (msg.role !== "custom") return msg;
+		if (!PRIMARY_CONTEXT_CUSTOM_TYPES.has(msg.customType)) return msg;
+		if (typeof msg.content !== "string") return msg;
+		if (this.#seenContext.get(msg.customType) === msg.content) {
+			return { ...msg, content: "(unchanged — still in effect)" };
+		}
+		return msg;
+	}
+
+	/**
+	 * Render already-prepared (deduped + advisor-filtered) messages to the
+	 * single-block Session update text. Does NOT dedup again — callers that
+	 * prepared the list must pass it here directly, and callers that prepared
+	 * via #prepareBatch get byte-identical batch text to what the multi-message
+	 * split consumes.
+	 */
+	#renderPreparedDelta(preparedMessages: AgentMessage[], wip = false): string | null {
+		const delta = preparedMessages;
 		if (delta.length === 0) return null;
 		const obfuscator = this.host.obfuscator;
 		let md = formatSessionHistoryMarkdown(delta, {
@@ -626,43 +796,22 @@ export class AdvisorRuntime {
 		});
 		if (!md.trim()) return null;
 		if (obfuscator?.hasSecrets()) {
-			let discoveredNewRegexSecretValue = false;
-			const addRegexValues = (text: string): void => {
-				for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
-					if (this.#advisorRegexSecretValues.has(secretValue)) continue;
-					this.#advisorRegexSecretValues.add(secretValue);
-					discoveredNewRegexSecretValue = true;
-				}
-			};
-			for (const message of delta) {
-				if (
-					message.role === "custom" &&
-					PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
-					typeof message.content === "string"
-				) {
-					addRegexValues(message.content);
-				}
-			}
-			addRegexValues(md);
-			scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
-			if (discoveredNewRegexSecretValue) {
-				this.#pending = this.#pending.map(delta => ({
-					...delta,
-					text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, this.#advisorRegexSecretValues),
-				}));
-			}
-			md = formatSessionHistoryMarkdown(
-				delta.map(message =>
-					message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
-						? obfuscateAdvisorMessage(obfuscator, message, this.#advisorRegexSecretValues)
-						: message,
-				),
-				{ ...ADVISOR_RENDER_OPTIONS, includeThinking: this.#includeThinking },
-			);
+			this.#collectAdvisorSecrets(obfuscator, delta, md);
+			md = formatSessionHistoryMarkdown(this.#obfuscatePrimaryContextMessages(obfuscator, delta), {
+				...ADVISOR_RENDER_OPTIONS,
+				includeThinking: this.#includeThinking,
+			});
 			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
 		}
-		const heading = wip ? "### Session update [in progress — more steps follow]" : "### Session update";
-		return `${heading}\n\n${md}`;
+		// Candidate 3: keep the heading byte-identical between wip and final turns
+		// and put the WIP marker at the END of the batch, so a wip/final flip
+		// never changes the batch prefix. The provider prompt cache is
+		// prefix-based; a heading that flips between turns re-prefills the whole
+		// user message on every in-progress turn.
+		const heading = "### Session update";
+		const mdHead = `${heading}\n\n${md}`;
+		if (!wip) return mdHead;
+		return `${mdHead}\n\n---\n\n[in progress — more steps follow]`;
 	}
 
 	#seedCursor(messages: AgentMessage[]): void {
@@ -672,8 +821,8 @@ export class AdvisorRuntime {
 			fingerprint: fingerprintMessage(message),
 		}));
 	}
-
-	#advanceCursor(all: AgentMessage[]): AgentMessage[] {
+	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
+		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
 		let prefixChanged = all.length < this.#lastCount;
 		for (let i = 0; !prefixChanged && i < this.#lastCount; i++) {
 			const delivered = this.#deliveredPrefix[i];
@@ -690,13 +839,23 @@ export class AdvisorRuntime {
 				delivered.fingerprint !== fingerprint
 			) {
 				prefixChanged = true;
+				// Full replays are expensive; record the exact divergent fields.
+				try {
+					const oldMsg: Record<string, unknown> = delivered.message as unknown as Record<string, unknown>;
+					const newMsg: Record<string, unknown> = current as unknown as Record<string, unknown>;
+					const differingFields: string[] = [];
+					for (const key of new Set([...Object.keys(oldMsg), ...Object.keys(newMsg)])) {
+						if (JSON.stringify(oldMsg[key]) !== JSON.stringify(newMsg[key])) differingFields.push(key);
+					}
+					logger.debug("advisor delivered prefix changed", { index: i, role: newMsg.role, differingFields });
+				} catch {}
 				break;
 			}
 			delivered.message = current;
 		}
 		if (prefixChanged) {
 			this.#epoch++;
-			this.#resetAdvisorContext(true, true);
+			this.#resetAdvisorContext(true, true, "delivered-prefix-changed");
 		}
 		const rawMessages = all.slice(this.#lastCount);
 		for (let i = this.#lastCount; i < all.length; i++) {
@@ -705,13 +864,7 @@ export class AdvisorRuntime {
 			this.#deliveredPrefix.push({ message, fingerprint: fingerprintMessage(message) });
 		}
 		this.#lastCount = all.length;
-		return rawMessages;
-	}
-
-	#renderDelta(messages?: AgentMessage[], wip = false): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
-		const all = messages ?? this.#latestMessages ?? this.host.snapshotMessages();
-		const rawMessages = this.#advanceCursor(all);
-		const text = this.#formatRawDelta(rawMessages, wip);
+		const text = this.#formatRawDelta(rawMessages, wip, false);
 		return text ? { text, rawMessages, renderRevision: this.#renderRevision, wip } : null;
 	}
 
@@ -758,7 +911,19 @@ export class AdvisorRuntime {
 	 * append-only context); falls back to truncating `state.messages` for tests
 	 * that hand-roll a minimal facade.
 	 */
+	#restoreSeenContextInFlight(): void {
+		if (!this.#seenContextInFlight) return;
+		this.#seenContext.clear();
+		for (const [key, value] of this.#seenContextInFlight) this.#seenContext.set(key, value);
+		this.#seenContextInFlight = undefined;
+	}
+
 	#rollbackFailedTurn(snapshot: number): void {
+		// Restore the primary-context dedup map to its pre-batch state: the
+		// failed turn never reached the advisor, so first-time context collapsed
+		// to "(unchanged…)" by this batch's #prepareBatch must expand again on
+		// the retry/requeue pass.
+		this.#restoreSeenContextInFlight();
 		const messages = this.agent.state.messages;
 		if (messages.length <= snapshot) return;
 		try {
@@ -800,6 +965,7 @@ export class AdvisorRuntime {
 	): Promise<{
 		batch: string | null;
 		rawMessages: AgentMessage[];
+		preparedMessages: AgentMessage[];
 		finalTurns: number;
 		wip: boolean;
 		resetContext: boolean;
@@ -849,11 +1015,18 @@ export class AdvisorRuntime {
 					// waiters, latest snapshot, and epoch stay untouched. Re-render only
 					// this already-popped raw batch so active plan/reference bodies are
 					// restored without replaying any older primary transcript.
+					logger.debug("advisor context reset", {
+						reason: "context-maintenance",
+						lastCount: this.#lastCount,
+						pending: this.#pending.length,
+						backlog: this.#backlog,
+					});
 					this.#clearAdvisorContextAtCurrentCursor();
-					const rerendered = this.#formatRawDelta(rawMessages, wip);
+					const { batch: rerendered, preparedMessages } = this.#prepareBatch(rawMessages, wip, batchText);
 					return {
 						batch: rerendered ?? (batchText || null),
 						rawMessages,
+						preparedMessages,
 						finalTurns: turns,
 						wip,
 						resetContext: true,
@@ -882,11 +1055,47 @@ export class AdvisorRuntime {
 			wip = late.at(-1)!.wip;
 		}
 
-		const batchObfuscator = this.host.obfuscator;
-		if (batchObfuscator?.hasSecrets()) {
-			batchText = batchObfuscator.stripUnsafeFriendlyPlaceholderPrefixes(batchText, this.#advisorRegexSecretValues);
-		}
-		return { batch: batchText || null, rawMessages, finalTurns: turns, wip, resetContext: false };
+		// Prepare the deduped view AFTER coalescing (rawMessages is complete by
+		// now): filters advisor custom messages and collapses re-injected
+		// primary-context to "(unchanged…)". BOTH the single-block text and the
+		// multi-message split derive from this exact list so they never diverge.
+		const { batch: preparedBatch, preparedMessages } = this.#prepareBatch(rawMessages, wip, batchText);
+		return {
+			batch: preparedBatch ?? (batchText || null),
+			rawMessages,
+			preparedMessages,
+			finalTurns: turns,
+			wip,
+			resetContext: false,
+		};
+	}
+
+	/**
+	 * Single dedup+render pass shared by every batch finalization path (normal
+	 * and context-reset). Filters advisor custom messages, collapses re-injected
+	 * primary-context to "(unchanged…)" via #dedupContextMessage, renders the
+	 * single-block batch text from the SAME prepared list the multi-message
+	 * split consumes, so the two views can never diverge.
+	 */
+	#prepareBatch(
+		rawMessages: AgentMessage[],
+		wip: boolean,
+		fallback: string | null,
+	): { batch: string | null; preparedMessages: AgentMessage[] } {
+		// Dedup against the LIVE #seenContext (populated by previous turns via
+		// #renderDelta -> #formatRawDelta) so re-injected primary context that
+		// was ALREADY shown collapses to "(unchanged…)", while a FIRST delivery
+		// in this batch stays expanded. This pass advances the live map exactly
+		// once per batch — #renderDelta's text is a preview and must not set it.
+		// Snapshot the dedup map BEFORE this batch's first mutation so a failed
+		// turn can restore it (see #rollbackFailedTurn). `??=` keeps the first
+		// snapshot across coalescing re-prepares within one in-flight batch.
+		this.#seenContextInFlight ??= [...this.#seenContext];
+		const preparedMessages = rawMessages
+			.filter(message => !(message.role === "custom" && message.customType === "advisor"))
+			.map(message => this.#dedupContextMessage(message));
+		const batch = this.#renderPreparedDelta(preparedMessages, wip);
+		return { batch: batch ?? fallback, preparedMessages };
 	}
 
 	#terminalAssistantFailure(snapshot: number): AssistantMessage | undefined {
@@ -928,8 +1137,10 @@ export class AdvisorRuntime {
 				const epoch = this.#epoch;
 				for (const delta of popped) {
 					if (delta.renderRevision === this.#renderRevision) continue;
-					const refreshed = this.#formatRawDelta(delta.rawMessages, delta.wip);
-					if (refreshed) delta.text = refreshed;
+					// Context maintenance estimates this preview before #prepareBatch makes
+					// its final deduped render. Rebuild stale text against the new context
+					// so the maintenance budget cannot undercount an expanded re-injection.
+					delta.text = this.#formatRawDelta(delta.rawMessages, delta.wip, false) ?? delta.text;
 					delta.renderRevision = this.#renderRevision;
 				}
 				const recoveringOverflow = popped.some(delta => delta.overflowRecovery === true);
@@ -943,11 +1154,12 @@ export class AdvisorRuntime {
 				// Epoch was invalidated during batch collection; restart the loop.
 				if (result === null) continue;
 				if (this.#sessionTransitionPaused) {
+					this.#restoreSeenContextInFlight();
 					this.#pending.unshift(...popped);
 					continue;
 				}
 
-				const { batch, rawMessages, finalTurns, wip, resetContext } = result;
+				const { batch, rawMessages, preparedMessages, finalTurns, wip, resetContext } = result;
 
 				if (this.disposed || batch === null) {
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
@@ -964,10 +1176,18 @@ export class AdvisorRuntime {
 				const messageSnapshot = this.agent.state.messages.length;
 				const contextWasFresh = resetContext || recoveringOverflow || messageSnapshot === 0;
 				try {
-					// Reset the host's per-update advisor state (one-advise-per-update
-					// gate) and pass through whether this batch reviews partial work.
 					this.host.beginAdvisorUpdate?.(wip);
-					const prompt = this.agent.prompt(batch);
+					// Candidate 4 (multi-message split): deliver the Session update as
+					// multiple user messages so the provider prompt cache can
+					// incrementally hit each appended message (cache_read grows with
+					// the session instead of staying pinned at the instructions/tools
+					// boundary). Falls back to the single-block string when the chunk
+					// renderer cannot split (e.g. empty delta). The split is
+					// byte-equivalent to the old single-block render (equivalence
+					// tested), so the advisor sees identical context.
+					const splitMessages = this.#formatRawDeltaMessageChunks(preparedMessages, wip);
+					const promptInput: string | AgentMessage[] = splitMessages ?? batch;
+					const prompt = this.agent.prompt(promptInput);
 					this.#promptInFlight = prompt;
 					try {
 						await prompt;
@@ -987,6 +1207,7 @@ export class AdvisorRuntime {
 					const turnError = getAdvisorTurnError(this.agent.state.messages.slice(messageSnapshot));
 					if (turnError) throw turnError;
 					success = true;
+					this.#seenContextInFlight = undefined;
 					this.#failing = false;
 					this.#consecutiveFailures = 0;
 					this.#failureNotified = false;
@@ -1017,14 +1238,16 @@ export class AdvisorRuntime {
 					this.#wakeAllWaiters();
 					const failedMessages = this.agent.state.messages.slice(messageSnapshot);
 					const terminalFailure = this.#terminalAssistantFailure(messageSnapshot);
-					const classifierRefusal =
-						(terminalFailure !== undefined && isClassifierRefusal(terminalFailure)) ||
-						AIError.is(AIError.classify(err), AIError.Flag.ContentBlocked);
+					const rawErrorId = AIError.classify(err);
 					const terminalFailureId =
 						terminalFailure === undefined ? undefined : AIError.classifyMessage(terminalFailure);
+					const classifierRefusal =
+						(terminalFailure !== undefined && isClassifierRefusal(terminalFailure)) ||
+						(!AIError.is(rawErrorId, AIError.Flag.AccountPolicy) &&
+							AIError.is(rawErrorId, AIError.Flag.ContentBlocked));
 					const contextOverflow =
 						(terminalFailureId !== undefined && AIError.is(terminalFailureId, AIError.Flag.ContextOverflow)) ||
-						AIError.is(AIError.classify(err), AIError.Flag.ContextOverflow);
+						AIError.is(rawErrorId, AIError.Flag.ContextOverflow);
 					// A terminal provider failure that is neither retriable nor an
 					// overflow (e.g. a blocked prompt) will fail identically on every
 					// retry — classify it before rollback so the batch is dropped after
@@ -1038,7 +1261,11 @@ export class AdvisorRuntime {
 					if (classifierRefusal) {
 						if (this.#includeThinking) {
 							this.#includeThinking = false;
-							const strippedBatch = this.#formatRawDelta(rawMessages, wip);
+							// Do NOT advance #seenContext here: the requeued batch is
+							// re-deduped by #prepareBatch on the next drain, so a mutation
+							// now would double-fold first-time primary context into
+							// "(unchanged — still in effect)" on the retry.
+							const strippedBatch = this.#formatRawDelta(rawMessages, wip, false);
 							if (strippedBatch) {
 								this.#pending.unshift({
 									text: strippedBatch,
@@ -1127,13 +1354,13 @@ export class AdvisorRuntime {
 						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
 							this.#notifyFailureOnce(err);
 							this.#consecutiveQuarantines = 0;
-							this.#resetAdvisorContext(true, true);
+							this.#resetAdvisorContext(true, true, "quarantine-retry-exhausted");
 							continue;
 						}
 						const rePrime = this.#pending.length > 0 ? this.#latestMessages : undefined;
 						// Wake catchup waiters only when nothing is re-primed; otherwise the
 						// re-primed turn restores the backlog and waiters resolve on its completion.
-						this.#resetAdvisorContext(true, !rePrime);
+						this.#resetAdvisorContext(true, !rePrime, "quarantine-recovery");
 						if (rePrime) this.onTurnEnd(rePrime);
 						continue;
 					}
@@ -1199,7 +1426,10 @@ export class AdvisorRuntime {
 						} else {
 							// Retry once against the fresh advisor context, using only the same
 							// bounded raw batch. Pending updates remain queued behind it.
-							const recoveryBatch = this.#formatRawDelta(rawMessages, wip) ?? batch;
+							// Same double-fold guard as the refusal branch: #prepareBatch
+							// re-dedups on retry, so this preview render must not mutate
+							// #seenContext.
+							const recoveryBatch = this.#formatRawDelta(rawMessages, wip, false) ?? batch;
 							this.#pending.unshift({
 								text: recoveryBatch,
 								rawMessages,
@@ -1257,12 +1487,14 @@ export class AdvisorRuntime {
 	}
 }
 
-/** Mirrors turn recovery's refusal classification and retains AIError's provider-neutral content-block fallback. */
+/** Mirrors turn recovery's refusal classification without treating account eligibility as a model refusal. */
 function isClassifierRefusal(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
+	const id = AIError.classifyMessage(message);
+	if (AIError.is(id, AIError.Flag.AccountPolicy)) return false;
 	const stopType = message.stopDetails?.type;
 	if (stopType === "refusal" || stopType === "sensitive") return true;
-	return AIError.is(AIError.classifyMessage(message), AIError.Flag.ContentBlocked);
+	return AIError.is(id, AIError.Flag.ContentBlocked);
 }
 
 /**

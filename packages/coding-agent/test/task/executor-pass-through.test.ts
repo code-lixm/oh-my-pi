@@ -236,6 +236,81 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.customTools?.map(tool => tool.name)).toEqual(["mcp__private_read"]);
 	});
 
+	it("filters inherited MCP proxies through an explicit agent tools list", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const mcpManager = {
+			getTools: () => [
+				{ name: "mcp__allowed_read", label: "allowed/read" },
+				{ name: "mcp__hidden_browser", label: "hidden/browser" },
+			],
+		} as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "mcp-whitelist-child",
+			agent: { ...baseAgent, tools: ["read", "mcp__allowed_read"] },
+			mcpManager,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.enableMCP).toBe(true);
+		expect(forwarded?.mcpManager).toBe(mcpManager);
+		expect(forwarded?.customTools?.map(tool => tool.name)).toEqual(["mcp__allowed_read"]);
+	});
+
+	it("matches whole MCP servers through wildcard entries in the agent tools list", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const mcpManager = {
+			getTools: () => [
+				{ name: "mcp__codegraph_lookup", label: "codegraph/lookup" },
+				{ name: "mcp__codegraph_index", label: "codegraph/index" },
+				{ name: "mcp__chrome_devtools_navigate", label: "chrome-devtools/navigate" },
+			],
+		} as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "mcp-wildcard-child",
+			agent: { ...baseAgent, tools: ["read", "mcp__codegraph_*"] },
+			mcpManager,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.customTools?.map(tool => tool.name).sort()).toEqual([
+			"mcp__codegraph_index",
+			"mcp__codegraph_lookup",
+		]);
+	});
+
+	it("matches every inherited MCP tool with a bare mcp__* wildcard", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const mcpManager = {
+			getTools: () => [
+				{ name: "mcp__codegraph_lookup", label: "codegraph/lookup" },
+				{ name: "mcp__chrome_devtools_navigate", label: "chrome-devtools/navigate" },
+			],
+		} as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "mcp-all-wildcard-child",
+			agent: { ...baseAgent, tools: ["read", "mcp__*"] },
+			mcpManager,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.customTools?.map(tool => tool.name).sort()).toEqual([
+			"mcp__chrome_devtools_navigate",
+			"mcp__codegraph_lookup",
+		]);
+	});
+
 	it("does not inject hub into ordinary explicit read-only tool lists while preserving yield", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));

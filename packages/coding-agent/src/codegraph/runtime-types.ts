@@ -279,6 +279,7 @@ export interface CodeGraphRuntime {
 	sync(options?: CodeGraphSyncOptions): Promise<CodeGraphSyncResult>;
 	explore(query: string, options?: CodeGraphExploreOptions): Promise<CodeGraphExploreResult>;
 	inspectFreshness(paths?: readonly string[]): Promise<CodeGraphExploreFreshness>;
+	detectNewFiles(): Promise<string[]>;
 	status(): Promise<CodeGraphStatus>;
 	close(): void;
 }

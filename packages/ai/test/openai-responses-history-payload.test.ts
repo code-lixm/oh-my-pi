@@ -1656,4 +1656,64 @@ describe("OpenAI responses history payload", () => {
 		expect(orphanNote(strictOverridePayload.input)?.content).toContain("[Orphan read result;");
 		expect(orphanNote(nonStrictOverridePayload.input)?.content).toContain("[Orphan tool result;");
 	});
+
+	it("never synthesizes an empty reasoning_text item for a DeepSeek-family Responses target", () => {
+		// A turn minted by another model captured no reasoning (empty thinking
+		// block, no signature). Console Go rejects a reasoning item whose
+		// `reasoning_text` is empty — "The reasoning_text in the thinking mode
+		// must be passed back to the API" — so the replay must omit the item
+		// instead of carrying an empty placeholder (regression: 400 retry loop
+		// after switching to opencode-go/deepseek-v4-flash).
+		const deepseekModel = getBundledModel<"openai-responses">("opencode-go", "deepseek-v4-flash");
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "work", timestamp: Date.now() },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "", thinkingSignature: undefined },
+						{
+							type: "toolCall",
+							id: "call_empty_reasoning",
+							name: "read",
+							arguments: { path: "a.ts" },
+						},
+					],
+					api: "openai-responses",
+					provider: "openai",
+					model: "gpt-5.6-sol",
+					usage: issue5002ZeroUsage,
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_empty_reasoning",
+					toolName: "read",
+					content: [{ type: "text", text: "contents" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
+		const input = buildResponsesInput({
+			model: deepseekModel,
+			context,
+			strictResponsesPairing: true,
+			supportsImageDetailOriginal: true,
+			nativeHistory: { replay: true, filterReasoning: false },
+			requiresReasoningReplayForAllTurns: true,
+			requiresReasoningReplayForToolCalls: true,
+			repairOrphanOutputs: true,
+		});
+		const emptyReasoning = input.filter(
+			item =>
+				item?.type === "reasoning" &&
+				Array.isArray((item as { content?: unknown[] }).content) &&
+				((item as { content: Array<{ text?: string }> }).content[0]?.text ?? "").trim() === "",
+		);
+		expect(emptyReasoning).toHaveLength(0);
+		// The tool call itself must still replay.
+		expect(input.some(item => item?.type === "function_call" && item.call_id === "call_empty_reasoning")).toBe(true);
+	});
 });

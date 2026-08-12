@@ -51,6 +51,31 @@ export function normalizeToolName(name: string): string {
 	return LEGACY_BUILTIN_TOOL_NAME_ALIASES.get(normalized) ?? normalized;
 }
 
+/**
+ * Match a tool-name glob pattern against a concrete tool name.
+ *
+ * Supports the same `*` (any run of characters) and `?` (exactly one
+ * character) wildcards as OpenCode's permission patterns, so an agent's
+ * `tools:` list can address a whole MCP server at once — e.g.
+ * `mcp__codegraph_*` matches every tool of the `codegraph` server while
+ * `mcp__*` matches every inherited MCP tool. Exact names continue to match
+ * literally, and patterns are anchored (a partial pattern never matches).
+ */
+export function matchesToolNamePattern(pattern: string, name: string): boolean {
+	if (!pattern.includes("*") && !pattern.includes("?")) return pattern === name;
+	let regex = "";
+	for (const ch of pattern) {
+		if (ch === "*") {
+			regex += ".*";
+		} else if (ch === "?") {
+			regex += ".";
+		} else {
+			regex += ch.replace(/[\\^$+?.()|[\]{}]/g, "\\$&");
+		}
+	}
+	return new RegExp(`^${regex}$`).test(name);
+}
+
 /** Normalize and deduplicate tool names while preserving first-seen order. */
 export function normalizeToolNames(names: Iterable<string>): string[] {
 	const out: string[] = [];

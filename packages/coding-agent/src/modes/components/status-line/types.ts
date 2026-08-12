@@ -71,6 +71,7 @@ export interface StatusLineUsageItem {
 	durationMs?: number;
 	modelId?: string;
 	windowId?: string;
+	limitId?: string;
 	resetsAt?: number;
 	usedFraction?: number;
 	amount: UsageAmount;
@@ -79,6 +80,13 @@ export interface StatusLineUsageItem {
 
 export interface StatusLineUsageSummary {
 	items: StatusLineUsageItem[];
+	/** Compact subscription windows used by providers such as Cursor. */
+	tier?: string;
+	fiveHour?: { percent: number; resetMinutes?: number };
+	sevenDay?: { percent: number; resetHours?: number };
+	monthly?: { percent: number; resetHours?: number };
+	/** Whether the provider supplied compact subscription-shaped rows. */
+	preferCompact?: boolean;
 }
 
 export interface SegmentContext {

@@ -108,6 +108,12 @@ export interface CodeGraphToolDetails {
 const DEFAULT_MAX_FILES = 8;
 const ABSOLUTE_MAX_FILES = 200;
 const MODEL_OUTPUT_HARD_CEILING = 25_000;
+/**
+ * Cooldown between on-demand new-file scans. The scan walks the whole source
+ * root, so consecutive `codegraph` calls within the window skip it; the tool
+ * mutation pipeline and `inspectFreshness` still cover everything indexed.
+ */
+const NEW_FILE_SCAN_COOLDOWN_MS = 30_000;
 
 type FallbackContext = {
 	sourceRoot: string;
@@ -184,10 +190,13 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 	}
 
 	readonly #scheduledKeys = new Set<string>();
+	/** Last on-demand new-file scan timestamp; gates the cooldown. */
+	#lastNewFileScanAt = 0;
 
 	constructor(
 		private readonly session: CodeGraphToolSession,
 		initialLocation?: CodeGraphIndexLocation,
+		private readonly newFileScanCooldownMs: number = NEW_FILE_SCAN_COOLDOWN_MS,
 	) {
 		this.description = prompt.render(selectPrompt(codegraphDescription, codegraphDescriptionZh));
 		if (initialLocation) this.#scheduleIndex(initialLocation);
@@ -257,6 +266,22 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 					logger.debug("CodeGraph freshness inspection failed", {
 						error: error instanceof Error ? error.message : String(error),
 					});
+				}
+				// Safety net: mutation events + freshness only cover files that are
+				// already tracked (modified/deleted) or were touched by the tool
+				// pipeline. Files created out-of-band (bash, IDE, git operations)
+				// have neither an event nor an index entry, so a cooldown-gated
+				// project scan finds them and the scoped sync below indexes them.
+				if (Date.now() - this.#lastNewFileScanAt >= this.newFileScanCooldownMs) {
+					this.#lastNewFileScanAt = Date.now();
+					try {
+						const newFiles = await runtime.detectNewFiles();
+						for (const newFile of newFiles) syncTargets.add(newFile);
+					} catch (error) {
+						logger.debug("CodeGraph new-file scan failed", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
 				}
 				if (syncTargets.size > 0) {
 					try {

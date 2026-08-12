@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
-import { resolveAgentModelPatterns, resolveAgentModelSource, resolveExplicitModelRole } from "../config/model-resolver";
+import { resolveAgentModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
@@ -45,7 +45,7 @@ export type VibeCli = "fast" | "good";
  * CLI flavor → bundled agent type. This IS the model-tier mapping: `sonic`
  * carries `model: "@smol"` (the configured fast/low-latency role) and `task`
  * carries `model: "@task"` (inherits the session's strong model).
- * Resolution goes through {@link resolveAgentModelPatterns} exactly like a
+ * Resolution goes through {@link resolveAgentModelSelection} exactly like a
  * `task` spawn, so `task.agentModelOverrides` and model-role settings apply.
  */
 export const VIBE_CLI_AGENT: Record<VibeCli, string> = {
@@ -146,6 +146,7 @@ interface VibeRestoreCandidate {
 interface ResolvedVibeWorker {
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
+	/** Pre-expansion role alias behind {@link modelOverride}, when the worker agent named one. */
 	modelRole?: string;
 }
 
@@ -168,6 +169,7 @@ interface VibeRecord {
 	childSessionFile?: string;
 	agent: AgentDefinition;
 	modelOverride?: string | string[];
+	/** Pre-expansion role alias behind {@link modelOverride}, when the worker agent named one. */
 	modelRole?: string;
 	state: VibeSessionState;
 	createdAt: number;
@@ -494,18 +496,17 @@ export class VibeSessionRegistry {
 			throw new ToolError(`Bundled agent "${agentName}" for vibe cli "${cli}" is unavailable.`);
 		}
 		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
-		const modelResolution = {
+		// Same contract as the task spawn path: the expansion discards the role
+		// alias (`@task`, `@smol`), so patterns and role identity come from one
+		// call — the child's inherited retry-fallback chain is keyed off the role.
+		const { patterns, role } = resolveAgentModelSelection({
 			settingsOverride: agentModelOverrides[agentName],
 			agentModel: agent.model,
 			settings: session.settings,
 			activeModelPattern: session.getActiveModelString?.(),
 			fallbackModelPattern: session.getModelString?.(),
-		};
-		return {
-			agent,
-			modelOverride: resolveAgentModelPatterns(modelResolution),
-			modelRole: resolveExplicitModelRole(resolveAgentModelSource(modelResolution), session.settings),
-		};
+		});
+		return { agent, modelOverride: patterns, modelRole: role };
 	}
 
 	async #appendLifecycleEvent(

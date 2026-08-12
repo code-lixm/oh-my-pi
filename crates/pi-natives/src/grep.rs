@@ -1141,7 +1141,7 @@ fn build_grep_walk_request(
 		.emit_root(false)
 		.depth(1, usize::MAX)
 		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
-		.cache(false)
+		.cache(true)
 		.filter(filter))
 }
 

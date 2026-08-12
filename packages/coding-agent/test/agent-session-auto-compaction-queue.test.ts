@@ -324,12 +324,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		gate.resolve();
-		// Let the extension handler's resolved promise settle before fake timers
-		// advance the runner's timeout budget.
-		await Promise.resolve();
-		await Promise.resolve();
-		vi.runAllTimers();
-		await Promise.resolve();
+		// Wait for compact() to observe the released hook before advancing fake timers.
+		// Advancing them here would fire the runner's timeout while its promise chain
+		// is still settling, causing compaction to fall through to provider fallback.
 		await compactPromise;
 		vi.runAllTimers();
 		await Promise.resolve();

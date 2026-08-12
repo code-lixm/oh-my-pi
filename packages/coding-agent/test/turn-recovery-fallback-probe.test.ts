@@ -78,7 +78,10 @@ function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}):
 	const probeModelConnectivity = vi.fn(probe);
 	const host: TurnRecoveryHost = {
 		agent: agent as TurnRecoveryHost["agent"],
-		sessionManager: undefined as never,
+		sessionManager: {
+			getSessionId: () => "test-session",
+			appendModelChange: () => {},
+		} as unknown as TurnRecoveryHost["sessionManager"],
 		persistedAssistantEntryId: () => undefined,
 		settings: Settings.isolated(),
 		modelRegistry,

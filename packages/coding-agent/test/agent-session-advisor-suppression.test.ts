@@ -296,19 +296,6 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		});
 	}
 
-	function lastUserContextText(messages: readonly Message[]): string | undefined {
-		for (let index = messages.length - 1; index >= 0; index--) {
-			const message = messages[index];
-			if (message?.role !== "user") continue;
-			if (typeof message.content === "string") return message.content;
-			return message.content
-				.filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
-				.map(part => part.text)
-				.join("\n");
-		}
-		return undefined;
-	}
-
 	function capturePersistedAdvice(sessionManager: SessionManager): string[] {
 		const persisted: string[] = [];
 		sessionManager.onEntryAppended = entry => {
@@ -547,8 +534,8 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		await advisor.waitForIdle();
 
 		expect(mock.calls.length).toBeGreaterThanOrEqual(2);
-		const mixedUserReviewCalls = advisorMock.calls.filter(
-			call => lastUserContextText(call.context.messages)?.includes(mixedUserRequest) === true,
+		const mixedUserReviewCalls = advisorMock.calls.filter(call =>
+			messagesContainText(call.context.messages, mixedUserRequest),
 		);
 		expect(mixedUserReviewCalls).toHaveLength(1);
 		const mixedReviewContext = mixedUserReviewCalls[0]?.context.messages;
@@ -602,10 +589,11 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(advisorMock.calls).toHaveLength(2);
 		const nextReviewContext = advisorMock.calls[1]?.context.messages;
 		if (!nextReviewContext) throw new Error("Expected the next user turn to reach the advisor");
-		const latestReviewBatch = lastUserContextText(nextReviewContext);
-		if (!latestReviewBatch) throw new Error("Expected a rendered advisor update");
-		expect(latestReviewBatch).toContain(nextUserRequest);
-		expect(latestReviewBatch).not.toContain(initialAnswer);
+		const previousUserCount =
+			advisorMock.calls[0]?.context.messages.filter(message => message.role === "user").length ?? 0;
+		const nextReviewDelta = nextReviewContext.filter(message => message.role === "user").slice(previousUserCount);
+		expect(messagesContainText(nextReviewDelta, nextUserRequest)).toBe(true);
+		expect(messagesContainText(nextReviewDelta, initialAnswer)).toBe(false);
 	});
 
 	it("auto-resumes a late advisor steer queued during post-turn unwind after a terminal answer", async () => {

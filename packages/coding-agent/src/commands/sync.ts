@@ -4,7 +4,7 @@ import { runSyncCommand, type SyncAction, type SyncCommandArgs } from "../cli/sy
 const ACTIONS: SyncAction[] = ["init", "status", "push", "pull", "conflict", "resolve", "gc", "bootstrap"];
 
 export default class Sync extends Command {
-	static description = "Synchronize encrypted OMP configuration through S3-compatible storage";
+	static description = "Synchronize encrypted configuration through S3-compatible storage";
 
 	static args = {
 		action: Args.string({ description: "Sub-command", required: false, options: ACTIONS }),

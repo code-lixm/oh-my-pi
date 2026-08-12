@@ -53,8 +53,20 @@ export interface ActiveRetryFallbackState {
 	lastAppliedFallbackThinkingLevel: ConfiguredThinkingLevel | undefined;
 	/** Prevent automatic restoration after a semantic or usage-driven fallback. */
 	pinned: boolean;
-	/** Whether this fallback has completed at least one provider turn. */
-	hasCompletedFallbackTurn: boolean;
+	/**
+	 * Set once a turn on the fallback target settles successfully. Until then the
+	 * switch is only a routing decision — nothing has been produced by the new
+	 * model, so no observer may report the run as having used it.
+	 */
+	served?: boolean;
+}
+
+/** Model a session's produced work is attributed to. */
+export interface ServingModel {
+	/** Full selector including routing and thinking level. */
+	selector: string;
+	/** Whether fallback routing, rather than the configured primary, owns it. */
+	isFallback: boolean;
 }
 
 export const FALLBACK_RECOVERY_PROBE_INTERVAL_MS = 60_000;

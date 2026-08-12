@@ -14,8 +14,12 @@ import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
+import { selectPrompt } from "../prompts/prompt-locale";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import noProgressLoopRedirectTemplate from "../prompts/system/no-progress-loop-redirect.md" with { type: "text" };
+import noProgressLoopRedirectTemplateZh from "../prompts/system/no-progress-loop-redirect.zh-CN.md" with {
+	type: "text",
+};
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { assertEditableFile } from "../tools/auto-generated-guard";
@@ -392,7 +396,7 @@ export class LoopGuards {
 	#interruptNoProgressLoop(messages: AgentMessage[], detection: NoProgressLoopDetection): void {
 		const generation = this.#host.promptGeneration();
 		const canRecover = this.#noProgressRecoveryGeneration !== generation;
-		const content = prompt.render(noProgressLoopRedirectTemplate, {
+		const content = prompt.render(selectPrompt(noProgressLoopRedirectTemplate, noProgressLoopRedirectTemplateZh), {
 			count: detection.count,
 			summary: detection.summary,
 		});

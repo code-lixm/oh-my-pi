@@ -10,7 +10,12 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { type ImageMetadata, isProbablyBinary, logger, prompt, readImageMetadata } from "@oh-my-pi/pi-utils";
-import { recordFileSnapshot, recordSeenLinesFromBody, SNAPSHOT_MAX_BYTES } from "../edit/file-snapshot-store";
+import {
+	recordFileSnapshot,
+	recordHashlineSourceSnapshot,
+	recordSeenLinesFromBody,
+	SNAPSHOT_MAX_BYTES,
+} from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import { isNotebookPath, readEditableNotebookText } from "../edit/notebook";
 import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from "../internal-urls";
@@ -758,7 +763,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			outputText = blocks.join("\n\n…\n\n");
 		}
 		if (shouldAddHashLines && outputText) {
-			const tag = await recordFileSnapshot(this.session, absolutePath);
+			const tag = fullLines
+				? recordHashlineSourceSnapshot(this.session, {
+						absolutePath,
+						anchor: formatPathRelativeToCwd(absolutePath, this.session.cwd),
+						fullText: fullLines.join("\n"),
+					})?.tag
+				: await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
 				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
 				outputText = `${

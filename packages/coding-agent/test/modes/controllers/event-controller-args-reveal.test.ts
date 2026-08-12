@@ -6,9 +6,11 @@
  * how assistant text snaps at message_end.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { EDIT_MODE_STRATEGIES } from "@oh-my-pi/pi-coding-agent/edit";
 import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import {
 	ToolExecutionComponent,
@@ -47,13 +49,26 @@ function makeStreamingMessage(content: AssistantMessage["content"]): AssistantMe
 
 function createFixture(
 	streamingMessage: AssistantMessage,
-	options?: {
-		chatContainer?: TranscriptContainer | { addChild: (...args: unknown[]) => void };
-		pendingTools?: Map<string, ToolExecutionHandle>;
-	},
+	optionsOrTool?:
+		| AgentTool
+		| {
+				chatContainer?: TranscriptContainer | { addChild: (...args: unknown[]) => void };
+				pendingTools?: Map<string, ToolExecutionHandle>;
+		  },
 ) {
+	const options = optionsOrTool && "chatContainer" in optionsOrTool ? optionsOrTool : undefined;
+	const tool = optionsOrTool && !("chatContainer" in optionsOrTool) ? optionsOrTool : undefined;
 	const pendingTools = options?.pendingTools ?? new Map<string, ToolExecutionHandle>();
 	const chatContainer = options?.chatContainer ?? { addChild: vi.fn() };
+	let approvalWaiter: ((toolCallId: string) => Promise<void>) | undefined;
+	const extensionRunner = {
+		setToolApprovalPreviewWaiter(waiter: (toolCallId: string) => Promise<void>) {
+			approvalWaiter = waiter;
+			return () => {
+				if (approvalWaiter === waiter) approvalWaiter = undefined;
+			};
+		},
+	};
 	const ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
@@ -68,12 +83,17 @@ function createFixture(
 		noteDisplayableThinkingContent: vi.fn(() => false),
 		chatContainer,
 		toolOutputExpanded: false,
-		session: { getToolByName: () => undefined, hasBuiltInTool: () => true },
-		viewSession: { getToolByName: () => undefined, hasBuiltInTool: () => true },
+		session: { getToolByName: () => tool, hasBuiltInTool: () => true, extensionRunner },
+		viewSession: { getToolByName: () => tool, hasBuiltInTool: () => true },
 		sessionManager: { getCwd: () => process.cwd() },
 	} as unknown as InteractiveModeContext;
 
-	return { controller: new EventController(ctx), pendingTools, chatContainer };
+	return {
+		controller: new EventController(ctx),
+		pendingTools,
+		chatContainer,
+		getApprovalWaiter: () => approvalWaiter,
+	};
 }
 
 async function dispatch(controller: EventController, message: AssistantMessage) {
@@ -247,6 +267,48 @@ describe("EventController paces streamed tool args", () => {
 		// back to a streaming prefix.
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 5);
 		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("/tmp/exec.ts");
+	});
+	it("holds approval until the final edit preview is ready", async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		const compute = Promise.withResolvers<void>();
+		vi.spyOn(EDIT_MODE_STRATEGIES.replace, "computeDiffPreview").mockImplementation(async () => {
+			await compute.promise;
+			return [
+				{
+					path: "/tmp/approval.ts",
+					diff: "@@ -1 +1 @@\n-old\n+ISSUE_7957_PROPOSED_EDIT",
+					firstChangedLine: 1,
+				},
+			];
+		});
+		const args = {
+			path: "/tmp/approval.ts",
+			old_string: "old",
+			new_string: "ISSUE_7957_PROPOSED_EDIT",
+		};
+		const streaming = makeStreamingMessage([{ type: "toolCall", id: "tc-approval", name: "edit", arguments: args }]);
+		const tool = { mode: "replace" } as unknown as AgentTool;
+		const { controller, pendingTools, getApprovalWaiter } = createFixture(streaming, tool);
+		await dispatch(controller, streaming);
+
+		const waiter = getApprovalWaiter();
+		if (!waiter) throw new Error("expected the TUI approval-preview waiter");
+		let approvalReady = false;
+		const waiting = waiter("tc-approval").then(() => {
+			approvalReady = true;
+		});
+		await dispatchToolStart(controller, {
+			toolCallId: "tc-approval",
+			toolName: "edit",
+			args,
+		});
+		await Promise.resolve();
+		expect(approvalReady).toBe(false);
+
+		compute.resolve();
+		await waiting;
+		const rendered = pendingTools.get("tc-approval")?.render(100).join("\n") ?? "";
+		expect(Bun.stripANSI(rendered)).toContain("ISSUE_7957_PROPOSED_EDIT");
 	});
 });
 

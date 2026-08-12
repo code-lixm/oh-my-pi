@@ -109,6 +109,12 @@ function formatWorkingActivityMessage(activity: AgentActivityState): string {
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
+interface ApprovalPreviewGate {
+	promise: Promise<void>;
+	resolve(): void;
+	reject(reason?: unknown): void;
+	started: boolean;
+}
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
@@ -126,6 +132,8 @@ export class EventController {
 	/** Tool calls whose approval prompt drove the title into `attention`; cleared
 	 *  at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
+	#approvalPreviewGates = new Map<string, ApprovalPreviewGate>();
+	#detachToolApprovalPreviewWaiter: (() => void) | undefined;
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
@@ -234,6 +242,9 @@ export class EventController {
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
 		// partial contexts (tests, minimal embeddings) by wiring null.
 		const session = ctx.session;
+		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
+			this.#waitForToolApprovalPreview(toolCallId),
+		);
 		vocalizer.setEnhancer(
 			session?.modelRegistry && session.agent && session.settings
 				? new SpeechEnhancer({
@@ -311,6 +322,9 @@ export class EventController {
 	}
 
 	dispose(): void {
+		this.#detachToolApprovalPreviewWaiter?.();
+		this.#detachToolApprovalPreviewWaiter = undefined;
+		this.#clearApprovalPreviewGates();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -357,6 +371,36 @@ export class EventController {
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
+	}
+	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
+		let gate = this.#approvalPreviewGates.get(toolCallId);
+		if (!gate) {
+			const deferred = Promise.withResolvers<void>();
+			gate = { ...deferred, started: false };
+			this.#approvalPreviewGates.set(toolCallId, gate);
+		}
+		return gate;
+	}
+
+	async #waitForToolApprovalPreview(toolCallId: string): Promise<void> {
+		await this.#approvalPreviewGate(toolCallId).promise;
+	}
+
+	#startToolApprovalPreview(toolCallId: string): void {
+		const gate = this.#approvalPreviewGate(toolCallId);
+		if (gate.started) return;
+		gate.started = true;
+		const component = this.ctx.pendingTools.get(toolCallId);
+		const ready = component instanceof ToolExecutionComponent ? component.whenPreviewSettled() : Promise.resolve();
+		void ready.then(() => {
+			this.ctx.ui.requestRender();
+			gate.resolve();
+		}, gate.reject);
+	}
+
+	#clearApprovalPreviewGates(): void {
+		for (const gate of this.#approvalPreviewGates.values()) gate.resolve();
+		this.#approvalPreviewGates.clear();
 	}
 
 	#getReadGroup(): ReadToolGroupComponent {
@@ -805,6 +849,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#clearApprovalPreviewGates();
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
@@ -1529,6 +1574,7 @@ export class EventController {
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 				}
+				this.#startToolApprovalPreview(event.toolCallId);
 				this.ctx.ui.requestRender();
 				return;
 			}
@@ -1568,6 +1614,7 @@ export class EventController {
 				this.ctx.sessionManager.getCwd(),
 				event.toolCallId,
 			);
+			component.setArgsComplete(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			component.setToolActivityVisible(!this.ctx.hideToolActivity);
 			this.ctx.chatContainer.addChild(component);
@@ -1595,6 +1642,7 @@ export class EventController {
 				this.ctx.ui.requestRender();
 			}
 		}
+		this.#startToolApprovalPreview(event.toolCallId);
 	}
 
 	/**

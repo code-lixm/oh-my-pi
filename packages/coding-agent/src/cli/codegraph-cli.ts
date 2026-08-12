@@ -1,9 +1,10 @@
 /**
  * CodeGraph management CLI surface.
  *
- * `omp codegraph <status|list|clear|clear-all|prune>` lets the user inspect
- * and clean the external CodeGraph cache rooted at
- * `~/.omp/codegraph/v1/indexes/<key>`.
+ * `omp codegraph <status|list|sync|hooks-install|hooks-remove|hooks-status|clear|clear-all|prune>`
+ * lets the user inspect and clean the external CodeGraph cache rooted at
+ * `~/.omp/codegraph/v1/indexes/<key>`, refresh the index on demand, and
+ * manage the opt-in git sync hooks that refresh it after commit/merge/checkout.
  *
  * The CLI is a thin argument parser + presenter. Every read, identity
  * check, and filesystem mutation goes through the public Location facade
@@ -16,6 +17,7 @@
 
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
+import { type GitHookName, installGitSyncHook, isSyncHookInstalled, removeGitSyncHook } from "../codegraph/git-hooks";
 import type {
 	CodeGraphCacheIdentity,
 	CodeGraphIndexEntry,
@@ -38,6 +40,8 @@ import {
 	resolveCodeGraphIndexLocation,
 } from "../codegraph/location";
 import { readProgress } from "../codegraph/progress";
+import { openCodeGraphRuntime } from "../codegraph/runtime";
+import type { CodeGraphRuntime } from "../codegraph/runtime-types";
 import { formatBytes } from "../tools/render-utils";
 import { shortenPath } from "../utils/path-display";
 
@@ -74,6 +78,17 @@ export type CodeGraphPruneOptions = {
 	maxProjectBytes?: number;
 	maxProjectIndexes?: number;
 	deleteOrphans?: boolean;
+};
+
+export type CodeGraphSyncOptions = {
+	json: boolean;
+	cwd?: string;
+};
+
+export type CodeGraphHooksOptions = {
+	json: boolean;
+	cwd?: string;
+	hooks?: GitHookName[];
 };
 
 function writeLine(line = ""): void {
@@ -413,4 +428,117 @@ export async function runCodeGraphPrune(options: CodeGraphPruneOptions): Promise
 
 	const verb = options.dryRun ? "would remove" : "removed";
 	writeLine(chalk.dim(`\n${verb} ${result.removed} · kept ${result.kept} · freed ${formatBytes(result.bytesFreed)}`));
+}
+
+/**
+ * Refresh the index for the current project (or an explicit `--cwd`) on
+ * demand. Opens the runtime — which holds the cross-process file lock — and
+ * runs a full incremental sync: the orchestrator scan-diffs the tree and
+ * only re-extracts changed/new files. This is the command the opt-in git
+ * sync hooks launch in the background after commit/merge/checkout, and the
+ * manual catch-up for files changed outside the tool pipeline (bash, IDE).
+ */
+export async function runCodeGraphSync(options: CodeGraphSyncOptions): Promise<void> {
+	const cwd = options.cwd ?? getProjectDir();
+	const location = await resolveCodeGraphIndexLocation(cwd);
+	if (!location.available) {
+		if (options.json) {
+			writeLine(JSON.stringify({ cwd, synced: false, reason: location.reason ?? "unavailable" }, null, 2));
+			return;
+		}
+		writeLine(chalk.yellow(`CodeGraph sync skipped — ${location.reason ?? "unavailable"}`));
+		return;
+	}
+
+	let runtime: CodeGraphRuntime;
+	try {
+		runtime = await openCodeGraphRuntime({ sourceRoot: cwd, location });
+	} catch (error) {
+		// The lock is held by an indexing worker or another sync, so the index
+		// is already being refreshed; skipping is a no-op, not a failure.
+		const message = error instanceof Error ? error.message : String(error);
+		if (options.json) {
+			writeLine(JSON.stringify({ cwd, synced: false, reason: message }, null, 2));
+			return;
+		}
+		writeLine(chalk.dim(`CodeGraph sync skipped — ${message}`));
+		return;
+	}
+
+	try {
+		const result = await runtime.sync();
+		if (options.json) {
+			writeLine(JSON.stringify({ cwd, synced: true, ...result }, null, 2));
+			return;
+		}
+		writeLine(chalk.bold(`CodeGraph sync — ${chalk.cyan(cwd)}`));
+		writeLine(
+			`  ${chalk.dim("checked")}  ${result.filesChecked}    ${chalk.dim("indexed")}  ${result.filesIndexed}    ${chalk.dim("updated")}  ${result.filesUpdated}    ${chalk.dim("removed")}  ${result.filesRemoved}    ${chalk.dim("duration")}  ${result.durationMs}ms`,
+		);
+	} finally {
+		runtime.close();
+	}
+}
+
+function describeHooksDir(result: { hooksDir: string | null }): string {
+	return result.hooksDir ? shortenPath(result.hooksDir) : chalk.dim("(not a git repository)");
+}
+
+/**
+ * Install (or refresh) the opt-in git sync hooks in the current project
+ * (or an explicit `--cwd`). Idempotent; user-authored hook content is
+ * preserved. Hooks launch `omp codegraph sync` in the background.
+ */
+export async function runCodeGraphHooksInstall(options: CodeGraphHooksOptions): Promise<void> {
+	const cwd = options.cwd ?? getProjectDir();
+	const result = installGitSyncHook(cwd, options.hooks);
+	if (options.json) {
+		writeLine(JSON.stringify({ cwd, ...result }, null, 2));
+		return;
+	}
+	if (result.skipped) {
+		writeLine(chalk.yellow(`CodeGraph sync hooks skipped — ${result.skipped}`));
+		return;
+	}
+	writeLine(chalk.bold(`CodeGraph sync hooks installed — ${chalk.cyan(cwd)}`));
+	writeLine(`  ${chalk.dim("hooksDir")}  ${describeHooksDir(result)}`);
+	writeLine(`  ${chalk.dim("installed")}  ${result.installed.join(", ") || chalk.dim("(none)")}`);
+}
+
+/**
+ * Remove the opt-in git sync hooks. Strips only the `omp`-owned marker
+ * block; user-authored hook content is left untouched.
+ */
+export async function runCodeGraphHooksRemove(options: CodeGraphHooksOptions): Promise<void> {
+	const cwd = options.cwd ?? getProjectDir();
+	const result = removeGitSyncHook(cwd, options.hooks);
+	if (options.json) {
+		writeLine(JSON.stringify({ cwd, ...result }, null, 2));
+		return;
+	}
+	if (result.skipped) {
+		writeLine(chalk.yellow(`CodeGraph sync hooks skipped — ${result.skipped}`));
+		return;
+	}
+	writeLine(chalk.bold(`CodeGraph sync hooks removed — ${chalk.cyan(cwd)}`));
+	writeLine(`  ${chalk.dim("hooksDir")}  ${describeHooksDir(result)}`);
+	writeLine(`  ${chalk.dim("removed")}  ${result.installed.join(", ") || chalk.dim("(none)")}`);
+}
+
+/**
+ * Report whether any CodeGraph sync hook is currently installed in the
+ * current project (or an explicit `--cwd`).
+ */
+export async function runCodeGraphHooksStatus(options: CodeGraphHooksOptions): Promise<void> {
+	const cwd = options.cwd ?? getProjectDir();
+	const installed = isSyncHookInstalled(cwd, options.hooks);
+	if (options.json) {
+		writeLine(JSON.stringify({ cwd, installed }, null, 2));
+		return;
+	}
+	writeLine(
+		installed
+			? chalk.green(`CodeGraph sync hooks installed — ${chalk.cyan(cwd)}`)
+			: chalk.dim(`No CodeGraph sync hooks — ${chalk.cyan(cwd)}`),
+	);
 }

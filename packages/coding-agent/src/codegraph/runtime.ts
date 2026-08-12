@@ -38,6 +38,7 @@ import type {
 	CodeGraphStatus,
 	CodeGraphSyncOptions,
 } from "./runtime-types";
+import { scanProject } from "./scanner";
 import { CodeGraphFileLock } from "./utils";
 
 export { getCodeGraphExploreBudget } from "./explore-budget";
@@ -211,6 +212,21 @@ export async function openCodeGraphRuntime(options: CodeGraphRuntimeOptions): Pr
 			},
 			async inspectFreshness(paths?: readonly string[]) {
 				return inspectFreshness(paths);
+			},
+			/**
+			 * Scan the source root and return source-relative paths that exist on
+			 * disk but are not tracked by the index yet. Covers files created
+			 * outside the tool mutation pipeline (bash, IDE, git operations), which
+			 * `inspectFreshness` cannot see because it only compares already-indexed
+			 * files. Callers pair this with a scoped `sync()` so new files get
+			 * extracted without a full-project pass.
+			 */
+			async detectNewFiles(): Promise<string[]> {
+				if (closed) throw new Error("runtime is closed");
+				if (!queryBuilder) throw new Error("runtime is not wired");
+				const scanned = await scanProject(effectiveSourceRoot);
+				const tracked = new Set(queryBuilder.getAllFilePaths());
+				return scanned.filter(file => !tracked.has(file.filePath)).map(file => file.filePath);
 			},
 			async explore(query: string, exploreOpts: CodeGraphExploreOptions = {}): Promise<CodeGraphExploreResult> {
 				if (closed) throw new Error("runtime is closed");

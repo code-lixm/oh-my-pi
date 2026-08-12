@@ -35,6 +35,9 @@ function render(text: string): string {
 
 const stripUserControls = (text: string) => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
 const BACKGROUND_SGR = /\x1b\[(?:4[0-7]|10[0-7]|48;(?:5;\d+|2;\d+;\d+;\d+))m/;
+function countOccurrences(haystack: string, needle: string): number {
+	return haystack.split(needle).length - 1;
+}
 
 describe("UserMessageComponent magic-keyword highlighting", () => {
 	it("gradient-paints a magic keyword in the rendered (sent) message bubble", () => {
@@ -137,7 +140,26 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		const raw = render("first line\nsecond line");
 		expect(raw).toContain("\x1b]133;A\x07");
 		expect(raw).toContain("\x1b]133;B\x07");
-		expect(raw).not.toContain("\x1b]133;C\x07");
+		// #8030: the command-start marker is required. Terminals latch a sticky
+		// `.input` cursor semantic on 133;B that only 133;C clears; without it every
+		// later cell stays tagged as prompt input and click-to-move injects arrow
+		// keys into the pty.
+		expect(raw).toContain("\x1b]133;C\x07");
+		// ...but the zone is closed inside the same render, so terminals still cannot
+		// group later assistant/tool output under the submitted prompt.
+		expect(raw).toContain("\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07");
+		expect(raw.endsWith("\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07")).toBe(true);
+		// Exactly one balanced command zone per bubble.
+		expect(countOccurrences(raw, "\x1b]133;C\x07")).toBe(1);
+		expect(countOccurrences(raw, "\x1b]133;D;0\x07")).toBe(1);
+	});
+
+	it("closes the OSC 133 command zone for a single-line message too", () => {
+		const raw = render("only line");
+		expect(raw).toContain("\x1b]133;A\x07");
+		expect(raw.endsWith("\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07")).toBe(true);
+		expect(countOccurrences(raw, "\x1b]133;C\x07")).toBe(1);
+		expect(countOccurrences(raw, "\x1b]133;D;0\x07")).toBe(1);
 	});
 
 	it("bolds and underlines image references in the rendered message bubble", () => {

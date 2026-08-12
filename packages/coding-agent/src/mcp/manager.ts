@@ -164,8 +164,6 @@ export interface MCPDiscoverOptions {
 	enableProjectConfig?: boolean;
 	/** Whether to filter out Exa MCP servers (default: true) */
 	filterExa?: boolean;
-	/** Whether to filter out browser MCP servers when builtin browser tool is enabled (default: false) */
-	filterBrowser?: boolean;
 	/** Called when MCP server connection state changes. */
 	onStatus?: (event: McpConnectionStatusEvent) => void;
 }
@@ -397,7 +395,6 @@ export class MCPManager {
 			loadedConfigs = await loadAllMCPConfigs(this.cwd, {
 				enableProjectConfig: options?.enableProjectConfig,
 				filterExa: options?.filterExa,
-				filterBrowser: options?.filterBrowser,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

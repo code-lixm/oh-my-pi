@@ -1,4 +1,5 @@
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { parseModelString } from "../config/model-resolver";
 import type { AgentMessageReceipt, AgentMessageSendOptions, AgentMessageTarget } from "../irc/rlm-message-adapter";
 import { createRlmMessageAdapter, type RlmMessageAdapter } from "../irc/rlm-message-adapter";
 import type { RlmChildLifecycle } from "../prime-integration/contracts";
@@ -9,6 +10,42 @@ import type {
 	RlmSettlement,
 } from "../registry/rlm-child-registry";
 import type { RlmChildRegistryEntry, RlmSpawnHandle } from "./rlm-types";
+
+function rlmModelsMatch(
+	expected: string,
+	actual: string,
+	isLiteralModelId?: (provider: string, id: string) => boolean,
+): boolean {
+	const requested = expected.trim();
+	const resolved = actual.trim();
+	if (requested === resolved) return true;
+
+	const parseOptions = {
+		allowMaxSuffix: isLiteralModelId !== undefined,
+		allowAutoAlias: isLiteralModelId !== undefined,
+		...(isLiteralModelId === undefined ? {} : { isLiteralModelId }),
+	};
+	const requestedModel = parseModelString(requested, parseOptions);
+	const resolvedModel = parseModelString(resolved, parseOptions);
+	if (!requestedModel || !resolvedModel) return false;
+	if (
+		requestedModel.provider.toLowerCase() !== resolvedModel.provider.toLowerCase() ||
+		requestedModel.id.toLowerCase() !== resolvedModel.id.toLowerCase()
+	) {
+		return false;
+	}
+
+	// A selector without an explicit effort may acquire the session's concrete
+	// default while the child starts. Explicit levels still must match; `auto`
+	// and `inherit` intentionally defer the concrete level to the child session.
+	const requestedThinking = requestedModel.thinkingLevel;
+	return (
+		requestedThinking === undefined ||
+		requestedThinking === "auto" ||
+		requestedThinking === "inherit" ||
+		requestedThinking === resolvedModel.thinkingLevel
+	);
+}
 
 export interface RlmSpawnedSubagent {
 	agentId: string;
@@ -37,6 +74,8 @@ export interface RlmBridgeDeps {
 		},
 	) => Promise<RlmSpawnedSubagent>;
 	getDefaultModel: () => string | undefined;
+	/** Returns true for a provider/model ID whose suffix is literal rather than a thinking selector. */
+	isLiteralModelId?: (provider: string, id: string) => boolean;
 	/** Current session identity; it owns direct children and receives their terminal notices. */
 	ownerAgentId: string;
 	/** Upstream parent available to a nested child for `agent_message` only. */
@@ -223,7 +262,7 @@ export class RlmBridge implements RlmChildLifecycle {
 					`RLM child session directory mismatch: expected ${sessionDir}, received ${spawned.sessionDir}`,
 				);
 			}
-			if (spawned.model.trim() !== model) {
+			if (!rlmModelsMatch(model, spawned.model, this.#deps.isLiteralModelId)) {
 				throw new Error(`RLM child model mismatch: expected ${model}, received ${spawned.model}`);
 			}
 			if (!earlyRunningPublication) {

@@ -16,7 +16,12 @@ import * as path from "node:path";
 import { Patch, Patcher } from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { canonicalSnapshotKey, getFileSnapshotStore } from "@oh-my-pi/pi-coding-agent/edit/file-snapshot-store";
+import {
+	canonicalSnapshotKey,
+	getFileSnapshotStore,
+	recordFileSnapshot,
+	SNAPSHOT_MAX_BYTES,
+} from "@oh-my-pi/pi-coding-agent/edit/file-snapshot-store";
 import { HashlineFilesystem } from "@oh-my-pi/pi-coding-agent/edit/hashline/filesystem";
 import { writethroughNoop } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -181,5 +186,92 @@ describe("read tool column truncation vs hashline snapshot", () => {
 
 		const after = await fs.readFile(filePath, "utf8");
 		expect(after).toBe(`intro\n${longLine}\nepilogue\n`);
+	});
+});
+
+describe("read snapshot reuse of in-memory fullLines", () => {
+	let tmpDir: string;
+
+	beforeAll(async () => {
+		await Settings.init({ inMemory: true });
+	});
+
+	beforeEach(async () => {
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "read-snapshot-reuse-"));
+	});
+
+	afterEach(async () => {
+		await removeWithRetries(tmpDir);
+	});
+
+	it("mints the same tag/text as a direct recordFileSnapshot for CRLF files with a trailing newline", async () => {
+		// The reused path feeds fullLines.join("\n") through the same
+		// store/key/normalization path as recordFileSnapshot, so both mints must
+		// land on the identical content-hash tag for the identical canonical key.
+		const filePath = path.join(tmpDir, "crlf.txt");
+		await fs.writeFile(filePath, "alpha\r\nbeta\r\n");
+
+		const session = createSession(tmpDir);
+		const tool = new ReadTool(session);
+		const result = await tool.execute("call-1", { path: filePath });
+		const { tag } = extractHeader(textOutput(result));
+
+		const key = canonicalSnapshotKey(filePath);
+		const snapshot = getFileSnapshotStore(session).byHash(key, tag);
+		expect(snapshot).not.toBeNull();
+		// CRLF normalized to LF; the trailing empty line survives the split/join.
+		expect(snapshot?.text).toBe("alpha\nbeta\n");
+
+		const directTag = await recordFileSnapshot(session, filePath);
+		expect(directTag).toBe(tag);
+	});
+
+	it("keeps trailing-newline-free files byte-identical under the reused path", async () => {
+		const filePath = path.join(tmpDir, "no-trailing-newline.txt");
+		await fs.writeFile(filePath, "one\ntwo");
+
+		const session = createSession(tmpDir);
+		const tool = new ReadTool(session);
+		const result = await tool.execute("call-2", { path: filePath });
+		const { tag } = extractHeader(textOutput(result));
+
+		const snapshot = getFileSnapshotStore(session).byHash(canonicalSnapshotKey(filePath), tag);
+		expect(snapshot).not.toBeNull();
+		expect(snapshot?.text).toBe("one\ntwo");
+	});
+
+	it("hashline edit still anchors after a CRLF read", async () => {
+		// The snapshot now derives from fullLines.join("\n"); it must still match
+		// what the patcher normalizes from disk, or every CRLF edit would fail
+		// with a spurious tag mismatch.
+		const filePath = path.join(tmpDir, "editable-crlf.txt");
+		await fs.writeFile(filePath, "alpha\r\nbeta\r\ngamma\r\n");
+
+		const session = createSession(tmpDir);
+		const readTool = new ReadTool(session);
+		const readResult = await readTool.execute("call-3", { path: filePath });
+		const { header } = extractHeader(textOutput(readResult));
+
+		await applyEditWithTag({
+			session,
+			tmpDir,
+			filePath,
+			header,
+			patchBody: "PUT 3-3:\n+delta\n",
+		});
+		// Line endings survive the edit; only line 3 was replaced.
+		expect(await fs.readFile(filePath, "utf8")).toBe("alpha\r\nbeta\r\ndelta\r\n");
+	});
+
+	it("falls back to recordFileSnapshot for oversized files (no hashline header)", async () => {
+		// fullLines is undefined above SNAPSHOT_MAX_BYTES, so the recordFileSnapshot
+		// path (which re-checks the size cap) must stay intact — no header, no tag.
+		const filePath = path.join(tmpDir, "huge.txt");
+		await fs.writeFile(filePath, Buffer.alloc(SNAPSHOT_MAX_BYTES + 1, 0x61));
+
+		const session = createSession(tmpDir);
+		const tool = new ReadTool(session);
+		const result = await tool.execute("call-4", { path: filePath });
+		expect(textOutput(result)).not.toMatch(HASHLINE_HEADER_LINE);
 	});
 });

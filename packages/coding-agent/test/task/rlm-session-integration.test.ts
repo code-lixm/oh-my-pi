@@ -213,6 +213,98 @@ describe("SDK RLM task-session integration", () => {
 			fixture.authStorage.close();
 		}
 	});
+	it("normalizes deferred RLM thinking suffixes while rejecting model mismatches", async () => {
+		using tempDir = TempDir.createSync("@omp-rlm-model-match-");
+		const fixture = await createRlmSession(tempDir);
+		try {
+			vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+				agents: [TASK_AGENT],
+				projectAgentsDir: null,
+			});
+			const cases: Array<{
+				name: string;
+				requestedModel: string;
+				resolvedModel: string;
+				expectedStatus: "completed" | "failed";
+			}> = [
+				{
+					name: "plain selector adopts high",
+					requestedModel: "anthropic/claude-sonnet-4-5",
+					resolvedModel: "anthropic/claude-sonnet-4-5:high",
+					expectedStatus: "completed",
+				},
+				{
+					name: "plain selector adopts max",
+					requestedModel: "anthropic/claude-sonnet-4-5",
+					resolvedModel: "anthropic/claude-sonnet-4-5:max",
+					expectedStatus: "completed",
+				},
+				{
+					name: "auto selector adopts concrete high",
+					requestedModel: "anthropic/claude-sonnet-4-5:auto",
+					resolvedModel: "anthropic/claude-sonnet-4-5:high",
+					expectedStatus: "completed",
+				},
+				{
+					name: "canonical provider and model case is accepted",
+					requestedModel: "ANTHROPIC/CLAUDE-SONNET-4-5",
+					resolvedModel: "anthropic/claude-sonnet-4-5:high",
+					expectedStatus: "completed",
+				},
+				{
+					name: "explicit low rejects high",
+					requestedModel: "anthropic/claude-sonnet-4-5:low",
+					resolvedModel: "anthropic/claude-sonnet-4-5:high",
+					expectedStatus: "failed",
+				},
+				{
+					name: "different provider rejects",
+					requestedModel: "anthropic/claude-sonnet-4-5",
+					resolvedModel: "openai/gpt-5.5:high",
+					expectedStatus: "failed",
+				},
+				{
+					name: "different model rejects",
+					requestedModel: "anthropic/claude-sonnet-4-5",
+					resolvedModel: "anthropic/claude-opus-4-5:high",
+					expectedStatus: "failed",
+				},
+				{
+					name: "literal max model is not a concrete suffix",
+					requestedModel: "nanogpt/nanogpt/coding-router",
+					resolvedModel: "nanogpt/nanogpt/coding-router:max",
+					expectedStatus: "failed",
+				},
+			];
+			let nextCase = 0;
+			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+				const testCase = cases[nextCase++];
+				if (!testCase) throw new Error("Unexpected extra RLM task dispatch");
+				return taskResult(options.id, { resolvedModel: testCase.resolvedModel });
+			});
+
+			const lifecycle = fixture.session.getRlmLifecycle();
+			if (!lifecycle) throw new Error("Expected RLM lifecycle on explicitly enabled root SDK session");
+			for (const testCase of cases) {
+				const handle = await lifecycle.spawnChild(`model ${testCase.name}`, {
+					name: `${testCase.name}-worker`,
+					model: testCase.requestedModel,
+				});
+				const job = requireRlmJob(fixture.session, handle.rlm_child_id);
+				await job.promise;
+
+				const child = lifecycle.listChildren().find(entry => entry.rlm_child_id === handle.rlm_child_id);
+				expect(child, testCase.name).toMatchObject({ status: testCase.expectedStatus });
+				expect(job.status, testCase.name).toBe(testCase.expectedStatus);
+				if (testCase.expectedStatus === "failed") {
+					expect(job.errorText, testCase.name).toContain("RLM child model mismatch");
+				}
+			}
+		} finally {
+			await fixture.session.dispose();
+			fixture.authStorage.close();
+		}
+	});
 	it("keeps nested RLM family state in its immediate parent's registry sidecar", async () => {
 		using tempDir = TempDir.createSync("@omp-rlm-nested-registry-");
 		let rootRegistry: RlmChildRegistry | undefined;

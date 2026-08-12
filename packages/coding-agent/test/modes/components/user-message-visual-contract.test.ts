@@ -5,6 +5,10 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
+const OSC133_COMMAND_START = "\x1b]133;C\x07";
+const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
+const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
+const OSC133_MARKER = /\x1b\]133;(?:A|B|C|D;0)\x07/g;
 const WIDTH = 40;
 
 describe("UserMessageComponent visual contract", () => {
@@ -15,7 +19,7 @@ describe("UserMessageComponent visual contract", () => {
 	it("renders ordinary user text on the user message background while keeping transcript spacing", () => {
 		const expectedBg = theme.getBgAnsi("userMessageBg");
 		const lines = new UserMessageComponent("Ship the fix.").render(WIDTH);
-		const withoutZones = lines.map(line => line.replace(/\x1b\]133;[AB]\x07/g, ""));
+		const withoutZones = lines.map(line => line.replace(OSC133_MARKER, ""));
 		const raw = withoutZones.join("\n");
 		const plain = withoutZones.map(line => Bun.stripANSI(line));
 
@@ -23,7 +27,7 @@ describe("UserMessageComponent visual contract", () => {
 		expect(raw).toContain(expectedBg);
 		expect(withoutZones.every(line => line.startsWith(expectedBg) && line.endsWith("\x1b[49m"))).toBe(true);
 		expect(lines[0]!.startsWith(OSC133_ZONE_START)).toBe(true);
-		expect(lines.at(-1)!.endsWith(OSC133_ZONE_END)).toBe(true);
+		expect(lines.at(-1)!.endsWith(OSC133_ZONE_CLOSE)).toBe(true);
 		expect(withoutZones.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH, WIDTH]);
 		expect(plain).toEqual([
 			" ".repeat(WIDTH),

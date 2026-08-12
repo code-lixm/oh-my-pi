@@ -40,6 +40,14 @@
 </workspace-tree>
 {{/if}}
 {{/if}}
+	{{#if additionalWorkspaceRoots.length}}
+<workspace-roots>
+本会话还包含以下附加目录。此列表代表当前工作区状态，并覆盖对话中更早提到的任何工作区变更。使用这些根目录下的绝对路径调用 `read`/`grep`/`glob`/`edit`。使用 `/add-dir` 和 `/remove-dir` 管理集合；`/dirs` 列出当前目录。
+{{#each additionalWorkspaceRoots}}
+- {{this}}
+{{/each}}
+</workspace-roots>
+{{/if}}
 
 今天是 {{date}}，当前工作目录是 '{{cwd}}'。
 

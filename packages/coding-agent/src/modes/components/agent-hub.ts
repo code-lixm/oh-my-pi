@@ -24,7 +24,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { formatAge, formatNumber, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
@@ -36,30 +36,22 @@ import {
 	AgentRegistry,
 	type AgentStatus,
 	agentDisplayLabel,
-	compareAgentNavigationOrder,
 	MAIN_AGENT_ID,
 	resolveTopLevelAgent,
 } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import type { AgentProgress } from "../../task";
-import { shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { previewLine, shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { formatAgentClockTime, resolveAgentTerminalStatus, selectAgentActivity } from "./agent-activity-display";
-import {
-	type AgentMetrics,
-	type AggregateMetrics,
-	aggregateMetrics,
-	progressMetrics,
-	projectAgentTree,
-} from "./agent-hub-projection";
+import { resolveAgentTerminalStatus, selectAgentActivity } from "./agent-activity-display";
+import { type AgentMetrics, progressMetrics, projectAgentTree } from "./agent-hub-projection";
 import {
 	clampHubLine,
 	contextGauge,
 	formatChildIds,
-	formatCost,
 	formatMetricDuration,
 	formatMetrics,
 	formatRoleBadge,
@@ -92,8 +84,16 @@ const LEFT_TAP_WINDOW_MS = 500;
 
 const HUB_STATUS_WIDTH = 16;
 const HUB_DURATION_WIDTH = 12;
-const HUB_MODEL_WIDTH = 26;
-const HUB_ACTIVITY_WIDTH = 8;
+const HUB_MODEL_WIDTH = 52;
+/**
+ * Width of the per-row Detail column that explains status (failure cause,
+ * completion gist, current tool/intent). Truncated with `…` past this width
+ * so the column stays bounded; longer detail belongs in the focused
+ * inspector. The Model column was widened (26 → 52) for fallback-aware
+ * identifiers (`fallback → <provider>/<id>`), which raised the fixed-column
+ * layout threshold to {@link HUB_FIXED_COLUMNS_MIN_WIDTH} cells.
+ */
+const HUB_DETAIL_WIDTH = 30;
 const HUB_COLUMN_GAP = " ";
 const HUB_MIN_AGENT_WIDTH = 21;
 /** Cap the agent-name column so Duration/Model columns stay readable on wide terminals. */
@@ -104,11 +104,13 @@ const HUB_FIXED_COLUMNS_MIN_WIDTH =
 	HUB_STATUS_WIDTH +
 	HUB_DURATION_WIDTH +
 	HUB_MODEL_WIDTH +
-	HUB_ACTIVITY_WIDTH +
+	HUB_DETAIL_WIDTH +
 	HUB_COLUMN_GAP.length * 4;
-
-/** Small rosters may use tracked state for lifecycle ordering without unbounded observer work. */
-const HUB_STATUS_SORT_OBSERVER_LIMIT = 32;
+/**
+ * Small rosters may collect live observer state for every row; larger rosters
+ * keep the registry fallback so the observer map never grows unbounded.
+ */
+const HUB_OBSERVER_COLLECT_LIMIT = 32;
 
 function fixedCell(text: string, width: number): string {
 	const clipped = truncateToWidth(text, Math.max(1, width));
@@ -125,18 +127,6 @@ type HubTaskStatus =
 	| "completed"
 	| "failed"
 	| "stopped";
-
-const HUB_NAVIGATION_STATUS: Record<HubTaskStatus, AgentStatus | AgentProgress["status"]> = {
-	"not-started": "pending",
-	queued: "pending",
-	running: "running",
-	"waiting-user": "waiting",
-	idle: "idle",
-	parked: "parked",
-	completed: "completed",
-	failed: "failed",
-	stopped: "aborted",
-};
 
 const UUID_LABEL = /^(?:top-level:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -157,6 +147,23 @@ const HUB_STATUS_WORDS = new Set([
 function isHubStatusWord(text: string): boolean {
 	return HUB_STATUS_WORDS.has(text.trim().toLowerCase());
 }
+
+/**
+ * Built-in agent profile names whose Hub label is owned by the runtime; the
+ * i18n layer translates them so the title row follows the active display
+ * language. Names that do not appear here stay verbatim (user-defined labels,
+ * third-party agent profiles, or task labels from `task` tool calls).
+ */
+const BUILTIN_AGENT_NAMES: Record<string, true> = {
+	task: true,
+	scout: true,
+	librarian: true,
+	reviewer: true,
+	designer: true,
+	"security-reviewer": true,
+	sonic: true,
+	advisor: true,
+};
 
 /** Result of one host-backed transcript read for the Agent Hub viewer. */
 export interface AgentHubRemoteTranscript {
@@ -279,21 +286,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	/** Current observer index and summary data, rebuilt on source changes rather than every paint. */
 	#observedById = new Map<string, ObservableSession>();
 	#childrenByParent = new Map<string, AgentRef[]>();
-	/** Aggregate usage is sampled with the same bounded observer snapshot as the roster. */
-	#aggregate: AggregateMetrics = {
-		tokens: 0,
-		requests: 0,
-		tools: 0,
-		cost: 0,
-		durationMs: 0,
-		durationKind: "active",
-		reportedAgents: 0,
-		activeDurationAgents: 0,
-	};
 	/** Transcript-derived fallback stats are sampled only on the bounded age cadence. */
 	#sessionMetrics = new WeakMap<object, { metrics: AgentMetrics | undefined }>();
-	/** Avoid a cadence-time row scan for the common persisted-only roster. */
-	#hasFallbackLiveSessions = false;
 	/** On narrow terminals Tab replaces the roster with the selected-agent inspector. */
 	#narrowDetailsOpen = false;
 	#lastRenderWasSplit = false;
@@ -364,7 +358,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange(true)));
 		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
 		this.#ageTimer = setInterval(() => {
-			if (this.#hasFallbackLiveSessions) this.#refreshAggregate(true);
 			this.#requestRender();
 		}, AGE_TICK_MS);
 		this.#ageTimer.unref?.();
@@ -560,19 +553,23 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const selectedId = this.#rows[this.#selectedRow]?.id;
 		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
 		this.#observedById =
-			refs.length <= HUB_STATUS_SORT_OBSERVER_LIMIT
-				? this.#collectObserved(refs)
-				: new Map<string, ObservableSession>();
-		const rosterRows = refs.sort((left, right) => {
-			const leftStatus = this.#taskStatus(left, this.#observedById.get(left.id));
-			const rightStatus = this.#taskStatus(right, this.#observedById.get(right.id));
-			return compareAgentNavigationOrder(
-				left,
-				right,
-				HUB_NAVIGATION_STATUS[leftStatus],
-				HUB_NAVIGATION_STATUS[rightStatus],
-			);
+			refs.length <= HUB_OBSERVER_COLLECT_LIMIT ? this.#collectObserved(refs) : new Map<string, ObservableSession>();
+		// Partition by creation timestamp: rows with a known createdAt are sorted
+		// ascending; rows missing the timestamp are pushed to the end, in id
+		// order, so a row that loses its timestamp mid-session can never reorder
+		// the list above peers it was already below.
+		const withTimestamp: typeof refs = [];
+		const withoutTimestamp: typeof refs = [];
+		for (const ref of refs) {
+			if (Number.isFinite(ref.createdAt)) withTimestamp.push(ref);
+			else withoutTimestamp.push(ref);
+		}
+		withTimestamp.sort((left, right) => {
+			if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
+			return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 		});
+		withoutTimestamp.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+		const rosterRows = withTimestamp.concat(withoutTimestamp);
 
 		if (this.#viewMode === "tree") {
 			const tree = projectAgentTree(rosterRows);
@@ -607,7 +604,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			const status = this.#agentStatusFor(taskStatus);
 			this.#statusCounts[status]++;
 		}
-		this.#refreshAggregate();
 	}
 
 	#collectObserved(refs: readonly AgentRef[]): Map<string, ObservableSession> {
@@ -699,7 +695,10 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	#displayLabel(ref: AgentRef): string {
 		const label = sanitizeDisplayText(agentDisplayLabel(ref)).trim();
 		if (!label || UUID_LABEL.test(label)) return tSettingsUi("Subagent");
-		return label;
+		// Named advisors register as `advisor:<slug>`; translate the base name and
+		// keep the slug verbatim so every advisor row follows the display language.
+		if (label.startsWith("advisor:")) return `${tSettingsUi("advisor")}:${label.slice("advisor:".length)}`;
+		return BUILTIN_AGENT_NAMES[label] ? tSettingsUi(label) : label;
 	}
 
 	#metricsFor(ref: AgentRef, observed: ObservableSession | undefined): AgentMetrics | undefined {
@@ -725,7 +724,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	#renderTable(width: number, termHeight: number): string[] {
 		this.#hitRows.length = 0;
 		const contentRows = Math.max(1, termHeight - 4);
-		if (this.#rows.length <= HUB_STATUS_SORT_OBSERVER_LIMIT) {
+		if (this.#rows.length <= HUB_OBSERVER_COLLECT_LIMIT) {
 			this.#observedById = this.#collectObserved(this.#rows);
 			this.#statusCounts = { running: 0, waiting: 0, idle: 0, parked: 0, aborted: 0 };
 			for (const ref of this.#rows) {
@@ -733,7 +732,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				const status = this.#agentStatusFor(taskStatus);
 				this.#statusCounts[status]++;
 			}
-			this.#refreshAggregate();
 		}
 		const observedById = this.#observedById;
 		const split = this.#splitRosterWidth(width);
@@ -945,36 +943,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const max = Math.max(1, width);
 		const header = `${theme.bold(tSettingsUi("Roster"))}${theme.fg("dim", theme.sep.dot)}${projection}${counts ? theme.fg("dim", theme.sep.dot) + counts : ""}`;
 		const lines = wrapTextWithAnsi(header, max);
-		const metrics = this.#aggregate;
-		const coverage = tSettingsUi("{reported}/{total} measured", {
-			reported: metrics.reportedAgents,
-			total: this.#rows.length,
-		});
-
-		if (metrics.reportedAgents === 0) {
-			lines.push(...wrapTextWithAnsi(theme.fg("dim", `${tSettingsUi("Usage")} —${theme.sep.dot}${coverage}`), max));
-		} else {
-			const activeTime = formatMetricDuration(metrics);
-			const usage = [
-				theme.fg("statusLineCost", formatCost(metrics.cost)),
-				theme.fg("dim", activeTime ? `${activeTime} ${tSettingsUi("agent time")}` : tSettingsUi("agent time —")),
-				theme.fg("dim", `${formatNumber(metrics.requests)} ${tSettingsUi("req")}`),
-				theme.fg("dim", `${formatNumber(metrics.tools)} ${tSettingsUi("tools")}`),
-				theme.fg("dim", `${formatNumber(metrics.tokens)} ${tSettingsUi("tok")}`),
-			].join(theme.fg("dim", theme.sep.dot));
-			lines.push(...wrapTextWithAnsi(usage, max));
-			const reporting = [
-				theme.fg(
-					"dim",
-					tSettingsUi("{timed}/{reported} timed", {
-						timed: metrics.activeDurationAgents,
-						reported: metrics.reportedAgents,
-					}),
-				),
-				theme.fg("dim", coverage),
-			].join(theme.fg("dim", theme.sep.dot));
-			lines.push(...wrapTextWithAnsi(reporting, max));
-		}
 		if (this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH) lines.push(this.#columnHeader(width));
 		return lines;
 	}
@@ -990,7 +958,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 					HUB_STATUS_WIDTH -
 					HUB_DURATION_WIDTH -
 					HUB_MODEL_WIDTH -
-					HUB_ACTIVITY_WIDTH -
+					HUB_DETAIL_WIDTH -
 					HUB_COLUMN_GAP.length * 4,
 			),
 		);
@@ -1001,7 +969,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				fixedCell(tSettingsUi("Status"), HUB_STATUS_WIDTH),
 				fixedCell(tSettingsUi("Duration"), HUB_DURATION_WIDTH),
 				fixedCell(tSettingsUi("Model"), HUB_MODEL_WIDTH),
-				fixedCell(tSettingsUi("Last update"), HUB_ACTIVITY_WIDTH),
+				fixedCell(tSettingsUi("Detail"), HUB_DETAIL_WIDTH),
 			].join(HUB_COLUMN_GAP)}`,
 		);
 	}
@@ -1012,19 +980,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			if (count > 0) parts.push(`${statusGlyph(status)} ${count} ${tSettingsUi(status)}`);
 		}
 		return parts.join(theme.sep.dot);
-	}
-
-	#refreshAggregate(refreshFallback = false): void {
-		const result = aggregateMetrics({
-			rows: this.#rows,
-			observedById: this.#observedById,
-			metricsFor: (ref, observed) => this.#metricsFor(ref, observed),
-			fallbackStatsSession: (ref, observed) => this.#fallbackStatsSession(ref, observed),
-			sessionMetrics: this.#sessionMetrics,
-			refreshFallback,
-		});
-		this.#aggregate = result.metrics;
-		this.#hasFallbackLiveSessions = result.hasFallbackLiveSessions;
 	}
 
 	#observableFor(id: string): ObservableSession | undefined {
@@ -1107,7 +1062,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		section(tSettingsUi("Owner"));
 		add(sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID));
 		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
-		add(theme.fg("dim", new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")));
+		add(theme.fg("dim", `Registered ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`));
 
 		const artifacts = ref.history;
 		if (artifacts?.readOnly) add(theme.fg("warning", tSettingsUi("read-only")));
@@ -1137,21 +1092,11 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				? treeBranch(ref, max, this.#treeDepthById, this.#treeParentById, this.#treeLastSiblingById)
 				: "";
 		const taskStatus = this.#taskStatus(ref, observed);
-		const activity = selectAgentActivity(ref.activityState, observed?.progress);
-		// Pure status words duplicate the Status column; skip them in every detail source.
-		const detail = [
-			activity?.label,
-			observed?.progress?.currentTool,
-			observed?.progress?.lastIntent,
-			ref.activity,
-		].find(candidate => candidate && !isHubStatusWord(candidate));
 		const label = this.#displayLabel(ref);
 		const styledLabel = selected ? theme.bold(theme.fg("accent", label)) : theme.bold(label);
-		const detailWidth = Math.max(1, Math.floor(max / 3));
-		const activityText = detail ? ` ${theme.fg("muted", sanitizeLine(detail, detailWidth))}` : "";
 		const unread = this.#irc.unreadCount(ref.id);
 		const unreadText = unread > 0 ? ` ${theme.fg("warning", `⧉ ${unread}`)}` : "";
-		const agent = `${branch}${styledLabel}${activityText}${unreadText}`;
+		const agent = `${branch}${styledLabel}${unreadText}`;
 		const metrics = this.#metricsFor(ref, observed);
 		const duration = metrics ? (formatMetricDuration(metrics) ?? "—") : "—";
 		const modelParts: string[] = [];
@@ -1160,16 +1105,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const badge = modelBadge(ref, observed);
 		if (badge) modelParts.push(badge);
 		const model = modelParts.join(theme.sep.dot) || "—";
-		const completedAtMs = observed?.progress?.completedAtMs ?? observed?.completedAtMs;
-		const age =
-			(taskStatus === "idle" ||
-				taskStatus === "parked" ||
-				taskStatus === "completed" ||
-				taskStatus === "failed" ||
-				taskStatus === "stopped") &&
-			completedAtMs !== undefined
-				? formatAgentClockTime(completedAtMs)
-				: formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)));
 		let line: string;
 		const nameWidth = Math.min(
 			HUB_MAX_AGENT_WIDTH,
@@ -1180,7 +1115,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 					HUB_STATUS_WIDTH -
 					HUB_DURATION_WIDTH -
 					HUB_MODEL_WIDTH -
-					HUB_ACTIVITY_WIDTH -
+					HUB_DETAIL_WIDTH -
 					HUB_COLUMN_GAP.length * 4,
 			),
 		);
@@ -1191,7 +1126,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				fixedCell(this.#renderTaskStatus(taskStatus), HUB_STATUS_WIDTH),
 				fixedCell(theme.fg("dim", duration), HUB_DURATION_WIDTH),
 				fixedCell(model, HUB_MODEL_WIDTH),
-				fixedCell(theme.fg("dim", age), HUB_ACTIVITY_WIDTH),
+				fixedCell(this.#renderEntryDetail(ref, taskStatus, observed), HUB_DETAIL_WIDTH),
 			].join(HUB_COLUMN_GAP)}`;
 		} else {
 			line = `${cursor} ${this.#taskGlyph(taskStatus)} ${agent} ${theme.fg("dim", theme.sep.dot)} ${this.#renderTaskStatus(taskStatus)}`;
@@ -1199,6 +1134,96 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const clipped = truncateToWidth(line.replace(/[\r\n]+/g, " "), max);
 		if (!selected && !hovered) return [clipped];
 		return [theme.bg("selectedBg", `${clipped}${padding(Math.max(0, max - visibleWidth(clipped)))}`)];
+	}
+
+	/**
+	 * One-line, status-aware description for the Detail column. Every terminal
+	 * status (failed, completed, stopped) carries a concrete reason; transient
+	 * states (running, queued, waiting) point to the live activity, the
+	 * current tool, or a registry gist. Output is sanitized and clipped to
+	 * {@link HUB_DETAIL_WIDTH} so the column never spills into adjacent
+	 * columns; longer detail stays in the focused inspector.
+	 */
+	#renderEntryDetail(ref: AgentRef, taskStatus: HubTaskStatus, observed: ObservableSession | undefined): string {
+		const progress = observed?.progress;
+		const activity = selectAgentActivity(ref.activityState, progress);
+		const liveLabel = activity?.label;
+		const liveTool = progress?.currentTool
+			? progress.currentTool +
+				(progress.currentToolArgs
+					? `${theme.sep.dot}${previewLine(sanitizeDisplayText(progress.currentToolArgs), 24)}`
+					: "")
+			: undefined;
+		const liveIntent = progress?.lastIntent;
+		const stored = ref.activity;
+		const filteredActivity = liveLabel && !isHubStatusWord(liveLabel) ? liveLabel : undefined;
+		const filteredTool = liveTool && !isHubStatusWord(liveTool) ? liveTool : undefined;
+		const filteredIntent = liveIntent && !isHubStatusWord(liveIntent) ? liveIntent : undefined;
+		const filteredStored = stored && !isHubStatusWord(stored) ? stored : undefined;
+		const resultText = progress?.resultText;
+		const retryFailure = progress?.retryFailure;
+		const preview = (text: string): string => previewLine(sanitizeDisplayText(text), HUB_DETAIL_WIDTH);
+		const tint = (color: "muted" | "dim" | "warning" | "error", text: string): string => theme.fg(color, text);
+		switch (taskStatus) {
+			case "failed":
+				return tint(
+					"error",
+					retryFailure
+						? tSettingsUi("Failed: {error}", { error: preview(retryFailure.errorMessage) })
+						: resultText
+							? tSettingsUi("Failed: {error}", { error: preview(resultText) })
+							: tSettingsUi("Failed"),
+				);
+			case "completed":
+				return tint(
+					"muted",
+					resultText
+						? tSettingsUi("Completed: {summary}", { summary: preview(resultText) })
+						: liveIntent
+							? tSettingsUi("Completed: {summary}", { summary: preview(liveIntent) })
+							: tSettingsUi("Completed"),
+				);
+			case "stopped":
+				return tint(
+					"muted",
+					retryFailure
+						? tSettingsUi("Stopped: {reason}", { reason: preview(retryFailure.errorMessage) })
+						: resultText
+							? tSettingsUi("Stopped: {reason}", { reason: preview(resultText) })
+							: tSettingsUi("Stopped"),
+				);
+			case "queued":
+				return tint("muted", tSettingsUi("Queued: waiting for runnable slot"));
+			case "not-started":
+				return tint("muted", tSettingsUi("Not started: pending prompt"));
+			case "waiting-user":
+				return tint("warning", tSettingsUi("Waiting for user input"));
+			case "running":
+				return tint(
+					"muted",
+					filteredActivity
+						? tSettingsUi("Running: {activity}", { activity: preview(filteredActivity) })
+						: filteredTool
+							? tSettingsUi("Running: {activity}", { activity: preview(filteredTool) })
+							: filteredIntent
+								? tSettingsUi("Running: {activity}", { activity: preview(filteredIntent) })
+								: filteredStored
+									? tSettingsUi("Running: {activity}", { activity: preview(filteredStored) })
+									: tSettingsUi("Running"),
+				);
+			case "parked":
+				return tint(
+					"muted",
+					filteredStored
+						? tSettingsUi("Parked: {note}", { note: preview(filteredStored) })
+						: tSettingsUi("Parked"),
+				);
+			case "idle":
+				return tint(
+					"muted",
+					filteredStored ? tSettingsUi("Idle: {note}", { note: preview(filteredStored) }) : tSettingsUi("Idle"),
+				);
+		}
 	}
 
 	#scrollDetails(direction: -1 | 1): void {

@@ -4,7 +4,7 @@
   <name>{{name}}</name>
   <type>python</type>
   <python_import>{{importName}}</python_import>
-  <call_pattern>await {{importName}}(...)</call_pattern>
+  <call_pattern>await {{importName}}(…)</call_pattern>
   <description>{{description}}</description>
   <location>{{filePath}}</location>
 </skill>

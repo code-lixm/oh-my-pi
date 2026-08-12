@@ -13,15 +13,17 @@
 - Fixed framed and plain Markdown code rows bypassing the surrounding component gutter, which made assistant fenced blocks start at column zero instead of aligning with prose and could punch unpainted holes through styled message surfaces.
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
 - Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
-## [17.0.6] - 2026-07-20
 
 ### Fixed
 
-- Fixed idle Loader animations on WSL repeatedly entering render scheduling after an expired ConPTY post-paint settle window instead of resuming direct component writes ([#6024](https://github.com/can1357/oh-my-pi/issues/6024)).
+- Fixed inline images rendering permanently cropped on Kitty direct-placement terminals (WezTerm, Warp) when an image block straddled the viewport top during streaming: placements are now clipped to the visible slice at write time, and a placement id whose cells reached native scrollback is never re-used ([#8070](https://github.com/can1357/oh-my-pi/pull/8070) by [@voonfoo](https://github.com/voonfoo))
+
 
 ### Fixed
 
-- Fixed delayed Ghostty background-color replies being discarded after the startup probe's DA1 grace window, which could leave auto-theme stuck on the dark palette after restarting on a light terminal.
+- Fixed slow Loader paints exceeding their cost-aware CPU duty cycle on WSL/ConPTY when a 200 ms backpressure cap was shorter than the proportional delay ([#8012](https://github.com/can1357/oh-my-pi/issues/8012)).
+- Fixed display-math (`$$…$$`) fractions rendering as fragmented text when the numerator and denominator are written on separate source lines: `latexToBlock` treated the top-level newline between `\frac{num}` and `{den}` as a row break, severing `\frac` from its denominator. Such argument-continuation newlines are now preserved so the fraction stays stacked ([#7996](https://github.com/can1357/oh-my-pi/issues/7996)).
+
 ## [17.2.11] - 2026-08-07
 
 ### Fixed

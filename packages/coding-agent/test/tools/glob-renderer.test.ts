@@ -428,4 +428,43 @@ describe("globToolRenderer", () => {
 		expect(rendered).toContain("EACCES");
 		expect(rendered).toContain("/private");
 	});
+
+	it("surfaces the non-default path sort in the call preview", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+
+		const plain = sanitizeText(
+			globToolRenderer
+				.renderCall({ path: "src/**/*.ts", sort: "path" }, { expanded: true, isPartial: false }, uiTheme)
+				.render(240)
+				.join("\n"),
+		);
+
+		expect(plain).toContain("sort:path");
+	});
+
+	it("omits sort meta for the default mtime mode and localizes path sort to zh-CN", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+
+		const defaultPlain = sanitizeText(
+			globToolRenderer
+				.renderCall({ path: "src/**/*.ts", sort: "mtime" }, { expanded: true, isPartial: false }, uiTheme)
+				.render(240)
+				.join("\n"),
+		);
+		expect(defaultPlain).not.toContain("sort");
+
+		setSettingsUiLocale("zh-CN");
+		const zhPlain = sanitizeText(
+			globToolRenderer
+				.renderCall({ path: "src/**/*.ts", sort: "path" }, { expanded: true, isPartial: false }, uiTheme)
+				.render(240)
+				.join("\n"),
+		);
+		expect(zhPlain).toContain("按路径排序");
+		expect(zhPlain).not.toContain("sort:path");
+	});
 });

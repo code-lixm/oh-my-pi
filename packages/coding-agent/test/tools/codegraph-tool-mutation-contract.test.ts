@@ -174,4 +174,44 @@ describe("CodeGraphTool pending mutation contract", () => {
 		const renamedDetails = renamedResult.details as { entries?: Array<{ node: { filePath: string } }> };
 		expect(renamedDetails.entries?.some(e => e.node.filePath === "lib/rename-after.ts")).toBe(true);
 	});
+
+	test("execute() indexes brand-new files created out-of-band (no mutation event) via the new-file scan", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "repo-tool-newfile"));
+		const libDir = path.join(repoRoot, "lib");
+		await fs.mkdir(libDir, { recursive: true });
+		const seededPath = path.join(libDir, "seeded.ts");
+		const seededSymbol = "resolveSeededSymbol";
+		await fs.writeFile(seededPath, `export function ${seededSymbol}(): string { return "seed"; }\n`, "utf8");
+
+		// Cooldown 0 so every execute() runs the project scan; the default 30s
+		// window is covered by the constant's doc comment and the real call path.
+		const session = makeSession(repoRoot);
+		const tool = new CodeGraphTool(session, undefined, 0);
+
+		await tool.execute("call-initial", { query: seededSymbol });
+		await waitForSlotReady(repoRoot, "new-file warmup");
+
+		const warm = await tool.execute("call-warm", { query: seededSymbol });
+		const warmDetails = warm.details as { entries?: Array<{ node: { name: string } }> };
+		expect(warmDetails.entries?.some(e => e.node.name === seededSymbol)).toBe(true);
+
+		// A file created by bash/IDE/git has no mutation event and no index
+		// entry; only the safety-net scan can surface it.
+		const externalSymbol = "resolveExternalNewSymbol";
+		await fs.writeFile(
+			path.join(libDir, "external-new.ts"),
+			`export function ${externalSymbol}(): string { return "external new"; }\n`,
+			"utf8",
+		);
+		expect(peekPendingFileMutations(session)).toHaveLength(0);
+
+		const caught = await tool.execute("call-external-new", { query: externalSymbol });
+		expect(caught.isError).not.toBe(true);
+		const caughtDetails = caught.details as {
+			entries?: Array<{ node: { name: string; filePath: string } }>;
+		};
+		expect(
+			caughtDetails.entries?.some(e => e.node.name === externalSymbol && e.node.filePath === "lib/external-new.ts"),
+		).toBe(true);
+	});
 });

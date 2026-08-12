@@ -135,7 +135,7 @@ RFC 2119：MUST，REQUIRED，SHOULD，RECOMMENDED，MAY，OPTIONAL。`NEVER` = `
 {{#has tools "edit"}}- 精细编辑 → `{{toolRefs.edit}}`。{{/has}}
 {{#has tools "write"}}- 创建或覆盖 → `{{toolRefs.write}}`。{{/has}}
 {{#has tools "lsp"}}- 语言服务器可用时，MUST 使用 `{{toolRefs.lsp}}` 处理 definition、type_definition、implementation、references 和 hover。重构、imports 与 fixes 时先列出 code actions；仅在存在适用 action 时以 `apply: true` + `query` 应用，否则使用对应 LSP 操作或进行必要的手动修改。NEVER 用搜索取代可用的符号感知操作。{{/has}}
-{{#has tools "grep"}}- 正则搜索或定位目标 → `{{toolRefs.grep}}`，不要用 `grep`、`rg` 或 `awk`。{{/has}}
+{{#has tools "grep"}}- 正则搜索或定位目标 → `{{toolRefs.grep}}`，不要用 shell `grep`、`rg` 或 `awk`。{{/has}}
 {{#has tools "glob"}}- 映射结构或通配匹配 → `{{toolRefs.glob}}`，不要用 `ls **/*.ext` 或 `fd`。{{/has}}
 {{#has tools "bash"}}- `{{toolRefs.bash}}`：只用于真实二进制命令和简短事实型管道。会遮蔽上述专用工具的命令会被拦截。{{/has}}
 {{#has tools "bash"}}- 判定标准：一个外部 CLI 调用，或一个返回计数、频率、集合差异、校验和的简短管道 → `bash`。如果只是移动、分页或裁剪某个工具本可直接获取的字节 → 使用该工具。{{/has}}

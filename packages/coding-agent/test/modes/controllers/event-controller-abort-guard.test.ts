@@ -109,6 +109,7 @@ function makeTurnEndContext(
 		clearPinnedError: () => {},
 		ensureLoadingAnimation: () => {},
 		showError: () => {},
+		showStatus: () => {},
 		session,
 		viewSession: session,
 	} as unknown as InteractiveModeContext;

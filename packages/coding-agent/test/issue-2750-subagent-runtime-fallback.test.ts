@@ -4,6 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 
@@ -22,11 +23,28 @@ function model(provider: string, id: string): Model<Api> {
 	});
 }
 
-function createYieldingSession(onFallbackRestored?: () => void): AgentSession {
+/**
+ * Fake session that runs a turn on its primary, applies a retry fallback, and
+ * yields.
+ *
+ * `servingModel` mirrors the real session contract: it names the model that
+ * produced output and holds the previous one while a fallback is armed but
+ * unproven, so the executor is exercised against the same shape production
+ * gives it.
+ *
+ * `fallback` picks what the target does with the switch it was handed:
+ * - `"served"` settles a real turn on it, which moves attribution.
+ * - `"unproven"` errors on its first request, producing none of the run's work.
+ */
+function createYieldingSession(fallbackOrOnRestored: "served" | "unproven" | (() => void) = "served"): AgentSession {
+	const fallback = typeof fallbackOrOnRestored === "function" ? "served" : fallbackOrOnRestored;
+	const onFallbackRestored = typeof fallbackOrOnRestored === "function" ? fallbackOrOnRestored : undefined;
 	const listeners: Array<(event: { type: string; [key: string]: unknown }) => void> = [];
 	const session = {
 		agent: { state: { systemPrompt: ["test"] } },
 		state: { messages: [] },
+		model: model("primary", "bad-runtime-model"),
+		servingModel: { selector: "primary/bad-runtime-model", isFallback: false } as ServingModel | undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["yield"],
@@ -38,34 +56,35 @@ function createYieldingSession(onFallbackRestored?: () => void): AgentSession {
 			return () => {};
 		},
 		prompt: async () => {
-			for (const listener of listeners) {
-				listener({
-					type: "retry_fallback_applied",
-					from: "primary/bad-runtime-model",
-					to: "fallback/working-model",
-					role: "subagent:issue-2750",
-				});
-				listener({
-					type: "retry_fallback_succeeded",
-					model: "fallback/working-model",
-					role: "subagent:issue-2750",
-				});
-				listener({
+			const emit = (event: { type: string; [key: string]: unknown }): void => {
+				for (const listener of listeners) listener(event);
+			};
+			session.model = model("fallback", "working-model");
+			emit({
+				type: "retry_fallback_applied",
+				from: "primary/bad-runtime-model",
+				to: "fallback/working-model",
+				role: "subagent:issue-2750",
+			});
+			if (fallback === "served") {
+				session.servingModel = { selector: "fallback/working-model", isFallback: true };
+				emit({ type: "retry_fallback_succeeded", model: "fallback/working-model", role: "subagent:issue-2750" });
+				session.model = model("primary", "bad-runtime-model");
+				emit({
 					type: "retry_fallback_restored",
 					from: "fallback/working-model",
 					to: "primary/bad-runtime-model",
 					role: "subagent:issue-2750",
 				});
-				// Capture before yield can emit a terminal snapshot.
 				onFallbackRestored?.();
-				listener({
-					type: "tool_execution_end",
-					toolCallId: "tool-yield",
-					toolName: "yield",
-					result: { content: [{ type: "text", text: "Result submitted." }], details: { status: "success" } },
-					isError: false,
-				});
 			}
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-yield",
+				toolName: "yield",
+				result: { content: [{ type: "text", text: "Result submitted." }], details: { status: "success" } },
+				isError: false,
+			});
 		},
 		waitForIdle: async () => {},
 		getLastAssistantMessage: () => undefined,
@@ -80,7 +99,7 @@ describe("subagent runtime model resolution", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("passes ordered subagent candidates and restores primary progress after fallback", async () => {
+	it("keeps serving attribution after restoring primary routing", async () => {
 		const primary = model("primary", "bad-runtime-model");
 		const fallback = model("fallback", "working-model");
 		const progressSnapshots: AgentProgress[] = [];
@@ -147,12 +166,51 @@ describe("subagent runtime model resolution", () => {
 			}),
 		);
 		expect(progressAfterRestoration).toMatchObject({
-			resolvedModel: "primary/bad-runtime-model",
-			resolvedModelIsFallback: false,
+			resolvedModel: "fallback/working-model",
+			resolvedModelIsFallback: true,
 		});
 		expect(result.modelOverride).toEqual(["primary/bad-runtime-model", "fallback/working-model"]);
+		expect(result.resolvedModel).toBe("fallback/working-model");
+		expect(result.resolvedModelIsFallback).toBe(true);
+	});
+
+	it("does not attribute the run to a fallback that never served a turn", async () => {
+		// The incident shape: the primary does all the work, a transient error
+		// routes the child onto a chain candidate, and that candidate errors on its
+		// first request. Crediting the run to it reports 0 tokens of its output as
+		// the whole run — to the Agent Hub row and, via the hub job snapshot, to
+		// the parent model.
+		const primary = model("primary", "bad-runtime-model");
+		const fallback = model("fallback", "working-model");
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
+			return {
+				session: createYieldingSession("unproven"),
+				extensionsResult: {},
+				setToolUIContext: () => {},
+			} as never;
+		});
+
+		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const settings = Settings.isolated({});
+		settings.setModelRole("default", "primary/bad-runtime-model");
+		const result = await runSubprocess({
+			cwd: "/tmp",
+			agent,
+			task: "work",
+			index: 0,
+			id: "unproven-fallback",
+			modelOverride: ["primary/bad-runtime-model"],
+			settings,
+			modelRegistry: {
+				refresh: async () => {},
+				getAvailable: () => [primary, fallback],
+				getApiKey: async () => "test-key",
+			} as never,
+			enableLsp: false,
+		});
+
 		expect(result.resolvedModel).toBe("primary/bad-runtime-model");
-		expect(result.resolvedModelIsFallback).toBe(false);
+		expect(result.resolvedModelIsFallback).toBeFalsy();
 	});
 
 	it("inherits an explicitly configured default fallback chain for a single subagent model", async () => {
@@ -211,7 +269,7 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		// Mirrors the bundled scout agent (`model: "@smol"`).
+		// Direct executor callers may still pass an unexpanded agent role alias.
 		const agent: AgentDefinition = {
 			name: "scout",
 			description: "test",
@@ -245,9 +303,13 @@ describe("subagent runtime model resolution", () => {
 		expect(childFallbackChains?.default).toEqual(["slow/opus-backup"]);
 	});
 
-	it("uses an explicit semantic model role's chain over the default for a concrete override", async () => {
-		const fast = model("fast", "hy3");
-		const slow = model("slow", "opus");
+	it("inherits the aliased role's chain when the spawn path pre-expands the alias", async () => {
+		// The real task flow (structured-subagent) resolves `@task` to a concrete
+		// selector before calling the executor and carries the role identity in
+		// `modelRole`. Re-deriving the role from the expanded patterns yields
+		// nothing, so the child must route off `modelRole`, not `default`.
+		const roleModel = model("task-provider", "sonnet");
+		const defaultModel = model("default-provider", "opus");
 		let childFallbackChains: Record<string, string[]> | undefined;
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			if (!options) throw new Error("Expected createAgentSession options");
@@ -255,32 +317,37 @@ describe("subagent runtime model resolution", () => {
 			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
 		});
 
-		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		const agent: AgentDefinition = {
+			name: "task",
+			description: "test",
+			systemPrompt: "test",
+			source: "bundled",
+			model: ["@task"],
+		};
 		await runSubprocess({
 			cwd: "/tmp",
 			agent,
 			task: "work",
 			index: 0,
-			id: "explicit-role-concrete-model",
-			modelOverride: "fast/hy3:high",
-			modelRole: "reviewer",
+			id: "pre-expanded-role",
+			modelOverride: ["task-provider/sonnet"],
+			modelRole: "task",
 			settings: Settings.isolated({
-				modelRoles: { default: "slow/opus", reviewer: "fast/hy3" },
+				modelRoles: { default: "default-provider/opus", task: "task-provider/sonnet" },
 				"retry.fallbackChains": {
-					default: ["slow/opus-backup"],
-					reviewer: ["fast/composer"],
+					default: ["task-provider/sonnet", "default-provider/sol"],
+					task: ["task-provider/sonnet"],
 				},
 			}),
 			modelRegistry: {
 				refresh: async () => {},
-				getAvailable: () => [fast, slow],
+				getAvailable: () => [roleModel, defaultModel],
 				getApiKey: async () => "test-key",
 			} as never,
 			enableLsp: false,
 		});
 
-		expect(childFallbackChains?.["subagent:explicit-role-concrete-model"]).toEqual(["fast/composer"]);
-		expect(childFallbackChains?.default).toEqual(["slow/opus-backup"]);
+		expect(childFallbackChains?.["subagent:pre-expanded-role"]).toEqual(["task-provider/sonnet"]);
 	});
 
 	it("inherits the default chain for a role alias whose role configures no chain", async () => {
