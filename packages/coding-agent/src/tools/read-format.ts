@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { formatNumberedLine, formatNumberedLines } from "@oh-my-pi/hashline";
+import { formatNumberedLine, formatNumberedLines, splitAddressableFileLines } from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { formatHashlineSourceHeader, recordHashlineSourceSnapshot, recordSeenLines } from "../edit/file-snapshot-store";
 import { isMarkdownPath } from "../modes/theme/theme";
@@ -282,7 +282,7 @@ export function buildInMemoryTextResult(
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
-	const allLines = text.split("\n");
+	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
 	// User-requested 0-indexed range start. Lines BEFORE this are leading
@@ -479,7 +479,7 @@ export function buildInMemoryMultiRangeResult(
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
-	const allLines = text.split("\n");
+	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
 	const shouldAddHashLines = displayMode.hashLines;

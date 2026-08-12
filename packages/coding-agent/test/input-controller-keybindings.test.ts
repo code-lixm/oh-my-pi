@@ -352,7 +352,7 @@ async function createContext() {
 		hideToolActivity: false,
 		toolOutputExpanded: false,
 		settings: { set: vi.fn() },
-		chatContainer: { children: [] },
+		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
 		handleClearCommand: vi.fn(),
@@ -457,6 +457,7 @@ describe("InputController keybinding setup", () => {
 		expect(ctx.settings.set).toHaveBeenCalledWith("display.hideToolActivity", true);
 		expect(spies.clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
+		expect(ctx.chatContainer.setToolActivityVisible).toHaveBeenCalledWith(false);
 	});
 
 	it("routes configurable agent-cycle shortcuts to next and previous focus changes", async () => {

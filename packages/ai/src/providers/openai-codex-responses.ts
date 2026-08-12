@@ -1569,6 +1569,7 @@ export async function buildTransformedCodexRequestBody(
 	}
 	const codexOptions: CodexRequestOptions = {
 		reasoningEffort: options?.reasoning,
+		reasoningOff: options?.forceReasoningOff,
 		reasoningSummary: options?.reasoningSummary,
 		reasoningContext: options?.reasoningContext,
 		textVerbosity: options?.textVerbosity,

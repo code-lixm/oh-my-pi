@@ -6,6 +6,13 @@
 
 - Added fail-closed trusted Codex prompt profiles from official model discovery, preserving exact model provenance, typed model messages, composition hashes, source/ETag metadata, and canonical vendor digests.
 - Added the `bedrock-mantle` provider with authenticated model discovery for OpenAI GPT-5.4, GPT-5.5, and GPT-5.6 models served through Amazon Bedrock's Responses endpoint ([#7080](https://github.com/can1357/oh-my-pi/pull/7080) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+## [17.2.15] - 2026-08-12
+
+### Fixed
+
+- Fixed classification of model IDs with large minor versions (e.g., `claude-opus-5-11`) or three-part versions, ensuring they no longer fall back to stale default configurations.
+
+## [17.2.13] - 2026-08-11
 
 ### Changed
 

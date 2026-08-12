@@ -25,7 +25,7 @@ export interface LateDiagnosticsFile {
  */
 export class LateDiagnosticsMessageComponent extends Container {
 	#expanded = false;
-
+	#toolActivityVisible = true;
 	constructor(private readonly files: LateDiagnosticsFile[]) {
 		super();
 		this.#rebuild();
@@ -37,12 +37,14 @@ export class LateDiagnosticsMessageComponent extends Container {
 		this.#rebuild();
 	}
 
-	override invalidate(): void {
-		super.invalidate();
-		this.#rebuild();
+	setToolActivityVisible(visible: boolean): void {
+		if (this.#toolActivityVisible === visible) return;
+		this.#toolActivityVisible = visible;
+		this.invalidate();
 	}
 
 	override render(width: number): readonly string[] {
+		if (!this.#toolActivityVisible) return [];
 		if (getOutputBlockBorderStyle() !== "accent") return super.render(width);
 
 		const safeWidth = Math.max(1, width);

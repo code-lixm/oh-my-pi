@@ -1,22 +1,22 @@
-Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste, then list new content. A header ending in `:` takes `+` body rows; colonless `PUT` (paste), `CUT`, `REM`, `MV` take none.
+Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
 Every file section starts `[PATH#TAG]`. `TAG` = 4-hex snapshot tag copied from your latest `read`/`search` or current-disk `codegraph` source section — REQUIRED on every section. Create new files with `write`; hashline only edits existing files.
 </headers>
 
 <ops>
-`PUT N.=M:` — replace original lines N through M (INCLUSIVE) with body rows.
-`PUT N*:` — replace the syntactic block BEGINNING on line N; its closing line is resolved for you.
-`PUT <N:` / `PUT >N:` — insert body rows before / after line N (`PUT <1:` = file head, `PUT >$:` = file tail).
-`PUT >N*:` — insert body rows after the END of the block beginning at N (at sibling depth). Append inside a block → `PUT >M:`.
-`PUT <N` / `PUT >N` / `PUT N.=M @name` / `PUT N* @name` — paste a captured register at a gap, over a range, or over a resolved block (no `:` header, no body rows). Unlabeled gap `PUT` pastes the anonymous register; span/block paste requires `@name`.
-`CUT N.=M` / `CUT N*` — delete lines N through M / block N and capture them (anonymous, or `@name` when given).
-`REM` — delete the whole section file. `MV DEST` — move/rename to `DEST` (quote paths with spaces); edits above `MV` land on the source first, final content written at `DEST`.
-Single line: `PUT N.=N:` / `CUT N.=N`. Range = ORIGINAL lines touched (`N.=M`, inclusive); body length irrelevant.
+`PUT N.=M:`: replace original inclusive lines N–M with body.
+`PUT N*:`: replace syntactic block beginning N; closing line resolved.
+`PUT <N:` / `PUT >N:`: insert before/after N; `<1` head, `>$` tail.
+`PUT >N*:`: insert after block N's end, at sibling depth. Append inside block: `PUT >M:`.
+`PUT <N` / `PUT >N` / `PUT N.=M @name` / `PUT N* @name`: paste captured register at gap/range/resolved block; no `:` or body. Unlabeled gap paste: anonymous register; range/block paste: `@name` required.
+`CUT N.=M` / `CUT N*`: delete and capture inclusive lines N–M / block N; anonymous or given `@name`.
+`REM`: delete section file. `MV DEST`: move/rename (quote paths with spaces); prior edits apply to source, final content to `DEST`.
+Single line: `PUT N.=N:` / `CUT N.=N`. Ranges name original inclusive touched lines; body length irrelevant.
 </ops>
 
 <body-rows>
-Only under a `:` header. Every row is `+TEXT`, verbatim (leading whitespace kept); `+` alone = blank line. NEVER `-old` or bare/context rows — the range deletes; the body is only the final content. Keep a line: leave it out of every range. Literal leading `-`/`+` keeps the prefix: `- item` → `+- item`, `+ item` → `++ item`.
+Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+`: blank. NEVER `-old`, bare, or context rows: range deletes; body is final content. Keep line: exclude it from every range. Literal initial `-`/`+`: `- item` → `+- item`; `+ item` → `++ item`.
 </body-rows>
 
 <rules>
@@ -54,7 +54,7 @@ PUT 1.=3:
 MV lib/greet.py
 ```
 
-Markdown bullets — the file receives `- task`:
+Markdown bullets — file receives `- task`:
 ```
 [PLAN.md#A1B2]
 PUT >2:
@@ -62,7 +62,7 @@ PUT >2:
 +  - nested task
 ```
 
-Move `greet` to a sibling file using a named register — flows across sections:
+Move `greet` to sibling file via named register; flows across sections:
 ```
 [greet.py#A1B2]
 CUT 1* @fn
@@ -70,7 +70,7 @@ CUT 1* @fn
 PUT <1 @fn
 ```
 
-`PUT 1*:` resolves lines 1–3 (`def` header through `print(msg)`); line 4 is a separate statement and stays:
+`PUT 1*:` resolves lines 1–3 (`def` through `print(msg)`); line 4 separate, remains:
 ```
 [greet.py#A1B2]
 PUT 1*:
@@ -78,7 +78,7 @@ PUT 1*:
 +    print(f"Hello, {name}")
 ```
 
-Decorator/doc-comment = SEPARATE block — point N at the decorator to take both; anchoring the `def` (line 2) would orphan `@cache`:
+Decorator/doc-comment separate block: point N at decorator to include both; anchoring `def` line 2 orphans `@cache`:
 ```
 [svc.py#C3D4]
 PUT 1*:
@@ -127,7 +127,7 @@ PUT >20 @fn:
 </anti-patterns>
 
 <critical>
-1. RE-GROUND AFTER EVERY EDIT — applied edits renumber the file and change the `#TAG`; take next numbers from the edit response or a fresh `read`. Stale tag or surprise? STOP, re-`read`.
-2. RANGES ARE TIGHT — cover only lines that change. Whole construct → `PUT N*:`.
-3. BODY = FINAL CONTENT — every body row starts with `+`; Markdown bullets use `+- item`, not `- item`.
+1. RE-GROUND AFTER EVERY EDIT: edits renumber and change `#TAG`; take next numbers from edit response or fresh `read`. Stale tag/surprise: STOP; re-`read`.
+2. RANGES TIGHT: changed lines only. Whole construct: `PUT N*:`.
+3. BODY FINAL CONTENT: every row starts `+`; Markdown bullet: `+- item`, not `- item`.
 </critical>

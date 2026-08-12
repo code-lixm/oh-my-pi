@@ -3,9 +3,9 @@
  * stable navigation order. Status groups come first; creation time and agent
  * identity make ordering repeatable while activity heartbeats only update display.
  */
-import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { type AgentHubDeps, AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import {
@@ -156,9 +156,10 @@ describe("Agent hub row ordering", () => {
 	let geometry: GeometryStub | undefined;
 	let previousLocale: string;
 
-	beforeAll(async () => {
+	beforeEach(async () => {
 		await initTheme();
 		previousLocale = getSettingsUiLocale();
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
 	});
 
 	afterEach(() => {
@@ -169,6 +170,7 @@ describe("Agent hub row ordering", () => {
 		geometry = undefined;
 		AgentRegistry.resetGlobalForTests();
 		setSettingsUiLocale(previousLocale);
+		resetSettingsForTest();
 	});
 
 	it("renders a useful empty state before any task agents exist", () => {

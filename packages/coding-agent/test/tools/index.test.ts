@@ -500,7 +500,7 @@ describe("createTools", () => {
 		expect(names).toContain("rewind");
 	});
 
-	it("HIDDEN_TOOLS contains yield, goal, and refine", () => {
-		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual(["goal", "refine", "yield"]);
+	it("HIDDEN_TOOLS contains yield, goal, refine, and think", () => {
+		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual(["goal", "refine", "think", "yield"]);
 	});
 });

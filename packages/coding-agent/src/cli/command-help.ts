@@ -36,6 +36,10 @@ export const completionsHelp = {
 
 export const completeHelp = { hidden: true } satisfies CommandMetadata;
 
+export const compressHelp = {
+	description: "Rewrite a text file into the dense prompt register, reporting what it drops",
+} satisfies CommandMetadata;
+
 export const configHelp = { description: "Manage configuration settings" } satisfies CommandMetadata;
 export const syncHelp = {
 	description: "Synchronize encrypted configuration through S3-compatible storage",

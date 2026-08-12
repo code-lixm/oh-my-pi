@@ -9,6 +9,20 @@
 ### Fixed
 
 - Fixed OpenAPI Responses replay for DeepSeek-family targets (e.g. Console Go) synthesizing an empty `reasoning_text` item when a replayed assistant turn — minted by another model before a model switch — captured no reasoning content; the provider rejects the empty text with "The reasoning_text in the thinking mode must be passed back to the API", which exhausted the retry budget. Turns without captured reasoning now replay without a reasoning item instead of carrying an empty placeholder.
+## [17.2.15] - 2026-08-12
+
+### Fixed
+
+- Fixed an issue where AWS_BEDROCK_SKIP_AUTH failed to expose Amazon Bedrock models when AWS credential files were unavailable.
+- Fixed an issue where forceReasoningOff was ignored by Anthropic and Google transports, which allowed native thinking alongside a caller-supplied external scratchpad.
+
+## [17.2.14] - 2026-08-11
+
+### Added
+
+- Added `forceReasoningOff` and `disableReasoning` options to disable reasoning in OpenAI and Azure OpenAI models
+
+## [17.2.13] - 2026-08-11
 
 ### Changed
 

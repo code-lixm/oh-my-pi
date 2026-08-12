@@ -12,7 +12,6 @@ import { extractImagePathFromText } from "../../modes/components/custom-editor";
 import { HubActivityGroupComponent } from "../../modes/components/hub-activity-group";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
-import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
@@ -2144,10 +2143,9 @@ export class InputController {
 				child.setToolActivityVisible(!this.ctx.hideToolActivity);
 			} else if (child instanceof AssistantMessageComponent) {
 				child.setToolResultImagesVisible(!this.ctx.hideToolActivity);
-			} else if (child instanceof StrippedToolCallsPlaceholder) {
-				child.setToolActivityVisible(!this.ctx.hideToolActivity);
 			}
 		}
+		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
 
 		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
 		this.ctx.ui.resetDisplay();

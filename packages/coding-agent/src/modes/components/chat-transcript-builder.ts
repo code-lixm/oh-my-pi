@@ -20,6 +20,7 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
@@ -56,6 +57,7 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
+import { ToolActivityContainer } from "./tool-activity";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock } from "./usage-row";
@@ -118,7 +120,9 @@ export class ChatTranscriptBuilder {
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 
-	constructor(private readonly deps: ChatTranscriptBuilderDeps) {}
+	constructor(private readonly deps: ChatTranscriptBuilderDeps) {
+		this.container.setToolActivityVisible(!settings.get("display.hideToolActivity"));
+	}
 
 	/** Whether the transcript currently holds any rendered rows. */
 	get isEmpty(): boolean {
@@ -216,7 +220,6 @@ export class ChatTranscriptBuilder {
 			this.#readGroup = new ReadToolGroupComponent({
 				showContentPreview: settings.get("read.toolResultPreview"),
 			});
-			this.#readGroup.setToolActivityVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(this.#readGroup);
 			this.container.addChild(this.#readGroup);
 		}
@@ -469,7 +472,6 @@ export class ChatTranscriptBuilder {
 				this.deps.cwd,
 				content.id,
 			);
-			component.setToolActivityVisible(!settings.get("display.hideToolActivity"));
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 
@@ -529,7 +531,6 @@ export class ChatTranscriptBuilder {
 			this.#todoSnapshot = pending;
 		}
 	}
-
 	#appendCustomMessage(message: Extract<AgentMessage, { role: "custom" | "hookMessage" }>): void {
 		if (!message.display) return;
 		if (
@@ -540,7 +541,8 @@ export class ChatTranscriptBuilder {
 			return;
 		}
 		if (message.customType === "async-result") {
-			this.container.addChild(buildAsyncResultBlock(message));
+			const component = buildAsyncResultBlock(message);
+			this.container.addChild(component);
 			return;
 		}
 		if (message.customType === LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE) {
@@ -563,6 +565,16 @@ export class ChatTranscriptBuilder {
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
 			this.container.addChild(createAdvisorMessageCard(details, () => this.#expanded, theme));
+			return;
+		}
+		if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
+			const messageComponent = new CustomMessageComponent(
+				message as CustomMessage<unknown>,
+				this.deps.getMessageRenderer?.(message.customType),
+			);
+			this.#trackExpandable(messageComponent);
+			const component = new ToolActivityContainer(messageComponent);
+			this.container.addChild(component);
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {
