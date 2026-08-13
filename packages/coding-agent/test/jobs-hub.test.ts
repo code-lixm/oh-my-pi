@@ -8,11 +8,67 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
+import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../src/i18n/settings-locale";
 
 let localeBeforeTest = getSettingsUiLocale();
 
 type InputListener = (data: string) => { consume: boolean } | undefined;
+
+interface GeometryStub {
+	restore(): void;
+}
+
+let geometry: GeometryStub | undefined;
+
+function stubStdoutGeometry(columns: number, rows: number): GeometryStub {
+	const rowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	const columnsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+	Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => rows, set: () => {} });
+	Object.defineProperty(process.stdout, "columns", { configurable: true, get: () => columns, set: () => {} });
+	const restore = (key: "rows" | "columns", descriptor: PropertyDescriptor | undefined) => {
+		if (descriptor) Object.defineProperty(process.stdout, key, descriptor);
+		else Reflect.deleteProperty(process.stdout, key);
+	};
+	return {
+		restore() {
+			restore("rows", rowsDescriptor);
+			restore("columns", columnsDescriptor);
+		},
+	};
+}
+
+function renderedHubLines(hub: JobsHubOverlayComponent, width: number): string[] {
+	return hub.render(width).map(line => Bun.stripANSI(line));
+}
+
+function renderedJobsColumnHeader(lines: readonly string[]): string | undefined {
+	const columns = ["Job", "Type", "Status", "Duration", "Model", "Owner"];
+	return lines.find(line => columns.every(column => line.includes(column)) && line.includes("Last up"));
+}
+
+function expectRoundedJobsFrame(lines: readonly string[], width: number): void {
+	expect(lines[0]).toMatch(/^╭─ Jobs Hub ─+╮$/u);
+	expect(lines.at(-1)).toMatch(/^╰─+╯$/u);
+	expect(lines.at(-3)).toMatch(/^├─+┤$/u);
+	expect(lines.at(-2)).toMatch(/^│ .* │$/u);
+	for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+	for (const line of lines.slice(1, -3)) {
+		expect(line, line).toMatch(/^│ .* │$/u);
+	}
+}
+
+function registerBlockingJob(manager: AsyncJobManager, label: string): void {
+	manager.register(
+		"bash",
+		label,
+		async ({ signal }) =>
+			await new Promise<string>(resolve => {
+				if (signal.aborted) return resolve("cancelled");
+				signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
+			}),
+	);
+}
 
 function renderHub(hub: JobsHubOverlayComponent, width = 120): string {
 	return Bun.stripANSI(hub.render(width).join("\n"));
@@ -93,6 +149,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	geometry?.restore();
+	geometry = undefined;
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	setSystemTime();
@@ -381,6 +439,87 @@ describe("Jobs Hub overlay", () => {
 				}
 			}
 		} finally {
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
+	it("uses a rounded full frame around Jobs Hub chrome and rows", async () => {
+		geometry = stubStdoutGeometry(95, 16);
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		registerBlockingJob(manager, "FRAME_JOB_ALPHA");
+		registerBlockingJob(manager, "FRAME_JOB_BRAVO");
+		const hub = new JobsHubOverlayComponent({ manager, onDone() {}, requestRender() {} });
+
+		try {
+			const lines = renderedHubLines(hub, 95);
+			expectRoundedJobsFrame(lines, 95);
+
+			const jobRows = lines.filter(line => /FRAME_JOB_(?:ALPHA|BRAVO)/u.test(line));
+			expect(jobRows).toHaveLength(2);
+			const selectedRow = jobRows.find(line => line.includes("❯"));
+			const unselectedRow = jobRows.find(line => !line.includes("❯"));
+			expect(selectedRow).toMatch(/^│ .* │$/u);
+			expect(unselectedRow).toMatch(/^│ .* │$/u);
+			for (const row of jobRows) expect(visibleWidth(row)).toBe(95);
+		} finally {
+			hub.dispose();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
+	it("activates wide job columns at outer width 95 while keeping width 94 compact", async () => {
+		geometry = stubStdoutGeometry(95, 16);
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		registerBlockingJob(manager, "WIDTH_BOUNDARY_JOB");
+		const hub = new JobsHubOverlayComponent({ manager, onDone() {}, requestRender() {} });
+
+		try {
+			const compact = renderedHubLines(hub, 94);
+			expect(renderedJobsColumnHeader(compact)).toBeUndefined();
+			for (const line of compact) expect(visibleWidth(line)).toBeLessThanOrEqual(94);
+
+			const wide = renderedHubLines(hub, 95);
+			expect(renderedJobsColumnHeader(wide)).toBeDefined();
+			for (const line of wide) expect(visibleWidth(line)).toBeLessThanOrEqual(95);
+		} finally {
+			hub.dispose();
+			manager.cancelAll();
+			await manager.waitForAll();
+			await manager.dispose({ timeoutMs: 0 });
+		}
+	});
+
+	it("keeps the jobs column header fixed while selection scrolls into later rows", async () => {
+		vi.useFakeTimers();
+		geometry = stubStdoutGeometry(95, 10);
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const labels = Array.from({ length: 12 }, (_, index) => `SCROLL_JOB_${String(index).padStart(2, "0")}`);
+		for (const [index, label] of labels.entries()) {
+			setSystemTime(1_000 + index);
+			registerBlockingJob(manager, label);
+		}
+		const hub = new JobsHubOverlayComponent({ manager, onDone() {}, requestRender() {} });
+
+		try {
+			const initial = renderedHubLines(hub, 95);
+			expect(renderedJobsColumnHeader(initial)).toBeDefined();
+			const initiallySelected = labels.find(label =>
+				initial.some(line => line.includes("❯") && line.includes(label)),
+			);
+			expect(initiallySelected).toBeDefined();
+
+			for (let step = 0; step < 8; step++) hub.handleInput("j");
+			const scrolled = renderedHubLines(hub, 95);
+			expect(renderedJobsColumnHeader(scrolled)).toBeDefined();
+			const laterSelected = labels.find(label => scrolled.some(line => line.includes("❯") && line.includes(label)));
+			expect(laterSelected).toBeDefined();
+			expect(laterSelected).not.toBe(initiallySelected);
+		} finally {
+			hub.dispose();
+			manager.cancelAll();
+			await manager.waitForAll();
 			await manager.dispose({ timeoutMs: 0 });
 		}
 	});

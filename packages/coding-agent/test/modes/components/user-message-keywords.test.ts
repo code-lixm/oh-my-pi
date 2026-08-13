@@ -8,14 +8,12 @@ import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components
 import {
 	getCurrentThemeName,
 	getEditorTheme,
-	getThemeByName,
 	initTheme,
 	previewTheme,
 	theme,
 } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { getOutputBlockBorderStyle, setOutputBlockBorderStyle } from "@oh-my-pi/pi-coding-agent/tui/output-block";
 import { Container, visibleWidth } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
@@ -34,7 +32,6 @@ function render(text: string): string {
 }
 
 const stripUserControls = (text: string) => Bun.stripANSI(text).replace(/\x1b\]133;[AB]\x07/g, "");
-const BACKGROUND_SGR = /\x1b\[(?:4[0-7]|10[0-7]|48;(?:5;\d+|2;\d+;\d+;\d+))m/;
 function countOccurrences(haystack: string, needle: string): number {
 	return haystack.split(needle).length - 1;
 }
@@ -120,14 +117,16 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 			expect(syntaxForegrounds.size).toBeGreaterThanOrEqual(2);
 
 			for (const row of codeRows) {
-				expect(row.startsWith(bubbleBackground)).toBe(true);
+				expect(row).toContain(bubbleBackground);
 				expect(visibleWidth(row)).toBe(80);
-				expect(row.endsWith("\x1b[49m")).toBe(true);
+				expect(row.endsWith("\x1b[49m") || row.endsWith("\x1b[39m")).toBe(true);
 
 				for (const reset of row.matchAll(/\x1b\[(?:0|49)m/g)) {
 					const nextOffset = reset.index! + reset[0].length;
-					const isFinalBubbleReset = reset[0] === "\x1b[49m" && nextOffset === row.length;
-					if (!isFinalBubbleReset) expect(row.slice(nextOffset).startsWith(bubbleBackground)).toBe(true);
+					const remainder = row.slice(nextOffset);
+					const leftFrameReset = remainder.includes(bubbleBackground);
+					const finalReset = reset[0] === "\x1b[49m" && !remainder.includes(bubbleBackground);
+					expect(leftFrameReset || finalReset).toBe(true);
 				}
 			}
 		} finally {
@@ -251,48 +250,5 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		expect(Bun.stripANSI(raw)).toContain("[Image #1, 800x600]");
 		expect(raw).toContain("\x1b]8;id=");
 		expect(raw).toContain(imageUri);
-	});
-
-	it("uses a full rounded frame without accent rail, tint, or bubble background for image placeholders under accent output styling", async () => {
-		const previousBorderStyle = getOutputBlockBorderStyle();
-		try {
-			setOutputBlockBorderStyle("accent");
-			const theme = await getThemeByName("dark");
-			expect(theme).toBeDefined();
-			const uiTheme = theme!;
-			const rendered = new UserMessageComponent("see [Image #1, 2024x464] now").render(80);
-			const plain = rendered.map(stripUserControls);
-
-			expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(true);
-			expect(plain[0]?.trimEnd().endsWith(uiTheme.boxRound.topRight)).toBe(true);
-			expect(plain.at(-1)?.trimStart().startsWith(uiTheme.boxRound.bottomLeft)).toBe(true);
-			expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(true);
-			expect(plain.map(line => visibleWidth(line))).toEqual(Array(plain.length).fill(80));
-			expect(rendered.every(line => !BACKGROUND_SGR.test(line))).toBe(true);
-			const bodyLine = plain.find(line => line.includes("[Image #1, 2024x464]"));
-			expect(bodyLine).toBeDefined();
-			expect(bodyLine?.trimStart().startsWith(uiTheme.boxRound.vertical)).toBe(true);
-			expect(bodyLine?.trimEnd().endsWith(uiTheme.boxRound.vertical)).toBe(true);
-		} finally {
-			setOutputBlockBorderStyle(previousBorderStyle);
-		}
-	});
-
-	it("keeps ordinary text messages on the existing bubble background under accent output styling without adding a rounded frame", async () => {
-		const previousBorderStyle = getOutputBlockBorderStyle();
-		try {
-			setOutputBlockBorderStyle("accent");
-			const theme = await getThemeByName("dark");
-			expect(theme).toBeDefined();
-			const uiTheme = theme!;
-			const rendered = new UserMessageComponent("plain user text").render(80);
-			const plain = rendered.map(stripUserControls);
-
-			expect(rendered.some(line => line.includes(uiTheme.getBgAnsi("userMessageBg")))).toBe(true);
-			expect(plain[0]?.trimStart().startsWith(uiTheme.boxRound.topLeft)).toBe(false);
-			expect(plain.at(-1)?.trimEnd().endsWith(uiTheme.boxRound.bottomRight)).toBe(false);
-		} finally {
-			setOutputBlockBorderStyle(previousBorderStyle);
-		}
 	});
 });

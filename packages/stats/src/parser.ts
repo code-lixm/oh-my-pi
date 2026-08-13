@@ -406,6 +406,31 @@ export interface ParseSessionResult {
 	toolResults: ToolResultLink[];
 	newOffset: number;
 }
+/**
+ * Resolve the user message an assistant reply ultimately answers by walking
+ * the parentId chain. Some session formats (RLM / runner-based agents)
+ * record the assistant's parent as a `custom` lifecycle event
+ * (`session_run_start`, `tool_execution_start`) whose own `parentId` points
+ * at the real user message - the naive one-hop lookup would miss it and
+ * leave the user row stuck in the "unknown" model bucket. Nested runner
+ * chains can be deep and contain cross-run cycles, so the walk is bounded
+ * and cycle-guarded; callers fall back to the most recent user message when
+ * it returns null.
+ */
+function resolveUserParentId(entryById: ReadonlyMap<string, SessionEntry>, startId: string): string | null {
+	let id: string | undefined = startId;
+	const seen = new Set<string>();
+	for (let depth = 0; id && depth < 256; depth++) {
+		if (seen.has(id)) return null;
+		seen.add(id);
+		const entry = entryById.get(id);
+		if (!entry) return null;
+		if (isUserMessage(entry)) return entry.id;
+		id = (entry as SessionEntry & { parentId?: unknown }).parentId as string | undefined;
+	}
+	return null;
+}
+
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
 	let bytes: Uint8Array;
 	try {
@@ -424,6 +449,13 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const toolCalls: ToolCallStats[] = [];
 	const toolResults: ToolResultLink[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
+	// Every parsed row (messages plus `custom` lifecycle events) keyed by id,
+	// so assistant replies can walk parentId chains to the real user message.
+	const entryById = new Map<string, SessionEntry>();
+	// Most-recently-ingested user message id: assistant replies always belong
+	// to the reply tree of the latest user message, so this is a safe fallback
+	// when a parentId chain is cyclic, truncated, or spans sync passes.
+	let lastUserEntryId: string | null = null;
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
 	const { entries, read } = parseSessionEntriesLenient(unprocessed);
@@ -432,6 +464,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		currentServiceTier = scanLastServiceTier(bytes.subarray(0, start));
 	}
 	for (const entry of entries) {
+		if ("id" in entry && typeof entry.id === "string" && entry.id.length > 0) entryById.set(entry.id, entry);
 		if (isServiceTierChange(entry)) {
 			currentServiceTier = coerceServiceTierByFamily(entry.serviceTier);
 			continue;
@@ -441,6 +474,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 			if (userMsg) {
 				userStats.push(userMsg);
 				userByEntryId.set(entry.id, userMsg);
+				lastUserEntryId = entry.id;
 			}
 			continue;
 		}
@@ -454,6 +488,8 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 			if (msgStats) stats.push(msgStats);
 			toolCalls.push(...extractToolCalls(sessionPath, folder, entry, agentType));
 			// Link assistant's responding model back to the user message it answered.
+			// Walk the parentId chain: some session formats point the assistant
+			// at a `custom` lifecycle event instead of the user message itself.
 			const parentId = (entry as SessionMessageEntry).parentId;
 			if (parentId) {
 				const msg = entry.message as AssistantMessage;
@@ -463,10 +499,13 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 					// linked rows, a fix-up for fresh inserts (which start NULL
 					// because the user row is recorded before its reply lands) and
 					// for cross-pass orphans whose parent was committed by an
-					// earlier incremental sync.
+					// earlier incremental sync. Prefer the parentId chain walk;
+					// fall back to the most recent user message when the chain is
+					// cyclic / truncated, then to the raw parentId (which the
+					// UPDATE simply doesn't match - same as before the fix).
 					userLinks.push({
 						sessionFile: sessionPath,
-						entryId: parentId,
+						entryId: resolveUserParentId(entryById, parentId) ?? lastUserEntryId ?? parentId,
 						model: msg.model,
 						provider: msg.provider,
 					});

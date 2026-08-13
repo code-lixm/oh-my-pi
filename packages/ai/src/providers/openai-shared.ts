@@ -1804,6 +1804,9 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 			});
 		} else if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
+			const needsReasoningReplay =
+				(options.requiresReasoningReplayForAllTurns ?? false) ||
+				(options.requiresReasoningReplayForToolCalls ?? false);
 			// Providers replay stale native items even when the current request has
 			// disabled native replay (cold session state, filter policy). Consult
 			// the payload sanitizer directly so hidden-empty turns are recognized
@@ -1873,7 +1876,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				options.requiresReasoningReplayForToolCalls ?? false,
 			);
 			const outputItems = suppressHiddenEmptyFallback
-				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)
+				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems, needsReasoningReplay)
 				: convertedOutputItems;
 			if (outputItems.length === 0) continue;
 			messages.push(...(escapeControlTokens ? escapeReplayedControlTokens(outputItems) : outputItems));
@@ -1899,6 +1902,16 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 }
 
 type ResponsesReplayAssistantMessage = Omit<ResponseOutputMessage, "id"> & { id?: string };
+
+/**
+ * Neutral non-empty placeholder for a synthesized reasoning item when a
+ * replayed assistant turn captured no reasoning at all. Console Go's DeepSeek
+ * gateway rejects both a missing reasoning item and an empty `reasoning_text`
+ * ("The reasoning_text in the thinking mode must be passed back to the API"),
+ * so foreign turns (GPT encrypted CoT, minimax, compacted history) must still
+ * ship a non-empty item to keep the thinking-mode continuation valid.
+ */
+const SYNTHETIC_REASONING_PLACEHOLDER = "…";
 
 function parseResponseReasoningReplayItem(signature: string | undefined): ResponseReasoningItem | undefined {
 	if (!signature) return undefined;
@@ -2067,18 +2080,19 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 		});
 	}
 
-	if (requiresReasoningItem && !reasoningItemEmitted && outputItems.length > 0 && carriedReasoningTexts.length > 0) {
+	if (requiresReasoningItem && !reasoningItemEmitted && outputItems.length > 0) {
 		// Replay the demoted reasoning (already present in `content` as visible
 		// text) as a structured reasoning item so the thinking-mode continuation
-		// carries the `reasoning_text` the provider requires. Synthesized only
-		// when there is actual reasoning text to replay: DeepSeek-family
-		// Responses targets (e.g. Console Go) reject a reasoning item whose
-		// `reasoning_text` is empty — "The reasoning_text in the thinking mode
-		// must be passed back to the API" — so a turn minted by another model
-		// that captured no reasoning replays without a reasoning item instead of
-		// with an empty placeholder (which the chat-completions path tolerates
-		// but the Responses wire shape does not).
-		const reasoningText = carriedReasoningTexts.join("\n");
+		// carries the `reasoning_text` the provider requires. Console Go's
+		// DeepSeek gateway rejects BOTH a reasoning item whose `reasoning_text`
+		// is empty AND a replayed assistant turn that ships no reasoning item at
+		// all — "The reasoning_text in the thinking mode must be passed back to
+		// the API" — so a turn minted by another model (GPT encrypted CoT,
+		// minimax, compacted history) that captured no reasoning must still emit
+		// an item. Carry the captured reasoning when available; otherwise fall
+		// back to a neutral non-empty placeholder.
+		const reasoningText =
+			carriedReasoningTexts.length > 0 ? carriedReasoningTexts.join("\n") : SYNTHETIC_REASONING_PLACEHOLDER;
 		const reasoningId =
 			synthesizedReasoningItemId ?? `rs_${Bun.hash(`${model.id}:${msgIndex}:${reasoningText}`).toString(36)}`;
 		const reasoningItem: ResponseReasoningItem = {

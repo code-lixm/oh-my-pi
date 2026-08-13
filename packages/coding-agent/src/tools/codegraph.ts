@@ -382,6 +382,9 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 			};
 		}
 		const projectBase = projectStat.isDirectory() ? projectRealpath : path.dirname(projectRealpath);
+		// An explicit projectPath establishes the scope base for relative targets;
+		// without it, tool paths follow the session cwd like the other filesystem tools.
+		const scopeBase = rawProjectPath !== undefined ? projectBase : sessionCwd;
 		let location: CodeGraphIndexLocation;
 		try {
 			location = await resolveCodeGraphIndexLocation(projectBase);
@@ -408,7 +411,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 
 		const runtimeSourceRoot = location.identity.sourceRoot || projectBase;
 		if (!rawPath || rawPath.length === 0) return { kind: "ready", location, runtimeSourceRoot, syncPaths: [] };
-		const requestedScope = resolveToCwd(rawPath, runtimeSourceRoot);
+		const requestedScope = resolveToCwd(rawPath, scopeBase);
 		const scopeRealpath = await realpathOrUndefined(requestedScope);
 		if (!scopeRealpath) {
 			return {

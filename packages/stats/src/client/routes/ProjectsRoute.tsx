@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { getFolderStats } from "../api";
 import { formatCost, formatDurationMs, formatInteger, formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
-import { buildFolderRows, type FolderRowView } from "../data/view-models";
+import { buildFolderRows, type FolderRowView, sumConversationTokens } from "../data/view-models";
 import { t } from "../locale/catalog";
 import type { TimeRange } from "../types";
 import { AsyncBoundary, DataTable, Panel, StatusPill } from "../ui";
@@ -86,7 +86,7 @@ export function ProjectsRoute({ active, range, refreshTrigger }: ProjectsRoutePr
 				header: t("projects.column.tokens"),
 				numeric: true,
 				render: (item: FolderRowView) => (
-					<div className="font-mono">{formatInteger(item.totalInputTokens + item.totalOutputTokens)}</div>
+					<div className="font-mono">{formatInteger(sumConversationTokens(item))}</div>
 				),
 			},
 			{

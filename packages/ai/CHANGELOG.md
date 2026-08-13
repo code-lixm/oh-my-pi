@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Fixed OpenAPI Responses replay for DeepSeek-family targets (e.g. Console Go) synthesizing an empty `reasoning_text` item when a replayed assistant turn — minted by another model before a model switch — captured no reasoning content; the provider rejects the empty text with "The reasoning_text in the thinking mode must be passed back to the API", which exhausted the retry budget. Turns without captured reasoning now replay without a reasoning item instead of carrying an empty placeholder.
+- Fixed OpenAPI Responses replay for DeepSeek-family targets (e.g. Console Go) rejecting a thinking-mode continuation when a replayed assistant turn — minted by another model before a model switch (GPT encrypted CoT, minimax, compacted history) — captured no reasoning content at all. The gateway 400s with "The reasoning_text in the thinking mode must be passed back to the API" for BOTH an empty `reasoning_text` and a missing reasoning item on tool-call turns (verified against the live backend), so the encoder now synthesizes a non-empty reasoning item for every replayed assistant turn that requires reasoning replay, falling back to a neutral placeholder when no reasoning text was captured; the fallback replay sanitizer also keeps those items for reasoning-requiring targets instead of dropping them.
 ## [17.2.15] - 2026-08-12
 
 ### Fixed

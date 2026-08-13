@@ -1,4 +1,4 @@
-import type { AgentEvent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { AgentEvent, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Effort } from "@oh-my-pi/pi-ai";
 import type { Rule } from "../capability/rule";
@@ -8,6 +8,58 @@ import type { ConfiguredThinkingLevel } from "../thinking";
 import type { TodoItem } from "../tools/todo";
 import type { CustomMessage } from "./messages";
 
+export type MemoryOperation = "retain" | "recall" | "reflect";
+export type MemoryOperationTrigger = "auto-recall" | "auto-retain" | "compaction" | "maintenance" | "shutdown";
+
+export type MemoryOperationResult = Pick<AgentToolResult, "content" | "details">;
+
+/** Optional event surface used by memory backends and lightweight test hosts. */
+export interface MemoryOperationEmitter {
+	beginMemoryOperation?: (operation: MemoryOperation, args: unknown, trigger: MemoryOperationTrigger) => string;
+	endMemoryOperation?: (
+		operationId: string,
+		operation: MemoryOperation,
+		result: MemoryOperationResult,
+		isError?: boolean,
+	) => void;
+}
+
+export function emitMemoryOperationStart(
+	session: MemoryOperationEmitter,
+	operation: MemoryOperation,
+	args: unknown,
+	trigger: MemoryOperationTrigger,
+): string | undefined {
+	return session.beginMemoryOperation?.(operation, args, trigger);
+}
+
+export function emitMemoryOperationEnd(
+	session: MemoryOperationEmitter,
+	operationId: string | undefined,
+	operation: MemoryOperation,
+	result: MemoryOperationResult,
+	isError = false,
+): void {
+	if (operationId === undefined) return;
+	session.endMemoryOperation?.(operationId, operation, result, isError);
+}
+
+export interface MemoryOperationStartEvent {
+	type: "memory_operation_start";
+	operationId: string;
+	operation: MemoryOperation;
+	args: unknown;
+	trigger: MemoryOperationTrigger;
+}
+
+export interface MemoryOperationEndEvent {
+	type: "memory_operation_end";
+	operationId: string;
+	operation: MemoryOperation;
+	result: MemoryOperationResult;
+	isError?: boolean;
+}
+
 /** Session-specific events that extend the core AgentEvent. */
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
@@ -15,6 +67,8 @@ export type AgentSessionEvent =
 			/** False when an async delivery will resume the session before its true final settle. */
 			isTerminal?: boolean;
 	  })
+	| MemoryOperationStartEvent
+	| MemoryOperationEndEvent
 	| {
 			type: "auto_compaction_start";
 			reason: "threshold" | "overflow" | "idle" | "incomplete";

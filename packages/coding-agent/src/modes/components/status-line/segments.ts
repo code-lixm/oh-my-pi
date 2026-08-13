@@ -31,8 +31,9 @@ export type { SegmentContext } from "./types";
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-function withIcon(icon: string, text: string): string {
-	return icon ? `${icon} ${text}` : text;
+function withIcon(icon: string, text: string, color?: ThemeColor): string {
+	const content = icon ? `${icon} ${text}` : text;
+	return color ? theme.fg(color, content) : content;
 }
 
 function focusedRootLabel(agentId: string): string {
@@ -481,12 +482,11 @@ const contextPctSegment: StatusLineSegment = {
 	render(ctx) {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
-
 		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.icon.auto}` : "";
 		const text = `${formatContextUsage(pct, window, ctx.contextTokens)}${autoIcon}`;
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
-		const content = withIcon(theme.icon.context, theme.fg(color, text));
+		const content = withIcon(theme.icon.context, text, color);
 
 		return { content, visible: true };
 	},
@@ -516,7 +516,7 @@ const timeSpentSegment: StatusLineSegment = {
 	id: "time_spent",
 	render(ctx) {
 		if (ctx.activeMs < 1000) return { content: "", visible: false };
-		return { content: withIcon(theme.icon.time, formatDuration(ctx.activeMs)), visible: true };
+		return { content: withIcon(theme.icon.time, formatDuration(ctx.activeMs), "statusLineContext"), visible: true };
 	},
 };
 
@@ -540,7 +540,7 @@ const timeSegment: StatusLineSegment = {
 		}
 		timeStr += suffix;
 
-		return { content: withIcon(theme.icon.time, timeStr), visible: true };
+		return { content: withIcon(theme.icon.time, timeStr, "statusLineContext"), visible: true };
 	},
 };
 
@@ -551,7 +551,7 @@ const sessionSegment: StatusLineSegment = {
 		const sessionId = sessionManager?.getSessionId?.();
 		const display = sessionId?.slice(0, 8) || tSettingsUi("new");
 
-		return { content: withIcon(theme.icon.session, display), visible: true };
+		return { content: withIcon(theme.icon.session, display, "statusLineContext"), visible: true };
 	},
 };
 
@@ -559,7 +559,7 @@ const hostnameSegment: StatusLineSegment = {
 	id: "hostname",
 	render(_ctx) {
 		const name = os.hostname().split(".")[0];
-		return { content: withIcon(theme.icon.host, name), visible: true };
+		return { content: withIcon(theme.icon.host, name, "statusLineContext"), visible: true };
 	},
 };
 
@@ -603,9 +603,7 @@ const cacheHitSegment: StatusLineSegment = {
 		const rate = (cacheRead / total) * 100;
 		const rateStr = rate.toFixed(2);
 
-		const parts: string[] = [theme.icon.cache];
-		parts.push(theme.fg("statusLineSpend", `${rateStr}%`));
-		return { content: parts.join(" "), visible: true };
+		return { content: withIcon(theme.icon.cache, `${rateStr}%`, "statusLineSpend"), visible: true };
 	},
 };
 
@@ -821,7 +819,7 @@ const usageSegment: StatusLineSegment = {
 			if (compact.fiveHour) addWindow("5h", compact.fiveHour, compact.fiveHour.resetMinutes, "m");
 			if (compact.sevenDay) addWindow("7d", compact.sevenDay, compact.sevenDay.resetHours, "h");
 			if (compact.monthly) addWindow("mo", compact.monthly, compact.monthly.resetHours, "h", true);
-			const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
+			const content = withIcon(theme.icon.time, parts.join(theme.sep.dot), "statusLineContext");
 			return { content, visible: content.length > 0 };
 		}
 		if (items.length === 0) return { content: "", visible: false };
@@ -875,7 +873,9 @@ const usageSegment: StatusLineSegment = {
 		const hidden = displayItems.length - selected.length;
 		if (hidden > 0 && options.style !== "battery") parts.push(theme.fg("dim", `+${hidden}`));
 		let content =
-			options.style === "battery" ? parts.join(theme.sep.dot) : withIcon(theme.icon.time, parts.join(theme.sep.dot));
+			options.style === "battery"
+				? parts.join(theme.sep.dot)
+				: withIcon(theme.icon.time, parts.join(theme.sep.dot), "statusLineContext");
 		if (options.maxWidth !== undefined) content = truncateToWidth(content, Math.max(4, options.maxWidth));
 		return { content, visible: content.length > 0 };
 	},

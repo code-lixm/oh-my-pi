@@ -657,15 +657,7 @@ describe("tool execution left-edge alignment", () => {
 		},
 		{
 			toolName: "web_search",
-			snippets: [
-				"Web Search",
-				"latest Bun release",
-				"Answer",
-				"Bun shipped a release.",
-				"Sources",
-				"Example Article",
-				"Provider:",
-			],
+			snippets: ["Web Search", "latest Bun release", "Bun shipped a release.", "Example Article"],
 		},
 	] as const)("keeps bare $toolName results rail-free under global accent", async spec => {
 		const uiTheme = await getThemeByName("dark");

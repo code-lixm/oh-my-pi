@@ -60,6 +60,31 @@ describe("getDashboardStats time range", () => {
 		expect(allStats.overall.totalRequests).toBe(2);
 	});
 
+	it("aggregates all four conversation token buckets per folder within the range", async () => {
+		await initDb();
+
+		const now = Date.now();
+		insertMessageStats([makeMessage(now, "recent"), makeMessage(now - 48 * 60 * 60 * 1000, "older")]);
+
+		const dayStats = await getDashboardStats("24h");
+		const dayFolder = dayStats.byFolder.find(f => f.folder === "/tmp/project");
+		expect(dayFolder).toMatchObject({
+			totalInputTokens: 1000,
+			totalOutputTokens: 500,
+			totalCacheReadTokens: 200,
+			totalCacheWriteTokens: 0,
+		});
+
+		const weekStats = await getDashboardStats("7d");
+		const weekFolder = weekStats.byFolder.find(f => f.folder === "/tmp/project");
+		expect(weekFolder).toMatchObject({
+			totalInputTokens: 2000,
+			totalOutputTokens: 1000,
+			totalCacheReadTokens: 400,
+			totalCacheWriteTokens: 0,
+		});
+	});
+
 	it("falls back to 24h for unknown range", async () => {
 		await initDb();
 

@@ -1,6 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../i18n/settings-locale";
 import type { AgentSession } from "../session/agent-session";
+import { emitMemoryOperationEnd, emitMemoryOperationStart } from "../session/agent-session-events";
 import { type BankScope, ensureBankExists } from "./bank";
 import { type HindsightApi, HindsightError, type MemoryItemInput } from "./client";
 import type { HindsightConfig } from "./config";
@@ -377,9 +378,14 @@ export class HindsightSessionState {
 		if (!this.config.autoRetain) return;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
-		const userTurns = messages.filter(m => m.role === "user").length;
+		const userTurns = messages.filter(message => message.role === "user").length;
 		if (userTurns - this.lastRetainedTurn < this.config.retainEveryNTurns) return;
-
+		const operationId = emitMemoryOperationStart(
+			this.session,
+			"retain",
+			{ userTurns, messageCount: messages.length },
+			"auto-retain",
+		);
 		try {
 			await this.retainSession(messages);
 			this.lastRetainedTurn = userTurns;
@@ -391,6 +397,9 @@ export class HindsightSessionState {
 					messages: messages.length,
 				});
 			}
+			emitMemoryOperationEnd(this.session, operationId, "retain", {
+				content: [{ type: "text", text: "Conversation retained." }],
+			});
 		} catch (err) {
 			logger.warn("Hindsight: auto-retain failed", {
 				sessionId: this.sessionId,
@@ -398,6 +407,13 @@ export class HindsightSessionState {
 				error: String(err),
 			});
 			this.reportRequestFailure(err);
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"retain",
+				{ content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }] },
+				true,
+			);
 		}
 	}
 
@@ -432,7 +448,6 @@ export class HindsightSessionState {
 		}
 
 		if (!this.config.autoRecall || this.hasRecalledForFirstTurn) return undefined;
-
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
 
@@ -440,24 +455,65 @@ export class HindsightSessionState {
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		const { context, ok } = await this.recallForContext(truncated);
-		if (!ok) return undefined;
-
-		this.hasRecalledForFirstTurn = true;
-		if (!context) return undefined;
-
-		this.lastRecallSnippet = context;
-		return context;
+		const operationId = emitMemoryOperationStart(this.session, "recall", { query: truncated }, "auto-recall");
+		try {
+			const { context, ok } = await this.recallForContext(truncated);
+			if (ok) this.hasRecalledForFirstTurn = true;
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{ content: [{ type: "text", text: context ? "Memory context injected." : "No relevant memories found." }] },
+				!ok,
+			);
+			if (!ok || !context) return undefined;
+			this.lastRecallSnippet = context;
+			return context;
+		} catch (error) {
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+				true,
+			);
+			throw error;
+		}
 	}
 
 	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
 		const lastUser = messages.findLast(m => m.role === "user");
 		if (!lastUser) return undefined;
-
 		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		const { context } = await this.recallForContext(truncated);
-		return context ?? undefined;
+		const operationId = emitMemoryOperationStart(this.session, "recall", { query: truncated }, "compaction");
+		try {
+			const { context, ok } = await this.recallForContext(truncated);
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{
+					content: [
+						{
+							type: "text",
+							text: context ? "Memory context used for compaction." : "No relevant memories found.",
+						},
+					],
+				},
+				!ok,
+			);
+			return context ?? undefined;
+		} catch (error) {
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+				true,
+			);
+			throw error;
+		}
 	}
 
 	async runMentalModelLoad(scope: BankScope): Promise<void> {

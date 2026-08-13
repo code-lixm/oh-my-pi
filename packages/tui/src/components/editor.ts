@@ -425,6 +425,7 @@ interface HistoryStorage {
 }
 
 type HistoryCursorAnchor = "start" | "end";
+export type EditorBorderStyle = "full" | "horizontal" | "none";
 
 export class Editor implements Component, Focusable, MouseRoutable {
 	#state: EditorState = {
@@ -549,7 +550,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	// per-event rebuilds down to one per rendered frame (see #4145).
 	#topBorderContent?: EditorTopBorder;
 	#topBorderProvider?: (availableWidth: number) => EditorTopBorder | undefined;
-	#borderVisible = true;
+	#borderStyle: EditorBorderStyle = "full";
 
 	constructor(theme: EditorTheme) {
 		this.#theme = theme;
@@ -588,10 +589,16 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	}
 
 	/**
-	 * Show or hide the editor border chrome.
+	 * Select the editor chrome. Horizontal borders keep dedicated top and bottom
+	 * rules without reserving cells beside the editable content.
 	 */
+	setBorderStyle(borderStyle: EditorBorderStyle): void {
+		this.#borderStyle = borderStyle;
+	}
+
+	/** Show or hide the full editor border chrome. */
 	setBorderVisible(borderVisible: boolean): void {
-		this.#borderVisible = borderVisible;
+		this.#borderStyle = borderVisible ? "full" : "none";
 	}
 
 	setPromptGutter(promptGutter: string | undefined): void {
@@ -600,9 +607,10 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	/**
 	 * Get the available width for top border content given a total terminal width.
-	 * Accounts for the border characters and horizontal padding when visible.
+	 * Horizontal rules reserve one visible cell at each edge; full frames reserve side chrome.
 	 */
 	getTopBorderAvailableWidth(terminalWidth: number): number {
+		if (this.#borderStyle === "horizontal") return Math.max(0, terminalWidth - 2);
 		const paddingX = this.#getEditorPaddingX();
 		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
 		return Math.max(0, terminalWidth - borderWidth * 2);
@@ -737,11 +745,11 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	}
 
 	#getHorizontalChromeWidth(paddingX: number): number {
-		return this.#borderVisible ? paddingX + 1 : 0;
+		return this.#borderStyle === "full" ? paddingX + 1 : 0;
 	}
 
 	#getPromptGutterWidth(width: number, paddingX: number): number {
-		if (this.#borderVisible || !this.#promptGutter) return 0;
+		if (this.#borderStyle !== "none" || !this.#promptGutter) return 0;
 		const chromeWidth = 2 * this.#getHorizontalChromeWidth(paddingX);
 		const availableWidth = Math.max(0, width - chromeWidth);
 		return Math.min(visibleWidth(this.#promptGutter), availableWidth);
@@ -751,7 +759,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		width: number,
 		paddingX: number,
 	): { firstLine: string; continuation: string; width: number } | undefined {
-		if (this.#borderVisible || !this.#promptGutter) return undefined;
+		if (this.#borderStyle !== "none" || !this.#promptGutter) return undefined;
 		const gutterWidth = this.#getPromptGutterWidth(width, paddingX);
 		if (gutterWidth === 0) return undefined;
 		return {
@@ -768,14 +776,14 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	#getLayoutWidth(width: number, paddingX: number): number {
 		const contentWidth = this.#getContentWidth(width, paddingX);
-		const cursorReserve = this.#borderVisible && paddingX === 0 ? 1 : 0;
+		const cursorReserve = this.#borderStyle === "full" && paddingX === 0 ? 1 : 0;
 		// Keep cursor/scroll layout addressable even when a borderless prompt gutter consumes every visible column.
 		return Math.max(1, contentWidth - cursorReserve);
 	}
 
 	#getVisibleContentHeight(contentLines: number): number {
 		if (this.#maxHeight === undefined) return contentLines;
-		const verticalChrome = this.#borderVisible ? 2 : 0;
+		const verticalChrome = this.#borderStyle === "none" ? 0 : 2;
 		return Math.max(1, this.#maxHeight - verticalChrome);
 	}
 
@@ -890,7 +898,9 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	render(width: number): readonly string[] {
 		const paddingX = this.#getEditorPaddingX();
-		const borderVisible = this.#borderVisible;
+		const borderStyle = this.#borderStyle;
+		const borderVisible = borderStyle !== "none";
+		const fullBorder = borderStyle === "full";
 		const promptGutter = this.#getPromptGutter(width, paddingX);
 		const contentAreaWidth = this.#getContentWidth(width, paddingX);
 		const layoutWidth = this.#getLayoutWidth(width, paddingX);
@@ -899,8 +909,8 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		// Box-drawing characters for rounded corners
 		const box = this.#theme.symbols.boxRound;
 		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
-		const topLeft = this.borderColor(`${box.topLeft}${box.horizontal.repeat(paddingX)}`);
-		const topRight = this.borderColor(`${box.horizontal.repeat(paddingX)}${box.topRight}`);
+		const topLeft = fullBorder ? this.borderColor(`${box.topLeft}${box.horizontal.repeat(paddingX)}`) : "";
+		const topRight = fullBorder ? this.borderColor(`${box.horizontal.repeat(paddingX)}${box.topRight}`) : "";
 		const bottomLeft = this.borderColor(`${box.bottomLeft}${box.horizontal}${padding(Math.max(0, paddingX - 1))}`);
 		const horizontal = this.borderColor(box.horizontal);
 
@@ -915,7 +925,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 		const result: string[] = [];
 		// Scrollbar: shown only when content overflows and the caller opted in.
-		const needsScrollbar = this.#scrollbarVisible && layoutLines.length > visibleContentHeight;
+		const needsScrollbar = fullBorder && this.#scrollbarVisible && layoutLines.length > visibleContentHeight;
 		let scrollbarThumb: { start: number; end: number } | null = null;
 		if (needsScrollbar && visibleContentHeight > 0) {
 			const thumbSize = Math.max(
@@ -931,8 +941,19 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			scrollbarThumb = { start, end: start + thumbSize };
 		}
 
-		if (borderVisible) {
-			// Render top border: ╭─ [status content] ────────────────╮
+		if (borderStyle === "horizontal") {
+			if (width === 0) {
+				result.push("");
+			} else {
+				const fillWidth = Math.max(0, width - 2);
+				const topBorder = this.#topBorderProvider ? this.#topBorderProvider(fillWidth) : this.#topBorderContent;
+				const content = topBorder ? truncateToWidth(topBorder.content, fillWidth) : "";
+				const contentWidth = visibleWidth(content);
+				const rightFillWidth = Math.max(0, fillWidth - contentWidth);
+				result.push(horizontal + content + horizontal.repeat(rightFillWidth + (width > 1 ? 1 : 0)));
+			}
+		} else if (borderVisible) {
+			// Render the top border: ╭─ [status content] ────────────────╮
 			const topFillWidth = Math.max(0, width - borderWidth * 2);
 			// Provider (lazy) wins over eager content — a host that installs both
 			// wants the coalesced path; falling back to eager keeps existing
@@ -975,10 +996,11 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		// keeping stale maps around forces every typed keystroke to rebuild them.
 		const hitMap: HitRow[] = [];
 		const hitMapEligible = this.mouseTracking;
-		// BorderVisible rows place text after `paddingX + 1` cells of left chrome.
-		// Borderless rows place text after the gutter (prompt-gutter width or 0).
-		const borderLeftCells = borderVisible ? paddingX + 1 : 0;
-		const gutterCells = borderVisible || promptGutter === undefined ? 0 : visibleWidth(promptGutter.firstLine);
+		// Full borders place text after `paddingX + 1` cells of left chrome.
+		// Horizontal-border rows use the full width; borderless rows may start after a prompt gutter.
+		const borderLeftCells = fullBorder ? paddingX + 1 : 0;
+		const gutterCells =
+			borderStyle === "none" && promptGutter !== undefined ? visibleWidth(promptGutter.firstLine) : 0;
 
 		for (let visibleIndex = 0; visibleIndex < visibleLayoutLines.length; visibleIndex++) {
 			const layoutLine = visibleLayoutLines[visibleIndex]!;
@@ -1008,7 +1030,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 						logicalLine: visualLine.logicalLine,
 						startCol: visualLine.startCol,
 						text: layoutLine.text,
-						contentStartCol: borderLeftCells + (borderVisible ? 0 : gutterCells),
+						contentStartCol: borderLeftCells + (borderStyle === "none" ? gutterCells : 0),
 						contentWidth: lineContentWidth,
 						hasCursor,
 					});
@@ -1066,7 +1088,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 					if (this.#imeSafeCursorLayout && after.length === 0 && borderVisible) {
 						// Terminal frontends render IME marked text locally before committed bytes
 						// reach the application. Keep the end-of-input cursor row empty to its
-						// right so that insertion cannot shift box chrome onto the next row.
+						// right so that insertion cannot shift border chrome onto the next row.
 						displayText = before + marker;
 						imeSafeCursorTail = true;
 					} else if (after.length === 0 && inlineHint) {
@@ -1100,7 +1122,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				} else if (this.cursorOverride) {
 					// Cursor override replaces the normal end-of-text cursor glyph
 					const overrideWidth = this.cursorOverrideWidth ?? 1;
-					if (!borderVisible && displayWidth + overrideWidth > lineContentWidth) {
+					if (!fullBorder && displayWidth + overrideWidth > lineContentWidth) {
 						// Borderless editors have no spare padding cell for an end-of-line cursor glyph.
 						// Preserve cursorOverride by replacing the tail of the line with it.
 						const widthLimitedCursor = this.#renderEndOfLineCursorAtWidthLimit(before, marker, lineContentWidth, {
@@ -1121,7 +1143,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				} else {
 					// Cursor is at the end - add thin cursor glyph
 					const { text: cursor, width: cursorWidth } = this.#getStyledInputCursor();
-					if (!borderVisible && displayWidth + cursorWidth > lineContentWidth) {
+					if (!fullBorder && displayWidth + cursorWidth > lineContentWidth) {
 						// Borderless editors have no spare padding cell for an end-of-line cursor glyph.
 						// Highlight the last grapheme so the cursor stays visible without consuming width.
 						const widthLimitedCursor = this.#renderEndOfLineCursorAtWidthLimit(before, marker, lineContentWidth);
@@ -1136,7 +1158,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 						displayText = before + marker + cursor;
 						displayWidth += cursorWidth;
 					}
-					if (displayWidth > lineContentWidth && paddingX > 0) {
+					if (fullBorder && displayWidth > lineContentWidth && paddingX > 0) {
 						cursorPaddingOverflow = displayWidth - lineContentWidth;
 					}
 				}
@@ -1160,7 +1182,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 			const linePad = padding(Math.max(0, lineContentWidth - displayWidth));
 
-			if (!borderVisible) {
+			if (!fullBorder) {
 				result.push(gutterText + displayText + linePad);
 				continue;
 			}
@@ -1196,6 +1218,10 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				const rightBorder = this.borderColor(`${padding(Math.max(0, rightChromeCells - 1))}${rightGlyph}`);
 				result.push(anchorRightBorder(leftBorder + displayText + linePad, rightBorder, width));
 			}
+		}
+
+		if (borderStyle === "horizontal") {
+			result.push(horizontal.repeat(Math.max(0, width)));
 		}
 
 		// Add autocomplete list if active
@@ -1812,13 +1838,13 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				}
 			}
 			if (cursorVisibleIndex >= 0) {
-				const borderTopOffset = this.#borderVisible ? 1 : 0;
+				const borderTopOffset = this.#borderStyle === "none" ? 0 : 1;
 				const editorOriginRow = cursorScreen.row - cursorVisibleIndex - borderTopOffset;
 				const eventVisibleRow = event.row - editorOriginRow - borderTopOffset;
 				if (eventVisibleRow >= 0 && eventVisibleRow < this.#lastVisibleHeight) {
 					const hit = hitMap[eventVisibleRow]!;
 					const adjustedCol = event.col - hit.contentStartCol;
-					if (this.#borderVisible && (adjustedCol < 0 || adjustedCol >= hit.contentWidth)) {
+					if (this.#borderStyle !== "none" && (adjustedCol < 0 || adjustedCol >= hit.contentWidth)) {
 						return false;
 					}
 					const localEvent: SgrMouseEvent = { ...event, col: adjustedCol };
@@ -1848,14 +1874,14 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		// border when bordered. The hit map only knows about content rows; the
 		// border and any autocomplete rows below live outside it. Subtract the
 		// top border before indexing.
-		const borderTopOffset = this.#borderVisible ? 1 : 0;
+		const borderTopOffset = this.#borderStyle === "none" ? 0 : 1;
 		const contentLine = line - borderTopOffset;
 		if (contentLine < 0 || contentLine >= hitMap.length) return false;
 		const hit = hitMap[contentLine]!;
 		// Horizontal: `contentStartCol` already accounts for the border (left
 		// chrome) + padding, so the click's local col is usable as-is.
 		const adjustedCol = col - hit.contentStartCol;
-		if (adjustedCol < 0 || (this.#borderVisible && adjustedCol >= hit.contentWidth)) return false;
+		if (adjustedCol < 0 || (this.#borderStyle !== "none" && adjustedCol >= hit.contentWidth)) return false;
 		// Inject the post-padding col by mutating a shallow event copy so the
 		// shared helper stays free of editor-specific geometry.
 		const localEvent: SgrMouseEvent = { ...event, col: adjustedCol };

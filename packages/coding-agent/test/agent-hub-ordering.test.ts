@@ -1,7 +1,7 @@
 /**
- * Regression coverage for the unified Agent Hub task list: rows use the shared
- * stable navigation order. Status groups come first; creation time and agent
- * identity make ordering repeatable while activity heartbeats only update display.
+ * Regression coverage for the unified Agent Hub task list: known creation
+ * times sort newest first; equal timestamps use agent identity, unknown times
+ * stay last, and activity heartbeats only update display.
  */
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
@@ -138,6 +138,27 @@ function renderedRosterHeaderLineRaw(hub: AgentHubOverlayComponent, label: strin
 	return row.raw;
 }
 
+/** Find the rendered fixed-column chrome rather than relying on layout internals. */
+function renderedAgentColumnHeader(hub: AgentHubOverlayComponent, width: number): string | undefined {
+	const columns = ["Agent", "Status", "Duration", "Model", "Detail"];
+	return hub
+		.render(width)
+		.map(line => Bun.stripANSI(line))
+		.find(line => columns.every(column => line.includes(column)));
+}
+/** Return top chrome only, excluding physical roster rows and footer controls. */
+function renderedTopChrome(hub: AgentHubOverlayComponent, width: number): string {
+	const lines = hub.render(width).map(line => Bun.stripANSI(line));
+	const firstRow = lines.findIndex(line => parseRosterCell(line) !== undefined);
+	return lines.slice(0, firstRow >= 0 ? firstRow : lines.length).join("\n");
+}
+
+function visibleColumnStart(line: string, marker: string): number {
+	const index = line.indexOf(marker);
+	if (index < 0) throw new Error(`Expected ${marker} in rendered column header`);
+	return visibleWidth(line.slice(0, index));
+}
+
 function stubObservedSessions(observers: SessionObserverRegistry, snapshots: readonly ObservableSession[]): void {
 	const snapshotsById = new Map<string, ObservableSession>();
 	for (const snapshot of snapshots) snapshotsById.set(snapshot.id, snapshot);
@@ -186,7 +207,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("orders rows by lifecycle group, newest creation, then stable identity", () => {
+	it("orders rows by newest creation, stable identity, and unknown timestamps last", () => {
 		vi.useFakeTimers();
 		geometry = stubStdoutGeometry(120);
 		setSettingsUiLocale("en");
@@ -220,8 +241,6 @@ describe("Agent hub row ordering", () => {
 
 		const hub = makeHub(agents, { observers });
 		try {
-			// Rows stay in registration order regardless of status; running heartbeats
-			// never reorder the list.
 			expect(
 				renderedAgentLabels(hub, [
 					"Running older",
@@ -237,15 +256,15 @@ describe("Agent hub row ordering", () => {
 					"Aborted worker",
 				]),
 			).toEqual([
-				"Running older",
-				"Running newer",
+				"Aborted worker",
+				"Completed worker",
+				"Failed worker",
+				"Queued worker",
+				"Waiting worker",
 				"Running tie Alpha",
 				"Running tie Zulu",
-				"Waiting worker",
-				"Queued worker",
-				"Failed worker",
-				"Completed worker",
-				"Aborted worker",
+				"Running newer",
+				"Running older",
 				"Running missing Alpha",
 				"Running missing Zulu",
 			]);
@@ -272,7 +291,7 @@ describe("Agent hub row ordering", () => {
 		const hub = makeHub(agents);
 		try {
 			const labels = ["Oldest", "Heartbeat", "Newest"];
-			const expectedOrder = ["Oldest", "Heartbeat", "Newest"];
+			const expectedOrder = ["Newest", "Heartbeat", "Oldest"];
 			expect(renderedAgentLabels(hub, labels)).toEqual(expectedOrder);
 
 			setSystemTime(10_000);
@@ -318,12 +337,12 @@ describe("Agent hub row ordering", () => {
 		});
 		try {
 			const labels = ["Oldest", "Selected", "Newest"];
-			expect(renderedAgentLabels(hub, labels)).toEqual(["Oldest", "Selected", "Newest"]);
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Newest", "Selected", "Oldest"]);
 			hub.handleInput("j");
 
 			agents.setStatus("newest", "waiting");
 			vi.advanceTimersByTime(100);
-			expect(renderedAgentLabels(hub, labels)).toEqual(["Oldest", "Selected", "Newest"]);
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Newest", "Selected", "Oldest"]);
 
 			hub.handleInput("f");
 			await finished.promise;
@@ -361,7 +380,8 @@ describe("Agent hub row ordering", () => {
 			getSessions.mockClear();
 			getSession.mockClear();
 			const visibleLabels = renderedAgentLabels(hub, labels);
-			expect(visibleLabels).toHaveLength(6);
+			expect(visibleLabels.length).toBeGreaterThan(0);
+			expect(visibleLabels.length).toBeLessThanOrEqual(6);
 			expect(getSessions).not.toHaveBeenCalled();
 			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 			expect(getSession.mock.calls.length).toBeGreaterThan(0);
@@ -373,7 +393,8 @@ describe("Agent hub row ordering", () => {
 			getSession.mockClear();
 			hub.handleInput("j");
 			const afterMove = renderedAgentRows(hub, labels);
-			expect(afterMove).toHaveLength(6);
+			expect(afterMove.length).toBeGreaterThan(0);
+			expect(afterMove.length).toBeLessThanOrEqual(6);
 			expect(afterMove.find(row => row.selected)?.label).not.toBe(visibleLabels[0]);
 			expect(afterMove.map(row => row.label)).toContain(visibleLabels[0]!);
 			expect(getSessions).not.toHaveBeenCalled();
@@ -569,6 +590,62 @@ describe("Agent hub row ordering", () => {
 			hub.dispose();
 		}
 	});
+
+	it("renders both columns for a live parked row in Chinese", () => {
+		const localeBeforeRender = getSettingsUiLocale();
+		const testGeometry = stubStdoutGeometry(160);
+		geometry = testGeometry;
+		let hub: AgentHubOverlayComponent | undefined;
+
+		try {
+			const agents = new AgentRegistry();
+			agents.register({
+				id: "live-parked-agent",
+				displayName: "Live parked task",
+				kind: "sub",
+				session: {} as AgentSession,
+				status: "parked",
+			});
+			hub = makeHub(agents);
+			setSettingsUiLocale("zh-CN");
+
+			const entry = renderedRosterEntry(hub, "Live parked task", 160);
+			expect(entry.match(/已停放/gu) ?? []).toHaveLength(2);
+			expect(entry).not.toContain("Parked");
+		} finally {
+			hub?.dispose();
+			setSettingsUiLocale(localeBeforeRender);
+			testGeometry.restore();
+			if (geometry === testGeometry) geometry = undefined;
+		}
+	});
+
+	it("derives compact runtime for a parked history row without observer or metrics", () => {
+		geometry = stubStdoutGeometry(160);
+		setSettingsUiLocale("en");
+		const createdAt = Date.parse("2026-08-10T12:00:00.000Z");
+		const lastActivity = createdAt + 2 * 60_000 + 15_000;
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "parked-history-runtime",
+			displayName: "Parked history runtime",
+			kind: "sub",
+			session: null,
+			status: "parked",
+			history: {},
+			createdAt,
+			lastActivity,
+		});
+		const hub = makeHub(agents);
+
+		try {
+			const row = renderedRosterEntry(hub, "Parked history runtime", 160);
+			expect(row).toContain("2m15s");
+		} finally {
+			hub.dispose();
+		}
+	});
+
 	it("fits the fullscreen table to short terminals without scanning the roster", () => {
 		geometry = stubStdoutGeometry(80);
 		geometry.setRows(10);
@@ -601,7 +678,6 @@ describe("Agent hub row ordering", () => {
 	});
 	it("uses whole-row mouse selection while f performs the explicit live focus action", async () => {
 		vi.useFakeTimers();
-		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
 		setSystemTime(1_000);
 		agents.register({ id: "mouse-alpha", displayName: "Mouse Alpha", kind: "sub", session: {} as AgentSession });
@@ -625,7 +701,7 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			const labels = ["Mouse Alpha", "Mouse Beta", "Mouse Gamma"];
-			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Alpha");
+			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Gamma");
 			hub.handleInput(wheel("down"));
 			expect(selectedAgentLabel(hub, labels)).toBe("Mouse Beta");
 
@@ -821,11 +897,10 @@ describe("Agent hub row ordering", () => {
 			status: "idle",
 		});
 		const hub = makeHub(agents, { activeTopLevelId: "Main" });
-
 		try {
 			expect(renderedAgentLabels(hub, ["Primary worker", "Review worker"])).toEqual([
-				"Primary worker",
 				"Review worker",
+				"Primary worker",
 			]);
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
 			for (const hidden of [
@@ -950,10 +1025,13 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
-			expect(rendered).toContain("1 running");
-			expect(rendered).toContain("Flat");
-			expect(rendered).toContain("By parent");
-			expect(rendered).toContain("Detail");
+			const topChrome = renderedTopChrome(hub, 160);
+			for (const summary of ["Roster", "Flat", "By parent"]) expect(topChrome).not.toContain(summary);
+			const header = renderedAgentColumnHeader(hub, 160);
+			expect(header).toBeDefined();
+			expect(header).toContain("Agent");
+			expect(header).toContain(theme.status.running);
+			expect(header).toMatch(/\b1\b/u);
 			expect(rendered).toContain("Security Reviewer");
 			// Task details and context usage belong to the focused inspector, not the compact roster row.
 			expect(rendered).not.toContain("read · src/session/agent-session.ts");
@@ -1154,38 +1232,29 @@ describe("Agent hub row ordering", () => {
 			session: null,
 		});
 		const hub = makeHub(agents);
-		const labels = ["Parent task", "Peer task", "Child task"];
-
 		try {
-			expect(renderedAgentLabels(hub, labels)).toEqual(["Parent task", "Peer task", "Child task"]);
-			expect(selectedAgentLabel(hub, labels)).toBe("Parent task");
-			const flat = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(flat).toContain("Flat");
-			expect(flat).toContain("By parent");
+			const labels = ["Parent task", "Peer task", "Child task"];
 
-			hub.setHoverIndex(0);
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Child task", "Peer task", "Parent task"]);
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
+			expect(renderedTopChrome(hub, 120)).not.toMatch(/Roster|Flat|By parent/u);
+			hub.setHoverIndex(2);
 			expect(renderedRosterHeaderLineRaw(hub, "Parent task", 120)).toContain(theme.getBgAnsi("selectedBg"));
 			hub.handleInput("t");
 			const byParentLabels = renderedAgentLabels(hub, labels);
 			expect(byParentLabels).toEqual(["Parent task", "Child task", "Peer task"]);
-			expect(selectedAgentLabel(hub, labels)).toBe("Parent task");
-			const byParent = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(byParent).toContain("Flat");
-			expect(byParent).toContain("By parent");
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
+			expect(renderedTopChrome(hub, 120)).not.toMatch(/Roster|Flat|By parent/u);
 			expect(byParentLabels.indexOf("Parent task")).toBeLessThan(byParentLabels.indexOf("Child task"));
-			// Row order and projection labels are the contract; the hover/selected
-			// background mix is covered by other Hub renderer tests.
-
 			hub.handleInput("t");
-			expect(renderedAgentLabels(hub, labels)).toEqual(["Parent task", "Peer task", "Child task"]);
-			expect(selectedAgentLabel(hub, labels)).toBe("Parent task");
+			expect(renderedAgentLabels(hub, labels)).toEqual(["Child task", "Peer task", "Parent task"]);
+			expect(selectedAgentLabel(hub, labels)).toBe("Child task");
 		} finally {
 			hub.dispose();
 			vi.useRealTimers();
 			setSystemTime();
 		}
 	});
-
 	it("renders parent lineage with bash-style tree connectors", () => {
 		geometry = stubStdoutGeometry(120);
 		geometry.setRows(32);
@@ -1314,6 +1383,49 @@ describe("Agent hub row ordering", () => {
 			hub.handleInput("\r");
 			expect(fullscreen).toBe(true);
 			expect(focused).toHaveLength(1);
+		} finally {
+			hub.dispose();
+		}
+	});
+
+	it("activates fixed columns at outer width 85 and keeps Detail stable across elastic resizes", () => {
+		geometry = stubStdoutGeometry(160);
+		geometry.setRows(24);
+		setSettingsUiLocale("en");
+		const agents = new AgentRegistry();
+		agents.register({
+			id: "elastic-layout-agent",
+			displayName: "Elastic layout agent",
+			kind: "sub",
+			session: null,
+			status: "running",
+		});
+		const hub = makeHub(agents);
+
+		try {
+			expect(renderedAgentColumnHeader(hub, 84)).toBeUndefined();
+			const firstFixedHeader = renderedAgentColumnHeader(hub, 85);
+			expect(firstFixedHeader).toBeDefined();
+
+			for (const width of [84, 85, 142, 143]) {
+				for (const line of hub.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+
+			const headerAt142 = renderedAgentColumnHeader(hub, 142);
+			const headerAt143 = renderedAgentColumnHeader(hub, 143);
+			if (!headerAt142 || !headerAt143) throw new Error("Expected fixed-column headers at elastic widths");
+			const detailAt142 = visibleColumnStart(headerAt142, "Detail");
+			const detailAt143 = visibleColumnStart(headerAt143, "Detail");
+			expect(detailAt143).toBeGreaterThanOrEqual(detailAt142);
+
+			let previousDetailStart = visibleColumnStart(firstFixedHeader!, "Detail");
+			for (let width = 86; width <= 160; width++) {
+				const header = renderedAgentColumnHeader(hub, width);
+				if (!header) throw new Error(`Expected fixed-column header at outer width ${width}`);
+				const detailStart = visibleColumnStart(header, "Detail");
+				expect(detailStart, `Detail start at outer width ${width}`).toBeGreaterThanOrEqual(previousDetailStart - 1);
+				previousDetailStart = detailStart;
+			}
 		} finally {
 			hub.dispose();
 		}

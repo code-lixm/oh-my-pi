@@ -317,6 +317,68 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("horizontal border rendering", () => {
+		it("renders full-width horizontal rules around width-limited content", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setBorderStyle("horizontal");
+			editor.setMaxHeight(4);
+			editor.setText("first\nsecond\nthird");
+			editor.moveToMessageStart();
+
+			const width = 12;
+			const lines = editor.render(width).map(line => stripVTControlCharacters(line).replaceAll(CURSOR_MARKER, ""));
+			const rule = defaultEditorTheme.symbols.boxRound.horizontal.repeat(width);
+
+			expect(lines).toHaveLength(4); // maxHeight includes exactly the top and bottom rules.
+			expect(lines[0]).toBe(rule);
+			expect(lines.at(-1)).toBe(rule);
+			expect(lines.slice(1, -1)).toEqual(["first".padEnd(width), "second".padEnd(width)]);
+			for (const line of lines.slice(1, -1)) {
+				expect(visibleWidth(line)).toBe(width);
+				for (const chrome of [
+					defaultEditorTheme.symbols.boxRound.topLeft,
+					defaultEditorTheme.symbols.boxRound.topRight,
+					defaultEditorTheme.symbols.boxRound.bottomLeft,
+					defaultEditorTheme.symbols.boxRound.bottomRight,
+					defaultEditorTheme.symbols.boxRound.vertical,
+				]) {
+					expect(line).not.toContain(chrome);
+				}
+			}
+		});
+
+		it("reserves horizontal rules around eager and provider status content", () => {
+			const width = 16;
+			const ruleChar = defaultEditorTheme.symbols.boxRound.horizontal;
+			const cases = [
+				{
+					label: "STATUS",
+					install: (editor: Editor) => editor.setTopBorder({ content: "STATUS", width: 6 }),
+				},
+				{
+					label: "LIVE",
+					install: (editor: Editor) => editor.setTopBorderProvider(() => ({ content: "LIVE", width: 4 })),
+				},
+			];
+
+			for (const { label, install } of cases) {
+				const editor = new Editor(defaultEditorTheme);
+				editor.setBorderStyle("horizontal");
+				editor.setText("body");
+				install(editor);
+
+				const lines = editor
+					.render(width)
+					.map(line => stripVTControlCharacters(line).replaceAll(CURSOR_MARKER, ""));
+				const top = lines[0]!;
+				expect(top.startsWith(`${ruleChar}${label}`)).toBeTrue();
+				expect(visibleWidth(top)).toBe(width);
+				expect(top).toBe(`${ruleChar}${label}${ruleChar.repeat(width - label.length - 1)}`);
+				expect(lines[1]).toContain("body");
+				expect(lines.at(-1)).toBe(ruleChar.repeat(width));
+			}
+		});
+	});
 	describe("mouse cursor placement", () => {
 		it("routes a normal-screen click into the hit multi-line row before inserting", async () => {
 			const terminal = new VirtualTerminal(20, 6, 1_000);
@@ -333,6 +395,32 @@ describe("Editor component", () => {
 				await terminal.waitForRender();
 
 				terminal.sendInput("\x1b[<0;3;2M");
+				await terminal.waitForRender();
+				editor.handleInput("X");
+
+				expect(editor.getText()).toBe("alpha\nbrXavo");
+				expect(editor.getCursor()).toEqual({ line: 1, col: 3 });
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("routes a click in a horizontal-bordered row without side-chrome offset", async () => {
+			const terminal = new VirtualTerminal(20, 6, 1_000);
+			const tui = new TUI(terminal, true);
+			const editor = new Editor(defaultEditorTheme);
+			editor.mouseTracking = true;
+			editor.setBorderStyle("horizontal");
+			editor.setText("alpha\nbravo");
+			tui.addChild(editor);
+			tui.setFocus(editor);
+
+			try {
+				tui.start();
+				await terminal.waitForRender();
+
+				// Row 1 is the top rule; row 3 is the second content line.
+				terminal.sendInput("\x1b[<0;3;3M");
 				await terminal.waitForRender();
 				editor.handleInput("X");
 

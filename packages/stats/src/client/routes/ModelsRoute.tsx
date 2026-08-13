@@ -19,7 +19,7 @@ import {
 } from "../components/models-table-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
 import { useResource } from "../data/useResource";
-import { buildModelPerformanceLookup } from "../data/view-models";
+import { buildModelPerformanceLookup, sumConversationTokens } from "../data/view-models";
 import { t } from "../locale/catalog";
 import type { ModelPerformancePoint, ModelStats, ModelTimeSeriesPoint, TimeRange } from "../types";
 import { AsyncBoundary, Panel } from "../ui";
@@ -260,9 +260,7 @@ function ModelsTable({
 	const chartTheme = TABLE_CHART_THEMES[theme];
 
 	const sortedModels = useMemo(() => {
-		return [...models].sort(
-			(a, b) => b.totalInputTokens + b.totalOutputTokens - (a.totalInputTokens + a.totalOutputTokens),
-		);
+		return [...models].sort((a, b) => sumConversationTokens(b) - sumConversationTokens(a));
 	}, [models]);
 
 	return (
@@ -304,7 +302,7 @@ function ModelsTable({
 									${model.totalCost.toFixed(2)}
 								</div>,
 								<div key="tokens" className="text-right text-[var(--text-secondary)] font-mono text-sm">
-									{(model.totalInputTokens + model.totalOutputTokens).toLocaleString()}
+									{sumConversationTokens(model).toLocaleString()}
 								</div>,
 								<div key="tps" className="text-right text-[var(--text-secondary)] font-mono text-sm">
 									{model.avgTokensPerSecond?.toFixed(1) ?? "-"}

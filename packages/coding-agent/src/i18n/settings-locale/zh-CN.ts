@@ -2208,8 +2208,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"在对话记录中内联渲染 read 工具结果，而不是显示为摘要行",
 	"Mouse Input": "鼠标输入",
-	"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.":
-		"启用 Agent Hub、会话历史和选择器等应用内面板的鼠标交互。主会话保留终端原生鼠标输入，以便继续使用回滚历史和文本选择。",
+	"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.":
+		"启用 Agent Hub 和选择器等应用内面板的鼠标交互。会话历史和主会话保留终端原生文本选择。",
 	"Show Agent Communication": "显示代理通信",
 	"Show agent-to-agent messages and coordination activity in the transcript": "在对话记录中显示代理间消息和协调活动",
 	"Show Subagent List": "显示子代理列表",
@@ -3711,6 +3711,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"{count} more files pending…": "还有 {count} 个文件待处理…",
 	"{count} note": "{count} 条备注",
 	"{count} notes": "{count} 条备注",
+	"{count} jobs": "{count} 个",
 	"{count} on air": "{count} 个在线",
 	"{count} paths": "{count} 个路径",
 	"{count} question": "{count} 个问题",

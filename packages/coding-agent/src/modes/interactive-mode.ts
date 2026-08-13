@@ -1226,10 +1226,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
-		// The main transcript lives in terminal-native scrollback. Enabling mouse
-		// tracking here captures Ghostty's wheel events and makes that history
-		// unreachable; application mouse input remains available in overlays.
-		this.editor.mouseTracking = false;
+		this.editor.setBorderStyle("horizontal");
+		this.editor.mouseTracking = this.settings.get("tui.mouseInput");
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -1277,7 +1275,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// (#4145). The TUI throttles renders at ~30fps, so a long-running eval
 		// spraying events no longer runs `getTopBorder` synchronously in the
 		// hot path where the render never gets to paint the result.
-		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
+		this.editor.setTopBorderProvider(availableWidth =>
+			this.statusLine.getTopBorder(availableWidth, this.editor.borderColor),
+		);
 
 		this.hideToolActivity = settings.get("display.hideToolActivity");
 		this.chatContainer.setToolActivityVisible(!this.hideToolActivity);
@@ -3491,7 +3491,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			width: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.settings.get("tui.mouseInput"),
+			// Keep terminal-native drag selection/copy available in the history viewer.
+			// Its keyboard navigation and application scrollbar do not require pointer input.
+			mouseTracking: false,
 		});
 		this.ui.setFocus(viewer);
 		this.ui.requestRender();
@@ -4857,8 +4859,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
-		// Preserve terminal-native transcript scrolling for extension editors too.
-		nextEditor.mouseTracking = false;
+		nextEditor.setBorderStyle("horizontal");
+		nextEditor.mouseTracking = this.settings.get("tui.mouseInput");
 		nextEditor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
 		};
@@ -4866,7 +4868,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
-		nextEditor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
+		nextEditor.setTopBorderProvider(availableWidth =>
+			this.statusLine.getTopBorder(availableWidth, nextEditor.borderColor),
+		);
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
 			nextEditor.setHistoryStorage(this.historyStorage);

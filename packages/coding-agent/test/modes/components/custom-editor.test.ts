@@ -1,8 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { CURSOR_MARKER } from "@oh-my-pi/pi-tui";
+import { CURSOR_MARKER, TUI } from "@oh-my-pi/pi-tui";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import { $ } from "bun";
+import { StressRenderScheduler } from "../../../../tui/test/render-stress-scheduler";
+import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
 import { getDefaultPasteImageKeys } from "../../../src/config/keybindings";
 import {
 	CustomEditor,
@@ -35,6 +37,13 @@ const BRACKETED_PASTE_END = "\x1b[201~";
 
 function bracketedPaste(text: string): string {
 	return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
+}
+
+function visible(terminal: VirtualTerminal): string[] {
+	return terminal
+		.getViewport()
+		.map(row => Bun.stripANSI(row).trimEnd())
+		.filter(row => row.length > 0);
 }
 
 /** Feed `count` spaces `gapMs` apart on the fake clock. The first space of a run has no prior
@@ -105,6 +114,47 @@ describe("CustomEditor restored image drafts", () => {
 			text: "Inspect [Image #1, 1x1]",
 			images: [image],
 		});
+	});
+});
+
+describe("CustomEditor normal-screen TUI input routing", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("inserts focused TUI input after a horizontal-border mouse click without dropping the suffix", async () => {
+		const terminal = new VirtualTerminal(20, 6, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new TUI(terminal, true, { renderScheduler: scheduler });
+		const editor = new CustomEditor(tui, getEditorTheme(), {});
+		tui.enableScopedInputRender(editor);
+		editor.setBorderStyle("horizontal");
+		editor.mouseTracking = true;
+		editor.setUseTerminalCursor(true);
+		editor.setText("alpha\nbravo");
+		tui.addChild(editor);
+		tui.setFocus(editor);
+
+		try {
+			tui.start();
+			await scheduler.drain(terminal);
+
+			// The horizontal rule is row 1; this 1-based SGR coordinate clicks
+			// between "bra" and "vo" on the second content row.
+			terminal.sendInput("\x1b[<0;4;3M");
+			await scheduler.drain(terminal);
+			for (const character of "XYZ") {
+				terminal.sendInput(character);
+				await scheduler.drain(terminal);
+			}
+
+			expect(editor.getText()).toBe("alpha\nbraXYZvo");
+			expect(editor.getCursor()).toEqual({ line: 1, col: 6 });
+			expect(visible(terminal).join("\n")).toContain("alpha\nbraXYZvo");
+		} finally {
+			tui.stop();
+			await terminal.flush();
+		}
 	});
 });
 

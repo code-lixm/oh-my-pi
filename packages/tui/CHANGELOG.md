@@ -6,6 +6,7 @@
 
 - Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
 - Added render-time mouse hit routing for editors, Markdown links, images, nested containers, boxes, and overlays without changing rendered terminal output.
+- Added an `EditorBorderStyle` horizontal mode with full-width top and bottom rules, no side chrome, and click hit maps that preserve text-column alignment.
 
 ### Fixed
 - Fixed event-loop watchdog reports losing render attribution by marking the complete synchronous TUI render and terminal-paint cycle as `ui.render`, including exception-safe phase cleanup.

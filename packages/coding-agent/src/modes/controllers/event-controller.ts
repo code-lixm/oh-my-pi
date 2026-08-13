@@ -42,7 +42,12 @@ import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "t
 import idleRecapPromptZh from "../../prompts/system/recap-user.zh-CN.md" with { type: "text" };
 import type { AgentActivityState } from "../../registry/agent-activity";
 import { MAIN_AGENT_ID } from "../../registry/agent-registry";
-import type { AgentSessionActivityEvent, AgentSessionEvent } from "../../session/agent-session";
+import type {
+	AgentSessionActivityEvent,
+	AgentSessionEvent,
+	MemoryOperationEndEvent,
+	MemoryOperationStartEvent,
+} from "../../session/agent-session";
 import { type CustomMessage, isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { createIrcCustomMessageCard } from "../../tools/hub/messaging";
@@ -276,6 +281,8 @@ export class EventController {
 			tool_execution_start: e => this.#handleToolExecutionStart(e),
 			tool_execution_update: e => this.#handleToolExecutionUpdate(e),
 			tool_execution_end: e => this.#handleToolExecutionEnd(e),
+			memory_operation_start: e => this.#handleMemoryOperationStart(e),
+			memory_operation_end: e => this.#handleMemoryOperationEnd(e),
 			auto_compaction_start: e => this.#handleAutoCompactionStart(e),
 			auto_compaction_end: e => this.#handleAutoCompactionEnd(e),
 			auto_retry_start: e => this.#handleAutoRetryStart(e),
@@ -1516,6 +1523,43 @@ export class EventController {
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
 		}
+		this.ctx.ui.requestRender();
+	}
+
+	#memoryOperationArgs(args: unknown): unknown {
+		return args ?? {};
+	}
+
+	async #handleMemoryOperationStart(event: MemoryOperationStartEvent): Promise<void> {
+		this.#finalizeHubActivityGroup();
+		this.#resetReadGroup();
+		if (this.ctx.pendingTools.has(event.operationId)) return;
+		const tool = this.ctx.viewSession.getToolByName(event.operation);
+		const component = new ToolExecutionComponent(
+			event.operation,
+			this.#memoryOperationArgs(event.args),
+			{
+				useBuiltInRenderer: true,
+				showImages: settings.get("terminal.showImages"),
+				liveRegion: this.ctx.chatContainer,
+			},
+			tool,
+			this.ctx.ui,
+			this.ctx.sessionManager.getCwd(),
+			event.operationId,
+		);
+		component.setExpanded(this.ctx.toolOutputExpanded);
+		this.ctx.chatContainer.addChild(component);
+		this.ctx.pendingTools.set(event.operationId, component);
+		this.#toolTimelineComponents.set(event.operationId, component);
+		this.ctx.ui.requestRender();
+	}
+
+	async #handleMemoryOperationEnd(event: MemoryOperationEndEvent): Promise<void> {
+		const component = this.ctx.pendingTools.get(event.operationId);
+		if (!(component instanceof ToolExecutionComponent)) return;
+		component.updateResult({ ...event.result, isError: event.isError }, false, event.operationId);
+		this.ctx.pendingTools.delete(event.operationId);
 		this.ctx.ui.requestRender();
 	}
 

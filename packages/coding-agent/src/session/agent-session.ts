@@ -269,7 +269,12 @@ import type {
 	WorkspaceRestoreResult,
 } from "../workspace-checkpoints/types";
 import { WORKSPACE_CONVERSATION_ROOT_ENTRY_ID } from "../workspace-checkpoints/types";
-import type { AgentSessionEvent } from "./agent-session-events";
+import type {
+	AgentSessionEvent,
+	MemoryOperation,
+	MemoryOperationResult,
+	MemoryOperationTrigger,
+} from "./agent-session-events";
 import type {
 	AgentSessionActivityEvent,
 	AgentSessionConfig,
@@ -2583,6 +2588,25 @@ export class AgentSession {
 				});
 			}
 		}
+	}
+
+	/**
+	 * Emit a UI-visible memory lifecycle pair without adding synthetic messages to
+	 * the persisted conversation or presenting the operation as model-authored.
+	 */
+	beginMemoryOperation(operation: MemoryOperation, args: unknown, trigger: MemoryOperationTrigger): string {
+		const operationId = `memory:${Snowflake.next()}`;
+		this.#emit({ type: "memory_operation_start", operationId, operation, args, trigger });
+		return operationId;
+	}
+
+	endMemoryOperation(
+		operationId: string,
+		operation: MemoryOperation,
+		result: MemoryOperationResult,
+		isError = false,
+	): void {
+		this.#emit({ type: "memory_operation_end", operationId, operation, result, isError });
 	}
 
 	/**

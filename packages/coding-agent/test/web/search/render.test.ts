@@ -33,14 +33,13 @@ function buildResult(answer: string): {
 	return { content: [{ type: "text", text: answer }], details: { response } };
 }
 
-/** Slice the sanitized lines belonging to the framed "Answer" section. */
+/** Slice the sanitized lines between the bare header and the source tree. */
 function answerSection(lines: string[]): string {
-	const start = lines.findIndex(l => / Answer /.test(l));
-	const end = lines.findIndex((l, i) => i > start && / Sources /.test(l));
+	const start = lines.findIndex(l => /Web Search/.test(l));
 	expect(start).toBeGreaterThanOrEqual(0);
-	expect(end).toBeGreaterThan(start);
+	const end = lines.findIndex((l, i) => i > start && /^[├└]/.test(l.trim()));
 	return lines
-		.slice(start + 1, end)
+		.slice(start + 1, end >= 0 ? end : lines.length)
 		.join("\n")
 		.trim();
 }

@@ -1,8 +1,8 @@
 import { type Component, Container, Markdown, type MouseRoutable, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
-import { applyStableBackground, framedBlock, outputBlockContentWidth } from "../../tui";
-import { hasImageMarker, imageReferenceHyperlink, renderPlaceholders } from "../image-references";
+import { applyStableBackground } from "../../tui";
+import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
@@ -45,11 +45,9 @@ export class UserMessageComponent extends Container {
 		onOpenLink?: (href: string) => void,
 	) {
 		super();
-		const framedImageMessage = hasImageMarker(text);
-		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
-		// bubble too — matching the live editor glow. Markdown code spans and fenced
-		// blocks own their foreground styling; the bubble background is reapplied
-		// separately so syntax-color resets cannot punch holes through the message.
+		// Paint magic keywords inside the rendered bubble, matching the live editor.
+		// Markdown code spans and fenced blocks own their foreground styling; the bubble
+		// background is reapplied separately so syntax resets cannot punch holes through it.
 		const keywordReset = theme.getFgAnsi("userMessageText") || "\x1b[39m";
 		const baseText = synthetic
 			? (value: string) => theme.fg("dim", value)
@@ -63,18 +61,12 @@ export class UserMessageComponent extends Container {
 						? imageReferenceHyperlink(label, index, imageLinks, imageLabel)
 						: theme.fg("accent", `\x1b[1m${label}\x1b[22m`),
 			});
-		const background =
-			synthetic || framedImageMessage
-				? undefined
-				: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg"));
-		const md = new Markdown(
-			sanitizeText(text),
-			framedImageMessage ? 0 : 1,
-			framedImageMessage ? 0 : 1,
-			getMarkdownTheme(),
-			{ color, bgColor: background },
-		);
-		if (!framedImageMessage) {
+		const background = synthetic
+			? undefined
+			: (value: string) => applyStableBackground(value, theme.getBgAnsi("userMessageBg"));
+		const padding = synthetic ? 0 : 1;
+		const md = new Markdown(sanitizeText(text), padding, padding, getMarkdownTheme(), { color, bgColor: background });
+		if (!synthetic) {
 			md.setCodeBlockDisplayOptions({
 				frame: false,
 				cacheKey: "user-message:code-block:v1",
@@ -86,26 +78,7 @@ export class UserMessageComponent extends Container {
 		}
 		md.setIgnoreTight(true);
 		if (onOpenLink) md.setLinkHandler(onOpenLink);
-		if (framedImageMessage) {
-			const frame = framedBlock(theme, width => ({
-				sections: [{ lines: [...md.render(outputBlockContentWidth(width))] }],
-				borderColor: "borderMuted",
-				borderStyle: "full",
-				applyBg: false,
-				width,
-			}));
-			const framedMarkdown: Component & MouseRoutable = {
-				render: width => frame.render(width),
-				invalidate: () => {
-					md.invalidate();
-					frame.invalidate?.();
-				},
-				routeMouse: (event, line, col) => md.routeMouse(event, line - 1, col - 3),
-			};
-			this.addChild(framedMarkdown);
-		} else {
-			this.addChild(md);
-		}
+		this.addChild(md);
 	}
 
 	override render(width: number): readonly string[] {

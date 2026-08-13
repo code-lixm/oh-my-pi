@@ -1896,7 +1896,7 @@ export class StatusLineComponent implements Component {
 		return theme.fg("statusLineSubagents", `${theme.icon.agents} ${this.#subagentCount} ${noun}`);
 	}
 
-	#buildStatusLine(width: number): string {
+	#buildStatusLine(width: number, ruleColor?: (text: string) => string): string {
 		const effectiveSettings = this.#resolveSettings();
 		const includePath =
 			hasPathSegment(effectiveSettings.leftSegments) || hasPathSegment(effectiveSettings.rightSegments);
@@ -2073,18 +2073,23 @@ export class StatusLineComponent implements Component {
 		}
 
 		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth);
-		const sessionName =
-			effectiveSettings.sessionAccent !== false ? this.session.sessionManager?.getSessionName() : undefined;
-		const accentHex = sessionName
-			? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
-			: undefined;
-		const gapColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("border");
-		const gapFill = `${gapColor}${theme.boxRound.horizontal.repeat(gapWidth)}\x1b[39m`;
+		let gapFill: string;
+		if (ruleColor) {
+			gapFill = ruleColor(theme.boxRound.horizontal.repeat(gapWidth));
+		} else {
+			const sessionName =
+				effectiveSettings.sessionAccent !== false ? this.session.sessionManager?.getSessionName() : undefined;
+			const accentHex = sessionName
+				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
+				: undefined;
+			const gapColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("border");
+			gapFill = `${gapColor}${theme.boxRound.horizontal.repeat(gapWidth)}\x1b[39m`;
+		}
 		return leftGroup + gapFill + rightGroup;
 	}
 
-	getTopBorder(width: number): { content: string; width: number } {
-		let content = this.#buildStatusLine(width);
+	getTopBorder(width: number, ruleColor?: (text: string) => string): { content: string; width: number } {
+		let content = this.#buildStatusLine(width, ruleColor);
 		if (this.#focusedAgentId && content) {
 			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
 			// `\x1b[0m` resets that would cancel faint mid-bar, so re-open it after each.

@@ -16,20 +16,43 @@ import { replaceTabs } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { formatAgentDuration } from "./agent-activity-display";
-import { DynamicBorder } from "./dynamic-border";
 import { rawKeyHint } from "./keybinding-hints";
+import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 
 const REFRESH_MS = 1_000;
 const CLOSE_DOUBLE_TAP_MIN_GAP_MS = 40;
 const CLOSE_DOUBLE_TAP_MAX_GAP_MS = 500;
-const JOBS_WIDE_MIN_WIDTH = 120;
+const JOB_MIN_JOB_WIDTH = 18;
+const JOB_WIDTH = 32;
+const JOB_MAX_JOB_WIDTH = 40;
 const JOB_TYPE_WIDTH = 8;
 const JOB_STATUS_WIDTH = 14;
 const JOB_DURATION_WIDTH = 8;
 const JOB_MODEL_WIDTH = 20;
+const JOB_MODEL_MIN_WIDTH = 12;
 const JOB_OWNER_WIDTH = 12;
+const JOB_OWNER_MIN_WIDTH = 8;
 const JOB_UPDATE_WIDTH = 11;
-const JOB_COLUMN_GAP = "  ";
+const JOB_UPDATE_MIN_WIDTH = 8;
+const JOB_COLUMN_GAP = " ";
+const JOB_WIDE_BREATHING_WIDTH = 6;
+/**
+ * Minimum content width for the aligned column layout. The fullscreen frame
+ * contributes four gutter cells, so the observable outer threshold is 95.
+ * The extra breathing cells keep the minimum layout readable after every
+ * elastic column reaches its floor.
+ */
+const JOBS_WIDE_MIN_CONTENT_WIDTH =
+	3 +
+	JOB_MIN_JOB_WIDTH +
+	JOB_TYPE_WIDTH +
+	JOB_STATUS_WIDTH +
+	JOB_DURATION_WIDTH +
+	JOB_MODEL_MIN_WIDTH +
+	JOB_OWNER_MIN_WIDTH +
+	JOB_UPDATE_MIN_WIDTH +
+	JOB_COLUMN_GAP.length * 6 +
+	JOB_WIDE_BREATHING_WIDTH;
 const DETAIL_LABEL_WIDTH = 16;
 const STATUS_ORDER: Record<AsyncJob["status"], number> = {
 	running: 0,
@@ -264,7 +287,7 @@ export class JobsHubOverlayComponent extends Container {
 	}
 
 	#renderList(width: number): string[] {
-		const innerWidth = Math.max(1, width - 2);
+		const innerWidth = Math.max(1, width - 4);
 		this.#rowAtScreenLine.clear();
 		const jobs = this.#rows.map(row => row.job);
 		const running = jobs.filter(job => job.status === "running" && !job.queued).length;
@@ -281,21 +304,18 @@ export class JobsHubOverlayComponent extends Container {
 			tSettingsUi("{count} cancelled", { count: cancelled }),
 			`${capacity.running}/${capacity.limit}`,
 		].join(theme.sep.dot);
-		const hintLines = this.#hintLines(width);
-		const lines: string[] = [];
+		const wide = innerWidth >= JOBS_WIDE_MIN_CONTENT_WIDTH;
+		const lines = [topBorder(width, tSettingsUi("Jobs Hub")), row(theme.fg("dim", summary), width)];
 
-		lines.push(...new DynamicBorder().render(width));
-		lines.push(` ${truncateToWidth(theme.fg("accent", tSettingsUi("Jobs Hub")), innerWidth)}`);
-		lines.push(` ${theme.fg("dim", truncateToWidth(summary, innerWidth))}`);
-		for (const hintLine of hintLines) lines.push(` ${truncateToWidth(hintLine, innerWidth)}`);
+		if (wide && this.#rows.length > 0) lines.push(row(this.#columnHeader(innerWidth), width));
 
 		if (this.#rows.length === 0) {
-			lines.push(` ${theme.fg("dim", tSettingsUi("No retained background jobs."))}`);
+			lines.push(row(theme.fg("dim", tSettingsUi("No retained background jobs.")), width));
 		} else {
 			const terminalRows = process.stdout.rows || 40;
-			const chromeRows = 4 + hintLines.length + (this.#notice ? 1 : 0);
-			const budget = Math.max(3, terminalRows - chromeRows);
-			const entries = this.#renderEntries(width);
+			const chromeRows = 5 + (wide ? 1 : 0) + (this.#notice ? 1 : 0);
+			const budget = Math.max(1, terminalRows - chromeRows);
+			const entries = this.#renderEntries(innerWidth);
 			const selectedEntry = Math.max(
 				0,
 				entries.findIndex(entry => entry.rowIndex === this.#selected),
@@ -332,11 +352,11 @@ export class JobsHubOverlayComponent extends Container {
 			const showStartMarker = start > 0 && markerCapacity > 0;
 			const showEndMarker = end < entries.length && markerCapacity > (showStartMarker ? 1 : 0);
 			if (showStartMarker) {
-				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`)}`);
+				lines.push(row(theme.fg("dim", `… ${tSettingsUi("{count} more", { count: start })}`), width));
 			}
 			for (const entry of entries.slice(start, end)) {
 				const lineStart = lines.length;
-				lines.push(...entry.lines);
+				for (const content of entry.lines) lines.push(row(content, width));
 				if (entry.rowIndex !== undefined) {
 					for (let offset = 0; offset < entry.lines.length; offset++) {
 						this.#rowAtScreenLine.set(lineStart + offset, entry.rowIndex);
@@ -344,20 +364,21 @@ export class JobsHubOverlayComponent extends Container {
 				}
 			}
 			if (showEndMarker) {
-				lines.push(` ${theme.fg("dim", `… ${tSettingsUi("{count} more", { count: entries.length - end })}`)}`);
+				lines.push(
+					row(theme.fg("dim", `… ${tSettingsUi("{count} more", { count: entries.length - end })}`), width),
+				);
 			}
 		}
 
-		if (this.#notice) lines.push(` ${theme.fg("warning", oneLine(this.#notice, innerWidth))}`);
-		lines.push(...new DynamicBorder().render(width));
+		if (this.#notice) lines.push(row(theme.fg("warning", oneLine(this.#notice, innerWidth)), width));
+		lines.push(divider(width));
+		lines.push(row(this.#footer(innerWidth), width));
+		lines.push(bottomBorder(width));
 		return lines;
 	}
 
 	#renderEntries(width: number): RenderedJobEntry[] {
 		const entries: RenderedJobEntry[] = [];
-		if (width >= JOBS_WIDE_MIN_WIDTH && this.#rows.length > 0) {
-			entries.push({ lines: [this.#columnHeader(width)] });
-		}
 		for (let rowIndex = 0; rowIndex < this.#rows.length; rowIndex++) {
 			const row = this.#rows[rowIndex]!;
 			entries.push({
@@ -368,52 +389,67 @@ export class JobsHubOverlayComponent extends Container {
 		return entries;
 	}
 
-	#columnHeader(width: number): string {
-		const max = Math.max(1, width - 2);
-		const jobWidth = Math.max(
-			18,
-			max -
-				3 -
-				JOB_TYPE_WIDTH -
-				JOB_STATUS_WIDTH -
-				JOB_DURATION_WIDTH -
-				JOB_MODEL_WIDTH -
-				JOB_OWNER_WIDTH -
-				JOB_UPDATE_WIDTH -
-				JOB_COLUMN_GAP.length * 6,
+	/** Distribute aligned columns continuously while preserving each column floor. */
+	#fixedColumnWidths(width: number): { job: number; model: number; owner: number; update: number } {
+		const max = Math.max(1, width);
+		let job = JOB_WIDTH;
+		let model = JOB_MODEL_WIDTH;
+		let owner = JOB_OWNER_WIDTH;
+		let update = JOB_UPDATE_WIDTH;
+		const available = max - 3 - JOB_TYPE_WIDTH - JOB_STATUS_WIDTH - JOB_DURATION_WIDTH - JOB_COLUMN_GAP.length * 6;
+		const deficit = Math.max(0, job + model + owner + update - available);
+		const updateReduction = Math.min(JOB_UPDATE_WIDTH - JOB_UPDATE_MIN_WIDTH, deficit);
+		update -= updateReduction;
+		const ownerReduction = Math.min(JOB_OWNER_WIDTH - JOB_OWNER_MIN_WIDTH, deficit - updateReduction);
+		owner -= ownerReduction;
+		const modelReduction = Math.min(
+			JOB_MODEL_WIDTH - JOB_MODEL_MIN_WIDTH,
+			deficit - updateReduction - ownerReduction,
 		);
+		model -= modelReduction;
+		const jobReduction = Math.min(
+			JOB_WIDTH - JOB_MIN_JOB_WIDTH,
+			deficit - updateReduction - ownerReduction - modelReduction,
+		);
+		job -= jobReduction;
+		const surplus = Math.max(0, available - job - model - owner - update);
+		job += Math.min(JOB_MAX_JOB_WIDTH - job, surplus);
+		return { job, model, owner, update };
+	}
+
+	#columnHeader(width: number): string {
+		const {
+			job: jobWidth,
+			model: modelWidth,
+			owner: ownerWidth,
+			update: updateWidth,
+		} = this.#fixedColumnWidths(width);
 		const cells = [
 			fixedCell(tSettingsUi("Job"), jobWidth),
 			fixedCell(tSettingsUi("Type"), JOB_TYPE_WIDTH),
 			fixedCell(tSettingsUi("Status"), JOB_STATUS_WIDTH),
 			fixedCell(tSettingsUi("Duration"), JOB_DURATION_WIDTH),
-			fixedCell(tSettingsUi("Model"), JOB_MODEL_WIDTH),
-			fixedCell(tSettingsUi("Owner"), JOB_OWNER_WIDTH),
-			fixedCell(tSettingsUi("Last update"), JOB_UPDATE_WIDTH),
+			fixedCell(tSettingsUi("Model"), modelWidth),
+			fixedCell(tSettingsUi("Owner"), ownerWidth),
+			fixedCell(tSettingsUi("Last update"), updateWidth),
 		];
 		return theme.fg("dim", `   ${cells.join(JOB_COLUMN_GAP)}`);
 	}
 
-	#hintLines(width: number): string[] {
-		const maxWidth = Math.max(1, width - 2);
+	#footer(width: number): string {
 		const separator = theme.fg("dim", theme.sep.dot);
-		const clamp = (line: string): string => truncateToWidth(line, maxWidth);
-		const primary = [
+		const controls = [
 			rawKeyHint("j/k", tSettingsUi("select")),
 			rawKeyHint("Enter", tSettingsUi("open details")),
 			rawKeyHint("Esc/←←/→→", tSettingsUi("close")),
-		].join(separator);
-		if (!this.#rows[this.#selected]) return [clamp(primary)];
-
-		const actions = [rawKeyHint("f", tSettingsUi("focus agent")), rawKeyHint("x", tSettingsUi("cancel job"))].join(
-			separator,
-		);
-		const combined = `${primary}${separator}${actions}`;
-		return visibleWidth(combined) <= maxWidth ? [combined] : [clamp(primary), clamp(actions)];
+			rawKeyHint("f", tSettingsUi("focus agent")),
+			rawKeyHint("x", tSettingsUi("cancel job")),
+		];
+		return theme.fg("dim", truncateToWidth(controls.join(separator), Math.max(1, width)));
 	}
 
 	#renderEntry(row: JobRow, selected: boolean, width: number): string[] {
-		const max = Math.max(1, width - 2);
+		const max = Math.max(1, width);
 		const job = row.job;
 		const label = oneLine(job.label || job.id, max);
 		const type = oneLine(job.type, JOB_TYPE_WIDTH);
@@ -427,28 +463,22 @@ export class JobsHubOverlayComponent extends Container {
 		const cursor = selected ? theme.fg("accent", theme.nav.cursor) : " ";
 		const entry: string[] = [];
 
-		if (width >= JOBS_WIDE_MIN_WIDTH) {
-			const jobWidth = Math.max(
-				18,
-				max -
-					3 -
-					JOB_TYPE_WIDTH -
-					JOB_STATUS_WIDTH -
-					JOB_DURATION_WIDTH -
-					JOB_MODEL_WIDTH -
-					JOB_OWNER_WIDTH -
-					JOB_UPDATE_WIDTH -
-					JOB_COLUMN_GAP.length * 6,
-			);
+		if (width >= JOBS_WIDE_MIN_CONTENT_WIDTH) {
+			const {
+				job: jobWidth,
+				model: modelWidth,
+				owner: ownerWidth,
+				update: updateWidth,
+			} = this.#fixedColumnWidths(width);
 			entry.push(
 				` ${cursor} ${[
 					fixedCell(theme.bold(oneLine(label, jobWidth)), jobWidth),
 					fixedCell(theme.fg("muted", type), JOB_TYPE_WIDTH),
 					fixedCell(status, JOB_STATUS_WIDTH),
 					fixedCell(theme.fg("dim", duration), JOB_DURATION_WIDTH),
-					fixedCell(theme.fg("dim", model), JOB_MODEL_WIDTH),
-					fixedCell(theme.fg("dim", owner), JOB_OWNER_WIDTH),
-					fixedCell(theme.fg("dim", lastUpdate), JOB_UPDATE_WIDTH),
+					fixedCell(theme.fg("dim", model), modelWidth),
+					fixedCell(theme.fg("dim", owner), ownerWidth),
+					fixedCell(theme.fg("dim", lastUpdate), updateWidth),
 				].join(JOB_COLUMN_GAP)}`,
 			);
 		} else {
@@ -457,26 +487,21 @@ export class JobsHubOverlayComponent extends Container {
 			entry.push(` ${cursor} ${fixedCell(theme.bold(oneLine(label, labelWidth)), labelWidth)}${suffix}`);
 		}
 
-		if (!selected) return entry;
-		return entry.map(line => {
-			const clipped = truncateToWidth(line, max);
-			return theme.bg("selectedBg", `${clipped}${padding(Math.max(0, max - visibleWidth(clipped)))}`);
-		});
+		const clipped = truncateToWidth(entry[0] ?? "", max);
+		if (!selected) return [clipped];
+		return [theme.bg("selectedBg", `${clipped}${padding(Math.max(0, max - visibleWidth(clipped)))}`)];
 	}
 
 	#renderDetail(width: number): string[] {
-		const row = this.#rows[this.#selected];
+		const selected = this.#rows[this.#selected];
 		this.#rowAtScreenLine.clear();
-		if (!row) {
+		if (!selected) {
 			this.#detail = false;
 			return this.#renderList(width);
 		}
-		const inner = Math.max(1, width - 2);
-		const job = row.job;
-		const lines = [
-			...new DynamicBorder().render(width),
-			` ${truncateToWidth(`${theme.fg("accent", tSettingsUi("Job Details"))}${theme.fg("dim", `${theme.sep.dot}${job.id}`)}`, inner)}`,
-			` ${truncateToWidth(`${rawKeyHint("j/k", tSettingsUi("scroll"))}${theme.sep.dot}${rawKeyHint("Enter/Esc", tSettingsUi("back"))}${theme.sep.dot}${rawKeyHint("←←/→→", tSettingsUi("close"))}${theme.sep.dot}${rawKeyHint("f", tSettingsUi("focus agent"))}${theme.sep.dot}${rawKeyHint("x", tSettingsUi("cancel job"))}`, inner)}`,
+		const inner = Math.max(1, width - 4);
+		const job = selected.job;
+		const content = [
 			detailLine(tSettingsUi("Status"), statusLabel(job), inner),
 			detailLine(tSettingsUi("Type"), job.type, inner),
 			detailLine(tSettingsUi("Duration"), jobDuration(job), inner),
@@ -488,25 +513,44 @@ export class JobsHubOverlayComponent extends Container {
 				inner,
 			),
 		];
-		if (row.progress) lines.push(...this.#taskDetailLines(row.progress, inner));
-		else if (job.description) lines.push(detailLine(tSettingsUi("Work"), oneLine(job.description, inner), inner));
+		if (selected.progress) content.push(...this.#taskDetailLines(selected.progress, inner));
+		else if (job.description) content.push(detailLine(tSettingsUi("Work"), oneLine(job.description, inner), inner));
 		const rawOutput = job.type === "bash" ? job.latestProgressText : (job.errorText ?? job.resultText);
 		if (rawOutput) {
-			lines.push(` ${theme.bold(tSettingsUi(job.type === "bash" ? "Live output tail" : "Result"))}`);
-			const outputLines = safeLines(rawOutput).map(line => ` ${truncateToWidth(line, inner - 1, Ellipsis.Omit)}`);
-			const viewport = Math.max(3, (process.stdout.rows || 40) - lines.length - 2);
+			content.push(theme.bold(tSettingsUi(job.type === "bash" ? "Live output tail" : "Result")));
+			const outputLines = safeLines(rawOutput).map(line => truncateToWidth(line, inner, Ellipsis.Omit));
+			const viewport = Math.max(3, (process.stdout.rows || 40) - content.length - 4);
 			const maxOffset = Math.max(0, outputLines.length - viewport);
 			this.#detailOffset = Math.min(this.#detailOffset, maxOffset);
-			lines.push(...outputLines.slice(this.#detailOffset, this.#detailOffset + viewport));
+			content.push(...outputLines.slice(this.#detailOffset, this.#detailOffset + viewport));
 			if (outputLines.length > viewport) {
-				lines.push(
-					` ${theme.fg("dim", tSettingsUi("lines {start}-{end} of {total}", { start: this.#detailOffset + 1, end: Math.min(outputLines.length, this.#detailOffset + viewport), total: outputLines.length }))}`,
+				content.push(
+					theme.fg(
+						"dim",
+						tSettingsUi("lines {start}-{end} of {total}", {
+							start: this.#detailOffset + 1,
+							end: Math.min(outputLines.length, this.#detailOffset + viewport),
+							total: outputLines.length,
+						}),
+					),
 				);
 			}
 		}
-		if (this.#notice) lines.push(` ${theme.fg("warning", oneLine(this.#notice, inner))}`);
-		lines.push(...new DynamicBorder().render(width));
-		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+		if (this.#notice) content.push(theme.fg("warning", oneLine(this.#notice, inner)));
+		const footer = [
+			rawKeyHint("j/k", tSettingsUi("scroll")),
+			rawKeyHint("Enter/Esc", tSettingsUi("back")),
+			rawKeyHint("←←/→→", tSettingsUi("close")),
+			rawKeyHint("f", tSettingsUi("focus agent")),
+			rawKeyHint("x", tSettingsUi("cancel job")),
+		].join(theme.sep.dot);
+		return [
+			topBorder(width, `${tSettingsUi("Job Details")}${theme.sep.dot}${job.id}`),
+			...content.map(line => row(line, width)),
+			divider(width),
+			row(theme.fg("dim", truncateToWidth(footer, inner)), width),
+			bottomBorder(width),
+		];
 	}
 
 	#taskDetailLines(progress: AgentProgress, width: number): string[] {

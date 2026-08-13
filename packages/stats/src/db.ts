@@ -57,7 +57,7 @@ let db: Database | null = null;
 
 const BACKFILL_COMPLETE = "complete";
 const BACKFILL_PENDING = "pending";
-const USER_MESSAGES_BACKFILL_KEY = "user_messages_v8";
+const USER_MESSAGES_BACKFILL_KEY = "user_messages_v10";
 const USER_MESSAGE_LINKS_REPAIR_KEY = "user_message_links_v1";
 const PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY = "premium_requests_priority_v1";
 const AGENT_TYPE_BACKFILL_KEY = "agent_type_v1";
@@ -1141,6 +1141,14 @@ export function getCostTimeSeries(days = 90, cutoff?: number | null): CostTimeSe
  *   you` scores blame, `makes (no|zero) sense` scores negation. v7
  *   shipped briefly without these, so any database that completed the v7
  *   backfill needs one more re-derive.
+ * - v9: CJK (Chinese) signals added - full-width drama runs (`！！！` /
+ *   `？？？`), Chinese profanity/interjection/negation/repetition/blame
+ *   word lists, pinyin abbreviations (`tmd`, `sb`, ...), and repeated
+ *   interjection characters (啊啊啊). Existing rows were scored with
+ *   English-only rules and must be re-derived.
+ * - v10: CJK profanity boundary fixes - 我操/我草/我日 reject a following
+ *   作/稿/志 so 操作/草稿/日志 never score as profanity (measured against
+ *   real corpus hits). v9 rows over-counted these collisions.
  *
  * Existing `messages` rows are unaffected - `INSERT OR IGNORE` keeps them.
  */

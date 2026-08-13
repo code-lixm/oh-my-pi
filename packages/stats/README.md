@@ -13,6 +13,7 @@ Local observability dashboard for AI usage statistics.
 
 | Metric | Calculation |
 |--------|-------------|
+| Total Tokens | Sum of `input + output + cacheRead + cacheWrite` across the selected range |
 | Tokens/s | `output_tokens / (duration / 1000)` |
 | Cache Rate | `cache_read / (input + cache_read) * 100` |
 | Error Rate | `count(stopReason=error) / total_calls * 100` |

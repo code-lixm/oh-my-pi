@@ -5,9 +5,14 @@ import {
 	streamOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { type OpenAIResponsesOptions, streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
+import type { ResponseInput } from "@oh-my-pi/pi-ai/providers/openai-responses-wire";
 import { buildResponsesInput } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import type { Context, Model, ModelSpec, ProviderSessionState, Tool } from "@oh-my-pi/pi-ai/types";
-import { createOpenAIResponsesHistoryPayload, truncateResponseItemId } from "@oh-my-pi/pi-ai/utils";
+import {
+	createOpenAIResponsesHistoryPayload,
+	sanitizeOpenAIResponsesAssistantFallbackItemsForReplay,
+	truncateResponseItemId,
+} from "@oh-my-pi/pi-ai/utils";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import * as piUtils from "@oh-my-pi/pi-utils";
@@ -1657,13 +1662,14 @@ describe("OpenAI responses history payload", () => {
 		expect(orphanNote(nonStrictOverridePayload.input)?.content).toContain("[Orphan tool result;");
 	});
 
-	it("never synthesizes an empty reasoning_text item for a DeepSeek-family Responses target", () => {
+	it("synthesizes a non-empty reasoning_text item for a DeepSeek-family Responses target", () => {
 		// A turn minted by another model captured no reasoning (empty thinking
-		// block, no signature). Console Go rejects a reasoning item whose
-		// `reasoning_text` is empty — "The reasoning_text in the thinking mode
-		// must be passed back to the API" — so the replay must omit the item
-		// instead of carrying an empty placeholder (regression: 400 retry loop
-		// after switching to opencode-go/deepseek-v4-flash).
+		// block, no signature). Console Go rejects both a reasoning item whose
+		// `reasoning_text` is empty and a replayed turn that ships no reasoning
+		// item — "The reasoning_text in the thinking mode must be passed back
+		// to the API" — so the replay must synthesize a NON-empty placeholder
+		// item (regression: 400 retry loop after switching to
+		// opencode-go/deepseek-v4-flash).
 		const deepseekModel = getBundledModel<"openai-responses">("opencode-go", "deepseek-v4-flash");
 		const context: Context = {
 			messages: [
@@ -1706,14 +1712,39 @@ describe("OpenAI responses history payload", () => {
 			requiresReasoningReplayForToolCalls: true,
 			repairOrphanOutputs: true,
 		});
-		const emptyReasoning = input.filter(
+		const synthesized = input.filter(
 			item =>
 				item?.type === "reasoning" &&
 				Array.isArray((item as { content?: unknown[] }).content) &&
-				((item as { content: Array<{ text?: string }> }).content[0]?.text ?? "").trim() === "",
-		);
-		expect(emptyReasoning).toHaveLength(0);
+				((item as { content: Array<{ type?: string }> }).content ?? []).some(
+					part => part.type === "reasoning_text",
+				),
+		) as Array<{ content: Array<{ text?: string }> }>;
+		// Exactly one synthesized reasoning item, carrying a NON-empty text.
+		expect(synthesized).toHaveLength(1);
+		const text = synthesized[0]!.content[0]?.text ?? "";
+		expect(text.trim().length).toBeGreaterThan(0);
 		// The tool call itself must still replay.
 		expect(input.some(item => item?.type === "function_call" && item.call_id === "call_empty_reasoning")).toBe(true);
+	});
+
+	it("keeps synthesized reasoning items in fallback replay only when the target requires reasoning replay", () => {
+		// sanitizeOpenAIResponsesAssistantFallbackItemsForReplay drops reasoning
+		// by default (hidden-only fallback), but must keep it for DeepSeek-family
+		// targets whose thinking-mode continuation 400s without `reasoning_text`.
+		const items = [
+			{ type: "reasoning", id: "rs_x", summary: [], content: [{ type: "reasoning_text", text: "…" }] },
+			{
+				type: "message",
+				role: "assistant",
+				content: [{ type: "output_text", text: "visible", annotations: [] }],
+				status: "completed",
+			},
+			{ type: "function_call", call_id: "call_1", name: "read", arguments: "{}" },
+		] as unknown as ResponseInput;
+		const kept = sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(items, true);
+		expect(kept.some(item => item.type === "reasoning")).toBe(true);
+		const dropped = sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(items);
+		expect(dropped.some(item => item.type === "reasoning")).toBe(false);
 	});
 });

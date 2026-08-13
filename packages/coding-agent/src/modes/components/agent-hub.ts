@@ -2,7 +2,7 @@
  * Agent Hub overlay component.
  *
  * - Task-only roster: Main and advisors remain routing/observability nodes, never selectable rows.
- * - Rows use lifecycle priority, newest creation, then stable identity; activity heartbeats only refresh display.
+ * - Rows use newest creation time, then stable identity; activity heartbeats only refresh display.
  * - Enter opens a fullscreen read-only transcript; `f` focuses a live subagent, `m` sends
  *   it a message, and `p`/`r`/`x` switch, resume, or terminate a task.
  * - The fullscreen projection keeps persisted history metadata, tree-safe lineage, bounded paint,
@@ -46,7 +46,7 @@ import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { resolveAgentTerminalStatus, selectAgentActivity } from "./agent-activity-display";
+import { formatAgentDuration, resolveAgentTerminalStatus, selectAgentActivity } from "./agent-activity-display";
 import { type AgentMetrics, progressMetrics, projectAgentTree } from "./agent-hub-projection";
 import {
 	clampHubLine,
@@ -90,10 +90,16 @@ const HUB_MODEL_WIDTH = 52;
  * completion gist, current tool/intent). Truncated with `…` past this width
  * so the column stays bounded; longer detail belongs in the focused
  * inspector. The Model column was widened (26 → 52) for fallback-aware
- * identifiers (`fallback → <provider>/<id>`), which raised the fixed-column
- * layout threshold to {@link HUB_FIXED_COLUMNS_MIN_WIDTH} cells.
+ * identifiers (`fallback → <provider>/<id>`).
+ *
+ * The fixed-column layout compresses Model/Detail down to these floors (never
+ * the agent name) instead of falling back to a two-cell row, so a half-width
+ * terminal keeps the full column header as long as it clears
+ * {@link HUB_FIXED_COLUMNS_MIN_WIDTH} cells.
  */
 const HUB_DETAIL_WIDTH = 30;
+const HUB_MODEL_MIN_WIDTH = 16;
+const HUB_DETAIL_MIN_WIDTH = 8;
 const HUB_COLUMN_GAP = " ";
 const HUB_MIN_AGENT_WIDTH = 21;
 /** Cap the agent-name column so Duration/Model columns stay readable on wide terminals. */
@@ -103,8 +109,8 @@ const HUB_FIXED_COLUMNS_MIN_WIDTH =
 	HUB_MIN_AGENT_WIDTH +
 	HUB_STATUS_WIDTH +
 	HUB_DURATION_WIDTH +
-	HUB_MODEL_WIDTH +
-	HUB_DETAIL_WIDTH +
+	HUB_MODEL_MIN_WIDTH +
+	HUB_DETAIL_MIN_WIDTH +
 	HUB_COLUMN_GAP.length * 4;
 /**
  * Small rosters may collect live observer state for every row; larger rosters
@@ -554,22 +560,18 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const refs = this.#registry.list().filter(ref => ref.kind === "sub");
 		this.#observedById =
 			refs.length <= HUB_OBSERVER_COLLECT_LIMIT ? this.#collectObserved(refs) : new Map<string, ObservableSession>();
-		// Partition by creation timestamp: rows with a known createdAt are sorted
-		// ascending; rows missing the timestamp are pushed to the end, in id
-		// order, so a row that loses its timestamp mid-session can never reorder
-		// the list above peers it was already below.
-		const withTimestamp: typeof refs = [];
-		const withoutTimestamp: typeof refs = [];
-		for (const ref of refs) {
-			if (Number.isFinite(ref.createdAt)) withTimestamp.push(ref);
-			else withoutTimestamp.push(ref);
-		}
-		withTimestamp.sort((left, right) => {
-			if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt;
+		// Newest tasks stay at the top. Persisted rows without a trustworthy
+		// timestamp remain usable but sort after timestamped rows, with an id tie-break.
+		const rosterRows = [...refs].sort((left, right) => {
+			const leftCreatedAt = Number.isFinite(left.createdAt) ? left.createdAt : undefined;
+			const rightCreatedAt = Number.isFinite(right.createdAt) ? right.createdAt : undefined;
+			if (leftCreatedAt !== undefined || rightCreatedAt !== undefined) {
+				if (leftCreatedAt === undefined) return 1;
+				if (rightCreatedAt === undefined) return -1;
+				if (leftCreatedAt !== rightCreatedAt) return rightCreatedAt - leftCreatedAt;
+			}
 			return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 		});
-		withoutTimestamp.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-		const rosterRows = withTimestamp.concat(withoutTimestamp);
 
 		if (this.#viewMode === "tree") {
 			const tree = projectAgentTree(rosterRows);
@@ -706,6 +708,13 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (ref.history?.metrics) return ref.history.metrics;
 		const session = this.#fallbackStatsSession(ref, observed);
 		return session ? this.#sessionMetrics.get(session)?.metrics : undefined;
+	}
+
+	#durationFor(ref: AgentRef, metrics: AgentMetrics | undefined): string {
+		const metricDuration = metrics ? formatMetricDuration(metrics) : undefined;
+		if (metricDuration) return metricDuration;
+		const span = ref.lastActivity - ref.createdAt;
+		return Number.isFinite(span) && span > 0 ? formatAgentDuration(span) : "—";
 	}
 
 	#fallbackStatsSession(
@@ -933,43 +942,48 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	}
 
 	#summaryLines(width: number): string[] {
-		const active = (label: string): string => theme.bg("selectedBg", theme.bold(theme.fg("accent", ` ${label} `)));
-		const inactive = (label: string): string => theme.fg("muted", ` ${label} `);
-		const projection =
-			this.#viewMode === "roster"
-				? `${active(tSettingsUi("Flat"))}${theme.fg("dim", "/")}${inactive(tSettingsUi("By parent"))}`
-				: `${inactive(tSettingsUi("Flat"))}${theme.fg("dim", "/")}${active(tSettingsUi("By parent"))}`;
-		const counts = this.#statusSummary();
-		const max = Math.max(1, width);
-		const header = `${theme.bold(tSettingsUi("Roster"))}${theme.fg("dim", theme.sep.dot)}${projection}${counts ? theme.fg("dim", theme.sep.dot) + counts : ""}`;
-		const lines = wrapTextWithAnsi(header, max);
-		if (this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH) lines.push(this.#columnHeader(width));
-		return lines;
+		return this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH ? [this.#columnHeader(width)] : [];
 	}
 
-	#columnHeader(width: number): string {
-		const max = Math.max(1, width);
-		const nameWidth = Math.min(
+	/**
+	 * Distribute the fixed-column layout widths. When the terminal clears
+	 * {@link HUB_FIXED_COLUMNS_MIN_WIDTH} but cannot fit the full Model/Detail
+	 * pair, compress Detail first (it is truncatable prose), then Model —
+	 * the agent name column never shrinks below {@link HUB_MIN_AGENT_WIDTH}.
+	 */
+	#fixedColumnWidths(width: number): { name: number; model: number; detail: number } {
+		let model = HUB_MODEL_WIDTH;
+		let detail = HUB_DETAIL_WIDTH;
+		const slack = width - 4 - HUB_MIN_AGENT_WIDTH - HUB_STATUS_WIDTH - HUB_DURATION_WIDTH - HUB_COLUMN_GAP.length * 4;
+		const deficit = Math.max(0, model + detail - slack);
+		const detailReduction = Math.min(HUB_DETAIL_WIDTH - HUB_DETAIL_MIN_WIDTH, deficit);
+		detail -= detailReduction;
+		const modelReduction = Math.min(HUB_MODEL_WIDTH - HUB_MODEL_MIN_WIDTH, deficit - detailReduction);
+		model -= modelReduction;
+		const name = Math.min(
 			HUB_MAX_AGENT_WIDTH,
 			Math.max(
 				HUB_MIN_AGENT_WIDTH,
-				max -
-					4 -
-					HUB_STATUS_WIDTH -
-					HUB_DURATION_WIDTH -
-					HUB_MODEL_WIDTH -
-					HUB_DETAIL_WIDTH -
-					HUB_COLUMN_GAP.length * 4,
+				width - 4 - HUB_STATUS_WIDTH - HUB_DURATION_WIDTH - model - detail - HUB_COLUMN_GAP.length * 4,
 			),
 		);
+		return { name, model, detail };
+	}
+
+	#columnHeader(width: number): string {
+		const { name: nameWidth, model: modelWidth, detail: detailWidth } = this.#fixedColumnWidths(width);
+		const statusSummary = this.#statusSummary();
+		const agentHeader = statusSummary
+			? `${tSettingsUi("Agent")}${theme.fg("dim", theme.sep.dot)}${statusSummary}`
+			: tSettingsUi("Agent");
 		return theme.fg(
 			"dim",
 			`    ${[
-				fixedCell(tSettingsUi("Agent"), nameWidth),
+				fixedCell(agentHeader, nameWidth),
 				fixedCell(tSettingsUi("Status"), HUB_STATUS_WIDTH),
 				fixedCell(tSettingsUi("Duration"), HUB_DURATION_WIDTH),
-				fixedCell(tSettingsUi("Model"), HUB_MODEL_WIDTH),
-				fixedCell(tSettingsUi("Detail"), HUB_DETAIL_WIDTH),
+				fixedCell(tSettingsUi("Model"), modelWidth),
+				fixedCell(tSettingsUi("Detail"), detailWidth),
 			].join(HUB_COLUMN_GAP)}`,
 		);
 	}
@@ -1014,7 +1028,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		add(`${this.#taskGlyph(taskStatus)} ${theme.bold(label)}`);
 		if (label !== sanitizeDisplayText(ref.id)) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
 		const lifecycleDetails = [
-			metrics ? formatMetricDuration(metrics) : undefined,
+			this.#durationFor(ref, metrics),
 			formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000))),
 		].filter(Boolean);
 		add(
@@ -1098,7 +1112,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const unreadText = unread > 0 ? ` ${theme.fg("warning", `⧉ ${unread}`)}` : "";
 		const agent = `${branch}${styledLabel}${unreadText}`;
 		const metrics = this.#metricsFor(ref, observed);
-		const duration = metrics ? (formatMetricDuration(metrics) ?? "—") : "—";
+		const duration = this.#durationFor(ref, metrics);
 		const modelParts: string[] = [];
 		const modelRole = observed?.progress?.modelRole ?? ref.history?.modelRole;
 		if (modelRole && this.#settings) modelParts.push(formatRoleBadge(modelRole, this.#settings));
@@ -1106,27 +1120,15 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (badge) modelParts.push(badge);
 		const model = modelParts.join(theme.sep.dot) || "—";
 		let line: string;
-		const nameWidth = Math.min(
-			HUB_MAX_AGENT_WIDTH,
-			Math.max(
-				HUB_MIN_AGENT_WIDTH,
-				max -
-					4 -
-					HUB_STATUS_WIDTH -
-					HUB_DURATION_WIDTH -
-					HUB_MODEL_WIDTH -
-					HUB_DETAIL_WIDTH -
-					HUB_COLUMN_GAP.length * 4,
-			),
-		);
+		const { name: nameWidth, model: modelWidth, detail: detailWidth } = this.#fixedColumnWidths(width);
 		const useFixedColumns = this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH;
 		if (useFixedColumns) {
 			line = `${cursor} ${this.#taskGlyph(taskStatus)} ${[
 				fixedCell(agent, nameWidth),
 				fixedCell(this.#renderTaskStatus(taskStatus), HUB_STATUS_WIDTH),
 				fixedCell(theme.fg("dim", duration), HUB_DURATION_WIDTH),
-				fixedCell(model, HUB_MODEL_WIDTH),
-				fixedCell(this.#renderEntryDetail(ref, taskStatus, observed), HUB_DETAIL_WIDTH),
+				fixedCell(model, modelWidth),
+				fixedCell(this.#renderEntryDetail(ref, taskStatus, observed), detailWidth),
 			].join(HUB_COLUMN_GAP)}`;
 		} else {
 			line = `${cursor} ${this.#taskGlyph(taskStatus)} ${agent} ${theme.fg("dim", theme.sep.dot)} ${this.#renderTaskStatus(taskStatus)}`;
@@ -1216,7 +1218,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 					"muted",
 					filteredStored
 						? tSettingsUi("Parked: {note}", { note: preview(filteredStored) })
-						: tSettingsUi("Parked"),
+						: tSettingsUi("parked"),
 				);
 			case "idle":
 				return tint(

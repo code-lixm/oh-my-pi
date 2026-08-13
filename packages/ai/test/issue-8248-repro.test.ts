@@ -22,6 +22,9 @@ interface ResponsesInputItem {
 	type?: string;
 	role?: string;
 	content?: unknown;
+	call_id?: string;
+	name?: string;
+	arguments?: unknown;
 }
 
 interface ResponsesPayload {
@@ -153,6 +156,137 @@ describe("issue #8248: DeepSeek Responses reasoning replay after prewalk/compact
 		const reasoning = reasoningItems(payload);
 		expect(reasoning).toHaveLength(1);
 		expect(reasoningTextOf(reasoning[0]!)).toBe("Inspect bar.ts before editing.");
+	});
+
+	it("synthesizes a non-empty placeholder reasoning item when the foreign turn captured no thinking at all", async () => {
+		// GPT encrypted CoT / minimax / compacted turns carry no thinking block
+		// at all. Console Go rejects BOTH an empty reasoning_text and a missing
+		// reasoning item — "The reasoning_text in the thinking mode must be
+		// passed back to the API" — so the replay must still ship a non-empty
+		// item (regression: 400 retry loop on gpt -> deepseek fallback).
+		const prior: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "github-copilot",
+			model: "gpt-5.6-sol",
+			stopReason: "stop",
+			usage,
+			content: [{ type: "text", text: "Refactored bar.ts." }],
+			timestamp: Date.now(),
+		};
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Refactor foo", timestamp: Date.now() },
+				prior,
+				{ role: "user", content: "Now update the tests", timestamp: Date.now() },
+			],
+		};
+
+		const payload = await capture(deepseek, context);
+		const reasoning = reasoningItems(payload);
+		expect(reasoning).toHaveLength(1);
+		const text = reasoningTextOf(reasoning[0]!);
+		expect(text.trim().length).toBeGreaterThan(0);
+	});
+
+	it("synthesizes a non-empty placeholder reasoning item for a foreign tool-call turn with no thinking", async () => {
+		// Console Go's DeepSeek gateway enforces reasoning replay on tool-call
+		// turns specifically (verified against the live backend: a replayed
+		// function_call without a reasoning item 400s, an empty reasoning_text
+		// 400s, and a non-empty placeholder passes). Foreign tool-call turns
+		// with no captured thinking must therefore still ship a non-empty item.
+		const prior: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "github-copilot",
+			model: "gpt-5.6-sol",
+			stopReason: "toolUse",
+			usage,
+			content: [{ type: "toolCall", id: "call_prev", name: "read", arguments: { path: "a.ts" } }],
+			timestamp: Date.now(),
+		};
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Read a.ts", timestamp: Date.now() },
+				prior,
+				{
+					role: "toolResult",
+					toolCallId: "call_prev",
+					toolName: "read",
+					content: [{ type: "text", text: "contents" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				{ role: "user", content: "Now what?", timestamp: Date.now() },
+			],
+		};
+
+		const payload = await capture(deepseek, context);
+		const reasoning = reasoningItems(payload);
+		expect(reasoning.length).toBeGreaterThanOrEqual(1);
+		const text = reasoningTextOf(reasoning[0]!);
+		expect(text.trim().length).toBeGreaterThan(0);
+	});
+
+	it("synthesizes a reasoning item for every consecutive foreign tool-call turn", async () => {
+		// The reported 400 logs show long runs of consecutive tool-call turns
+		// (bash/read/... ) with no reasoning — each foreign turn must get its
+		// own synthesized non-empty reasoning item.
+		const priorA: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "github-copilot",
+			model: "gpt-5.6-sol",
+			stopReason: "toolUse",
+			usage,
+			content: [{ type: "toolCall", id: "call_a", name: "bash", arguments: { command: "ls" } }],
+			timestamp: Date.now(),
+		};
+		const priorB: AssistantMessage = {
+			role: "assistant",
+			api: "openai-responses",
+			provider: "github-copilot",
+			model: "gpt-5.6-sol",
+			stopReason: "toolUse",
+			usage,
+			content: [{ type: "toolCall", id: "call_b", name: "read", arguments: { path: "b.ts" } }],
+			timestamp: Date.now(),
+		};
+		const context: Context = {
+			messages: [
+				{ role: "user", content: "Inspect the repo", timestamp: Date.now() },
+				priorA,
+				{
+					role: "toolResult",
+					toolCallId: "call_a",
+					toolName: "bash",
+					content: [{ type: "text", text: "a.ts b.ts" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				priorB,
+				{
+					role: "toolResult",
+					toolCallId: "call_b",
+					toolName: "read",
+					content: [{ type: "text", text: "contents" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				{ role: "user", content: "Summarize", timestamp: Date.now() },
+			],
+		};
+
+		const payload = await capture(deepseek, context);
+		const reasoning = reasoningItems(payload);
+		expect(reasoning.length).toBeGreaterThanOrEqual(2);
+		for (const item of reasoning) {
+			expect(reasoningTextOf(item).trim().length).toBeGreaterThan(0);
+		}
+		// Both tool calls must still replay alongside their reasoning items.
+		const input = payload.input ?? [];
+		expect(input.some(item => item.type === "function_call" && item.call_id === "call_a")).toBe(true);
+		expect(input.some(item => item.type === "function_call" && item.call_id === "call_b")).toBe(true);
 	});
 
 	it("does not synthesize a reasoning item when reasoning is disabled for the turn", async () => {

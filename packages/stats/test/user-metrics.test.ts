@@ -230,3 +230,85 @@ describe("computeUserMessageMetrics", () => {
 		expect(m.repetition).toBeGreaterThanOrEqual(2); // `i told you` + `still doesnt`
 	});
 });
+
+describe("CJK / Chinese signals", () => {
+	it("counts full-width dramatic punctuation as anguish", () => {
+		expect(computeUserMessageMetrics("！！！").anguish).toBe(1);
+		expect(computeUserMessageMetrics("？？？").anguish).toBe(1);
+		expect(computeUserMessageMetrics("!!!").anguish).toBe(1);
+		expect(computeUserMessageMetrics("！").anguish).toBe(0);
+		expect(computeUserMessageMetrics("？？").anguish).toBe(0);
+	});
+
+	it("counts Chinese profanity and case-insensitive pinyin abbreviations", () => {
+		for (const text of ["这代码真垃圾", "傻逼", "他妈的", "卧槽", "tmd 又失败了", "SB"]) {
+			expect(computeUserMessageMetrics(text).profanity).toBe(1);
+		}
+	});
+
+	it("does not flag Chinese technical or neutral vocabulary", () => {
+		for (const text of ["垃圾回收", "他妈妈", "你妈妈", "日志", "草稿", "可靠", "干嘛", "逼真"]) {
+			expect(computeUserMessageMetrics(text).profanity).toBe(0);
+		}
+		expect(computeUserMessageMetrics("这里报错了").negation).toBe(0);
+		expect(computeUserMessageMetrics("出错了").negation).toBe(0);
+		// Regression: 操作 must not form 我操 across the boundary (告诉我操作命令).
+		expect(computeUserMessageMetrics("你告诉我操作命令，我自己操作").profanity).toBe(0);
+		expect(computeUserMessageMetrics("最大并发帮我操作").profanity).toBe(0);
+		expect(computeUserMessageMetrics("写一下我的日志").profanity).toBe(0);
+	});
+
+	it("counts Chinese corrective negation", () => {
+		expect(computeUserMessageMetrics("不对，这不是我要的").negation).toBe(2);
+		expect(computeUserMessageMetrics("这里写错了").negation).toBe(1);
+		expect(computeUserMessageMetrics("离谱").negation).toBe(1);
+	});
+
+	it("counts Chinese repetition without false positives", () => {
+		expect(computeUserMessageMetrics("我都说了还是不行").repetition).toBe(2);
+
+		const again = computeUserMessageMetrics("又报错了");
+		expect(again.repetition).toBe(1);
+		expect(again.negation).toBe(0);
+
+		expect(computeUserMessageMetrics("我说了算").repetition).toBe(0);
+	});
+
+	it("counts Chinese second-person blame without neutral false positives", () => {
+		expect(computeUserMessageMetrics("你没解决这个问题").blame).toBe(1);
+		expect(computeUserMessageMetrics("你敷衍我").blame).toBe(1);
+		expect(computeUserMessageMetrics("你没钱").blame).toBe(0);
+	});
+
+	it("counts Chinese anguish interjections and excludes idiomatic usage", () => {
+		for (const text of ["啊啊啊", "天啊", "我崩溃了", "救命啊"]) {
+			expect(computeUserMessageMetrics(text).anguish).toBe(1);
+		}
+		expect(computeUserMessageMetrics("救命稻草").anguish).toBe(0);
+	});
+
+	it("counts multiple independent signals in one Chinese message", () => {
+		const m = computeUserMessageMetrics("你他妈又报错了");
+		expect(m.profanity).toBe(1);
+		expect(m.repetition).toBe(1);
+		expect(m.negation).toBe(0);
+		expect(m.blame).toBe(0);
+	});
+
+	it("zeros all behavior signals for long Chinese prose while retaining raw counts", () => {
+		const long = ["不对，这不是我要的", "你他妈又报错了", "啊啊啊", "你没解决这个问题"].join("\n");
+		const m = computeUserMessageMetrics(long);
+		expect(m.chars).toBe(30);
+		expect(m.words).toBe(4);
+		expect(m.yelling).toBe(0);
+		expect(m.profanity).toBe(0);
+		expect(m.anguish).toBe(0);
+		expect(m.negation).toBe(0);
+		expect(m.repetition).toBe(0);
+		expect(m.blame).toBe(0);
+	});
+
+	it("keeps English profanity word boundaries intact in mixed-language input", () => {
+		expect(computeUserMessageMetrics("this is FUCKING stupid garbage code").profanity).toBe(2);
+	});
+});

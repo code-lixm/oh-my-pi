@@ -1073,7 +1073,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Mouse Input"),
 			description: tSettingsUi(
-				"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.",
+				"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.",
 			),
 		},
 	},

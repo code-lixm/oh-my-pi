@@ -166,6 +166,30 @@ describe("CodeGraphTool contract", () => {
 		expect(details.entries?.some(entry => entry.node.name === "greet")).toBe(true);
 	});
 
+	test("relative path resolves from an explicit projectPath", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "project-path-relative-scope"));
+		const tool = new CodeGraphTool(makeSession(tmp));
+		const cold = await tool.execute("call-project-path-relative-cold", {
+			query: "greet",
+			projectPath: repoRoot,
+			path: "greeter.ts",
+		});
+		expect(cold.isError).not.toBe(true);
+		expectIndexingFallback(cold.details as { fallback?: string });
+		await waitForSlotReady(repoRoot, "relative projectPath warmup");
+
+		const warm = await tool.execute("call-project-path-relative-warm", {
+			query: "greet",
+			projectPath: repoRoot,
+			path: "greeter.ts",
+			mode: "locate",
+		});
+		expect(warm.isError).not.toBe(true);
+		const details = warm.details as { pathScope?: string; entries?: Array<{ node: { name: string } }> };
+		expect(details.pathScope).toBe("greeter.ts");
+		expect(details.entries?.some(entry => entry.node.name === "greet")).toBe(true);
+	});
+
 	test("createIf() returns a tool for a Git repo with HEAD", async () => {
 		const repoRoot = await initGitRepo(path.join(tmp, "repo-create-if"));
 

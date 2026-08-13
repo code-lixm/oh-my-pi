@@ -409,6 +409,34 @@ describe("frame-level mouse routing", () => {
 		expect(editor.getCursor()).toEqual({ line: 0, col: 4 });
 	});
 
+	it("routes an SGR click below a horizontal top rule into the correct wrapped content row", async () => {
+		const terminal = new VirtualTerminal(20, 6, 1_000);
+		const tui = new TUI(terminal, true);
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderStyle("horizontal");
+		editor.setMaxHeight(4);
+		editor.setText("alpha\nbravo");
+		tui.addChild(editor);
+		tui.setFocus(editor);
+
+		try {
+			tui.start();
+			await terminal.waitForRender();
+
+			// The horizontal top rule occupies screen row 0, so screen row 2 is
+			// the second content row (`bravo`). Columns are 1-based in SGR.
+			terminal.sendInput("\x1b[<0;4;3M");
+			await terminal.waitForRender();
+			editor.handleInput("X");
+
+			expect(editor.getText()).toBe("alpha\nbraXvo");
+			expect(editor.getCursor()).toEqual({ line: 1, col: 4 });
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("snaps a trimmed wrap boundary click to the end of the visible text", () => {
 		// Width 5 forces wrap: "hello" (5) + "world" (5). The trailing space
 		// at chunk boundary is stripped during wrap; a click past "world"

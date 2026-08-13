@@ -3,56 +3,76 @@ import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 
-const OSC133_ZONE_START = "\x1b]133;A\x07";
-const OSC133_ZONE_END = "\x1b]133;B\x07";
-const OSC133_COMMAND_START = "\x1b]133;C\x07";
-const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
-const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
 const OSC133_MARKER = /\x1b\]133;(?:A|B|C|D;0)\x07/g;
 const WIDTH = 40;
+function stripUserControls(line: string): string {
+	return Bun.stripANSI(line.replace(OSC133_MARKER, ""));
+}
+
+function expectBorderlessBackgroundBlock(rendered: readonly string[], content: string): void {
+	const plain = rendered.map(stripUserControls);
+	const background = theme.getBgAnsi("userMessageBg");
+
+	expect(plain).toHaveLength(3);
+	expect(plain.map(line => visibleWidth(line))).toEqual(Array(plain.length).fill(WIDTH));
+	expect(plain[0]).toBe(" ".repeat(WIDTH));
+	expect(plain[1]?.indexOf(content)).toBe(1);
+	expect(plain[2]).toBe(" ".repeat(WIDTH));
+	expect(rendered.every(line => line.includes(background))).toBe(true);
+
+	for (const glyph of [
+		theme.boxRound.topLeft,
+		theme.boxRound.topRight,
+		theme.boxRound.bottomLeft,
+		theme.boxRound.bottomRight,
+		theme.boxRound.horizontal,
+		theme.boxRound.vertical,
+		"▌",
+	]) {
+		expect(plain.join("\n")).not.toContain(glyph);
+	}
+}
 
 describe("UserMessageComponent visual contract", () => {
 	beforeAll(async () => {
 		await initTheme(false, undefined, undefined, "dark", "light");
 	});
 
-	it("renders ordinary user text on the user message background while keeping transcript spacing", () => {
-		const expectedBg = theme.getBgAnsi("userMessageBg");
-		const lines = new UserMessageComponent("Ship the fix.").render(WIDTH);
-		const withoutZones = lines.map(line => line.replace(OSC133_MARKER, ""));
-		const raw = withoutZones.join("\n");
-		const plain = withoutZones.map(line => Bun.stripANSI(line));
+	it("renders ordinary text and image placeholders as matching borderless background blocks", () => {
+		const ordinary = new UserMessageComponent("Ship the fix.").render(WIDTH);
+		const image = new UserMessageComponent("Inspect [Image #1]").render(WIDTH);
 
-		expect(expectedBg).toMatch(/\x1b\[48;/);
-		expect(raw).toContain(expectedBg);
-		expect(withoutZones.every(line => line.startsWith(expectedBg) && line.endsWith("\x1b[49m"))).toBe(true);
-		expect(lines[0]!.startsWith(OSC133_ZONE_START)).toBe(true);
-		expect(lines.at(-1)!.endsWith(OSC133_ZONE_CLOSE)).toBe(true);
-		expect(withoutZones.map(line => visibleWidth(line))).toEqual([WIDTH, WIDTH, WIDTH]);
-		expect(plain).toEqual([
-			" ".repeat(WIDTH),
-			` Ship the fix. ${" ".repeat(WIDTH - " Ship the fix. ".length)}`,
-			" ".repeat(WIDTH),
-		]);
+		expectBorderlessBackgroundBlock(ordinary, "Ship the fix.");
+		expectBorderlessBackgroundBlock(image, "Inspect [Image #1]");
+		expect(ordinary.map(stripUserControls).map(line => visibleWidth(line))).toEqual(
+			image.map(stripUserControls).map(line => visibleWidth(line)),
+		);
 	});
 
-	it("routes normal and full-frame Markdown links using rendered coordinates", () => {
+	it("routes Markdown links from rendered coordinates in ordinary and image-placeholder messages", () => {
 		const hrefs: string[] = [];
-		const event = {
-			button: 0,
-			col: 0,
-			row: 0,
-			release: false,
-			wheel: null,
-			motion: false,
-			leftClick: true,
-		};
-		for (const text of ["[open](https://example.com)", "[Image #1]\n\n[open](https://example.com)"]) {
+		for (const { name, text } of [
+			{ name: "ordinary message", text: "[open](https://example.com)" },
+			{ name: "image-placeholder message", text: "[Image #1]\n\n[open](https://example.com)" },
+		]) {
 			const component = new UserMessageComponent(text, false, undefined, href => hrefs.push(href));
 			const lines = component.render(WIDTH);
-			const row = lines.findIndex(line => Bun.stripANSI(line).includes("open"));
-			const col = Bun.stripANSI(lines[row]!).indexOf("open");
-			expect(component.routeMouse(event, row, col)).not.toBe(false);
+			const plain = lines.map(stripUserControls);
+			const row = plain.findIndex(line => line.includes("open"));
+			if (row === -1) throw new Error(`Expected link row for ${name}`);
+			const col = plain[row]!.indexOf("open");
+			const event = {
+				button: 0,
+				col,
+				row,
+				release: false,
+				wheel: null,
+				motion: false,
+				leftClick: true,
+			};
+
+			expect(col).toBe(1);
+			expect(component.routeMouse(event, row, col)).toBe(true);
 		}
 
 		expect(hrefs).toEqual(["https://example.com", "https://example.com"]);

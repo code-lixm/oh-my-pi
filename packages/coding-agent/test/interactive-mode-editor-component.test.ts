@@ -4,28 +4,14 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
-import { SessionHistoryViewer } from "@oh-my-pi/pi-coding-agent/modes/components/session-history-viewer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TUI } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
-import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 class TestModalEditor extends CustomEditor {}
-
-function captureWrites(terminal: VirtualTerminal): string[] {
-	const writes: string[] = [];
-	const realWrite = terminal.write.bind(terminal);
-	vi.spyOn(terminal, "write").mockImplementation(data => {
-		writes.push(data);
-		realWrite(data);
-	});
-	return writes;
-}
 
 describe("InteractiveMode.setEditorComponent", () => {
 	let tempDir: TempDir;
@@ -105,47 +91,34 @@ describe("InteractiveMode.setEditorComponent", () => {
 		}
 	});
 
-	it("keeps native scrollback mouse-free for main editors while enabling history overlay tracking", async () => {
+	it("binds initial and replacement editors to tui.mouseInput", () => {
+		session.settings.set("tui.mouseInput", false);
+		expect(mode.editor.mouseTracking).toBe(false);
+
+		vi.spyOn(mode, "refreshSlashCommandState").mockResolvedValue();
+		mode.setEditorComponent((_tui, editorTheme) => new TestModalEditor(editorTheme));
+		expect(mode.editor.mouseTracking).toBe(false);
+
 		session.settings.set("tui.mouseInput", true);
-		const terminal = new VirtualTerminal(80, 8);
-		const scheduler = new StressRenderScheduler();
-		mode.ui = new TUI(terminal, undefined, { renderScheduler: scheduler });
-		mode.ui.addChild(mode.editorContainer);
-		mode.ui.setFocus(mode.editor);
-		const writes = captureWrites(terminal);
+		mode.setEditorComponent((_tui, editorTheme) => new TestModalEditor(editorTheme));
+		expect(mode.editor.mouseTracking).toBe(true);
+	});
 
-		try {
-			mode.ui.start();
-			await scheduler.drain(terminal);
+	it("keeps session history selection-first regardless of tui.mouseInput", () => {
+		for (const mouseTracking of [false, true]) {
+			session.settings.set("tui.mouseInput", mouseTracking);
+			let capturedOptions: { fullscreen?: boolean; mouseTracking?: boolean } | undefined;
+			const showOverlay = vi.spyOn(mode.ui, "showOverlay").mockImplementation((_component, options) => {
+				capturedOptions = options;
+				return { hide: vi.fn() } as never;
+			});
 
-			const initialWrites = writes.join("");
-			expect(initialWrites).not.toContain("\x1b[?1000h");
-			expect(initialWrites).not.toContain("\x1b[?1006h");
-
-			// Extension editors replace the same normal-screen composer and must retain
-			// the native scrollback contract rather than inheriting mouse input from the setting.
-			writes.length = 0;
-			vi.spyOn(mode, "refreshSlashCommandState").mockResolvedValue();
-			mode.setEditorComponent((tui, editorTheme) => new TestModalEditor(tui, editorTheme));
-			await scheduler.drain(terminal);
-
-			const replacementWrites = writes.join("");
-			expect(replacementWrites).not.toContain("\x1b[?1000h");
-			expect(replacementWrites).not.toContain("\x1b[?1006h");
-
-			// Application-managed fullscreen history is the intentional exception: it
-			// owns the alternate screen and needs pointer input for its transcript controls.
-			writes.length = 0;
-			mode.showSessionHistory();
-			await scheduler.drain(terminal);
-
-			const historyWrites = writes.join("");
-			expect(mode.ui.getFocused()).toBeInstanceOf(SessionHistoryViewer);
-			expect(historyWrites).toContain("\x1b[?1049h");
-			expect(historyWrites).toContain("\x1b[?1000h");
-			expect(historyWrites).toContain("\x1b[?1006h");
-		} finally {
-			mode.ui.stop();
+			try {
+				mode.showSessionHistory();
+				expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: false });
+			} finally {
+				showOverlay.mockRestore();
+			}
 		}
 	});
 });

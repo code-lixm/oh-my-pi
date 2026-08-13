@@ -13,7 +13,6 @@ import type { AsyncJob, AsyncJobManager } from "../../async";
 import { settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
@@ -22,12 +21,10 @@ import {
 	formatBadge,
 	formatDuration,
 	formatEmptyMessage,
-	formatStatusIcon,
 	getPreviewLines,
 	PREVIEW_LIMITS,
 	replaceTabs,
 	type ToolUIColor,
-	type ToolUIStatus,
 } from "../render-utils";
 import type {
 	AgentActivitySnapshot,
@@ -543,19 +540,6 @@ const LABEL_LINES_EXPANDED = 3;
 const PREVIEW_LINE_WIDTH = 80;
 const MODEL_BADGE_MAX_WIDTH = 48;
 
-function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
-	switch (status) {
-		case "completed":
-			return "done";
-		case "failed":
-			return "error";
-		case "cancelled":
-			return "aborted";
-		case "running":
-			return "running";
-	}
-}
-
 function statusToColor(status: JobSnapshot["status"]): ToolUIColor {
 	switch (status) {
 		case "completed":
@@ -673,8 +657,6 @@ export function jobsRenderResult(
 		);
 	}
 
-	const headerIcon: ToolUIStatus =
-		counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
 	const description =
 		jobs.length === 0
 			? tSettingsUi(agents.length === 1 ? "{count} running agent — no jobs" : "{count} running agents — no jobs", {
@@ -691,15 +673,9 @@ export function jobsRenderResult(
 						)
 				: tSettingsUi(jobs.length === 1 ? "{count} job settled" : "{count} jobs settled", { count: jobs.length });
 
-	const header = renderStatusLine(
-		{
-			icon: headerIcon,
-			spinnerFrame: counts.running > 0 || agents.length > 0 ? options.spinnerFrame : undefined,
-			title: description,
-			meta,
-		},
-		uiTheme,
-	);
+	// Static header: no spinner glyph and no shimmer — a running wait reads as
+	// a settled snapshot the moment it renders, instead of animating every frame.
+	const header = renderStatusLine({ title: description, meta }, uiTheme);
 
 	// Sort: running first (so user sees what's still pending), then failed, then completed/cancelled.
 	const statusOrder: Record<JobSnapshot["status"], number> = {
@@ -718,16 +694,8 @@ export function jobsRenderResult(
 	return {
 		render(width: number): readonly string[] {
 			const expanded = options.expanded;
-			const spinnerFrame = options.spinnerFrame ?? 0;
-			// Running-job labels shimmer while the wait block is live; the band
-			// phase is Date.now()-sampled at render time, so serving cached bytes
-			// would pin it to the ~12.5fps spinner-glyph cadence instead of the
-			// 30fps redraw. Bypass the cache while any row animates, and key on
-			// the animation state so a sealed block never hits stale shimmered
-			// bytes (spinnerFrame falls back to 0 on both sides of the seal).
-			const shimmerActive = counts.running > 0 && options.spinnerFrame !== undefined && shimmerEnabled();
-			const key = new Hasher().bool(expanded).u32(width).u32(spinnerFrame).bool(shimmerActive).digest();
-			if (!shimmerActive && cached?.key === key) return cached.lines;
+			const key = new Hasher().bool(expanded).u32(width).digest();
+			if (cached?.key === key) return cached.lines;
 
 			const itemLines = renderTreeList<JobSnapshot>(
 				{
@@ -737,11 +705,6 @@ export function jobsRenderResult(
 					itemType: "job",
 					renderItem: job => {
 						const lines: string[] = [];
-						const icon = formatStatusIcon(
-							statusToIcon(job.status),
-							uiTheme,
-							job.status === "running" ? options.spinnerFrame : undefined,
-						);
 						const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
 						// Task jobs label themselves with their agent id, which is also
 						// the job id — drop the id column instead of stuttering it twice.
@@ -770,19 +733,14 @@ export function jobsRenderResult(
 										),
 									)}`
 								: "";
-						// Running rows in a live block shimmer their label; once the block
-						// stops animating (sealed, or a settled snapshot — spinnerFrame
-						// cleared) they render static so scrollback never keeps a mid-sweep
-						// shimmer band.
-						const live = job.status === "running" && options.spinnerFrame !== undefined;
+						// Running rows keep a static accent label; the block never
+						// animates, so scrollback bytes are stable across frames.
 						const headRaw = visibleLabelLines[0] ?? "";
-						const headLabel = live
-							? shimmerEnabled()
-								? shimmerText(headRaw, uiTheme)
-								: uiTheme.fg("accent", headRaw)
-							: uiTheme.fg("toolOutput", headRaw);
+						const headLabel =
+							job.status === "running" ? uiTheme.fg("accent", headRaw) : uiTheme.fg("toolOutput", headRaw);
+						const idAndBadge = `${idPart ? `${idPart} ` : ""}${typeBadge}`;
 						lines.push(
-							`${icon}${idPart} ${typeBadge} ${headLabel}${modelText}${modelText ? uiTheme.sep.dot : " "}${durationText}`,
+							`${idAndBadge} ${headLabel}${modelText}${modelText ? uiTheme.sep.dot : " "}${durationText}`,
 						);
 						for (let i = 1; i < visibleLabelLines.length; i++) {
 							lines.push(`  ${uiTheme.fg("toolOutput", visibleLabelLines[i]!)}`);
@@ -817,14 +775,13 @@ export function jobsRenderResult(
 								maxCollapsed: COLLAPSED_LIST_LIMIT,
 								itemType: "agent",
 								renderItem: agent => {
-									const icon = formatStatusIcon("running", uiTheme, options.spinnerFrame);
 									const badge = formatBadge(tSettingsUi("agent"), "accent", uiTheme);
 									const gist = agent.activity
 										? ` ${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(agent.activity), LABEL_MAX_WIDTH, Ellipsis.Unicode))}`
 										: "";
 									const parent = agent.parentId ? uiTheme.fg("dim", ` ← ${agent.parentId}`) : "";
 									const age = uiTheme.fg("dim", formatDuration(agent.ageMs));
-									return [`${icon} ${uiTheme.fg("muted", agent.id)} ${badge}${gist} ${age}${parent}`];
+									return [`${uiTheme.fg("muted", agent.id)} ${badge}${gist} ${age}${parent}`];
 								},
 							},
 							uiTheme,

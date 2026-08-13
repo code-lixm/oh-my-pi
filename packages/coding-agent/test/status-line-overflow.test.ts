@@ -293,6 +293,23 @@ describe("status line session accent", () => {
 		expect(enabled.visible).toBe(true);
 		expect(enabled.content).toContain(ansi);
 	});
+
+	it("uses the supplied rule color for the top-border gap", () => {
+		const sessionAccentAnsi = accentAnsi();
+		let receivedRule = "";
+		const sentinelAnsi = "\x1b[38;5;213m";
+		const ruleColor = (text: string): string => {
+			receivedRule = text;
+			return `${sentinelAnsi}${text}\x1b[39m`;
+		};
+
+		const border = buildComponent(true).getTopBorder(80, ruleColor).content;
+
+		expect(receivedRule.length).toBeGreaterThan(0);
+		expect(receivedRule).toBe(theme.boxRound.horizontal.repeat(receivedRule.length));
+		expect(border).toContain(`${sentinelAnsi}${receivedRule}\x1b[39m`);
+		expect(border).not.toContain(`${sessionAccentAnsi}${theme.boxRound.horizontal}`);
+	});
 });
 
 describe("status line focused-agent dimming", () => {

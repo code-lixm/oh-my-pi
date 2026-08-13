@@ -12,21 +12,15 @@ import { getMarkdownTheme, type Theme } from "../../modes/theme/theme";
 import {
 	formatAge,
 	formatCount,
+	formatErrorMessage,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	getDomain,
 	PREVIEW_LIMITS,
-	replaceTabs,
 	truncateToWidth,
 } from "../../tools/render-utils";
-import { renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
-import {
-	CachedOutputBlock,
-	markFramedBlockComponent,
-	outputBlockContentWidth,
-	resolveBareOutputBlockBorderStyle,
-} from "../../tui/output-block";
+import { Ellipsis, renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
 import { getSearchProviderLabel } from "./provider";
 import type { SearchResponse } from "./types";
 
@@ -65,31 +59,13 @@ export interface SearchRenderDetails {
 	error?: string;
 }
 
-/** Render a web search failure as a framed error panel, matching the success layout. */
+/** Render a web search failure as bare status text, matching the success layout. */
 function renderSearchErrorPanel(message: string, providerLabel: string | undefined, theme: Theme): Component {
 	const header = renderStatusLine(
 		{ icon: "error", title: tSettingsUi("Web Search"), description: providerLabel },
 		theme,
 	);
-	const body = theme.fg("error", `Error: ${replaceTabs(message)}`);
-	const outputBlock = new CachedOutputBlock();
-	return markFramedBlockComponent({
-		render(width: number): readonly string[] {
-			return outputBlock.render(
-				{
-					header,
-					state: "error",
-					sections: [{ lines: [body] }],
-					width,
-					borderStyle: resolveBareOutputBlockBorderStyle(),
-				},
-				theme,
-			);
-		},
-		invalidate() {
-			outputBlock.invalidate();
-		},
-	});
+	return new Text(`${header}\n${formatErrorMessage(message, theme)}`, 0, 0);
 }
 
 /** Render web search result with tree-based layout */
@@ -136,53 +112,38 @@ export function renderSearchResult(
 			? truncateToWidth(searchQueries[0], 80)
 			: undefined;
 	const success = sourceCount > 0;
+	// Bare read/grep/glob-style header: the query takes the description slot
+	// (like grep's pattern) and provider + count ride in meta — no separate
+	// Query:/Metadata: sections.
 	const header = renderStatusLine(
 		success
 			? {
 					iconOverride: theme.styledSymbol("tool.webSearch", "accent"),
 					title: tSettingsUi("Web Search"),
-					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					description: queryPreview,
+					meta: [formatCount("source", sourceCount), providerLabel],
 				}
 			: {
 					icon: "warning",
 					title: tSettingsUi("Web Search"),
-					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					description: queryPreview,
+					meta: [formatCount("source", sourceCount), providerLabel],
 				},
 		theme,
 	);
 
-	const authShort =
-		response.authMode === "oauth" ? "OAuth" : response.authMode === "api_key" ? "API" : response.authMode;
-	let providerInfo = response.model ? `${response.model} @ ${providerLabel}` : providerLabel;
-	if (authShort) providerInfo += ` (${authShort})`;
-	const metaLines: string[] = [`${theme.fg("muted", "Provider:")} ${theme.fg("text", providerInfo)}`];
-	if (response.usage) {
-		const usageParts: string[] = [];
-		if (response.usage.inputTokens !== undefined) usageParts.push(`in ${response.usage.inputTokens}`);
-		if (response.usage.outputTokens !== undefined) usageParts.push(`out ${response.usage.outputTokens}`);
-		if (response.usage.totalTokens !== undefined) usageParts.push(`total ${response.usage.totalTokens}`);
-		if (response.usage.searchRequests !== undefined) usageParts.push(`search ${response.usage.searchRequests}`);
-		if (usageParts.length > 0)
-			metaLines.push(`${theme.fg("muted", "Usage:")} ${theme.fg("text", usageParts.join(theme.sep.dot))}`);
-	}
-
 	const answerMarkdown = contentText ? new Markdown(contentText, 0, 0, getMarkdownTheme()) : undefined;
-	const outputBlock = new CachedOutputBlock();
 
-	return markFramedBlockComponent({
+	return {
 		render(width: number): readonly string[] {
 			// Read mutable state at render time
 			const { expanded } = options;
-			const borderStyle = resolveBareOutputBlockBorderStyle();
 
 			// Answer lines: full markdown when expanded, capped markdown preview when collapsed.
-			const answerWidth = outputBlockContentWidth(width, undefined, borderStyle);
-			const renderedAnswer = answerMarkdown ? answerMarkdown.render(answerWidth) : [];
+			const renderedAnswer = answerMarkdown ? answerMarkdown.render(width) : [];
 			let answerLines: readonly string[];
 			if (renderedAnswer.length === 0) {
-				answerLines = [theme.fg("muted", "No answer text returned")];
+				answerLines = [];
 			} else if (args?.maxAnswerLines !== undefined && !expanded) {
 				// CLI compact mode (`omp q`) caps the answer; the TUI passes no cap and shows it in full.
 				// `renderedAnswer` is the Markdown component's shared cache — slice copies before appending.
@@ -219,7 +180,6 @@ export function renderSearchResult(
 						const metaSep = theme.fg("dim", theme.sep.dot);
 						const metaSuffix = metaParts.length > 0 ? ` ${metaParts.join(metaSep)}` : "";
 						// One line per source: the title links to its URL, followed by domain · age.
-						// Reserve room for the box borders, the tree branch, and the meta suffix.
 						const lineBudget = Math.max(24, width - 6);
 						const titleBudget = Math.max(12, lineBudget - Bun.stringWidth(metaSuffix));
 						const title = theme.fg("accent", truncateToWidth(titleText, titleBudget));
@@ -230,38 +190,18 @@ export function renderSearchResult(
 				theme,
 			);
 
-			return outputBlock.render(
-				{
-					header,
-					state: sourceCount > 0 ? "success" : "warning",
-					sections: [
-						...(queryPreview
-							? [
-									{
-										lines: [`${theme.fg("muted", "Query:")} ${theme.fg("text", queryPreview)}`],
-									},
-								]
-							: []),
-						{
-							label: theme.fg("toolTitle", "Answer"),
-							lines: answerLines,
-						},
-						{
-							label: theme.fg("toolTitle", "Sources"),
-							lines: sourceTree.length > 0 ? sourceTree : [theme.fg("muted", "No sources returned")],
-						},
-						{ label: theme.fg("toolTitle", "Metadata"), lines: metaLines },
-					],
-					width,
-					borderStyle,
-				},
-				theme,
-			);
+			// Bare read/grep/glob-style surface: header, then the answer text
+			// (when present), then the source tree — no section labels.
+			const lines = [header, ...answerLines];
+			if (sourceTree.length > 0) {
+				lines.push(...sourceTree);
+			} else if (!success) {
+				lines.push(theme.fg("muted", tSettingsUi("No sources returned")));
+			}
+			return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode));
 		},
-		invalidate() {
-			outputBlock.invalidate();
-		},
-	});
+		invalidate() {},
+	};
 }
 
 /** Render web search call (query preview) */

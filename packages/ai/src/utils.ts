@@ -350,12 +350,22 @@ export function sanitizeOpenAIResponsesAssistantHistoryItemsForReplay(
 
 /**
  * Drop hidden-only fallback assistant replay after a native Responses snapshot is rejected.
+ *
+ * `preserveReasoning` keeps synthesized reasoning items for targets (DeepSeek
+ * family) whose thinking-mode continuation rejects a replayed assistant turn
+ * lacking `reasoning_text`.
  */
-export function sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(items: ResponseInput): ResponseInput {
+export function sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(
+	items: ResponseInput,
+	preserveReasoning = false,
+): ResponseInput {
 	const sanitized: ResponseInput = [];
 
 	for (const item of items) {
-		if (item.type === "reasoning") continue;
+		if (item.type === "reasoning") {
+			if (preserveReasoning) sanitized.push(item);
+			continue;
+		}
 		if (item.type !== "message" || item.role !== "assistant") {
 			sanitized.push(item);
 			continue;

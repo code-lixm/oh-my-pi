@@ -6,13 +6,7 @@ import { bodyLines, ircGlyph, messageAge } from "../../tools/hub/messaging";
 
 import type { CoordinationDetails, HubRenderArgs } from "../../tools/hub/types";
 import { replaceTabs } from "../../tools/render-utils";
-import {
-	CachedOutputBlock,
-	markFramedBlockComponent,
-	type OutputBlockOptions,
-	outputBlockContentWidth,
-	renderStatusLine,
-} from "../../tui";
+import { markFramedBlockComponent, renderStatusLine } from "../../tui";
 import { type ThemeColor, theme } from "../theme/theme";
 import type { ToolExecutionHandle } from "./tool-execution";
 
@@ -58,7 +52,12 @@ function resultText(result: HubActivityResult | undefined): string {
 function isWaitingPollEntry(entry: HubToolActivityEntry): boolean {
 	if (entry.args.op !== "wait" || !Array.isArray(entry.args.ids) || entry.partial || !entry.result) return false;
 	const details = entry.result.details as Partial<CoordinationDetails> | undefined;
-	return Boolean(details?.jobs?.length && details.jobs.every(job => job.status === "running"));
+	const jobs = details?.jobs ?? [];
+	if (jobs.length > 0) return jobs.every(job => job.status === "running");
+	// Job-less waits can still carry the running-subagent roster; repeated
+	// polls of that roster must displace like job-backed waits instead of
+	// stacking "agent 运行中" rows in the transcript.
+	return (details?.agents?.length ?? 0) > 0;
 }
 
 function receiptStatus(receipts: readonly IrcDeliveryReceipt[], isError: boolean): { color: ThemeColor; text: string } {
@@ -204,13 +203,9 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	#version = 0;
 	constructor() {
 		super();
-		const block = new CachedOutputBlock();
 		this.#frame = markFramedBlockComponent({
-			render: (width: number): readonly string[] => {
-				const options = this.#buildFrame(width);
-				return options ? block.render(options, theme) : [];
-			},
-			invalidate: () => block.invalidate(),
+			render: (width: number): readonly string[] => this.#buildFrame(width) ?? [],
+			invalidate: () => {},
 		});
 		this.addChild(this.#frame);
 	}
@@ -418,8 +413,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		if (sameRoster) entry.hidden = true;
 	}
 
-	#buildFrame(width: number): OutputBlockOptions | undefined {
-		const contentWidth = outputBlockContentWidth(width);
+	#buildFrame(width: number): string[] | undefined {
 		const renderExpanded = this.#finalized && this.#expanded;
 		const rows: string[] = [];
 		let headerKind: "irc" | "job" | undefined;
@@ -427,7 +421,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		let settledContentRows = 0;
 
 		for (const entry of this.#entries) {
-			const entryRows = this.#entryLines(entry, renderExpanded).map(line => truncateToWidth(line, contentWidth));
+			const entryRows = this.#entryLines(entry, renderExpanded).map(line => truncateToWidth(line, width));
 			if (entryRows.length > 0 && headerKind === undefined) {
 				headerKind = entry.kind === "tool" && !isHubPeerCommunicationArgs(entry.args) ? "job" : "irc";
 			}
@@ -453,15 +447,25 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#settledRows = settledContentRows > 0 ? 1 + settledContentRows : 0;
 		const header =
 			headerKind === "job"
-				? renderStatusLine({ icon: "pending", title: tSettingsUi("Job"), titleColor: "muted" }, theme)
+				? renderStatusLine(
+						{
+							icon: "pending",
+							title: tSettingsUi("Job"),
+							titleColor: "muted",
+							meta: [tSettingsUi("{count} jobs", { count: rows.length })],
+						},
+						theme,
+					)
 				: renderStatusLine({ iconOverride: ircGlyph(theme), title: tSettingsUi("IRC") }, theme);
-		return {
-			header,
-			sections: [{ lines: rows }],
-			borderColor: "borderMuted" as const,
-			applyBg: false,
-			width,
-		};
+
+		// Compact read-style tree: one header row plus tree-joined entry rows.
+		// Every content row is a node; the trailing row closes with └─.
+		const lines = [header];
+		rows.forEach((line, index) => {
+			const connector = index === rows.length - 1 ? theme.tree.last : theme.tree.branch;
+			lines.push(`${theme.fg("dim", connector)} ${line.replace(/^ {2}/, "")}`.trimEnd());
+		});
+		return lines;
 	}
 
 	#entryLines(entry: HubActivityEntry, expanded: boolean): string[] {
@@ -515,18 +519,16 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	#jobWaitLines(entry: HubToolActivityEntry, expanded: boolean): string[] {
 		if (!entry.result) {
 			const targets = entry.args.ids?.join(", ") || tSettingsUi("jobs");
-			return [
-				`  ${theme.fg("accent", theme.status.running)} ${theme.fg("customMessageLabel", targets)} ${theme.fg("dim", tSettingsUi("pending"))}`,
-			];
+			return [`  ${theme.fg("customMessageLabel", targets)} ${theme.fg("dim", tSettingsUi("pending"))}`];
 		}
 		if (entry.result.isError) return [`  ${theme.fg("error", resultText(entry.result) || tSettingsUi("failed"))}`];
 		const details = (entry.result.details ?? {}) as Partial<CoordinationDetails>;
 		const lines = (details.jobs ?? []).map(job => {
 			const status = activityStatus(job.status);
-			return `  ${theme.fg(status.color, theme.status[job.status === "running" ? "running" : "enabled"])} ${theme.fg("customMessageLabel", replaceTabs(job.label || job.id))} ${theme.fg(status.color, status.text)}`;
+			return `  ${theme.fg("customMessageLabel", replaceTabs(job.label || job.id))} ${theme.fg(status.color, status.text)}`;
 		});
 		for (const agent of details.agents ?? []) {
-			const head = `  ${theme.fg("accent", theme.status.running)} ${theme.fg("customMessageLabel", replaceTabs(agent.id))} ${theme.fg("accent", tSettingsUi("running"))}`;
+			const head = `  ${theme.fg("customMessageLabel", replaceTabs(agent.id))} ${theme.fg("accent", tSettingsUi("running"))}`;
 			lines.push(...activityBodyLines(head, agent.activity ?? "", expanded, "dim"));
 		}
 		if (lines.length > 0) return lines;
@@ -543,8 +545,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		const lines = visiblePeers.flatMap(peer => {
 			const status = activityStatus(peer.status);
 			const age = messageAge(peer.lastActivity);
-			const glyph = peer.status === "running" || peer.status === "waiting" ? "running" : "enabled";
-			const head = `  ${theme.fg(status.color, theme.status[glyph])} ${theme.fg("customMessageLabel", replaceTabs(peer.displayName || peer.id))} ${theme.fg(status.color, status.text)}${age ? ` ${theme.fg("dim", age)}` : ""}`;
+			const head = `  ${theme.fg("customMessageLabel", replaceTabs(peer.displayName || peer.id))} ${theme.fg(status.color, status.text)}${age ? ` ${theme.fg("dim", age)}` : ""}`;
 			return activityBodyLines(head, peer.activity ?? "", expanded, "dim");
 		});
 		if (visiblePeers.length < peers.length) {

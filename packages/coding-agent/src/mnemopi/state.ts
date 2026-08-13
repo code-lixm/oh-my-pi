@@ -16,6 +16,7 @@ import {
 } from "../hindsight/content";
 import { extractMessages } from "../hindsight/transcript";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
+import { emitMemoryOperationEnd, emitMemoryOperationStart } from "../session/agent-session-events";
 import type { MnemopiBackendConfig, MnemopiScoping } from "./config";
 import { mnemopiEmbedClient } from "./embed-client";
 
@@ -477,11 +478,26 @@ export class MnemopiSessionState {
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		const context = await this.recallForContext(truncated);
-		this.hasRecalledForFirstTurn = true;
-		if (!context) return undefined;
-		this.lastRecallSnippet = context;
-		return context;
+		const operationId = emitMemoryOperationStart(this.session, "recall", { query: truncated }, "auto-recall");
+		try {
+			const context = await this.recallForContext(truncated);
+			this.hasRecalledForFirstTurn = true;
+			emitMemoryOperationEnd(this.session, operationId, "recall", {
+				content: [{ type: "text", text: context ? "Memory context injected." : "No relevant memories found." }],
+			});
+			if (!context) return undefined;
+			this.lastRecallSnippet = context;
+			return context;
+		} catch (error) {
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+				true,
+			);
+			throw error;
+		}
 	}
 
 	async recallForCompaction(messages: AgentMessage[]): Promise<string | undefined> {
@@ -490,7 +506,25 @@ export class MnemopiSessionState {
 		if (!lastUser) return undefined;
 		const query = composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		return await this.recallForContext(truncated);
+		const operationId = emitMemoryOperationStart(this.session, "recall", { query: truncated }, "compaction");
+		try {
+			const context = await this.recallForContext(truncated);
+			emitMemoryOperationEnd(this.session, operationId, "recall", {
+				content: [
+					{ type: "text", text: context ? "Memory context used for compaction." : "No relevant memories found." },
+				],
+			});
+			return context;
+		} catch (error) {
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"recall",
+				{ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+				true,
+			);
+			throw error;
+		}
 	}
 
 	async maybeRetainOnAgentEnd(_messages: AgentMessage[]): Promise<void> {
@@ -499,12 +533,31 @@ export class MnemopiSessionState {
 		this.#restoreRetainedTurnCursor();
 		const userTurns = flat.filter(message => message.role === "user").length;
 		if (userTurns - this.lastRetainedTurn < this.config.retainEveryNTurns) return;
-		await this.retainMessages(
-			sliceUnretainedMessages(flat, this.lastRetainedTurn),
-			`${this.sessionId}-${Date.now()}`,
-			{ retainedThroughUserTurn: userTurns },
+		const retainedMessages = sliceUnretainedMessages(flat, this.lastRetainedTurn);
+		const operationId = emitMemoryOperationStart(
+			this.session,
+			"retain",
+			{ userTurns, messageCount: retainedMessages.length },
+			"auto-retain",
 		);
-		this.lastRetainedTurn = userTurns;
+		try {
+			await this.retainMessages(retainedMessages, `${this.sessionId}-${Date.now()}`, {
+				retainedThroughUserTurn: userTurns,
+			});
+			this.lastRetainedTurn = userTurns;
+			emitMemoryOperationEnd(this.session, operationId, "retain", {
+				content: [{ type: "text", text: "Conversation retained." }],
+			});
+		} catch (error) {
+			emitMemoryOperationEnd(
+				this.session,
+				operationId,
+				"retain",
+				{ content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] },
+				true,
+			);
+			throw error;
+		}
 	}
 
 	async forceRetainCurrentSession(options: { extract?: boolean } = {}): Promise<void> {

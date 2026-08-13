@@ -431,15 +431,128 @@ const PROFANITY: readonly string[] = [
 ];
 
 const PROFANITY_RE = new RegExp(String.raw`\b(?:${PROFANITY.join("|")})\b`, "gi");
+
+// --- Chinese (CJK) signals ------------------------------------------------
+// The English lists above rely on `\b` word boundaries, which don't exist
+// for CJK text - every Han character sits between two word boundaries.
+// Chinese lists are therefore matched as plain substrings (no `\b`), and
+// only full terms are listed: single characters ("日" in 日志, "草" in
+// 草稿, "靠" in 可靠, "干" in 干嘛, "逼" in 逼真, "妈" in 妈妈) are
+// deliberately absent because they are overwhelmingly technical or neutral
+// in a coding corpus. Longer terms are listed first so alternation prefers
+// the most specific match. The same false-positive discipline as the
+// English lists applies: `垃圾` excludes the GC term 垃圾回收/垃圾收集,
+// `他妈`/`你妈` reject a following 妈 so 他妈妈/你妈妈 stay neutral,
+// `救命` rejects 稻草, and `我说了` rejects 算 so 我说了算 doesn't score.
+const PROFANITY_ZH: readonly string[] = [
+	// f-word family
+	"他妈的",
+	"去他妈的",
+	"去你妈的",
+	"操你妈",
+	"你他妈",
+	"他妈(?!妈)",
+	"你妈(?!妈)",
+	"尼玛",
+	"妈蛋",
+	"妈逼",
+	"麻痹",
+	"特么",
+	"特么的",
+	"特喵的",
+	"草泥马",
+	"卧槽",
+	"我操(?!作)",
+	"我草(?!稿)",
+	"我日(?!志)",
+	"日了狗",
+	"妈的",
+	"他娘的",
+	// intelligence insults
+	"傻逼",
+	"傻B",
+	"傻b",
+	"傻x",
+	"傻X",
+	"煞笔",
+	"沙比",
+	"撒比",
+	"傻叉",
+	"傻缺",
+	"智障",
+	"脑残",
+	"白痴",
+	"弱智",
+	"蠢货",
+	"蠢蛋",
+	"笨蛋",
+	"蠢猪",
+	"猪脑子",
+	"傻",
+	"蠢",
+	// other abuse
+	"混蛋",
+	"王八蛋",
+	"混账",
+	"混球",
+	"狗东西",
+	"狗日的",
+	"饭桶",
+	"废物",
+	"废柴",
+	"脓包",
+	"草包",
+	// s-word family
+	"屎",
+	"狗屎",
+	"屎一样",
+	"一坨屎",
+	// mild abuse (technical-collision guarded)
+	"垃圾(?!回收|收集)",
+	"垃圾东西",
+	"破玩意",
+	"破东西",
+	"破代码",
+	"烂代码",
+	"烂东西",
+];
+
+// Pinyin / chat abbreviations for Chinese profanity. ASCII, so `\b` + the
+// `i` flag work. `md` is deliberately absent: it collides with the
+// Markdown abbreviation ("md 文件") in a coding corpus.
+const PROFANITY_ZH_ABBR: readonly string[] = [
+	"sb",
+	"tmd",
+	"nmd",
+	"cnm",
+	"qnmd",
+	"wqnmlgb",
+	"wocao",
+	"woc",
+	"cao",
+	"kao",
+	"wcnm",
+	"mmp",
+	"mlgb",
+	"nmb",
+	"nmmd",
+	"mdzz",
+];
+
+const PROFANITY_ZH_RE = new RegExp(`(?:${PROFANITY_ZH.join("|")})`, "g");
+const PROFANITY_ZH_ABBR_RE = new RegExp(String.raw`\b(?:${PROFANITY_ZH_ABBR.join("|")})\b`, "gi");
 const SENTENCE_RE = /[^.!?\n]+/g;
 const LETTER_RE = /\p{L}/gu;
 const UPPER_LETTER_RE = /\p{Lu}/gu;
 const YELLING_MIN_LETTERS = 4;
 const YELLING_THRESHOLD = 0.5;
-// Runs starting with `!` or `?` followed by 2+ of `!?1`. The `1` is the
-// classic shift-key mishit ("!!!111" / "!?!??111") so we count those as
-// part of the same drama burst.
-const DRAMA_RE = /[!?][!?1]{2,}/g;
+// Runs starting with `!` or `?` followed by 2+ of `!?1` (plus full-width
+// `！`/`？`/`１` for CJK input). The `1` is the classic shift-key mishit
+// ("!!!111" / "!?!??111") so we count those as part of the same drama
+// burst. Full-width forms (`！！！` / `？？？`) are the CJK equivalent of
+// the same exasperation; a single full-width `？` is ordinary prose
+// punctuation, so 3+ are required just like the ASCII side.
+const DRAMA_RE = /[!?！？][!?1！？１]{2,}/g;
 const WORD_RE = /\S+/g;
 
 // Anguish/exasperation interjections. Each alternative is a case-insensitive
@@ -472,6 +585,48 @@ const SAD_EMOTICON_RE = /(?<=^|[\s.!?])[:;]-?\(+/g;
 // Dot runs (`..` / `...` / `....`) are deliberately NOT counted: on a real
 // corpus they are dominated by neutral trail-offs, template placeholders
 // (`{{href...}}`) and range syntax, not exasperation.
+
+// Chinese exasperation interjections (plain substring match - no `\b`).
+// `完了` is deliberately absent (处理完了 is the neutral perfective), and
+// `救命` rejects 稻草 so the idiom 救命稻草 doesn't score. The repeat-char
+// pattern below catches the CJK version of elongation (啊啊啊 / 呜呜呜).
+const ANGUISH_ZH: readonly string[] = [
+	"天啊",
+	"天哪",
+	"天呐",
+	"我的天啊",
+	"我的天哪",
+	"我的天呐",
+	"老天爷",
+	"我的妈呀",
+	"妈呀",
+	"完蛋了",
+	"凉了",
+	"救命(?!稻草)",
+	"救救我",
+	"抓狂",
+	"崩溃",
+	"裂开",
+	"破防",
+	"绷不住了",
+	"蚌埠住了",
+	"麻了",
+	"服了",
+	"无语",
+	"醉了",
+	"吐了",
+	"心累",
+	"累了",
+	"毁灭吧",
+	"我裂开",
+	"呵呵",
+];
+const ANGUISH_ZH_RE = new RegExp(`(?:${ANGUISH_ZH.join("|")})`, "g");
+// Repeated single characters = the CJK analog of elongated interjections
+// (啊啊啊 / 哎哎哎 / 呜呜呜 / 呵呵呵).
+const ANGUISH_ZH_REPEAT = /([啊唉哎呜嘤哭呵])\1{2,}/g;
+// `emo 了` - ASCII loanword, so `\b` + `i` work.
+const EMO_RE = /\bemo\b/gi;
 
 // --- Frustration signals ----------------------------------------------------
 // Each set of patterns below is tuned against ~42k real user prompts so the
@@ -516,6 +671,187 @@ const BLAME_WHY_RE = /\bwhy\s+(?:would|did)\s+(?:you|u)\b/gi;
 // `stop <verb>ing` is only frustration when it's an imperative - require it
 // to start a sentence (line start or after a sentence-terminating punctuator).
 const BLAME_STOP_RE = /(?:^|(?<=[.!?\n]))\s*stop\s+\w+ing\b/gim;
+
+// --- Chinese frustration signals ------------------------------------------
+// Same semantics as the English lists above, matched as plain substrings
+// (no `\b`). Collision guards follow the same discipline: `错` alone never
+// matches (错误/出错/报错 are technical), `不是` is only ever scored as part
+// of a full phrase (我不是说了吗 lives in repetition), and `你(没|没有)` is
+// pinned to a verb list so 你没钱 doesn't score.
+
+// Corrective negation. Unlike the English `NEGATION_LEAD_RE` these are NOT
+// line-anchored - Chinese corrections routinely open mid-message ("这个
+// 不对", "这里错了"), so anchoring would miss most real hits. `错了`
+// rejects a preceding 报/出 so 报错了 / 出错了 (neutral error reports)
+// don't score, while 写错了 / 说错了 / 做错了 (genuine corrections) do.
+const NEGATION_ZH: readonly string[] = [
+	"不对",
+	"(?<!报|出)错了",
+	"完全不对",
+	"根本不对",
+	"离谱",
+	"太离谱",
+	"不是这样",
+	"不是这个",
+	"不是我要的",
+	"不是那个意思",
+	"不是这个意思",
+	"不是我说的",
+	"根本不是",
+	"完全不是",
+	"压根不是",
+	"答非所问",
+	"文不对题",
+	"跑题了",
+	"偏题了",
+	"避重就轻",
+	"偷换概念",
+	"胡说八道",
+	"胡扯",
+	"瞎扯",
+	"瞎说",
+	"乱说",
+	"乱扯",
+	"扯淡",
+	"扯蛋",
+	"鬼扯",
+	"胡诌",
+	"没这回事",
+	"没有的事",
+	"毫无道理",
+	"莫名其妙",
+	"什么鬼",
+	"什么玩意",
+	"什么玩意儿",
+	"乱七八糟",
+	"废话连篇",
+	"等于没说",
+	"说了等于没说",
+	"车轱辘话",
+	"不可能",
+	"怎么可能",
+	"怎么会这样",
+	"凭什么",
+];
+
+// User repeating themselves. Same two branches as English: recall
+// ("我都说了" / "我是说") and still-not-fixed ("还是不行" / "又报错").
+const REPETITION_ZH_RECALL: readonly string[] = [
+	"我都说了",
+	"我说了(?!算)",
+	"我说过",
+	"我已经说了",
+	"刚说了",
+	"刚才说了",
+	"前面说了",
+	"之前说了",
+	"我不是说了吗",
+	"我不是说过吗",
+	"我是说",
+	"我的意思是",
+	"我意思是",
+	"我说的是",
+	"我指的是",
+];
+const REPETITION_ZH_STILL: readonly string[] = [
+	"还是不行",
+	"还是不对",
+	"还是错",
+	"还是没用",
+	"还是没有",
+	"还是老样子",
+	"依然不行",
+	"依旧不行",
+	"仍然不行",
+	"照样不行",
+	"又来了",
+	"又这样",
+	"又错",
+	"又出错",
+	"又失败",
+	"又报错",
+	"又没解决",
+	"又不行",
+	"老样子",
+	"一模一样",
+	"同样的问题",
+	"同一个问题",
+	"跟上次一样",
+	"跟之前一样",
+	"你还没回答",
+	"你还没解决",
+	"你根本没回答",
+	"问题还在",
+	"还没解决",
+	"再说一遍",
+	"重复一遍",
+	"第几次了",
+	"还要我说几遍",
+	"说了多少遍了",
+];
+
+// Direct second-person reproach. The `你(没|没有)` patterns are pinned to
+// accusatory verbs so neutral statements (你没钱) don't score; `你干嘛` /
+// `你会不会` are second-tier (neutral questions exist) but kept because in
+// an agent interaction they are overwhelmingly reproach.
+const BLAME_ZH: readonly string[] = [
+	"你(?:根本|压根|完全)?没(?:解决|听懂|看懂|看|试|做|回答|发现|注意到|检查|处理|修|改)",
+	"你(?:根本|压根)?没有(?:解决|理解|听懂|看|试|做|回答|处理)",
+	"你误解了",
+	"你会错意了",
+	"你根本没理解",
+	"你没理解",
+	"你漏了",
+	"你忽略了",
+	"你忘了",
+	"你忘记了",
+	"你错过了",
+	"你没注意",
+	"你没看到",
+	"你没读",
+	"你敷衍",
+	"你在敷衍",
+	"你糊弄",
+	"你在糊弄",
+	"你应付",
+	"你在应付",
+	"你敷衍我",
+	"别老是",
+	"别总是",
+	"别一直",
+	"别再",
+	"别老",
+	"别废话",
+	"少废话",
+	"闭嘴",
+	"停止废话",
+	"浪费时间",
+	"浪费我时间",
+	"白费功夫",
+	"白干了",
+	"白做了",
+	"破回答",
+	"什么破",
+	"什么烂",
+	"这都什么玩意",
+	"睁眼说瞎话",
+	"满嘴胡话",
+	// second tier
+	"你为什么",
+	"你为啥",
+	"你干嘛",
+	"你到底",
+	"你究竟",
+	"你行不行",
+	"你能不能行",
+	"你会不会",
+	"你懂不懂",
+	"你明白吗",
+];
+
+const NEGATION_ZH_RE = new RegExp(`(?:${NEGATION_ZH.join("|")})`, "g");
+const REPETITION_ZH_RE = new RegExp(`(?:${REPETITION_ZH_RECALL.join("|")}|${REPETITION_ZH_STILL.join("|")})`, "g");
+const BLAME_ZH_RE = new RegExp(`(?:${BLAME_ZH.join("|")})`, "g");
 
 // Stripped from the analyzed body before scoring so that structured
 // content (code, XML/HTML, URLs, file mentions, quoted blocks) doesn't
@@ -663,18 +999,33 @@ export function computeUserMessageMetrics(text: string): UserMessageMetrics {
 		countMatches(prose, DRAMA_RE) +
 		countMatches(prose, ANGUISH_RE) +
 		countMatches(prose, DUDE_RE) +
-		countMatches(prose, SAD_EMOTICON_RE);
+		countMatches(prose, SAD_EMOTICON_RE) +
+		countMatches(prose, ANGUISH_ZH_RE) +
+		countMatches(prose, ANGUISH_ZH_REPEAT) +
+		countMatches(prose, EMO_RE);
 
-	const negation = countMatches(prose, NEGATION_LEAD_RE) + countMatches(prose, NEGATION_PHRASE_RE);
-	const repetition = countMatches(prose, REPETITION_RECALL_RE) + countMatches(prose, REPETITION_STILL_RE);
+	const negation =
+		countMatches(prose, NEGATION_LEAD_RE) +
+		countMatches(prose, NEGATION_PHRASE_RE) +
+		countMatches(prose, NEGATION_ZH_RE);
+	const repetition =
+		countMatches(prose, REPETITION_RECALL_RE) +
+		countMatches(prose, REPETITION_STILL_RE) +
+		countMatches(prose, REPETITION_ZH_RE);
 	const blame =
-		countMatches(prose, BLAME_YOU_RE) + countMatches(prose, BLAME_WHY_RE) + countMatches(prose, BLAME_STOP_RE);
+		countMatches(prose, BLAME_YOU_RE) +
+		countMatches(prose, BLAME_WHY_RE) +
+		countMatches(prose, BLAME_STOP_RE) +
+		countMatches(prose, BLAME_ZH_RE);
 
 	return {
 		chars,
 		words,
 		yelling: countYellingSentences(prose),
-		profanity: countMatches(prose, PROFANITY_RE),
+		profanity:
+			countMatches(prose, PROFANITY_RE) +
+			countMatches(prose, PROFANITY_ZH_RE) +
+			countMatches(prose, PROFANITY_ZH_ABBR_RE),
 		anguish,
 		negation,
 		repetition,

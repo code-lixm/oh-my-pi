@@ -60,7 +60,7 @@ describe("behavior backfill", () => {
 		const database = new Database(getStatsDbPath());
 		database
 			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-			.run("user_messages_v8", "1778589361860");
+			.run("user_messages_v10", "1778589361860");
 		database
 			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 			.run("user_message_links_v1", "1778589361862");
@@ -85,7 +85,7 @@ describe("behavior backfill", () => {
 		closeDb();
 
 		const database = new Database(getStatsDbPath());
-		database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_messages_v8", "pending");
+		database.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("user_messages_v10", "pending");
 		database
 			.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
 			.run("user_message_links_v1", "pending");
@@ -104,7 +104,7 @@ describe("behavior backfill", () => {
 		const database = new Database(getStatsDbPath(), { readonly: true });
 		const rows = database
 			.query(
-				"SELECT key, value FROM meta WHERE key IN ('user_messages_v8', 'tool_calls_v1', 'user_message_links_v1', 'premium_requests_priority_v1') ORDER BY key",
+				"SELECT key, value FROM meta WHERE key IN ('user_messages_v10', 'tool_calls_v1', 'user_message_links_v1', 'premium_requests_priority_v1') ORDER BY key",
 			)
 			.all() as { key: string; value: string }[];
 		database.close();
@@ -113,7 +113,7 @@ describe("behavior backfill", () => {
 			{ key: "premium_requests_priority_v1", value: "complete" },
 			{ key: "tool_calls_v1", value: "complete" },
 			{ key: "user_message_links_v1", value: "complete" },
-			{ key: "user_messages_v8", value: "complete" },
+			{ key: "user_messages_v10", value: "complete" },
 		]);
 	});
 });

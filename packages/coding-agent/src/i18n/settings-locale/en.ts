@@ -2290,8 +2290,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
 	"Mouse Input": "Mouse Input",
-	"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.":
-		"Enable pointer interaction in application-managed panels such as Agent Hub, session history, and selectors. The main transcript keeps terminal-native mouse input so scrollback and text selection remain available.",
+	"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.":
+		"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.",
 	"Show Agent Communication": "Show Agent Communication",
 	"Show agent-to-agent messages and coordination activity in the transcript":
 		"Show agent-to-agent messages and coordination activity in the transcript",
@@ -3859,6 +3859,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Advisor found {count} issues": "Advisor found {count} issues",
 	"Advisor found {count} nit": "Advisor found {count} nit",
 	"Advisor found {count} nits": "Advisor found {count} nits",
+	"{count} jobs": "{count} jobs",
 	"{count} on air": "{count} on air",
 	"{count} paths": "{count} paths",
 	"{count} question": "{count} question",
