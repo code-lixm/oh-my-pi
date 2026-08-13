@@ -1,6 +1,10 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+
+- Fixed Claude Code user discovery ignoring `CLAUDE_CONFIG_DIR` for configuration, plugins, MCP servers, and imported sessions ([#8436](https://github.com/can1357/oh-my-pi/issues/8436)).
+
 
 ### Added
 - Added OpenCode Web and Electron Desktop clients backed by OMP RPC sessions, with durable session/message state, optimistic prompt identity reconciliation, SSE updates, prompt/abort/model bridges, file search, Bun-native PTYs, packaged sidecar startup, and isolated OMP application/profile identifiers.
