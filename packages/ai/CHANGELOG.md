@@ -10,6 +10,16 @@
 - Fixed MiniMax M3 thinking streams bypassing the generalized thinking-loop guard; exact MiniMax M3 family models now use the retryable loop-abort path while MiniMax M2 remains unaffected.
 
 - Fixed OpenAPI Responses replay for DeepSeek-family targets (e.g. Console Go) rejecting a thinking-mode continuation when a replayed assistant turn — minted by another model before a model switch (GPT encrypted CoT, minimax, compacted history) — captured no reasoning content at all. The gateway 400s with "The reasoning_text in the thinking mode must be passed back to the API" for BOTH an empty `reasoning_text` and a missing reasoning item on tool-call turns (verified against the live backend), so the encoder now synthesizes a non-empty reasoning item for every replayed assistant turn that requires reasoning replay, falling back to a neutral placeholder when no reasoning text was captured; the fallback replay sanitizer also keeps those items for reasoning-requiring targets instead of dropping them.
+### Fixed
+
+- Dropped unsigned thinking blocks from Antigravity Claude requests instead of sending them without a signature, preventing HTTP 400 responses when resuming sessions or switching models.
+- Classified Antigravity HTTP 429 responses from structured `google.rpc.ErrorInfo` reasons (`QUOTA_EXHAUSTED`, `RATE_LIMIT_EXCEEDED`, and `INSUFFICIENT_G1_CREDITS_BALANCE`), using retry delays of five minutes or longer to distinguish rotatable quota windows from transient throttling instead of relying only on message regexes.
+
+### Removed
+
+- Removed the Antigravity identity-prompt injection (`ANTIGRAVITY_SYSTEM_INSTRUCTION` and `shouldInjectAntigravitySystemInstruction`): Cloud Code Assist accepts arbitrary system instructions on gemini-3.x and Claude routes (verified live), and the injected stub never matched the real client's system prompt anyway. User system prompts are now sent unmodified (still tagged `role: "user"`).
+
+
 ## [17.3.0] - 2026-08-13
 
 ### Breaking Changes
