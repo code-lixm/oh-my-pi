@@ -100,6 +100,8 @@ export interface RpcClientOptions {
 	sessionDir?: string;
 	/** Additional CLI arguments */
 	args?: string[];
+	/** Grace period before escalating process termination (default: process utility default, 1000ms) */
+	terminationGraceMs?: number;
 	/** Custom tools owned by the embedding host and exposed over the RPC transport */
 	customTools?: RpcClientCustomTool[];
 	/** Physical transport override; defaults to a child coding-agent process. */

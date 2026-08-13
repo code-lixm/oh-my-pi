@@ -435,7 +435,7 @@ describe("Agent hub row ordering", () => {
 		try {
 			getSession.mockClear();
 			const rows = renderedAgentRows(hub, labels);
-			expect(rows).toHaveLength(5);
+			expect(rows).toHaveLength(6);
 			for (const row of rows) expect(row.raw).not.toContain("\n");
 			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
 			const text = Bun.stripANSI(hub.render(120).join("\n"));
@@ -1013,7 +1013,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("renders aggregate usage without surfacing inspector-only history", () => {
+	it("keeps usage and history out of compact chrome while retaining them in details", () => {
 		setSettingsUiLocale("en");
 		geometry = stubStdoutGeometry(140);
 		const createdAt = Date.parse("2026-08-09T20:15:00Z");
@@ -1068,13 +1068,11 @@ describe("Agent hub row ordering", () => {
 		try {
 			const rendered = Bun.stripANSI(hub.render(140).join("\n"));
 			const topChrome = renderedTopChrome(hub, 140);
-			expect(topChrome).toContain("$0.213");
-			expect(topChrome).toContain("2m14s agent time");
-			expect(topChrome).toContain("12 req");
-			expect(topChrome).toContain("27 tools");
-			expect(topChrome).toContain("18K tok");
-			expect(topChrome).toContain("1/1 timed");
-			expect(topChrome).toContain("1/1 measured");
+			expect(topChrome).not.toContain("$0.213");
+			expect(topChrome).not.toContain("2m14s agent time");
+			expect(topChrome).not.toContain("12 req");
+			expect(topChrome).not.toContain("27 tools");
+			expect(topChrome).not.toContain("18K tok");
 
 			const rows = renderedAgentRows(hub, ["Security Reviewer"], 140);
 			expect(rows).toHaveLength(1);
@@ -1091,6 +1089,24 @@ describe("Agent hub row ordering", () => {
 				"Branch omp/task/Reviewer",
 			]) {
 				expect(rendered).not.toContain(inspectorOnly);
+			}
+
+			hub.handleInput("\t");
+			const details = Bun.stripANSI(hub.render(140).join("\n"));
+			for (const detail of [
+				"$0.213",
+				"2m14s",
+				"12 req",
+				"27 tools",
+				"18K tok",
+				"Review the session lifecycle and produce actionable findings",
+				"read · src/session/agent-session.ts",
+				"31K/128K 24%",
+				"Registered ",
+				"Output /tmp/Reviewer.md",
+				"Patch /tmp/Reviewer.patch",
+			]) {
+				expect(details).toContain(detail);
 			}
 		} finally {
 			hub.dispose();

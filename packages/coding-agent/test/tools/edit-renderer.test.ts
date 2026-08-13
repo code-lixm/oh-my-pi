@@ -24,11 +24,16 @@ beforeAll(async () => {
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
 });
 
-async function getUiTheme() {
-	await themeModule.initTheme(false, undefined, undefined, "dark", "light");
-	const theme = await themeModule.getThemeByName("dark");
-	expect(theme).toBeDefined();
-	return theme!;
+let uiThemePromise: Promise<themeModule.Theme> | undefined;
+
+function getUiTheme(): Promise<themeModule.Theme> {
+	uiThemePromise ??= (async () => {
+		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		const theme = await themeModule.getThemeByName("dark");
+		expect(theme).toBeDefined();
+		return theme!;
+	})();
+	return uiThemePromise;
 }
 
 async function withFullOutputBlockBorderStyle<T>(run: () => T | Promise<T>): Promise<T> {
@@ -488,6 +493,7 @@ describe("editToolRenderer", () => {
 		);
 
 		const rendered = Bun.stripANSI(component.render(160).join("\n"));
+		expect(rendered).toContain("Delete");
 		expect(rendered).not.toContain("No changes would be made");
 		for (const path of paths) expect(rendered).toContain(path);
 	});

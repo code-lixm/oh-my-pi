@@ -4,7 +4,7 @@
  * strip-driven configuration flows (property strips, pattern input, and the
  * model-browser pick) persisting to the per-agent settings records.
  */
-import { afterEach, describe, expect, test, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,6 +19,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+let tempCwd: string;
 const tempDirs: string[] = [];
 
 // Narrow TUI stub: the hub only reads terminal rows and requests renders.
@@ -40,7 +41,6 @@ const sonnet = buildModel({
 
 // Registry stub: the hub uses getAvailable() for browser items and resolution.
 const registryStub = { getAvailable: () => [sonnet] } as unknown as ModelRegistry;
-
 async function makeTempCwd(): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agents-hub-"));
 	tempDirs.push(dir);
@@ -64,11 +64,10 @@ async function createHub(settings: Settings): Promise<{
 	type: (text: string) => void;
 	cancelled: () => boolean;
 }> {
-	await initTheme(false);
 	let cancelled = false;
 	const hub = await AgentsHubComponent.create(
 		tuiStub,
-		await makeTempCwd(),
+		tempCwd,
 		settings,
 		{ modelRegistry: registryStub },
 		{ onCancel: () => (cancelled = true) },
@@ -83,9 +82,17 @@ async function createHub(settings: Settings): Promise<{
 	};
 }
 
-afterEach(async () => {
-	vi.restoreAllMocks();
+beforeAll(async () => {
+	await initTheme(false);
+	tempCwd = await makeTempCwd();
+});
+
+afterAll(async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe("AgentsHub layout", () => {

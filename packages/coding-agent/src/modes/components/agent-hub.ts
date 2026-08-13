@@ -24,7 +24,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { formatAge, formatNumber, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { formatAge, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
 import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
@@ -47,18 +47,11 @@ import type { ObservableSession, SessionObserverRegistry } from "../session-obse
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 import { formatAgentDuration, resolveAgentTerminalStatus, selectAgentActivity } from "./agent-activity-display";
-import {
-	type AgentMetrics,
-	type AggregateMetrics,
-	aggregateMetrics,
-	progressMetrics,
-	projectAgentTree,
-} from "./agent-hub-projection";
+import { type AgentMetrics, aggregateMetrics, progressMetrics, projectAgentTree } from "./agent-hub-projection";
 import {
 	clampHubLine,
 	contextGauge,
 	formatChildIds,
-	formatCost,
 	formatMetricDuration,
 	formatMetrics,
 	formatRoleBadge,
@@ -298,21 +291,9 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	#treeLastSiblingById = new Map<string, boolean>();
 	/** Current observer index and summary data, rebuilt on source changes rather than every paint. */
 	#observedById = new Map<string, ObservableSession>();
-	#aggregate: AggregateMetrics = {
-		tokens: 0,
-		requests: 0,
-		tools: 0,
-		cost: 0,
-		durationMs: 0,
-		durationKind: "active",
-		reportedAgents: 0,
-		activeDurationAgents: 0,
-	};
 	#childrenByParent = new Map<string, AgentRef[]>();
 	/** Transcript-derived fallback stats are sampled only on the bounded age cadence. */
 	#sessionMetrics = new WeakMap<object, { metrics: AgentMetrics | undefined }>();
-	/** Avoid a cadence-time row scan for the common persisted-only roster. */
-	#hasFallbackLiveSessions = false;
 	/** On narrow terminals Tab replaces the roster with the selected-agent inspector. */
 	#narrowDetailsOpen = false;
 	#lastRenderWasSplit = false;
@@ -383,7 +364,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		this.#unsubscribers.push(this.#registry.onChange(() => this.#scheduleDataChange(true)));
 		this.#unsubscribers.push(this.#observers.onChange(() => this.#scheduleDataChange()));
 		this.#ageTimer = setInterval(() => {
-			if (this.#hasFallbackLiveSessions) this.#refreshAggregate(true);
+			this.#refreshSelectedFallbackMetrics(true);
 			this.#requestRender();
 		}, AGE_TICK_MS);
 		this.#ageTimer.unref?.();
@@ -496,7 +477,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			getVisibleAgentIds: () => this.#rows.map(row => row.id),
 			onAgentChange: agentId => {
 				const rowIndex = this.#rows.findIndex(row => row.id === agentId);
-				if (rowIndex >= 0) this.#selectedRow = rowIndex;
+				if (rowIndex >= 0) this.#selectRow(rowIndex);
 			},
 			registry: this.#registry,
 			remote: this.#remote,
@@ -626,7 +607,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			const status = this.#agentStatusFor(taskStatus);
 			this.#statusCounts[status]++;
 		}
-		this.#refreshAggregate();
+		this.#refreshSelectedFallbackMetrics();
 	}
 
 	#collectObserved(refs: readonly AgentRef[]): Map<string, ObservableSession> {
@@ -742,9 +723,22 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		ref: AgentRef,
 		observed: ObservableSession | undefined,
 	): NonNullable<AgentRef["session"]> | undefined {
-		if (observed?.progress) return undefined;
+		if (observed?.progress || ref.history?.metrics) return undefined;
 		const session = ref.session;
 		return session && typeof session.getSessionStats === "function" ? session : undefined;
+	}
+
+	#refreshSelectedFallbackMetrics(refreshFallback = false): void {
+		const ref = this.#rows[this.#selectedRow];
+		if (!ref) return;
+		aggregateMetrics({
+			rows: [ref],
+			observedById: this.#observedById,
+			metricsFor: (row, observed) => this.#metricsFor(row, observed),
+			fallbackStatsSession: (row, observed) => this.#fallbackStatsSession(row, observed),
+			sessionMetrics: this.#sessionMetrics,
+			refreshFallback,
+		});
 	}
 
 	// ========================================================================
@@ -762,7 +756,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				const status = this.#agentStatusFor(taskStatus);
 				this.#statusCounts[status]++;
 			}
-			this.#refreshAggregate();
 		}
 		const observedById = this.#observedById;
 		const split = this.#splitRosterWidth(width);
@@ -964,37 +957,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	}
 
 	#summaryLines(width: number): string[] {
-		const metrics = this.#aggregate;
-		const usage =
-			metrics.reportedAgents === 0
-				? [
-						tSettingsUi("Usage unavailable"),
-						tSettingsUi("{measured}/{total} measured", {
-							measured: metrics.reportedAgents,
-							total: this.#rows.length,
-						}),
-					].join(theme.sep.dot)
-				: [
-						tSettingsUi("Usage"),
-						theme.fg("statusLineCost", formatCost(metrics.cost)),
-						tSettingsUi("{duration} agent time", {
-							duration: metrics.durationMs > 0 ? formatAgentDuration(metrics.durationMs) : "—",
-						}),
-						tSettingsUi("{count} req", { count: formatNumber(metrics.requests) }),
-						tSettingsUi("{count} tools", { count: formatNumber(metrics.tools) }),
-						tSettingsUi("{count} tok", { count: formatNumber(metrics.tokens) }),
-						tSettingsUi("{timed}/{measured} timed", {
-							timed: metrics.activeDurationAgents,
-							measured: metrics.reportedAgents,
-						}),
-						tSettingsUi("{measured}/{total} measured", {
-							measured: metrics.reportedAgents,
-							total: this.#rows.length,
-						}),
-					].join(theme.sep.dot);
-		const lines = wrapTextWithAnsi(theme.fg("dim", usage), Math.max(1, width));
-		if (this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH) lines.push(this.#columnHeader(width));
-		return lines;
+		return this.#viewMode === "roster" && width >= HUB_FIXED_COLUMNS_MIN_WIDTH ? [this.#columnHeader(width)] : [];
 	}
 
 	/**
@@ -1046,19 +1009,6 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			if (count > 0) parts.push(`${statusGlyph(status)} ${count} ${tSettingsUi(status)}`);
 		}
 		return parts.join(theme.sep.dot);
-	}
-
-	#refreshAggregate(refreshFallback = false): void {
-		const result = aggregateMetrics({
-			rows: this.#rows,
-			observedById: this.#observedById,
-			metricsFor: (ref, observed) => this.#metricsFor(ref, observed),
-			fallbackStatsSession: (ref, observed) => this.#fallbackStatsSession(ref, observed),
-			sessionMetrics: this.#sessionMetrics,
-			refreshFallback,
-		});
-		this.#aggregate = result.metrics;
-		this.#hasFallbackLiveSessions = result.hasFallbackLiveSessions;
 	}
 
 	#observableFor(id: string): ObservableSession | undefined {
@@ -1306,6 +1256,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			this.#detailAgentId = this.#rows[index]?.id;
 		}
 		this.#selectedRow = index;
+		this.#refreshSelectedFallbackMetrics();
 	}
 
 	handleWheel(delta: -1 | 1): void {

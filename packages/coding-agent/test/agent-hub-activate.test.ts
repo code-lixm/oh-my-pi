@@ -540,7 +540,7 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 
-	it("yields to a macrotask while streaming a large session", async () => {
+	it("yields to a macrotask at the configured streaming threshold", async () => {
 		vi.useFakeTimers();
 		using tempDir = TempDir.createSync("@omp-agent-hub-responsive-");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
@@ -551,7 +551,8 @@ describe("Agent hub Enter activation", () => {
 			timestamp: "2026-07-30T01:13:30.000Z",
 			message: { role: "user", content: [{ type: "text", text: "small" }] },
 		});
-		await Bun.write(sessionFile, `${entry}\n`.repeat(8_193));
+		await Bun.write(sessionFile, `${entry}\n`.repeat(3));
+		const thresholdVisited = Promise.withResolvers<void>();
 		let complete = false;
 		let yieldedBeforeComplete = false;
 		let visited = 0;
@@ -559,20 +560,21 @@ describe("Agent hub Enter activation", () => {
 			sessionFile,
 			() => {
 				visited++;
-				if (visited !== 8_192) return;
+				if (visited !== 2) return;
 				setTimeout(() => {
 					if (!complete) yieldedBeforeComplete = true;
 				}, 0);
+				thresholdVisited.resolve();
 			},
-			{ yieldEveryBytes: 0, yieldEveryEntries: 8_192 },
+			{ yieldEveryBytes: 0, yieldEveryEntries: 2 },
 		).finally(() => {
 			complete = true;
 		});
 		try {
-			for (let i = 0; i < 20_000 && visited < 8_192 && !complete; i++) await Promise.resolve();
-			expect(visited).toBeGreaterThanOrEqual(8_192);
+			await thresholdVisited.promise;
 			vi.runOnlyPendingTimers();
 			await visit;
+			expect(visited).toBe(3);
 			expect(yieldedBeforeComplete).toBe(true);
 		} finally {
 			vi.useRealTimers();
@@ -1058,13 +1060,11 @@ describe("Agent hub data refresh coalescing", () => {
 		}
 	});
 
-	it("refreshes direct-session fallback stats on the age cadence, not paints or heartbeats", async () => {
+	it("refreshes selected direct-session fallback stats on the age cadence, not paints or heartbeats", async () => {
 		vi.useFakeTimers();
 		const agents = new AgentRegistry();
-		const observers = new SessionObserverRegistry();
-		const requestRender = vi.fn();
-		const inputTokens = 100;
-		const assistantMessages = 1;
+		let inputTokens = 100;
+		let assistantMessages = 1;
 		const getSessionStats = vi.fn(() => ({
 			sessionFile: undefined,
 			sessionId: "sdk-agent",
@@ -1094,10 +1094,10 @@ describe("Agent hub data refresh coalescing", () => {
 		});
 		const hub = new AgentHubOverlayComponent({
 			settings: Settings.isolated(),
-			observers,
+			observers: new SessionObserverRegistry(),
 			hubKeys: [],
 			onDone: () => {},
-			requestRender,
+			requestRender: () => {},
 			registry: agents,
 			irc: new IrcBus(agents),
 			focusAgent: async () => {},
@@ -1105,18 +1105,33 @@ describe("Agent hub data refresh coalescing", () => {
 
 		try {
 			await hub.persistedSubagentsReady;
-			// After removing the roster aggregate row, the inspector no longer triggers
-			// After removing the roster aggregate row, the inspector no longer triggers
-			// After removing the roster aggregate row, the inspector no longer triggers
-			// fallback stats refreshes; per-render queries were dropped with the row.
-			expect(getSessionStats).toHaveBeenCalledTimes(0);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			for (let i = 0; i < 4; i++) hub.render(120);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+
+			hub.handleInput("\t");
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("150 tok");
+			inputTokens = 400;
+			assistantMessages = 2;
+			agents.setActivity("SdkAgent", "heartbeat");
+			vi.advanceTimersByTime(100);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("150 tok");
+
+			vi.advanceTimersByTime(4_899);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
+			vi.advanceTimersByTime(1);
+			expect(getSessionStats).toHaveBeenCalledTimes(2);
+			const refreshed = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(refreshed).toContain("450 tok");
+			expect(refreshed).toContain("2 req");
 		} finally {
 			hub.dispose();
 			vi.useRealTimers();
 		}
 	});
 
-	it("counts shared fallback session usage once across parent and descendant rows", () => {
+	it("reuses cached fallback stats for parent and descendant rows sharing one session", () => {
 		const agents = new AgentRegistry();
 		const getSessionStats = vi.fn(() => ({
 			tokens: { input: 100, output: 40, cacheRead: 10, cacheWrite: 10, total: 160 },
@@ -1146,9 +1161,11 @@ describe("Agent hub data refresh coalescing", () => {
 			focusAgent: async () => {},
 		});
 		try {
-			// Detail panel surfaces usage; the roster row no longer aggregates it.
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
 			hub.render(120);
-			expect(getSessionStats).toHaveBeenCalledTimes(0);
+			hub.handleInput("j");
+			hub.render(120);
+			expect(getSessionStats).toHaveBeenCalledTimes(1);
 		} finally {
 			hub.dispose();
 		}

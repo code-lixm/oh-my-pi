@@ -91,8 +91,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		const messageEndEvents = events.filter(e => e.type === "message_end");
 		expect(messageEndEvents.length).toBeGreaterThanOrEqual(2); // user + assistant
 
-		// Wait for file writes
-		await Bun.sleep(200);
+		// SessionManager appends each JSONL entry synchronously before the RPC response completes.
 
 		// Verify session file
 		const sessionsPath = path.join(sessionDir, "sessions");
@@ -131,8 +130,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		expect(result.summary).toBeDefined();
 		expect(result.tokensBefore).toBeGreaterThan(0);
 
-		// Wait for file writes
-		await Bun.sleep(200);
+		// Compaction persistence is synchronous with the completed RPC command.
 
 		// Verify compaction in session file
 		const sessionsPath = path.join(sessionDir, "sessions");
@@ -166,8 +164,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		const uniqueValue = `test-${Snowflake.next()}`;
 		await client.bash(`echo ${uniqueValue}`);
 
-		// Wait for file writes
-		await Bun.sleep(200);
+		// Bash context persistence is synchronous with the completed RPC command.
 
 		// Verify bash message in session
 		const sessionsPath = path.join(sessionDir, "sessions");

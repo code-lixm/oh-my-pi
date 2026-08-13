@@ -22,6 +22,8 @@ export interface ChildProcessRpcTransportOptions {
 	sessionDir?: string;
 	/** Additional CLI arguments. */
 	args?: string[];
+	/** Grace period before escalating process termination. */
+	terminationGraceMs?: number;
 }
 
 /** RPC transport backed by a local coding-agent child process. */
@@ -111,7 +113,7 @@ export class ChildProcessRpcTransport implements RpcTransport {
 
 		this.#stopRequested = true;
 		try {
-			child.kill();
+			child.kill(undefined, this.options.terminationGraceMs);
 		} catch {
 			// The process may already have exited.
 		}

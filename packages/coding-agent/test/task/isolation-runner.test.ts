@@ -100,20 +100,17 @@ async function seedFooRepo(
 	const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-merge-"));
 	tempRoots.push(repoRoot);
 
-	await git(repoRoot, "init");
+	await git(repoRoot, "init", "-q", "-b", "main");
 	await git(repoRoot, "config", "user.email", "repro@example.com");
 	await git(repoRoot, "config", "user.name", "Repro");
-	await Bun.write(path.join(repoRoot, "foo.txt"), initialContent);
+	await Bun.write(path.join(repoRoot, "foo.txt"), finalContent);
 	await git(repoRoot, "add", "foo.txt");
-	await git(repoRoot, "commit", "-m", "base");
+	await git(repoRoot, "commit", "-q", "-m", "fixture state");
 
+	// The merge contract needs a valid old→new patch, not a second commit and
+	// diff-tree subprocess for every scenario.
 	const patchPath = path.join(repoRoot, "task.patch");
 	await Bun.write(patchPath, patchText);
-
-	if (finalContent !== initialContent) {
-		await Bun.write(path.join(repoRoot, "foo.txt"), finalContent);
-		await git(repoRoot, "commit", "-am", "set final content");
-	}
 	return { repoRoot, patchPath };
 }
 

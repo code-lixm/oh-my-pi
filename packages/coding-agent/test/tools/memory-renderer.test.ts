@@ -8,8 +8,10 @@ import {
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
 
+const themePromise = getThemeByName("dark");
+
 async function theme() {
-	const t = await getThemeByName("dark");
+	const t = await themePromise;
 	expect(t).toBeDefined();
 	return t!;
 }

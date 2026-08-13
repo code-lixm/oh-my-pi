@@ -14,7 +14,7 @@ import { once } from "node:events";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, isRecord, readLines, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, isRecord, Snowflake } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { KeybindingsManager } from "../../config/keybindings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -48,7 +48,7 @@ import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
-import { claimRpcInput } from "./rpc-input";
+import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
 import {
 	buildRpcKeybindingsCatalog,
 	buildRpcKeybindingsSnapshot,
@@ -892,20 +892,11 @@ export async function runRpcMode(
 	// Start consuming stdin before startup hooks run. Extension UI responses are
 	// control frames, so they overtake an ordinary command waiting for startup.
 	const inputClosed = (async () => {
-		const decoder = new TextDecoder();
-		for await (const line of readLines(input ?? Bun.stdin.stream())) {
-			const text = decoder.decode(line).trim();
-			if (!text) continue;
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(text);
-			} catch (e: unknown) {
-				const message = e instanceof Error ? e.message : String(e);
-				output(error(undefined, "parse", `Failed to parse command: ${message}`));
-				continue;
-			}
-			inputDispatcher.dispatch(parsed);
-		}
+		await readRpcInputFrames(
+			input ?? Bun.stdin.stream(),
+			parsed => inputDispatcher.dispatch(parsed),
+			message => output(error(undefined, "parse", message)),
+		);
 		pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
 		hostToolBridge.close("RPC client disconnected before host tool execution completed");
 		hostUriBridge.clear("RPC client disconnected before host URI request completed");
@@ -1114,34 +1105,34 @@ export async function runRpcMode(
 	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
 	setToolUIContext?.(rpcUiContext, true);
 
-let extensionInitialization: Promise<void> | undefined;
-const initializeExtensionsOnce = (): Promise<void> => {
-	extensionInitialization ??= (async () => {
-		await initializeExtensions(session, {
-			mode: "rpc",
-			reportSendError: (action, err) => {
-				output(error(undefined, action, err.message));
-			},
-			reportRuntimeError: err => {
-				output({
-					type: "extension_error",
-					extensionPath: err.extensionPath,
-					event: err.event,
-					error: err.error,
-				});
-			},
-			onShutdown: () => {
-				shutdownState.requested = true;
-			},
-			trackAgentInvokingMessage: task => {
-				extensionUserMessageTracker.trackAgentMessageTask(task);
-			},
-			uiContext: rpcUiContext,
-		});
-		await emitAvailableCommandsUpdate();
-	})();
-	return extensionInitialization;
-};
+	let extensionInitialization: Promise<void> | undefined;
+	const initializeExtensionsOnce = (): Promise<void> => {
+		extensionInitialization ??= (async () => {
+			await initializeExtensions(session, {
+				mode: "rpc",
+				reportSendError: (action, err) => {
+					output(error(undefined, action, err.message));
+				},
+				reportRuntimeError: err => {
+					output({
+						type: "extension_error",
+						extensionPath: err.extensionPath,
+						event: err.event,
+						error: err.error,
+					});
+				},
+				onShutdown: () => {
+					shutdownState.requested = true;
+				},
+				trackAgentInvokingMessage: task => {
+					extensionUserMessageTracker.trackAgentMessageTask(task);
+				},
+				uiContext: rpcUiContext,
+			});
+			await emitAvailableCommandsUpdate();
+		})();
+		return extensionInitialization;
+	};
 
 	// Output all agent events as JSON, coalescing only cumulative streaming updates.
 	session.subscribe(event => {
