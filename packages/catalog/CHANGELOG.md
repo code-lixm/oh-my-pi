@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [17.3.1] - 2026-08-13
+
 ### Added
 
 - Added fail-closed trusted Codex prompt profiles from official model discovery, preserving exact model provenance, typed model messages, composition hashes, source/ETag metadata, and canonical vendor digests.
