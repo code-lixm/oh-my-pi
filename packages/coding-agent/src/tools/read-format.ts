@@ -31,7 +31,7 @@ export interface HashlineHeaderContext {
 }
 
 function readHashlineAnchor(displayPath: string): string {
-	return path.isAbsolute(displayPath) ? shortenPath(displayPath) : path.basename(displayPath);
+	return path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
 }
 
 export function recordFullHashlineContext(
