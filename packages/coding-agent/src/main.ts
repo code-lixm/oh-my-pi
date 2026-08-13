@@ -1857,6 +1857,13 @@ export async function runRootCommand(
 			throw error;
 		}
 
+		try {
+			validateToolNames(initialArgs.tools, session.getAllToolNames());
+		} catch (error) {
+			await session.dispose();
+			throw error;
+		}
+
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
 		// reviver, so `ensureLive` (IRC sends, hub focus) would refuse it. Install a
