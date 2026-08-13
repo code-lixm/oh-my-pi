@@ -66,12 +66,17 @@ function makeCtx(): {
 	const transcriptSpy = vi.fn(() => makeEmptyContext());
 	const llmContextSpy = vi.fn(() => makeEmptyContext());
 	const renderSessionContextSpy = vi.fn(async () => {});
+	const chatContainer = new TranscriptContainer();
 
 	const ctx = {
-		chatContainer: { clear: vi.fn(), addChild: vi.fn() },
+		chatContainer,
 		pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
+		transcriptMessageComponents: new WeakMap<AgentMessage, Component>(),
+		pendingTools: new Map(),
+		hideToolActivity: false,
+		initialChatRendered: true,
 		session: { buildTranscriptSessionContext: transcriptSpy },
 		viewSession: {
 			buildTranscriptSessionContext: transcriptSpy,
@@ -89,8 +94,8 @@ function makeCtx(): {
 		},
 		renderSessionContextIncrementally: renderSessionContextSpy,
 		showStatus: vi.fn(),
-		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
-		resetTranscript: () => ctx.chatContainer.clear(),
+ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
+resetTranscript: () => ctx.chatContainer.disposeChildren(),
 	} as unknown as InteractiveModeContext;
 
 	return { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy };
@@ -154,16 +159,19 @@ function makeRenderCtx(
 		pendingMessagesContainer: new Container(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
-		transcriptMessageComponents: new WeakMap(),
+		transcriptMessageComponents: new WeakMap<AgentMessage, Component>(),
 		pendingTools: new Map(),
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
-		resetTranscript: () => chatContainer.clear(),
+ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
+resetTranscript: () => {
+	ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+	ctx.chatContainer.disposeChildren();
+},
 		present: (content: Component | readonly Component[]) => {
 			const components = Array.isArray(content) ? content : [content];
-			for (const component of components) chatContainer.addChild(component);
+			for (const component of components) ctx.chatContainer.addChild(component);
 		},
 		// Rebuild paths honor terminal.showImages since the native-image work;
 		// keep it on so the image-replay contracts below stay meaningful.
@@ -332,6 +340,37 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 			timestamp: index,
 		}));
 		expect(await countRebuildChunks(messages)).toBeGreaterThan(0);
+	});
+
+	it("keeps the complete transcript visible until an incremental replacement is ready", async () => {
+		await Settings.init({ inMemory: true });
+		const messages: AgentMessage[] = Array.from({ length: 256 }, (_, index) => ({
+			role: "user",
+			content: `replacement ${index}`,
+			timestamp: index,
+		}));
+		const { ctx, chatContainer } = makeRenderCtx(transcriptWith(messages));
+		const helpers = new UiHelpers(ctx);
+		helpers.addMessageToChat({
+			role: "user",
+			content: "VISIBLE_OLD_TRANSCRIPT",
+			timestamp: -1,
+		});
+		const requestRender = ctx.ui.requestRender as Mock<(...args: unknown[]) => void>;
+
+		const replay = helpers.renderInitialMessages({ clearTerminalHistory: true });
+
+		const duringReplay = Bun.stripANSI(chatContainer.render(100).join("\n"));
+		expect(duringReplay).toContain("VISIBLE_OLD_TRANSCRIPT");
+		expect(duringReplay).not.toContain("replacement 0");
+		expect(requestRender.mock.calls.some(([force]) => force === true)).toBeFalse();
+
+		await replay;
+
+		const afterReplay = Bun.stripANSI(chatContainer.render(100).join("\n"));
+		expect(afterReplay).not.toContain("VISIBLE_OLD_TRANSCRIPT");
+		expect(afterReplay).toContain("replacement 255");
+		expect(requestRender.mock.calls.filter(([force]) => force === true)).toEqual([[true, { clearScrollback: true }]]);
 	});
 
 	it("yields across a large parallel read-result batch", async () => {
@@ -569,7 +608,7 @@ describe("UiHelpers.renderInitialMessages — persisted hub process activity", (
 	it("hides persisted hub process cards by default while retaining after-tool assistant text", async () => {
 		const { ctx, chatContainer } = makeRenderCtx(await reopenPersistedHubProcessTranscript());
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain(AFTER_TOOL_TEXT);
@@ -579,7 +618,7 @@ describe("UiHelpers.renderInitialMessages — persisted hub process activity", (
 	it("renders persisted hub process cards when enabled", async () => {
 		const { ctx, chatContainer } = makeRenderCtx(await reopenPersistedHubProcessTranscript(), true, false, true);
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain(AFTER_TOOL_TEXT);
@@ -595,7 +634,7 @@ describe("UiHelpers.renderInitialMessages — persisted hub process activity", (
 			"Worker",
 		);
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain(AFTER_TOOL_TEXT);
@@ -820,10 +859,10 @@ function peerCommunicationTranscript(): SessionContext {
 }
 
 describe("UiHelpers.renderInitialMessages — peer communication replay", () => {
-	it("hides historical peer Hub calls, results, and IRC rows when agent communication is disabled", () => {
+	it("hides historical peer Hub calls, results, and IRC rows when agent communication is disabled", async () => {
 		const { ctx, chatContainer } = makeRenderCtx(peerCommunicationTranscript(), true, false, true, undefined, false);
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(chatContainer.children).toHaveLength(0);
@@ -832,10 +871,10 @@ describe("UiHelpers.renderInitialMessages — peer communication replay", () => 
 		}
 	});
 
-	it("rebuilds historical peer Hub calls, results, and IRC rows when agent communication is enabled", () => {
+	it("rebuilds historical peer Hub calls, results, and IRC rows when agent communication is enabled", async () => {
 		const { ctx, chatContainer } = makeRenderCtx(peerCommunicationTranscript(), true, false, false, undefined, true);
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const transcriptText = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(chatContainer.children.length).toBeGreaterThan(0);

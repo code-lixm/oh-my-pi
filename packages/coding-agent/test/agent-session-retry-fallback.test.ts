@@ -34,6 +34,8 @@ import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 
+const FALLBACK_TEST_RETRY_AFTER_MS = 60_000;
+
 function trackRetryEvents(session: AgentSession): {
 	retryStartEvents: AutoRetryStartEvent[];
 	retryEndEvents: AutoRetryEndEvent[];
@@ -59,7 +61,12 @@ function getLastAssistantMessage(session: AgentSession): AssistantMessage {
 	return lastMessage;
 }
 
-function createFallbackAgent(primaryModel: Model, requestedModels: string[]): Agent {
+function createFallbackAgent(
+	primaryModel: Model,
+	requestedModels: string[],
+	options: { retryAfterMs?: number } = {},
+): Agent {
+	const retryAfterMs = options.retryAfterMs ?? FALLBACK_TEST_RETRY_AFTER_MS;
 	const mock = createMockModel();
 	let primaryAttempts = 0;
 	return new Agent({
@@ -74,7 +81,7 @@ function createFallbackAgent(primaryModel: Model, requestedModels: string[]): Ag
 			requestedModels.push(`${model.provider}/${model.id}`);
 			if (model.provider === primaryModel.provider && model.id === primaryModel.id && primaryAttempts === 0) {
 				primaryAttempts += 1;
-				mock.push({ throw: "rate limit exceeded retry-after-ms=200" });
+				mock.push({ throw: `rate limit exceeded retry-after-ms=${retryAfterMs}` });
 			} else {
 				mock.push({ content: [`ok:${model.provider}/${model.id}`] });
 			}
@@ -4143,7 +4150,7 @@ describe("AgentSession retry fallback", () => {
 				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
 				if (requestedModel.provider === primaryModel.provider && primaryAttempts === 0) {
 					primaryAttempts += 1;
-					mock.push({ throw: "rate limit exceeded retry-after-ms=200" });
+					mock.push({ throw: `rate limit exceeded retry-after-ms=${FALLBACK_TEST_RETRY_AFTER_MS}` });
 				} else {
 					mock.push({ content: [`ok:${requestedModel.provider}/${requestedModel.id}`] });
 				}
@@ -4185,7 +4192,7 @@ describe("AgentSession retry fallback", () => {
 		}
 
 		const requestedModels: string[] = [];
-		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
 
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
@@ -4950,7 +4957,7 @@ describe("AgentSession retry fallback", () => {
 		}
 
 		const requestedModels: string[] = [];
-		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
 
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
