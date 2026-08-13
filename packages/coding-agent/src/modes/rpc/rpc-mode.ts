@@ -1114,33 +1114,34 @@ export async function runRpcMode(
 	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
 	setToolUIContext?.(rpcUiContext, true);
 
-	let extensionInitialization: Promise<void> | undefined;
-	const initializeExtensionsOnce = (): Promise<void> => {
-		extensionInitialization ??= (async () => {
-			await initializeExtensions(session, {
-				reportSendError: (action, err) => {
-					output(error(undefined, action, err.message));
-				},
-				reportRuntimeError: err => {
-					output({
-						type: "extension_error",
-						extensionPath: err.extensionPath,
-						event: err.event,
-						error: err.error,
-					});
-				},
-				onShutdown: () => {
-					shutdownState.requested = true;
-				},
-				trackAgentInvokingMessage: task => {
-					extensionUserMessageTracker.trackAgentMessageTask(task);
-				},
-				uiContext: rpcUiContext,
-			});
-			await emitAvailableCommandsUpdate();
-		})();
-		return extensionInitialization;
-	};
+let extensionInitialization: Promise<void> | undefined;
+const initializeExtensionsOnce = (): Promise<void> => {
+	extensionInitialization ??= (async () => {
+		await initializeExtensions(session, {
+			mode: "rpc",
+			reportSendError: (action, err) => {
+				output(error(undefined, action, err.message));
+			},
+			reportRuntimeError: err => {
+				output({
+					type: "extension_error",
+					extensionPath: err.extensionPath,
+					event: err.event,
+					error: err.error,
+				});
+			},
+			onShutdown: () => {
+				shutdownState.requested = true;
+			},
+			trackAgentInvokingMessage: task => {
+				extensionUserMessageTracker.trackAgentMessageTask(task);
+			},
+			uiContext: rpcUiContext,
+		});
+		await emitAvailableCommandsUpdate();
+	})();
+	return extensionInitialization;
+};
 
 	// Output all agent events as JSON, coalescing only cumulative streaming updates.
 	session.subscribe(event => {

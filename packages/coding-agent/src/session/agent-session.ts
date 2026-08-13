@@ -6921,6 +6921,7 @@ export class AgentSession {
 
 		return {
 			ui: noOpUIContext,
+			mode: "print",
 			hasUI: false,
 			workspaceRestoreLockHeld: () => false,
 			cwd: this.sessionManager.getCwd(),
