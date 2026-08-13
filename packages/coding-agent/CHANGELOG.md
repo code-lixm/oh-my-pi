@@ -273,6 +273,10 @@
 - Fixed RLM family messaging during startup and restart: early child publications wait for a messageable session, sibling delivery consults the parent registry, persisted children rehydrate as parked refs, and failed terminal notices remain retryable.
 - Fixed RLM child model validation rejecting children that resolve an omitted or `auto` thinking selector to a concrete runtime suffix, while preserving literal `:max`/`:auto` model IDs, canonical provider/model matching, and explicit effort/model mismatches.
 - Fixed explicit subagent `tools` lists being bypassed by inherited MCP tools; task subagents now expose only MCP tools explicitly listed in the agent's `tools` whitelist, while agents without a list keep inheriting the parent's connected MCP tools. Whitelist entries support `*`/`?` wildcards, so `mcp__codegraph_*` picks up every tool of one MCP server and `mcp__*` inherits all MCP tools.
+### Fixed
+
+- Fixed the status-line git branch display freezing on the previous branch after the first branch switch, caused by the HEAD watcher binding to a file inode that git unlinks on its atomic HEAD rename ([#8412](https://github.com/can1357/oh-my-pi/issues/8412)).
+
 ## [17.3.0] - 2026-08-13
 
 ### Breaking Changes
