@@ -296,6 +296,12 @@
 ### Fixed
 
 - Fixed `omp update` aborting with `chmod ENOENT` on `<binary>.new` when two update runs overlapped: the download temp path is now unique per attempt (pid, timestamp, and a process-local counter), so concurrent runs no longer delete each other's temp file, and orphaned temp files are reclaimed alongside stale backups ([#8434](https://github.com/can1357/oh-my-pi/issues/8434)).
+- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
+- Fixed the status-line git branch display freezing after switching branches.
+- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
+- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
+- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
+- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
 
 ## [17.3.0] - 2026-08-13
 
