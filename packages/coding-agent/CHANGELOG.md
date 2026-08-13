@@ -282,6 +282,9 @@
 ### Fixed
 
 - Fixed extension-registered tool names being rejected by `--tools` before extension discovery, preventing least-privilege sessions from allowlisting plugin tools ([#8421](https://github.com/can1357/oh-my-pi/issues/8421)).
+### Fixed
+
+- Fixed `omp plugin install` failing with `The object can not be cloned.` for legacy Pi extensions whose tool schemas embed or spread omptype builders through the legacy-typebox shim (e.g. `pi-subagents`). `Type.Unsafe` now lowers nested schema builders to plain wire JSON and reconstructs spread schemas from their copied self-reference before serializing ([#8420](https://github.com/can1357/oh-my-pi/issues/8420)).
 
 ## [17.3.0] - 2026-08-13
 
