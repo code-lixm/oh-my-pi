@@ -361,7 +361,7 @@ export interface AcpSessionFactoryOptions {
 	sessionDir?: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
-	parsedArgs: Pick<Args, "apiKey" | "trustedExtensions">;
+	parsedArgs: Pick<Args, "apiKey" | "trustedExtensions" | "tools">;
 	rawArgs: string[];
 	createSession: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
 }
@@ -438,7 +438,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			args.authStorage.setRuntimeApiKey(nextSession.model.provider, args.parsedArgs.apiKey);
 		}
 		const runner = nextSession.extensionRunner;
-		applyExtensionFlags(
+		const reparsedArgs = applyExtensionFlags(
 			runner
 				? {
 						getFlags: () => runner.getFlags(),
@@ -449,6 +449,15 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 				: undefined,
 			args.rawArgs,
 		);
+		const requestedTools = reparsedArgs?.tools ?? args.parsedArgs.tools;
+		if (requestedTools) {
+			try {
+				validateToolNames(requestedTools, nextSession.getAllToolNames());
+			} catch (error) {
+				await nextSession.dispose();
+				throw error;
+			}
+		}
 		return nextSession;
 	};
 }
