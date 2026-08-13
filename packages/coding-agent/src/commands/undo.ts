@@ -53,6 +53,7 @@ export default class Undo extends Command {
 		const retention = {
 			maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
 			maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+			maxTotalMiB: settings.get("workspaceCheckpoint.retention.maxTotalMiB"),
 		};
 		const scope = typeof flags.scope === "string" ? (flags.scope as WorkspaceRestoreScope) : undefined;
 		const sessionPath = typeof flags.session === "string" ? flags.session : undefined;

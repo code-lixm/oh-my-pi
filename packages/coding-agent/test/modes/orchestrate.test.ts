@@ -98,11 +98,13 @@ describe("orchestrate keyword highlighting", () => {
 
 describe("keyword notices", () => {
 	it("renders the orchestrate notice as a self-contained system notice and switches locale at call time", () => {
+		const tools = ["read", "task", "edit"];
+
 		setPromptLocale("en");
-		const english = renderOrchestrateNotice();
+		const english = renderOrchestrateNotice({ tools });
 
 		setPromptLocale("zh-CN");
-		const chinese = renderOrchestrateNotice();
+		const chinese = renderOrchestrateNotice({ tools });
 
 		expect(english.startsWith("<system-notice>")).toBe(true);
 		expect(english.endsWith("</system-notice>")).toBe(true);
@@ -125,11 +127,45 @@ describe("keyword notices", () => {
 		setPromptLocale("zh-CN");
 		const chinese = renderUltrathinkNotice();
 
-		expect(english).toContain("multi-step reasoning");
+		expect(english).toContain("Multi-step reasoning");
 		expect(english).not.toContain("多步推理");
 		expect(chinese).toContain("多步推理");
 		expect(chinese).not.toContain("multi-step reasoning");
 		expect(chinese).not.toBe(english);
+	});
+
+	it("is a self-contained system notice carrying the orchestration contract", () => {
+		const notice = renderOrchestrateNotice({
+			tools: ["read", "task", "edit", "write", "lsp", "bash", "todo"],
+		});
+		expect(notice.startsWith("<system-notice>")).toBe(true);
+		expect(notice.endsWith("</system-notice>")).toBe(true);
+		expect(notice).toContain("orchestrator");
+		// The contract must not retain the slash-command input placeholder.
+		expect(notice).not.toContain("$@");
+	});
+
+	it("omits tool-budget mentions for tools absent from the session", () => {
+		const notice = renderOrchestrateNotice({ tools: ["read"] });
+		expect(notice).not.toContain("`task` for dispatch");
+		expect(notice).not.toContain("`edit`");
+		expect(notice).not.toContain("`write`");
+		expect(notice).not.toContain("`lsp diagnostics`");
+		expect(notice).not.toContain("via `bash`");
+		expect(notice).not.toContain("`todo` for tracking");
+	});
+
+	it("does not name edit when only write is available", () => {
+		const writeOnly = renderOrchestrateNotice({ tools: ["read", "write"] });
+		expect(writeOnly).toContain("with `write`");
+		expect(writeOnly).not.toContain("`edit`/`write`");
+		expect(writeOnly).not.toContain("with `edit`");
+	});
+
+	it("does not name write when only edit is available", () => {
+		const editOnly = renderOrchestrateNotice({ tools: ["read", "edit"] });
+		expect(editOnly).toContain("with `edit`");
+		expect(editOnly).not.toContain("`edit`/`write`");
 	});
 });
 

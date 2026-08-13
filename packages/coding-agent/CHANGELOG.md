@@ -16,6 +16,7 @@
 - Added encrypted S3 bootstrap export/import for portable cross-device sync credentials, with private `.env` persistence, disabled-on-import pending adoption, explicit `pull --adopt`, and a lineage-validated first-push guard.
 - Added a built-in `codegraph` semantic exploration tool, ported from CodeGraph and adapted to OMP-managed project-path-and-branch indexes under `~/.omp/codegraph/`; it combines non-blocking background initialization with persistent progress, optional native acceleration with distribution-safe WASM fallback, cross-file resolution, mutation-scoped incremental sync, automatic TTL/orphan/per-project/global storage governance, graph-first agent guidance, and safe `omp codegraph status|list|clear|clear-all|prune` management without writing `.codegraph` into source repositories.
 - Added durable user-level workspace checkpoints before top-level user turns, with external content-addressed storage, Git state capsules, stale-lineage conflict protection, crash-safe restore transactions, session-scoped undo/redo across restarts, and shared `/checkpoint`, `/rewind`, `/undo`, `/redo`, CLI, RPC, and SDK entry points.
+- Added a configurable global physical storage soft limit for durable workspace checkpoints; automatic retention now evicts the oldest unprotected checkpoints across workspaces while preserving pinned, named, undo/redo, transaction, and active restore roots.
 - Added `bash.async.enabled` to disable explicit `async: true` Bash jobs without disabling background task agents or changing `bash.autoBackground.enabled`.
 - Added a fullscreen Jobs Hub, opened with a deliberate double-right-arrow gesture on an empty prompt, showing every retained background task and Bash job with live work/model/runtime metadata, scrollable bounded Bash output tails, agent focus, and cancellation controls.
 - Added `dark-terminal-adaptive` and `light-terminal-adaptive` themes that bind OMP semantic colors to the terminal ANSI palette, inherit terminal surfaces for derived tool-card tints, and let Ghostty-compatible themes remain the base color authority.
@@ -96,6 +97,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed the per-agent advisor rollout dropping the global `advisor.subagents` fallback and conflating explicit `off`/frontmatter `false` with an absent choice; existing blanket settings now remain effective, while `task.agentAdvisor` and agent frontmatter override them per agent.
 - Fixed ordinary and image-bearing user prompts rendering with different chrome; all non-synthetic user messages now share the same borderless background surface while preserving Markdown padding, image links, and mouse routing.
 - Fixed relative CodeGraph `path` scopes being resolved from the session cwd even when an explicit `projectPath` selected another repository.
 - Fixed the Agent Hub parked detail fallback bypassing its localized lowercase lifecycle key, which exposed English `Parked` in Chinese rows.
@@ -228,6 +230,47 @@
 - Fixed RLM family messaging during startup and restart: early child publications wait for a messageable session, sibling delivery consults the parent registry, persisted children rehydrate as parked refs, and failed terminal notices remain retryable.
 - Fixed RLM child model validation rejecting children that resolve an omitted or `auto` thinking selector to a concrete runtime suffix, while preserving literal `:max`/`:auto` model IDs, canonical provider/model matching, and explicit effort/model mismatches.
 - Fixed explicit subagent `tools` lists being bypassed by inherited MCP tools; task subagents now expose only MCP tools explicitly listed in the agent's `tools` whitelist, while agents without a list keep inheriting the parent's connected MCP tools. Whitelist entries support `*`/`?` wildcards, so `mcp__codegraph_*` picks up every tool of one MCP server and `mcp__*` inherits all MCP tools.
+## [17.3.0] - 2026-08-13
+
+### Breaking Changes
+
+- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
+
+### Added
+
+- Added Astral `ty` as a built-in fallback Python LSP server (`ty server`), ordered behind `pyright`, `basedpyright`, and `pylsp`.
+- Added first-party Nix support, including reproducible source builds for Linux and macOS, a pinned development shell, NixOS and Home Manager modules, and offline Bun dependency support.
+- Added support for per-agent advisors configured via the `advisor` frontmatter field or the `task.agentAdvisor` settings, allowing different agents to be advised by different models.
+- Redesigned the `/agents` interface as a fullscreen hub featuring a scope sidebar, type-to-filter search, a pinned detail pane, mouse support, and interactive property chips for configuring agent settings.
+- Prepared for the upcoming npm package rename by updating `omp update` and startup version checks to follow the `omp.rename` pointer in the published manifest.
+
+### Changed
+
+- Updated `/usage`, `omp usage`, and the status line to display authoritative OpenCode Go quota usage directly from the official endpoint, replacing estimated costs with actual usage across three time windows (5h, 7d, and monthly).
+- Documented the source-available local protocol relay and clarified that production collaboration relay binaries are not currently published.
+- Enabled bounded Anthropic prompt-cache refreshes for the main agent loop while isolating advisor and side-channel requests from the shared refresh timer.
+
+### Fixed
+
+- Fixed multiple Language Server Protocol (LSP) issues, including concurrent sessions sharing backend overlays, stale document overlays after workspace edits, incorrect transactional edit advertisements, unhandled snippet placeholders in rust-analyzer, and failing to restore overwritten targets during failed file renames.
+- Fixed LSP `diagnostics` incorrectly reporting success when all language servers failed.
+- Fixed Hindsight memory scoping splitting repositories across multiple scopes on case-sensitive filesystems by lowercasing the project label.
+- Fixed the CLI crashing at startup with a raw `AuthBrokerError` when the configured auth broker is unreachable, replacing it with an actionable error message.
+- Fixed various resource and process leaks, including idle launch brokers staying alive indefinitely, stale MCP connections leaving child processes open, and undrained stdout in DAP `runInTerminal` requests.
+- Fixed custom STB-backed vision providers failing to decode WebP images by automatically detecting image formats from bytes and normalizing WebP blocks.
+- Fixed command-backed provider API keys (`!command`) staying pinned to cached values after receiving an HTTP 401 error.
+- Fixed the `/agents` Control Center failing to open when model overrides are configured as YAML arrays.
+- Fixed session-title generation regressions by restoring plain-sentence phrasing and name-fidelity instructions.
+- Fixed agent-facing prompts and system instructions mentioning tools that are absent from the current session catalog.
+- Fixed manual `/shake` discarding all tool results; it now retains a small recent tail of results to preserve active working context.
+- Fixed `omp install` failing validation for extensions importing legacy `is<Tool>ToolResult` event guards.
+- Fixed profile aliases generated by standalone binaries invoking Bun's embedded virtual script instead of the installed `omp` command.
+- Fixed `/skill:<name>` tokens in `/plan` or `/vibe` inline prompts being treated as literal text instead of executing the skill.
+- Fixed long streaming `write` previews stalling the TUI by optimizing file scanning and splitting.
+- Fixed the Windows console disappearing when running commands like `/stats`.
+- Fixed retry-fallback selection switching to a fallback model with a context window too small to hold the current session context.
+- Fixed OpenCode discovery ignoring `opencode.jsonc` files and rejecting comments in `opencode.json`.
+- Fixed WSL2 startup hanging forever when the Windows interop pipe is wedged: the WSL host-home discovery probes (`cmd.exe`, `wslpath`) now run under a 500ms hard timeout and fall back to the Linux `$HOME`/`~/.omp` candidates ([#8402](https://github.com/can1357/oh-my-pi/issues/8402)).
 
 ## [17.2.15] - 2026-08-12
 

@@ -93,6 +93,7 @@ async function createPersistedSession(
 	restrictToolNames?: boolean,
 	modelRole?: string,
 	resolvedModel?: string,
+	advisor?: string,
 ): Promise<string> {
 	const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 	const sessionFile = manager.getSessionFile();
@@ -104,6 +105,7 @@ async function createPersistedSession(
 		restrictToolNames,
 		modelRole,
 		resolvedModel: resolvedModel ?? (modelRole ? "anthropic/claude-sonnet-4-5" : undefined),
+		advisor,
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -226,6 +228,37 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.enableLsp).toBe(true);
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
 		expect(capturedOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
+	});
+	it("restores the persisted per-agent advisor opt-in on cold revival", async () => {
+		const cwd = makeTempDir("@pi-advisor-revive-");
+		registerRoot();
+		const advisedFile = await createPersistedSession(cwd, undefined, undefined, "moonshot/k3", "moonshot/k3");
+		const roleAdvisedFile = await createPersistedSession(cwd, undefined, undefined, "on", "on");
+		const unadvisedFile = await createPersistedSession(cwd);
+		const captured: Settings[] = [];
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (options?.settings) captured.push(options.settings);
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const factory = createFactory(cwd);
+		for (const [id, sessionFile] of [
+			["persisted-advised", advisedFile],
+			["persisted-role-advised", roleAdvisedFile],
+			["persisted-unadvised", unadvisedFile],
+		] as const) {
+			const ref = createRef(sessionFile, { id });
+			const reviver = await factory(ref);
+			if (!reviver) throw new Error(`Expected a persisted reviver for ${id}`);
+			await reviver(ref);
+		}
+
+		const [advised, roleAdvised, unadvised] = captured;
+		expect(advised.get("advisor.enabled")).toBe(true);
+		expect(advised.getModelRole("advisor")).toBe("moonshot/k3");
+		expect(roleAdvised.get("advisor.enabled")).toBe(true);
+		expect(roleAdvised.getModelRole("advisor")).toBeUndefined();
+		expect(unadvised.get("advisor.enabled")).toBe(false);
 	});
 
 	it("reuses the parent's shared request and runnable limiters when reviving a parked child", async () => {

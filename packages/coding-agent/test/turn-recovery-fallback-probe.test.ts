@@ -118,6 +118,7 @@ function createHarness(probe: Probe, options: FallbackProbeHarnessOptions = {}):
 		probeModelConnectivity,
 		runAutoCompaction: async () =>
 			({ deferredHandoff: false, continuationScheduled: false }) as RecoveryCompactionResult,
+		contextFitsModel: () => true,
 		withBashBranchTransition: <T>(operation: () => T): T => operation(),
 	};
 

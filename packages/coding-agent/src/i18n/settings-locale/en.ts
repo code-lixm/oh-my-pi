@@ -715,6 +715,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	Subagents: "Subagents",
 	"Main needs input · Esc return": "Main needs input · Esc return",
 	"{count} tools": "{count} tools",
+	"{count} tok": "{count} tok",
+	"{duration} agent time": "{duration} agent time",
+	"{measured}/{total} measured": "{measured}/{total} measured",
+	"{timed}/{measured} timed": "{timed}/{measured} timed",
 	"Started {time}": "Started {time}",
 	"Ended {time}": "Ended {time}",
 	"Duration {duration}": "Duration {duration}",
@@ -866,6 +870,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Advisor {count}": "Advisor {count}",
 	"Agent Control Center": "Agent Control Center",
 	"Agent Hub": "Agent Hub",
+	"Usage unavailable": "Usage unavailable",
 	"Jobs Hub": "Jobs Hub",
 	"Job Details": "Job Details",
 	"Live output tail": "Live output tail",
@@ -1981,6 +1986,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.",
 	warn: "warn",
 	ignore: "ignore",
+	"Max total checkpoint storage (MiB)": "Max total checkpoint storage (MiB)",
+	"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.":
+		"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.",
 	"Intent Tracing": "Intent Tracing",
 	"Interrupt Mode": "Interrupt Mode",
 	"Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)":

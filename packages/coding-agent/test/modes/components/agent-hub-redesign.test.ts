@@ -41,7 +41,7 @@ const COMPLETED_LABEL = "Archive";
 const ADVISOR = "ADVISOR_HUB_AGENT";
 const ADVISOR_LABEL = "Advisor";
 const METADATA_AGENT = "FIXED_COLUMN_METADATA_AGENT";
-const METADATA_LABEL = "Metrics";
+const METADATA_LABEL = "指标";
 const TRANSCRIPT_TIMESTAMP = "2025-01-02T03:04:05.000Z";
 
 let previousLocale = getSettingsUiLocale();
@@ -77,6 +77,14 @@ function renderedRosterPanel(hub: AgentHubOverlayComponent, width = 120): string
 		if (!line.startsWith("│ ") || !line.endsWith(" │")) return [];
 		return [line.slice(2, -2).trimEnd()];
 	});
+}
+
+/** Terminal cell offset of a visible rendered field, not its UTF-16 index. */
+function terminalCellBefore(line: string, text: string): number {
+	const visible = Bun.stripANSI(line);
+	const index = visible.indexOf(text);
+	if (index < 0) throw new Error(`Expected ${JSON.stringify(text)} in rendered line`);
+	return Bun.stringWidth(visible.slice(0, index));
 }
 
 function renderedRosterEntries(hub: AgentHubOverlayComponent, width = 120): string[] {
@@ -420,7 +428,7 @@ describe("Agent Hub redesign", () => {
 		}
 	});
 
-	it("keeps Status, Duration, Model, and Last update columns aligned as task metadata changes", async () => {
+	it("keeps Status, Duration, Model, and Detail columns cell-aligned for a CJK label as task metadata changes", async () => {
 		vi.useFakeTimers();
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
 		setSystemTime(startedAtMs);
@@ -439,6 +447,7 @@ describe("Agent Hub redesign", () => {
 			status: "running" as const,
 			completedAtMs: undefined,
 			resolvedModel: "provider/short-model",
+			lastIntent: "Initial column detail",
 		};
 		vi.spyOn(observers, "getSessions").mockImplementation(() => [
 			{
@@ -462,16 +471,16 @@ describe("Agent Hub redesign", () => {
 			if (!columns || !row) throw new Error("Expected fixed metadata header and agent row");
 			return {
 				header: {
-					status: columns.indexOf("Status"),
-					duration: columns.indexOf("Duration"),
-					model: columns.indexOf("Model"),
-					detail: columns.indexOf("Detail"),
+					status: terminalCellBefore(columns, "Status"),
+					duration: terminalCellBefore(columns, "Duration"),
+					model: terminalCellBefore(columns, "Model"),
+					detail: terminalCellBefore(columns, "Detail"),
 				},
 				row: {
-					status: row.indexOf(values.status),
-					duration: row.indexOf(values.duration),
-					model: row.indexOf(values.model),
-					detail: row.indexOf(values.detail),
+					status: terminalCellBefore(row, values.status),
+					duration: terminalCellBefore(row, values.duration),
+					model: terminalCellBefore(row, values.model),
+					detail: terminalCellBefore(row, values.detail),
 				},
 			};
 		};
@@ -483,13 +492,13 @@ describe("Agent Hub redesign", () => {
 				status: "Running",
 				duration: "1h2m",
 				model: "short-model",
-				detail: "Running:",
+				detail: "Running: Initial column detail",
 			});
 			expect(first.header.status).toBeGreaterThan(0);
 			expect(first.header.duration).toBeGreaterThan(first.header.status);
 			expect(first.header.model).toBeGreaterThan(first.header.duration);
-			// expect(first.header.lastUpdate).toBeGreaterThan(first.header.model);
-			// expect(first.row).toEqual(first.header);
+			expect(first.header.detail).toBeGreaterThan(first.header.model);
+			expect(first.row).toEqual(first.header);
 
 			progress = {
 				...completedProgress(METADATA_AGENT, startedAtMs, 359_999_000),
@@ -509,9 +518,10 @@ describe("Agent Hub redesign", () => {
 				status: "Waiting for user",
 				duration: "4d3h",
 				model: "intentionally",
-				detail: "Waiting for user",
+				detail: "Waiting for user input",
 			});
 			expect(later.header).toEqual(first.header);
+			expect(later.row).toEqual(later.header);
 		} finally {
 			hub.dispose();
 		}
@@ -555,9 +565,9 @@ describe("Agent Hub redesign", () => {
 			if (!header || !row) throw new Error("Expected fixed metadata header and long-label agent row");
 
 			expect(row).not.toContain("METADATA_TAIL");
-			expect(row.indexOf("Running")).toBe(header.indexOf("Status"));
-			expect(row.indexOf("1h2m")).toBe(header.indexOf("Duration"));
-			expect(row.indexOf("short-model")).toBe(header.indexOf("Model"));
+			expect(terminalCellBefore(row, "Running")).toBe(terminalCellBefore(header, "Status"));
+			expect(terminalCellBefore(row, "1h2m")).toBe(terminalCellBefore(header, "Duration"));
+			expect(terminalCellBefore(row, "short-model")).toBe(terminalCellBefore(header, "Model"));
 			expect(row).toContain("Running");
 		} finally {
 			hub.dispose();
@@ -1133,9 +1143,9 @@ describe("Agent Hub redesign", () => {
 				.flatMap(entry => fixtures.filter(fixture => entry.includes(fixture.label)).map(fixture => fixture.id))
 				.filter((id, index, ids) => ids.indexOf(id) === index);
 			expect(hubOrder.map(id => fixtures.find(fixture => fixture.id === id)?.label)).toEqual([
-				COMPLETED_LABEL,
-				WAITING_LABEL,
 				RUNNING_LABEL,
+				WAITING_LABEL,
+				COMPLETED_LABEL,
 			]);
 
 			terminalRows = 12;

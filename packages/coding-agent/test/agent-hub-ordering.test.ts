@@ -404,6 +404,48 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
+	it("keeps task-described entries single-line within the bounded lazy viewport", () => {
+		geometry = stubStdoutGeometry(120);
+		geometry.setRows(12);
+		const agents = new AgentRegistry();
+		const labels: string[] = [];
+		for (let i = 0; i < 100; i++) {
+			const label = `TaskAgent-${i.toString().padStart(3, "0")}`;
+			labels.push(label);
+			agents.register({
+				id: `task-agent-${i.toString().padStart(3, "0")}`,
+				displayName: label,
+				kind: "sub",
+				session: null,
+				status: "parked",
+			});
+		}
+
+		const observers = new SessionObserverRegistry();
+		const getSession = vi.spyOn(observers, "getSession").mockImplementation(id => ({
+			id,
+			kind: "subagent",
+			label: "Subagent",
+			status: "active",
+			description: `task for ${id}`,
+			lastUpdate: Date.now(),
+		}));
+		const hub = makeHub(agents, { observers });
+
+		try {
+			getSession.mockClear();
+			const rows = renderedAgentRows(hub, labels);
+			expect(rows).toHaveLength(5);
+			for (const row of rows) expect(row.raw).not.toContain("\n");
+			expect(getSession.mock.calls.length).toBeLessThanOrEqual(8);
+			const text = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(text).toContain(rows[0]!.label);
+			expect(text).toMatch(/… \d+ more/);
+		} finally {
+			hub.dispose();
+		}
+	});
+
 	it("sanitizes compact roster content without rendering task details as extra rows", () => {
 		geometry = stubStdoutGeometry(80);
 		const agents = new AgentRegistry();
@@ -971,9 +1013,9 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("renders aggregate usage in flat rows without surfacing inspector-only history", () => {
+	it("renders aggregate usage without surfacing inspector-only history", () => {
+		setSettingsUiLocale("en");
 		geometry = stubStdoutGeometry(140);
-		geometry.setRows(28);
 		const createdAt = Date.parse("2026-08-09T20:15:00Z");
 		const agents = new AgentRegistry();
 		agents.register({
@@ -1024,29 +1066,39 @@ describe("Agent hub row ordering", () => {
 		const hub = makeHub(agents, { observers });
 
 		try {
-			const rendered = Bun.stripANSI(hub.render(160).join("\n"));
-			const topChrome = renderedTopChrome(hub, 160);
-			for (const summary of ["Roster", "Flat", "By parent"]) expect(topChrome).not.toContain(summary);
-			const header = renderedAgentColumnHeader(hub, 160);
-			expect(header).toBeDefined();
-			expect(header).toContain("Agent");
-			expect(header).toContain(theme.status.running);
-			expect(header).toMatch(/\b1\b/u);
-			expect(rendered).toContain("Security Reviewer");
-			// Task details and context usage belong to the focused inspector, not the compact roster row.
-			expect(rendered).not.toContain("read · src/session/agent-session.ts");
-			expect(rendered).not.toContain("31K/128K 24%");
-			// Registration, workspace, output, patch, and branch metadata stay in the focused inspector.
-			expect(rendered).not.toContain("Registered ");
-			expect(rendered).not.toContain("Shared workspace");
-			expect(rendered).not.toContain("Output /tmp/Reviewer.md");
-			expect(rendered).not.toContain("Patch /tmp/Reviewer.patch");
-			expect(rendered).not.toContain("Worktree branch omp/task/Reviewer");
+			const rendered = Bun.stripANSI(hub.render(140).join("\n"));
+			const topChrome = renderedTopChrome(hub, 140);
+			expect(topChrome).toContain("$0.213");
+			expect(topChrome).toContain("2m14s agent time");
+			expect(topChrome).toContain("12 req");
+			expect(topChrome).toContain("27 tools");
+			expect(topChrome).toContain("18K tok");
+			expect(topChrome).toContain("1/1 timed");
+			expect(topChrome).toContain("1/1 measured");
+
+			const rows = renderedAgentRows(hub, ["Security Reviewer"], 140);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]!.raw).not.toContain("\n");
+			expect(hub.render(140).filter(parseRosterCell)).toHaveLength(1);
+			for (const inspectorOnly of [
+				"Review the session lifecycle and produce actionable findings",
+				"Review the session lifecycle",
+				"read · src/session/agent-session.ts",
+				"31K/128K 24%",
+				"Registered ",
+				"Output /tmp/Reviewer.md",
+				"Patch /tmp/Reviewer.patch",
+				"Branch omp/task/Reviewer",
+			]) {
+				expect(rendered).not.toContain(inspectorOnly);
+			}
 		} finally {
 			hub.dispose();
 		}
 	});
+
 	it("treats incomplete and non-finite progress usage as unknown", () => {
+		setSettingsUiLocale("en");
 		geometry = stubStdoutGeometry(160);
 		const agents = new AgentRegistry();
 		const getSessionStats = vi.fn(() => ({

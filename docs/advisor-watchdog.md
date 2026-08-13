@@ -294,12 +294,15 @@ Fields:
 
 ## Subagents
 
-`advisor.subagents` controls whether spawned task/eval subagents also get an advisor runtime.
+Subagents remain unadvised when no advisor source enables them. Advisor selection follows this precedence:
 
-- `false` (default): only the main session can run an advisor.
-- `true`: eligible subagent sessions build their own advisor subsystem with the same settings/model-role resolution, then rerun both `WATCHDOG.md` and `WATCHDOG.yml` discovery for that subagent session's `cwd` and agent directory.
+1. The agent's `task.agentAdvisor` entry (`"on"` / `"off"` / model pattern).
+2. The agent definition's `advisor` frontmatter: `true`, `false`, or an explicit model pattern such as `"deepseek/deepseek-v4-flash"` or `"@smol:high"`.
+3. The global `advisor.subagents` blanket fallback, used only when neither per-agent layer decides.
 
-Subagent advisors remain isolated from the subagent's primary tool session in the same way the main advisor is isolated from the main agent.
+`task.agentAdvisor` is configured from the `/agents` hub: Enter on an agent opens its property strip; the advisor strip offers on/off, a model-browser pick, or a raw pattern. Existing `advisor.subagents` values remain global fallbacks rather than migrating to one bundled agent, so a per-agent explicit `"off"` or frontmatter `false` can opt out while other subagents stay advised.
+
+An advised subagent session builds its own advisor subsystem with the same settings/model-role resolution (an explicit pattern lands on the spawned session's `modelRoles.advisor`), then reruns both `WATCHDOG.md` and `WATCHDOG.yml` discovery for that subagent session's `cwd` and agent directory. Subagent advisors remain isolated from the subagent's primary tool session in the same way the main advisor is isolated from the main agent.
 
 ## Cost and context behavior
 
@@ -319,7 +322,7 @@ The advisor is a passive reviewer with its own model usage, so — like a task s
 
 - legacy/default advisor: `<session>/__advisor.jsonl`
 - named advisor: `<session>/__advisor.<slug>.jsonl`
-- subagent advisor (`advisor.subagents: true`): `<session>/<SubId>/__advisor[.<slug>].jsonl`
+- subagent advisor (frontmatter `advisor` / `task.agentAdvisor`): `<session>/<SubId>/__advisor[.<slug>].jsonl`
 
 Paths derive from the owning session file (not the shared artifacts root), so each primary/subagent advisor writes a distinct file. The reserved `__advisor` stem cannot collide with a task subagent id.
 

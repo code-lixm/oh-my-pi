@@ -1401,7 +1401,7 @@ export class SelectorController {
 						return;
 					}
 
-					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 					this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 					done();
 					this.ctx.showStatus(tSettingsUi("Branched to new session"));
@@ -1582,7 +1582,7 @@ export class SelectorController {
 
 					// Update UI — rebuild the display transcript for the new leaf (the
 					// context from navigateTree is the LLM context, not the transcript).
-					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 					await this.ctx.reloadTodos();
 					if (result.editorText && !this.ctx.editor.getText().trim()) {
 						this.ctx.editor.setDraft(result.editorText, result.editorImages);
@@ -1832,7 +1832,7 @@ export class SelectorController {
 		this.ctx.statusLine.resetActiveTime();
 		this.ctx.ui.requestRender();
 		this.ctx.updateEditorBorderColor();
-		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 		return true;
@@ -1871,7 +1871,7 @@ export class SelectorController {
 		this.ctx.updateEditorBorderColor();
 
 		// Clear and re-render the chat
-		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
 		this.ctx.showStatus(
 			movedProject

@@ -15,6 +15,13 @@
 ### Fixed
 
 - Fixed terminal tool results allowing later calls from the same assistant message to start; not-yet-started calls now receive explicit synthetic results without executing.
+## [17.3.0] - 2026-08-13
+
+### Fixed
+
+- Improved the manual `/shake` command to retain a small history of recent tool results, preventing the agent from losing its active working context.
+
+## [17.2.13] - 2026-08-11
 
 ### Fixed
 

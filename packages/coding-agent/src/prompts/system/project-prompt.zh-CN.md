@@ -35,14 +35,14 @@
 工作目录布局（按 mtime 排序，最近的在前；深度 ≤ 3）：
 {{workspaceTree.rendered}}
 {{#if workspaceTree.truncated}}
-（为保持树结构简短，已省略部分条目——使用 `glob`/`read` 深入查看）
+{{#has tools "glob"}}{{#has tools "read"}}为保持树结构简短，已省略部分条目——使用 `{{toolRefs.glob}}`/`{{toolRefs.read}}` 深入查看。{{/has}}{{/has}}
 {{/if}}
 </workspace-tree>
 {{/if}}
 {{/if}}
-	{{#if additionalWorkspaceRoots.length}}
+{{#if additionalWorkspaceRoots.length}}
 <workspace-roots>
-本会话还包含以下附加目录。此列表代表当前工作区状态，并覆盖对话中更早提到的任何工作区变更。使用这些根目录下的绝对路径调用 `read`/`grep`/`glob`/`edit`。使用 `/add-dir` 和 `/remove-dir` 管理集合；`/dirs` 列出当前目录。
+本会话还包含以下附加目录。此列表代表当前工作区状态，并覆盖对话中更早提到的任何工作区变更。{{#ifAny (includes tools "read") (includes tools "grep") (includes tools "glob") (includes tools "edit")}}使用这些根目录下的绝对路径调用 {{#has tools "read"}}`{{toolRefs.read}}`{{/has}}{{#has tools "grep"}}{{#ifAny (includes tools "read")}}/{{/ifAny}}`{{toolRefs.grep}}`{{/has}}{{#has tools "glob"}}{{#ifAny (includes tools "read") (includes tools "grep")}}/{{/ifAny}}`{{toolRefs.glob}}`{{/has}}{{#has tools "edit"}}{{#ifAny (includes tools "read") (includes tools "grep") (includes tools "glob")}}/{{/ifAny}}`{{toolRefs.edit}}`{{/has}}。{{/ifAny}}使用 `/add-dir` 和 `/remove-dir` 管理集合；`/dirs` 列出当前目录。
 {{#each additionalWorkspaceRoots}}
 - {{this}}
 {{/each}}

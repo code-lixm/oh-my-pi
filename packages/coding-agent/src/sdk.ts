@@ -244,6 +244,7 @@ import { USER_TODO_EDIT_CUSTOM_TYPE } from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
+import { normalizeProviderContextImagesForModel } from "./utils/image-loading";
 import { buildNamedToolChoice } from "./utils/tool-choice";
 import { VibeSessionRegistry } from "./vibe/runtime";
 import { createWorkspaceCheckpointService } from "./workspace-checkpoints/service";
@@ -1685,16 +1686,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const enableLsp = options.enableLsp ?? !restrictToolNames;
 	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
-	// The first top-level session owns the process AsyncJobManager. Descendants and
-	// explicitly identified secondary top-level sessions share it: every session
-	// registers a delivery sink under its unique agent id, so jobs remain owner-routed.
-	// Anonymous secondary sessions still receive no manager because they would reuse
-	// `Main` and could cancel or consume the primary session's work on disposal.
+	// Only the first top-level session in a process owns an AsyncJobManager.
+	// Subagents inherit the parent's manager via `AsyncJobManager.instance()`
+	// (set below), and any additional top-level session spun up in-process
+	// (e.g. the agent-creation architect in `agents-hub.ts`) must share
+	// the live singleton — otherwise its dispose path would clobber the
+	// owning session's manager and break the `task`/`bash` async paths
+	// (issue #1923). The `instance()` guard means later sessions also skip
+	// constructing an orphaned manager that nothing would ever route to.
+	// Delivery is owner-routed: every AgentSession registers its own sink
+	// (see session/async-job-delivery.ts), so the manager takes no default
+	// onJobComplete here.
 	const asyncJobManager =
 		!options.parentTaskPrefix && !AsyncJobManager.instance()
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
-
 	const canShareAsyncJobManager =
 		Boolean(options.parentTaskPrefix) || (options.agentId !== undefined && options.agentId !== MAIN_AGENT_ID);
 	const scopedAsyncJobManager = asyncJobManager ?? (canShareAsyncJobManager ? AsyncJobManager.instance() : undefined);
@@ -3294,8 +3300,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return wrapSteeringForModel(withContext);
 		};
 		// Per-request provider-context transforms. Obfuscate FIRST so secrets are
-		// redacted from text before snapcompact rasterizes it into PNG frames, then
-		// clamp images to the active provider budget before the request is sent.
+		// redacted from text before snapcompact rasterizes it into PNG frames. Clamp
+		// to the provider budget before normalizing decoder-incompatible images so
+		// dropped historical images never pay a transcode cost.
 		const snapcompactSystemPromptMode = settings.get("snapcompact.systemPrompt");
 		const snapcompactInline =
 			snapcompactSystemPromptMode !== "none" || settings.get("snapcompact.toolResults")
@@ -3318,7 +3325,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (!promptsMatch(transformed.systemPrompt, systemPromptBeforeSnapcompact)) {
 				transformed = withoutCodexNativePrompt(transformed);
 			}
-			return clampProviderContextImages(transformed, transformModel);
+			transformed = clampProviderContextImages(transformed, transformModel);
+			return await normalizeProviderContextImagesForModel(transformed, transformModel);
 		};
 		const onPayload = async (payload: unknown, model?: Model) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload, model);
@@ -3441,6 +3449,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					supportsExternalThinking(streamModel);
 				return settingsAwareStreamFn(streamModel, context, {
 					...streamOptions,
+					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
 				});
 			},
@@ -3571,6 +3580,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						retention: {
 							maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
 							maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+							maxTotalMiB: settings.get("workspaceCheckpoint.retention.maxTotalMiB"),
 						},
 					})
 				: undefined;
@@ -4196,7 +4206,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					transformProviderContext: async (context, transformModel) => {
 						let transformed = attachCodexNativePrompt(context, transformModel);
 						if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
-						return clampProviderContextImages(transformed, transformModel);
+						transformed = clampProviderContextImages(transformed, transformModel);
+						return await normalizeProviderContextImagesForModel(transformed, transformModel);
 					},
 					thinkingBudgets: agent.thinkingBudgets,
 					temperature: agent.temperature,

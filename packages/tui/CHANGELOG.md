@@ -14,6 +14,14 @@
 - Fixed framed and plain Markdown code rows bypassing the surrounding component gutter, which made assistant fenced blocks start at column zero instead of aligning with prose and could punch unpainted holes through styled message surfaces.
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
 - Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
+## [17.3.0] - 2026-08-13
+
+### Fixed
+
+- Fixed an issue where repeated pane-width adjustments or terminal resizing could corrupt native scrollback and soft-wrap behavior.
+- Fixed an issue where scaled OSC 66 Markdown headings (such as "Large Headings" on Kitty) would render as invisible placeholders or get partially cleared after a redraw or terminal resize.
+
+## [17.2.13] - 2026-08-11
 
 ### Fixed
 

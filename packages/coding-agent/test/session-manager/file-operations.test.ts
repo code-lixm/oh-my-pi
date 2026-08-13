@@ -299,7 +299,9 @@ describe("SessionManager temp cwd session dirs", () => {
 
 describe("SessionManager legacy session migration persistence", () => {
 	let tempDir: string;
+	let testAgentDir: string;
 	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalTmuxPane = process.env.TMUX_PANE;
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	function makeAssistantMessage() {
@@ -333,6 +335,14 @@ describe("SessionManager legacy session migration persistence", () => {
 	}
 
 	beforeEach(() => {
+		// Deterministic, non-TTY terminal id so the per-terminal breadcrumb
+		// (written by newSession/continueRecent) is scoped to this test and
+		// cannot leak across files in the same suite run. Without it, a real
+		// terminal id (WT_SESSION/TMUX_PANE) points continueRecent at stale
+		// breadcrumb state from earlier tests in this file.
+		process.env.TMUX_PANE = "%legacy-migration-test";
+		testAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-agent-"));
+		setAgentDir(testAgentDir);
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-manager-legacy-"));
 		setAgentDir(path.join(tempDir, "agent"));
 		clearTerminalBreadcrumb();
@@ -340,6 +350,8 @@ describe("SessionManager legacy session migration persistence", () => {
 
 	afterEach(() => {
 		clearTerminalBreadcrumb();
+		if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+		else process.env.TMUX_PANE = originalTmuxPane;
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
 		} else {
@@ -347,6 +359,7 @@ describe("SessionManager legacy session migration persistence", () => {
 			delete process.env.PI_CODING_AGENT_DIR;
 		}
 		removeSyncWithRetries(tempDir);
+		removeSyncWithRetries(testAgentDir);
 	});
 
 	it("keeps legacy migration in memory until later persisted activity rewrites the file", async () => {
@@ -551,6 +564,39 @@ describe("SessionManager legacy session migration persistence", () => {
 			expect(resumed.getSessionFile()).toBe(newerSessionFile);
 		} finally {
 			await resumed.close();
+		}
+	});
+
+	it("materializes a fresh session after its first persisted activity", async () => {
+		const session = SessionManager.create(tempDir, tempDir);
+		try {
+			session.appendMessage({ role: "user", content: "hello", timestamp: Date.now() - 1 });
+			session.appendMessage(makeAssistantMessage());
+			await session.flush();
+
+			const previousSessionFile = session.getSessionFile();
+			if (!previousSessionFile) throw new Error("Expected persisted session file");
+
+			const freshSessionFile = await session.newSession();
+			if (!freshSessionFile) throw new Error("Expected fresh session file");
+			expect(fs.existsSync(freshSessionFile)).toBe(false);
+			// Lazy new-session persistence: nothing on disk yet, so materialize the
+			// fresh session the way assistant output would (issue #5730).
+			session.appendMessage({ role: "user", content: "first message of fresh session", timestamp: Date.now() });
+			session.appendMessage(makeAssistantMessage());
+			await session.flush();
+			expect(fs.existsSync(freshSessionFile)).toBe(true);
+
+			clearTerminalBreadcrumb();
+			const resumed = await SessionManager.continueRecent(tempDir, tempDir);
+			try {
+				expect(resumed.getSessionFile()).toBe(freshSessionFile);
+				expect(resumed.getSessionFile()).not.toBe(previousSessionFile);
+			} finally {
+				await resumed.close();
+			}
+		} finally {
+			await session.close();
 		}
 	});
 

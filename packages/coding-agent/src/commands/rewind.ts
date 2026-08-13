@@ -88,6 +88,7 @@ export default class Rewind extends Command {
 		const retention = {
 			maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
 			maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+			maxTotalMiB: settings.get("workspaceCheckpoint.retention.maxTotalMiB"),
 		};
 		const scope = flags.scope as WorkspaceRestoreScope;
 		const strategy = flags.strategy as WorkspaceRestoreStrategy;

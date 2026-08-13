@@ -1784,6 +1784,17 @@ export class Settings {
 			}
 			delete raw["search.contextAfter"];
 		}
+		if ("advisor.subagents" in raw) {
+			let advisorObj: Record<string, unknown>;
+			if (isRecord(raw.advisor)) {
+				advisorObj = raw.advisor;
+			} else {
+				advisorObj = {};
+				raw.advisor = advisorObj;
+			}
+			if (!("subagents" in advisorObj)) advisorObj.subagents = raw["advisor.subagents"];
+			delete raw["advisor.subagents"];
+		}
 
 		// Also clean up any empty nested objects we might have created or left behind
 		if (raw.glob && typeof raw.glob === "object" && Object.keys(raw.glob).length === 0) {

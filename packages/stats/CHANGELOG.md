@@ -13,6 +13,15 @@
 - Fixed CJK profanity boundaries so 我操/我草/我日 no longer match 操作/草稿/日志 across character boundaries (measured against real corpus hits); rows are re-derived once on the next database sync.
 - Fixed one repository appearing as separate canonical and hashed projects by deriving project identity from each session header's normalized `cwd` and transactionally migrating historical message, behavior, and tool-call rows.
 - Fixed project and model token totals to include input, output, cache read, and cache write tokens, matching the overview conversation-token denominator.
+## [17.3.0] - 2026-08-13
+
+### Added
+
+- Added cost-weighted `cacheSavings` metric alongside `cacheRate`, accounting for cache-read discounts and write premiums against equivalent uncached prompt costs.
+
+### Fixed
+
+- Ensured the embedded dashboard archive is byte-reproducible by sorting entries and zeroing tar and gzip timestamps during compilation.
 
 ## [17.2.10] - 2026-08-06
 

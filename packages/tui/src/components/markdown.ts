@@ -12,7 +12,12 @@ import { inlineMathSpanEnd, isBareMathEnvironment, latexToUnicode } from "../lat
 import type { MouseRoutable, SgrMouseEvent } from "../mouse";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
-import type { Component, NativeScrollbackCommittedRows, NativeScrollbackReplay } from "../tui";
+import type {
+	Component,
+	NativeScrollbackCommittedRows,
+	NativeScrollbackReplay,
+	NativeScrollbackWidthEpoch,
+} from "../tui";
 import {
 	anchorRightBorder,
 	applyBackgroundToLine,
@@ -20,6 +25,7 @@ import {
 	encodeTextSized,
 	getPaddingX,
 	getSegmenter,
+	isOsc66Line,
 	padding,
 	replaceTabs,
 	truncateToWidth,
@@ -40,15 +46,11 @@ function normalizeOsc8Terminators(text: string): string {
 }
 
 // OSC 66 (Kitty text-sizing) heading spans are emitted as a single indivisible
-// unit by the H1 render path. Like image-protocol lines, they must bypass
-// ANSI wrapping and width padding: re-wrapping splits/normalizes the sized span
-// (recomputing the explicit `w=` cell count and hoisting SGR out of the OSC
-// payload), and padding would append trailing cells past the doubled glyph.
-const OSC66_LINE_PREFIX = "\x1b]66;";
-
-function isOsc66Line(line: string): boolean {
-	return line.includes(OSC66_LINE_PREFIX);
-}
+// unit by the H1 render path. Like image-protocol lines, they bypass ANSI
+// wrapping and width padding (see `isOsc66Line` in ../utils): re-wrapping
+// splits/normalizes the sized span (recomputing the explicit `w=` cell count
+// and hoisting SGR out of the OSC payload), and padding would append trailing
+// cells past the doubled glyph.
 
 function normalizeHtmlEntitiesForTerminal(raw: string): string {
 	const parseCodePoint = (value: number): string => {
@@ -1632,7 +1634,14 @@ interface RenderedTableLayout extends TableLayoutLock {
 	endRow: number;
 }
 
-export class Markdown implements Component, MouseRoutable, NativeScrollbackCommittedRows, NativeScrollbackReplay {
+export class Markdown
+	implements
+		Component,
+		MouseRoutable,
+		NativeScrollbackCommittedRows,
+		NativeScrollbackReplay,
+		NativeScrollbackWidthEpoch
+{
 	#text: string;
 	#paddingX: number; // Left/right padding
 	#paddingY: number; // Top/bottom padding
@@ -1674,6 +1683,16 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 	// exposure to 0 and re-earns it — the exposure is hard-monotone within a
 	// text lineage.
 	#settledExposedText?: string;
+	// Semantic source state that produced the most recent render. Unlike #text,
+	// it does not advance when streaming updates arrive before the next paint.
+	#lastRenderedText?: string;
+	#lastRenderedTransientRenderCache = false;
+	#lastRenderedHasMutableTrailingRow = false;
+	#widthEpochBoundaries = new WeakMap<
+		object,
+		{ text: string; transientRenderCache: boolean; hasMutableTrailingRow: boolean }
+	>();
+
 	// True while #renderStreamingContentLines renders the frozen token range:
 	// frozen code blocks highlight even in transient mode so their bytes match
 	// the finalized render (they render once into the prefix line cache, so
@@ -1876,6 +1895,56 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 		return this.#lastRenderSettledRows;
 	}
 
+	captureNativeScrollbackWidthEpoch(): unknown {
+		if (this.#lastRenderedText === undefined) return undefined;
+		const marker = {};
+		this.#widthEpochBoundaries.set(marker, {
+			text: this.#lastRenderedText,
+			transientRenderCache: this.#lastRenderedTransientRenderCache,
+			hasMutableTrailingRow: this.#lastRenderedHasMutableTrailingRow,
+		});
+		return marker;
+	}
+
+	resolveNativeScrollbackWidthEpoch(boundary: unknown): number | undefined {
+		if (typeof boundary !== "object" || boundary === null || this.#cachedWidth === undefined) return undefined;
+		const captured = this.#widthEpochBoundaries.get(boundary);
+		if (captured === undefined) return undefined;
+		const snapshot = new Markdown(
+			captured.text,
+			this.#paddingX,
+			this.#paddingY,
+			this.#theme,
+			this.#defaultTextStyle,
+			this.#codeBlockIndent,
+		);
+		snapshot.#ignoreTight = this.#ignoreTight;
+		snapshot.#transientRenderCache = captured.transientRenderCache;
+		return Math.max(
+			0,
+			snapshot.render(this.#cachedWidth).length - this.#paddingY - (captured.hasMutableTrailingRow ? 1 : 0),
+		);
+	}
+
+	getNativeScrollbackWidthEpochRows(): number | undefined {
+		return this.#cachedLines === undefined ? undefined : this.#widthEpochRows(this.#cachedLines.length);
+	}
+
+	isNativeScrollbackWidthEpochAppendOnly(boundary: unknown): boolean {
+		if (typeof boundary !== "object" || boundary === null) return true;
+		return this.#widthEpochBoundaries.get(boundary)?.hasMutableTrailingRow !== true;
+	}
+
+	#widthEpochRows(renderedRows: number): number {
+		return Math.max(0, renderedRows - this.#paddingY - (this.#transientRenderCache ? 1 : 0));
+	}
+
+	#recordLastRenderedState(hasContentRows: boolean): void {
+		this.#lastRenderedText = this.#text;
+		this.#lastRenderedTransientRenderCache = this.#transientRenderCache;
+		this.#lastRenderedHasMutableTrailingRow = this.#transientRenderCache && hasContentRows;
+	}
+
 	/**
 	 * Freeze every table whose first physical row is already part of the native
 	 * scrollback prefix. The recorded widths came from the exact frame that was
@@ -1992,6 +2061,7 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 			// `#linkHitSpans` is preserved across L1 hits — the most recent full
 			// render populated it from the same source the cached lines came
 			// from, so a click on the cached layout still resolves correctly.
+			this.#recordLastRenderedState(this.#cachedLines.length > 0);
 			return this.#cachedLines;
 		}
 
@@ -2009,6 +2079,7 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 			this.#cachedWidth = width;
 			this.#cachedLines = EMPTY_RENDER_LINES;
 			this.#linkHitSpans = [];
+			this.#recordLastRenderedState(false);
 			return EMPTY_RENDER_LINES;
 		}
 
@@ -2045,6 +2116,7 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 				this.#cachedWidth = width;
 				this.#cachedLines = cached.lines;
 				this.#linkHitSpans = cached.linkHitSpans;
+				this.#recordLastRenderedState(cached.lines.length > 0);
 				return cached.lines;
 			}
 		}
@@ -2103,6 +2175,7 @@ export class Markdown implements Component, MouseRoutable, NativeScrollbackCommi
 				linkHitSpans: this.#linkHitSpans,
 			});
 		}
+		this.#recordLastRenderedState(contentLines.length > 0);
 
 		return result;
 	}

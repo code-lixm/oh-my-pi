@@ -41,6 +41,7 @@ export default class Redo extends Command {
 		const retention = {
 			maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
 			maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+			maxTotalMiB: settings.get("workspaceCheckpoint.retention.maxTotalMiB"),
 		};
 		const sessionPath = typeof flags.session === "string" ? flags.session : undefined;
 

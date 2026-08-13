@@ -232,7 +232,7 @@ describe("settings layout", () => {
 	});
 
 	it("hides advisor dependent settings when advisor is disabled", () => {
-		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
+		const advisorDependentPaths: SettingPath[] = ["advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);
 		const defs = getSettingsForTab("model").filter(
 			def => def.path !== LOCAL_SYNC_PASSPHRASE_SETTING_PATH && advisorDependentPathSet.has(def.path),

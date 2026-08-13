@@ -1,5 +1,5 @@
 /**
- * Gemini thinking-loop guard.
+ * Thinking-loop guard.
  *
  * Gemini models (notably `gemini-3.5-flash` via OpenRouter) occasionally fall
  * into a degenerate reasoning loop: they re-emit the same paragraph intent over
@@ -29,13 +29,14 @@
  *    anchor-free segments; a segment naming a path/identifier resets the run, so
  *    genuine but vocabulary-repetitive work (per-file templates) is spared.
  *
- * Scope is narrow: guarded Gemini/DeepSeek streams before any tool call. Native
+ * Scope is narrow: guarded Gemini, DeepSeek, and Grok family streams before any tool call. Native
  * thinking is checked first; assistant text can also be checked for providers
  * that surface reasoning as visible prose. On a hit the failed turn is emitted as
  * an empty retryable stream-stall error; result-awaiting callers (`complete`,
  * `completeSimple`) re-sample it a few times and then let a stubborn loop cook
  * through one unguarded pass. Disable detection with `PI_NO_THINKING_LOOP_GUARD=1`.
  */
+import { isMinimaxM3FamilyModelId, modelFamilyToken } from "@oh-my-pi/pi-catalog/identity";
 import { logger } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import type { Api, AssistantMessage, Model, StreamOptions } from "../types";
@@ -94,39 +95,30 @@ const LEX_STALL_MIN_RUN = 8;
 const CONCRETE_ANCHOR =
 	/`[^`]+`|\b\w{2,}\.[a-zA-Z]\w{0,4}\b|[\w-]+(?:\/[\w-]+){2,}|\b\w+_\w+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b/g;
 
-const OPENAI_COMPAT_GUARDED_APIS: Partial<Record<Api, true>> = {
-	"openai-completions": true,
-	"openai-responses": true,
-	"azure-openai-responses": true,
-	"openai-codex-responses": true,
-};
-
 /**
- * True when `model` is a Gemini model whose native thinking stream surfaces the
- * "thought summary" titles this module's header guard counts.
+ * True when `model.id` belongs to a family guarded for thinking/response loops:
+ * Gemini, DeepSeek, Grok, or MiniMax M3.
  *
- * OpenAI-compat transports can serve Gemini under an arbitrary provider/id, so they
- * carry the explicit `compat.enableGeminiThinkingLoopGuard` flag; direct Gemini
- * transports carry a clearly shaped id/provider, so a string match is sufficient.
+ * Model identity is derived only from its id; provider and compatibility metadata
+ * do not opt opaque aliases into the guard. Gemini, DeepSeek, and Grok use their
+ * family token; MiniMax is limited to the catalog's exact M3 family predicate.
  */
+/** @deprecated Use isLoopGuardedModel instead. */
 export function isGeminiThinkingModel(model: Model<Api>): boolean {
-	if (OPENAI_COMPAT_GUARDED_APIS[model.api]) {
-		const compat = model.compat as { enableGeminiThinkingLoopGuard?: boolean } | undefined;
-		return compat?.enableGeminiThinkingLoopGuard === true;
-	}
-	return /gemini/i.test(`${model.provider}/${model.id}`);
+	return modelFamilyToken(model.id) === "gemini";
 }
 
-/**
- * True when `model` should be guarded for thinking/response loops (Gemini, DeepSeek & MiniMax).
- *
- * OpenAI-compat transports can serve these models under an arbitrary provider/id.
- * Direct transports carry a clearly shaped id/provider, so a string match is sufficient.
- */
 export function isLoopGuardedModel(model: Model<Api>, options?: StreamOptions): boolean {
 	if (options?.loopGuard?.enabled === false) return false;
-	const modelIdentity = `${model.provider}/${model.id}`;
-	return isGeminiThinkingModel(model) || /deepseek|minimax/i.test(modelIdentity);
+	if (isMinimaxM3FamilyModelId(model.id)) return true;
+	switch (modelFamilyToken(model.id)) {
+		case "gemini":
+		case "deepseek":
+		case "grok":
+			return true;
+		default:
+			return false;
+	}
 }
 
 /** @deprecated Use isLoopGuardedModel instead. */
@@ -359,7 +351,7 @@ export class GeminiHeaderRunDetector {
 /**
  * Wrap a provider stream with the loop guard. `controller` is the guard's own
  * abort handle: aborting it (after wiring it into the provider's signal via
- * {@link withGeminiThinkingLoopGuard}) tears down the upstream once a loop
+ * {@link withThinkingLoopGuard}) tears down the upstream once a loop
  * trips.
  */
 export function guardThinkingLoopStream(
@@ -442,7 +434,7 @@ export function guardThinkingLoopStream(
  * stall; bounding the re-samples and the final cook pass lives in the
  * result-awaiting caller.
  */
-export function withGeminiThinkingLoopGuard<
+export function withThinkingLoopGuard<
 	O extends { signal?: AbortSignal; loopGuard?: { enabled?: boolean; checkAssistantContent?: boolean } },
 >(
 	model: Model<Api>,

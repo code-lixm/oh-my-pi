@@ -417,6 +417,8 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 ];
 
+const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
+
 export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
@@ -530,6 +532,7 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+
 	"advisor.syncBacklog": {
 		type: "enum",
 		values: ["off", "1", "3", "5"] as const,
@@ -5670,9 +5673,13 @@ export const SETTINGS_SCHEMA = {
 
 	"task.agentModelOverrides": {
 		type: "record",
-		default: {} as Record<string, string>,
+		default: DEFAULT_AGENT_MODEL_OVERRIDES,
 	},
 	"task.agentPrewalk": {
+		type: "record",
+		default: {} as Record<string, string>,
+	},
+	"task.agentAdvisor": {
 		type: "record",
 		default: {} as Record<string, string>,
 	},
@@ -6724,6 +6731,21 @@ export const SETTINGS_SCHEMA = {
 			),
 		},
 	},
+	"workspaceCheckpoint.retention.maxTotalMiB": {
+		type: "number",
+		default: 2048,
+		ui: {
+			tab: "files",
+			group: tSettingsUi("Workspace checkpoints"),
+			label: tSettingsUi("Max total checkpoint storage (MiB)"),
+			description: tSettingsUi(
+				"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.",
+			),
+			input: true,
+			min: 0,
+			integer: true,
+		},
+	},
 
 	// ────────────────────────────────────────────────────────────────────────
 	// Encrypted configuration sync (S3-compatible storage)
@@ -7099,6 +7121,7 @@ export interface WorkspaceCheckpointSettings {
 	failurePolicy: "block" | "warn" | "ignore";
 	"retention.maxPerSession": number;
 	"retention.maxAgeDays": number;
+	"retention.maxTotalMiB": number;
 }
 
 export interface ShellMinimizerSettings {

@@ -878,6 +878,7 @@ describe("StatusLineComponent usage refresh", () => {
 	it("emits distinct enabled events for an unscheduled weekly reset and a newly banked reset", async () => {
 		Settings.instance.set("tui.codexResetFireworks", true);
 		const sevenDayResetAt = Date.now() + 80 * 3_600_000;
+		const nextSevenDayResetAt = sevenDayResetAt + 7 * 24 * 3_600_000;
 		let state: CodexUsageState = {
 			sevenDayPercent: 42,
 			sevenDayResetAt,
@@ -891,20 +892,27 @@ describe("StatusLineComponent usage refresh", () => {
 		await refreshUsage(component);
 		expect(events).toEqual([]);
 		state = {
-			sevenDayPercent: 2,
+			sevenDayPercent: 41,
 			sevenDayResetAt,
+			savedResets: 0,
+		};
+		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
+		expect(events).toEqual([]);
+		state = {
+			sevenDayPercent: 2,
+			sevenDayResetAt: nextSevenDayResetAt,
 			savedResets: 0,
 		};
 		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
 		state = {
 			sevenDayPercent: 25,
-			sevenDayResetAt,
+			sevenDayResetAt: nextSevenDayResetAt,
 			savedResets: 0,
 		};
 		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
 		state = {
 			sevenDayPercent: 25.2,
-			sevenDayResetAt,
+			sevenDayResetAt: nextSevenDayResetAt,
 			savedResets: 1,
 		};
 		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
@@ -938,7 +946,7 @@ describe("StatusLineComponent usage refresh", () => {
 
 		state = { ...state, sevenDayPercent: 42, tier: "spark" };
 		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
-		state = { ...state, sevenDayPercent: 2 };
+		state = { ...state, sevenDayPercent: 2, sevenDayResetAt: sevenDayResetAt + 7 * 24 * 3_600_000 };
 		await refreshUsage(component, USAGE_REFRESH_INTERVAL_MS);
 		expect(events).toEqual([{ kind: "unscheduled-weekly-reset" }]);
 		component.dispose();

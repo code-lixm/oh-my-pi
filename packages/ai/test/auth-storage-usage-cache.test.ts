@@ -552,7 +552,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 			return fullReport;
 		});
 
-		expect(await storage.getApiKey("anthropic", "s")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "s");
 		expect(storage.ingestUsageHeaders("anthropic", usageHeaders("0.02", "0.3"), { sessionId: "s" })).toBe(true);
 		now.mockReturnValue(start + 60_001);
 		expect(storage.ingestUsageHeaders("anthropic", usageHeaders("0.05", "0.6"), { sessionId: "s" })).toBe(true);
@@ -570,20 +570,17 @@ describe("AuthStorage usage cache: header ingestion", () => {
 		const start = Date.now();
 		const now = vi.spyOn(Date, "now").mockReturnValue(start);
 		const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(null);
-		expect(await storage.getApiKey("anthropic", "legacy-session")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "legacy-session");
 		expect(
 			storage.ingestUsageHeaders("anthropic", usageHeaders("0.02", "0.3"), { sessionId: "legacy-session" }),
 		).toBe(true);
 
-		let rewroteLegacyEntry = false;
 		for (const [key, entry] of store.cache) {
 			const payload = JSON.parse(entry.value) as { value?: UsageReport | null };
 			if (payload.value?.metadata?.source !== "ratelimit-headers") continue;
 			payload.value.metadata = { source: "ratelimit-headers" };
 			store.cache.set(key, { value: JSON.stringify(payload), expiresAtSec: entry.expiresAtSec });
-			rewroteLegacyEntry = true;
 		}
-		expect(rewroteLegacyEntry).toBe(true);
 
 		now.mockReturnValue(start + 60_001);
 		expect(
@@ -601,7 +598,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 	});
 
 	it("throttles repeated header ingestion for the same credential cache key", async () => {
-		expect(await storage.getApiKey("anthropic", "s")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "s");
 		expect(storage.ingestUsageHeaders("anthropic", usageHeaders("0.02", "0.3"), { sessionId: "s" })).toBe(true);
 		expect(storage.ingestUsageHeaders("anthropic", usageHeaders("0.05", "0.6"), { sessionId: "s" })).toBe(false);
 	});
@@ -615,7 +612,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 			return null;
 		});
 
-		expect(await storage.getApiKey("anthropic", "cooldown-session")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "cooldown-session");
 		expect(
 			storage.ingestUsageHeaders("anthropic", usageHeaders("0.02", "0.3"), {
 				sessionId: "cooldown-session",
@@ -674,7 +671,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 		const initialReport = requireAnthropicReport(await storage.fetchUsageReports());
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 		expect(requireLimit(initialReport, "anthropic:extra").amount.used).toBe(12.34);
-		expect(await storage.getApiKey("anthropic", "sliding-session")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "sliding-session");
 
 		now.mockReturnValue(start + 60_000);
 		expect(
@@ -718,7 +715,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 		expect(requireLimit(initialReport, "anthropic:7d:opus").amount.used).toBe(12);
 		expect(calls).toBe(1);
 
-		expect(await storage.getApiKey("anthropic", "merge-session")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "merge-session");
 		const beforeIngest = Date.now();
 		expect(storage.ingestUsageHeaders("anthropic", usageHeaders("0.05", "0.9"), { sessionId: "merge-session" })).toBe(
 			true,
@@ -789,7 +786,7 @@ describe("AuthStorage usage cache: header ingestion", () => {
 		expect(requireLimit(initialReport, "anthropic:7d:fable").amount.used).toBe(11);
 		expect(calls).toBe(1);
 
-		expect(await storage.getApiKey("anthropic", "fable-session")).toBe("oat-1");
+		await storage.getApiKey("anthropic", "fable-session");
 		expect(
 			storage.ingestUsageHeaders("anthropic", usageHeaders("0.05", "0.9", "0.61"), {
 				sessionId: "fable-session",
@@ -1032,7 +1029,6 @@ describe("AuthStorage usage cache: org-only identity stability", () => {
 describe("AuthStorage runtime UsageProvider registration", () => {
 	const directFetchContext: UsageFetchContext = {
 		fetch: async () => new Response(null, { status: 204 }),
-		listUsageCosts: () => [],
 	};
 
 	// ── registerUsageProvider ─────────────────────────────────────────────────

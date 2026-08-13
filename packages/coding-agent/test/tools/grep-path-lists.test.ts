@@ -145,7 +145,6 @@ describe("tool path arrays", () => {
 	it("search accepts a semicolon-delimited path list", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		const result = await tool.execute("search-path-array", {
@@ -167,7 +166,6 @@ describe("tool path arrays", () => {
 	it("search accepts JSON-array string paths in direct execute", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		const result = await tool.execute("search-json-array-string-paths", {
@@ -188,7 +186,6 @@ describe("tool path arrays", () => {
 	it("search expands delimited path entries", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		for (const [name, entry] of [
@@ -215,7 +212,6 @@ describe("tool path arrays", () => {
 	it("search keeps comma-delimited surviving entries when peers are missing", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		const result = await tool.execute("search-delimited-missing", {
@@ -236,7 +232,6 @@ describe("tool path arrays", () => {
 		const session = createTestSession(tempDir);
 		const tools = await createTools(session);
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		const result = await tool.execute("search-records-snapshot", {
@@ -245,7 +240,6 @@ describe("tool path arrays", () => {
 		});
 		const text = getText(result);
 		const tag = /^# apps\/\n## grep\.txt#([0-9A-F]{4})/m.exec(text)?.[1];
-		expect(tag).toBeDefined();
 		if (!tag) throw new Error("Missing search snapshot tag");
 
 		const snapshot = session.fileSnapshotStore?.byHash(
@@ -258,7 +252,6 @@ describe("tool path arrays", () => {
 	it("search accepts a single string path through tool validation", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
 
 		const args = validateToolArguments(tool, {

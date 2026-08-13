@@ -18,6 +18,7 @@ import {
 	TrendEmpty,
 } from "../components/models-table-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
+import { formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildModelPerformanceLookup, sumConversationTokens } from "../data/view-models";
 import { t } from "../locale/catalog";
@@ -342,8 +343,20 @@ function ModelsTable({
 												</div>
 												<div className="flex items-center justify-between">
 													<span>{t("models.expanded.cacheRate")}</span>
-													<span className="text-[var(--accent-cyan)]">
-														{(model.cacheRate * 100).toFixed(1)}%
+													<span className="text-[var(--accent-cyan)] font-mono">
+														{formatPercent(model.cacheRate)}
+													</span>
+												</div>
+												<div className="flex items-center justify-between">
+													<span>{t("models.expanded.cacheSavings")}</span>
+													<span
+														className={
+															model.cacheSavings < 0
+																? "text-[var(--accent-red)]"
+																: "text-[var(--accent-green)]"
+														}
+													>
+														{formatPercent(model.cacheSavings)}
 													</span>
 												</div>
 											</div>

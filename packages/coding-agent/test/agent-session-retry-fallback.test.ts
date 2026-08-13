@@ -17,7 +17,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { parseModelPattern, parseModelString } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/agent-hub";
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
@@ -27,6 +28,7 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
@@ -258,6 +260,77 @@ describe("AgentSession retry fallback", () => {
 		} finally {
 			hub.dispose();
 		}
+	});
+
+	it("forwards retry fallback events to extension handlers", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const runtime = new ExtensionRuntime();
+		const appliedFromExtension: Array<{ from: string; to: string; role: string }> = [];
+		const succeededFromExtension: Array<{ model: string; role: string }> = [];
+		const extension = await loadExtensionFromFactory(
+			pi => {
+				pi.on("retry_fallback_applied", event => {
+					appliedFromExtension.push({ from: event.from, to: event.to, role: event.role });
+				});
+				pi.on("retry_fallback_succeeded", event => {
+					succeededFromExtension.push({ model: event.model, role: event.role });
+				});
+			},
+			tempDir.path(),
+			new EventBus(),
+			runtime,
+			"retry-fallback-observer",
+		);
+		const extensionRunner = new ExtensionRunner([extension], runtime, tempDir.path(), sessionManager, modelRegistry);
+
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+
+		const appliedFromSubscribe: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const succeededFromSubscribe: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") appliedFromSubscribe.push(event);
+			if (event.type === "retry_fallback_succeeded") succeededFromSubscribe.push(event);
+		});
+
+		await session.prompt("Recover onto the fallback model");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		// Extension handlers must observe the same transition and success the session broadcasts.
+		expect(appliedFromExtension).toEqual([
+			{
+				from: `${primaryModel.provider}/${primaryModel.id}`,
+				to: `${fallbackModel.provider}/${fallbackModel.id}`,
+				role: "default",
+			},
+		]);
+		expect(succeededFromExtension).toEqual([
+			{ model: `${fallbackModel.provider}/${fallbackModel.id}`, role: "default" },
+		]);
+		expect(appliedFromExtension).toEqual(appliedFromSubscribe.map(({ from, to, role }) => ({ from, to, role })));
+		expect(succeededFromExtension).toEqual(succeededFromSubscribe.map(({ model, role }) => ({ model, role })));
 	});
 
 	it("gives every fallback model a fresh retry budget", async () => {
@@ -1553,6 +1626,147 @@ describe("AgentSession retry fallback", () => {
 			}
 		}
 	});
+
+	it("keeps advisor fallback recovery on its role chain when another role shares its model", async () => {
+		const mainModel = getBundledModel("openai", "gpt-4o-mini");
+		const advisorPrimary = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const unrelatedFallback = getBundledModel("openai", "gpt-4o");
+		const advisorFallback = getBundledModel("google", "gemini-2.5-flash");
+		if (!mainModel || !advisorPrimary || !unrelatedFallback || !advisorFallback) {
+			throw new Error("Expected bundled advisor fallback models to exist");
+		}
+
+		const mainMock = createMockModel({
+			responses: [{ content: ["Primary complete"] }, { content: ["Primary complete again"] }],
+		});
+		const advisorMock = createMockModel();
+		let advisorPrimaryAttempts = 0;
+		const requestedAdvisorModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const fallbackSucceededEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>> = [];
+		const fallbackSucceeded = Promise.withResolvers<void>();
+		const advisorFailures: string[] = [];
+		const advisorPrimarySelector = `${advisorPrimary.provider}/${advisorPrimary.id}`;
+		const advisorRoleSelector = `${advisorPrimarySelector}:high`;
+		const unrelatedFallbackSelector = `${unrelatedFallback.provider}/${unrelatedFallback.id}`;
+		const advisorFallbackSelector = `${advisorFallback.provider}/${advisorFallback.id}`;
+
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: mainModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mainMock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				commit: [unrelatedFallbackSelector],
+				advisor: [advisorFallbackSelector],
+			},
+			"advisor.syncBacklog": "1",
+		});
+		settings.setModelRole("commit", `${advisorPrimarySelector}:medium`);
+		settings.setModelRole("advisor", advisorRoleSelector);
+		vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({ switched: false });
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+			advisorConfigs: [{ name: "fallback-test", model: advisorRoleSelector }],
+			advisorStreamFn: (model, context, options) => {
+				const selector = `${model.provider}/${model.id}`;
+				requestedAdvisorModels.push(selector);
+				if (selector === advisorPrimarySelector && advisorPrimaryAttempts++ === 0) {
+					advisorMock.push({
+						throw: "Devin stream error failed_precondition: Your daily usage quota has been exhausted. Your quota will reset after 1s.",
+					});
+				} else if (selector === advisorPrimarySelector) {
+					advisorMock.push({ content: ["Advisor primary restored"] });
+				} else if (selector === unrelatedFallbackSelector) {
+					advisorMock.push({ content: ["Unrelated fallback answered"] });
+				} else if (selector === advisorFallbackSelector) {
+					advisorMock.push({ content: ["Advisor recovered"] });
+				} else {
+					throw new Error(`Unexpected advisor model requested: ${selector}`);
+				}
+				return advisorMock.stream(model, context, options);
+			},
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") fallbackAppliedEvents.push(event);
+			if (event.type === "retry_fallback_succeeded") {
+				fallbackSucceededEvents.push(event);
+				fallbackSucceeded.resolve();
+			}
+			if (event.type === "notice" && event.source === "advisor" && event.message.includes("unavailable")) {
+				advisorFailures.push(event.message);
+			}
+		});
+
+		session.setAdvisorEnabled(true);
+		await session.prompt("Complete one primary turn");
+		await session.waitForIdle();
+		// The catch-up gate releases immediately while the advisor is mid-failure
+		// (a failing advisor must never park the primary), so waitForIdle can
+		// return before the fallback retry lands — await the success event.
+		await fallbackSucceeded.promise;
+
+		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector]);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorFallback.provider,
+			id: advisorFallback.id,
+		});
+		expect(fallbackAppliedEvents).toEqual([
+			{
+				type: "retry_fallback_applied",
+				from: advisorRoleSelector,
+				to: advisorFallbackSelector,
+				role: "advisor",
+			},
+		]);
+		expect(fallbackSucceededEvents).toEqual([
+			{
+				type: "retry_fallback_succeeded",
+				model: `${advisorFallbackSelector}:high`,
+				role: "advisor",
+			},
+		]);
+		expect(advisorFailures).toEqual([]);
+
+		// The merged revert policy is probe-based (dev): the advisor stays on the
+		// fallback until its private probe succeeds — a mocked Date.now alone must
+		// not revert it onto the primary.
+		const getApiKey = vi.spyOn(modelRegistry, "getApiKey");
+		const afterCooldown = Date.now() + 2_000;
+		vi.spyOn(Date, "now").mockReturnValue(afterCooldown);
+		await session.prompt("Complete another primary turn while the advisor probe is pending");
+		await session.waitForIdle();
+		expect(getApiKey).not.toHaveBeenCalledWith(
+			expect.objectContaining({ provider: advisorPrimary.provider, id: advisorPrimary.id }),
+			expect.any(String),
+			expect.anything(),
+		);
+
+		expect(requestedAdvisorModels).toEqual([
+			advisorPrimarySelector,
+			advisorFallbackSelector,
+			advisorFallbackSelector,
+		]);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorFallback.provider,
+			id: advisorFallback.id,
+		});
+	});
+
 	it("keeps an advisor fallback until a private primary probe restores it", async () => {
 		let fakeTimersEnabled = false;
 		try {
@@ -1859,7 +2073,7 @@ describe("AgentSession retry fallback", () => {
 			advisorTools: [],
 			advisorStreamFn: advisorMock.stream,
 		});
-		expect(session.setAdvisorEnabled(true)).toBe(true);
+		session.setAdvisorEnabled(true);
 
 		const credentialStarted = Promise.withResolvers<void>();
 		const releaseCredential = Promise.withResolvers<void>();
@@ -4465,6 +4679,192 @@ describe("AgentSession retry fallback", () => {
 		}
 	});
 
+	it("does not send oversized context to a smaller retry fallback model", async () => {
+		// Regression for #8065: the forward counterpart of #7952. A retryable
+		// error on a large-window primary switches to a retry-fallback candidate,
+		// but candidate selection never compared the candidate's window with the
+		// live context. A 1M-window primary could fall onto a 4000-window fallback
+		// and immediately send a predictably oversized request. The fit gate must
+		// skip the undersized candidate and advance to the first configured
+		// candidate whose window can hold the accumulated context.
+		const modelsConfigPath = path.join(tempDir.path(), "fallback-overflow-models.json");
+		await Bun.write(
+			modelsConfigPath,
+			JSON.stringify({
+				providers: {
+					anthropic: {
+						modelOverrides: {
+							"claude-sonnet-4-5": { contextWindow: 1_000_000 },
+						},
+					},
+					openai: {
+						modelOverrides: {
+							"gpt-4o-mini": { contextWindow: 4000, contextPromotionTarget: "openai/gpt-4o" },
+							"gpt-4o": { contextWindow: 1_000_000 },
+						},
+					},
+				},
+			}),
+		);
+		modelRegistry = new ModelRegistry(authStorage, modelsConfigPath);
+
+		const primaryModel = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		const smallFallback = modelRegistry.find("openai", "gpt-4o-mini");
+		const largeFallback = modelRegistry.find("openai", "gpt-4o");
+		if (!primaryModel || !smallFallback || !largeFallback) {
+			throw new Error("Expected override models to resolve");
+		}
+		expect(primaryModel.contextWindow).toBe(1_000_000);
+		expect(smallFallback.contextWindow).toBe(4000);
+		expect(largeFallback.contextWindow).toBe(1_000_000);
+
+		// ~15k estimated tokens in the initial prompt: fits the 1M primary and the
+		// 1M large fallback, but far exceeds the 4000-window small fallback
+		// (80% => 3200), so the small fallback cannot legally receive the request.
+		const bigText = "lorem ipsum ".repeat(5000);
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		let primaryAttempts = 0;
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (model.id === primaryModel.id && primaryAttempts === 0) {
+					primaryAttempts += 1;
+					mock.push({ throw: "rate limit exceeded retry-after-ms=200" });
+				} else {
+					mock.push({ content: ["ok"] });
+				}
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": true,
+			"compaction.strategy": "context-full",
+			"compaction.thresholdPercent": 80,
+			"compaction.thresholdTokens": -1,
+			"contextPromotion.enabled": true,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				default: [`${smallFallback.provider}/${smallFallback.id}`, `${largeFallback.provider}/${largeFallback.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		// Primary rate-limits with a live ~15k context; the retry-fallback path
+		// must skip the 4000-window candidate and land on the 1M-window one.
+		await session.prompt(bigText);
+		await session.waitForIdle();
+
+		expect(requestedModels).not.toContain(`${smallFallback.provider}/${smallFallback.id}`);
+		expect(requestedModels).toContain(`${largeFallback.provider}/${largeFallback.id}`);
+		expect(session.model?.id).toBe(largeFallback.id);
+		expect(requestedModels.at(-1)).toBe(`${largeFallback.provider}/${largeFallback.id}`);
+	});
+
+	it("fits retry fallbacks after excluding the failed assistant turn", async () => {
+		const modelsConfigPath = path.join(tempDir.path(), "fallback-failed-turn-models.json");
+		await Bun.write(
+			modelsConfigPath,
+			JSON.stringify({
+				providers: {
+					anthropic: {
+						modelOverrides: {
+							"claude-sonnet-4-5": { contextWindow: 1_000_000 },
+						},
+					},
+					openai: {
+						modelOverrides: {
+							"gpt-4o-mini": { contextWindow: 8000 },
+						},
+					},
+				},
+			}),
+		);
+		modelRegistry = new ModelRegistry(authStorage, modelsConfigPath);
+
+		const primaryModel = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = modelRegistry.find("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected override models to resolve");
+		}
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (model.id === primaryModel.id) {
+					mock.push({
+						content: [{ type: "thinking", thinking: "lorem ipsum ".repeat(5000) }],
+						stopReason: "error",
+						errorMessage: "rate limit exceeded retry-after-ms=200",
+					});
+				} else {
+					mock.push({ content: ["ok"] });
+				}
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": true,
+			"compaction.thresholdPercent": 80,
+			"compaction.thresholdTokens": -1,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 0,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		// The input fits the 8k fallback, while the failed thinking-only assistant
+		// does not. That assistant is removed before retry, so it must not make the
+		// selector reject a fallback that can hold the request actually sent.
+		await session.prompt("small retry input");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
 	it("restores routed fallback primaries after cooldown expiry", async () => {
 		const openRouterModel = getBundledModel("openrouter", "z-ai/glm-4.7");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
@@ -4640,7 +5040,7 @@ describe("AgentSession retry fallback", () => {
 
 	it("skips usage fallbacks whose effort floor exceeds the session ceiling", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-		const incompatibleFallback = getBundledModel("fireworks", "deepseek-v4-pro");
+		const incompatibleFallback = getBundledModel("openrouter", "deepseek/deepseek-v4-pro");
 		const compatibleFallback = getBundledModel("openai", "gpt-4o-mini");
 		if (!primaryModel || !incompatibleFallback || !compatibleFallback) {
 			throw new Error("Expected bundled usage fallback effort models");

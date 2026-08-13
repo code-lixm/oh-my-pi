@@ -288,7 +288,6 @@ describe("AskTool option descriptions", () => {
 
 	it("renders descriptions under labels in ask call previews", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderCall(
 			{
 				question: "How should authentication continue?",
@@ -766,7 +765,6 @@ describe("AskTool custom input", () => {
 		expect(result.content[0].text).toContain("custom detail");
 
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
 		const renderedText = stripAnsi(rendered.render(120).join("\n"));
 		expect(renderedText).toContain("alpha");
@@ -854,7 +852,6 @@ describe("AskTool multiline custom input rendering", () => {
 		expect(result.details?.customInput).toBe(multilineText);
 
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
 		const renderedText = stripAnsi(rendered.render(120).join("\n"));
 
@@ -909,7 +906,6 @@ describe("AskTool multiline custom input rendering", () => {
 		);
 
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme!);
 		const renderedText = stripAnsi(rendered.render(120).join("\n"));
 
@@ -1126,7 +1122,6 @@ describe("AskTool multi-question navigation", () => {
 describe("AskTool option markers", () => {
 	it("renders single-choice call options with circular radio markers, not checkboxes", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderCall(
 			{ question: "Pick one", options: [{ label: "Alpha" }, { label: "Beta" }] },
 			{ expanded: true, isPartial: false },
@@ -1139,7 +1134,6 @@ describe("AskTool option markers", () => {
 
 	it("renders multi-select call options with rectangular checkbox markers, not radios", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderCall(
 			{ question: "Pick many", options: [{ label: "Alpha" }, { label: "Beta" }], multi: true },
 			{ expanded: true, isPartial: false },
@@ -1152,7 +1146,6 @@ describe("AskTool option markers", () => {
 
 	it("keeps option rows stable across repeated renders", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const options = [
 			{ label: "TypeScript" },
 			{ label: "Rust" },
@@ -1204,7 +1197,6 @@ describe("AskTool option markers", () => {
 
 	it("keeps single-question option rows stable across repeated renders", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		// The question body comes from the Markdown render cache, which returns
 		// the SAME array on every render of identical text at identical width.
 		// Appending option rows in place would poison that cached entry, so a
@@ -1239,7 +1231,6 @@ describe("AskTool option markers", () => {
 	});
 	it("renders single-choice result selection with a filled radio marker", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderResult(
 			{
 				content: [{ type: "text", text: "" }],
@@ -1255,7 +1246,6 @@ describe("AskTool option markers", () => {
 
 	it("renders multi-select result selections with checkbox markers", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderResult(
 			{
 				content: [{ type: "text", text: "" }],
@@ -1273,7 +1263,6 @@ describe("AskTool option markers", () => {
 describe("askToolRenderer malformed call args", () => {
 	it("renders double-encoded questions string instead of crashing the TUI", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		// Models occasionally JSON-encode the questions array as a string; a bare
 		// string passes a truthy `.length` check but has no `.map` (TUI crash).
 		const doubleEncoded = JSON.stringify([
@@ -1292,7 +1281,6 @@ describe("askToolRenderer malformed call args", () => {
 
 	it("falls back to the error frame for unparseable questions without throwing", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		for (const questions of ["[{trunc", 42, { 0: { id: "x" } }]) {
 			const rendered = askToolRenderer.renderCall(
 				{ questions } as never,
@@ -1306,7 +1294,6 @@ describe("askToolRenderer malformed call args", () => {
 
 	it("drops malformed question entries and option items while keeping valid ones", async () => {
 		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
 		const rendered = askToolRenderer.renderCall(
 			{
 				questions: [

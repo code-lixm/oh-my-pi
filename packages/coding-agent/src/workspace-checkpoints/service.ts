@@ -37,12 +37,17 @@ export interface WorkspaceCheckpointRetentionResult {
 	releasedObjectIds: string[];
 	keptCheckpointIds: string[];
 	releasedBytes: number;
+	totalStoredBytes: number | null;
+	maxTotalBytes: number | null;
+	overBudgetBytes: number;
 }
 
 /** Retention knobs surfaced from settings (External agent wires these). */
 export interface WorkspaceCheckpointRetentionOptions {
 	maxPerSession?: number;
 	maxAgeDays?: number;
+	/** Global physical CAS soft limit in MiB; protected restore roots may keep usage above it. */
+	maxTotalMiB?: number;
 }
 
 export interface CreateWorkspaceCheckpointServiceOptions {
@@ -81,24 +86,43 @@ export class WorkspaceCheckpointServiceImpl {
 		this.#now = deps.now;
 	}
 
-	/** Apply a retention sweep using the configured per-session + age limits. */
+	/** Apply a retention sweep using the configured per-session, age, and global physical-byte limits. */
 	async runRetention(): Promise<WorkspaceCheckpointRetentionResult> {
 		return this.#runRetention(true);
 	}
 
 	async #runRetention(sweepContent: boolean): Promise<WorkspaceCheckpointRetentionResult> {
 		if (!this.#enabled) {
-			return { removedCheckpointIds: [], releasedObjectIds: [], releasedBytes: 0, keptCheckpointIds: [] };
+			return {
+				removedCheckpointIds: [],
+				releasedObjectIds: [],
+				releasedBytes: 0,
+				keptCheckpointIds: [],
+				totalStoredBytes: null,
+				maxTotalBytes: null,
+				overBudgetBytes: 0,
+			};
 		}
 		const result = await this.#coordinator.runRetention({
 			rootPath: this.#rootPath,
 			maxPerSession: this.#retention.maxPerSession,
 			maxAgeMs:
 				this.#retention.maxAgeDays !== undefined ? this.#retention.maxAgeDays * 24 * 60 * 60 * 1_000 : undefined,
+			maxTotalBytes:
+				sweepContent && typeof this.#retention.maxTotalMiB === "number" && this.#retention.maxTotalMiB > 0
+					? this.#retention.maxTotalMiB * 1024 * 1024
+					: undefined,
 			sweepContent,
 		});
 		if (sweepContent || result.removedCheckpointIds.length > 0) {
 			this.#lastContentSweepAtMs = this.#now().getTime();
+		}
+		if (result.overBudgetBytes > 0 && result.maxTotalBytes !== null) {
+			logger.warn("workspace checkpoint storage remains above the protected soft limit", {
+				totalStoredBytes: result.totalStoredBytes,
+				maxTotalBytes: result.maxTotalBytes,
+				overBudgetBytes: result.overBudgetBytes,
+			});
 		}
 		return result;
 	}

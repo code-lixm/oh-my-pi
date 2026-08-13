@@ -708,6 +708,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	Subagents: "子代理",
 	"Main needs input · Esc return": "主代理需要输入 · 按 Esc 返回",
 	"{count} tools": "{count} 个工具",
+	"{count} tok": "{count} 个 Token",
+	"{duration} agent time": "代理耗时 {duration}",
+	"{measured}/{total} measured": "已统计 {measured}/{total}",
+	"{timed}/{measured} timed": "已计时 {timed}/{measured}",
 	"Started {time}": "开始 {time}",
 	"Ended {time}": "结束 {time}",
 	"Duration {duration}": "耗时 {duration}",
@@ -857,6 +861,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Advisor {count}": "审阅助手 {count}",
 	"Agent Control Center": "代理控制中心",
 	"Agent Hub": "代理中心",
+	"Usage unavailable": "暂无用量数据",
 	"Jobs Hub": "任务中心",
 	"Job Details": "任务详情",
 	"Live output tail": "实时输出末尾",
@@ -1914,6 +1919,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"自动工作区检查点失败时的会话处理方式：阻止会修改工作区的回合、显示警告后继续，或静默继续。",
 	warn: "警告后继续",
 	ignore: "忽略",
+	"Max total checkpoint storage (MiB)": "检查点总存储上限（MiB）",
+	"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.":
+		"所有工作区检查点 CAS 物理存储的软上限。垃圾回收会自动删除最旧且未受保护的检查点；受保护的恢复历史可能使占用超过上限。设为 0 可禁用总量限制。",
 	"Intent Tracing": "意图追踪",
 	"Interrupt Mode": "中断模式",
 	"Interrupt the agent mid-stream when output matches rule patterns (Time-Traveling Stream Rules)":

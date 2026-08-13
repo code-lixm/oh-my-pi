@@ -109,6 +109,7 @@ export interface CoordinatorRetentionOptions {
 	rootPath: string;
 	maxPerSession?: number;
 	maxAgeMs?: number;
+	maxTotalBytes?: number;
 	/** Skip full CAS traversal unless metadata eviction requires immediate reclamation. */
 	sweepContent?: boolean;
 }
@@ -118,6 +119,22 @@ export interface CoordinatorRetentionResult {
 	releasedObjectIds: string[];
 	releasedBytes: number;
 	keptCheckpointIds: string[];
+	totalStoredBytes: number | null;
+	maxTotalBytes: number | null;
+	overBudgetBytes: number;
+}
+
+interface CapacityWorkspaceSnapshot {
+	rootPath: string;
+	workspaceId: string;
+	checkpoints: WorkspaceCheckpointRecord[];
+	protectedIds: Set<string>;
+	objectIdsByCheckpoint: Map<string, Set<string>>;
+	objectRefCounts: Map<string, number>;
+	objectBytes: Map<string, number>;
+	totalBytes: number;
+	orphanBytes: number;
+	safeToSweep: boolean;
 }
 
 const DEFAULT_MUTATOR_TIMEOUT_MS = 5_000;
@@ -564,28 +581,28 @@ export class Coordinator {
 
 	async runRetention(options: CoordinatorRetentionOptions): Promise<CoordinatorRetentionResult> {
 		await this.#store.init();
+		const local = await this.#runWorkspaceRetention(options);
+		if (typeof options.maxTotalBytes !== "number" || options.maxTotalBytes <= 0) return local;
+
+		const global = await this.#withLock(this.#storeDir, "global-checkpoint-retention", async () =>
+			this.#runGlobalCapacityRetention(options.maxTotalBytes!),
+		);
+		return {
+			removedCheckpointIds: [...new Set([...local.removedCheckpointIds, ...global.removedCheckpointIds])],
+			releasedObjectIds: [...new Set([...local.releasedObjectIds, ...global.releasedObjectIds])],
+			releasedBytes: local.releasedBytes + global.releasedBytes,
+			keptCheckpointIds: global.keptCheckpointIds,
+			totalStoredBytes: global.totalStoredBytes,
+			maxTotalBytes: global.maxTotalBytes,
+			overBudgetBytes: global.overBudgetBytes,
+		};
+	}
+
+	async #runWorkspaceRetention(options: CoordinatorRetentionOptions): Promise<CoordinatorRetentionResult> {
 		const workspaceId = this.#store.workspaceIdForRoot(options.rootPath);
 		return this.#withLock(options.rootPath, workspaceId, async () => {
 			const checkpoints = await this.#store.listCheckpoints({ rootPath: options.rootPath });
-			const roots = await this.#store.listGcRoots(options.rootPath);
-			const protectedIds = new Set(roots.map(root => root.checkpointId));
-			const pendingPlanCutoffMs = this.#now().getTime() - DEFAULT_PENDING_RESTORE_PLAN_TTL_MS;
-			const pendingPlans = await this.#store.listRestorePlans({
-				rootPath: options.rootPath,
-				status: "pending",
-				limit: Number.MAX_SAFE_INTEGER,
-			});
-			for (const plan of pendingPlans) {
-				const createdAtMs = Date.parse(plan.createdAt);
-				if (Number.isFinite(createdAtMs) && createdAtMs >= pendingPlanCutoffMs) {
-					protectedIds.add(plan.checkpointId);
-					continue;
-				}
-				await this.#store.updateRestorePlan(plan.id, {
-					status: "failed",
-					failedReason: "restore plan expired before apply",
-				});
-			}
+			const protectedIds = await this.#protectedCheckpointIds(options.rootPath);
 			const cutoffMs =
 				typeof options.maxAgeMs === "number" && options.maxAgeMs > 0
 					? this.#now().getTime() - options.maxAgeMs
@@ -624,14 +641,12 @@ export class Coordinator {
 					releasedObjectIds: [],
 					releasedBytes: 0,
 					keptCheckpointIds: remaining.map(checkpoint => checkpoint.id),
+					totalStoredBytes: null,
+					maxTotalBytes: null,
+					overBudgetBytes: 0,
 				};
 			}
-			const reachableObjectIds = new Set<string>();
-			for (const checkpoint of remaining) {
-				reachableObjectIds.add(checkpoint.manifestObjectId);
-				const manifest = await this.#loadManifest(checkpoint);
-				for (const objectId of collectWorkspaceManifestObjectIds(manifest)) reachableObjectIds.add(objectId);
-			}
+			const reachableObjectIds = await this.#reachableObjectIds(remaining);
 			const content = await this.#contentStoreFor(options.rootPath);
 			const sweep = await content.sweepUnreachable(reachableObjectIds);
 			return {
@@ -639,8 +654,196 @@ export class Coordinator {
 				releasedObjectIds: sweep.deletedObjectIds,
 				releasedBytes: sweep.deletedBytes,
 				keptCheckpointIds: remaining.map(checkpoint => checkpoint.id),
+				totalStoredBytes: null,
+				maxTotalBytes: null,
+				overBudgetBytes: 0,
 			};
 		});
+	}
+
+	async #protectedCheckpointIds(rootPath?: string): Promise<Set<string>> {
+		const roots = await this.#store.listGcRoots(rootPath);
+		const protectedIds = new Set(roots.map(root => root.checkpointId));
+		const pendingPlanCutoffMs = this.#now().getTime() - DEFAULT_PENDING_RESTORE_PLAN_TTL_MS;
+		const pendingPlans = await this.#store.listRestorePlans({
+			rootPath,
+			status: "pending",
+			limit: Number.MAX_SAFE_INTEGER,
+		});
+		for (const plan of pendingPlans) {
+			const createdAtMs = Date.parse(plan.createdAt);
+			if (Number.isFinite(createdAtMs) && createdAtMs >= pendingPlanCutoffMs) {
+				protectedIds.add(plan.checkpointId);
+				continue;
+			}
+			await this.#store.updateRestorePlan(plan.id, {
+				status: "failed",
+				failedReason: "restore plan expired before apply",
+			});
+		}
+		return protectedIds;
+	}
+
+	async #reachableObjectIds(checkpoints: readonly WorkspaceCheckpointRecord[]): Promise<Set<string>> {
+		const reachableObjectIds = new Set<string>();
+		for (const checkpoint of checkpoints) {
+			reachableObjectIds.add(checkpoint.manifestObjectId);
+			const manifest = await this.#loadManifest(checkpoint);
+			for (const objectId of collectWorkspaceManifestObjectIds(manifest)) reachableObjectIds.add(objectId);
+		}
+		return reachableObjectIds;
+	}
+
+	async #capacitySnapshot(rootPath: string): Promise<CapacityWorkspaceSnapshot> {
+		const workspaceId = this.#store.workspaceIdForRoot(rootPath);
+		return this.#withLock(rootPath, workspaceId, async () => {
+			const checkpoints = await this.#store.listCheckpoints({ rootPath });
+			const protectedIds = await this.#protectedCheckpointIds(rootPath);
+			const content = await this.#contentStoreFor(rootPath);
+			const inventory = await content.inventory();
+			const objectBytes = new Map(inventory.objects.map(object => [object.id, object.bytes]));
+			const objectIdsByCheckpoint = new Map<string, Set<string>>();
+			const objectRefCounts = new Map<string, number>();
+			try {
+				for (const checkpoint of checkpoints) {
+					const objectIds = new Set([checkpoint.manifestObjectId]);
+					const manifest = await this.#loadManifest(checkpoint);
+					for (const objectId of collectWorkspaceManifestObjectIds(manifest)) objectIds.add(objectId);
+					objectIdsByCheckpoint.set(checkpoint.id, objectIds);
+					for (const objectId of objectIds) {
+						objectRefCounts.set(objectId, (objectRefCounts.get(objectId) ?? 0) + 1);
+					}
+				}
+				let orphanBytes = 0;
+				for (const [objectId, bytes] of objectBytes) {
+					if (!objectRefCounts.has(objectId)) orphanBytes += bytes;
+				}
+				return {
+					rootPath,
+					workspaceId,
+					checkpoints,
+					protectedIds,
+					objectIdsByCheckpoint,
+					objectRefCounts,
+					objectBytes,
+					totalBytes: inventory.totalBytes,
+					orphanBytes,
+					safeToSweep: true,
+				};
+			} catch (error) {
+				this.#emitWarning(
+					rootPath,
+					workspaceId,
+					`global capacity retention skipped a workspace with unreadable checkpoint metadata: ${(error as Error).message}`,
+				);
+				return {
+					rootPath,
+					workspaceId,
+					checkpoints,
+					protectedIds: new Set(checkpoints.map(checkpoint => checkpoint.id)),
+					objectIdsByCheckpoint,
+					objectRefCounts,
+					objectBytes,
+					totalBytes: inventory.totalBytes,
+					orphanBytes: 0,
+					safeToSweep: false,
+				};
+			}
+		});
+	}
+
+	async #runGlobalCapacityRetention(maxTotalBytes: number): Promise<CoordinatorRetentionResult> {
+		const rootsByWorkspace = new Map<string, string>();
+		for (const state of await this.#store.listWorkspaces()) rootsByWorkspace.set(state.workspaceId, state.rootPath);
+		for (const checkpoint of await this.#store.listCheckpoints()) {
+			rootsByWorkspace.set(checkpoint.workspaceId, checkpoint.rootPath);
+		}
+		const snapshots: CapacityWorkspaceSnapshot[] = [];
+		for (const rootPath of [...rootsByWorkspace.values()].sort()) {
+			snapshots.push(await this.#capacitySnapshot(rootPath));
+		}
+
+		let projectedBytes = snapshots.reduce((total, snapshot) => total + snapshot.totalBytes, 0);
+		for (const snapshot of snapshots) projectedBytes -= snapshot.orphanBytes;
+		const candidates = snapshots
+			.flatMap(snapshot =>
+				snapshot.safeToSweep
+					? snapshot.checkpoints
+							.filter(checkpoint => !snapshot.protectedIds.has(checkpoint.id))
+							.map(checkpoint => ({ checkpoint, snapshot }))
+					: [],
+			)
+			.sort(
+				(left, right) =>
+					left.checkpoint.createdAt.localeCompare(right.checkpoint.createdAt) ||
+					left.checkpoint.id.localeCompare(right.checkpoint.id),
+			);
+		const selectedByRoot = new Map<string, Set<string>>();
+		for (const { checkpoint, snapshot } of candidates) {
+			if (projectedBytes <= maxTotalBytes) break;
+			let selected = selectedByRoot.get(snapshot.rootPath);
+			if (!selected) {
+				selected = new Set<string>();
+				selectedByRoot.set(snapshot.rootPath, selected);
+			}
+			selected.add(checkpoint.id);
+			for (const objectId of snapshot.objectIdsByCheckpoint.get(checkpoint.id) ?? []) {
+				const remainingRefs = (snapshot.objectRefCounts.get(objectId) ?? 1) - 1;
+				snapshot.objectRefCounts.set(objectId, remainingRefs);
+				if (remainingRefs === 0) projectedBytes -= snapshot.objectBytes.get(objectId) ?? 0;
+			}
+		}
+
+		const removedCheckpointIds: string[] = [];
+		const releasedObjectIds: string[] = [];
+		let releasedBytes = 0;
+		for (const snapshot of snapshots) {
+			if (!snapshot.safeToSweep) continue;
+			await this.#withLock(snapshot.rootPath, snapshot.workspaceId, async () => {
+				const current = await this.#store.listCheckpoints({ rootPath: snapshot.rootPath });
+				const protectedIds = await this.#protectedCheckpointIds(snapshot.rootPath);
+				const selected = selectedByRoot.get(snapshot.rootPath) ?? new Set<string>();
+				const deletable = current.filter(
+					checkpoint => selected.has(checkpoint.id) && !protectedIds.has(checkpoint.id),
+				);
+				const deletableIds = new Set(deletable.map(checkpoint => checkpoint.id));
+				const remaining = current.filter(checkpoint => !deletableIds.has(checkpoint.id));
+				let reachableObjectIds: Set<string>;
+				try {
+					reachableObjectIds = await this.#reachableObjectIds(remaining);
+				} catch (error) {
+					this.#emitWarning(
+						snapshot.rootPath,
+						snapshot.workspaceId,
+						`global capacity retention skipped a workspace with unreadable checkpoint metadata: ${(error as Error).message}`,
+					);
+					return;
+				}
+				for (const checkpoint of deletable) {
+					if (await this.#store.deleteCheckpoint(checkpoint.id)) removedCheckpointIds.push(checkpoint.id);
+				}
+				const content = await this.#contentStoreFor(snapshot.rootPath);
+				const sweep = await content.sweepUnreachable(reachableObjectIds);
+				releasedObjectIds.push(...sweep.deletedObjectIds);
+				releasedBytes += sweep.deletedBytes;
+			});
+		}
+
+		let totalStoredBytes = 0;
+		for (const snapshot of snapshots) {
+			const content = await this.#contentStoreFor(snapshot.rootPath);
+			totalStoredBytes += (await content.inventory()).totalBytes;
+		}
+		const kept = await this.#store.listCheckpoints();
+		return {
+			removedCheckpointIds,
+			releasedObjectIds,
+			releasedBytes,
+			keptCheckpointIds: kept.map(checkpoint => checkpoint.id),
+			totalStoredBytes,
+			maxTotalBytes,
+			overBudgetBytes: Math.max(0, totalStoredBytes - maxTotalBytes),
+		};
 	}
 
 	// ─── preview ──────────────────────────────────────────────────────────

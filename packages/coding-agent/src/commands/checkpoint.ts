@@ -55,6 +55,7 @@ export default class Checkpoint extends Command {
 		const retention = {
 			maxPerSession: settings.get("workspaceCheckpoint.retention.maxPerSession"),
 			maxAgeDays: settings.get("workspaceCheckpoint.retention.maxAgeDays"),
+			maxTotalMiB: settings.get("workspaceCheckpoint.retention.maxTotalMiB"),
 		};
 		const reason = (flags.reason ?? "manual") as CreateWorkspaceCheckpointRequest["reason"];
 		const label = typeof args.label === "string" ? args.label : undefined;

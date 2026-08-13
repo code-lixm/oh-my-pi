@@ -69,6 +69,15 @@ export interface WorkspaceContentSweepResult {
 	keptObjectCount: number;
 	deletedStagingFiles: number;
 }
+export interface WorkspaceContentInventoryObject {
+	id: string;
+	bytes: number;
+}
+
+export interface WorkspaceContentInventory {
+	objects: WorkspaceContentInventoryObject[];
+	totalBytes: number;
+}
 
 /** Public surface a checkpoint service can call against an open store. */
 export interface WorkspaceContentStore {
@@ -116,6 +125,8 @@ export interface WorkspaceContentStore {
 
 	/** Cheaply check if an object's backing file already exists on disk. */
 	has(id: string): Promise<boolean>;
+	/** Measure the materialised CAS objects and their physical byte sizes. */
+	inventory(): Promise<WorkspaceContentInventory>;
 
 	/**
 	 * Delete every materialised object not present in `reachableObjectIds`.
@@ -241,6 +252,32 @@ class FsWorkspaceContentStore implements WorkspaceContentStore {
 			if (isEnoent(err)) return false;
 			throw err;
 		}
+	}
+	async inventory(): Promise<WorkspaceContentInventory> {
+		const objects: WorkspaceContentInventoryObject[] = [];
+		let totalBytes = 0;
+		const shards = await fs.readdir(this.#objectsDir, { withFileTypes: true });
+		shards.sort((a, b) => a.name.localeCompare(b.name));
+		for (const shard of shards) {
+			if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) continue;
+			const shardPath = path.join(this.#objectsDir, shard.name);
+			const entries = await fs.readdir(shardPath, { withFileTypes: true });
+			entries.sort((a, b) => a.name.localeCompare(b.name));
+			for (const entry of entries) {
+				if (!entry.isFile() || !/^[0-9a-f]{62}$/.test(entry.name)) continue;
+				const objectPath = path.join(shardPath, entry.name);
+				try {
+					const stat = await fs.lstat(objectPath);
+					if (!stat.isFile()) continue;
+					const id = `${OBJECT_ID_PREFIX}${shard.name}${entry.name}`;
+					objects.push({ id, bytes: stat.size });
+					totalBytes += stat.size;
+				} catch (error) {
+					if (!isEnoent(error)) throw error;
+				}
+			}
+		}
+		return { objects, totalBytes };
 	}
 
 	async sweepUnreachable(reachableObjectIds: ReadonlySet<string>): Promise<WorkspaceContentSweepResult> {

@@ -15,6 +15,7 @@ import { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelSelectorValue,
 	formatModelStringWithRouting,
+	resolveAgentAdvisorSelection,
 	resolveAgentPrewalkPattern,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
@@ -926,6 +927,9 @@ export function createSubagentSettings(
 			// the parent task approval is the authorization boundary. Use yolo mode
 			// to preserve unattended subagent execution. User `tools.approval` policies still apply.
 			"tools.approvalMode": "yolo",
+			// Subagents run unadvised by default; runSubprocess opts a spawn back in
+			// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
+			"advisor.enabled": false,
 			...overrides,
 		},
 		{ storage: baseSettings.getStorage() },
@@ -2940,12 +2944,25 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const subtaskSessionFile =
 		options.sessionFile ?? (options.artifactsDir ? path.join(options.artifactsDir, `${id}.jsonl`) : undefined);
 
+	// Per-agent advisor decisions take precedence over the legacy blanket
+	// `advisor.subagents` setting. A false selection is an explicit opt-out;
+	// only an absent selection falls through to the global default.
+	const advisorSelection = resolveAgentAdvisorSelection({
+		settingsOverride: settings.get("task.agentAdvisor")[agent.name],
+		agentAdvisor: agent.advisor,
+	});
+	const advisorEnabled =
+		advisorSelection === undefined ? settings.get("advisor.subagents") : advisorSelection !== false;
+	const advisorModel =
+		advisorSelection !== undefined && advisorSelection !== false ? advisorSelection.model : undefined;
 	const subagentSettings = createSubagentSettings(
 		settings,
 		{
 			...(agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
 			// Isolated runs must not expose roots outside the worktree.
 			...(worktree !== undefined ? { "workspace.additionalDirectories": [] } : undefined),
+			...(advisorEnabled ? { "advisor.enabled": true } : undefined),
+			...(advisorModel ? { modelRoles: { ...settings.getModelRoles(), advisor: advisorModel } } : undefined),
 		},
 		options.parentServiceTier,
 	);
@@ -3464,6 +3481,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				readOnly: isReadOnlyAgent(agent),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
+				advisor: advisorEnabled ? (advisorModel ?? "on") : undefined,
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,

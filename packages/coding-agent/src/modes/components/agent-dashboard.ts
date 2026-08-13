@@ -455,12 +455,16 @@ export class AgentDashboard extends Container {
 					if (sourceCmp !== 0) return sourceCmp;
 					return a.name.localeCompare(b.name);
 				})
-				.map(agent => ({
-					...agent,
-					disabled: disabled.has(agent.name),
-					overrideModel: overrides[agent.name]?.trim() || undefined,
-					prewalkOverride: prewalkOverrides[agent.name]?.trim() || undefined,
-				}));
+				.map(agent => {
+					const override = overrides[agent.name];
+					const overrideModel = (Array.isArray(override) ? override.join(",") : (override ?? "")).trim();
+					return {
+						...agent,
+						disabled: disabled.has(agent.name),
+						overrideModel: overrideModel || undefined,
+						prewalkOverride: prewalkOverrides[agent.name]?.trim() || undefined,
+					};
+				});
 
 			this.#tabs = this.#buildTabs(this.#allAgents);
 			const nextTabIndex = this.#tabs.findIndex(tab => tab.id === activeTabId);

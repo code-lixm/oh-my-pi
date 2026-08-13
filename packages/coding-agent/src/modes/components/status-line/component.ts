@@ -302,6 +302,7 @@ function hasGitBackedSegment(segments: readonly StatusLineSegmentId[]): boolean 
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class StatusLineComponent implements Component {
+	#widthEpochRevision = 0;
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
@@ -767,6 +768,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	invalidate(): void {
+		this.#widthEpochRevision++;
 		// Generic repaint invalidation (theme change, message event, model
 		// switch, …). Must NOT abort or restart a live reftable HEAD/PR resolve:
 		// the render path self-invalidates via cwd/context cache-miss checks, so
@@ -1539,12 +1541,15 @@ export class StatusLineComponent implements Component {
 				const hasBurstSpan =
 					typeof durationMs === "number" &&
 					(Math.abs(durationMs - 5 * 3_600_000) <= 60_000 || Math.abs(durationMs - 7 * 86_400_000) <= 60_000);
+				const isCompactProviderWindow = provider === "opencode-go" && (isBurstWindow || isMonthlyWindow);
 				const compactShape =
 					isBurstWindow ||
 					hasBurstSpan ||
 					(provider === "cursor" && isMonthlyWindow && typeof rawAmount.unit !== "string");
 				if (typeof rawAmount.unit !== "string" && !compactShape) continue;
-				if (typeof rawAmount.unit !== "string" && compactShape) preferCompact = true;
+				if ((typeof rawAmount.unit !== "string" && compactShape) || isCompactProviderWindow) {
+					preferCompact = true;
+				}
 				const amount: UsageAmount =
 					typeof rawAmount.unit === "string" ? (rawAmount as UsageAmount) : { ...rawAmount, unit: "requests" };
 				const accountParts = [
@@ -1649,7 +1654,10 @@ export class StatusLineComponent implements Component {
 				};
 				sevenDayTier = item.tier;
 			}
-			if (activeProvider?.toLowerCase() === "cursor" && (item.windowId === "monthly" || item.windowId === "30d")) {
+			if (
+				(activeProvider?.toLowerCase() === "cursor" || activeProvider?.toLowerCase() === "opencode-go") &&
+				(item.windowId === "monthly" || item.windowId === "30d")
+			) {
 				const priority = cursorMonthlyPriority(item.limitId);
 				if (
 					compactWindows.monthly === undefined ||
@@ -1669,7 +1677,17 @@ export class StatusLineComponent implements Component {
 			}
 		}
 		compactWindows.tier = fiveHourTier ?? sevenDayTier ?? monthlyTier;
-		compactWindows.preferCompact = preferCompact && items.every(item => item.amount.unit === "requests");
+		compactWindows.preferCompact =
+			preferCompact &&
+			items.every(
+				item =>
+					item.amount.unit === "requests" ||
+					(item.provider === "opencode-go" &&
+						(item.windowId === "5h" ||
+							item.windowId === "7d" ||
+							item.windowId === "monthly" ||
+							item.windowId === "30d")),
+			);
 		return items.length > 0 ? compactWindows : null;
 	}
 
@@ -2088,7 +2106,10 @@ export class StatusLineComponent implements Component {
 		return leftGroup + gapFill + rightGroup;
 	}
 
-	getTopBorder(width: number, ruleColor?: (text: string) => string): { content: string; width: number } {
+	getTopBorder(
+		width: number,
+		ruleColor?: (text: string) => string,
+	): { content: string; width: number; revision: number } {
 		let content = this.#buildStatusLine(width, ruleColor);
 		if (this.#focusedAgentId && content) {
 			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
@@ -2098,6 +2119,7 @@ export class StatusLineComponent implements Component {
 		return {
 			content,
 			width: visibleWidth(content),
+			revision: this.#widthEpochRevision,
 		};
 	}
 

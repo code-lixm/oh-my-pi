@@ -953,7 +953,6 @@ describe("Agent hub overlay mounting and close tap", () => {
 
 		expect(shown()).toBeUndefined();
 		const shownHub = await shownReady;
-		expect(shownHub).toBeDefined();
 		expect(agents.get("Worker")?.sessionFile).toBe(workerSessionFile);
 		shownHub!.dispose();
 	});

@@ -1329,6 +1329,199 @@ describe("workspace checkpoint service end-to-end contracts", () => {
 		}
 	});
 
+	it("enforces one physical CAS budget across workspaces and evicts the globally oldest unprotected checkpoint", async () => {
+		vi.useFakeTimers();
+		let secondaryService: WorkspaceCheckpointServiceImpl | null = null;
+		try {
+			const maxTotalMiB = 4;
+			const maxTotalBytes = maxTotalMiB * 1024 * 1024;
+			const payloadBytes = 1024 * 1024 + 128 * 1024;
+			const retentionNow = new Date("2030-01-05T00:00:00.000Z");
+			const harness = await openHarness("retention-global-cas-budget", {
+				now: () => retentionNow,
+				retention: { maxTotalMiB },
+			});
+			const primaryService = harness.service;
+			const { root, store, storeDir, workspaceRoot: primaryWorkspace } = harness;
+			const secondaryWorkspace = path.join(root, "secondary-workspace");
+			await fs.mkdir(secondaryWorkspace, { recursive: true });
+			secondaryService = await createWorkspaceCheckpointService({
+				rootPath: secondaryWorkspace,
+				storeDir,
+				store,
+				conversationAdapter: new FakeConversationAdapter(),
+				mutatorGuard: new FakeMutatorGuard(),
+				now: () => retentionNow,
+				retention: { maxTotalMiB },
+			});
+
+			// Distinct deterministic payloads avoid CAS de-duplication while each
+			// independently crosses the 1 MiB capacity boundary. Create the
+			// younger secondary checkpoint first so database insertion order cannot
+			// stand in for the global createdAt ordering asserted below.
+			await writeBytes(secondaryWorkspace, "payload.bin", new Uint8Array(payloadBytes).fill(0x33));
+			const youngerUnprotected = await secondaryService.create({
+				rootPath: secondaryWorkspace,
+				reason: "turn",
+			});
+			await writeBytes(secondaryWorkspace, "payload.bin", new Uint8Array(payloadBytes).fill(0x44));
+			const secondaryCurrent = await secondaryService.create({ rootPath: secondaryWorkspace, reason: "turn" });
+
+			await writeBytes(primaryWorkspace, "payload.bin", new Uint8Array(payloadBytes).fill(0x11));
+			const globallyOldest = await primaryService.create({ rootPath: primaryWorkspace, reason: "turn" });
+			await writeBytes(primaryWorkspace, "payload.bin", new Uint8Array(payloadBytes).fill(0x22));
+			const primaryCurrent = await primaryService.create({ rootPath: primaryWorkspace, reason: "turn" });
+
+			setCheckpointCreatedAt(store, globallyOldest.id, "2030-01-01T00:00:00.000Z");
+			setCheckpointCreatedAt(store, youngerUnprotected.id, "2030-01-02T00:00:00.000Z");
+			setCheckpointCreatedAt(store, primaryCurrent.id, "2030-01-03T00:00:00.000Z");
+			setCheckpointCreatedAt(store, secondaryCurrent.id, "2030-01-04T00:00:00.000Z");
+
+			const primaryStoreDir = path.join(storeDir, "workspaces", store.workspaceIdForRoot(primaryWorkspace));
+			const secondaryStoreDir = path.join(storeDir, "workspaces", store.workspaceIdForRoot(secondaryWorkspace));
+			const [primaryContentStore, secondaryContentStore] = await Promise.all([
+				openWorkspaceContentStoreAt(primaryStoreDir),
+				openWorkspaceContentStoreAt(secondaryStoreDir),
+			]);
+			const [globallyOldestObjectId, youngerUnprotectedObjectId, primaryCurrentObjectId, secondaryCurrentObjectId] =
+				await Promise.all([
+					checkpointFileObjectId(primaryContentStore, globallyOldest, "payload.bin"),
+					checkpointFileObjectId(secondaryContentStore, youngerUnprotected, "payload.bin"),
+					checkpointFileObjectId(primaryContentStore, primaryCurrent, "payload.bin"),
+					checkpointFileObjectId(secondaryContentStore, secondaryCurrent, "payload.bin"),
+				]);
+			const beforeTotalStoredBytes = (
+				await Promise.all([
+					casObjectInventory(primaryContentStore.objectsDir),
+					casObjectInventory(secondaryContentStore.objectsDir),
+				])
+			).reduce((total, inventory) => total + inventory.totalBytes, 0);
+			expect(beforeTotalStoredBytes).toBeGreaterThan(maxTotalBytes);
+
+			const result = await secondaryService.runRetention();
+			const afterTotalStoredBytes = (
+				await Promise.all([
+					casObjectInventory(primaryContentStore.objectsDir),
+					casObjectInventory(secondaryContentStore.objectsDir),
+				])
+			).reduce((total, inventory) => total + inventory.totalBytes, 0);
+
+			expect(result.removedCheckpointIds).toEqual([globallyOldest.id]);
+			expect(result.releasedObjectIds).toContain(globallyOldestObjectId);
+			expect(result.releasedBytes).toBe(beforeTotalStoredBytes - afterTotalStoredBytes);
+			expect(result.releasedBytes).toBeGreaterThanOrEqual(payloadBytes);
+			expect(result.totalStoredBytes).toBe(afterTotalStoredBytes);
+			expect(result.maxTotalBytes).toBe(maxTotalBytes);
+			expect(result.overBudgetBytes).toBe(0);
+			expect(result.totalStoredBytes).toBeLessThanOrEqual(maxTotalBytes);
+
+			expect(await store.getCheckpoint(globallyOldest.id)).toBeNull();
+			expect(await primaryContentStore.has(globallyOldestObjectId)).toBeFalse();
+			expect(await pathExists(objectPathFor(primaryStoreDir, globallyOldestObjectId))).toBeFalse();
+			expect(checkpointIds(await primaryService.list({ rootPath: primaryWorkspace }))).toEqual([primaryCurrent.id]);
+			expect(checkpointIds(await secondaryService.list({ rootPath: secondaryWorkspace }))).toEqual(
+				expect.arrayContaining([youngerUnprotected.id, secondaryCurrent.id]),
+			);
+			for (const { checkpoint, contentStore, contentStoreDir, objectId } of [
+				{
+					checkpoint: youngerUnprotected,
+					contentStore: secondaryContentStore,
+					contentStoreDir: secondaryStoreDir,
+					objectId: youngerUnprotectedObjectId,
+				},
+				{
+					checkpoint: primaryCurrent,
+					contentStore: primaryContentStore,
+					contentStoreDir: primaryStoreDir,
+					objectId: primaryCurrentObjectId,
+				},
+				{
+					checkpoint: secondaryCurrent,
+					contentStore: secondaryContentStore,
+					contentStoreDir: secondaryStoreDir,
+					objectId: secondaryCurrentObjectId,
+				},
+			]) {
+				expect(await store.getCheckpoint(checkpoint.id)).not.toBeNull();
+				expect(result.keptCheckpointIds).toContain(checkpoint.id);
+				expect(await contentStore.has(objectId)).toBeTrue();
+				expect(await pathExists(objectPathFor(contentStoreDir, objectId))).toBeTrue();
+			}
+		} finally {
+			secondaryService?.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports positive over-budget bytes without deleting checkpoints protected by current, named, or pinned roots", async () => {
+		vi.useFakeTimers();
+		try {
+			const maxTotalMiB = 1;
+			const maxTotalBytes = maxTotalMiB * 1024 * 1024;
+			const payloadBytes = 1024 * 1024 + 128 * 1024;
+			const harness = await openHarness("retention-protected-global-budget", {
+				retention: { maxTotalMiB },
+			});
+			const service = harness.service;
+			const { store, storeDir, workspaceRoot } = harness;
+
+			await writeBytes(workspaceRoot, "payload.bin", new Uint8Array(payloadBytes).fill(0x51));
+			const named = await service.create({ rootPath: workspaceRoot, reason: "manual", label: "keep named" });
+			await writeBytes(workspaceRoot, "payload.bin", new Uint8Array(payloadBytes).fill(0x52));
+			const pinned = await service.create({ rootPath: workspaceRoot, reason: "manual", pinned: true });
+			await writeBytes(workspaceRoot, "payload.bin", new Uint8Array(payloadBytes).fill(0x53));
+			const current = await service.create({ rootPath: workspaceRoot, reason: "turn" });
+
+			const contentStoreDir = path.join(storeDir, "workspaces", store.workspaceIdForRoot(workspaceRoot));
+			const contentStore = await openWorkspaceContentStoreAt(contentStoreDir);
+			const [namedObjectId, pinnedObjectId, currentObjectId] = await Promise.all([
+				checkpointFileObjectId(contentStore, named, "payload.bin"),
+				checkpointFileObjectId(contentStore, pinned, "payload.bin"),
+				checkpointFileObjectId(contentStore, current, "payload.bin"),
+			]);
+			const before = await casObjectInventory(contentStore.objectsDir);
+			expect(before.totalBytes).toBeGreaterThan(maxTotalBytes);
+
+			const result = await service.runRetention();
+			const after = await casObjectInventory(contentStore.objectsDir);
+
+			expect(result.removedCheckpointIds).toEqual([]);
+			expect(result.releasedObjectIds).toEqual([]);
+			expect(result.releasedBytes).toBe(0);
+			expect(result.totalStoredBytes).toBe(after.totalBytes);
+			expect(result.totalStoredBytes).toBe(before.totalBytes);
+			expect(result.maxTotalBytes).toBe(maxTotalBytes);
+			expect(result.overBudgetBytes).toBe(after.totalBytes - maxTotalBytes);
+			expect(result.overBudgetBytes).toBeGreaterThan(0);
+
+			expect(await store.listGcRoots(workspaceRoot)).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ checkpointId: named.id, reasons: expect.arrayContaining(["named"]) }),
+					expect.objectContaining({ checkpointId: pinned.id, reasons: expect.arrayContaining(["pinned"]) }),
+					expect.objectContaining({
+						checkpointId: current.id,
+						reasons: expect.arrayContaining(["workspace_pointer"]),
+					}),
+				]),
+			);
+			expect(checkpointIds(await service.list({ rootPath: workspaceRoot }))).toEqual(
+				expect.arrayContaining([named.id, pinned.id, current.id]),
+			);
+			for (const { checkpoint, objectId } of [
+				{ checkpoint: named, objectId: namedObjectId },
+				{ checkpoint: pinned, objectId: pinnedObjectId },
+				{ checkpoint: current, objectId: currentObjectId },
+			]) {
+				expect(await store.getCheckpoint(checkpoint.id)).not.toBeNull();
+				expect(result.keptCheckpointIds).toContain(checkpoint.id);
+				expect(await contentStore.has(objectId)).toBeTrue();
+				expect(await pathExists(objectPathFor(contentStoreDir, objectId))).toBeTrue();
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	describe.skipIf(!git.isGitAvailable())("runRetention preserves Git capsule objects", () => {
 		it("retains raw HEAD, index, and shared-index objects referenced by surviving checkpoints while sweeping orphaned blobs", async () => {
 			const harness = await openHarness("retention-git");

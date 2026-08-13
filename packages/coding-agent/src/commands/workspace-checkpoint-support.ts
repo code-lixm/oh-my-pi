@@ -46,7 +46,7 @@ export async function createOfflineWorkspaceCheckpointService(input: {
 	rootPath: string;
 	agentDir: string;
 	enabled: boolean;
-	retention: { maxPerSession: number; maxAgeDays: number };
+	retention: { maxPerSession: number; maxAgeDays: number; maxTotalMiB: number };
 }): Promise<WorkspaceCheckpointService> {
 	return await createWorkspaceCheckpointService({
 		rootPath: input.rootPath,

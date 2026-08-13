@@ -926,7 +926,8 @@ function getModelRoleAlias(value: string, settings?: ModelRoleLookup): string | 
 	return undefined;
 }
 
-function normalizeModelPatternList(value: string | string[] | undefined): string[] {
+/** Normalize comma-separated or array model selectors into an ordered pattern list. */
+export function normalizeModelPatternList(value: string | string[] | undefined): string[] {
 	if (!value) return [];
 	const patterns = Array.isArray(value) ? value.flatMap(pattern => pattern.split(",")) : value.split(",");
 	return patterns.map(pattern => pattern.trim()).filter(Boolean);
@@ -1192,6 +1193,47 @@ export function resolveAgentPrewalkPattern(options: AgentPrewalkResolutionOption
 	}
 	if (options.agentPrewalk === true) return DEFAULT_PREWALK_TARGET;
 	return agentPattern;
+}
+
+export interface AgentAdvisorResolutionOptions {
+	/** `task.agentAdvisor` settings value for this agent: `"on"`, `"off"`, or a model pattern. */
+	settingsOverride?: string;
+	/** Agent definition `advisor` frontmatter: `true` = default advisor-role model, string = custom model pattern. */
+	agentAdvisor?: boolean | string;
+}
+
+/**
+ * Per-agent advisor decision. `false` is an explicit opt-out; `undefined` from
+ * {@link resolveAgentAdvisorSelection} means neither the task override nor
+ * frontmatter decided, so callers may use a global fallback.
+ */
+export type AgentAdvisorSelection = false | { model?: string };
+
+/**
+ * Resolve an agent's per-agent advisor decision. `task.agentAdvisor` decides
+ * first: `"off"`/`"false"` explicitly disable, `"on"`/`"true"` enable with
+ * the frontmatter model when present, and another value is a custom model.
+ * Frontmatter then supplies an explicit `false`, default advisor role (`true`),
+ * or custom model. `undefined` means no per-agent decision.
+ *
+ * A custom returned pattern lands on the spawned session's `modelRoles.advisor`,
+ * so role aliases and `:level` suffixes resolve there.
+ */
+export function resolveAgentAdvisorSelection(
+	options: AgentAdvisorResolutionOptions,
+): AgentAdvisorSelection | undefined {
+	const agentPattern =
+		typeof options.agentAdvisor === "string" && options.agentAdvisor.trim() ? options.agentAdvisor.trim() : undefined;
+	const override = options.settingsOverride?.trim();
+	if (override) {
+		const lowered = override.toLowerCase();
+		if (lowered === "off" || lowered === "false") return false;
+		if (lowered === "on" || lowered === "true") return { model: agentPattern };
+		return { model: override };
+	}
+	if (options.agentAdvisor === false) return false;
+	if (options.agentAdvisor === true) return {};
+	return agentPattern ? { model: agentPattern } : undefined;
 }
 
 /**

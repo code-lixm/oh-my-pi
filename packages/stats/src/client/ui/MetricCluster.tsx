@@ -32,7 +32,11 @@ export function MetricCluster({ stats }: MetricClusterProps) {
 					<div className="stats-metric-label">{t("overview.metric.requests")}</div>
 					<div className="stats-metric-value">{formatInteger(stats.totalRequests)}</div>
 				</div>
-				<div className="stats-metric-card primary">
+				<div className="stats-metric-card primary" title={t("overview.metric.cacheSavingsTitle")}>
+					<div className="stats-metric-label">{t("overview.metric.cacheSavings")}</div>
+					<div className="stats-metric-value">{formatPercent(stats.cacheSavings)}</div>
+				</div>
+				<div className="stats-metric-card primary" title={t("overview.metric.cacheRateTitle")}>
 					<div className="stats-metric-label">{t("overview.metric.cacheRate")}</div>
 					<div className="stats-metric-value">{formatPercent(stats.cacheRate)}</div>
 				</div>
