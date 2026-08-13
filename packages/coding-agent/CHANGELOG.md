@@ -279,6 +279,9 @@
 ### Fixed
 
 - Fixed Pi extension contexts omitting the runtime `mode`, which made documented TUI guards silently disable extension UI ([#8419](https://github.com/can1357/oh-my-pi/issues/8419)).
+### Fixed
+
+- Fixed extension-registered tool names being rejected by `--tools` before extension discovery, preventing least-privilege sessions from allowlisting plugin tools ([#8421](https://github.com/can1357/oh-my-pi/issues/8421)).
 
 ## [17.3.0] - 2026-08-13
 
