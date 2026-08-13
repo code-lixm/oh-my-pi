@@ -204,12 +204,18 @@ function isExecutableFile(p: string): boolean {
 
 async function isChromiumExecutable(p: string): Promise<boolean> {
 	if (!isExecutableFile(p)) return false;
+	// The version probe below launches the candidate. It exists to reject
+	// non-Chromium `chrome`/`chromium` wrapper scripts that appear on a Linux
+	// PATH. On Windows and macOS the candidates are fixed GUI application paths,
+	// and executing them can activate a normal browser window. Trust the
+	// executable-file check outside Linux.
+	if (process.platform !== "linux") return true;
 	const probeTimeoutMs = 3000;
 	let probeDir: string | undefined;
 	try {
 		probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-browser-probe-"));
 		const stdoutPath = path.join(probeDir, "stdout");
-		const detached = process.platform !== "win32";
+		const detached = true;
 		const proc = Bun.spawn([p, "--version"], {
 			stdout: Bun.file(stdoutPath),
 			stderr: "ignore",
