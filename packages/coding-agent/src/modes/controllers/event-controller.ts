@@ -2419,7 +2419,19 @@ export class EventController {
 			this.ctx.retryLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
-		const terminalFailurePinned = !event.success && this.#pinnedErrorComponent !== undefined;
+		const pinnedError = this.#pinnedErrorMessage?.errorMessage;
+		const terminalFailurePinned =
+			!event.success &&
+			this.#pinnedErrorComponent !== undefined &&
+			pinnedError !== undefined &&
+			pinnedError === event.finalError;
+		if (!event.success && this.#pinnedErrorComponent && !terminalFailurePinned) {
+			this.#pinnedErrorComponent.setErrorPinned(false);
+			this.#pinnedErrorComponent = undefined;
+			this.#pinnedErrorMessage = undefined;
+			this.#restorePinnedErrorInline = true;
+			this.ctx.clearPinnedError();
+		}
 		let clearedPinnedComponent = false;
 		for (const retryError of event.retryErrors ?? []) {
 			const component = this.#takeRetrySupersededAssistantComponent(retryError.persistenceKey);
@@ -2438,7 +2450,9 @@ export class EventController {
 		this.#clearRetrySupersededAssistantComponents();
 		if (!event.success) {
 			if (terminalFailurePinned) {
-				const terminalError = this.#pinnedErrorMessage?.errorMessage ?? event.finalError;
+				const terminalError = this.#restorePinnedErrorInline
+					? `Retry failed after ${event.attempt} attempts: ${event.finalError || pinnedError || "Unknown error"}`
+					: (pinnedError ?? event.finalError);
 				if (terminalError) this.ctx.showPinnedError(terminalError);
 				this.#restorePinnedErrorInline = true;
 			} else {
