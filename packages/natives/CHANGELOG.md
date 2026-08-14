@@ -13,6 +13,8 @@
 
 - Fixed `NativeInput` batches remaining pending when compiled Bun stranded a threadsafe-function wake after JavaScript stdin handoff; consumers can now await the native queue's event-driven readiness signal instead of relying solely on TSFN delivery.
 - Fixed `TerminalOutputBroker` delaying newline-free reliable writes and latest frames in Rust's terminal line buffer; the worker now physically flushes each selected output before publishing completion.
+- Added the async `pdfToMarkdown` native API backed by `pdf-inspector`, with page numbering, page-count, OCR-needed-page, and encoding-issue metadata.
+
 ### Changed
 
 - Docker images (`Dockerfile`, `scripts/install-tests/*.dockerfile`) build the native addon through the cargo/napi-rs backend (`OMP_NATIVE_BUILD_BACKEND=cargo`) instead of Bazel: a single fixed host target gains nothing from hermetic cross toolchains, and none of those images shipped bazelisk. `OMP_NATIVE_CARGO_PROFILE` picks the profile for that path (images use `ci`, local default stays `local`).
