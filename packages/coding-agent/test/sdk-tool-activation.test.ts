@@ -28,12 +28,15 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 import { logger, removeSyncWithRetries, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 
+const weatherForecastDescription = "Get weather forecasts and rain predictions for a city.";
+const releaseInspectorDescription = "Inspect release deployment pipelines and logs.";
+
 const toolActivationExtension: ExtensionFactory = pi => {
 	pi.registerTool({
 		name: "default_inactive_tool",
-		label: "Default Inactive Tool",
-		description: "Tool hidden from the initial active set unless explicitly requested.",
-		parameters: type({}),
+		label: "Weather Forecast",
+		description: weatherForecastDescription,
+		parameters: type({ city: "string" }),
 		defaultInactive: true,
 		async execute() {
 			return { content: [{ type: "text", text: "inactive" }] };
@@ -41,8 +44,8 @@ const toolActivationExtension: ExtensionFactory = pi => {
 	});
 	pi.registerTool({
 		name: "default_active_tool",
-		label: "Default Active Tool",
-		description: "Tool included in the initial active set.",
+		label: "Release Inspector",
+		description: releaseInspectorDescription,
 		parameters: type({}),
 		async execute() {
 			return { content: [{ type: "text", text: "active" }] };
@@ -87,10 +90,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	// Shared options for every session. `rules: []` and `workspaceTree` short-circuit
 	// the two slow startup scans (rule discovery + native workspace walk, ~100ms each)
-	// that are irrelevant to tool activation: these tests assert only which tools are
-	// registered/active and that tool names appear in the system prompt. The shared
-	// `modelRegistry` is injected here; each call still returns fresh
-	// `settings`/`sessionManager` instances to keep tests isolated.
+	// that are irrelevant to tool activation: these tests assert registration, activation,
+	// and how compact discovery metadata changes. The shared `modelRegistry` is injected
+	// here; each call still returns fresh `settings`/`sessionManager` instances to keep
+	// tests isolated.
 	const baseOptions = (tempDir: string): CreateAgentSessionOptions => ({
 		cwd: tempDir,
 		agentDir: tempDir,
@@ -115,6 +118,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		return bundled;
 	};
 
+	const toolSearchCatalogCounts = (session: AgentSession): { hidden: number; active: number } => {
+		const search = session.getToolByName("tool_search");
+		if (!search) throw new Error("expected tool_search");
+		const match = search.description.match(/Catalog: (\d+) hidden external tools; (\d+) already active\./);
+		if (!match) throw new Error(`expected compact tool_search catalog: ${search.description}`);
+		return { hidden: Number(match[1]), active: Number(match[2]) };
+	};
+
 	afterEach(() => {
 		for (const tempDir of tempDirs.splice(0)) {
 			removeSyncWithRetries(tempDir);
@@ -128,11 +139,12 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		removeSyncWithRetries(registryAuthDir);
 	});
 
-	it("excludes defaultInactive extension tools from the initial active set unless explicitly requested", async () => {
+	it("keeps defaultInactive external schemas out of the initial active set and their prompt catalog compact", async () => {
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdevDocs": "builtins" }),
 			extensions: [toolActivationExtension],
 		});
 
@@ -146,8 +158,64 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
 			expect(deviceNames).not.toContain("default_inactive_tool");
 			expect(session.getActiveToolNames()).not.toContain("default_inactive_tool");
-			expect(session.systemPrompt.join("\n")).toContain("default_active_tool");
-			expect(session.systemPrompt.join("\n")).not.toContain("default_inactive_tool");
+
+			const prompt = session.systemPrompt.join("\n");
+			expect(prompt).toMatch(/\d+ external tools are indexed behind tool_search\./);
+			for (const hiddenCatalogDetail of [
+				"default_active_tool",
+				"default_inactive_tool",
+				weatherForecastDescription,
+				releaseInspectorDescription,
+			]) {
+				expect(prompt).not.toContain(hiddenCatalogDetail);
+			}
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("promotes only the best hidden schema for a capability query instead of exposing the exact-name catalog", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			extensions: [toolActivationExtension],
+		});
+
+		try {
+			const search = session.getToolByName("tool_search");
+			if (!search) throw new Error("expected tool_search");
+			const description = search.description;
+			expect(description).toMatch(/Catalog: \d+ hidden external tools; 0 already active\./);
+			for (const hiddenCatalogDetail of [
+				"default_active_tool",
+				"default_inactive_tool",
+				weatherForecastDescription,
+				releaseInspectorDescription,
+			]) {
+				expect(description).not.toContain(hiddenCatalogDetail);
+			}
+
+			const defaultActiveWasActive = session.getActiveToolNames().includes("default_active_tool");
+			const defaultActiveWasMounted = session
+				.getXdevToolEntries()
+				.some(entry => entry.name === "default_active_tool");
+			const browserWasActive = session.getActiveToolNames().includes("browser");
+			const browserWasMounted = session.getXdevToolEntries().some(entry => entry.name === "browser");
+			const query = "weather forecast for a city";
+			const result = await search.execute("search-external", { query, limit: 1 });
+			const resultText = result.content.find(item => item.type === "text")?.text ?? "";
+
+			expect(resultText).toContain(`Matched "${query}": default_inactive_tool`);
+			expect(resultText).toContain("Enabled for the next response: default_inactive_tool");
+			expect(resultText).not.toContain("default_active_tool");
+			expect(session.getActiveToolNames()).toContain("default_inactive_tool");
+			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("default_inactive_tool");
+			expect(session.getActiveToolNames().includes("default_active_tool")).toBe(defaultActiveWasActive);
+			expect(session.getXdevToolEntries().some(entry => entry.name === "default_active_tool")).toBe(
+				defaultActiveWasMounted,
+			);
+			expect(session.getActiveToolNames().includes("browser")).toBe(browserWasActive);
+			expect(session.getXdevToolEntries().some(entry => entry.name === "browser")).toBe(browserWasMounted);
 		} finally {
 			await session.dispose();
 		}
@@ -206,7 +274,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await session.setModel(fable);
 			expect(session.getToolByName("think")).toBeDefined();
 			expect(session.getActiveToolNames()).toContain("think");
-			expect(session.systemPrompt.join("\n")).toContain("private scratchpad; not shown to user");
 
 			await session.setModel(responses);
 			expect(session.getActiveToolNames()).toContain("think");
@@ -217,7 +284,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 			await session.setModel(unsupported);
 			expect(session.getActiveToolNames()).not.toContain("think");
-			expect(session.systemPrompt.join("\n")).not.toContain("private scratchpad; not shown to user");
 		} finally {
 			await session.dispose();
 		}
@@ -371,6 +437,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 		try {
 			expect(session.getAllToolNames()).not.toContain("late_active_tool");
+			const catalogBefore = toolSearchCatalogCounts(session);
 			const runner = session.extensionRunner;
 			if (!runner) throw new Error("expected extension runner");
 			const errors: string[] = [];
@@ -392,8 +459,9 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.getEnabledToolNames()).not.toContain("late_inactive_tool");
 			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("late_active_tool");
 			expect(session.getActiveToolNames()).not.toContain("late_active_tool");
-			expect(session.systemPrompt.join("\n")).toContain("late_active_tool");
-			expect(session.systemPrompt.join("\n")).not.toContain("late_inactive_tool");
+			const catalogAfter = toolSearchCatalogCounts(session);
+			expect(catalogAfter.hidden).toBe(catalogBefore.hidden + 2);
+			expect(catalogAfter.active).toBe(catalogBefore.active);
 		} finally {
 			await session.dispose();
 		}
@@ -509,6 +577,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 		const runner = session.extensionRunner;
 		if (!runner) throw new Error("expected extension runner");
+		const catalogBefore = toolSearchCatalogCounts(session);
 		let emissionCompleted = false;
 		const emission = runner.emit({ type: "session_start" }).finally(() => {
 			emissionCompleted = true;
@@ -527,7 +596,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			await emission;
 			expect(session.getAllToolNames()).toContain("late_tool_before_failure");
 			expect(session.getEnabledToolNames()).toContain("late_tool_before_failure");
-			expect(session.systemPrompt.join("\n")).toContain("late_tool_before_failure");
+			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("late_tool_before_failure");
+			const catalogAfter = toolSearchCatalogCounts(session);
+			expect(catalogAfter.hidden).toBe(catalogBefore.hidden + 1);
+			expect(catalogAfter.active).toBe(catalogBefore.active);
 		} finally {
 			releaseActivation.resolve();
 			await emission;
@@ -1036,8 +1108,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("refreshes prompt-visible metadata when a lifecycle registration replaces an enabled tool", async () => {
+	it("refreshes lifecycle replacement metadata in xd:// docs while keeping the system prompt compact", async () => {
 		const tempDir = makeTempDir();
+		const originalDescription = "Original prompt-visible lifecycle description.";
+		const replacementDescription = "Replacement prompt-visible lifecycle description.";
 		const replacementExtension: ExtensionFactory = pi => {
 			const register = (label: string, description: string): void => {
 				pi.registerTool({
@@ -1050,28 +1124,46 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					},
 				});
 			};
-			register("Original Prompt Tool", "Original prompt-visible lifecycle description.");
+			register("Original Prompt Tool", originalDescription);
 			pi.on("session_start", async () => {
 				await Promise.resolve();
-				register("Replacement Prompt Tool", "Replacement prompt-visible lifecycle description.");
+				register("Replacement Prompt Tool", replacementDescription);
 			});
 		};
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdevDocs": "builtins" }),
 			extensions: [replacementExtension],
 		});
 
 		try {
-			expect(session.systemPrompt.join("\n")).toContain("Original prompt-visible lifecycle description.");
+			const original = session.getToolByName("prompt_refresh_tool");
+			expect(original?.label).toBe("Original Prompt Tool");
+			expect(original?.description).toBe(originalDescription);
+			const read = session.getToolByName("read");
+			if (!read) throw new Error("expected read");
+			const originalDocs = await read.execute("prompt-refresh-original-docs", { path: "xd://prompt_refresh_tool" });
+			const originalDocsText = originalDocs.content.find(item => item.type === "text")?.text ?? "";
+			expect(originalDocsText).toContain(originalDescription);
+			expect(session.systemPrompt.join("\n")).not.toContain(originalDescription);
+
 			const runner = session.extensionRunner;
 			if (!runner) throw new Error("expected extension runner");
 			await runner.emit({ type: "session_start" });
 
+			const replacement = session.getToolByName("prompt_refresh_tool");
+			expect(replacement?.label).toBe("Replacement Prompt Tool");
+			expect(replacement?.description).toBe(replacementDescription);
+			const replacementDocs = await read.execute("prompt-refresh-replacement-docs", {
+				path: "xd://prompt_refresh_tool",
+			});
+			const replacementDocsText = replacementDocs.content.find(item => item.type === "text")?.text ?? "";
+			expect(replacementDocsText).toContain(replacementDescription);
+			expect(replacementDocsText).not.toContain(originalDescription);
 			const prompt = session.systemPrompt.join("\n");
-			expect(session.getToolByName("prompt_refresh_tool")?.label).toBe("Replacement Prompt Tool");
-			expect(prompt).toContain("Replacement prompt-visible lifecycle description.");
-			expect(prompt).not.toContain("Original prompt-visible lifecycle description.");
+			expect(prompt).not.toContain(originalDescription);
+			expect(prompt).not.toContain(replacementDescription);
 		} finally {
 			await session.dispose();
 		}
@@ -1182,6 +1274,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		);
 		const runner = session.extensionRunner;
 		if (!runner) throw new Error("expected extension runner");
+		const catalogBefore = toolSearchCatalogCounts(session);
 		const errors: string[] = [];
 		runner.onError(error => {
 			errors.push(error.error);
@@ -1203,7 +1296,11 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(errors).toContain("expected activation failure");
 			expect(session.getToolByName("failed_registration_tool")).toBeUndefined();
 			expect(session.getToolByName("drained_registration_tool")).toBeDefined();
-			expect(session.systemPrompt.join("\n")).toContain("drained_registration_tool");
+			expect(session.getEnabledToolNames()).toContain("drained_registration_tool");
+			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("drained_registration_tool");
+			const catalogAfter = toolSearchCatalogCounts(session);
+			expect(catalogAfter.hidden).toBe(catalogBefore.hidden + 1);
+			expect(catalogAfter.active).toBe(catalogBefore.active);
 		} finally {
 			releaseLaterActivation.resolve();
 			await emission;
@@ -1528,7 +1625,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("activates the yield tool when requireYieldTool is set and toolNames is explicit", async () => {
 		// Regression for #1408: plan-mode subagents pass an explicit `toolNames` list
-		// (e.g. `["read", "grep", "glob", "lsp", "web_search"]`). Without this
+		// (e.g. `["read", "grep", "find", "lsp", "web_search"]`). Without this
 		// invariant, `yield` ended up registered but not active, and the model
 		// could not satisfy the idle-reminder contract that demands a `yield` call.
 		const tempDir = makeTempDir();
@@ -1536,7 +1633,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			requireYieldTool: true,
-			toolNames: ["read", "grep", "glob", "web_search"],
+			toolNames: ["read", "grep", "find", "web_search"],
 		});
 
 		try {
@@ -1546,22 +1643,16 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("normalizes legacy builtin toolNames before selecting the active SDK tools", async () => {
+	it("normalizes case and deduplicates canonical builtin toolNames before selecting the active SDK tools", async () => {
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "search", "find"],
+			toolNames: ["READ", "grep", "GREP", "find", "FIND"],
 		});
 
 		try {
-			const activeToolNames = session.getActiveToolNames();
-
-			expect(activeToolNames).toContain("read");
-			expect(activeToolNames).toContain("grep");
-			expect(activeToolNames).toContain("glob");
-			expect(activeToolNames).not.toContain("search");
-			expect(activeToolNames).not.toContain("find");
+			expect(session.getActiveToolNames()).toEqual(["read", "grep", "find"]);
 		} finally {
 			await session.dispose();
 		}
@@ -1572,14 +1663,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		// submits its finalized plan by writing the chosen slug/title to
 		// xd://propose, dispatched through the plan-proposal handler
 		// (interactive-mode.ts: `setPlanProposalHandler`). With an explicit
-		// read-only `toolNames` (e.g. `read`, `search`, `find`, `web_search`)
+		// read-only `toolNames` (e.g. `read`, `grep`, `find`, `web_search`)
 		// the registry has no `write` and no `deferrable` tool; dropping it would
 		// silently activate plan mode with no way to submit the plan.
 		const tempDir = makeTempDir();
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
-			toolNames: ["read", "grep", "glob", "web_search"],
+			toolNames: ["read", "grep", "find", "web_search"],
 		});
 
 		try {
@@ -1598,7 +1689,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
 			settings,
-			toolNames: ["read", "grep", "glob", "web_search"],
+			toolNames: ["read", "grep", "find", "web_search"],
 		});
 
 		try {
@@ -2190,7 +2281,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				settings: Settings.isolated({ "advisor.enabled": true, "tools.approval": { write: "deny" } }),
 			});
 			try {
-				// The default advisor roster is read-only (read/grep/glob); the
+				// The default advisor roster is read-only (read/grep/find); the
 				// reviewed hole needs one actually granted a mutating tool.
 				session.applyAdvisorConfigs([{ name: "writer", tools: ["write"], model: "gpt-4o-mini" }], undefined);
 				const advisor = session.getAdvisorAgent();

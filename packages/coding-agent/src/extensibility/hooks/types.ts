@@ -11,7 +11,7 @@ import type * as PiCodingAgent from "../../index";
 import type { Theme } from "../../modes/theme/theme";
 import type { CustomMessagePayload, HookMessage } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
-import type { BashToolDetails, GlobToolDetails, GrepToolDetails, ReadToolDetails } from "../../tools";
+import type { BashToolDetails, FindToolDetails, GrepToolDetails, ReadToolDetails } from "../../tools";
 import type {
 	AgentEndEvent,
 	AgentStartEvent,
@@ -367,10 +367,16 @@ export interface GrepToolResultEvent extends ToolResultEventBase {
 	details: GrepToolDetails | undefined;
 }
 
-/** Tool result event for glob tool */
-export interface GlobToolResultEvent extends ToolResultEventBase {
-	toolName: "glob";
-	details: GlobToolDetails | undefined;
+/** Tool result event for find tool */
+export interface FindToolResultEvent extends ToolResultEventBase {
+	toolName: "find";
+	details: FindToolDetails | undefined;
+}
+
+/** Tool result event for multi_grep tool */
+export interface MultiGrepToolResultEvent extends ToolResultEventBase {
+	toolName: "multi_grep";
+	details: GrepToolDetails | undefined;
 }
 
 /** Tool result event for custom/unknown tools */
@@ -390,7 +396,8 @@ export type ToolResultEvent =
 	| EditToolResultEvent
 	| WriteToolResultEvent
 	| GrepToolResultEvent
-	| GlobToolResultEvent
+	| FindToolResultEvent
+	| MultiGrepToolResultEvent
 	| CustomToolResultEvent;
 
 /**

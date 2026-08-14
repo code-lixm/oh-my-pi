@@ -122,25 +122,25 @@ describe("formatSessionHistoryMarkdown", () => {
 				content: [
 					{
 						type: "toolCall",
-						id: "tc-glob",
-						name: "glob",
-						arguments: { path: "packages/coding-agent/src/**/*.ts" },
+						id: "tc-find",
+						name: "find",
+						arguments: { pattern: "session", path: "packages/coding-agent/src/**/*.ts" },
 					},
 				],
 				timestamp: 1,
 			},
 			{
 				role: "toolResult",
-				toolCallId: "tc-glob",
-				toolName: "glob",
+				toolCallId: "tc-find",
+				toolName: "find",
 				content: [{ type: "text", text: "session-history-format.ts" }],
 				isError: false,
 				timestamp: 2,
 			},
 		]);
 
-		expect(output).toContain("→ glob(packages/coding-agent/src/**/*.ts) ⇒ ok · 1 line");
-		expect(output).not.toContain('{"paths"');
+		expect(output).toContain("→ find(session @ packages/coding-agent/src/**/*.ts) ⇒ ok · 1 line");
+		expect(output).not.toContain('{"pattern"');
 	});
 
 	it("renders search path scope alongside the pattern", () => {

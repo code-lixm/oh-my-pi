@@ -100,7 +100,7 @@ function interceptionCandidates(command: string): string[] {
 	const candidates = [command.trim()];
 	for (const segment of extractFlatShellCommandSegments(command)) {
 		// A segment that consumes the previous stage's stdout via `|` reads piped
-		// stdin, which no path-based dedicated tool (read/grep/glob) — nor any
+		// stdin, which no path-based dedicated tool (read/grep/find) — nor any
 		// other dedicated tool — can replace, so it is not an interception
 		// candidate. Standalone and first-stage commands still match.
 		if (segment.pipedStdin) continue;

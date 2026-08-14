@@ -1990,8 +1990,8 @@ export class AgentSession {
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: this.settings.get("advisor.enabled"),
 			tools: config.advisorTools,
-			createGrepTool: config.advisorCreateGrepTool,
 			createEditTool: config.advisorCreateEditTool,
+			createGrepTool: config.advisorCreateGrepTool,
 			getToolContext: config.advisorGetToolContext,
 			mcpResources: config.advisorMcpResources,
 			watchdogPrompt: config.advisorWatchdogPrompt,
@@ -5411,6 +5411,11 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<void> {
 		return this.#tools.setActiveToolPresentation(toolNames, mountedToolNames, forcePromptRefresh, signal);
+	}
+
+	/** Promotes registered external tools into the next request's top-level tool set. */
+	promoteExternalTools(toolNames: string[], signal?: AbortSignal): Promise<void> {
+		return this.#tools.promoteExternalTools(toolNames, signal);
 	}
 
 	/**

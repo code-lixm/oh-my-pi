@@ -303,6 +303,31 @@ describe("settings layout", () => {
 			group: "Available Tools",
 		});
 	});
+
+	it("localizes canonical FFF basic details and additional workspace roots", () => {
+		const basicDetails = getSettingsForTab("appearance").find(def => def.path === "display.basicToolDetails");
+		const additionalDirectories = getUi("workspace.additionalDirectories");
+
+		expect(basicDetails).toMatchObject({
+			label: "Basic Tool Details",
+			description: "Show detailed read, find, grep, and multi_grep results instead of one-line summaries",
+		});
+		if (!additionalDirectories) throw new Error("workspace.additionalDirectories UI metadata missing");
+		expect(tSettingsUi(additionalDirectories.description)).toBe(
+			"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/find them.",
+		);
+
+		setSettingsUiLocale("zh-CN");
+		const chineseBasicDetails = getSettingsForTab("appearance").find(def => def.path === "display.basicToolDetails");
+
+		expect(chineseBasicDetails).toMatchObject({
+			label: "基础工具详情",
+			description: "显示 read、find、grep 和 multi_grep 的详细结果，而不是一行摘要",
+		});
+		expect(tSettingsUi(additionalDirectories.description)).toBe(
+			"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/find。",
+		);
+	});
 	it("exposes fixed localized Ask timeout choices", () => {
 		expect(SETTINGS_SCHEMA["ask.timeout"].default).toBe(30);
 

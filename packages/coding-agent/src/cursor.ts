@@ -19,8 +19,6 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import {
 	omitUndefinedArgs,
-	piEscapeRegexLiteral,
-	piGrepSkip,
 	piJoinPath,
 	piLimit,
 	piLsPath,
@@ -31,6 +29,7 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { MCPResourceReadResult } from "./mcp/types";
 import type { ApprovalMode } from "./tools/approval";
 import { resolveApproval } from "./tools/approval";
+import type { FffGrepToolOptions } from "./tools/fff-tools";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
 import type { TodoPhase, TodoStatus } from "./tools/todo";
 
@@ -76,6 +75,8 @@ interface CursorExecBridgeOptions {
 	 * switching to Cursor later does not rebuild the roster.
 	 */
 	getEditReplaceTool?: () => CursorBridgeTool | undefined;
+	/** Build a wrapped FFF grep for Cursor-only file offsets and one-shot caps. */
+	createGrepTool?: (options?: FffGrepToolOptions) => CursorBridgeTool;
 	getToolContext?: () => AgentToolContext | undefined;
 	emitEvent?: (event: AgentEvent) => void;
 	/**
@@ -108,20 +109,6 @@ interface CursorExecBridgeOptions {
 	 * Cursor emits no local `todo` toolResult, so nothing else records it.
 	 */
 	persistTodoPhases?: (phases: TodoPhase[]) => void;
-	/**
-	 * Build a `grep` tool honoring a frame's own context width and match cap.
-	 *
-	 * The modern `pi_grep` frame carries both, and the shared `grep` instance
-	 * is fixed to the session settings at construction — so without this the
-	 * two fields are silently dropped. Callers that cannot supply it keep the
-	 * shared instance and the session's defaults.
-	 *
-	 * The returned tool is executed as-is. Callers whose registry tools carry an
-	 * approval wrapper MUST apply the same wrapper here, or a frame supplying
-	 * either field silently escapes the approval gate that every other call
-	 * goes through.
-	 */
-	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): CursorBridgeTool | undefined;
 	/**
 	 * The session's live MCP connections, for Cursor's resource frames.
 	 *
@@ -456,22 +443,25 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		return toolResultMessage;
 	}
 
-	/**
-	 * Modern Cursor builds paginate this frame with `offset`. The local `grep`
-	 * paginates by file through `skip`, which is the same unit its own
-	 * "use skip=N for the next page" advice counts in — so an unforwarded
-	 * offset re-runs the identical search and returns page one forever.
-	 */
+	/** Legacy Cursor grep offsets address FFF's file-order cursor directly. */
 	async grep(args: Parameters<NonNullable<ICursorExecHandlers["grep"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		const searchPath = args.glob ? `${args.path || "."}/${args.glob}` : args.path || ".";
-		const toolResultMessage = await executeTool(this.options, "grep", toolCallId, {
-			pattern: args.pattern,
-			path: searchPath,
-			case: args.caseInsensitive === true ? false : undefined,
-			skip: piGrepSkip(args.offset),
-		});
-		return toolResultMessage;
+		const searchPath = args.glob ? piJoinPath(args.path, args.glob) : args.path || ".";
+		const context = args.context ?? Math.max(args.contextBefore ?? 0, args.contextAfter ?? 0);
+		const terminalLimit = piLimit(args.headLimit);
+		return await executeTool(
+			this.options,
+			"grep",
+			toolCallId,
+			{
+				pattern: args.pattern,
+				path: searchPath,
+				caseSensitive: args.caseInsensitive === undefined ? undefined : !args.caseInsensitive,
+				context,
+				limit: terminalLimit,
+			},
+			this.options.createGrepTool?.({ fileOffset: args.offset, terminalLimit }),
+		);
 	}
 
 	async write(args: Parameters<NonNullable<ICursorExecHandlers["write"]>>[0]) {
@@ -670,52 +660,35 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		});
 	}
 
-	/**
-	 * `literal` makes the pattern a fixed string; the local tool is regex-only,
-	 * so the pattern is escaped on the way in (same translation the legacy pi
-	 * shim does).
-	 *
-	 * `context` and `limit` are not expressible in the model-facing schema —
-	 * context width comes from settings fixed at tool construction — so the
-	 * frame's values are honored by building a per-call `grep` through
-	 * {@link CursorExecBridgeOptions.createGrepTool}. Both are `optional int32`,
-	 * so a present `0` context means "no context lines", not "use the default".
-	 * Without the factory the shared instance runs with session defaults.
-	 */
+	/** FFF owns smart-case, literal/regex search, context, and the Pi frame's one-shot total cap. */
 	async piGrep(call: Parameters<NonNullable<ICursorExecHandlers["piGrep"]>>[0]) {
 		const { pattern, path, glob, ignoreCase, literal, context, limit } = call.args;
-		const scoped =
-			context !== undefined || limit !== undefined
-				? this.options.createGrepTool?.({ context, totalMatchLimit: piLimit(limit) })
-				: undefined;
-		// Same arg mapping as the legacy `grep` handler: the local tool takes one
-		// path spec, and its `case` flag is case-SENSITIVITY, the inverse of the
-		// frame's `ignore_case`.
+		const terminalLimit = piLimit(limit);
 		return await executeTool(
 			this.options,
 			"grep",
 			call.toolCallId,
 			{
-				pattern: literal === true ? piEscapeRegexLiteral(pattern) : pattern,
+				pattern,
 				path: glob ? piJoinPath(path, glob) : path || ".",
-				case: ignoreCase === true ? false : undefined,
+				caseSensitive: ignoreCase === undefined ? undefined : !ignoreCase,
+				literal,
+				context,
+				limit: terminalLimit,
 			},
-			scoped,
+			this.options.createGrepTool?.({ terminalLimit }),
 		);
 	}
 
 	/**
-	 * `pi_find` is a filename search, which is the local `glob` tool — not
-	 * `grep`. Its `pattern` is a glob, joined onto `path` because `glob` takes a
-	 * single combined path spec.
-	 *
-	 * `limit` is `optional int32`, so `0` is present rather than unset; the
-	 * reference clamps it with `Math.max(1, limit ?? 1000)`, and an unset limit
-	 * leaves the local tool's own default in place.
+	 * `pi_find` is a filename search, which maps to the local indexed `find`
+	 * tool. Its `pattern` is a glob, joined onto `path` as a single path
+	 * constraint while leaving the fuzzy pattern empty.
 	 */
 	async piFind(call: Parameters<NonNullable<ICursorExecHandlers["piFind"]>>[0]) {
 		const { pattern, path, limit } = call.args;
-		return await executeTool(this.options, "glob", call.toolCallId, {
+		return await executeTool(this.options, "find", call.toolCallId, {
+			pattern: "",
 			path: piJoinPath(path, pattern),
 			limit: piLimit(limit),
 		});

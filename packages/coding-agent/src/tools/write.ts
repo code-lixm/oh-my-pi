@@ -510,17 +510,24 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// Unwrap a hashline `[path#TAG]` wrapper first (parity with execute) so a
 		// wrapped `[ssh://h/x#ABCD]` can't dodge scheme detection and the tier checks below.
 		const path = unwrapHashlineHeaderPath(rawPath);
-		// xd:// device writes execute the mounted tool — take its approval tier.
-		// The resolution devices (xd://resolve, xd://reject, xd://propose)
-		// finalize a staged, already-previewed action, so they stay at read tier.
+		// xd:// writes execute built-in devices and inherit their approval tier.
+		// External tools are docs-only here: tool_search promotes their top-level
+		// schema, and both inactive and active external names fail before approval.
+		// Resolution devices finalize staged, already-previewed actions at read tier.
 		const xdevTarget = parseXdUrl(path);
 		if (xdevTarget) {
 			if (xdevTarget.name === REPORT_ISSUE_DEVICE_NAME) return "write";
 			if (xdevTarget.name && isResolutionDeviceName(xdevTarget.name)) return "read";
-			const inst =
-				xdevTarget.name && this.session.xdev ? resolveXdevTool(this.session.xdev, xdevTarget.name) : undefined;
+			const xdev = this.session.xdev;
+			const inst = xdevTarget.name && xdev ? resolveXdevTool(xdev, xdevTarget.name) : undefined;
 			if (!inst) return "exec";
-			// Decode the device JSON payload and evaluate the mounted tool's own
+			if (xdev && !xdev.builtInNames.has(inst.name)) {
+				const action = xdev.isActive(inst.name)
+					? "Call its top-level schema directly."
+					: "Enable it with tool_search first.";
+				throw new ToolError(`External tool "${inst.name}" cannot execute through write xd://. ${action}`);
+			}
+			// Decode the device JSON payload and evaluate the built-in tool's own
 			// approval (which may be argument-dependent, e.g. ast_edit is read-tier
 			// for internal-URL paths, debug is read-tier for inspection actions).
 			// Malformed JSON, non-object payloads, missing content, and approval

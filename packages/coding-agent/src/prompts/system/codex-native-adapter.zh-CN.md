@@ -9,8 +9,8 @@
 {{#has tools "grep"}}
 - 使用 `{{lookup toolRefs "grep"}}` 搜索文件内容；NEVER 通过 shell 调用 `rg`、`grep`、`ag`、`ack`、`awk` 或用于搜索的 `sed`。
 {{/has}}
-{{#has tools "glob"}}
-- 使用 `{{lookup toolRefs "glob"}}` 按路径模式发现文件；NEVER 使用 shell `find`、`fd` 或 `ls`。
+{{#has tools "find"}}
+- 使用 `{{lookup toolRefs "find"}}` 按路径模式发现文件；NEVER 使用 shell `find`、`fd` 或 `ls`。
 {{/has}}
 {{#has tools "codegraph"}}
 - 在文本探索前，使用 `{{lookup toolRefs "codegraph"}}` 理解源码行为、flow、impact 和修改边界。

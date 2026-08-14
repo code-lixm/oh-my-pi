@@ -1,13 +1,20 @@
-/**
- * Grep CLI command handlers.
- *
- * Handles `omp grep` subcommand for testing grep tool on Windows.
- */
+/** FFF-backed `omp grep` command handler. */
 import * as path from "node:path";
-import { GrepOutputMode, grep } from "@oh-my-pi/pi-natives";
-import { APP_NAME } from "@oh-my-pi/pi-utils";
+import type { GrepMatch, GrepResult } from "@ff-labs/fff-bun";
+import { getAgentDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { tSettingsUi } from "../i18n/settings-locale";
+import { createFffFinderManager, type FffFinderManager, resolveFffScope } from "../tools/fff-manager";
+import { normalizeFffPathConstraint } from "../tools/fff-query";
 import { expandPath } from "../tools/path-utils";
+
+export const GREP_OUTPUT_MODES = {
+	Content: "content",
+	FilesWithMatches: "files",
+	Count: "count",
+} as const;
+
+export type GrepOutputMode = (typeof GREP_OUTPUT_MODES)[keyof typeof GREP_OUTPUT_MODES];
 
 export interface GrepCommandArgs {
 	pattern: string;
@@ -16,146 +23,157 @@ export interface GrepCommandArgs {
 	limit: number;
 	context: number;
 	mode: GrepOutputMode;
-	gitignore: boolean;
 }
 
-/**
- * Parse grep subcommand arguments.
- * Returns undefined if not a grep command.
- */
-export function parseGrepArgs(args: string[]): GrepCommandArgs | undefined {
-	if (args.length === 0 || args[0] !== "grep") {
-		return undefined;
-	}
-
-	const result: GrepCommandArgs = {
-		pattern: "",
-		path: ".",
-		limit: 20,
-		context: 2,
-		mode: GrepOutputMode.Content,
-		gitignore: true,
-	};
-
-	const positional: string[] = [];
-
-	for (let i = 1; i < args.length; i++) {
-		const arg = args[i];
-		if (arg === "--glob" || arg === "-g") {
-			result.glob = args[++i];
-		} else if (arg === "--limit" || arg === "-l") {
-			result.limit = parseInt(args[++i], 10);
-		} else if (arg === "--context" || arg === "-C") {
-			result.context = parseInt(args[++i], 10);
-		} else if (arg === "--files" || arg === "-f") {
-			result.mode = GrepOutputMode.FilesWithMatches;
-		} else if (arg === "--count" || arg === "-c") {
-			result.mode = GrepOutputMode.Count;
-		} else if (arg === "--no-gitignore") {
-			result.gitignore = false;
-		} else if (!arg.startsWith("-")) {
-			positional.push(arg);
-		}
-	}
-
-	if (positional.length >= 1) {
-		result.pattern = positional[0];
-	}
-	if (positional.length >= 2) {
-		result.path = positional[1];
-	}
-
-	return result;
+export interface GrepCommandRuntime {
+	cwd?: string;
+	agentDir?: string;
+	manager?: FffFinderManager;
 }
 
-export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
+function positiveInteger(value: number, name: string): number {
+	if (!Number.isFinite(value) || value < 1) {
+		throw new Error(tSettingsUi("{name} must be a positive integer", { name }));
+	}
+	return Math.floor(value);
+}
+
+function nonNegativeInteger(value: number, name: string): number {
+	if (!Number.isFinite(value) || value < 0) {
+		throw new Error(tSettingsUi("{name} must be a non-negative integer", { name }));
+	}
+	return Math.floor(value);
+}
+
+function buildCliQuery(
+	root: string,
+	pathConstraint: string | undefined,
+	glob: string | undefined,
+	pattern: string,
+): string {
+	const constraints: string[] = [];
+	for (const value of [pathConstraint, glob]) {
+		if (!value) continue;
+		const normalized = normalizeFffPathConstraint(value, root);
+		if (normalized) constraints.push(normalized);
+	}
+	return [...constraints, pattern].join(" ");
+}
+
+function absoluteDisplayPath(root: string, match: GrepMatch): string {
+	return path.resolve(root, match.relativePath).replaceAll("\\", "/");
+}
+
+function printContentMatches(root: string, matches: readonly GrepMatch[]): void {
+	for (const match of matches) {
+		const displayPath = absoluteDisplayPath(root, match);
+		match.contextBefore?.forEach((line, index) => {
+			const lineNumber = match.lineNumber - match.contextBefore!.length + index;
+			console.log(chalk.dim(`${displayPath}-${lineNumber}- ${line}`));
+		});
+		console.log(`${chalk.cyan(displayPath)}:${chalk.yellow(String(match.lineNumber))}: ${match.lineContent}`);
+		match.contextAfter?.forEach((line, index) => {
+			console.log(chalk.dim(`${displayPath}-${match.lineNumber + index + 1}- ${line}`));
+		});
+		console.log("");
+	}
+}
+
+function printFileMatches(root: string, matches: readonly GrepMatch[]): void {
+	const seen = new Set<string>();
+	for (const match of matches) {
+		const displayPath = absoluteDisplayPath(root, match);
+		if (seen.has(displayPath)) continue;
+		seen.add(displayPath);
+		console.log(chalk.cyan(displayPath));
+	}
+}
+
+function printMatchCounts(root: string, matches: readonly GrepMatch[]): void {
+	const counts = new Map<string, number>();
+	for (const match of matches) {
+		const displayPath = absoluteDisplayPath(root, match);
+		counts.set(displayPath, (counts.get(displayPath) ?? 0) + 1);
+	}
+	for (const [displayPath, count] of counts) {
+		console.log(tSettingsUi("{path}: {count} matches", { path: chalk.cyan(displayPath), count }));
+	}
+}
+
+function printSummary(result: GrepResult): void {
+	const files = new Set(result.items.map(match => match.relativePath));
+	console.log(chalk.green(tSettingsUi("Total matches: {count}", { count: result.items.length })));
+	console.log(chalk.green(tSettingsUi("Files with matches: {count}", { count: files.size })));
+	console.log(chalk.green(tSettingsUi("Files searched: {count}", { count: result.totalFilesSearched })));
+	if (result.nextCursor) console.log(chalk.yellow(tSettingsUi("Limit reached: true")));
+	if (result.regexFallbackError) {
+		console.log(
+			chalk.yellow(
+				tSettingsUi("Invalid regex: {error}; used literal matching", { error: result.regexFallbackError }),
+			),
+		);
+	}
+	console.log("");
+}
+
+export async function runGrepCommand(cmd: GrepCommandArgs, runtime: GrepCommandRuntime = {}): Promise<void> {
 	if (!cmd.pattern) {
-		console.error(chalk.red("Error: Pattern is required"));
-		process.exit(1);
+		console.error(chalk.red(tSettingsUi("Error: {message}", { message: tSettingsUi("Pattern is required") })));
+		process.exitCode = 1;
+		return;
 	}
 
-	const searchPath = path.resolve(expandPath(cmd.path));
-	console.log(chalk.dim(`Searching in: ${searchPath}`));
-	console.log(chalk.dim(`Pattern: ${cmd.pattern}`));
-	console.log(
-		chalk.dim(`Mode: ${cmd.mode}, Limit: ${cmd.limit}, Context: ${cmd.context}, Gitignore: ${cmd.gitignore}`),
-	);
+	const cwd = path.resolve(runtime.cwd ?? process.cwd());
+	const searchPath = path.resolve(cwd, expandPath(cmd.path));
+	const limit = positiveInteger(cmd.limit, "limit");
+	const context = nonNegativeInteger(cmd.context, "context");
+	const manager = runtime.manager ?? createFffFinderManager(runtime.agentDir ?? getAgentDir(), cwd);
+	const ownsManager = runtime.manager === undefined;
 
+	console.log(chalk.dim(tSettingsUi("Searching in: {path}", { path: searchPath })));
+	console.log(chalk.dim(tSettingsUi("Pattern: {pattern}", { pattern: cmd.pattern })));
+	console.log(
+		chalk.dim(
+			tSettingsUi("Mode: {mode}, Limit: {limit}, Context: {context}, Engine: FFF", {
+				mode: cmd.mode,
+				limit,
+				context,
+			}),
+		),
+	);
 	console.log("");
 
 	try {
-		const result = await grep({
-			pattern: cmd.pattern,
-			path: searchPath,
-			glob: cmd.glob,
-			mode: cmd.mode,
-			maxCount: cmd.limit,
-			context: cmd.mode === GrepOutputMode.Content ? cmd.context : undefined,
-			hidden: true,
-			gitignore: cmd.gitignore,
+		const scope = await resolveFffScope(manager, cwd, searchPath);
+		const query = buildCliQuery(scope.root, scope.pathConstraint, cmd.glob, cmd.pattern);
+		const searched = scope.finder.grep(query, {
+			mode: "regex",
+			smartCase: true,
+			maxMatchesPerFile: cmd.mode === GREP_OUTPUT_MODES.FilesWithMatches ? 1 : limit,
+			pageSize: limit,
+			beforeContext: cmd.mode === GREP_OUTPUT_MODES.Content ? context : 0,
+			afterContext: cmd.mode === GREP_OUTPUT_MODES.Content ? context : 0,
 		});
+		if (!searched.ok) throw new Error(searched.error);
 
-		console.log(chalk.green(`Total matches: ${result.totalMatches}`));
-		console.log(chalk.green(`Files with matches: ${result.filesWithMatches}`));
-		console.log(chalk.green(`Files searched: ${result.filesSearched}`));
-		if (result.limitReached) {
-			console.log(chalk.yellow(`Limit reached: true`));
-		}
-		console.log("");
-
-		for (const match of result.matches) {
-			const displayPath = match.path.replace(/\\/g, "/");
-
-			if (cmd.mode === GrepOutputMode.Content) {
-				if (match.contextBefore) {
-					for (const ctx of match.contextBefore) {
-						console.log(chalk.dim(`${displayPath}-${ctx.lineNumber}- ${ctx.line}`));
-					}
-				}
-				console.log(`${chalk.cyan(displayPath)}:${chalk.yellow(String(match.lineNumber))}: ${match.line}`);
-				if (match.contextAfter) {
-					for (const ctx of match.contextAfter) {
-						console.log(chalk.dim(`${displayPath}-${ctx.lineNumber}- ${ctx.line}`));
-					}
-				}
-				console.log("");
-			} else if (cmd.mode === GrepOutputMode.Count) {
-				console.log(`${chalk.cyan(displayPath)}: ${match.matchCount ?? 0} matches`);
-			} else {
-				console.log(chalk.cyan(displayPath));
-			}
+		printSummary(searched.value);
+		switch (cmd.mode) {
+			case GREP_OUTPUT_MODES.Content:
+				printContentMatches(scope.root, searched.value.items);
+				break;
+			case GREP_OUTPUT_MODES.Count:
+				printMatchCounts(scope.root, searched.value.items);
+				break;
+			case GREP_OUTPUT_MODES.FilesWithMatches:
+				printFileMatches(scope.root, searched.value.items);
+				break;
 		}
 	} catch (err) {
-		console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
-		process.exit(1);
+		console.error(
+			chalk.red(tSettingsUi("Error: {message}", { message: err instanceof Error ? err.message : String(err) })),
+		);
+		process.exitCode = 1;
+	} finally {
+		if (ownsManager) manager.dispose();
 	}
-}
-
-export function printGrepHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} grep`)} - Test grep tool
-
-${chalk.bold("Usage:")}
-  ${APP_NAME} grep <pattern> [path] [options]
-
-${chalk.bold("Arguments:")}
-  pattern   Regex pattern to search for
-  path      Directory or file to search (default: .)
-
-${chalk.bold("Options:")}
-  -g, --glob <pattern>  Filter files by glob pattern
-  -l, --limit <n>       Max matches (default: 20)
-  -C, --context <n>     Context lines (default: 2)
-  -f, --files           Output file names only
-  -c, --count           Output match counts per file
-  -h, --help            Show this help
-  --no-gitignore        Include files excluded by .gitignore
-
-${chalk.bold("Environment:")}
-  PI_WALK_WORKERS=N    Set filesystem walker workers (default 4, 0 = auto)
-
-${chalk.bold("Examples:")}
-  ${APP_NAME} grep "import" src/
-  ${APP_NAME} grep "TODO" . --glob "*.ts"
-  ${APP_NAME} grep "function" --files
-`);
 }

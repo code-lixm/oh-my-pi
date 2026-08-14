@@ -630,7 +630,7 @@ describe("advisor", () => {
 
 			const errorMessage = quarantineAdvisorUnsafeOutput(
 				message,
-				new Set(["advise", "read", "grep", "glob"]),
+				new Set(["advise", "read", "grep", "find", "multi_grep"]),
 				"### Session update\n\nThe agent checked a networking design document.",
 			);
 			if (errorMessage === undefined) throw new Error("expected destructive advise-note quarantine");
@@ -710,7 +710,7 @@ describe("advisor", () => {
 
 			const errorMessage = quarantineAdvisorUnsafeOutput(
 				message,
-				new Set(["advise", "read", "grep", "glob"]),
+				new Set(["advise", "read", "grep", "find", "multi_grep"]),
 				"### Session update\n\nGrep found the networking document is internally consistent.",
 			);
 			if (errorMessage === undefined) throw new Error("expected destructive-output quarantine");
@@ -5717,7 +5717,7 @@ describe("advisor", () => {
 			modelRegistry: {} as unknown as ModelRegistry,
 			settings: {} as unknown as Settings,
 			scopedModels: [],
-			availableToolNames: ["read", "grep", "glob", "lsp", "web_search"],
+			availableToolNames: ["read", "grep", "find", "lsp", "web_search"],
 		};
 		const callbacks = {
 			loadDoc: async () => ({ advisors: [] }),
@@ -5755,7 +5755,7 @@ describe("advisor", () => {
 			expect(text).toContain("Save & apply");
 			// Right preview reflects the highlighted (first) advisor.
 			expect(text).toContain("x-ai/grok-code-fast:high");
-			expect(text).toContain("read, grep, glob (default)");
+			expect(text).toContain("read, grep, find (default)");
 		});
 
 		it("renders Chinese advisor configuration chrome with explicit tools", async () => {
@@ -5788,7 +5788,7 @@ describe("advisor", () => {
 
 			const text = strip(overlay.render(200));
 			expect(text.toLowerCase()).toContain("no tools");
-			expect(text).not.toContain("read, grep, glob (default)");
+			expect(text).not.toContain("read, grep, find (default)");
 		});
 
 		it("moves the preview with keyboard selection and preserves an explicit tool set", async () => {

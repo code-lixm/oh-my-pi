@@ -11,7 +11,7 @@ import { astGrepToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ast-grep";
 import { ReadTool, readToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
-import { grepToolRenderer } from "../../src/tools/grep";
+import { fffGrepToolRenderer } from "../../src/tools/fff-renderer";
 
 // 1x1 PNG so the read tool takes its image branch.
 const TINY_PNG_BASE64 =
@@ -109,10 +109,10 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 		}
 	});
 
-	it("resolves scoped search links against cwd, not the (sub)scope path", async () => {
+	it("resolves scoped grep links against cwd, not the (sub)scope path", async () => {
 		settings.override("tui.hyperlinks", "always");
 		const theme = (await getThemeByName("dark"))!;
-		// Scoped search: scope dir (`searchPath`) is below cwd, and the grouped
+		// Scoped grep: scope dir (`searchPath`) is below cwd, and the grouped
 		// display paths are cwd-relative. Resolving against searchPath would double
 		// the `src` prefix (`/proj/src/src/...`).
 		const projectRoot = path.resolve("/tmp/omp-project");
@@ -129,8 +129,8 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 				fileLocations: [fileLocation],
 			},
 		};
-		const rendered = grepToolRenderer
-			.renderResult(result as never, { expanded: true, isPartial: false }, theme, { pattern: "needle" })
+		const rendered = fffGrepToolRenderer
+			.renderResult(result as never, { expanded: true, isPartial: false }, theme)
 			.render(240)
 			.join("\n");
 		const interactiveModeLineUri = url.pathToFileURL(path.resolve(result.details.cwd, fileLocation.path));

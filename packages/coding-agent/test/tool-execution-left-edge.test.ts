@@ -125,7 +125,7 @@ function inlineArgsFor(name: string): unknown {
 	switch (name) {
 		case "grep":
 			return { pattern: "useState", path: "packages/tui/src" };
-		case "glob":
+		case "find":
 			return { pattern: "*.test.ts" };
 		case "ast_grep":
 			return { pattern: "useState($A)", language: "tsx", path: "packages/tui/src" };
@@ -172,10 +172,13 @@ function inlineResultFor(name: string): ToolResult {
 				details: {
 					matchCount: 2,
 					fileCount: 2,
-					displayContent: "# src/\n## a.ts\n*1│const x = useState()",
+					fileLocations: [
+						{ path: "src/a.ts", lineNumbers: [1] },
+						{ path: "src/b.ts", lineNumbers: [2] },
+					],
 				},
 			};
-		case "glob":
+		case "find":
 			return {
 				content: [
 					{ type: "text", text: "packages/coding-agent/test/a.test.ts\npackages/coding-agent/test/b.test.ts" },
@@ -346,11 +349,11 @@ function renderXdevWriteResult({ device: name, content, result }: XdevWriteRende
 
 function renderReadGroupLifecycle(): { pending: string[]; success: string[] } {
 	const component = new ReadToolGroupComponent();
-	component.updateArgs({ path: "packages/coding-agent/src/tools/glob.ts:437-448" }, "read-1");
+	component.updateArgs({ path: "packages/coding-agent/src/tools/fff-renderer.ts:32-108" }, "read-1");
 	const pending = plainLines(component.render(WIDTH));
 
 	component.updateResult(
-		{ content: [{ type: "text", text: "437:export const globToolRenderer = {" }] },
+		{ content: [{ type: "text", text: "32:export const fffFindToolRenderer = {" }] },
 		false,
 		"read-1",
 	);
@@ -365,7 +368,7 @@ describe("tool execution left-edge alignment", () => {
 
 	// ─── non-framed built-ins ─────────────────────────────────────────────────
 
-	it.each(["grep", "glob", "ast_grep"] as const)(
+	it.each(["grep", "find", "ast_grep"] as const)(
 		"keeps non-framed %s pending and result title rows on a one-column outer gutter under full style",
 		toolName => {
 			const { previous } = withBorderStyle("full", () => {
@@ -379,8 +382,8 @@ describe("tool execution left-edge alignment", () => {
 	);
 
 	it.each([
-		{ toolName: "grep", snippets: ["Grep", "useState"] },
-		{ toolName: "glob", snippets: ["Glob", "a.test.ts", "b.test.ts"] },
+		{ toolName: "grep", snippets: ["Grep", "a.ts", "b.ts"] },
+		{ toolName: "find", snippets: ["Find", "a.test.ts", "b.test.ts"] },
 		{ toolName: "ast_grep", snippets: ["AST Grep", "1 match", "meta: $A=0"] },
 	] as const)("renders bare $toolName wrappers under global accent while preserving status and body", async spec => {
 		const uiTheme = await getThemeByName("dark");
@@ -578,13 +581,13 @@ describe("tool execution left-edge alignment", () => {
 		expect(getOutputBlockBorderStyle()).toBe(previous);
 	});
 
-	it("removes the outer gutter from unframed search blocks and ReadToolGroup when border style is none", () => {
+	it("removes the outer gutter from unframed tool blocks and ReadToolGroup when border style is none", () => {
 		const previousBorderStyle = getOutputBlockBorderStyle();
 
 		try {
 			setOutputBlockBorderStyle("none");
 
-			for (const toolName of ["grep", "glob", "ast_grep"] as const) {
+			for (const toolName of ["grep", "find", "ast_grep"] as const) {
 				const { pending, success } = renderToolLifecycle(toolName);
 				expectNoOuterPadding(pending, `${toolName} pending`);
 				expectNoOuterPadding(success, `${toolName} success`);

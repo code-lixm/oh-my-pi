@@ -43,7 +43,6 @@ function createBashTool(settingsOverrides: Record<string, unknown> = {}): BashTo
 				case "astGrep.enabled":
 				case "astEdit.enabled":
 				case "grep.enabled":
-				case "glob.enabled":
 					return false;
 				case "bash.autoBackground.thresholdMs":
 					return 60_000;

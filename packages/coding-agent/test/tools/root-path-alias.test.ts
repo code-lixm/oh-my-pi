@@ -63,22 +63,6 @@ describe("tool path root alias", () => {
 		expect(() => resolveToCwd("@local://PLAN.md", tempDir)).toThrow("internal scheme");
 	});
 
-	it("searches from cwd when path is slash", async () => {
-		const tools = await createTools(createTestSession(tempDir));
-		const tool = tools.find(entry => entry.name === "grep");
-		expect(tool).toBeDefined();
-		if (!tool) throw new Error("Missing search tool");
-
-		const result = await tool.execute("search-root-alias", {
-			pattern: "root-alias-needle",
-			path: "/",
-		});
-		const details = result.details as { scopePath?: string } | undefined;
-
-		expect(getText(result)).toContain("search.txt");
-		expect(details?.scopePath).toBe(".");
-	});
-
 	it("reads cwd when path is slash", async () => {
 		const tools = await createTools(createTestSession(tempDir));
 		const tool = tools.find(entry => entry.name === "read");
@@ -89,23 +73,6 @@ describe("tool path root alias", () => {
 			path: "/",
 		});
 		const text = getText(result);
-		expect(text).toContain("search.txt");
-		expect(text).toContain("sample.ts");
-	});
-
-	it("finds from cwd when pattern is slash", async () => {
-		const tools = await createTools(createTestSession(tempDir));
-		const tool = tools.find(entry => entry.name === "glob");
-		expect(tool).toBeDefined();
-		if (!tool) throw new Error("Missing find tool");
-
-		const result = await tool.execute("find-root-alias", {
-			path: "/",
-		});
-		const details = result.details as { scopePath?: string } | undefined;
-		const text = getText(result);
-
-		expect(details?.scopePath).toBe(".");
 		expect(text).toContain("search.txt");
 		expect(text).toContain("sample.ts");
 	});

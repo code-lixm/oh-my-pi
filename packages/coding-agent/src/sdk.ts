@@ -214,8 +214,8 @@ import {
 	discoverStartupLspServers,
 	EditTool,
 	EvalTool,
-	GlobTool,
-	GrepTool,
+	FffFindTool,
+	FffGrepTool,
 	getSearchTools,
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
@@ -690,8 +690,8 @@ export {
 	createTools,
 	EditTool,
 	EvalTool,
-	GlobTool,
-	GrepTool,
+	FffFindTool,
+	FffGrepTool,
 	HIDDEN_TOOLS,
 	ReadTool,
 	type ToolSession,
@@ -1790,6 +1790,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,
+			promoteExternalTools: (names, signal) => session.promoteExternalTools(names, signal),
 			hasUI: options.hasUI ?? false,
 			getApiKey: options.getApiKey,
 			get additionalDirectories() {
@@ -2864,6 +2865,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cursorBridgeEditTool ??= createBridgeEditTool(toolSession, extensionRunner);
 			return cursorBridgeEditTool;
 		};
+		const createCursorBridgeGrepTool = createBridgeGrepFactory(toolSession, extensionRunner);
 		// Whether this session granted a file-writing tool. Same capture-early
 		// reasoning, plus `write` may be auto-registered further down as an xdev
 		// transport. The exec bridge answers native `delete` and
@@ -2903,10 +2905,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
-		// Cursor and the agent loop may call a mounted device by its top-level
-		// name. Resolve that name from the canonical map and apply the same
-		// execution-only ACP decorator used by `write xd://<tool>`; docs and
-		// renderer lookup continue to use the undecorated canonical instance.
+		// Cursor may call an eligible mounted device by top-level name. Resolve it
+		// from the canonical map, reject schema-hidden external devices, and apply
+		// the same execution-only ACP decorator as write dispatch; docs/renderers
+		// continue to use the undecorated canonical instance.
 		const resolveDeviceTool = (name: string): AgentTool | undefined => {
 			const state = toolSession.xdev;
 			if (!state) return undefined;
@@ -2942,18 +2944,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// registry may still hold the session's own `edit` (any mode) when
 			// this session did not start on Cursor.
 			getEditReplaceTool: getCursorBridgeEditTool,
+			createGrepTool: createCursorBridgeGrepTool,
 			getToolContext: () => toolContextStore.getContext(),
 			mcpResources: cursorMcpResources,
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
-			// `pi_grep` carries its own context width and match cap, which the
-			// shared grep instance fixed at construction cannot express. Gated on
-			// the grant: the factory builds a fresh tool and `executeTool` prefers
-			// it over the registry, so installing it unconditionally would let a
-			// session without `grep` search anyway.
-			createGrepTool: toolRegistry.has("grep") ? createBridgeGrepFactory(toolSession, extensionRunner) : undefined,
 			// The native `delete` and resource-download frames mutate files
 			// without running a registry tool, so this grant is the only thing
 			// standing between a restricted session and a workspace write.
@@ -3232,11 +3229,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// constructed and attached. Startup failure therefore leaves it revivable.
 		hasRegistered = options.expectedAgentRef === undefined || options.expectedAgentRef === null;
 
-		// Partition the initial enabled set for the xd:// transport. Tool instances
-		// remain in the canonical map; only presentation names move between layers.
-		// Mounting requires both transport halves in the granted set (`read xd://`
-		// discovers, `write xd://<tool>` executes); a session without either keeps
-		// every tool top-level instead of auto-granting the missing transport.
+		// Partition the initial enabled set for xd:// discovery. Tool instances stay
+		// in the canonical map; only presentation names move between layers. Mounting
+		// retains both existing transport grants (`read xd://` discovers and write
+		// executes built-in devices); without either, every tool stays top-level
+		// instead of auto-granting the missing transport.
 		if (toolSession.xdev) {
 			const topLevelToolNames: string[] = [];
 			const mountedNames: string[] = [];
@@ -3510,7 +3507,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// summary caches, all keyed on session identity — stays isolated from the
 		// primary, while edit/bash/write stay fully functional: the advisor is a full
 		// agent and its config's `tools` selects which of these it actually gets
-		// (defaulting to read/grep/glob).
+		// (defaulting to read/grep/find).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
 			get cwd() {
@@ -3527,13 +3524,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				Promise.reject(new Error("Session unavailable for launch completion delivery")),
 			getAgentId: () => "advisor",
 			// The primary's availability signals are wrong for advisors: their tool
-			// slate is filtered separately at runtime (default read/grep/glob, no
+			// slate is filtered separately at runtime (default read/grep/find, no
 			// write transport), so xd:// devices are unreachable and read must never
 			// advertise inspect_image — images are inlined, and the provider
 			// boundary handles text-only advisor models.
 			xdev: undefined,
 			isToolActive: name => name !== "inspect_image" && toolSession.isToolActive?.(name) === true,
 		};
+		const advisorCreateGrepTool = createBridgeGrepFactory(advisorToolSession, extensionRunner);
 		const advisorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
 		for (const name in BUILTIN_TOOLS) {
 			advisorToolBuilds.push(BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS](advisorToolSession));
@@ -3858,12 +3856,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
-			// Same per-call `grep` seam the primary bridge gets, built against the
-			// advisor's own tool session so a `pi_grep` frame's context width and
-			// match cap are honored there too.
-			advisorCreateGrepTool: createBridgeGrepFactory(advisorToolSession, extensionRunner),
 			// Same `replace`-mode requirement as the primary bridge; the advisor
 			// path gates it on the advisor's own `edit` grant.
+			advisorCreateGrepTool,
 			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner),
 			// The advisor's bridge tools are wrapped for approval, but the wrapper
 			// reads the mode and per-tool policies only from the execute-time

@@ -39,6 +39,7 @@ import type { AgentActivityState } from "../registry/agent-activity";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { TaskRequestConcurrency, TaskRunnableConcurrency } from "../task/request-concurrency";
 import type { ConfiguredThinkingLevel } from "../thinking";
+import type { FffGrepToolOptions } from "../tools/fff-tools";
 import type { XdevState } from "../tools/xdev";
 import type {
 	WorkspaceCheckpointConversationAdapter,
@@ -276,17 +277,13 @@ export interface AgentSessionConfig {
 	/** Full advisor toolset built against an advisor-scoped tool session. */
 	advisorTools?: AgentTool[];
 	/**
-	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
-	 * match cap, against the advisor-scoped tool session. Without it an advisor
-	 * running on Cursor silently drops both fields.
-	 */
-	advisorCreateGrepTool?(options: { context?: number; totalMatchLimit?: number }): AgentTool | undefined;
-	/**
 	 * Build the `replace`-mode `edit` a Cursor `pi_edit` frame needs, against the
 	 * advisor-scoped tool session. The advisor's ordinary instance follows the
 	 * configured `edit.mode` and rejects the frame's `old_string`/`new_string` args.
 	 */
 	advisorCreateEditTool?(): AgentTool | undefined;
+	/** Build a bridge-only FFF grep for Cursor file offsets and one-shot result caps. */
+	advisorCreateGrepTool?(options?: FffGrepToolOptions): AgentTool;
 	/**
 	 * The execute-time context the advisor's bridge tools resolve approval from.
 	 *

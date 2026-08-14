@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: "Read-only security specialist for evidence-backed repository vulnerability discovery"
-tools: read, grep, glob, lsp, ast_grep
+tools: read, grep, find, multi_grep, lsp, ast_grep
 output:
   properties:
     coverage_summary:

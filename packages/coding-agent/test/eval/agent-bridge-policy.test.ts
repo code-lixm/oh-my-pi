@@ -267,7 +267,14 @@ describe("runEvalAgent", () => {
 			text: "ok",
 		});
 		expect(runSpy).toHaveBeenCalledTimes(1);
-		expect(runSpy.mock.calls[0]?.[0].agent.tools).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
+		expect(runSpy.mock.calls[0]?.[0].agent.tools).toEqual([
+			"read",
+			"grep",
+			"find",
+			"multi_grep",
+			"web_search",
+			"ast_grep",
+		]);
 		expect(runSpy.mock.calls[0]?.[0].agent.spawns).toBeUndefined();
 		await expect(
 			runEvalAgent({ prompt: "unsafe", isolated: true }, { session: makeSession({ planMode: true }) }),

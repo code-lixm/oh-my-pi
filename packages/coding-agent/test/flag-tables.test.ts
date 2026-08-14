@@ -85,13 +85,7 @@ describe("--session-dir", () => {
 	});
 });
 
-describe("--tools legacy aliases", () => {
-	it("maps search and find to grep and glob", () => {
-		const result = parseArgs(["--tools", "search,find,grep"]);
-
-		expect(result.tools).toEqual(["grep", "glob"]);
-	});
-
+describe("--tools validation", () => {
 	it("rejects unknown tool names instead of silently narrowing the toolset", () => {
 		// Removed tools (ssh, job, irc, launch, search_tool_bm25) used to be
 		// dropped with only a log-file warning, so `--tools bash,ssh` ran with

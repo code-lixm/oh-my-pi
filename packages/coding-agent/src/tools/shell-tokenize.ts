@@ -94,7 +94,7 @@ interface FlatShellCommandSegment {
 	 * True when this segment consumes the previous stage's stdout via an
 	 * unquoted `|` or `|&`. Blank and comment-only continuation lines preserve
 	 * the pending pipe state. Such a stage reads piped stdin, so path-based
-	 * dedicated tools (read/grep/glob) cannot replace it. `||`, `;`, `&`, and
+	 * dedicated tools (read/grep/find) cannot replace it. `||`, `;`, `&`, and
 	 * `&&` start an independent command and leave this false.
 	 */
 	pipedStdin: boolean;

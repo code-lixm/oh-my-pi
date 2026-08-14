@@ -366,8 +366,8 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 	{
 		pattern: "^\\s*(find|fd|locate)\\s+.*(-name|-iname|-type|--type|-glob)",
-		tool: "glob",
-		message: "Use the `glob` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
+		tool: "find",
+		message: "Use the `find` tool instead of shell find/fd. It provides indexed fuzzy path and glob search.",
 	},
 	{
 		pattern: "^\\s*sed\\s+(-i|--in-place)",
@@ -1193,7 +1193,9 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Basic Tool Details"),
-			description: tSettingsUi("Show detailed read, grep, and glob results instead of one-line summaries"),
+			description: tSettingsUi(
+				"Show detailed read, find, grep, and multi_grep results instead of one-line summaries",
+			),
 		},
 	},
 	"display.toolDetailMaxLines": {
@@ -1581,7 +1583,7 @@ export const SETTINGS_SCHEMA = {
 			group: "General",
 			label: "Additional Workspace Dirs",
 			description:
-				"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.",
+				"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/find them.",
 		},
 	},
 
@@ -4383,15 +4385,15 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Grep, glob, and AST tools
-	"glob.enabled": {
+	// FFF search tools
+	"find.enabled": {
 		type: "boolean",
 		default: true,
 		ui: {
 			tab: "tools",
 			group: tSettingsUi("Available Tools"),
-			label: tSettingsUi("Glob"),
-			description: tSettingsUi("Enable the glob tool for glob-based file lookup"),
+			label: tSettingsUi("Find"),
+			description: tSettingsUi("Enable FFF fuzzy path and glob search"),
 		},
 	},
 
@@ -4402,7 +4404,18 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: tSettingsUi("Available Tools"),
 			label: tSettingsUi("Grep"),
-			description: tSettingsUi("Enable the grep tool for regex content search"),
+			description: tSettingsUi("Enable FFF indexed content search"),
+		},
+	},
+
+	"multiGrep.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("Multi Grep"),
+			description: tSettingsUi("Enable FFF multi-pattern OR content search"),
 		},
 	},
 

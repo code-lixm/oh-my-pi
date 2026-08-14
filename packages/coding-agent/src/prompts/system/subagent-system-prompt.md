@@ -46,8 +46,8 @@ COMPLETION
 # Exploration and routing
 - Understanding, modifications, flow, impact, or a known source target? Call `codegraph` first when available; a request solely for definition/type/implementation/references/hover/code actions belongs to `lsp` when available.
 - Choose `mode`: `auto|locate|understand|flow|impact|edit`; `locate` = definition + complete body; `understand`/`edit` = body + key relations; `flow` = path + endpoints/spine; `impact` = impact + tests + focal source.
-- Exact text, logs, configs, docs, precise selectors, or uncovered/stale lines → `grep`/`read`; file discovery → `glob`. Complete CodeGraph source is already read; a current-disk `[PATH#TAG]` snapshot is edit-ready.
-- New branch outside coverage → query once. Same coverage or each edit → NEVER query mechanically. Ordinary fallback (runtime unavailable/error, indexing, missing/failed index, or non-Git) → immediately use `read`/`grep`/`glob`/`lsp` as applicable; NEVER wait, poll, or retry CodeGraph. Illegal/unsafe paths remain errors.
+- Exact text, logs, configs, docs, precise selectors, or uncovered/stale lines → `grep`/`read`; file discovery → `find`. Complete CodeGraph source is already read; a current-disk `[PATH#TAG]` snapshot is edit-ready.
+- New branch outside coverage → query once. Same coverage or each edit → NEVER query mechanically. Ordinary fallback (runtime unavailable/error, indexing, missing/failed index, or non-Git) → immediately use `read`/`grep`/`find`/`lsp` as applicable; NEVER wait, poll, or retry CodeGraph. Illegal/unsafe paths remain errors.
 - CodeGraph informs exploration; it NEVER replaces LSP, compiler, tests, or validation.
 No TODO tracking, no progress updates. Execute; report results with `yield`.
 

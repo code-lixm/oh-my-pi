@@ -17,7 +17,6 @@ function makeSession(): ToolSession {
 				if (key === "astGrep.enabled") return false;
 				if (key === "astEdit.enabled") return false;
 				if (key === "grep.enabled") return false;
-				if (key === "glob.enabled") return false;
 				return undefined;
 			},
 			getBashInterceptorRules() {

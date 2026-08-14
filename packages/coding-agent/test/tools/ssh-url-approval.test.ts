@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 
@@ -26,7 +25,7 @@ function callApproval(tool: { approval?: unknown }, args: unknown): string {
 	return approval(args) as string;
 }
 
-describe("ssh:// tools require exec-tier approval", () => {
+describe("ssh:// read/write tools require exec-tier approval", () => {
 	beforeAll(async () => {
 		await Settings.init({ inMemory: true });
 	});
@@ -36,17 +35,6 @@ describe("ssh:// tools require exec-tier approval", () => {
 		expect(callApproval(tool, { path: "ssh://icaro/etc/hostname" })).toBe("exec");
 		expect(callApproval(tool, { path: "/etc/hostname" })).toBe("read");
 		expect(callApproval(tool, { path: "local://notes" })).toBe("read");
-		expect(callApproval(tool, {})).toBe("read");
-	});
-
-	it("grep: an ssh:// entry flattened into a delimited path still trips exec", () => {
-		const tool = new GrepTool(createTestToolSession(os.tmpdir()));
-		// The delimited string is one entry at approval time (expansion happens
-		// later), so an anchored check would miss it — the substring scan must not.
-		expect(callApproval(tool, { paths: "src,ssh://icaro/etc/hosts" })).toBe("exec");
-		expect(callApproval(tool, { paths: ["src", "ssh://icaro/etc/hosts"] })).toBe("exec");
-		expect(callApproval(tool, { paths: ["src", "lib"] })).toBe("read");
-		expect(callApproval(tool, { paths: "src" })).toBe("read");
 		expect(callApproval(tool, {})).toBe("read");
 	});
 

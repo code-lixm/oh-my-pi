@@ -939,27 +939,42 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		expect(mod.observed.updates).toEqual(["remote output"]);
 	});
 
-	it("preserves relative paths from legacy find operations", async () => {
+	it("rejects legacy find operations from in-place packages", async () => {
 		const dir = await writePackage({
 			"package.json": JSON.stringify({ name: "legacy-find-ops-ext", version: "1.0.0" }),
 			"index.ts": [
 				'import { createFindToolDefinition } from "@earendil-works/pi-coding-agent";',
-				"const tool = createFindToolDefinition('/remote/project', {",
-				"  operations: {",
-				"    exists: () => true,",
-				"    glob: () => ['src/a.ts', '/remote/project/src/b.ts'],",
-				"  },",
-				"});",
-				"const result = await tool.execute('call-1', { pattern: '**/*.ts', path: '.' });",
-				"const text = result.content.find(block => block.type === 'text')?.text ?? '';",
-				"export const lines = text.split('\\n');",
-				"export default function (pi) { pi.registerTool(tool); }",
+				"let operationsExecuted = false;",
+				"let errorMessage = '';",
+				"try {",
+				"  createFindToolDefinition('/remote/project', {",
+				"    operations: {",
+				"      exists() {",
+				"        operationsExecuted = true;",
+				"        throw new Error('legacy find operations must not run');",
+				"      },",
+				"      glob() {",
+				"        operationsExecuted = true;",
+				"        throw new Error('legacy find operations must not run');",
+				"      },",
+				"    },",
+				"  });",
+				"} catch (error) {",
+				"  errorMessage = error instanceof Error ? error.message : String(error);",
+				"}",
+				"export const observed = { errorMessage, operationsExecuted };",
+				"export default function () {}",
 			].join("\n"),
 		});
 
-		const mod = (await loadLegacyPiModule(path.join(dir, "index.ts"))) as { lines: string[] };
+		const mod = (await loadLegacyPiModule(path.join(dir, "index.ts"))) as {
+			observed: { errorMessage: string; operationsExecuted: boolean };
+		};
 
-		expect(mod.lines).toEqual(["src/a.ts", "src/b.ts"]);
+		expect(mod.observed.operationsExecuted).toBe(false);
+		expect(mod.observed.errorMessage).toContain("FindToolOptions.operations");
+		expect(mod.observed.errorMessage).toContain("FFF");
+		expect(mod.observed.errorMessage).toContain("defineTool()");
 	});
 
 	it("rewrites extension bare deps to file URLs for compiled-binary loading", async () => {

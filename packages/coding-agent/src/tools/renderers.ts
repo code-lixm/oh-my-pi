@@ -21,9 +21,8 @@ import { codegraphToolRenderer } from "./codegraph-renderer";
 import { computerToolRenderer } from "./computer-renderer";
 import { debugToolRenderer } from "./debug";
 import { evalToolRenderer } from "./eval-render";
+import { fffFindToolRenderer, fffGrepToolRenderer, fffMultiGrepToolRenderer } from "./fff-renderer";
 import { githubToolRenderer } from "./gh-renderer";
-import { globToolRenderer } from "./glob";
-import { grepToolRenderer } from "./grep";
 import { hubToolRenderer } from "./hub";
 import { inspectImageToolRenderer } from "./inspect-image-renderer";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
@@ -102,8 +101,9 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	eval: evalToolRenderer as ToolRenderer,
 	edit: editToolRenderer as ToolRenderer,
 	apply_patch: editToolRenderer as ToolRenderer,
-	glob: globToolRenderer as ToolRenderer,
-	grep: grepToolRenderer as ToolRenderer,
+	find: fffFindToolRenderer as ToolRenderer,
+	grep: fffGrepToolRenderer as ToolRenderer,
+	multi_grep: fffMultiGrepToolRenderer as ToolRenderer,
 	lsp: lspToolRenderer as ToolRenderer,
 	inspect_image: inspectImageToolRenderer as ToolRenderer,
 	// Lazy getter: `hubToolRenderer` lives in a module whose deps (messaging →

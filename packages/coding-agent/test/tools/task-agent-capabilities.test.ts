@@ -25,16 +25,30 @@ describe("task agent capability descriptions", () => {
 		}
 	});
 
+	it("treats multi_grep as read-only while failing closed for unknown tools", () => {
+		const readOnlyAgent: AgentDefinition = {
+			name: "multi-grep-scout",
+			description: "",
+			systemPrompt: "",
+			tools: ["read", "multi_grep"],
+			source: "project",
+		};
+		const unknownToolAgent: AgentDefinition = { ...readOnlyAgent, tools: ["multi_grep", "unknown_tool"] };
+
+		expect(isReadOnlyAgent(readOnlyAgent)).toBe(true);
+		expect(isReadOnlyAgent(unknownToolAgent)).toBe(false);
+	});
+
 	it("registers the localized security reviewer with its restricted review tools", () => {
 		const previousPromptLocale = getPromptLocale();
 		try {
 			const english = agentByName(loadBundledAgentsForLocale("en"), "security-reviewer");
 			const chinese = agentByName(loadBundledAgentsForLocale("zh-CN"), "security-reviewer");
 
-			expect(english.systemPrompt).toContain("Review only the assigned repository scope.");
+			expect(english.systemPrompt).toContain("Review assigned repository scope only.");
 			expect(chinese.systemPrompt).toContain("仅审查分配给你的仓库范围。");
-			expect(chinese.systemPrompt).not.toContain("Review only the assigned repository scope.");
-			expect(chinese.tools).toEqual(["read", "grep", "glob", "lsp", "ast_grep", "yield"]);
+			expect(chinese.systemPrompt).not.toContain("Review assigned repository scope only.");
+			expect(chinese.tools).toEqual(["read", "grep", "find", "multi_grep", "lsp", "ast_grep", "yield"]);
 		} finally {
 			setPromptLocale(previousPromptLocale);
 			clearBundledAgentsCache();

@@ -84,6 +84,7 @@ import {
 	shouldDisableReasoning,
 	toReasoningEffort,
 } from "../thinking";
+import type { FffGrepToolOptions } from "../tools/fff-tools";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ClientBridge } from "./client-bridge";
 import type { CustomMessage, CustomMessagePayload } from "./messages";
@@ -191,19 +192,14 @@ export interface SessionAdvisorsOptions {
 	enabled: boolean;
 	tools?: AgentTool[];
 	/**
-	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
-	 * match cap. The advisor's tools are fixed instances carrying session
-	 * defaults, so without this an advisor running against Cursor silently
-	 * drops both fields — the same gap the primary bridge closes.
-	 */
-	createGrepTool?(options: { context?: number; totalMatchLimit?: number }): AgentTool | undefined;
-	/**
 	 * Build the `replace`-mode `edit` a Cursor `pi_edit` frame needs. The
 	 * advisor's own instance follows the configured `edit.mode` (`hashline` by
 	 * default), whose schema the frame's `old_string`/`new_string` args do not
 	 * match, so without this every native advisor edit fails validation.
 	 */
 	createEditTool?(): AgentTool | undefined;
+	/** Build bridge-only FFF grep instances for Cursor's frame-specific controls. */
+	createGrepTool?: (options?: FffGrepToolOptions) => AgentTool;
 	/**
 	 * The execute-time context the bridge's tools resolve approval from.
 	 *
@@ -297,8 +293,8 @@ export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorEnabled: boolean;
 	#advisorTools: AgentTool[] | undefined;
-	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
+	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorGetToolContext: SessionAdvisorsOptions["getToolContext"];
 	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
 	#advisorWatchdogPrompt: string | undefined;
@@ -324,8 +320,8 @@ export class SessionAdvisors {
 		this.#host = host;
 		this.#advisorEnabled = options.enabled;
 		this.#advisorTools = options.tools;
-		this.#advisorCreateGrepTool = options.createGrepTool;
 		this.#advisorCreateEditTool = options.createEditTool;
+		this.#advisorCreateGrepTool = options.createGrepTool;
 		this.#advisorGetToolContext = options.getToolContext;
 		this.#advisorMcpResources = options.mcpResources;
 		this.#advisorWatchdogPrompt = options.watchdogPrompt;
@@ -790,7 +786,7 @@ export class SessionAdvisors {
 			// bridge (`sdk.ts`), scoped to this advisor's granted tool set.
 			// Cursor's native `delete` frame removes files directly, bypassing the
 			// tool map, so gate it on the advisor actually holding a file-mutating
-			// tool. A default read-only advisor (advise/read/grep/glob) never gets
+			// tool. A default read-only advisor (advise/read/grep/find) never gets
 			// to delete workspace files it was never granted (issue #5680 review).
 			const advisorCanMutateFiles = advisorToolMap.has("write") || advisorToolMap.has("edit");
 			if (advisorCanMutateFiles) availableAdvisorToolNames.add("delete");
@@ -804,14 +800,11 @@ export class SessionAdvisors {
 				cwd: this.#host.sessionManager.getCwd(),
 				getCwd: () => this.#host.sessionManager.getCwd(),
 				tools: bridgeToolMap(advisorToolMap, this.#advisorCreateEditTool),
+				createGrepTool: this.#advisorCreateGrepTool,
 				// Approval mode, per-tool policies and `autoApprove` live only on
 				// this context; without it every bridge tool resolves as `yolo`.
 				getToolContext: this.#advisorGetToolContext,
 				allowDirectFileMutation: advisorCanMutateFiles,
-				// Gated on the advisor's own grant: the factory builds a fresh
-				// tool, so handing it over unconditionally would give a roster
-				// without `grep` a search tool it was denied.
-				createGrepTool: advisorToolMap.has("grep") ? this.#advisorCreateGrepTool : undefined,
 				// Advisors share the session's live MCP connections, so their
 				// resource frames answer from the same catalog the primary sees.
 				// Not gated on a tool grant: reading what a server advertises is

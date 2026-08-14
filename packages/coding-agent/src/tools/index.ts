@@ -56,10 +56,9 @@ import { ComputerTool } from "./computer";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
+import { FffFindTool, FffGrepTool, FffMultiGrepTool } from "./fff-tools";
 import type { FileMutationEvent, PendingFileMutationCollector } from "./file-mutation-hook";
 import { GithubTool } from "./gh";
-import { GlobTool } from "./glob";
-import { GrepTool } from "./grep";
 import { HubTool, isIrcEnabled } from "./hub";
 import { InspectImageTool } from "./inspect-image";
 import { LearnTool } from "./learn";
@@ -77,6 +76,7 @@ import { SecurityScanTool } from "./security-scan";
 import { SiyuanTool } from "./siyuan";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
+import { ToolSearchTool } from "./tool-search";
 import { WriteTool } from "./write";
 import type { XdevState } from "./xdev";
 import { isMountableUnderXdev } from "./xdev";
@@ -101,9 +101,10 @@ export * from "./debug";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
+export * from "./fff-manager";
+export * from "./fff-query";
+export * from "./fff-tools";
 export * from "./gh";
-export * from "./glob";
-export * from "./grep";
 export * from "./hub";
 export * from "./image-gen";
 export * from "./inspect-image";
@@ -122,6 +123,7 @@ export * from "./security-scan";
 export * from "./siyuan";
 export * from "./think";
 export * from "./todo";
+export * from "./tool-search";
 export * from "./tts";
 export * from "./vibe";
 export * from "./write";
@@ -293,6 +295,8 @@ export interface ToolSession {
 	toolRegistry?: Map<string, Tool>;
 	/** `xd://` presentation state backed by {@link toolRegistry}. */
 	xdev?: XdevState;
+	/** Promote schema-hidden external tools into the next request's top-level tool set. */
+	promoteExternalTools?: (names: string[], signal?: AbortSignal) => Promise<void>;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
 	/** Idle→parked→revive lifecycle owner; lets the hub kill a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
@@ -509,8 +513,9 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	eval: s => new EvalTool(s),
 	github: GithubTool.createIf,
 	siyuan: SiyuanTool.createIf,
-	glob: s => new GlobTool(s, { rootPathAlias: true }),
-	grep: s => new GrepTool(s),
+	find: s => new FffFindTool(s),
+	grep: s => new FffGrepTool(s),
+	multi_grep: s => new FffMultiGrepTool(s),
 	lsp: LspTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
@@ -521,6 +526,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	hub: s => new HubTool(s),
 	codegraph: CodeGraphTool.createIf,
 	todo: s => new TodoTool(s),
+	tool_search: s => new ToolSearchTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
 	memory_edit: MemoryEditTool.createIf,
@@ -693,14 +699,16 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "refine") return refinementToolActive;
+		if (name === "tool_search") return !restrictToolNames && session.settings.get("tools.xdev");
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
-		if (name === "glob") return session.settings.get("glob.enabled");
+		if (name === "find") return session.settings.get("find.enabled");
 		if (name === "grep") return session.settings.get("grep.enabled");
+		if (name === "multi_grep") return session.settings.get("multiGrep.enabled");
 		if (name === "github") return session.settings.get("github.enabled");
 		if (name === "siyuan") return session.settings.get("siyuan.enabled");
 		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
@@ -787,13 +795,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const builtInNames = new Set(tools.map(tool => tool.name));
 	for (const tool of tools) toolRegistry.set(tool.name, tool);
 
-	// Ordinary sessions use xd:// for discoverable built-ins, custom tools, and
-	// MCP tools. Structured children must expose only their host-provided names,
+	// Ordinary sessions use xd:// to discover mounted built-ins, custom tools,
+	// and MCP tools. Built-ins remain write-dispatchable; external tools require
+	// tool_search promotion. Structured children expose only host-provided names,
 	// so never allocate a registry that later SDK assembly could populate.
-	// The transport rides read/write, so a session granted no write tool never
-	// allocates xd:// state — its tools are exposed top-level directly instead
-	// of auto-granting a write transport the session was denied.
-	// Explicitly requested built-ins retain their top-level presentation.
+	// The mounted-device layer retains the existing read/write transport grant:
+	// sessions without write expose every tool top-level instead of auto-granting
+	// a transport they were denied. Explicit built-ins stay top-level.
 	const xdevEnabled =
 		!restrictToolNames && session.settings.get("tools.xdev") && tools.some(tool => tool.name === "write");
 	const mountBuiltinTools = requestedTools === undefined;

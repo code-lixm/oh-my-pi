@@ -450,12 +450,10 @@
             const cmd = rawCmd.replace(/[\n\t]/g, ' ').trim().slice(0, 50);
             return `[bash: ${cmd}${rawCmd.length > 50 ? '...' : ''}]`;
           }
-          case 'search':
           case 'grep':
-            return `[grep: /${args.pattern || ''}/ in ${shortenPath(String((args.paths || [args.path || '.']).join(', ')))}]`;
+            return `[grep: /${args.pattern || ''}/ in ${shortenPath(String(args.path || '.'))}]`;
           case 'find':
-          case 'glob':
-            return `[glob: ${shortenPath(String((args.paths || [args.pattern || '.']).join(', ')))}]`;
+            return `[find: ${shortenPath(String(args.path || args.pattern || '.'))}]`;
           case 'ls':
             return `[ls: ${shortenPath(String(args.path || '.'))}]`;
           default: {

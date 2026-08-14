@@ -40,6 +40,12 @@ Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`:
 </dag>
 {{/if}}
 
+<workflow>
+- Single operation or independent work → call tools directly.
+- Multi-step dataflow with large intermediates → compose `tool.<name>` calls inside one cell; keep intermediates kernel-local and return only the distilled result.
+- External tool schema absent? Enable it with `tool_search` in a prior model response; NEVER bypass activation through Eval.
+</workflow>
+
 <critical>
 Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read.
 </critical>

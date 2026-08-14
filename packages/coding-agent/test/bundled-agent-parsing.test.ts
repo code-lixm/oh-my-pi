@@ -28,6 +28,14 @@ describe("bundled agent parsing", () => {
 		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
 	});
 
+	it("exposes canonical FFF discovery tools for bundled agents", () => {
+		for (const name of ["librarian", "reviewer", "scout", "security-reviewer"] as const) {
+			const agent = getBundledAgent(name);
+			expect(agent?.tools).toEqual(expect.arrayContaining(["read", "grep", "find", "multi_grep"]));
+			expect(agent?.tools).not.toContain("glob");
+		}
+	});
+
 	// Issue #4761: with `modelRoles.slow: ...:xhigh`, the role's explicit effort
 	// suffix must survive agent-pattern expansion and model resolution for the
 	// bundled agents routed at that role. The executor prefers an explicit

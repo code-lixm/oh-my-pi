@@ -69,10 +69,11 @@ import type { ReadonlySessionManager, SessionManager } from "../../session/sessi
 import type {
 	BashToolDetails,
 	BashToolInput,
-	GlobToolDetails,
-	GlobToolInput,
+	FindToolDetails,
+	FindToolInput,
 	GrepToolDetails,
 	GrepToolInput,
+	MultiGrepToolInput,
 	ReadToolDetails,
 	ReadToolInput,
 	WriteToolInput,
@@ -925,9 +926,14 @@ export interface GrepToolCallEvent extends ToolCallEventBase {
 	input: GrepToolInput;
 }
 
-export interface GlobToolCallEvent extends ToolCallEventBase {
-	toolName: "glob";
-	input: GlobToolInput;
+export interface FindToolCallEvent extends ToolCallEventBase {
+	toolName: "find";
+	input: FindToolInput;
+}
+
+export interface MultiGrepToolCallEvent extends ToolCallEventBase {
+	toolName: "multi_grep";
+	input: MultiGrepToolInput;
 }
 
 export interface CustomToolCallEvent extends ToolCallEventBase {
@@ -942,7 +948,8 @@ export type ToolCallEvent =
 	| EditToolCallEvent
 	| WriteToolCallEvent
 	| GrepToolCallEvent
-	| GlobToolCallEvent
+	| FindToolCallEvent
+	| MultiGrepToolCallEvent
 	| CustomToolCallEvent;
 
 interface ToolResultEventBase {
@@ -978,9 +985,14 @@ export interface GrepToolResultEvent extends ToolResultEventBase {
 	details: GrepToolDetails | undefined;
 }
 
-export interface GlobToolResultEvent extends ToolResultEventBase {
-	toolName: "glob";
-	details: GlobToolDetails | undefined;
+export interface FindToolResultEvent extends ToolResultEventBase {
+	toolName: "find";
+	details: FindToolDetails | undefined;
+}
+
+export interface MultiGrepToolResultEvent extends ToolResultEventBase {
+	toolName: "multi_grep";
+	details: GrepToolDetails | undefined;
 }
 
 export interface CustomToolResultEvent extends ToolResultEventBase {
@@ -995,7 +1007,8 @@ export type ToolResultEvent =
 	| EditToolResultEvent
 	| WriteToolResultEvent
 	| GrepToolResultEvent
-	| GlobToolResultEvent
+	| FindToolResultEvent
+	| MultiGrepToolResultEvent
 	| CustomToolResultEvent;
 
 /**
@@ -1023,7 +1036,8 @@ export function isToolCallEventType(toolName: "read", event: ToolCallEvent): eve
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
 export function isToolCallEventType(toolName: "grep", event: ToolCallEvent): event is GrepToolCallEvent;
-export function isToolCallEventType(toolName: "glob", event: ToolCallEvent): event is GlobToolCallEvent;
+export function isToolCallEventType(toolName: "find", event: ToolCallEvent): event is FindToolCallEvent;
+export function isToolCallEventType(toolName: "multi_grep", event: ToolCallEvent): event is MultiGrepToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,
 	event: ToolCallEvent,

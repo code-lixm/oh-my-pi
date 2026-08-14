@@ -112,7 +112,7 @@ export function renderSearchResult(
 			? truncateToWidth(searchQueries[0], 80)
 			: undefined;
 	const success = sourceCount > 0;
-	// Bare read/grep/glob-style header: the query takes the description slot
+	// Bare read/FFF-search-style header: the query takes the description slot
 	// (like grep's pattern) and provider + count ride in meta — no separate
 	// Query:/Metadata: sections.
 	const header = renderStatusLine(
@@ -190,7 +190,7 @@ export function renderSearchResult(
 				theme,
 			);
 
-			// Bare read/grep/glob-style surface: header, then the answer text
+			// Bare read/FFF-search-style surface: header, then the answer text
 			// (when present), then the source tree — no section labels.
 			const lines = [header, ...answerLines];
 			if (sourceTree.length > 0) {

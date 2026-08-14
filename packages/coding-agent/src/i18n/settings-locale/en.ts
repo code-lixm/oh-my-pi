@@ -102,7 +102,27 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Preview tool renderers across streaming, in-progress, success, and failure states":
 		"Preview tool renderers across streaming, in-progress, success, and failure states",
 	"Run storage garbage collection": "Run storage garbage collection",
-	"Test grep tool": "Test grep tool",
+	"Search indexed file contents with FFF": "Search indexed file contents with FFF",
+	"Regex pattern to search for": "Regex pattern to search for",
+	"Directory or file to search": "Directory or file to search",
+	"Filter files by glob pattern": "Filter files by glob pattern",
+	"Max matches": "Max matches",
+	"Context lines": "Context lines",
+	"Output file names only": "Output file names only",
+	"Output match counts per file": "Output match counts per file",
+	"Pattern is required": "Pattern is required",
+	"{name} must be a positive integer": "{name} must be a positive integer",
+	"{name} must be a non-negative integer": "{name} must be a non-negative integer",
+	"Searching in: {path}": "Searching in: {path}",
+	"Pattern: {pattern}": "Pattern: {pattern}",
+	"Mode: {mode}, Limit: {limit}, Context: {context}, Engine: FFF":
+		"Mode: {mode}, Limit: {limit}, Context: {context}, Engine: FFF",
+	"Total matches: {count}": "Total matches: {count}",
+	"Files with matches: {count}": "Files with matches: {count}",
+	"Files searched: {count}": "Files searched: {count}",
+	"Limit reached: true": "Limit reached: true",
+	"Invalid regex: {error}; used literal matching": "Invalid regex: {error}; used literal matching",
+	"{path}: {count} matches": "{path}: {count} matches",
 	"View, clean, or push reported tool issues (auto-QA grievances)":
 		"View, clean, or push reported tool issues (auto-QA grievances)",
 	"Install or link an extension package (alias of `plugin install`/`plugin link`)":
@@ -1797,7 +1817,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Enable the checkpoint and rewind tools for context checkpointing":
 		"Enable the checkpoint and rewind tools for context checkpointing",
 	"Enable the debug tool for DAP-based debugging": "Enable the debug tool for DAP-based debugging",
-	"Enable the glob tool for glob-based file lookup": "Enable the glob tool for glob-based file lookup",
+	"Enable FFF fuzzy path and glob search": "Enable FFF fuzzy path and glob search",
+	"Enable FFF indexed content search": "Enable FFF indexed content search",
+	"Enable FFF multi-pattern OR content search": "Enable FFF multi-pattern OR content search",
 	"Enable the grep tool for regex content search": "Enable the grep tool for regex content search",
 	"Enable the inspect_image tool, delegating image understanding to a vision-capable model":
 		"Enable the inspect_image tool, delegating image understanding to a vision-capable model",
@@ -1862,6 +1884,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"GitHub Gist": "GitHub Gist",
 	"GitHub View Cache": "GitHub View Cache",
 	Glob: "Glob",
+	Find: "Find",
+	"Multi Grep": "Multi Grep",
 	Global: "Global",
 	"Global — all projects (~/.omp/agent/rules)": "Global — all projects (~/.omp/agent/rules)",
 	"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)":
@@ -2394,8 +2418,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Show newly added onboarding steps once per setup version":
 		"Show newly added onboarding steps once per setup version",
 	"Show per-turn token usage on assistant messages": "Show per-turn token usage on assistant messages",
-	"Show detailed read, grep, and glob results instead of one-line summaries":
-		"Show detailed read, grep, and glob results instead of one-line summaries",
+	"Show detailed read, find, grep, and multi_grep results instead of one-line summaries":
+		"Show detailed read, find, grep, and multi_grep results instead of one-line summaries",
 	"Show terminal cursor for IME support": "Show terminal cursor for IME support",
 	"Show token budget alongside the goal indicator in the status line":
 		"Show token budget alongside the goal indicator in the status line",
@@ -3181,8 +3205,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Commands run in the main session — press ←← to return first",
 	"Commands:": "Commands:",
 	"Delete session?\\n{displayName}": "Delete session?\\n{displayName}",
-	"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob/codegraph = default)":
-		"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob/codegraph = default)",
 	"Enter assign · ↑/↓ providers · type to search · Esc cancel":
 		"Enter assign · ↑/↓ providers · type to search · Esc cancel",
 	"Enter create + pick model · Esc cancel": "Enter create + pick model · Esc cancel",
@@ -4935,8 +4957,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you":
 		"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you",
 	"Additional Workspace Dirs": "Additional Workspace Dirs",
-	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
-		"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.",
+	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/find them.":
+		"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/find them.",
 	"Usage-Aware Fallback": "Usage-Aware Fallback",
 	"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.":
 		"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.",

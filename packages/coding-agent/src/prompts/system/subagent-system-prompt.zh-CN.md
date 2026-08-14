@@ -54,8 +54,8 @@
 # 探索与路由
 - 理解、修改、flow、impact 或已知源码目标？工具可用时 MUST 先调用 `codegraph`；请求仅是 definition/type/implementation/references/hover/code actions 时归 `lsp`（可用时）。
 - 选择 `mode`：`auto|locate|understand|flow|impact|edit`；`locate` = 定义 + 完整 body；`understand`/`edit` = body + 关键关系；`flow` = 路径 + 端点／脊柱；`impact` = 影响 + tests + 焦点源码。
-- 精确文本、日志、配置、文档、精确 selector 或未覆盖／stale 行 → `grep`/`read`；文件发现 → `glob`。完整 CodeGraph 源码已视为已读；当前磁盘 `[PATH#TAG]` snapshot 可直接用于 edit。
-- coverage 外新分支 → 只提问一次。coverage 未变或每次 edit 后 → NEVER 机械重调。普通 fallback（runtime 不可用／error、indexing、缺失／失败的 index 或非 Git）→ 立即按需使用 `read`/`grep`/`glob`/`lsp`；NEVER 等待、轮询或重试 CodeGraph。非法／不安全路径仍是错误。
+- 精确文本、日志、配置、文档、精确 selector 或未覆盖／stale 行 → `grep`/`read`；文件发现 → `find`。完整 CodeGraph 源码已视为已读；当前磁盘 `[PATH#TAG]` snapshot 可直接用于 edit。
+- coverage 外新分支 → 只提问一次。coverage 未变或每次 edit 后 → NEVER 机械重调。普通 fallback（runtime unavailable/error、indexing、缺失／失败的 index 或非 Git）→ 立即按需使用 `read`/`grep`/`find`/`lsp`；NEVER 等待、轮询或重试 CodeGraph。非法／不安全路径仍是错误。
 - CodeGraph 只提供探索依据；NEVER 替代 LSP、compiler、tests 或验证。
 
 不要跟踪 TODO，不要提供进度更新。执行；用 `yield` 报告结果。

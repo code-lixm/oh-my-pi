@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
+import { isExternalXdevToolLocked } from "../../tools/xdev";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
 import { EVAL_COMPLETION_BRIDGE_NAME, runEvalCompletion } from "../completion-bridge";
@@ -38,6 +39,9 @@ function toolResultHasError(result: AgentToolResult): boolean {
 }
 
 function getTool(session: ToolSession, name: string): AgentTool {
+	if (session.xdev && isExternalXdevToolLocked(session.xdev, name)) {
+		throw new ToolError(`External tool "${name}" is discoverable but not active. Enable it with tool_search first.`);
+	}
 	const tool = session.getToolByName?.(name);
 	if (!tool) {
 		throw new ToolError(`Unknown tool from js runtime: ${name}`);
@@ -89,9 +93,9 @@ function summarizeToolResult(
 				path: record.path,
 				count: details.matchCount ?? undefined,
 			});
-		case "glob":
+		case "find":
 			return withError({
-				op: "glob",
+				op: "find",
 				pattern: record.pattern,
 				count: details.fileCount ?? undefined,
 				matches: Array.isArray(details.files) ? details.files.slice(0, 20) : undefined,

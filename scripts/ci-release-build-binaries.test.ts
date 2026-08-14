@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { $ } from "bun";
 import { resolveCrossBuild } from "../packages/coding-agent/scripts/build-binary";
+import { resolveFffLibc } from "../packages/coding-agent/scripts/compile-binary";
 
 const repoRoot = path.join(import.meta.dir, "..");
 
@@ -36,4 +37,22 @@ describe("Windows release binary target", () => {
 			target: "bun-windows-x64-baseline",
 		});
 	});
+});
+
+describe("FFF libc selection for release compile targets", () => {
+	const cases = [
+		{ target: "bun-linux-x64-baseline", expected: "gnu" },
+		{ target: "bun-linux-arm64", expected: "gnu" },
+		{ target: "bun-linux-x64-musl-baseline", expected: "musl" },
+		{ target: "bun-linux-arm64-musl", expected: "musl" },
+		{ target: "bun-darwin-arm64", expected: "gnu" },
+		{ target: "bun-darwin-x64", expected: "gnu" },
+		{ target: "bun-windows-x64-baseline", expected: "gnu" },
+	] as const;
+
+	for (const { target, expected } of cases) {
+		it(`${target} embeds the ${expected} FFF native variant`, () => {
+			expect(resolveFffLibc(target)).toBe(expected);
+		});
+	}
 });

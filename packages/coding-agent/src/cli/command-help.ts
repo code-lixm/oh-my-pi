@@ -59,7 +59,7 @@ export const daemonHelp = {
 	description: "Manage the background session daemon (start, status, stop, create, list, prompt, cancel)",
 } satisfies CommandMetadata;
 
-export const grepHelp = { description: "Test grep tool" } satisfies CommandMetadata;
+export const grepHelp = { description: "Search indexed file contents with FFF" } satisfies CommandMetadata;
 
 export const grievancesHelp = {
 	description: "View, clean, or push reported tool issues (auto-QA grievances)",

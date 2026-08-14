@@ -21,7 +21,6 @@ import {
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
 import type { SessionTreeNode } from "../../session/session-entries";
-import { toPathList } from "../../tools/path-utils";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { resolveAssistantErrorPresentation } from "../utils/transcript-render-helpers";
@@ -831,26 +830,18 @@ class TreeList implements Component {
 			}
 			case "grep": {
 				const pattern = String(args.pattern || "");
-				const searchPathsInput =
-					typeof args.paths === "string" || Array.isArray(args.paths)
-						? args.paths
-						: typeof args.path === "string"
-							? args.path
-							: undefined;
-				const paths = toPathList(searchPathsInput);
-				const scope = paths.length > 0 ? paths.join(", ") : ".";
+				const scope = typeof args.path === "string" && args.path ? args.path : ".";
 				return `[grep: /${pattern}/ in ${shortenPath(scope)}]`;
 			}
-			case "glob": {
-				const globInput =
-					typeof args.path === "string"
-						? args.path
-						: typeof args.paths === "string" || Array.isArray(args.paths)
-							? args.paths
-							: undefined;
-				const paths = toPathList(globInput);
-				const scope = paths.length > 0 ? paths.join(", ") : ".";
-				return `[glob: ${shortenPath(scope)}]`;
+			case "multi_grep": {
+				const patterns = Array.isArray(args.patterns) ? args.patterns.map(String).join(" | ") : "";
+				const scope = typeof args.constraints === "string" && args.constraints ? args.constraints : ".";
+				return `[multi_grep: /${patterns}/ in ${shortenPath(scope)}]`;
+			}
+			case "find": {
+				const pattern = String(args.pattern || "*");
+				const scope = typeof args.path === "string" && args.path ? ` in ${shortenPath(args.path)}` : "";
+				return `[find: ${pattern}${scope}]`;
 			}
 			case "ls": {
 				const path = shortenPath(String(args.path || "."));

@@ -75,7 +75,8 @@ describe("createTools", () => {
 		expect(names).toContain("edit");
 		expect(names).toContain("write");
 		expect(names).toContain("grep");
-		expect(names).toContain("glob");
+		expect(names).toContain("find");
+		expect(names).toContain("multi_grep");
 		expect(names).toContain("lsp");
 		expect(names).toContain("task");
 		expect(names).toContain("todo");
@@ -84,17 +85,14 @@ describe("createTools", () => {
 		expect(names).not.toContain("vim");
 	});
 
-	it("normalizes legacy explicit tool names", async () => {
+	it("deduplicates explicit canonical tool selections in first-seen order", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "astGrep.enabled": false }),
 		});
-		const tools = await createTools(session, ["search", "find", "grep"]);
+		const tools = await createTools(session, ["grep", "find", "grep", "find"]);
 		const names = tools.map(t => t.name);
 
-		expect(names.filter(name => name === "grep")).toHaveLength(1);
-		expect(names).toContain("glob");
-		expect(names).not.toContain("search");
-		expect(names).not.toContain("find");
+		expect(names).toEqual(["grep", "find"]);
 	});
 
 	it("includes bash and eval when both eval backends are allowed", async () => {
@@ -325,8 +323,9 @@ describe("createTools", () => {
 	it("filters disabled builtin tools by settings", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({
-				"glob.enabled": false,
+				"find.enabled": false,
 				"grep.enabled": false,
+				"multiGrep.enabled": false,
 				"astGrep.enabled": false,
 				"astEdit.enabled": false,
 				"bash.enabled": false,
@@ -341,8 +340,9 @@ describe("createTools", () => {
 
 		expect(names).not.toContain("bash");
 		expect(names).not.toContain("launch");
-		expect(names).not.toContain("glob");
+		expect(names).not.toContain("find");
 		expect(names).not.toContain("grep");
+		expect(names).not.toContain("multi_grep");
 		expect(names).not.toContain("ast_grep");
 		expect(names).not.toContain("ast_edit");
 		expect(names).not.toContain("web_search");

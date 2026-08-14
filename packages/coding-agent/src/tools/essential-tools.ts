@@ -2,13 +2,13 @@
  * Canonical set of built-in tools that must stay top-level.
  *
  * These are the coding essentials the model always needs directly in its
- * callable schema. `read`/`write` are additionally the `xd://` transport
- * (`read xd://` lists devices, `write xd://<tool>` executes them), so demoting
- * them under xdev makes every mounted device unreachable.
+ * callable schema. `read`/`write` additionally expose `xd://`: read lists
+ * mounted devices and write executes built-in devices. External devices remain
+ * documentation-only until `tool_search` promotes their top-level schema.
  *
  * Adapter boundaries (extension `registerTool`, SDK custom tools, RPC host
  * tools) default an omitted `loadMode` to `"discoverable"`. A UI-only
- * re-register of a built-in — e.g. wrapping `read`/`write`/`bash`/`edit`/`glob`
+ * re-register of a built-in — e.g. wrapping `read`/`write`/`bash`/`edit`/`find`
  * to customize rendering — would then silently demote it to `discoverable` and,
  * with `tools.xdev` on, unmount it from the top-level schema (issue #5764).
  * {@link defaultLoadModeForToolName} pins these names to `"essential"` when the
@@ -25,7 +25,10 @@ export const ESSENTIAL_BUILTIN_TOOL_NAMES: Record<string, true> = {
 	write: true,
 	bash: true,
 	edit: true,
-	glob: true,
+	find: true,
+	grep: true,
+	tool_search: true,
+	multi_grep: true,
 	computer: true,
 	eval: true,
 	task: true,

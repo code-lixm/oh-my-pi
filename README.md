@@ -196,7 +196,7 @@ _[Watch the capture ↗](https://omp.sh/clips/web.mp4)_
 
 ### 09 · Unapologetically native. Even on Windows.
 
-Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp links the real implementations into the process. ripgrep, glob, find: in-process. brush is the bash — with sessions that survive across calls, and 58 command-line utilities (ls, sed, sort, xargs, even jq) ported into the builtins crate and run in-process, zero fork/exec. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
+Other agents shell out to rg, grep, find, and bash. On many machines those binaries don't exist, and on the ones where they do, every call costs a fork-exec round-trip. omp keeps search in-process: FFF maintains a live path/content index with fuzzy matching and frecency/Git ranking, while brush is the bash — with sessions that survive across calls and 58 command-line utilities (ls, sed, sort, xargs, even jq) ported into the builtins crate. The same omp binary runs on macOS, Linux, and Windows — no WSL bridge.
 
 ### 10 · Code review with priorities and a verdict
 
@@ -228,7 +228,7 @@ omp reads the working tree through git_overview, git_file_diff, and git_hunk, th
 
 ### 17 · Read PRs. _Walk skills._ Pull JSON out of subagents.
 
-Sixteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `ssh://`, and the rest — resolve transparently inside every FS-shaped tool the agent already calls. `read pr://1428` returns the same shape as `read src/foo.ts`. `grep` walks a diff like a directory. `agent://<id>/findings.0.path` pulls a field out of a subagent's output by path.
+Sixteen internal schemes — `pr://`, `issue://`, `agent://`, `skill://`, `ssh://`, and the rest — resolve transparently through `read`; filesystem-backed resources also compose with path-aware tools. `read pr://1428` returns the same shape as `read src/foo.ts`, and `agent://<id>/findings.0.path` pulls a field out of a subagent's output by path.
 
 ![omp TUI reading pr://can1357/oh-my-pi/1063 and then /diff/1, showing hunk headers, added lines, and a [MODIFIED] (+12 -0) summary.](https://omp.sh/captures/pr.webp)
 

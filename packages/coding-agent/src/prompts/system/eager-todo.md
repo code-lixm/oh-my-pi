@@ -3,7 +3,7 @@
 Before substantive work, create a phased todo.
 
 You MUST include the `{{toolRefs.todo}}` `init` op in your first tool-call message.
-Batch it with independent reads or edits you already need (`glob`, `grep`, `read`, etc.).
+Batch it with independent reads or edits you already need (`find`, `grep`, `read`, etc.).
 NEVER make the `{{toolRefs.todo}}` call your turn's only tool call.
 You MUST cover the entire request from investigation through implementation and verification — not just the next immediate step.
 Task descriptions MUST be concise, specific 5-10 word labels.

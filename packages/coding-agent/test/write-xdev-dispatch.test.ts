@@ -13,7 +13,10 @@ import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer"
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 import {
+	dispatchXdevTool,
+	externalXdevToolCatalog,
 	listXdevTools,
+	resolveMountedXdevExecutable,
 	resolveMountedXdevTool,
 	XDEV_DOCS_PER_DEVICE_CAP,
 	XDEV_DOCS_TOTAL_BUDGET,
@@ -53,6 +56,70 @@ function createTestXdevState(tools: Tool[], builtInNames: Iterable<string> = too
 }
 
 describe("read and write route xd:// device URLs", () => {
+	it("keeps external devices discoverable but never write-dispatchable", async () => {
+		let executions = 0;
+		const builtIn: AgentTool = {
+			name: "weather",
+			label: "Weather",
+			description: "Built-in weather.",
+			parameters: type({}),
+			async execute() {
+				return { content: [{ type: "text", text: "built-in" }] };
+			},
+		};
+		const external: AgentTool = {
+			name: "mcp__weather__forecast",
+			label: "Forecast",
+			description: "External weather forecast.",
+			parameters: type({ city: "string" }),
+			async execute() {
+				executions++;
+				return { content: [{ type: "text", text: "external" }] };
+			},
+		};
+		const active = new Set<string>();
+		const xdev: XdevState = {
+			...createTestXdevState([builtIn, external], ["weather"]),
+			isActive: name => active.has(name),
+		};
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const approval = write.approval;
+		if (typeof approval !== "function") throw new Error("expected write approval function");
+		const writeArgs = { path: `xd://${external.name}`, content: "{}" };
+
+		expect(externalXdevToolCatalog(xdev)).toEqual([
+			{
+				name: "mcp__weather__forecast",
+				label: "Forecast",
+				summary: "External weather forecast.",
+				schemaKeys: ["city"],
+				active: false,
+			},
+		]);
+		expect(resolveMountedXdevExecutable(xdev, external.name)).toBeUndefined();
+		const help = await dispatchXdevTool(xdev, external.name, "help", "external-help");
+		expect(help.result.content.find(item => item.type === "text")?.text).toContain(
+			"Enable this external tool with tool_search before execution.",
+		);
+		expect(() => approval(writeArgs)).toThrow("Enable it with tool_search first");
+
+		const blocked = await dispatchXdevTool(xdev, external.name, "{}", "external-blocked");
+		expect(blocked.result.isError).toBe(true);
+		expect(blocked.result.content.find(item => item.type === "text")?.text).toContain(
+			"Enable it with tool_search first",
+		);
+		expect(executions).toBe(0);
+
+		active.add(external.name);
+		expect(resolveMountedXdevExecutable(xdev, external.name)).toBeUndefined();
+		expect(xdevDocs(xdev, external.name)).toContain("Call this external tool through its top-level schema");
+		expect(() => approval(writeArgs)).toThrow("Call its top-level schema directly");
+		const dispatched = await dispatchXdevTool(xdev, external.name, "{}", "external-active");
+		expect(dispatched.result.isError).toBe(true);
+		expect(dispatched.result.content.find(item => item.type === "text")?.text).toContain("Call its schema directly");
+		expect(executions).toBe(0);
+	});
+
 	it("lists, documents, and dispatches an ast_edit device", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-"));
 		try {
@@ -504,7 +571,6 @@ describe("read and write route xd:// device URLs", () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-external-"));
 		try {
 			const session = xdevSession(tempDir);
-			expect(session.settings.get("tools.xdevDocs")).toBe("builtins");
 			await createTools(session);
 			const xdev = session.xdev;
 			if (!xdev) throw new Error("expected xdev state");
@@ -529,9 +595,10 @@ describe("read and write route xd:// device URLs", () => {
 
 			const builtinsDocs = xdevDocsAll(xdev, "builtins");
 			expect(builtinsDocs).toContain("## ");
-			expect(builtinsDocs).not.toContain("## mcp_external_tool");
-			expect(builtinsDocs).toContain("- xd://mcp_external_tool —");
-			expect(builtinsDocs).not.toContain("TAIL");
+			expect(builtinsDocs).toContain("1 external tool is indexed behind tool_search.");
+			expect(builtinsDocs).not.toContain(external.name);
+			expect(builtinsDocs).not.toContain("LEDE ");
+			expect(builtinsDocs).not.toContain("SUMMARY ");
 			const catalogDocs = xdevDocsAll(xdev, "catalog");
 			expect(catalogDocs).not.toContain(`## ${mounted[0]!.name}`);
 			expect(catalogDocs).toContain("- xd://");
@@ -550,18 +617,21 @@ describe("read and write route xd:// device URLs", () => {
 			const allowlistedDocs = xdevDocsAll(xdev, "builtins", ["mcp__context_mode_*"]);
 			expect(allowlistedDocs).toContain("## mcp__context_mode_ctx_execute");
 			expect(allowlistedDocs).not.toContain("## mcp__other_server_execute");
-			expect(allowlistedDocs).toContain("- xd://mcp__other_server_execute —");
+			expect(allowlistedDocs).not.toContain(external.name);
+			expect(allowlistedDocs).not.toContain(unrelatedMcp.name);
 
 			const catalogWithAllowlistDocs = xdevDocsAll(xdev, "catalog", ["mcp__context_mode_*"]);
 			expect(catalogWithAllowlistDocs).not.toContain("## mcp__context_mode_ctx_execute");
 
 			// Malformed user config (scalar or non-string entries reach the
-			// registry unvalidated) degrades to the catalog listing instead of
-			// throwing while the system prompt is built.
+			// registry unvalidated) degrades to the compact catalog notice instead
+			// of throwing while the system prompt is built.
 			const scalarAllowlistDocs = xdevDocsAll(xdev, "builtins", "mcp__context_mode_*" as never);
-			expect(scalarAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
+			expect(scalarAllowlistDocs).toContain("3 external tools are indexed behind tool_search.");
+			expect(scalarAllowlistDocs).not.toContain(contextMode.name);
 			const nonStringAllowlistDocs = xdevDocsAll(xdev, "builtins", [123] as never);
-			expect(nonStringAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
+			expect(nonStringAllowlistDocs).toContain("3 external tools are indexed behind tool_search.");
+			expect(nonStringAllowlistDocs).not.toContain(contextMode.name);
 		} finally {
 			await removeWithRetries(tempDir);
 		}

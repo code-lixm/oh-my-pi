@@ -1067,6 +1067,28 @@ export class SessionTools {
 		});
 	}
 
+	/** Promotes registered external tools while preserving every unrelated presentation choice. */
+	promoteExternalTools(toolNames: string[], signal?: AbortSignal): Promise<void> {
+		return this.runToolRegistryMutation(async () => {
+			const requested = normalizeToolNames(toolNames);
+			const requestedSet = new Set(requested);
+			const mounted = this.#xdev?.mountedNames;
+			if (!mounted) throw new ToolError("External tool discovery is unavailable in this session.");
+			for (const name of requested) {
+				if (!this.#toolRegistry.has(name) || this.#builtInToolNames.has(name)) {
+					throw new ToolError(`External tool "${name}" is no longer available; call tool_search again.`);
+				}
+			}
+			await this.#applyToolPresentation(
+				normalizeToolNames([...this.getEnabledToolNames(), ...requested]),
+				new Set([...mounted].filter(name => !requestedSet.has(name))),
+				this.getActiveToolNames().includes("write"),
+				false,
+				signal,
+			);
+		}, signal);
+	}
+
 	/**
 	 * Restore an enabled tool set with its exact top-level versus `xd://` partition.
 	 *

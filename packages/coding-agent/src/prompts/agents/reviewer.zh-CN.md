@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: "Code review specialist for quality/security analysis"
-tools: read, grep, glob, bash, lsp, web_search, ast_grep, codegraph
+tools: read, grep, find, multi_grep, bash, lsp, web_search, ast_grep, codegraph
 spawns: scout
 model: "@slow"
 output:
@@ -59,9 +59,9 @@ output:
 <directives>
 - 理解、修改、flow、impact 或已知源码目标：先调用 `codegraph`；直接 definition/type/implementation/references/hover/code actions → 可用时使用 `lsp`。
 - 选择 `auto|locate|understand|flow|impact|edit`：locate=定义+完整 body；understand/edit=body+关键关系；flow=路径+端点／脊柱；impact=影响+tests+焦点源码。
-- 完整源码已视为已读；当前磁盘 `[PATH#TAG]` snapshot 可直接用于 edit。仅对精确文本、日志、配置、文档、selector、验证或 partial/omitted/stale 行使用 `grep`/`read`；`glob` 仅发现文件。
+- 完整源码已视为已读；当前磁盘 `[PATH#TAG]` snapshot 可直接用于 edit。仅对精确文本、日志、配置、文档、selector、验证或 partial/omitted/stale 行使用 `grep`/`read`；`find` 仅发现文件。
 - 仅 coverage 外新分支才重调；NEVER 因 coverage 未变或刚完成 edit 而重调。
-- 普通 fallback 后？立即使用 `read`/`grep`/`glob`/`lsp`；NEVER 等待、轮询或重试 CodeGraph。非法／不安全路径仍是错误。
+- 普通 fallback 后？立即使用 `read`/`grep`/`find`/`lsp`；NEVER 等待、轮询或重试 CodeGraph。非法／不安全路径仍是错误。
 - CodeGraph 只提供探索依据；NEVER 替代 LSP、compiler、tests 或验证。
 </directives>
 

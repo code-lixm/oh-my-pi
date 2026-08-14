@@ -45,7 +45,7 @@ import {
 import { createSecurityPublicationTool } from "./publication";
 import { SecurityStore, writeSecurityBundleToDirectory } from "./store";
 
-const SECURITY_SESSION_TOOLS = ["read", "grep", "glob", "lsp", "ast_grep", "task", "security_publish"];
+const SECURITY_SESSION_TOOLS = ["read", "grep", "find", "lsp", "ast_grep", "task", "security_publish"];
 const SECURITY_WORKFLOW_FINGERPRINT = createSecurityWorkflowFingerprint([
 	securityCoordinatorPrompt,
 	securityCoordinatorPromptZh,

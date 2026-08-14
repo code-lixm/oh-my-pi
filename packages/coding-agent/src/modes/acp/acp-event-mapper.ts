@@ -196,7 +196,8 @@ export function mapToolKind(toolName: string, args?: unknown): ToolKind {
 		case "eval":
 			return "execute";
 		case "grep":
-		case "glob":
+		case "find":
+		case "multi_grep":
 		case "ast_grep":
 			return "search";
 		case "web_search":

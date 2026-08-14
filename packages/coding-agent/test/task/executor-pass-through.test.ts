@@ -314,7 +314,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	it("does not inject hub into ordinary explicit read-only tool lists while preserving yield", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
-		const toolNames = ["read", "grep", "glob", "web_search", "codegraph", "yield"];
+		const toolNames = ["read", "grep", "find", "multi_grep", "web_search", "codegraph", "yield"];
 
 		const result = await runSubprocess({
 			...baseOptions,

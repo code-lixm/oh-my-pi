@@ -76,23 +76,23 @@ describe("formatSessionDumpText tool parameters", () => {
 	});
 
 	it("includes tool examples in Python call syntax", () => {
-		const findSchema = type({ paths: "string[]" });
+		const findSchema = type({ pattern: "string", "path?": "string" });
 
 		const out = formatSessionDumpText({
 			messages: [],
 			tools: [
 				{
-					name: "glob",
-					description: "Globs files.",
+					name: "find",
+					description: "Finds indexed paths.",
 					parameters: findSchema,
-					examples: [{ call: { paths: ["src/**/*.ts"] } }],
+					examples: [{ call: { pattern: "profile", path: "src/**/*.ts" } }],
 				},
 			],
 		});
 
 		expect(out).toContain("## Available Tools");
 		expect(out).toContain("@example");
-		expect(out).toContain('glob(paths=["src/**/*.ts"])');
+		expect(out).toContain('find(pattern="profile", path="src/**/*.ts")');
 	});
 
 	it("omits the Available Tools section if inlineToolDescriptors is true", () => {

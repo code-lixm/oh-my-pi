@@ -1,11 +1,8 @@
-/**
- * Test grep tool.
- */
+/** FFF-backed `omp grep` command. */
 
-import { GrepOutputMode } from "@oh-my-pi/pi-natives";
 import { grepHelp as commandHelp } from "../cli/command-help";
 import { Args, Command, Flags } from "../cli/command-runtime";
-import { type GrepCommandArgs, runGrepCommand } from "../cli/grep-cli";
+import { GREP_OUTPUT_MODES, type GrepCommandArgs, runGrepCommand } from "../cli/grep-cli";
 import { initTheme } from "../modes/theme/theme";
 
 export default class Grep extends Command {
@@ -21,17 +18,16 @@ export default class Grep extends Command {
 		context: Flags.integer({ char: "C", description: "Context lines", default: 2 }),
 		files: Flags.boolean({ char: "f", description: "Output file names only" }),
 		count: Flags.boolean({ char: "c", description: "Output match counts per file" }),
-		"no-gitignore": Flags.boolean({ description: "Include files excluded by .gitignore" }),
 	};
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Grep);
 
 		const mode: GrepCommandArgs["mode"] = flags.count
-			? GrepOutputMode.Count
+			? GREP_OUTPUT_MODES.Count
 			: flags.files
-				? GrepOutputMode.FilesWithMatches
-				: GrepOutputMode.Content;
+				? GREP_OUTPUT_MODES.FilesWithMatches
+				: GREP_OUTPUT_MODES.Content;
 
 		const cmd: GrepCommandArgs = {
 			pattern: args.pattern ?? "",
@@ -40,7 +36,6 @@ export default class Grep extends Command {
 			limit: flags.limit,
 			context: flags.context,
 			mode,
-			gitignore: !flags["no-gitignore"],
 		};
 
 		await initTheme();

@@ -1,28 +1,27 @@
 /**
  * `xd://` virtual tool devices.
  *
- * Discoverable built-ins and custom tools are unmounted from the request's
- * tools array and exposed as internal URLs driven through the `read`/`write`
- * tools the model already has:
+ * Discoverable built-ins and external tools are unmounted from the request's
+ * tools array and exposed as internal URLs for discovery:
  *
- *   read  xd://          → mounted tool listing (discovery)
+ *   read  xd://          → mounted tool listing
  *   read  xd://<tool>    → tool docs + JSON parameter schema
- *   write xd://<tool>    → execute: `content` is the JSON args object
+ *   write xd://<tool>    → execute a built-in device with JSON `content`
+ *   tool_search          → promote an external tool's top-level schema
  *
  * Direct and device dispatch share one canonical tool map. The mounted-name
- * set controls presentation only; dispatch accepts the enabled union of
- * top-level active and mounted names. Listing and prompt docs stay
- * mounted-only because top-level tools already ship their schemas.
+ * set controls presentation; provenance controls execution. Built-in devices
+ * stay executable through write, while external devices are documentation-only
+ * until `tool_search` promotes them. Listing and prompt docs stay mounted-only
+ * because top-level tools already ship their schemas.
  *
- * Args go through the same machinery as native tool calls: validated with
- * pi-ai's `validateToolArguments` (the schema is returned on mismatch, so a
- * malformed call self-corrects without a round trip) and streamed through
- * the write tool's existing incremental `content` decoding for live render
- * previews. Compared to a dispatcher def this still costs zero *schema
- * duplication* — one wire schema per tool instead of one per dispatcher
- * branch — but full docs + schema for every mounted device can be inlined
- * into the system prompt, so no discovery read is needed before first use;
- * `read xd://<tool>` remains for on-demand re-fetch.
+ * Eligible device args go through the same machinery as native tool calls:
+ * validated with pi-ai's `validateToolArguments` (the schema is returned on
+ * mismatch, so a malformed call self-corrects without a round trip) and
+ * streamed through the write tool's existing incremental `content` decoding
+ * for live render previews. Full docs + schema for mounted devices can be
+ * inlined into the system prompt; `read xd://<tool>` remains for on-demand
+ * re-fetch, and external summaries remain capped as untrusted metadata.
  *
  * Rendering: the write renderer draws NOTHING until the streamed `path` is
  * known and provably does not target `xd://`; device writes then delegate to
@@ -62,9 +61,9 @@ export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 /**
  * Tools that carry the `xd://` transport itself and therefore can never be
  * mounted as devices: `read xd://` lists/documents devices and
- * `write xd://<tool>` executes them. Demoting either leaves every mounted
- * device unreachable (issue #5764), so they stay top-level regardless of a
- * declared `loadMode`.
+ * `write xd://<tool>` executes built-in devices. Demoting either leaves
+ * mounted built-ins unreachable (issue #5764), so they stay top-level
+ * regardless of a declared `loadMode`.
  */
 export const XDEV_TRANSPORT_TOOLS: Record<string, true> = { read: true, write: true };
 
@@ -119,12 +118,25 @@ function schemaDeclaresIntentField(schema: unknown): boolean {
 	return !!props && typeof props === "object" && "i" in props;
 }
 
-function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
+type XdevDocsExecutionMode = "write" | "activate" | "top-level";
+
+function renderDocs(
+	inst: Tool,
+	heading = "#",
+	descriptionCap?: number,
+	executionMode: XdevDocsExecutionMode = "write",
+): string {
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
 	let description = inst.description ?? "";
 	if (descriptionCap !== undefined && description.length > descriptionCap) {
 		description = `${description.slice(0, descriptionCap).trimEnd()}… (full docs: read ${XD_URL_PREFIX}${inst.name})`;
 	}
+	const executionHint =
+		executionMode === "activate"
+			? `Enable this external tool with tool_search before execution.`
+			: executionMode === "top-level"
+				? `Call this external tool through its top-level schema; do not use write ${XD_URL_PREFIX}${inst.name}.`
+				: `Execute by writing JSON to ${XD_URL_PREFIX}${inst.name}.`;
 	return [
 		`${heading} ${inst.name}${inst.label ? ` — ${inst.label}` : ""}`,
 		"",
@@ -134,7 +146,7 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 		"```ts",
 		`type Args = ${schema};`,
 		"```",
-		`Execute by writing JSON to ${XD_URL_PREFIX}${inst.name}.`,
+		executionHint,
 	].join("\n");
 }
 
@@ -273,8 +285,19 @@ export function resolveMountedXdevTool(state: XdevState, name: string): Tool | u
 	return state.mountedNames.has(name) ? state.tools.get(name) : undefined;
 }
 
-/** Resolve a mounted tool with its execution-only permission decorator. */
+/** Whether a registered external tool's schema has not been promoted. */
+export function isExternalXdevToolLocked(state: XdevState, name: string): boolean {
+	return state.tools.has(name) && !state.builtInNames.has(name) && !state.isActive(name);
+}
+
+function xdevDocsExecutionMode(state: XdevState, name: string): XdevDocsExecutionMode {
+	if (state.builtInNames.has(name)) return "write";
+	return isExternalXdevToolLocked(state, name) ? "activate" : "top-level";
+}
+
+/** Resolve a built-in mounted tool with its execution-only permission decorator. */
 export function resolveMountedXdevExecutable(state: XdevState, name: string): Tool | undefined {
+	if (!state.builtInNames.has(name)) return undefined;
 	const tool = resolveMountedXdevTool(state, name);
 	return tool && state.decorateExecution ? state.decorateExecution(tool) : tool;
 }
@@ -284,6 +307,39 @@ export function listXdevTools(state: XdevState): Tool[] {
 		const tool = state.tools.get(name);
 		return tool ? [tool] : [];
 	});
+}
+
+function externalToolSchemaKeys(tool: Tool): string[] {
+	try {
+		const schema = toolWireSchema(tool as AiTool);
+		if (!schema || typeof schema !== "object" || !("properties" in schema)) return [];
+		const properties = schema.properties;
+		if (!properties || typeof properties !== "object" || Array.isArray(properties)) return [];
+		return Object.keys(properties as Record<string, unknown>).sort();
+	} catch {
+		return [];
+	}
+}
+
+export interface ExternalXdevToolCatalogEntry {
+	name: string;
+	label: string;
+	summary: string;
+	schemaKeys: string[];
+	active: boolean;
+}
+
+/** Complete registered external catalog used by native schema discovery. */
+export function externalXdevToolCatalog(state: XdevState): ExternalXdevToolCatalogEntry[] {
+	return [...state.tools.values()]
+		.filter(tool => !state.builtInNames.has(tool.name))
+		.map(tool => ({
+			name: tool.name,
+			label: tool.label || tool.name,
+			summary: promptCatalogSummary(tool, XDEV_EXTERNAL_DESCRIPTION_CAP),
+			schemaKeys: externalToolSchemaKeys(tool),
+			active: state.isActive(tool.name),
+		}));
 }
 
 /** `{name, summary, dynamic}` triples for prompt templates and `/tools` display. */
@@ -308,13 +364,14 @@ export function xdevListing(state: XdevState): string {
 		`${XD_URL_PREFIX} ${state.mountedNames.size} mounted tool devices.`,
 		...rows,
 		"",
-		`Read ${XD_URL_PREFIX}<tool> for docs + JSON schema; write the JSON args object to ${XD_URL_PREFIX}<tool> to execute. Active top-level tools accept the same dispatch.`,
+		`Read ${XD_URL_PREFIX}<tool> for docs + JSON schema. Built-in devices execute through write; external devices require tool_search activation and then run as top-level tools.`,
 	].join("\n");
 }
 
 /** Docs + schema for any enabled tool. */
 export function xdevDocs(state: XdevState, name: string): string {
-	return renderDocs(resolveRequiredXdevTool(state, name));
+	const tool = resolveRequiredXdevTool(state, name);
+	return renderDocs(tool, "#", undefined, xdevDocsExecutionMode(state, name));
 }
 
 /** Docs + schema for mounted devices under the configured prompt-doc policy. */
@@ -326,14 +383,16 @@ export function xdevDocsAll(
 	const sections: string[] = [];
 	const overflow: Tool[] = [];
 	const inlineGlobs = compileInlineGlobs(inlinePatterns);
+	const hiddenExternalCount =
+		mode === "builtins" ? externalXdevToolCatalog(state).filter(entry => !entry.active).length : 0;
 	let used = 0;
 	for (const tool of listXdevTools(state)) {
 		if (!shouldInlineXdevTool(state, tool, mode, inlineGlobs)) {
-			overflow.push(tool);
+			if (mode !== "builtins" || state.builtInNames.has(tool.name)) overflow.push(tool);
 			continue;
 		}
 		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
+		const docs = renderDocs(tool, "##", descriptionCap, xdevDocsExecutionMode(state, tool.name));
 		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) {
 			overflow.push(tool);
 			continue;
@@ -341,13 +400,22 @@ export function xdevDocsAll(
 		used += docs.length;
 		sections.push(docs);
 	}
+	if (hiddenExternalCount > 0) {
+		sections.push(
+			[
+				"## External tools",
+				`${hiddenExternalCount} external tool${hiddenExternalCount === 1 ? " is" : "s are"} indexed behind tool_search. Search by capability; exact names remain available through read xd:// on demand.`,
+			].join("\n"),
+		);
+	}
 	if (overflow.length > 0) {
 		sections.push(
 			[
 				"## Additional devices (docs on demand)",
 				...overflow.map(tool => {
 					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
+					const activation = !state.builtInNames.has(tool.name) ? " (enable with tool_search)" : "";
+					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}${activation}`;
 				}),
 				"",
 				`Read ${XD_URL_PREFIX}<tool> for full docs + JSON schema before first use.`,
@@ -371,7 +439,7 @@ export function xdevDocsFor(
 		const tool = resolveMountedXdevTool(state, name);
 		if (!tool || !shouldInlineXdevTool(state, tool, mode, inlineGlobs)) continue;
 		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
+		const docs = renderDocs(tool, "##", descriptionCap, xdevDocsExecutionMode(state, tool.name));
 		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) continue;
 		used += docs.length;
 		sections.push(docs);
@@ -401,7 +469,7 @@ function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 	return inst;
 }
 
-/** Execute an enabled canonical tool through `write xd://<tool>`. */
+/** Execute a built-in canonical tool through `write xd://<tool>`. */
 export async function dispatchXdevTool(
 	state: XdevState,
 	name: string,
@@ -417,9 +485,27 @@ export async function dispatchXdevTool(
 
 		if (HELP_CONTENT_RE.test(content)) {
 			return {
-				result: { content: [{ type: "text", text: renderDocs(canonical) }] },
+				result: {
+					content: [
+						{
+							type: "text",
+							text: renderDocs(canonical, "#", undefined, xdevDocsExecutionMode(state, name)),
+						},
+					],
+				},
 				xdev: { tool: name, mode: "help" },
 			};
+		}
+
+		if (!state.builtInNames.has(name)) {
+			if (isExternalXdevToolLocked(state, name)) {
+				throw new ToolError(
+					`External tool "${name}" is discoverable but not active. Enable it with tool_search first.`,
+				);
+			}
+			throw new ToolError(
+				`External tool "${name}" is active at the top level. Call its schema directly; write ${XD_URL_PREFIX}${name} is disabled.`,
+			);
 		}
 
 		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));

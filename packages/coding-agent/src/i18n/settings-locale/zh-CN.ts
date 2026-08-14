@@ -95,7 +95,27 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Preview tool renderers across streaming, in-progress, success, and failure states":
 		"预览工具渲染器在流式、进行中、成功和失败状态下的表现",
 	"Run storage garbage collection": "运行存储垃圾回收",
-	"Test grep tool": "测试 grep 工具",
+	"Search indexed file contents with FFF": "使用 FFF 搜索已索引的文件内容",
+	"Regex pattern to search for": "要搜索的正则表达式",
+	"Directory or file to search": "要搜索的目录或文件",
+	"Filter files by glob pattern": "使用 glob 模式筛选文件",
+	"Max matches": "最大匹配数",
+	"Context lines": "上下文行数",
+	"Output file names only": "仅输出文件名",
+	"Output match counts per file": "输出每个文件的匹配数",
+	"Pattern is required": "必须提供搜索模式",
+	"{name} must be a positive integer": "{name} 必须是正整数",
+	"{name} must be a non-negative integer": "{name} 必须是非负整数",
+	"Searching in: {path}": "搜索范围：{path}",
+	"Pattern: {pattern}": "搜索模式：{pattern}",
+	"Mode: {mode}, Limit: {limit}, Context: {context}, Engine: FFF":
+		"模式：{mode}，上限：{limit}，上下文：{context}，引擎：FFF",
+	"Total matches: {count}": "总匹配数：{count}",
+	"Files with matches: {count}": "匹配文件数：{count}",
+	"Files searched: {count}": "已搜索文件数：{count}",
+	"Limit reached: true": "已达到结果上限：是",
+	"Invalid regex: {error}; used literal matching": "无效正则表达式：{error}；已改用字面量匹配",
+	"{path}: {count} matches": "{path}：{count} 个匹配",
 	"View, clean, or push reported tool issues (auto-QA grievances)":
 		"查看、清理或推送已报告的工具问题（自动化 QA 申诉）",
 	"Install or link an extension package (alias of `plugin install`/`plugin link`)":
@@ -1305,8 +1325,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Show live provider SSE frames": "显示实时 provider SSE 帧",
 	"Show session tree": "显示会话树",
 	"Show text placeholder instead": "改为显示文本占位符",
-	"Show detailed read, grep, and glob results instead of one-line summaries":
-		"显示 read、grep 和 glob 的详细结果，而不是一行摘要",
+	"Show detailed read, find, grep, and multi_grep results instead of one-line summaries":
+		"显示 read、find、grep 和 multi_grep 的详细结果，而不是一行摘要",
 	"Source:": "来源：",
 	"Space only": "仅空格",
 	"Space/Enter toggle · n note": "Space/Enter 切换 · n 备注",
@@ -1738,7 +1758,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"启用 browser 工具以进行脚本化 Chromium 自动化（puppeteer）",
 	"Enable the checkpoint and rewind tools for context checkpointing": "启用 checkpoint 和 rewind 工具用于上下文检查点",
 	"Enable the debug tool for DAP-based debugging": "启用 debug 工具用于基于 DAP 的调试",
-	"Enable the glob tool for glob-based file lookup": "启用 glob 工具以按 glob 模式查找文件",
+	"Enable FFF fuzzy path and glob search": "启用 FFF 模糊路径和 glob 搜索",
+	"Enable FFF indexed content search": "启用 FFF 索引内容搜索",
+	"Enable FFF multi-pattern OR content search": "启用 FFF 多模式 OR 内容搜索",
 	"Enable the grep tool for regex content search": "启用 grep 工具用于正则内容搜索",
 	"Enable the inspect_image tool, delegating image understanding to a vision-capable model":
 		"启用 inspect_image 工具，将图像理解委托给支持视觉的模型",
@@ -1801,6 +1823,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"GitHub Gist": "GitHub Gist（代码片段）",
 	"GitHub View Cache": "GitHub 视图缓存",
 	Glob: "Glob",
+	Find: "查找",
+	"Multi Grep": "多模式 Grep",
 	Global: "全局",
 	"Global — all projects (~/.omp/agent/rules)": "全局 —— 所有项目（~/.omp/agent/rules）",
 	"Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)":
@@ -3067,8 +3091,6 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Commands run in the main session — press ←← to return first": "命令在主会话中执行 — 请先按 ←← 返回",
 	"Commands:": "命令：",
 	"Delete session?\\n{displayName}": "删除会话？\n{displayName}",
-	"Enter / 点击切换 · 选择完成或 Esc 应用（留空 = 不使用工具；read/grep/glob/codegraph = 默认）":
-		"Enter / 点击切换 · 选择完成或 Esc 应用（留空 = 不使用工具；read/grep/glob/codegraph = 默认）",
 	"Enter assign · ↑/↓ providers · type to search · Esc cancel": "Enter 分配 · ↑/↓ 提供方 · 输入以搜索 · Esc 取消",
 	"Enter create + pick model · Esc cancel": "Enter 创建并选择模型 · Esc 取消",
 	"Enter loads older when highlighted; printable keys update filter":
@@ -4771,8 +4793,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Show the agent run state in the terminal title's separator — an animated spinner while working (a static ':' on Windows), '>' when it's your turn, '!' when the agent is waiting on you":
 		"在终端标题的分隔符中显示代理运行状态：工作时显示动画 spinner（Windows 上显示静态“:”），轮到你操作时显示“>”，等待你响应时显示“!”",
 	"Additional Workspace Dirs": "附加工作区目录",
-	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/glob them.":
-		"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/glob。",
+	"Extra workspace directories added to every session as additional roots (multi-root workspace). Managed live via /add-dir and /remove-dir. Paths resolve relative to cwd; absolute paths recommended. The agent is told these roots exist and can read/grep/find them.":
+		"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/find。",
 	"Usage-Aware Fallback": "感知用量的回退",
 	"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.":
 		"在触及硬性用量限制前，根据可靠的 coding-plan 配额报告优先选择同一提供方的账户，再选择已配置的回退模型。普通配置的 API key 不参与此逻辑。",

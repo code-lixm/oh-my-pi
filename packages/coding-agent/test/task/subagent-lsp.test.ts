@@ -282,7 +282,7 @@ describe("subagent LSP availability", () => {
 		expect(options?.enableLsp).toBe(false);
 		expect(options?.enableIrc).toBe(false);
 		expect(options?.restrictToolNames).toBe(true);
-		expect(options?.toolNames).toEqual(["read", "grep", "glob", "web_search", "ast_grep"]);
+		expect(options?.toolNames).toEqual(["read", "grep", "find", "multi_grep", "web_search", "ast_grep"]);
 		expect(options?.toolNames).not.toContain("lsp");
 		expect(options?.toolNames).not.toContain("hub");
 		expect(options?.toolNames).not.toContain("bash");

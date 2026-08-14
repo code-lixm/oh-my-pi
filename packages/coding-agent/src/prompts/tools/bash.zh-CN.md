@@ -14,7 +14,7 @@
 
 <critical>
 {{#if hasGrep}}- NEVER 使用 shell `grep`/`rg`；使用内置 `grep`。{{/if}}
-{{#if hasRead}}{{#if hasGlob}}- 用 `read` 列出目录、用 `glob` 查找路径；NEVER 使用 `ls`/`find`。{{/if}}{{/if}}
+{{#if hasRead}}{{#if hasFind}}- 用 `read` 列出目录、用 `find` 查找路径；NEVER 使用 `ls`/`find`。{{/if}}{{/if}}
 - 避免 `head`、`tail` 与重定向：输出会被捕获、截断，并链接到 `artifact://<id>`。
 {{#if hasLaunch}}- 服务、watcher、调试器和 REPL MUST 使用 `hub`（`op:"start"`）。{{/if}}
 </critical>

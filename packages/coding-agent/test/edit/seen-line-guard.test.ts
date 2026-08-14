@@ -9,7 +9,8 @@ import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-coding-agent/session/streaming-o
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { GrepTool } from "../../src/tools/grep";
+import { disposeSessionFffFinderManager } from "../../src/tools/fff-manager";
+import { FffGrepTool } from "../../src/tools/fff-tools";
 
 function createSession(cwd: string): ToolSession {
 	return {
@@ -355,6 +356,7 @@ describe("read → edit seen-line guard", () => {
 
 describe("search → edit seen-line guard", () => {
 	let tmpDir: string;
+	let activeSearchSession: ToolSession | undefined;
 
 	beforeAll(async () => {
 		await Settings.init({ inMemory: true });
@@ -363,11 +365,13 @@ describe("search → edit seen-line guard", () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "seen-line-search-"));
 	});
 	afterEach(async () => {
+		if (activeSearchSession) await disposeSessionFffFinderManager(activeSearchSession);
+		activeSearchSession = undefined;
 		await removeWithRetries(tmpDir);
 	});
 
 	function searchSession(cwd: string): ToolSession {
-		return {
+		const session = {
 			cwd,
 			hasUI: false,
 			hasEditTool: true,
@@ -383,6 +387,8 @@ describe("search → edit seen-line guard", () => {
 			}),
 			enableLsp: false,
 		} as ToolSession;
+		activeSearchSession = session;
+		return session;
 	}
 
 	it("records matched lines as seen and rejects an edit on an unsearched line", async () => {
@@ -391,7 +397,7 @@ describe("search → edit seen-line guard", () => {
 		await Bun.write(file, `${lines.join("\n")}\n`);
 		const session = searchSession(tmpDir);
 
-		const search = await new GrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
+		const search = await new FffGrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
 		const tag = tagFromOutput(resultText(search));
 
 		const seen = getFileSnapshotStore(session).byHash(canonicalSnapshotKey(file), tag)?.seenLines;
@@ -409,7 +415,7 @@ describe("search → edit seen-line guard", () => {
 		await Bun.write(file, `${lines.join("\n")}\n`);
 		const session = searchSession(tmpDir);
 
-		const search = await new GrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
+		const search = await new FffGrepTool(session).execute("s1", { pattern: "NEEDLE", path: file });
 		const tag = tagFromOutput(resultText(search));
 
 		await expect(executeHashlineSingle(execOptions(`[code.txt#${tag}]\nPUT 8-8:\n+X`, session))).rejects.toThrow(

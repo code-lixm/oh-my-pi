@@ -56,12 +56,14 @@ describe("discoverAdvisorConfigs", () => {
 		expect(sharedInstructions).toBe("Shared baseline for all advisors.");
 	});
 
-	it("distinguishes omitted tools, explicit no-tools, and invalid-only lists", async () => {
+	it("distinguishes omitted tools, explicit no-tools, invalid-only lists, and canonical tool normalization", async () => {
 		const yaml = [
 			"advisors:",
 			"  - name: No Tools",
 			"    tools: []",
 			"  - name: Default Tools",
+			"  - name: Canonical Tools",
+			"    tools: [Find, grep, FIND, Grep]",
 			"  - name: Invalid Only",
 			"    tools: [reed]",
 		].join("\n");
@@ -70,10 +72,12 @@ describe("discoverAdvisorConfigs", () => {
 		const { advisors } = await discoverAdvisorConfigs(tmp, agentDir);
 		const noTools = advisors.find(a => a.name === "No Tools");
 		const defaultTools = advisors.find(a => a.name === "Default Tools");
+		const canonicalTools = advisors.find(a => a.name === "Canonical Tools");
 		const invalidOnly = advisors.find(a => a.name === "Invalid Only");
 
 		expect(noTools?.tools).toEqual([]);
 		expect(defaultTools?.tools).toBeUndefined();
+		expect(canonicalTools?.tools).toEqual(["find", "grep"]);
 		expect(invalidOnly?.tools).toBeUndefined();
 	});
 
@@ -258,6 +262,15 @@ describe("WATCHDOG.yml file round-trip", () => {
 		const { advisors } = await discoverAdvisorConfigs(tmp, tmp);
 		expect(advisors.find(a => a.name === "No Tools")?.tools).toEqual([]);
 		expect(advisors.find(a => a.name === "Default Tools")?.tools).toBeUndefined();
+	});
+
+	it("normalizes and deduplicates canonical tool names while loading an editable WATCHDOG config", async () => {
+		const file = path.join(tmp, "WATCHDOG.yml");
+		await Bun.write(file, 'advisors:\n  - name: "Canonical"\n    tools: [Find, grep, FIND, Grep]\n');
+
+		expect(await loadWatchdogConfigFile(file)).toEqual({
+			advisors: [{ name: "Canonical", tools: ["find", "grep"] }],
+		});
 	});
 
 	it("removes the file when the doc is empty so legacy discovery resumes", async () => {

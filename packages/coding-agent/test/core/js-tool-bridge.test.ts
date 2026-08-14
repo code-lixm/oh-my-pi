@@ -145,4 +145,24 @@ describe("callSessionTool", () => {
 
 		await expect(callSessionTool("missing", {}, { session })).rejects.toThrow("Unknown tool from js runtime");
 	});
+
+	it("blocks schema-hidden external tools until tool_search activation", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "external" }] });
+		const external = createTool("mcp__demo__external", execute);
+		const active = new Set<string>();
+		const session = createSession([external]);
+		session.xdev = {
+			tools: new Map([[external.name, external]]),
+			mountedNames: new Set(),
+			builtInNames: new Set(),
+			isActive: name => active.has(name),
+		};
+
+		await expect(callSessionTool(external.name, {}, { session })).rejects.toThrow("Enable it with tool_search first");
+		expect(execute).not.toHaveBeenCalled();
+
+		active.add(external.name);
+		await expect(callSessionTool(external.name, {}, { session })).resolves.toBe("external");
+		expect(execute).toHaveBeenCalledTimes(1);
+	});
 });

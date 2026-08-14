@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- Added an optional `sort: "mtime" | "path"` parameter to the `glob` tool: `path` ordering enables early termination and the walker scan cache for wide scans, while `mtime` (the default) preserves the previous behavior.
+- Added the essential `tool_search` schema-discovery tool for every registered external tool, including `defaultInactive` definitions: a compact BM25 capability query or exact names promote only the relevant schemas for the next model response, the default prompt carries counts instead of the full external catalog, built-ins keep their existing load tiers and `xd://` behavior, and external `xd://` devices remain documentation-only before and after activation.
 - Added an opt-in continual harness (`refinement.enabled`) with `/refine`, a model-callable refine tool, proposal/entry-level rollback, and refreshed supplemental prompt state. Local state is session-artifact scoped at `<session-artifacts>/harness-state.json`; global state remains under `~/.omp/agent/harness/`.
 - Added persisted per-session heartbeat and scheduled-prompt runtimes: `scheduled-jobs.json` sidecars, cron/interval/one-shot parsing, claim-before-deliver recovery, missed-tick deduplication, and stale session-binding protection around `sendCustomMessage({ triggerTurn: true })`. Scheduling remains in-process; it is not daemon-backed.
 - Added asynchronous Eval `rlm()` admission with four-field handles, caller-owned child artifacts, a durable direct-child lifecycle/status registry, family-scoped `agent_message` receipts, manual settlement without parent `async-result`, and terminal notices for no-reply/failed children.
@@ -32,7 +32,7 @@
 - Added configuration-driven named custom status-line presets through `statusLine.customPresets`; the settings selector displays each configured label and supports multiple selectable layouts.
 - Added a `background` value for `display.borderStyle` that renders tool cards with filled backgrounds instead of framed borders.
 - Added an `accent` value for `display.borderStyle` that replaces full frames with a half-cell `▌` semantic-color rail, a matching translucent-looking tint, and vertical card padding across standard tool blocks and interactive Bash sessions.
-- Added `display.basicToolDetails` to control completed `read`, `grep`, and `glob` detail visibility.
+- Added `display.basicToolDetails` to control completed `read`, `grep`, `find`, and `multi_grep` detail visibility.
 - Added live top-level session switching: `/new` keeps the previous in-process session running in the background, while `/resume` reattaches live sessions without interrupting them.
 - Added compact battery-style status-line usage rendering with remaining-quota blocks, deterministic latest-window selection, and configurable battery width.
 
@@ -44,10 +44,10 @@
 - Added the `thinkingDisplay` setting with `full`, `prose`, and `hidden` modes for live Main and subagent thinking streams; legacy `hideThinkingBlock` and `proseOnlyThinking` settings migrate automatically.
 
 ### Changed
+- Replaced the built-in filesystem `grep`/`glob` implementations and standalone `omp grep` CLI command with session-shared or durable standalone FFF indexes and the clean-cut `grep`, `find`, and `multi_grep` tool surface, adding smart-case regex/literal/fuzzy content search, OR-pattern search, frecency/Git-ranked path discovery, opaque cursor pagination, bounded external-path indexes, durable per-workspace FFF data, localized compact renderers, and source/npm/compiled-binary smoke coverage; removed the legacy `glob`/`search` tool aliases, old prompts, settings migration, unsupported `omp grep --no-gitignore`, and native-tool implementations.
 - Changed the `web_search` result card from a framed section panel (`Query:`/`Answer:`/`Sources:`/`Metadata:`) to the same bare read/grep/glob surface: one status header (query in the description slot, provider + source count in meta), the answer text directly beneath, then the source tree — no section labels or border.
 - Changed transcript hub/job activity to a compact borderless tree under a single header (read-style `├─/└─` rows with a running-task count), removed per-row status glyphs, and displaced repeated job-less wait polls so an uninterrupted run of `hub` waits keeps one live roster row instead of stacking "running" snapshots. The `hub` wait/jobs result card itself is now static too: the header spinner glyph, per-row running spinners, and the label shimmer are gone, so a running wait reads as a settled snapshot instead of animating every frame.
 - Changed hashline snapshot recording in the `read` tool to reuse already-loaded full-file lines instead of re-reading the file, halving whole-file reads for snapshot-tagged reads without changing tag semantics.
-- Changed the filesystem grep walker to enable scan caching for sequential candidate collection, reducing repeated directory traversal overhead when the same path is searched multiple times within the cache TTL.
 - Changed the main coding-agent prompt to default to in-scope action, persist through verification, defer questions until repository context cannot safely resolve material ambiguity, and correct task-relevant faulty premises with evidence.
 - Changed system and tool prompts to add short Codex/Claude model-family guidance overlays, preserve full custom-prompt overrides, deduplicate schema-carried mechanics, and keep English/Chinese execution semantics aligned.
 - Changed Agent Hub and focused-agent cycling to use one stable navigation order: running, waiting or queued, failed, then completed and other terminal agents, with newest-created agents first inside each group.
@@ -83,7 +83,7 @@
 - Changed automatic compaction to default to `context-full`, producing an anchored model-generated continuation summary like OpenCode; `snapcompact` remains available as an explicit strategy.
 
 - Color-coded Advisor notes by severity (`blocker`, `concern`, and `nit`) and normalized ordinary completed tool cards to the same neutral border color across renderers.
-- Changed completed Grep details to show one compact `path:line-ranges` row per file, omit repeated source snippets, and remove redundant scope metadata while preserving full model-facing search output.
+- Changed completed FFF Grep details to show one compact `path:line-ranges` row per file, omit repeated source snippets, and remove redundant scope metadata while preserving full model-facing search output.
 - Replaced `/last` with `/history`, a fullscreen application-scrolled viewer for the complete active session branch with a persistent scrollbar, width-aware `Alt+J`/`Alt+K` user-turn navigation, case-insensitive `/` search, and wrapping `n`/`N` match jumps.
 - Changed late Advisor notes of every severity to trigger a fresh primary-agent turn after a terminal answer with no queued work, while preserving deliberate user-interrupt, plan-mode, deferred-ACP, and headless safeguards.
 - Grouped uninterrupted Hub messaging, job waits, agent status, and IRC notifications into one compact expandable transcript activity block.
@@ -97,6 +97,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed completed FFF `grep` and `multi_grep` cards retaining the pending call header above the final result header; merged search renderers now keep one compact status row.
 - Fixed the per-agent advisor rollout dropping the global `advisor.subagents` fallback and conflating explicit `off`/frontmatter `false` with an absent choice; existing blanket settings now remain effective, while `task.agentAdvisor` and agent frontmatter override them per agent.
 - Fixed ordinary and image-bearing user prompts rendering with different chrome; all non-synthetic user messages now share the same borderless background surface while preserving Markdown padding, image links, and mouse routing.
 - Fixed relative CodeGraph `path` scopes being resolved from the session cwd even when an explicit `projectPath` selected another repository.
@@ -124,10 +125,10 @@
 - Fixed Agent Hub stopped/failed outcomes, aggregate counts, long-title column fallback, duplicate activity words, and persisted lifecycle tombstone ordering; explicit cancellations remain neutral while abnormal aborts remain failures across live and persisted views.
 - Fixed Edit tool cards remaining stuck in their streaming preview when final display assembly failed, which could splice later transcript content into a stale card; failed rebuilds now settle to a safe final-text fallback without caching incomplete display state.
 - Fixed Memory, LSP, Checkpoint, and Rewind results inheriting generic accent cards instead of their own semantic tool presentation; they now use bare status-and-tree layouts, `xd://` delegation preserves the wrapped renderer surface, and Memory keeps one English tool identity across UI locales.
-- Fixed shared `accent` tool-result surfaces adding redundant full-width rows and `xd://` fallback cards retaining nested state backgrounds and padding; wrappers now own one uniform tint across title, omission, and result rows, while self-framed blocks retain their internal spacing. Grouped Read summary trees now also align with the root column used by Glob, Grep, and CodeGraph.
+- Fixed shared `accent` tool-result surfaces adding redundant full-width rows and `xd://` fallback cards retaining nested state backgrounds and padding; wrappers now own one uniform tint across title, omission, and result rows, while self-framed blocks retain their internal spacing. Grouped Read summary trees now also align with the root column used by FFF Find/Grep/Multi Grep and CodeGraph.
 - Fixed Eval `agent()` progress trees touching the bottom of accent code-cell surfaces; one unpainted row now separates the external live HUD from the framed cell.
 - Fixed the Poimandres status-line HUD mixing geometric Unicode model, path, and mode icons into the configured Nerd preset; both dark and light variants now use one consistent Nerd glyph set while retaining their navigation, thinking, and Markdown markers.
-- Fixed empty Glob results rendering “No files found” as a second standalone warning row; the empty result now appears as a root-level tree child matching other search-tool result layouts.
+- Fixed empty FFF Find results rendering “No files found” as a second standalone warning row; the empty result now appears as a root-level tree child matching other search-tool result layouts.
 - Fixed the Jobs Hub using a preview-block list unrelated to the Agent Hub table and both directional hub gestures refusing to open empty centers; Jobs now share the fullscreen table language, while empty Jobs and Agent centers remain discoverable with explicit empty states.
 - Fixed Agent and Jobs Hub follow-up interaction details: aggregate timing and measured counts remain in the Agent Hub header, each Jobs Hub row stays single-line at narrow widths, `Esc` plus deliberate `←←`/`→→` close gestures work inside Jobs Hub, disabled agent communication no longer reaches Main feedback surfaces, and task lifecycle transitions appear as localized ordinary status notifications.
 - Fixed the documented `--sandbox` launch flag surviving help, startup-directory handling, and regression coverage while being dropped by the runtime argv parser during the upstream merge; it now again creates and enters `~/.omp/sandbox` (or `--cwd`) before initialization.
@@ -172,7 +173,7 @@
 - Fixed `/tree` reserving half the terminal instead of using the fullscreen viewport; the session tree now fills all rows outside its chrome, groups shortcuts into two compact aligned lines, and keeps active filter status beside search instead of consuming a list row.
 - Fixed the Agent Hub, agent dashboard, and `/tree` selector opening inside or over the prompt area; they now use independent fullscreen overlays that leave the conversation untouched and return to the active editor surface on Escape.
 - Fixed accent-style generic fallback tool results adding their own horizontal padding on top of the shared rail gap, restoring a single-cell gap and the full content-width budget.
-- Fixed truncated Glob results rendering a detached, duplicated warning beneath the file tree; truncation now stays in the compact status header, matching Grep.
+- Fixed truncated FFF Find results rendering a detached, duplicated warning beneath the file tree; truncation now stays in the compact status header, matching FFF Grep.
 - Fixed collapsed CodeGraph results to use the same single middle tree-omission row as Grep, preserving the first and last entries without an additional generic `lines omitted` row.
 - Fixed collapsed tree-shaped tool results losing the `├─` connector on the central middle-omission row, preserving visual continuity between the first and final sibling rows.
 - Fixed the central collapsed-detail wrapper truncating Hub and Todo results that own their visibility; both now bypass the outer budget while normal tool results remain capped.

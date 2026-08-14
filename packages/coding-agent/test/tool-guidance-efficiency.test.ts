@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { prompt } from "@oh-my-pi/pi-utils";
 import bashPrompt from "../src/prompts/tools/bash.md" with { type: "text" };
-import globPrompt from "../src/prompts/tools/glob.md" with { type: "text" };
-import grepPrompt from "../src/prompts/tools/grep.md" with { type: "text" };
+import fffGrepPrompt from "../src/prompts/tools/fff-grep.md" with { type: "text" };
+import findPrompt from "../src/prompts/tools/find.md" with { type: "text" };
+import multiGrepPrompt from "../src/prompts/tools/multi-grep.md" with { type: "text" };
 
 const bash = prompt.render(bashPrompt, {
 	asyncEnabled: true,
@@ -10,19 +11,20 @@ const bash = prompt.render(bashPrompt, {
 	autoBackgroundThresholdSeconds: 60,
 	hasAstEdit: true,
 	hasAstGrep: true,
-	hasEval: true,
-	hasGlob: true,
+	hasFind: true,
 	hasGrep: true,
 	hasLaunch: true,
 	hasRead: true,
 	hasShellBuiltins: true,
 	isWindows: false,
 });
-const glob = prompt.render(globPrompt);
-const grep = prompt.render(grepPrompt);
+
+const find = prompt.render(findPrompt);
+const grep = prompt.render(fffGrepPrompt);
+const multiGrep = prompt.render(multiGrepPrompt);
 
 describe("tool guidance efficiency", () => {
 	test("keeps the corrected guidance smaller than the previous prompt set", () => {
-		expect(bash.length + grep.length + glob.length).toBeLessThan(3_050);
+		expect(bash.length + find.length + grep.length + multiGrep.length).toBeLessThan(4_000);
 	});
 });

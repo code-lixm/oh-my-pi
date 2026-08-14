@@ -9,8 +9,9 @@ export const BUILTIN_TOOL_NAMES = [
 	"eval",
 	"github",
 	"siyuan",
-	"glob",
+	"find",
 	"grep",
+	"multi_grep",
 	"lsp",
 	"inspect_image",
 	"browser",
@@ -22,6 +23,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"hub",
 	"todo",
 	"web_search",
+	"tool_search",
 	"codegraph",
 	"write",
 	"memory_edit",
@@ -40,15 +42,9 @@ export const HIDDEN_TOOL_NAMES = ["yield", "goal", "refine", "think"] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 
-const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
-	["search", "grep"],
-	["find", "glob"],
-]);
-
-/** Return the canonical tool name for current and legacy built-in tool IDs. */
+/** Normalize built-in tool IDs for case-insensitive configuration surfaces. */
 export function normalizeToolName(name: string): string {
-	const normalized = name.toLowerCase();
-	return LEGACY_BUILTIN_TOOL_NAME_ALIASES.get(normalized) ?? normalized;
+	return name.toLowerCase();
 }
 
 /**

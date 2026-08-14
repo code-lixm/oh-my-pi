@@ -9,8 +9,8 @@
 {{#has tools "grep"}}
 - Search file contents with `{{lookup toolRefs "grep"}}`; NEVER shell out to `rg`, `grep`, `ag`, `ack`, `awk`, or search-oriented `sed`.
 {{/has}}
-{{#has tools "glob"}}
-- Discover files by path pattern with `{{lookup toolRefs "glob"}}`; NEVER use shell `find`, `fd`, or `ls` for discovery.
+{{#has tools "find"}}
+- Discover files by path pattern with `{{lookup toolRefs "find"}}`; NEVER use shell `find`, `fd`, or `ls` for discovery.
 {{/has}}
 {{#has tools "codegraph"}}
 - Understand source behavior, flow, impact, and modification boundaries with `{{lookup toolRefs "codegraph"}}` before textual exploration.

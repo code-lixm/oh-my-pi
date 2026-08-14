@@ -4,6 +4,22 @@ import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
 export const COMPILED_EXTERNAL_DEPENDENCIES: readonly string[] = Object.freeze(["fastembed", "onnxruntime-node"]);
 
+export type FffLibc = "gnu" | "musl";
+
+/** Resolve the FFF native library variant embedded by Bun's standalone compiler. */
+export function resolveFffLibc(target?: Bun.Build.CompileTarget): FffLibc {
+	if (target?.includes("musl")) return "musl";
+	if (target?.includes("linux")) return "gnu";
+	if (process.platform !== "linux") return "gnu";
+	const report = process.report.getReport();
+	const header = Reflect.get(report, "header");
+	return header !== null &&
+		typeof header === "object" &&
+		typeof Reflect.get(header, "glibcVersionRuntime") === "string"
+		? "gnu"
+		: "musl";
+}
+
 /** Inputs shared by local and release coding-agent binary builds. */
 export interface CodingAgentCompileOptions {
 	/** Absolute repository root used for package resolution. */
@@ -42,6 +58,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
+				FFF_LIBC: JSON.stringify(resolveFffLibc(options.target)),
 			},
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,

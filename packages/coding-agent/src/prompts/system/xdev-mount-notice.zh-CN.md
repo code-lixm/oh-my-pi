@@ -5,7 +5,7 @@ xd:// 设备清单已发生变化。
 {{#each added}}
 - xd://{{this.name}} — {{this.summary}}
 {{/each}}
-首次使用前读取 `xd://<tool>` 的文档和 JSON schema；将 JSON 参数对象写入 `xd://<tool>` 执行。
+首次使用前读取 `xd://<tool>` 的文档和 JSON schema。内置设备通过写入执行；外部设备必须先通过 `tool_search` 启用，再作为顶层工具执行。
 {{/if}}
 {{#if removed.length}}
 以下设备已不再挂载（写入这些设备会失败）：

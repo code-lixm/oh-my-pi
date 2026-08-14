@@ -139,8 +139,11 @@ export function formatToolCallPrimaryArg(name: string, args: Record<string, unkn
 		if (pattern) return oneLine(pattern);
 		if (paths) return oneLine(paths);
 	}
-	if (name === "glob") {
+	if (name === "find") {
+		const pattern = primaryArgValue(args.pattern);
 		const paths = primaryArgValue(args.path) || primaryArgValue(args.paths);
+		if (pattern && paths) return oneLine(`${pattern} @ ${paths}`);
+		if (pattern) return oneLine(pattern);
 		if (paths) return oneLine(paths);
 	}
 	if (name === "ast_grep") {

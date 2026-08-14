@@ -68,7 +68,8 @@ ${chalk.bold(tSettingsUi("Available Tools (default-enabled unless noted):"))}
   edit          - ${tSettingsUi("Edit files with find/replace")}
   write         - ${tSettingsUi("Write files (creates/overwrites)")}
   grep          - ${tSettingsUi("Search file contents")}
-  glob          - ${tSettingsUi("Find files by glob pattern")}
+  find          - ${tSettingsUi("Find files by glob pattern")}
+  multi_grep    - ${tSettingsUi("Search file contents")}
   lsp           - ${tSettingsUi("Language server protocol (code intelligence)")}
   python        - ${tSettingsUi("Execute Python code (requires: {command})", { command: `${APP_NAME} setup python` })}
   notebook      - ${tSettingsUi("Edit Jupyter notebooks")}

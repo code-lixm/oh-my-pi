@@ -40,6 +40,12 @@ budget → {{#if py}}`budget.total`（上限或 None）、`budget.spent()`、`bu
 </dag>
 {{/if}}
 
+<workflow>
+- 单次操作或独立工作 → 直接调用工具。
+- 多步数据流且中间结果较大 → 在一个单元内组合 `tool.<name>` 调用；中间结果留在内核，仅返回提炼后的结果。
+- 缺少外部工具 schema？先在模型的上一次响应中用 `tool_search` 启用；NEVER 通过 Eval 绕过激活。
+</workflow>
+
 <critical>
 先前顶层名称会存活到下一个单元；复用，NEVER 重新 import／声明。仅在文件自上次读取后发生变化时重新读取。
 </critical>

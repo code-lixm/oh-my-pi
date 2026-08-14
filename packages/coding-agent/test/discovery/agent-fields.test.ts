@@ -81,20 +81,20 @@ describe("parseAgentFields", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
 			description: "desc",
-			tools: ["Read", "Search"],
+			tools: ["Read", "Grep"],
 		});
 
 		expect(fields?.tools).toEqual(["read", "grep", "yield"]);
 	});
 
-	test("maps legacy search and find tool names", () => {
+	test("normalizes and deduplicates canonical tool names", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
 			description: "desc",
-			tools: ["Find", "Glob", "Search", "Grep"],
+			tools: ["Find", "Grep", "FIND", "grep"],
 		});
 
-		expect(fields?.tools).toEqual(["glob", "grep", "yield"]);
+		expect(fields?.tools).toEqual(["find", "grep", "yield"]);
 	});
 
 	test("parses autoloadSkills from array frontmatter", () => {
