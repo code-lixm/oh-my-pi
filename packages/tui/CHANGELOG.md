@@ -28,6 +28,10 @@
 - Fixed Loader spinner and shimmer ticks from falling back to component or full transcript renders when direct geometry is unsafe; animation frames are now dropped while semantic message changes retain a correctness fallback.
 - Fixed cosmetic Loader spinner and shimmer paints competing with editor input during intentional `waiting-user` and `waiting-peer` states; waiting now freezes the phase label, spinner, and shimmer without elapsed-time refreshes, then resumes animation when work restarts.
 - Fixed low-priority Loader status updates, such as elapsed activity time, scheduling component renders when a direct terminal rewrite is unsafe. The update now remains available to the next valid render without competing with editor input.
+### Fixed
+
+- Fixed Gemini reports rendering their final headings and tables as one raw code block when the model emitted a lone closing Markdown fence without its opener.
+
 ## [17.3.1] - 2026-08-13
 
 ### Fixed
