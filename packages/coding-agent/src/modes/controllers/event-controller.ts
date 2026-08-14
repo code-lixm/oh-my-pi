@@ -215,6 +215,8 @@ export class EventController {
 	// restored when the banner clears at the next `agent_start` (see
 	// #handleMessageEnd / #handleAgentStart).
 	#pinnedErrorComponent: AssistantMessageComponent | undefined = undefined;
+	#pinnedErrorMessage: AssistantMessage | undefined = undefined;
+	#restorePinnedErrorInline = true;
 	#retrySupersededAssistantComponents = new Map<string, AssistantMessageComponent>();
 	#retrySupersededAssistantQueue: AssistantMessageComponent[] = [];
 	#errorAggregation: AssistantErrorAggregation<AssistantMessageComponent> | undefined;
@@ -832,6 +834,8 @@ export class EventController {
 		this.#readToolCallAssistantComponents.clear();
 		this.#lastAssistantComponent = undefined;
 		this.#pinnedErrorComponent = undefined;
+		this.#pinnedErrorMessage = undefined;
+		this.#restorePinnedErrorInline = true;
 		this.#retryPending = this.ctx.viewSession.isRetrying;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
@@ -923,10 +927,13 @@ export class EventController {
 		this.#resetReadGroup();
 		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
-		// Restore the previous turn's inline error in the transcript before dropping
-		// the banner, so the error stays in history once the banner is gone.
-		this.#pinnedErrorComponent?.setErrorPinned(false);
+		// Restore terminal errors in transcript history when their banner clears.
+		// Recoverable empty-output attempts are discarded by session recovery and
+		// must stay hidden rather than resurfacing as a stale inline error.
+		if (this.#restorePinnedErrorInline) this.#pinnedErrorComponent?.setErrorPinned(false);
 		this.#pinnedErrorComponent = undefined;
+		this.#pinnedErrorMessage = undefined;
+		this.#restorePinnedErrorInline = true;
 		this.ctx.clearPinnedError();
 		this.#clearRetryCountdown();
 		if (this.ctx.retryLoader) {
@@ -1577,18 +1584,23 @@ export class EventController {
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
-			// Pin a turn-ending provider error (e.g. Anthropic content-filter block)
-			// above the editor so it survives transcript scroll. Cleared at the next
-			// turn's agent_start. Suppress the transcript's inline `Error: …` line for
-			// the same message while pinned so the error isn't rendered twice.
+			// Pin a turn-ending provider error above the editor so it survives
+			// transcript scroll and suppress its duplicate inline row. Empty-output
+			// errors are known intermediate attempts: hide them entirely while
+			// session recovery continues, but retain the component so a terminal
+			// retry-cap event can promote its final error into the one banner.
 			if (event.message.stopReason === "error" && event.message.errorMessage && !isSilentAbort(event.message)) {
+				const recoverableEmptyOutput =
+					!event.message.errorMessage.startsWith("Retry budget exhausted") &&
+					AIError.is(AIError.classifyMessage(event.message), AIError.Flag.EmptyResponse);
 				const leader = this.#errorAggregation?.leader ?? this.#lastAssistantComponent;
 				leader?.setErrorPinned(true);
 				this.#pinnedErrorComponent = leader;
-				// Show only the latest error text — never an attempt-count
-				// aggregation, so a retrying model surfaces its newest failure
-				// instead of a cumulative ×N badge.
-				this.ctx.showPinnedError(event.message.errorMessage);
+				this.#pinnedErrorMessage = event.message;
+				this.#restorePinnedErrorInline = !recoverableEmptyOutput;
+				// Show only the latest terminal error text. Recoverable empty-output
+				// attempts remain hidden while session recovery continues.
+				if (!recoverableEmptyOutput) this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
@@ -2380,6 +2392,8 @@ export class EventController {
 			// restore its inline Error row; just unpin the fixed-region banner so the
 			// retry UI is the visible state.
 			this.#pinnedErrorComponent = undefined;
+			this.#pinnedErrorMessage = undefined;
+			this.#restorePinnedErrorInline = true;
 			this.ctx.clearPinnedError();
 		}
 		this.#clearRetryCountdown();
@@ -2405,26 +2419,33 @@ export class EventController {
 			this.ctx.retryLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
+		const terminalFailurePinned = !event.success && this.#pinnedErrorComponent !== undefined;
 		let clearedPinnedComponent = false;
 		for (const retryError of event.retryErrors ?? []) {
 			const component = this.#takeRetrySupersededAssistantComponent(retryError.persistenceKey);
 			if (!component) continue;
 			component.applyRetryRecovery(retryError.retryRecovery);
-			if (this.#pinnedErrorComponent === component) {
+			if (!terminalFailurePinned && this.#pinnedErrorComponent === component) {
 				this.#pinnedErrorComponent = undefined;
+				this.#pinnedErrorMessage = undefined;
+				this.#restorePinnedErrorInline = true;
 				clearedPinnedComponent = true;
 			}
 		}
-		// Retry updates describe superseded attempts. A terminal non-retryable or
-		// budget-exhausted error may have pinned a different, newer component.
-		if (clearedPinnedComponent) this.ctx.clearPinnedError();
+		// Only clear the banner when this retry actually superseded its pinned
+		// component; a newer terminal error must remain visible.
+		if (!terminalFailurePinned && clearedPinnedComponent) this.ctx.clearPinnedError();
 		this.#clearRetrySupersededAssistantComponents();
 		if (!event.success) {
-			// Show the concrete model error as plain text (latest per model),
-			// not an attempt-count aggregation. The error banner itself already
-			// surfaced the settled failure; the toast carries the model detail.
-			const finalError = event.finalError || tSettingsUi("Unknown error");
-			this.ctx.showStatus(finalError);
+			if (terminalFailurePinned) {
+				const terminalError = this.#pinnedErrorMessage?.errorMessage ?? event.finalError;
+				if (terminalError) this.ctx.showPinnedError(terminalError);
+				this.#restorePinnedErrorInline = true;
+			} else {
+				// The settled retry banner already describes the failure; surface the
+				// concrete latest model error as status text without attempt aggregation.
+				this.ctx.showStatus(event.finalError || tSettingsUi("Unknown error"));
+			}
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.ctx.ui.requestRender();
