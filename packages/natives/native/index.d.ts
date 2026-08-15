@@ -140,6 +140,21 @@ export declare class MacOSPowerAssertion {
   stop(): void
 }
 
+export declare class NativeEditorShadow {
+  constructor()
+  reset(text: string, cursorLine: number, cursorCol: number, generation: number): boolean
+  applyPrintable(input: string, beforeText: string, beforeLine: number, beforeCol: number, afterText: string, afterLine: number, afterCol: number, generation: number): boolean
+}
+
+export declare class NativeInput {
+  constructor(onWake: (error: Error | null, wake: number) => void, options?: NativeInputOptions | undefined | null)
+  start(): boolean
+  read(maxEvents: number, maxBytes: number): Array<Buffer>
+  waitForInput(): Promise<boolean>
+  stop(): boolean
+  stats(): NativeInputStats
+}
+
 /** Stable process reference. */
 export declare class Process {
   /** Open a stable process reference from a PID. */
@@ -232,6 +247,16 @@ export declare class Shell {
    * dropping it (which would SIGKILL them via kill-on-drop).
    */
   liveBackgroundJobCount(): Promise<number>
+}
+
+/** Cross-thread terminal-output owner exposed to TypeScript. */
+export declare class TerminalOutputBroker {
+  constructor(options?: TerminalOutputBrokerOptions | undefined | null)
+  writeReliable(data: string): boolean
+  writeLatest(frameId: number, data: string): boolean
+  flush(timeoutMs?: number | undefined | null): boolean
+  close(timeoutMs?: number | undefined | null): boolean
+  stats(): TerminalOutputBrokerStats
 }
 
 /**
@@ -583,6 +608,11 @@ export interface BlockRangeOptions {
   line: number
 }
 
+export interface CaptureCaps {
+  maxWidth?: number
+  maxHeight?: number
+}
+
 /**
  * The cFnPtr extraction-sweep facts for one file — see cfnptr.rs (and the
  * TS synthesizer's `FileFacts`) for field semantics.
@@ -645,11 +675,6 @@ export interface CfnptrStructOut {
   id: string
   parsed: boolean
   fields: Array<CfnptrField>
-}
-
-export interface CaptureCaps {
-  maxWidth?: number
-  maxHeight?: number
 }
 
 /** Clipboard image payload encoded as PNG bytes. */
@@ -1642,6 +1667,26 @@ export interface MinimizerResult {
  */
 export declare function mmrRerankIndices(contents: Array<string>, scores: Float64Array, lambdaParam: number, topK: number): Uint32Array
 
+export interface NativeInputOptions {
+  queueBytes?: number
+  readChunkBytes?: number
+}
+
+export interface NativeInputStats {
+  queueCapacityBytes: number
+  queuedEvents: number
+  queuedBytes: number
+  eventsRead: number
+  bytesRead: number
+  eventsDropped: number
+  bytesDropped: number
+  wakesSent: number
+  running: boolean
+  stopped: boolean
+  workerFailed: boolean
+  failure?: string
+}
+
 /** Parsed Kitty keyboard protocol sequence result for a Kitty input sequence. */
 export interface ParsedKittyResult {
   /** Primary codepoint associated with the key. */
@@ -2059,6 +2104,42 @@ export interface SummarySegment {
  * mapping.
  */
 export declare function supportsLanguage(lang: string): boolean
+
+/** Options accepted by [`TerminalOutputBroker`]. */
+export interface TerminalOutputBrokerOptions {
+  /** Maximum number of reliable writes waiting behind the worker. */
+  reliableCapacity?: number
+}
+
+/** Snapshot of native terminal-output state. */
+export interface TerminalOutputBrokerStats {
+  reliableCapacity: number
+  reliableQueued: number
+  reliableAccepted: number
+  reliableWritten: number
+  reliableRejected: number
+  latestAccepted: number
+  latestWritten: number
+  latestRejected: number
+  latestSuperseded: number
+  latestPending: boolean
+  lastLatestFrameId?: number
+  closed: boolean
+  workerFinished: boolean
+  workerFailed: boolean
+  failure?: string
+}
+
+export declare function terminalRowPlan(previous: Array<string>, next: Array<string>): TerminalRowPlan
+
+export interface TerminalRowPlan {
+  previousLen: number
+  nextLen: number
+  firstChanged?: number
+  lastChanged?: number
+  changedRows: number
+  same: boolean
+}
 
 /**
  * Truncate text to a visible width, preserving ANSI codes.

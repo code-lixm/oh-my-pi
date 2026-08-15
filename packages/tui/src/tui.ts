@@ -17,12 +17,19 @@
  */
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { $flag, getDebugLogPath, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { $flag, getDebugLogPath, isBunTestRuntime, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
+import { CompositorOutput } from "./compositor-output";
+import { CompositorShadow } from "./compositor-shadow";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
 import { LoopWatchdog } from "./loop-watchdog";
 import { isMouseRoutable, type MouseRoutable, parseSgrMouse, type SgrMouseEvent } from "./mouse";
+import {
+	TuiResponsivenessTelemetry,
+	type TuiResponsivenessTestHooks,
+	type TuiResponsivenessTestStage,
+} from "./render-input-telemetry";
 import { isConPTYHosted, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteImage,
@@ -48,6 +55,15 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "./utils";
+
+export type {
+	TuiFrameResponsivenessSample,
+	TuiInputResponsivenessSample,
+	TuiResponsivenessReport,
+	TuiResponsivenessSample,
+	TuiResponsivenessTestHooks,
+	TuiResponsivenessTestStage,
+} from "./render-input-telemetry";
 
 const SEGMENT_RESET = "\x1b[0m";
 /**
@@ -112,6 +128,8 @@ export interface RenderScheduler {
 
 export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
+	/** Test-only deterministic responsiveness probe; rejected outside Bun's test runtime. */
+	responsivenessTestHooks?: TuiResponsivenessTestHooks;
 }
 
 export interface TUIStartOptions {
@@ -313,25 +331,19 @@ function getRenderStablePrefixRows(component: Component): number | undefined {
 }
 
 /**
- * Opt-in fast path for composing only the visible tail of a tall component
- * during a terminal resize. A drag emits a SIGWINCH burst, and the width
- * changes on every event: a full compose re-lays-out (and, for markdown,
- * re-lexes) the entire transcript per event — O(history) work that is
- * discarded the instant the next event arrives. While the resize is in flight
- * the engine paints only the viewport, so it asks each tall root child for at
- * most `maxRows` rows from the bottom of its render at `width` and skips
- * composing everything above the fold. The authoritative full paint replays
- * once the drag settles (see {@link TUI} resize handling).
+ * Opt-in fast path for composing only the visible tail of a tall component.
+ * Transient viewport paints use it to skip off-screen history during terminal
+ * resize and staged session replacement; an authoritative full paint follows.
  *
  * Contract:
  * - Returns the BOTTOM rows of the component's full render at `width`, in
  *   top-to-bottom order, capped at `maxRows` (fewer when the component is
  *   shorter). The rows MUST be byte-identical to the corresponding tail of
  *   what `render(width)` would have returned, modulo a one-row separator at
- *   the very top edge (a transient frame the settle paint overwrites).
+ *   the very top edge (a transient frame the authoritative paint overwrites).
  * - MUST NOT mutate any persistent full-compose state: the next `render()`
- *   (the settle paint) has to reconcile exactly as if the tail render never
- *   happened. Warming pure per-width render caches is fine and desirable.
+ *   has to reconcile exactly as if the tail render never happened. Warming
+ *   pure per-width render caches is fine and desirable.
  */
 export interface ViewportTailProvider {
 	renderViewportTail(width: number, maxRows: number): readonly string[];
@@ -1228,6 +1240,8 @@ interface OverlayRouteEntry {
 
 export class TUI extends Container {
 	terminal: Terminal;
+	#compositorOutput: CompositorOutput;
+	#compositorShadow = new CompositorShadow();
 	#previousFrameLength = 0;
 	#previousWidth = 0;
 	#previousHeight = 0;
@@ -1266,6 +1280,7 @@ export class TUI extends Container {
 	 */
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
 	#inputRenderGraceUntilMs = 0;
+	#inputRenderUrgent = false;
 	// Pane-reflow settle window for tmux/screen/zellij. The host process gets
 	// SIGWINCH (and `process.stdout` already reports the new geometry) before
 	// the multiplexer finishes repainting the pane at the new size, and
@@ -1471,6 +1486,8 @@ export class TUI extends Container {
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
 	#watchdog: LoopWatchdog;
+	#responsivenessTelemetry: TuiResponsivenessTelemetry;
+	#responsivenessTestHooks: TuiResponsivenessTestHooks | undefined;
 
 	// Transient alternate-screen state for a fullscreen overlay. While active, the
 	// engine paints only the modal on the alt buffer and leaves every
@@ -1555,7 +1572,17 @@ export class TUI extends Container {
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
 		this.terminal = terminal;
+		this.#compositorOutput = new CompositorOutput(terminal);
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
+		const responsivenessTestHooks = options?.responsivenessTestHooks;
+		if (responsivenessTestHooks !== undefined && !isBunTestRuntime()) {
+			throw new Error("TUI responsiveness test hooks are only available under Bun test");
+		}
+		this.#responsivenessTestHooks = responsivenessTestHooks;
+		this.#responsivenessTelemetry = new TuiResponsivenessTelemetry(
+			() => this.#renderScheduler.now(),
+			responsivenessTestHooks?.onReport,
+		);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
 	}
@@ -1923,7 +1950,7 @@ export class TUI extends Container {
 		const transmittedIds = this.#imageBudget.takeAllTransmittedIds();
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		for (const id of transmittedIds) {
-			this.terminal.write(encodeKittyDeleteImage(id));
+			this.#writeTerminal(encodeKittyDeleteImage(id));
 		}
 	}
 
@@ -2180,7 +2207,7 @@ export class TUI extends Container {
 			this.#releaseStartupSynchronizedOutputWait();
 		});
 		this.terminal.start(
-			data => this.#handleInput(data),
+			data => this.#receiveTerminalInput(data),
 			() => {
 				// Real terminals deliver SIGWINCH (and the equivalent ConPTY
 				// notification) atomically with the new `process.stdout` geometry, so
@@ -2293,8 +2320,8 @@ export class TUI extends Container {
 		this.#sixelProbePendingDa = true;
 		this.#sixelProbePendingGraphics = true;
 		this.#sixelProbeUnsubscribe = this.addInputListener(data => this.#handleSixelProbeInput(data));
-		this.terminal.write("\x1b[c");
-		this.terminal.write("\x1b[?2;1;0S");
+		this.#writeTerminal("\x1b[c");
+		this.#writeTerminal("\x1b[?2;1;0S");
 		this.#sixelProbeTimeout = setTimeout(() => {
 			this.#finishSixelProbe(false);
 		}, 250);
@@ -2415,7 +2442,7 @@ export class TUI extends Container {
 		}
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
-		this.terminal.write("\x1b[16t");
+		this.#writeTerminal("\x1b[16t");
 	}
 
 	/**
@@ -2436,12 +2463,12 @@ export class TUI extends Container {
 		// Leave the resize alt buffer first so the teardown cursor math below runs
 		// against the restored normal screen (which #previousLines still describes).
 		if (this.#resizeAltActive) {
-			this.terminal.write(this.#leaveResizeAltSequence());
+			this.#writeTerminal(this.#leaveResizeAltSequence());
 		}
 		if (this.#altActive || this.#pendingAltExit) {
 			const mouseExit = this.#altMouseTrackingActive ? MOUSE_TRACKING_OFF : "";
 			const exitSequence = this.#pendingAltExit || `${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`;
-			this.terminal.write(exitSequence);
+			this.#writeTerminal(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#altMouseTrackingActive = false;
@@ -2449,7 +2476,7 @@ export class TUI extends Container {
 			this.#pendingAltExit = "";
 		}
 		if (this.#normalMouseTrackingActive) {
-			this.terminal.write(MOUSE_CLICK_TRACKING_OFF);
+			this.#writeTerminal(MOUSE_CLICK_TRACKING_OFF);
 			this.#normalMouseTrackingActive = false;
 		}
 		this.#purgeInlineImages();
@@ -2500,11 +2527,11 @@ export class TUI extends Container {
 			const moveTargetRow = Math.min(targetRow, viewportBottom);
 			const lineDiff = moveTargetRow - clampedCursorRow;
 			if (lineDiff > 0) {
-				this.terminal.write(`\x1b[${lineDiff}B`);
+				this.#writeTerminal(`\x1b[${lineDiff}B`);
 			} else if (lineDiff < 0) {
-				this.terminal.write(`\x1b[${-lineDiff}A`);
+				this.#writeTerminal(`\x1b[${-lineDiff}A`);
 			}
-			this.terminal.write(targetRow <= viewportBottom ? "\r" : "\r\n");
+			this.#writeTerminal(targetRow <= viewportBottom ? "\r" : "\r\n");
 		}
 
 		// Force: the parent shell needs the cursor back regardless of what the
@@ -2553,10 +2580,38 @@ export class TUI extends Container {
 		this.#prepareForcedRender(!isMultiplexerSession());
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
+		this.#markRenderQueued();
 		this.#executeRender();
 	}
 
+	/**
+	 * Paint the current viewport tail immediately without composing off-screen history.
+	 *
+	 * This is a transient, state-isolated snapshot: it does not advance diff,
+	 * native-scrollback, or commit bookkeeping. The caller MUST follow it with an
+	 * authoritative render. Returns false when no stable normal-screen frame is
+	 * available, so callers can fall back to the authoritative render alone.
+	 */
+	paintViewportTail(): boolean {
+		if (
+			this.#stopped ||
+			!this.#hasEverRendered ||
+			this.#startupAppearanceWaitActive ||
+			this.#altActive ||
+			this.#getTopmostVisibleOverlay() !== undefined
+		) {
+			return false;
+		}
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		if (width <= 0 || height <= 0) return false;
+		this.#componentRenderTargets.clear();
+		this.#paintViewportTail(width, height);
+		return true;
+	}
+
 	requestRender(force = false, options?: RenderRequestOptions): void {
+		this.#markRenderQueued();
 		if (this.#startupAppearanceWaitActive) {
 			this.#startupAppearanceRenderForce ||= force;
 			this.#startupAppearanceClearScrollback ||= options?.clearScrollback === true;
@@ -2792,7 +2847,7 @@ export class TUI extends Container {
 		);
 		buffer += cursorControl.seq;
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeTerminal(buffer);
 		this.#windowTopRow = windowTop;
 		this.#commit(this.#composedFrame, previousWindow, width, height, cursorControl);
 	}
@@ -2806,8 +2861,18 @@ export class TUI extends Container {
 		return 0;
 	}
 
+	/** Let visible input preempt animation backpressure without exceeding the 30 fps paint cadence. */
+	#prioritizeInputRender(): void {
+		this.#inputRenderUrgent = true;
+		if (!this.#renderTimer) return;
+		this.#renderTimer.cancel();
+		this.#renderTimer = undefined;
+		this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
+	}
+
 	/** Ordinary (non-forced) scheduling shared by full and component-scoped requests. */
 	#requestOrdinaryRender(): void {
+		this.#markRenderQueued();
 		if (this.#startupAppearanceWaitActive) return;
 		if (this.#multiplexerResizeTimer) {
 			this.#multiplexerResizeHasPendingRender = true;
@@ -2992,6 +3057,7 @@ export class TUI extends Container {
 			return false;
 		}
 
+		this.#markRenderQueued();
 		this.#ghosttyInitialImageDelayTimer = this.#renderScheduler.scheduleRender(() => {
 			this.#ghosttyInitialImageDelayTimer = undefined;
 			this.#ghosttyInitialImageDelayDone = true;
@@ -3030,7 +3096,9 @@ export class TUI extends Container {
 		// from the last frame's start) must already exceed twice the cost
 		// before we allow the follow-up render to fire. Capped so a
 		// pathological one-off spike doesn't lock the UI (#4145).
-		const adaptiveFloor = Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2);
+		const adaptiveFloor = this.#inputRenderUrgent
+			? 0
+			: Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2);
 		const adaptiveDelay = Math.max(0, adaptiveFloor - elapsed);
 		const inputGraceDelay = Math.max(0, this.#inputRenderGraceUntilMs - now);
 		const delay = Math.max(cadenceDelay, adaptiveDelay, inputGraceDelay);
@@ -3047,24 +3115,78 @@ export class TUI extends Container {
 		}, delay);
 	}
 
+	/** Record the first queued-render timestamp without changing scheduling semantics. */
+	#markRenderQueued(): void {
+		if (this.#responsivenessTelemetry.markRenderQueued(this.#renderScheduler.now())) {
+			this.#runResponsivenessTestStage("render.schedule");
+		}
+	}
+
+	#runResponsivenessTestStage(stage: TuiResponsivenessTestStage): void {
+		this.#responsivenessTestHooks?.injectStall?.(stage);
+	}
+
+	#writeTerminal(data: string): void {
+		this.#submitTerminalOutput(data, false);
+	}
+
+	#writeLatestTerminal(data: string): void {
+		this.#submitTerminalOutput(data, true);
+	}
+
+	#submitTerminalOutput(data: string, replaceable: boolean): void {
+		if (!this.#responsivenessTelemetry.frameActive) {
+			this.#compositorOutput.submit(data, replaceable);
+			return;
+		}
+		const startedAt = this.#renderScheduler.now();
+		try {
+			this.#runResponsivenessTestStage("render.output");
+			this.#compositorOutput.submit(data, replaceable);
+		} finally {
+			this.#responsivenessTelemetry.recordOutputSubmission(startedAt, this.#renderScheduler.now(), data.length);
+		}
+	}
+
 	/**
 	 * Wrap `#doRender()` so every path records the wall-clock frame cost that
 	 * feeds adaptive backpressure. Set `#lastRenderAt` first (some render code
 	 * reads it re-entrantly) and compute the cost once the paint returns.
 	 */
 	#executeRender(): void {
+		this.#inputRenderUrgent = false;
 		const start = this.#renderScheduler.now();
+		this.#responsivenessTelemetry.beginFrame(start);
 		this.#lastRenderAt = start;
 		pushLoopPhase("ui.render");
 		try {
 			this.#doRender();
 			this.#lastFrameCostMs = this.#renderScheduler.now() - start;
 		} finally {
+			this.#runResponsivenessTestStage("render.complete");
+			this.#responsivenessTelemetry.finishFrame(this.#composedFrame.length, this.#renderScheduler.now());
 			popLoopPhase();
 		}
 	}
 
-	#handleInput(data: string): void {
+	#receiveTerminalInput(data: string): void {
+		const receivedAt = this.#renderScheduler.now();
+		this.#runResponsivenessTestStage("input.received");
+		this.#handleInput(data, receivedAt);
+	}
+
+	#handleInput(data: string, receivedAt: number): void {
+		const dispatchedAt = this.#renderScheduler.now();
+		this.#responsivenessTelemetry.beginInput(receivedAt, dispatchedAt, data.length);
+		this.#runResponsivenessTestStage("input.dispatch");
+		try {
+			this.#dispatchInput(data);
+		} finally {
+			this.#responsivenessTelemetry.finishInput(this.#renderScheduler.now());
+		}
+	}
+
+	#dispatchInput(data: string): void {
 		// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
 		// frame to drain queued input before an ordinary repaint; delaying every
 		// key would make idle navigation pay a full frame of latency.
@@ -3188,6 +3310,7 @@ export class TUI extends Container {
 				return;
 			}
 			focused.handleInput(data);
+			this.#prioritizeInputRender();
 			if (this.#focusedComponent === focused && this.#scopedInputRenderComponents.has(focused)) {
 				this.requestComponentRender(focused);
 			} else {
@@ -3625,7 +3748,7 @@ export class TUI extends Container {
 				: this.#normalMouseTrackingActive
 					? MOUSE_CLICK_TRACKING_OFF
 					: "";
-			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
+			this.#writeTerminal(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
 			setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
@@ -3648,7 +3771,7 @@ export class TUI extends Container {
 			if (this.#clearScrollbackOnNextRender) {
 				this.#pendingAltExit = exitSequence;
 				deferredAltExit = exitSequence;
-			} else this.terminal.write(exitSequence);
+			} else this.#writeTerminal(exitSequence);
 			setAltScreenActive(false);
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
@@ -3669,7 +3792,7 @@ export class TUI extends Container {
 				if (width === this.#altEnterWidth) this.#altToggleResizesInPlace = true;
 			}
 		} else if (wantMouseTracking !== this.#altMouseTrackingActive) {
-			this.terminal.write(wantMouseTracking ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
+			this.#writeTerminal(wantMouseTracking ? MOUSE_TRACKING_ON : MOUSE_TRACKING_OFF);
 			this.#altMouseTrackingActive = wantMouseTracking;
 		}
 		if (this.#altActive) {
@@ -3678,7 +3801,7 @@ export class TUI extends Container {
 			return;
 		}
 		if (wantNormalMouseTracking !== this.#normalMouseTrackingActive) {
-			this.terminal.write(wantNormalMouseTracking ? MOUSE_CLICK_TRACKING_ON : MOUSE_CLICK_TRACKING_OFF);
+			this.#writeTerminal(wantNormalMouseTracking ? MOUSE_CLICK_TRACKING_ON : MOUSE_CLICK_TRACKING_OFF);
 			this.#normalMouseTrackingActive = wantNormalMouseTracking;
 		}
 
@@ -3713,7 +3836,8 @@ export class TUI extends Container {
 		// (overlay resizes are not on the drag-cost hot path).
 		if (this.#resizeViewportActive && this.#hasEverRendered && this.#getTopmostVisibleOverlay() === undefined) {
 			this.#componentRenderTargets.clear();
-			this.#renderResizeViewport(width, height);
+			this.#paintViewportTail(width, height);
+			this.#resizeViewportPaintCount += 1;
 			return;
 		}
 
@@ -3741,17 +3865,23 @@ export class TUI extends Container {
 		const partialRoots = componentScopedOnly ? this.#resolvePartialComposeRoots(width, height) : null;
 		this.#componentRenderTargets.clear();
 		let rawFrame: readonly string[];
-		if (partialRoots !== null) {
-			this.#partialComposeRoots = partialRoots;
-			try {
+		this.#responsivenessTelemetry.beginCompose(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.compose");
+		try {
+			if (partialRoots !== null) {
+				this.#partialComposeRoots = partialRoots;
+				try {
+					rawFrame = this.render(width);
+				} finally {
+					this.#partialComposeRoots = null;
+				}
+			} else {
+				this.#imageBudget.beginPass();
 				rawFrame = this.render(width);
-			} finally {
-				this.#partialComposeRoots = null;
+				this.#imageBudget.endPass();
 			}
-		} else {
-			this.#imageBudget.beginPass();
-			rawFrame = this.render(width);
-			this.#imageBudget.endPass();
+		} finally {
+			this.#responsivenessTelemetry.endCompose(this.#renderScheduler.now());
 		}
 		// Ghostty initial-image deferral must run before any render state is
 		// consumed (#resizeEventPending, hardware-cursor state, commit
@@ -4096,18 +4226,28 @@ export class TUI extends Container {
 				break;
 			}
 		}
-		const frame = this.#prepareFrame(rawFrame, width);
-		let window: string[] = new Array(height);
-		for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
-		if (hasVisibleOverlay) {
-			window = this.#compositeOverlaysIntoWindow(window, width, height);
-			const overlayMarkers = this.#extractCursorMarkers(window);
-			if (overlayMarkers.length > 0) {
-				cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
+		this.#responsivenessTelemetry.beginPrepare(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.prepare");
+		let frame: string[];
+		let window: string[];
+		try {
+			frame = this.#prepareFrame(rawFrame, width);
+			window = new Array(height);
+			for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
+			if (hasVisibleOverlay) {
+				window = this.#compositeOverlaysIntoWindow(window, width, height);
+				const overlayMarkers = this.#extractCursorMarkers(window);
+				if (overlayMarkers.length > 0) {
+					cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
+				}
+				window = this.#prepareLinesArray(window, width);
 			}
-			window = this.#prepareLinesArray(window, width);
+		} finally {
+			this.#responsivenessTelemetry.endPrepare(this.#renderScheduler.now());
 		}
 		const cursorTrackingLineCount = hasVisibleOverlay ? Math.max(frame.length, windowTop + height) : frame.length;
+		this.#responsivenessTelemetry.beginDiff(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.diff");
 
 		// `resetDisplay()` requests an unbounded replay of the current
 		// transcript. Consume that one-shot intent on this authoritative
@@ -4157,7 +4297,6 @@ export class TUI extends Container {
 			this.#imageBudget.observeCommitWatermark(chunkTo);
 		}
 
-		// 6. Emit.
 		if (intent.kind === "fullPaint") {
 			this.#emitFullPaint(frame, window, width, height, cursorPos, purgeSequence, imageTransmitBuffer, {
 				clearScrollback: intent.clearScrollback,
@@ -4180,6 +4319,7 @@ export class TUI extends Container {
 			this.#widthEpochCommittedPrefix = undefined;
 			this.#publishCommittedRows();
 			if (!firstPaint && frameLength > height) this.#armPostFullPaintSettle();
+			this.#responsivenessTelemetry.endDiff(this.#renderScheduler.now());
 			return;
 		}
 		if (this.#widthEpochBaselineRows !== undefined) {
@@ -4303,10 +4443,11 @@ export class TUI extends Container {
 			this.#clearScrollbackOnNextRender = false;
 			this.#hasEverRendered = true;
 			this.#publishCommittedRows(this.#windowTopRow);
+			this.#responsivenessTelemetry.endDiff(this.#renderScheduler.now());
 			return;
 		}
 		if (imageTransmitBuffer.length > 0) {
-			this.terminal.write(imageTransmitBuffer);
+			this.#writeTerminal(imageTransmitBuffer);
 		}
 		this.#emitUpdate(frame, window, width, height, cursorPos, purgeSequence, {
 			chunkTo,
@@ -4331,6 +4472,7 @@ export class TUI extends Container {
 			this.#committedPrefixAuditRows = Math.min(preAuditRows, this.#committedRows);
 		}
 		this.#publishCommittedRows();
+		this.#responsivenessTelemetry.endDiff(this.#renderScheduler.now());
 	}
 
 	/**
@@ -4836,7 +4978,7 @@ export class TUI extends Container {
 			buffer += `\x1b[${contentRows};1H\x1b[?25l`;
 		}
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeTerminal(buffer);
 
 		this.#commit(frame, window, width, height, {
 			toRow: target?.row ?? contentBottomRow,
@@ -4878,6 +5020,7 @@ export class TUI extends Container {
 			copyScreenToScrollback: boolean;
 		},
 	): void {
+		this.#compositorShadow.observe(this.#previousWindow, window);
 		this.#fullRedrawCount += 1;
 		const { chunkTo, windowTop, cursorTrackingLineCount } = options;
 		// Map the frame-space cursor into paint space: committed-prefix rows
@@ -5027,7 +5170,7 @@ export class TUI extends Container {
 		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
 		buffer += cursorControl.seq;
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeTerminal(buffer);
 
 		const committedCursorState = paintCursorPos
 			? this.#targetHardwareCursorState(cursorPos, cursorTrackingLineCount)
@@ -5076,31 +5219,43 @@ export class TUI extends Container {
 	#requestResizeViewportPaint(): void {
 		if (this.#stopped) return;
 		this.#renderRequested = false;
+		this.#markRenderQueued();
 		this.#executeRender();
 		if (this.#renderRequested) this.#scheduleRender();
 	}
 
 	/**
-	 * Compose and paint only the viewport for one resize fast-path frame.
-	 * State-isolated: advances no commit/window/diff field and calls neither
-	 * `#commit` nor `#emitFullPaint`, so the settle full paint reconciles against
-	 * the pre-drag screen state.
+	 * Compose and emit one state-isolated viewport-tail snapshot. Advances no
+	 * commit/window/diff field and calls neither `#commit` nor `#emitFullPaint`,
+	 * so the next authoritative paint reconciles against the prior screen state.
 	 */
-	#renderResizeViewport(width: number, height: number): void {
+	#paintViewportTail(width: number, height: number): void {
 		if (width <= 0 || height <= 0) return;
 		// Tail renders call block.render(), which observes inline images on the
 		// budget. This is a STABLE (partial) pass: the tail walk is bottom-up and
 		// sees only the visible subset, so display-order-by-call-order is wrong
 		// here — `beginPass(true)` makes observe() replay the last committed
 		// live/text split per image id instead, so images keep their on-screen
-		// state through the drag. Reset the pass each frame so a long drag does
-		// not accumulate; never endPass() here — that mutates the demotion ledger
-		// off a partial walk. The settle paint's own beginPass()/endPass() is the
-		// authoritative accounting, and its beginPass() wipes these frames.
-		this.#imageBudget.beginPass(true);
-		const { framed, viewportTop, contentRows } = this.#composeResizeViewport(width, height);
-		this.#emitResizeViewport(framed, viewportTop, height, contentRows, width);
-		this.#resizeViewportPaintCount += 1;
+		// state through the transient snapshot. Reset the pass each frame so
+		// repeated snapshots do not accumulate; never endPass() here — that mutates
+		// the demotion ledger off a partial walk. The authoritative paint's own
+		// beginPass()/endPass() performs the real accounting and wipes this pass.
+		this.#responsivenessTelemetry.beginCompose(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.compose");
+		let viewport: { framed: readonly string[]; viewportTop: number; contentRows: number };
+		try {
+			this.#imageBudget.beginPass(true);
+			viewport = this.#composeResizeViewport(width, height);
+		} finally {
+			this.#responsivenessTelemetry.endCompose(this.#renderScheduler.now());
+		}
+		this.#responsivenessTelemetry.beginDiff(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.diff");
+		try {
+			this.#emitResizeViewport(viewport.framed, viewport.viewportTop, height, viewport.contentRows, width);
+		} finally {
+			this.#responsivenessTelemetry.endDiff(this.#renderScheduler.now());
+		}
 	}
 
 	/**
@@ -5229,7 +5384,8 @@ export class TUI extends Container {
 	): void {
 		const widthChanged = this.#previousWidth > 0 && this.#previousWidth !== width;
 		const altEnter = widthChanged ? this.#enterResizeAltSequence() : "";
-		let buffer = `${this.#paintBeginSequence + altEnter}\x1b[H`;
+		if (altEnter) this.#writeTerminal(altEnter);
+		let buffer = `${this.#paintBeginSequence}\x1b[H`;
 		for (let r = 0; r < height; r++) {
 			if (r > 0) buffer += "\r\n";
 			// `framed` carries context rows above the fold; the visible window
@@ -5252,7 +5408,7 @@ export class TUI extends Container {
 		const parkUp = height - Math.max(1, contentRows);
 		if (parkUp > 0) buffer += `\x1b[${parkUp}A`;
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeLatestTerminal(buffer);
 	}
 
 	/**
@@ -5263,10 +5419,29 @@ export class TUI extends Container {
 	 */
 	#renderAltFrame(width: number, height: number): void {
 		const base: string[] = new Array(Math.max(0, height)).fill("");
-		let lines = this.#compositeOverlaysIntoWindow(base, width, height);
-		this.#extractCursorMarkers(lines);
-		lines = this.#prepareLinesArray(lines, width);
-		this.#emitAltFrame(lines, width, height);
+		this.#responsivenessTelemetry.beginCompose(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.compose");
+		let lines: string[];
+		try {
+			lines = this.#compositeOverlaysIntoWindow(base, width, height);
+		} finally {
+			this.#responsivenessTelemetry.endCompose(this.#renderScheduler.now());
+		}
+		this.#responsivenessTelemetry.beginPrepare(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.prepare");
+		try {
+			this.#extractCursorMarkers(lines);
+			lines = this.#prepareLinesArray(lines, width);
+		} finally {
+			this.#responsivenessTelemetry.endPrepare(this.#renderScheduler.now());
+		}
+		this.#responsivenessTelemetry.beginDiff(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.diff");
+		try {
+			this.#emitAltFrame(lines, width, height);
+		} finally {
+			this.#responsivenessTelemetry.endDiff(this.#renderScheduler.now());
+		}
 	}
 
 	/**
@@ -5278,6 +5453,7 @@ export class TUI extends Container {
 	#emitAltFrame(lines: string[], width: number, height: number): void {
 		const fitted: string[] = new Array(height);
 		for (let r = 0; r < height; r++) fitted[r] = lines[r] ?? "";
+		this.#compositorShadow.observe(this.#altPreviousLines, fitted);
 		// Flush queued image-data transmits (`a=t`, no visible output) before the
 		// paint so id-keyed placements and placeholder cells composed into this
 		// frame resolve against loaded data. The normal-screen path flushes these
@@ -5288,7 +5464,7 @@ export class TUI extends Container {
 		if (imageTransmits.length > 0) {
 			let transmitBuffer = "";
 			for (const seq of imageTransmits) transmitBuffer += seq;
-			this.terminal.write(transmitBuffer);
+			this.#writeTerminal(transmitBuffer);
 		}
 		// Skip an identical repaint (the modal is mostly static between
 		// keystrokes) — unless a forced repaint (resetDisplay,
@@ -5312,7 +5488,7 @@ export class TUI extends Container {
 			buffer += this.#lineRewriteSequence(fitted[r], width, r, -1, -1, this.#osc66SpacerGlyphWidth(fitted, r));
 		}
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeLatestTerminal(buffer);
 		this.#altPreviousLines = fitted;
 		this.#fullRedrawCount += 1;
 	}
@@ -5359,6 +5535,7 @@ export class TUI extends Container {
 			repaintVirtualScrollInPlace,
 			cursorTrackingLineCount,
 		} = options;
+		this.#compositorShadow.observe(this.#previousWindow, window);
 		const chunkFrom = this.#committedRows;
 		const chunkLength = chunkTo - chunkFrom;
 		const scroll = windowTop - prevWindowTop;
@@ -5419,7 +5596,7 @@ export class TUI extends Container {
 				const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
 				buffer += cursorControl.seq;
 				buffer += this.#paintEndSequence;
-				this.terminal.write(buffer);
+				this.#writeTerminal(buffer);
 				this.#committedRows = chunkTo;
 				this.#windowTopRow = windowTop;
 				this.#commit(frame, window, width, height, cursorControl);
@@ -5449,7 +5626,7 @@ export class TUI extends Container {
 				}
 			}
 			if (firstChanged === -1) {
-				if (purgeSequence.length > 0) this.terminal.write(purgeSequence);
+				if (purgeSequence.length > 0) this.#writeTerminal(purgeSequence);
 				this.#writeCursorPosition(cursorPos, cursorTrackingLineCount);
 				this.#previousWidth = width;
 				this.#previousHeight = height;
@@ -5502,7 +5679,7 @@ export class TUI extends Container {
 			const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, cursorFromRow);
 			buffer += cursorControl.seq;
 			buffer += this.#paintEndSequence;
-			this.terminal.write(buffer);
+			this.#writeTerminal(buffer);
 			this.#windowTopRow = windowTop;
 			this.#commit(frame, window, width, height, cursorControl);
 			return;
@@ -5546,7 +5723,7 @@ export class TUI extends Container {
 		const cursorControl = this.#cursorControlSequence(cursorPos, cursorTrackingLineCount, contentBottomRow);
 		buffer += cursorControl.seq;
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		this.#writeTerminal(buffer);
 		this.#committedRows = chunkTo;
 		this.#windowTopRow = windowTop;
 		this.#commit(frame, window, width, height, cursorControl);
@@ -5618,7 +5795,7 @@ export class TUI extends Container {
 		}
 		if (this.#sameHardwareCursorState(target)) return;
 		const cursorControl = this.#cursorControlSequence(cursorPos, totalLines, this.#hardwareCursorRow);
-		this.terminal.write(`${this.#cursorBeginSequence}${cursorControl.seq}${this.#cursorEndSequence}`);
+		this.#writeTerminal(`${this.#cursorBeginSequence}${cursorControl.seq}${this.#cursorEndSequence}`);
 		this.#recordHardwareCursorUpdate(cursorControl);
 	}
 

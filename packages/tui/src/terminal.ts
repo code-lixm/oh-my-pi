@@ -10,6 +10,7 @@ import {
 	suppressTerminalStderr,
 } from "@oh-my-pi/pi-utils";
 import { setKittyProtocolActive } from "./keys";
+import { createNativeInputBridge, type NativeInputBridge, shouldUseNativeInput } from "./native-input";
 import { StdinBuffer } from "./stdin-buffer";
 import {
 	isInsideTerminalMultiplexer,
@@ -18,6 +19,7 @@ import {
 	setOsc99Supported,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { installTerminalOutputOwner, type TerminalOutputOwner, writeTerminalControl } from "./terminal-output";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 
@@ -26,6 +28,10 @@ const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 const WINDOWS_TERMINAL_OSC11_POLL_MS = 30_000;
 const OSC11_SENTINEL_GRACE_MS = 100;
+const NATIVE_INPUT_STARTUP_DELAY_MS = 250;
+const NATIVE_INPUT_DRAIN_MAX_EVENTS = 64;
+const NATIVE_INPUT_DRAIN_MAX_BYTES = 64 * 1024;
+const NATIVE_INPUT_DRAIN_BUDGET_MS = 2;
 function shouldEnableModifyOtherKeysFallback(env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!env.SSH_CONNECTION && !env.SSH_TTY && !env.SSH_CLIENT) return true;
 	return TERMINAL.id !== "base" && TERMINAL.id !== "trueColor";
@@ -344,12 +350,11 @@ export function emergencyTerminalRestore(): void {
 				terminal.write(`${keyboardExit}\x1b[?1049l`);
 				altScreenActive = false;
 			}
-			terminal.stop();
-			terminal.showCursor(true);
-		} else if (terminalEverStarted && !isTerminalHeadless()) {
+			terminal.stop(true);
+		} else if (terminalEverStarted && !isTerminalHeadless() && process.stdout.isTTY) {
 			// Blind restore only if we know a terminal was started but lost track of it
 			// This avoids writing escape sequences for non-TUI commands (grep, commit, etc.)
-			process.stdout.write(
+			writeTerminalControl(
 				"\x1b[?2026l" + // End synchronized output
 					"\x1b[?7h" + // Restore autowrap
 					"\x1b[?1l\x1b>" + // Restore normal cursor-key + keypad mode (rmkx, #6374)
@@ -397,6 +402,12 @@ export interface Terminal {
 
 	// Write output to terminal
 	write(data: string): void;
+	/** Write a self-contained cosmetic frame that a newer frame may replace. */
+	writeLatest?(data: string): void;
+	/** Whether raw stdin is currently owned by the native bounded reader. */
+	readonly nativeInputActive?: boolean;
+	/** Optimistic local echo; available only while native input owns stdin. */
+	writeNativeHud?(data: string): void;
 
 	// Get terminal dimensions
 	get columns(): number;
@@ -566,6 +577,13 @@ export class ProcessTerminal implements Terminal {
 	#modifyOtherKeysTimeout?: Timer;
 	#stdinBuffer?: StdinBuffer;
 	#stdinDataHandler?: (data: string) => void;
+	#jsStdinReaderAttached = false;
+	#nativeInput?: NativeInputBridge;
+	#nativeInputRunning = false;
+	#nativeInputActivationTimer?: Timer;
+	#nativeInputDrainScheduled = false;
+	#nativeInputDecoder = new TextDecoder();
+	#nativeInputDroppedEvents = 0;
 	#disconnectHandler?: () => void;
 	#stdinEndHandler = () => {
 		this.#markTerminalDisconnected("stdin ended");
@@ -589,6 +607,8 @@ export class ProcessTerminal implements Terminal {
 	// suppressed. Defaults on under `bun test` — see isTerminalHeadless().
 	#headless = isTerminalHeadless();
 	#writeLogPath = $env.PI_TUI_WRITE_LOG || "";
+	#terminalOutput?: TerminalOutputOwner;
+	#latestFrameId = 0;
 	#stdoutErrorCleanup?: () => void;
 	#stdoutErrorHandler = (err: Error) => {
 		this.#markTerminalDisconnected("stdout failed", err);
@@ -670,6 +690,10 @@ export class ProcessTerminal implements Terminal {
 		return this.#kittyProtocolActive ? "\x1b[<u" : null;
 	}
 
+	get nativeInputActive(): boolean {
+		return this.#nativeInputRunning;
+	}
+
 	get appearance(): TerminalAppearance | undefined {
 		return this.#appearance;
 	}
@@ -735,14 +759,15 @@ export class ProcessTerminal implements Terminal {
 		// The host terminal's cursor visibility is unknown until we write it.
 		this.#cursorVisible = undefined;
 
-		// Headless (tests): suppress every real-terminal side effect. Skip raw
-		// mode, stdin listeners, capability probes, SIGWINCH, and emergency-restore
+		// Headless and non-TTY paths suppress every real-terminal side effect. Skip
+		// raw mode, stdin listeners, capability probes, SIGWINCH, and emergency
 		// ownership; #safeWrite is also a no-op, so frame paints and teardown
 		// escapes never reach the developer's terminal during `bun test`.
-		this.#headless = isTerminalHeadless();
+		this.#headless = isTerminalHeadless() || !process.stdout.isTTY;
 		if (this.#headless) return;
+		this.#terminalOutput = installTerminalOutputOwner();
+		this.#latestFrameId = 0;
 		registerPostmortemTerminalRestore();
-
 		// Register for emergency cleanup
 		activeTerminal = this;
 		terminalEverStarted = true;
@@ -761,6 +786,7 @@ export class ProcessTerminal implements Terminal {
 				process.stdin.setRawMode(true);
 			} catch (err) {
 				this.#markTerminalDisconnected("stdin raw mode setup failed", err);
+				if (this.#terminalOutput) this.stop();
 				return;
 			}
 		}
@@ -854,6 +880,7 @@ export class ProcessTerminal implements Terminal {
 		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
 			this.#queryPrivateMode(mode);
 		}
+		this.#scheduleNativeInputActivation();
 	}
 
 	/**
@@ -1295,6 +1322,175 @@ export class ProcessTerminal implements Terminal {
 		};
 	}
 
+	#scheduleNativeInputActivation(): void {
+		if (isBunTestRuntime()) return;
+		if (
+			!shouldUseNativeInput({
+				platform: process.platform,
+				stdinIsTTY: process.stdin.isTTY === true,
+				env: Bun.env,
+			}) ||
+			this.#nativeInput ||
+			this.#nativeInputActivationTimer
+		) {
+			return;
+		}
+		this.#nativeInputActivationTimer = setTimeout(() => {
+			this.#nativeInputActivationTimer = undefined;
+			this.#activateNativeInput();
+		}, NATIVE_INPUT_STARTUP_DELAY_MS);
+		this.#nativeInputActivationTimer.unref?.();
+	}
+
+	#activateNativeInput(): void {
+		if (!this.#active || this.#dead || this.#nativeInput) return;
+		let bridge: NativeInputBridge | undefined;
+		try {
+			bridge = createNativeInputBridge(error => {
+				if (error) {
+					this.#fallbackFromNativeInput("native input wake failed", error);
+					return;
+				}
+				this.#scheduleNativeInputDrain();
+			});
+		} catch (err) {
+			logger.warn("native input construction failed; keeping JavaScript stdin", { err });
+			return;
+		}
+		if (!bridge || !this.#stdinDataHandler) return;
+
+		process.stdin.pause();
+		if (this.#jsStdinReaderAttached) {
+			process.stdin.removeListener("data", this.#stdinDataHandler);
+			this.#jsStdinReaderAttached = false;
+		}
+		this.#nativeInput = bridge;
+		this.#nativeInputDecoder = new TextDecoder();
+		this.#nativeInputDroppedEvents = 0;
+		try {
+			if (!bridge.start()) {
+				this.#fallbackFromNativeInput("native input declined startup");
+				return;
+			}
+			this.#nativeInputRunning = true;
+			this.#armNativeInputWait(bridge);
+		} catch (err) {
+			this.#fallbackFromNativeInput("native input startup failed", err);
+		}
+	}
+
+	#armNativeInputWait(bridge: NativeInputBridge): void {
+		void bridge.waitForInput().then(
+			ready => {
+				if (this.#nativeInput !== bridge) return;
+				if (!ready) {
+					this.#fallbackFromNativeInput("native input worker stopped");
+					return;
+				}
+				this.#drainNativeInputBudget();
+				if (this.#nativeInput === bridge) this.#armNativeInputWait(bridge);
+			},
+			err => {
+				if (this.#nativeInput === bridge) this.#fallbackFromNativeInput("native input wait failed", err);
+			},
+		);
+	}
+
+	#scheduleNativeInputDrain(): void {
+		if (this.#nativeInputDrainScheduled || !this.#nativeInput) return;
+		this.#nativeInputDrainScheduled = true;
+		queueMicrotask(() => {
+			this.#nativeInputDrainScheduled = false;
+			this.#drainNativeInputBudget();
+		});
+	}
+
+	#consumeNativeInputChunks(chunks: readonly Uint8Array[]): { events: number; bytes: number } {
+		let bytes = 0;
+		for (const chunk of chunks) {
+			bytes += chunk.byteLength;
+			const text = this.#nativeInputDecoder.decode(chunk, { stream: true });
+			if (text) this.#stdinBuffer?.process(text);
+		}
+		return { events: chunks.length, bytes };
+	}
+
+	#drainNativeInputBudget(): void {
+		const bridge = this.#nativeInput;
+		if (!bridge || !this.#active || this.#dead) return;
+		const startedAt = performance.now();
+		let events = 0;
+		let bytes = 0;
+		try {
+			while (
+				events < NATIVE_INPUT_DRAIN_MAX_EVENTS &&
+				bytes < NATIVE_INPUT_DRAIN_MAX_BYTES &&
+				performance.now() - startedAt < NATIVE_INPUT_DRAIN_BUDGET_MS
+			) {
+				const chunks = bridge.read(NATIVE_INPUT_DRAIN_MAX_EVENTS - events, NATIVE_INPUT_DRAIN_MAX_BYTES - bytes);
+				if (chunks.length === 0) break;
+				const consumed = this.#consumeNativeInputChunks(chunks);
+				events += consumed.events;
+				bytes += consumed.bytes;
+			}
+			const stats = bridge.stats();
+			if (stats.workerFailed) {
+				this.#fallbackFromNativeInput("native input worker failed", stats.failure);
+				return;
+			}
+			if (stats.eventsDropped > this.#nativeInputDroppedEvents) {
+				this.#nativeInputDroppedEvents = stats.eventsDropped;
+				this.#fallbackFromNativeInput("native input queue overflowed; reverting to JavaScript stdin");
+				return;
+			}
+			if (stats.queuedEvents > 0) this.#scheduleNativeInputDrain();
+		} catch (err) {
+			this.#fallbackFromNativeInput("native input drain failed", err);
+		}
+	}
+
+	#fallbackFromNativeInput(reason: string, err?: unknown): void {
+		if (!this.#nativeInput) return;
+		logger.warn(reason, { err });
+		this.#stopNativeInput(true);
+	}
+
+	#stopNativeInput(restoreJavaScriptReader: boolean): void {
+		if (this.#nativeInputActivationTimer) {
+			clearTimeout(this.#nativeInputActivationTimer);
+			this.#nativeInputActivationTimer = undefined;
+		}
+		const bridge = this.#nativeInput;
+		this.#nativeInput = undefined;
+		this.#nativeInputRunning = false;
+		this.#nativeInputDrainScheduled = false;
+		if (bridge) {
+			try {
+				bridge.stop();
+				for (;;) {
+					const chunks = bridge.read(NATIVE_INPUT_DRAIN_MAX_EVENTS, NATIVE_INPUT_DRAIN_MAX_BYTES);
+					if (chunks.length === 0) break;
+					this.#consumeNativeInputChunks(chunks);
+				}
+				const tail = this.#nativeInputDecoder.decode();
+				if (tail) this.#stdinBuffer?.process(tail);
+			} catch (err) {
+				logger.warn("native input shutdown failed; restoring JavaScript stdin", { err });
+			}
+		}
+		if (
+			restoreJavaScriptReader &&
+			this.#active &&
+			!this.#dead &&
+			this.#stdinDataHandler &&
+			!this.#jsStdinReaderAttached
+		) {
+			process.stdin.on("data", this.#stdinDataHandler);
+			this.#jsStdinReaderAttached = true;
+			process.stdin.resume();
+		}
+	}
+
 	/** Finish the active OSC 11 query and cancel every post-sentinel grace window. */
 	#completeOsc11Query(): void {
 		if (this.#osc11SentinelGraceTimer) {
@@ -1586,6 +1782,7 @@ export class ProcessTerminal implements Terminal {
 	#queryAndEnableKittyProtocol(): void {
 		this.#setupStdinBuffer();
 		process.stdin.on("data", this.#stdinDataHandler!);
+		this.#jsStdinReaderAttached = true;
 		// Progressive enhancement query: CSI ?u asks the terminal for its current
 		// kitty keyboard flags (no side effect on the stack); the DA1 sentinel
 		// guarantees a reply even from terminals that ignore CSI ?u.
@@ -1721,6 +1918,7 @@ export class ProcessTerminal implements Terminal {
 
 	async drainInput(maxMs = 1000, idleMs = 50): Promise<void> {
 		if (this.#headless) return;
+		if (this.#nativeInput) this.#stopNativeInput(true);
 		if (this.#kittyProtocolActive) {
 			// Disable Kitty keyboard protocol first so any late key releases
 			// do not generate new Kitty escape sequences.
@@ -1762,9 +1960,10 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
-	stop(): void {
+	stop(showCursorAfterRestore = false): void {
 		// Suppress observer/timer callbacks before any teardown can yield or throw.
 		this.#active = false;
+		this.#stopNativeInput(false);
 		if (this.#headless) return;
 		// Unregister from emergency cleanup
 		if (activeTerminal === this) {
@@ -1860,6 +2059,9 @@ export class ProcessTerminal implements Terminal {
 			this.#safeWrite("\x1b[>4;0m");
 			this.#modifyOtherKeysActive = false;
 		}
+		if (showCursorAfterRestore) this.#safeWrite("\x1b[?25h");
+
+		this.#finishTerminalOutput();
 
 		this.#restoreWindowsVTInput();
 		// Clean up StdinBuffer
@@ -1873,6 +2075,7 @@ export class ProcessTerminal implements Terminal {
 			process.stdin.removeListener("data", this.#stdinDataHandler);
 			this.#stdinDataHandler = undefined;
 		}
+		this.#jsStdinReaderAttached = false;
 		process.stdin.removeListener("end", this.#stdinEndHandler);
 		process.stdin.removeListener("close", this.#stdinCloseHandler);
 		process.stdin.removeListener("error", this.#stdinErrorHandler);
@@ -1913,6 +2116,13 @@ export class ProcessTerminal implements Terminal {
 		this.#cursorVisible = undefined;
 	}
 
+	#finishTerminalOutput(): void {
+		const output = this.#terminalOutput;
+		if (!output) return;
+		output.flush();
+		if (output.close()) this.#terminalOutput = undefined;
+	}
+
 	#ensureStdoutErrorHandler(): void {
 		this.#stdoutErrorCleanup ??= registerStdoutErrorHandler(this.#stdoutErrorHandler);
 	}
@@ -1948,33 +2158,47 @@ export class ProcessTerminal implements Terminal {
 
 	write(data: string): void {
 		this.#safeWrite(data);
-		if (this.#writeLogPath) {
-			try {
-				fs.appendFileSync(this.#writeLogPath, data, { encoding: "utf8" });
-			} catch {
-				// Ignore logging errors
-			}
+		this.#appendWriteLog(data);
+	}
+
+	writeLatest(data: string): void {
+		this.#safeWrite(data, true);
+		this.#appendWriteLog(data);
+	}
+
+	writeNativeHud(data: string): void {
+		if (!this.nativeInputActive) return;
+		this.#safeWrite(data);
+		this.#appendWriteLog(data);
+	}
+
+	#appendWriteLog(data: string): void {
+		if (!this.#writeLogPath) return;
+		try {
+			fs.appendFileSync(this.#writeLogPath, data, { encoding: "utf8" });
+		} catch {
+			// Ignore logging errors
 		}
 	}
 
-	#safeWrite(data: string): void {
+	#safeWrite(data: string, replaceable = false): void {
 		if (this.#headless) return;
 		if (this.#dead) return;
 		// Skip control sequences when stdout isn't a TTY (piped output, tests, log
 		// files). They serve no purpose there and would surface as visible noise.
 		if (!process.stdout.isTTY) return;
 		this.#ensureStdoutErrorHandler();
-		this.#trackCursorVisibility(data);
 		// A console-sharing child process may have flipped the console codepage
 		// away from UTF-8; repair it before any bytes hit WriteFile so no frame
 		// is ever translated through an OEM codepage. See ensureWindowsConsoleUtf8.
 		if (process.platform === "win32") ensureWindowsConsoleUtf8();
+		const latestFrameId = replaceable ? ++this.#latestFrameId : undefined;
 		try {
 			// Windows ConPTY drops viewport tracking when a single write exceeds
 			// ~32-64 KB: the host UI's scroll position stays parked at wherever
 			// the write began, even though every byte landed in scrollback. Split
-			// large paints into newline-aligned chunks so each underlying
-			// `WriteFile` stays well below the threshold. The gate also covers
+			// large paints into newline-aligned chunks before enqueueing so each
+			// underlying write stays well below the threshold. The gate also covers
 			// WSL — `process.platform === "linux"` there, but stdout still
 			// crosses into ConPTY at the `wslhost` boundary, so the same per-
 			// WriteFile cap applies. Non-ConPTY PTYs keep the single-write fast
@@ -1983,15 +2207,40 @@ export class ProcessTerminal implements Terminal {
 			// and a code-unit cap would let CJK transcript rows expand past the
 			// threshold. See #2034 and #2095.
 			const bytes = Buffer.byteLength(data, "utf8");
+			const chunkForConPty = isConPTYHosted() && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES;
+			const output = this.#terminalOutput;
+			if (output?.usesNativeBroker) {
+				let accepted = true;
+				if (latestFrameId !== undefined && !chunkForConPty) {
+					accepted = output.latest(latestFrameId, data);
+				} else if (chunkForConPty) {
+					for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
+						if (!output.reliable(chunk)) {
+							accepted = false;
+							break;
+						}
+					}
+				} else {
+					accepted = output.reliable(data);
+				}
+				if (!accepted) {
+					this.#markTerminalDisconnected("terminal output broker rejected output");
+					return;
+				}
+				this.#trackCursorVisibility(data);
+				return;
+			}
+
+			this.#trackCursorVisibility(data);
 			let accepted: boolean;
-			if (isConPTYHosted() && bytes > MAX_CONPTY_WRITE_CHUNK_BYTES) {
+			if (chunkForConPty) {
 				accepted = true;
 				for (const chunk of chunkForConPTY(data, MAX_CONPTY_WRITE_CHUNK_BYTES)) {
 					if (this.#dead) break;
-					accepted = process.stdout.write(chunk);
+					accepted = output?.reliable(chunk) ?? process.stdout.write(chunk);
 				}
 			} else {
-				accepted = process.stdout.write(data);
+				accepted = output?.reliable(data) ?? process.stdout.write(data);
 			}
 			// A stalled-but-alive PTY consumer never throws: write() just returns
 			// false and queues the bytes. Bound that never-draining backlog by

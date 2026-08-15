@@ -23,9 +23,12 @@ export const FileLock = nativeBindings.FileLock;
 export const LiveWebRtcPeer = nativeBindings.LiveWebRtcPeer;
 export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
 export const MacOSPowerAssertion = nativeBindings.MacOSPowerAssertion;
+export const NativeEditorShadow = nativeBindings.NativeEditorShadow;
+export const NativeInput = nativeBindings.NativeInput;
 export const Process = nativeBindings.Process;
 export const PtySession = nativeBindings.PtySession;
 export const Shell = nativeBindings.Shell;
+export const TerminalOutputBroker = nativeBindings.TerminalOutputBroker;
 
 // functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
@@ -83,6 +86,7 @@ export const snapcompactSupportedChars = nativeBindings.snapcompactSupportedChar
 export const structuredPatchHunks = nativeBindings.structuredPatchHunks;
 export const summarizeCode = nativeBindings.summarizeCode;
 export const supportsLanguage = nativeBindings.supportsLanguage;
+export const terminalRowPlan = nativeBindings.terminalRowPlan;
 export const truncateToWidth = nativeBindings.truncateToWidth;
 export const vectorIndexTopK = nativeBindings.vectorIndexTopK;
 export const visibleWidth = nativeBindings.visibleWidth;

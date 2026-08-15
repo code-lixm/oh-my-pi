@@ -1,6 +1,5 @@
 // Core TUI interfaces and classes
 
-// Autocomplete support
 export * from "./autocomplete";
 // Components
 export * from "./components/box";
@@ -17,6 +16,9 @@ export * from "./components/spacer";
 export * from "./components/tab-bar";
 export * from "./components/text";
 export * from "./components/truncated-text";
+// Autocomplete support
+export * from "./compositor-output";
+export * from "./compositor-shadow";
 // DECCARA rectangular-SGR background-fill optimizer
 export * from "./deccara";
 // Desktop notifications via D-Bus (Linux freedesktop notifications)
@@ -37,6 +39,7 @@ export * from "./latex-to-unicode";
 // SGR mouse report parsing
 export * from "./mouse";
 // Mermaid diagram support
+export * from "./native-input";
 // Input buffering for batch splitting
 export * from "./stdin-buffer";
 export type * from "./symbols";
@@ -44,6 +47,7 @@ export type * from "./symbols";
 export * from "./terminal";
 // Terminal image support
 export * from "./terminal-capabilities";
+export * from "./terminal-output";
 // TTY ID
 export * from "./ttyid";
 export * from "./tui";

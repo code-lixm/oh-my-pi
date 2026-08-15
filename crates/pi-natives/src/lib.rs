@@ -55,6 +55,9 @@ pub mod pty;
 pub mod shell;
 pub mod summary;
 pub mod task;
+pub mod terminal_compositor;
+pub mod terminal_input;
+pub mod terminal_output;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod text;

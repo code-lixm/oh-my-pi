@@ -10,6 +10,7 @@ import { canonicalKeyId, getKeybindings, type KeybindingsManager } from "../keyb
 import { extractPrintableText, matchesKey, parseKey } from "../keys";
 import { KillRing } from "../kill-ring";
 import type { MouseRoutable, SgrMouseEvent } from "../mouse";
+import type { EditorInputShadow, EditorShadowState } from "../native-input";
 import type { SymbolTheme } from "../symbols";
 import { type Component, CURSOR_MARKER, type Focusable } from "../tui";
 import {
@@ -437,6 +438,8 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	};
 	#widthEpochText = "";
 	#widthEpochRevision = 0;
+	#inputShadow: EditorInputShadow | undefined;
+	#inputShadowGeneration = 0;
 
 	/** Focusable interface - set by TUI when focus changes */
 	focused: boolean = false;
@@ -538,6 +541,8 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	onSubmit?: (text: string) => void | Promise<void>;
 	onAltEnter?: (text: string) => void;
 	onChange?: (text: string) => void;
+	/** Optional optimistic local echo for a strictly eligible plain-printable input. */
+	onNativeHudInput?: (data: string) => void;
 	/** Called for a "marker-sized" paste — the point where the editor would otherwise collapse it
 	 *  into a `[Paste #N]` token (> 10 lines or > 1000 characters). Return `true` to intercept:
 	 *  the editor inserts nothing and records no undo state, leaving insertion to the host (e.g. a
@@ -563,6 +568,67 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	constructor(theme: EditorTheme) {
 		this.#theme = theme;
 		this.borderColor = theme.borderColor;
+	}
+
+	setNativeInputShadow(shadow: EditorInputShadow | undefined): void {
+		this.#inputShadow = shadow;
+		if (!shadow) return;
+		const generation = ++this.#inputShadowGeneration;
+		if (!shadow.reset(this.#editorShadowState(), generation)) {
+			this.#inputShadow = undefined;
+		}
+	}
+
+	#editorShadowState(): EditorShadowState {
+		return {
+			text: this.getText(),
+			cursorLine: this.#state.cursorLine,
+			cursorCol: this.#state.cursorCol,
+		};
+	}
+
+	#isPlainPrintableInput(data: string): boolean {
+		if (data.length === 0) return false;
+		for (let index = 0; index < data.length; index++) {
+			const code = data.charCodeAt(index);
+			if (code < 0x20 || code === 0x7f) return false;
+		}
+		return true;
+	}
+
+	#tryNativeHudInput(data: string, before: EditorShadowState): void {
+		const echo = this.onNativeHudInput;
+		if (
+			!echo ||
+			!this.focused ||
+			!this.#useTerminalCursor ||
+			this.#autocompleteState !== null ||
+			!this.#isPlainPrintableInput(data) ||
+			before.cursorLine !== 0 ||
+			before.text.includes("\n") ||
+			before.cursorCol !== before.text.length
+		) {
+			return;
+		}
+		try {
+			echo(data);
+		} catch (err) {
+			logger.warn("native HUD input echo failed; disabling fast path", { err });
+			this.onNativeHudInput = undefined;
+		}
+	}
+
+	#observeInputShadow(data: string, before: EditorShadowState): void {
+		const shadow = this.#inputShadow;
+		if (!shadow) return;
+		const after = this.#editorShadowState();
+		const generation = ++this.#inputShadowGeneration;
+		const matched = this.#isPlainPrintableInput(data)
+			? shadow.applyPrintable(data, before, after, generation)
+			: shadow.reset(after, generation);
+		if (matched) return;
+		logger.warn("native editor shadow mismatch; disabling shadow", { generation });
+		this.#inputShadow = undefined;
 	}
 
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
@@ -1298,7 +1364,11 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		// so a fragmented paste stream can never grow the call stack.
 		let next: string | undefined = data;
 		while (next !== undefined && next.length > 0) {
-			next = this.#handleInputChunk(next);
+			const chunk = next;
+			const before = this.#editorShadowState();
+			this.#tryNativeHudInput(chunk, before);
+			next = this.#handleInputChunk(chunk);
+			this.#observeInputShadow(chunk, before);
 		}
 	}
 

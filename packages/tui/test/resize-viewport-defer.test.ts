@@ -209,6 +209,59 @@ describe("non-multiplexer resize viewport fast path", () => {
 		return { tui, blocks, scheduler };
 	}
 
+	it("paints a stable normal-screen tail without mutating the authoritative frame", async () => {
+		await withEnvPatch(NO_MULTIPLEXER_ENV, async () => {
+			const term = new VirtualTerminal(40, 10, 1000);
+			const { tui, blocks, scheduler } = makeTui(term);
+			try {
+				tui.start();
+				await scheduler.flushImmediates(term);
+
+				const baselineFull = tui.fullRedraws;
+				const baselineViewportPaints = tui.resizeViewportPaints;
+				const writes = captureWrites(term);
+				for (const block of blocks) block.renderCount = 0;
+
+				expect(tui.paintViewportTail()).toBe(true);
+				await term.flush();
+
+				// The snapshot walks only the provider's tail and leaves both
+				// authoritative counters and native scrollback untouched.
+				expect(tui.fullRedraws).toBe(baselineFull);
+				expect(tui.resizeViewportPaints).toBe(baselineViewportPaints);
+				expect(eraseScrollbackCount(writes)).toBe(0);
+				expect(blocks.slice(0, 7).every(block => block.renderCount === 0)).toBe(true);
+				expect(visible(term)).toEqual([
+					"b10-x",
+					"b10-y",
+					"b11-x",
+					"b11-y",
+					"b12-x",
+					"b12-y",
+					"b13-x",
+					"b13-y",
+					"b14-x",
+					"b14-y",
+				]);
+
+				// A subsequent authoritative request must still replay every block and
+				// replace the old terminal history exactly once.
+				tui.requestRender(true, { clearScrollback: true });
+				await scheduler.flushImmediates(term);
+				expect(tui.fullRedraws).toBe(baselineFull + 1);
+				expect(eraseScrollbackCount(writes)).toBe(1);
+				expect(blocks.every(block => block.renderCount > 0)).toBe(true);
+				const buffer = term.getScrollBuffer().map(line => line.trimEnd());
+				for (let i = 0; i < blocks.length; i++) {
+					expect(buffer.filter(line => line === `b${i}-x`).length).toBe(1);
+					expect(buffer.filter(line => line === `b${i}-y`).length).toBe(1);
+				}
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	it("paints only bounded viewport context during a drag", async () => {
 		await withEnvPatch(NO_MULTIPLEXER_ENV, async () => {
 			const term = new VirtualTerminal(40, 10, 1000);

@@ -8,6 +8,7 @@ import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { Editor } from "@oh-my-pi/pi-tui/components/editor";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui/keybindings";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
+import type { EditorInputShadow, EditorShadowState } from "@oh-my-pi/pi-tui/native-input";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { defaultEditorTheme } from "./test-themes";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -3096,5 +3097,95 @@ describe("Editor component", () => {
 			editor.setVolatileText("single line");
 			expect(editor.getText()).toBe("single line");
 		});
+	});
+});
+
+type ShadowReset = {
+	state: EditorShadowState;
+	generation: number;
+};
+
+type PrintableShadowMutation = {
+	input: string;
+	before: EditorShadowState;
+	after: EditorShadowState;
+	generation: number;
+};
+
+class RecordingEditorInputShadow implements EditorInputShadow {
+	readonly resets: ShadowReset[] = [];
+	readonly printableMutations: PrintableShadowMutation[] = [];
+
+	constructor(private readonly acceptReset: (state: EditorShadowState, generation: number) => boolean = () => true) {}
+
+	reset(state: EditorShadowState, generation: number): boolean {
+		this.resets.push({ state: { ...state }, generation });
+		return this.acceptReset(state, generation);
+	}
+
+	applyPrintable(input: string, before: EditorShadowState, after: EditorShadowState, generation: number): boolean {
+		this.printableMutations.push({ input, before: { ...before }, after: { ...after }, generation });
+		return true;
+	}
+}
+
+describe("Editor native input shadow", () => {
+	it("keeps every printable keystroke's UTF-16 before and after state in generation order", () => {
+		const editor = new Editor(defaultEditorTheme);
+		const shadow = new RecordingEditorInputShadow();
+		editor.setNativeInputShadow(shadow);
+
+		for (const input of ["a", "😀", "b"]) editor.handleInput(input);
+
+		expect(editor.getText()).toBe("a😀b");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 4 });
+		expect(shadow.resets).toEqual([{ state: { text: "", cursorLine: 0, cursorCol: 0 }, generation: 1 }]);
+		expect(shadow.printableMutations).toEqual([
+			{
+				input: "a",
+				before: { text: "", cursorLine: 0, cursorCol: 0 },
+				after: { text: "a", cursorLine: 0, cursorCol: 1 },
+				generation: 2,
+			},
+			{
+				input: "😀",
+				before: { text: "a", cursorLine: 0, cursorCol: 1 },
+				after: { text: "a😀", cursorLine: 0, cursorCol: 3 },
+				generation: 3,
+			},
+			{
+				input: "b",
+				before: { text: "a😀", cursorLine: 0, cursorCol: 3 },
+				after: { text: "a😀b", cursorLine: 0, cursorCol: 4 },
+				generation: 4,
+			},
+		]);
+	});
+
+	it("keeps pasted text and later complex edits on the JavaScript state when the native shadow exits", () => {
+		const editor = new Editor(defaultEditorTheme);
+		const shadow = new RecordingEditorInputShadow((_state, generation) => generation !== 4);
+		editor.setNativeInputShadow(shadow);
+
+		editor.handleInput("ab");
+		editor.handleInput("\x1b[200~XY\x1b[201~");
+		editor.handleInput("\x1b[D");
+		editor.handleInput("\x7f");
+
+		expect(editor.getText()).toBe("abY");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
+		expect(shadow.printableMutations).toEqual([
+			{
+				input: "ab",
+				before: { text: "", cursorLine: 0, cursorCol: 0 },
+				after: { text: "ab", cursorLine: 0, cursorCol: 2 },
+				generation: 2,
+			},
+		]);
+		expect(shadow.resets).toEqual([
+			{ state: { text: "", cursorLine: 0, cursorCol: 0 }, generation: 1 },
+			{ state: { text: "abXY", cursorLine: 0, cursorCol: 4 }, generation: 3 },
+			{ state: { text: "abXY", cursorLine: 0, cursorCol: 3 }, generation: 4 },
+		]);
 	});
 });
