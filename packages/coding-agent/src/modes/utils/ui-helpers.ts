@@ -830,7 +830,7 @@ export class UiHelpers {
 			}
 			this.ctx.pendingTools.clear();
 		}
-		this.ctx.ui.requestRender();
+		if (!options.deferRender) this.ctx.ui.requestRender();
 	}
 
 	async renderInitialMessages(options: RenderInitialMessagesOptions = {}): Promise<void> {
@@ -856,25 +856,19 @@ export class UiHelpers {
 		// (focus attach/unfocus while a tool executes) keep dangling toolCalls so
 		// the in-flight call re-renders as pending instead of vanishing;
 		// renderSessionContext then keeps it in `pendingTools` for live routing.
-		let terminalHistoryCleared = false;
-		const renderChunk = options.clearTerminalHistory
-			? () => {
-					this.ctx.ui.requestRender(true, { clearScrollback: !terminalHistoryCleared });
-					terminalHistoryCleared = true;
-				}
-			: undefined;
 		let context = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: settings.get("display.collapseCompacted"),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
-		const renderOptions = {
+		const renderOptions: RenderSessionContextOptions = {
 			updateFooter: true,
 			// A dirty replay may restart from a newer context. Populate history
 			// once from the stable context below instead of duplicating it on
 			// every attempt.
 			populateHistory: false,
 		};
+		if (options.clearTerminalHistory) renderOptions.deferRender = true;
 		this.ctx.initialChatRendered = false;
 		try {
 			while (true) {
@@ -882,8 +876,6 @@ export class UiHelpers {
 					// Live events mutate the same component maps; keep their replay atomic so
 					// a delta cannot land halfway through rebuilding its pending tool block.
 					this.ctx.renderSessionContext(context, renderOptions);
-				} else if (renderChunk) {
-					await this.ctx.renderSessionContextIncrementally(context, renderOptions, renderChunk);
 				} else {
 					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
 				}
@@ -898,7 +890,6 @@ export class UiHelpers {
 				this.ctx.resetTranscript();
 				this.ctx.pendingBashComponents = [];
 				this.ctx.pendingPythonComponents = [];
-				terminalHistoryCleared = false;
 				context = this.ctx.viewSession.buildTranscriptSessionContext({
 					collapseCompactedHistory: settings.get("display.collapseCompacted"),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
@@ -929,13 +920,18 @@ export class UiHelpers {
 				compactionCount === 1 ? tSettingsUi("1 time") : tSettingsUi("{compactionCount} times", { compactionCount });
 			this.ctx.showStatus(tSettingsUi("Session compacted {times}", { times }));
 		}
-		if (options.clearTerminalHistory) {
-			this.ctx.ui.requestRender(true, { clearScrollback: !terminalHistoryCleared });
-		}
 		if (preservedChatChildren && preservedChatChildren.length > 0) {
 			for (const child of preservedChatChildren) {
 				this.ctx.chatContainer.addChild(child);
 			}
+		}
+		if (options.clearTerminalHistory) {
+			// Show the final viewport before the authoritative history replay. This
+			// tail-only snapshot never lays out off-screen transcript blocks and the
+			// forced paint below replaces native scrollback in one synchronized frame.
+			this.ctx.ui.paintViewportTail();
+			this.ctx.ui.requestRender(true, { clearScrollback: true });
+		} else if (preservedChatChildren && preservedChatChildren.length > 0) {
 			this.ctx.ui.requestRender();
 		}
 		this.ctx.initialChatRendered = true;

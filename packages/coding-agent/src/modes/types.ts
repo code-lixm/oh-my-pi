@@ -112,6 +112,8 @@ export interface RenderSessionContextOptions {
 	updateFooter?: boolean;
 	populateHistory?: boolean;
 	reuseSettledComponents?: boolean;
+	/** Build the component tree without queuing a paint; the caller owns the final render. */
+	deferRender?: boolean;
 	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
 	preservedLiveToolCallIds?: ReadonlySet<string>;
 }

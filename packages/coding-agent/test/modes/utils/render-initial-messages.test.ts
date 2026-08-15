@@ -89,7 +89,7 @@ function makeCtx(): {
 		},
 		renderSessionContextIncrementally: renderSessionContextSpy,
 		showStatus: vi.fn(),
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
 		resetTranscript: () => ctx.chatContainer.clear(),
 	} as unknown as InteractiveModeContext;
 
@@ -159,7 +159,7 @@ function makeRenderCtx(
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn(), imageBudget: undefined },
+		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
 		resetTranscript: () => chatContainer.clear(),
 		present: (content: Component | readonly Component[]) => {
 			const components = Array.isArray(content) ? content : [content];
@@ -242,21 +242,64 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
-	it("requests a scrollback-clearing repaint when clearTerminalHistory is set", async () => {
+	it("defers intermediate paints, then snapshots the final tail before one clearing replay", async () => {
 		await Settings.init({ inMemory: true });
-		const { ctx } = makeCtx();
-		await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
-		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+		const { ctx, renderSessionContextSpy } = makeCtx();
+		let releaseRebuild!: () => void;
+		renderSessionContextSpy.mockImplementation(
+			() =>
+				new Promise<void>(resolve => {
+					releaseRebuild = resolve;
+				}),
+		);
+		const renderEvents: string[] = [];
+		const paintViewportTail = ctx.ui.paintViewportTail as Mock<() => boolean>;
+		const requestRender = ctx.ui.requestRender as Mock<
+			(force?: boolean, options?: { clearScrollback?: boolean }) => void
+		>;
+		paintViewportTail.mockImplementation(() => {
+			renderEvents.push("tail");
+			return true;
+		});
+		requestRender.mockImplementation(() => {
+			renderEvents.push("authoritative");
+		});
+
+		const restore = new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
+
+		expect(renderSessionContextSpy).toHaveBeenCalledTimes(1);
+		expect(renderSessionContextSpy).toHaveBeenCalledWith(expect.anything(), {
+			updateFooter: true,
+			populateHistory: false,
+			deferRender: true,
+		});
+		expect(paintViewportTail).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
+
+		releaseRebuild();
+		await restore;
+
+		expect(paintViewportTail).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+		expect(renderEvents).toEqual(["tail", "authoritative"]);
 	});
 
-	it("never clears scrollback when clearTerminalHistory is unset", async () => {
+	it("retains the ordinary incremental repaint without a tail snapshot or scrollback clear", async () => {
 		await Settings.init({ inMemory: true });
-		const { ctx } = makeCtx();
+		const { ctx } = makeRenderCtx(transcriptWith([{ role: "user", content: "ordinary transcript", timestamp: 1 }]));
+
 		await new UiHelpers(ctx).renderInitialMessages();
-		const clearedCall = (ctx.ui.requestRender as Mock<(...a: unknown[]) => void>).mock.calls.find(
-			([force, opts]) => force === true && (opts as { clearScrollback?: boolean } | undefined)?.clearScrollback,
-		);
-		expect(clearedCall).toBeUndefined();
+
+		const paintViewportTail = ctx.ui.paintViewportTail as Mock<() => boolean>;
+		const requestRender = ctx.ui.requestRender as Mock<
+			(force?: boolean, options?: { clearScrollback?: boolean }) => void
+		>;
+		expect(paintViewportTail).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		const [force, options] = requestRender.mock.calls[0] ?? [];
+		expect(force).not.toBe(true);
+		expect((options as { clearScrollback?: boolean } | undefined)?.clearScrollback).not.toBe(true);
 	});
 });
 

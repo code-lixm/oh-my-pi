@@ -116,7 +116,7 @@ function createHarness(): Harness {
 		pendingPythonComponents: [],
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
 		resetTranscript: () => ctx.chatContainer.clear(),
 		isBackgrounded: false,
 		initialChatRendered: false,
