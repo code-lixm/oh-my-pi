@@ -3,12 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- Added a state-isolated viewport-tail paint API that renders only visible rows through `ViewportTailProvider` without advancing native-scrollback or diff bookkeeping, allowing session replacement callers to show the latest viewport before an authoritative history replay.
 
 - Added a three-rule Markdown table layout with top, header-divider, and bottom rules but no outer or column borders.
 - Added render-time mouse hit routing for editors, Markdown links, images, nested containers, boxes, and overlays without changing rendered terminal output.
 - Added an `EditorBorderStyle` horizontal mode with full-width top and bottom rules, no side chrome, and click hit maps that preserve text-column alignment.
 
+- Added a process-owned terminal-output route with FIFO reliable controls and replaceable latest-frame writes, plus bounded flush/close barriers and direct-write fallback when native broker construction is unavailable.
+- Added non-authoritative native row-plan and editor-input shadows that continuously compare against JavaScript compositor/editor state and disable themselves on the first mismatch without changing rendered output or edit semantics.
+- Added a bounded native Unix stdin bridge with priority preservation for control bytes, time/event/byte-budgeted JavaScript draining, conservative multiplexer and unsupported-host fallback, immediate kill switches, and an opt-in-safe hardware-cursor HUD hook.
+
 ### Fixed
+- Fixed direct-terminal Native stdin becoming unresponsive after an earlier input batch when compiled Bun stranded a wake with its JavaScript loop idle; an event-driven native readiness promise now preserves Rust stdin ownership without polling, and input-triggered paints preempt animation backpressure while retaining the 30 fps cadence so typing and deletion remain responsive.
+- Fixed Native HUD echoes and compact differential frames without a newline remaining in Rust's line-buffered stdout, which left editor text or the hardware cursor visually stale until a later full paint.
+
 - Fixed event-loop watchdog reports losing render attribution by marking the complete synchronous TUI render and terminal-paint cycle as `ui.render`, including exception-safe phase cleanup.
 
 - Fixed framed and plain Markdown code rows bypassing the surrounding component gutter, which made assistant fenced blocks start at column zero instead of aligning with prose and could punch unpainted holes through styled message surfaces.

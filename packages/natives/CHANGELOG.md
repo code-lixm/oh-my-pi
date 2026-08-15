@@ -5,6 +5,15 @@
 ### Added
 
 - Added the CodeGraph native extraction kernel to the existing `pi_natives` addon, including its ABI/grammar introspection, 20 language walkers, and C function-pointer scan helpers, with upstream MIT attribution and exact vendored grammar assets; also exposed the side-effect-free `@oh-my-pi/pi-natives/loader` entry so optional accelerators can catch addon-load failures and fall back safely.
+
+- Added the bounded cross-thread `TerminalOutputBroker` N-API surface with FIFO reliable writes, ordered replaceable latest frames, flush/close barriers, worker-failure state, and runtime statistics.
+- Added deterministic terminal row-plan and UTF-16 editor-shadow N-API helpers, plus a bounded Unix terminal-input reader with coalesced wakeups, event-driven wait promises, control-byte backpressure, overflow/worker telemetry, orderly stop/drain, and raw-byte delivery to the existing JavaScript parser.
+
+### Fixed
+
+- Fixed `NativeInput` batches remaining pending when compiled Bun stranded a threadsafe-function wake after JavaScript stdin handoff; consumers can now await the native queue's event-driven readiness signal instead of relying solely on TSFN delivery.
+- Fixed `TerminalOutputBroker` delaying newline-free reliable writes and latest frames in Rust's terminal line buffer; the worker now physically flushes each selected output before publishing completion.
+
 ## [17.3.0] - 2026-08-13
 
 ### Fixed
