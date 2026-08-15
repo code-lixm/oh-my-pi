@@ -624,3 +624,206 @@ describe("CustomEditor space-hold push-to-talk", () => {
 		expect(events).toEqual([]);
 	});
 });
+
+const NATIVE_HUD_ENV_KEYS = [
+	"PI_TUI_NATIVE_HUD",
+	"PI_TUI_NATIVE_EDITOR_SHADOW",
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"HERDR_ENV",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"CMUX_REMOTE_TRANSPORT",
+	"TERM",
+] as const;
+
+const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+
+function withDirectNativeHudEnvironment<T>(run: () => T): T {
+	const saved: Record<(typeof NATIVE_HUD_ENV_KEYS)[number], string | undefined> = {
+		PI_TUI_NATIVE_HUD: Bun.env.PI_TUI_NATIVE_HUD,
+		PI_TUI_NATIVE_EDITOR_SHADOW: Bun.env.PI_TUI_NATIVE_EDITOR_SHADOW,
+		TMUX: Bun.env.TMUX,
+		STY: Bun.env.STY,
+		ZELLIJ: Bun.env.ZELLIJ,
+		HERDR_ENV: Bun.env.HERDR_ENV,
+		CMUX_WORKSPACE_ID: Bun.env.CMUX_WORKSPACE_ID,
+		CMUX_SURFACE_ID: Bun.env.CMUX_SURFACE_ID,
+		CMUX_REMOTE_TRANSPORT: Bun.env.CMUX_REMOTE_TRANSPORT,
+		TERM: Bun.env.TERM,
+	};
+	for (const key of NATIVE_HUD_ENV_KEYS) {
+		delete Bun.env[key];
+	}
+	const needsSupportedPlatform = process.platform === "win32";
+	try {
+		if (needsSupportedPlatform) Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
+		return run();
+	} finally {
+		if (needsSupportedPlatform) {
+			if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+			else Reflect.deleteProperty(process, "platform");
+		}
+		for (const key of NATIVE_HUD_ENV_KEYS) {
+			const value = saved[key];
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+	}
+}
+
+class NativeHudTerminal extends VirtualTerminal {
+	nativeInputActive = true;
+	readonly nativeHudWrites: string[] = [];
+
+	writeNativeHud(data: string): void {
+		this.nativeHudWrites.push(data);
+	}
+}
+
+function createNativeHudEditor(columns = 20): { editor: CustomEditor; terminal: NativeHudTerminal } {
+	const terminal = new NativeHudTerminal(columns, 6);
+	const tui = new TUI(terminal, true);
+	const editor = new CustomEditor(tui, getEditorTheme(), {});
+	editor.focused = true;
+	editor.setUseTerminalCursor(true);
+	return { editor, terminal };
+}
+
+describe("CustomEditor native HUD eligibility", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("writes one optimistic HUD byte only while native input owns a single-line hardware-cursor draft", () => {
+		withDirectNativeHudEnvironment(() => {
+			const { editor, terminal } = createNativeHudEditor();
+			editor.setText("draft");
+
+			editor.handleInput("!");
+
+			expect(editor.getText()).toBe("draft!");
+			expect(terminal.nativeHudWrites).toEqual(["!"]);
+		});
+	});
+
+	const ineligibleHudCases: Array<{
+		name: string;
+		text: string;
+		input: string;
+		expectedText: string;
+		columns?: number;
+		configure?: (editor: CustomEditor, terminal: NativeHudTerminal) => void;
+	}> = [
+		{
+			name: "when native input is inactive",
+			text: "draft",
+			input: "!",
+			expectedText: "draft!",
+			configure: (_editor, terminal) => {
+				terminal.nativeInputActive = false;
+			},
+		},
+		{
+			name: "without the hardware cursor",
+			text: "draft",
+			input: "!",
+			expectedText: "draft!",
+			configure: editor => {
+				editor.setUseTerminalCursor(false);
+			},
+		},
+		{
+			name: "for a multi-line draft",
+			text: "draft\nsecond line",
+			input: "!",
+			expectedText: "draft\nsecond line!",
+		},
+		{
+			name: "for a bracketed paste control sequence",
+			text: "draft",
+			input: "\x1b[200~paste\x1b[201~",
+			expectedText: "draftpaste",
+		},
+		{
+			name: "when the next printable character reaches the terminal width",
+			text: "draft",
+			input: "!",
+			expectedText: "draft!",
+			columns: 6,
+		},
+		{
+			name: "when the cursor is not at the single-line draft tail",
+			text: "draft",
+			input: "!",
+			expectedText: "!draft",
+			configure: editor => {
+				editor.moveToLineStart();
+			},
+		},
+		{
+			name: "for an image-placeholder draft",
+			text: "review [Image #1]",
+			input: "!",
+			expectedText: "review [Image #1]!",
+		},
+		{
+			name: "for a paste-placeholder draft",
+			text: "[Paste #1, +30 lines]",
+			input: "!",
+			expectedText: "[Paste #1, +30 lines]!",
+		},
+		{
+			name: "for a one-line queue shorthand draft",
+			text: "->draft",
+			input: "!",
+			expectedText: "->draft!",
+		},
+		{
+			name: "for an input that completes a magic keyword",
+			text: "",
+			input: "orchestrate",
+			expectedText: "orchestrate",
+		},
+	];
+
+	for (const { name, text, input, expectedText, columns, configure } of ineligibleHudCases) {
+		it(`does not visually echo ${name} before JavaScript applies it`, () => {
+			withDirectNativeHudEnvironment(() => {
+				const { editor, terminal } = createNativeHudEditor(columns);
+				editor.setText(text);
+				configure?.(editor, terminal);
+
+				editor.handleInput(input);
+
+				expect(editor.getText()).toBe(expectedText);
+				expect(terminal.nativeHudWrites).toEqual([]);
+			});
+		});
+	}
+
+	it("does not visually echo a slash that opens autocomplete before JavaScript owns the input", async () => {
+		const { editor, terminal, autocompleteUpdated } = withDirectNativeHudEnvironment(() => {
+			const { editor, terminal } = createNativeHudEditor();
+			const { promise: autocompleteUpdated, resolve: resolveAutocompleteUpdated } = Promise.withResolvers<void>();
+			editor.setAutocompleteProvider({
+				async getSuggestions() {
+					return { items: [{ label: "/help", value: "/help" }], prefix: "/" };
+				},
+				applyCompletion(lines, cursorLine, cursorCol) {
+					return { lines, cursorLine, cursorCol };
+				},
+			});
+			editor.onAutocompleteUpdate = resolveAutocompleteUpdated;
+			editor.handleInput("/");
+			return { editor, terminal, autocompleteUpdated };
+		});
+
+		await autocompleteUpdated;
+
+		expect(editor.getText()).toBe("/");
+		expect(editor.isShowingAutocomplete()).toBe(true);
+		expect(terminal.nativeHudWrites).toEqual([]);
+	});
+});

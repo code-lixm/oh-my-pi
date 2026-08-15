@@ -6,7 +6,7 @@ import * as path from "node:path";
 
 import { type Api, type AssistantMessage, completeSimple, type Model } from "@oh-my-pi/pi-ai";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
-import { isConPTYHosted } from "@oh-my-pi/pi-tui";
+import { isConPTYHosted, writeTerminalControl } from "@oh-my-pi/pi-tui";
 import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 
@@ -442,7 +442,7 @@ export function setTerminalTitle(title: string): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
 	if (next === lastTerminalTitle) return;
-	if (!setWindowsConsoleTitle(next)) process.stdout.write(`\x1b]0;${next}\x07`);
+	if (!setWindowsConsoleTitle(next)) writeTerminalControl(`\x1b]0;${next}\x07`);
 	lastTerminalTitle = next;
 }
 
@@ -587,7 +587,7 @@ export function disposeTerminalTitleState(): void {
  */
 export function pushTerminalTitle(): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
-	process.stdout.write("\x1b[22;2t");
+	writeTerminalControl("\x1b[22;2t");
 }
 
 /**
@@ -595,5 +595,5 @@ export function pushTerminalTitle(): void {
  */
 export function popTerminalTitle(): void {
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
-	process.stdout.write("\x1b[23;2t");
+	writeTerminalControl("\x1b[23;2t");
 }

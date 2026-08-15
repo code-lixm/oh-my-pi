@@ -5,12 +5,15 @@ import {
 	canonicalKeyId,
 	Editor,
 	type EditorTheme,
+	isInsideTerminalMultiplexer,
 	type KeyId,
 	parseKey,
 	parseKittySequence,
 	TUI,
+	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
+import { createNativeEditorInputShadow } from "@oh-my-pi/pi-tui/native-input";
 import type { AppKeybinding } from "../../config/keybindings";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
@@ -388,6 +391,7 @@ export class CustomEditor extends Editor {
 	/** Per-image source links (file:// targets) parallel to {@link pendingImages};
 	 *  `undefined` entries are images without a backing reference yet. */
 	pendingImageLinks: (string | undefined)[] = [];
+	#nativeAccelerationConfigured = false;
 
 	/**
 	 * The host {@link TUI}, captured when a plugin constructs this editor through
@@ -413,7 +417,48 @@ export class CustomEditor extends Editor {
 	 */
 	constructor(...args: readonly unknown[]) {
 		super(pickEditorTheme(args));
-		if (args[0] instanceof TUI) this.tui = args[0];
+		if (args[0] instanceof TUI) this.attachTui(args[0]);
+		if (Bun.env.PI_TUI_NATIVE_EDITOR_SHADOW !== "0" && Bun.env.PI_TUI_NATIVE_EDITOR_SHADOW !== "false") {
+			this.setNativeInputShadow(createNativeEditorInputShadow());
+		}
+	}
+
+	attachTui(tui: TUI): void {
+		this.tui = tui;
+		if (this.#nativeAccelerationConfigured) return;
+		this.#nativeAccelerationConfigured = true;
+		this.onNativeHudInput = data => {
+			const terminal = this.tui?.terminal;
+			const text = this.getText();
+			const cursor = this.getCursor();
+			const nextText = `${text}${data}`;
+			const disabled = Bun.env.PI_TUI_NATIVE_HUD === "0" || Bun.env.PI_TUI_NATIVE_HUD === "false";
+			if (
+				disabled ||
+				terminal?.nativeInputActive !== true ||
+				!terminal.writeNativeHud ||
+				process.platform === "win32" ||
+				isInsideTerminalMultiplexer() ||
+				this.#pasteInFlight > 0 ||
+				this.#pendingInput.length > 0 ||
+				this.pendingImages.length > 0 ||
+				text.includes("[Image #") ||
+				text.includes("[Paste #") ||
+				cursor.line !== 0 ||
+				cursor.col !== text.length ||
+				nextText.includes("/") ||
+				nextText.includes("@") ||
+				nextText.includes("#") ||
+				nextText.includes(":") ||
+				this.isShowingAutocomplete() ||
+				hasMagicKeyword(nextText) ||
+				parseQueueShorthand(nextText) !== undefined ||
+				visibleWidth(nextText) >= terminal.columns
+			) {
+				return;
+			}
+			terminal.writeNativeHud(data);
+		};
 	}
 
 	/** Clear the composer draft: optionally commit `historyText` to history, then
