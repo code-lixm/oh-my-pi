@@ -588,6 +588,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Eval code": "求值代码",
 	"Extension sendMessage failed: {error}": "扩展 sendMessage 失败：{error}",
 	"Extension sendUserMessage failed: {error}": "扩展 sendUserMessage 失败：{error}",
+	"External Thinking": "外部思考",
+	"Failed to apply external thinking: {error}": "应用外部思考设置失败：{error}",
 	"Failed to apply Mermaid rendering setting: {error}": "应用 Mermaid 渲染设置失败：{error}",
 	"Failed to apply personality: {error}": "应用回复风格失败：{error}",
 	"Failed to clear auth: {error}": "清除认证失败：{error}",
@@ -2138,6 +2140,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Output Column Cap": "输出列数上限",
 	"Output Limits": "输出限制",
 	Overlayfs: "Overlayfs（覆盖文件系统）",
+	"Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning":
+		"私有草稿本，不向用户展示；会关闭支持范围内（GPT、Claude、Gemini）的推理能力",
 	"Penalty for introducing already-present tokens (-1 = provider default)":
 		"对引入已出现 token 的惩罚（-1 = 提供方默认值）",
 	"Penalty for repeated tokens (-1 = provider default)": "对重复 token 的惩罚（-1 = 提供方默认值）",

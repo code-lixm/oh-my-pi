@@ -1429,9 +1429,11 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 		ui: {
 			tab: "model",
-			group: "Thinking",
-			label: "External Thinking",
-			description: "Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning",
+			group: tSettingsUi("Thinking"),
+			label: tSettingsUi("External Thinking"),
+			description: tSettingsUi(
+				"Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning",
+			),
 		},
 	},
 

@@ -600,6 +600,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Eval code": "Eval code",
 	"Extension sendMessage failed: {error}": "Extension sendMessage failed: {error}",
 	"Extension sendUserMessage failed: {error}": "Extension sendUserMessage failed: {error}",
+	"External Thinking": "External Thinking",
+	"Failed to apply external thinking: {error}": "Failed to apply external thinking: {error}",
 	"Failed to apply Mermaid rendering setting: {error}": "Failed to apply Mermaid rendering setting: {error}",
 	"Failed to apply personality: {error}": "Failed to apply personality: {error}",
 	"Failed to clear auth: {error}": "Failed to clear auth: {error}",
@@ -2217,6 +2219,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Output Column Cap": "Output Column Cap",
 	"Output Limits": "Output Limits",
 	Overlayfs: "Overlayfs",
+	"Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning":
+		"Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning",
 	"Penalty for introducing already-present tokens (-1 = provider default)":
 		"Penalty for introducing already-present tokens (-1 = provider default)",
 	"Penalty for repeated tokens (-1 = provider default)": "Penalty for repeated tokens (-1 = provider default)",

@@ -669,7 +669,7 @@ export class SelectorController {
 				break;
 			case "externalThinking":
 				void this.ctx.session.setThinkToolEnabled(value as boolean).catch(err => {
-					this.ctx.showError(`Failed to apply external thinking: ${err}`);
+					this.ctx.showError(tSettingsUi("Failed to apply external thinking: {error}", { error: String(err) }));
 				});
 				break;
 
