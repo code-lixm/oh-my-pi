@@ -5,6 +5,7 @@ import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/inp
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
+import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { tSettingsUi } from "../src/i18n/settings-locale";
 
@@ -61,6 +62,9 @@ function createContext(): {
 		abort: Spy;
 		abortBash: Spy;
 		abortEval: Spy;
+		abortMainCompaction: Spy;
+		abortMainHandoff: Spy;
+		abortMainRetry: Spy;
 		abortHandoff: Spy;
 		addMessageToChat: Spy;
 		cancelAsyncJobs: Spy;
@@ -91,6 +95,9 @@ function createContext(): {
 	const abort = vi.fn();
 	const abortBash = vi.fn();
 	const abortEval = vi.fn();
+	const abortMainCompaction = vi.fn();
+	const abortMainHandoff = vi.fn();
+	const abortMainRetry = vi.fn();
 	const abortHandoff = vi.fn();
 	const addMessageToChat = vi.fn();
 	const cancelAsyncJobs = vi.fn();
@@ -141,6 +148,7 @@ function createContext(): {
 		ui: {
 			requestRender,
 			resetDisplay,
+			getFocused: () => editor,
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
 				return () => {};
@@ -156,6 +164,7 @@ function createContext(): {
 			isStreaming: false,
 			isCompacting: false,
 			isGeneratingHandoff: false,
+			isRetrying: false,
 			isBashRunning: false,
 			isEvalRunning: false,
 			runningAsyncJobCount: 0,
@@ -165,6 +174,9 @@ function createContext(): {
 			abort,
 			abortBash,
 			abortEval,
+			abortCompaction: abortMainCompaction,
+			abortHandoff: abortMainHandoff,
+			abortRetry: abortMainRetry,
 			cancelAsyncJobs,
 			clearQueue,
 			getQueuedMessages,
@@ -192,6 +204,7 @@ function createContext(): {
 		} as unknown as InteractiveModeContext["sessionManager"],
 		keybindings: {
 			getKeys: () => [],
+			matches: () => false,
 		} as unknown as InteractiveModeContext["keybindings"],
 		compactionQueuedMessages: [],
 		isBashMode: false,
@@ -234,6 +247,9 @@ function createContext(): {
 			abort,
 			abortBash,
 			abortEval,
+			abortMainCompaction,
+			abortMainHandoff,
+			abortMainRetry,
 			abortHandoff,
 			addMessageToChat,
 			cancelAsyncJobs,
@@ -279,6 +295,11 @@ function abortViewSession(ctx: InteractiveModeContext): AbortViewSession {
 
 type MutableSessionState = InteractiveModeContext["session"] & {
 	isStreaming: boolean;
+	isCompacting: boolean;
+	isGeneratingHandoff: boolean;
+	isRetrying: boolean;
+	isBashRunning: boolean;
+	isEvalRunning: boolean;
 	runningAsyncJobCount: number;
 };
 
@@ -318,7 +339,7 @@ afterEach(() => {
 });
 
 describe("InputController escape behavior", () => {
-	it("requires a second Esc to cancel a pending optimistic submission before aborting the session", async () => {
+	it("requires a confirmed second Esc to cancel a pending optimistic submission and abort the main session", async () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "hello" });
@@ -349,7 +370,8 @@ describe("InputController escape behavior", () => {
 		editor.onEscape?.();
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).not.toHaveBeenCalled();
-		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
@@ -416,19 +438,32 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("pauses an idle loop and cancels its pending submission", () => {
+	it("requires a confirmed second Esc to pause an idle loop, cancel its pending submission, and abort the main session", () => {
+		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const pauseLoop = vi.fn();
 		ctx.loopModeEnabled = true;
 		ctx.pauseLoop = pauseLoop;
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		spies.cancelPendingSubmission.mockReturnValue(true);
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(pauseLoop).not.toHaveBeenCalled();
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
 		expect(pauseLoop).toHaveBeenCalledTimes(1);
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
 	it("requires a second Esc to abort active handoff generation before default Esc handling", () => {
@@ -454,7 +489,7 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("requires a second Esc to cancel only running async jobs without interrupting main, bash, or eval work", () => {
+	it("uses confirmed Esc to stop an async-only session through the global abort", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		mutableSessionState(ctx).runningAsyncJobCount = 1;
@@ -465,23 +500,16 @@ describe("InputController escape behavior", () => {
 
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 		expect(spies.cancelAsyncJobs).not.toHaveBeenCalled();
-		expect(spies.requestRender).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
-		expect(spies.abortBash).not.toHaveBeenCalled();
-		expect(spies.abortEval).not.toHaveBeenCalled();
 
 		clock.advance(500);
 		editor.onEscape?.();
 
-		expect(spies.cancelAsyncJobs).toHaveBeenCalledTimes(1);
-		expect(spies.requestRender).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
-		expect(spies.abortBash).not.toHaveBeenCalled();
-		expect(spies.abortEval).not.toHaveBeenCalled();
-		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
-	it("cancels running async jobs before an overlapping main stream", () => {
+	it("stops an async job and its overlapping main stream through session abort after confirmation", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const session = mutableSessionState(ctx);
@@ -499,17 +527,16 @@ describe("InputController escape behavior", () => {
 		clock.advance(500);
 		editor.onEscape?.();
 
-		expect(spies.cancelAsyncJobs).toHaveBeenCalledTimes(1);
-		expect(spies.requestRender).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
-		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
-	it("requires a second Esc to abort bash before aborting an overlapping stream", () => {
+	it("stops bash and its overlapping main stream after confirmed Esc", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
-		(ctx.session as { isStreaming: boolean; isBashRunning: boolean }).isStreaming = true;
-		(ctx.session as { isStreaming: boolean; isBashRunning: boolean }).isBashRunning = true;
+		const session = mutableSessionState(ctx);
+		session.isStreaming = true;
+		session.isBashRunning = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -522,16 +549,16 @@ describe("InputController escape behavior", () => {
 		clock.advance(500);
 		editor.onEscape?.();
 
-		expect(spies.abortBash).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
-		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
-	it("requires a second Esc to abort python before aborting an overlapping stream", () => {
+	it("stops eval and its overlapping main stream after confirmed Esc", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
-		(ctx.session as { isStreaming: boolean; isEvalRunning: boolean }).isStreaming = true;
-		(ctx.session as { isStreaming: boolean; isEvalRunning: boolean }).isEvalRunning = true;
+		const session = mutableSessionState(ctx);
+		session.isStreaming = true;
+		session.isEvalRunning = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -544,9 +571,8 @@ describe("InputController escape behavior", () => {
 		clock.advance(500);
 		editor.onEscape?.();
 
-		expect(spies.abortEval).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
-		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 	it("requires a second Esc to pause loop mode and abort its active stream", () => {
 		const clock = installClock();
@@ -573,7 +599,7 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
-	it("keeps double-Esc owned by loop mode during idle compaction", () => {
+	it("requires a confirmed second Esc to stop loop mode, compaction, and the main session", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		const pauseLoop = vi.fn();
@@ -597,7 +623,8 @@ describe("InputController escape behavior", () => {
 
 		expect(pauseLoop).toHaveBeenCalledTimes(1);
 		expect(viewSession.abortCompaction).toHaveBeenCalledTimes(1);
-		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
@@ -692,6 +719,41 @@ describe("InputController escape behavior", () => {
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
 
+	it("does not count a Kitty Esc release as the confirming press", () => {
+		const clock = installClock();
+		const { ctx, editor, spies, inputListeners } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		setKittyProtocolActive(true);
+		try {
+			controller.setupKeyHandlers();
+			const dispatchInput = (data: string) => {
+				for (const listener of inputListeners) {
+					const result = listener(data);
+					if (result) return result;
+				}
+				return undefined;
+			};
+
+			expect(dispatchInput("\x1b[27u")).toBeUndefined();
+			editor.onEscape?.();
+			expectEscapeCancelPrompt(spies.showStatus, 1);
+			expect(spies.abort).not.toHaveBeenCalled();
+
+			expect(dispatchInput("\x1b[27;1:3u")).toBeUndefined();
+			expectEscapeCancelPrompt(spies.showStatus, 1);
+			expect(spies.abort).not.toHaveBeenCalled();
+
+			clock.advance(500);
+			expect(dispatchInput("\x1b[27u")).toEqual({ consume: true });
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+			expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		} finally {
+			setKittyProtocolActive(false);
+		}
+	});
+
 	it("carries the same main-task confirmation from optimistic loading into streaming", async () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
@@ -731,6 +793,27 @@ describe("InputController escape behavior", () => {
 
 		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("stops the main stream on the next Esc after leaving a focused subagent overlay", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		Object.defineProperty(ctx, "focusedAgentId", { value: undefined, configurable: true });
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
 	it("returns focused subagent view to main on Esc without aborting its active maintenance (#2819)", () => {
@@ -785,6 +868,54 @@ describe("InputController escape behavior", () => {
 		expect(viewSession.abortRetry).toHaveBeenCalledTimes(1);
 		expectEscapeCancelPrompt(spies.showStatus, 1);
 	});
+
+	it.each([
+		{ lifecycle: "compaction", state: "isCompacting" },
+		{ lifecycle: "handoff", state: "isGeneratingHandoff" },
+		{ lifecycle: "retry", state: "isRetrying" },
+	] as const)(
+		"requires a confirmed second Esc to cancel main-session $lifecycle and abort its turn despite a separate view session",
+		({ lifecycle, state }) => {
+			const clock = installClock();
+			const { ctx, editor, spies } = createContext();
+			const session = mutableSessionState(ctx);
+			const viewSession = abortViewSession(ctx);
+			session[state] = true;
+			const mainMaintenanceAborts = {
+				compaction: spies.abortMainCompaction,
+				handoff: spies.abortMainHandoff,
+				retry: spies.abortMainRetry,
+			};
+			const controller = new InputController(ctx);
+
+			controller.setupKeyHandlers();
+			editor.onEscape?.();
+
+			expectEscapeCancelPrompt(spies.showStatus, 1);
+			for (const abortMaintenance of Object.values(mainMaintenanceAborts)) {
+				expect(abortMaintenance).not.toHaveBeenCalled();
+			}
+			expect(viewSession.abortCompaction).not.toHaveBeenCalled();
+			expect(viewSession.abortHandoff).not.toHaveBeenCalled();
+			expect(viewSession.abortRetry).not.toHaveBeenCalled();
+			expect(spies.abort).not.toHaveBeenCalled();
+
+			clock.advance(500);
+			editor.onEscape?.();
+
+			expect(mainMaintenanceAborts[lifecycle]).toHaveBeenCalledTimes(1);
+			for (const [otherLifecycle, abortMaintenance] of Object.entries(mainMaintenanceAborts)) {
+				if (otherLifecycle !== lifecycle) expect(abortMaintenance).not.toHaveBeenCalled();
+			}
+			expect(viewSession.abortCompaction).not.toHaveBeenCalled();
+			expect(viewSession.abortHandoff).not.toHaveBeenCalled();
+			expect(viewSession.abortRetry).not.toHaveBeenCalled();
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+			expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+			expectEscapeCancelPrompt(spies.showStatus, 1);
+		},
+	);
+
 	it("re-prompts instead of canceling when the second Esc arrives after the 2s confirmation window", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
@@ -862,34 +993,26 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("does not let different cancellation targets share confirmation", () => {
+	it("keeps global cancellation armed when the active local surface changes", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
-		(ctx.session as { isBashRunning: boolean }).isBashRunning = true;
+		const session = mutableSessionState(ctx);
+		session.isBashRunning = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
 		expectEscapeCancelPrompt(spies.showStatus, 1);
-		expect(spies.abortBash).not.toHaveBeenCalled();
-		expect(spies.abortEval).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
 
-		(ctx.session as { isBashRunning: boolean }).isBashRunning = false;
-		(ctx.session as { isEvalRunning: boolean }).isEvalRunning = true;
+		session.isBashRunning = false;
+		session.isEvalRunning = true;
 		clock.advance(100);
 		editor.onEscape?.();
 
-		expect(spies.abortBash).not.toHaveBeenCalled();
-		expect(spies.abortEval).not.toHaveBeenCalled();
-		expectEscapeCancelPrompt(spies.showStatus, 2);
-
-		clock.advance(100);
-		editor.onEscape?.();
-
-		expect(spies.abortBash).not.toHaveBeenCalled();
-		expect(spies.abortEval).toHaveBeenCalledTimes(1);
-		expectEscapeCancelPrompt(spies.showStatus, 2);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
 	it("logs abort failures while treating maintenance Esc as handled after confirmation", () => {
@@ -1024,7 +1147,7 @@ describe("InputController escape behavior", () => {
 		expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
 	});
 
-	it("silences TTS before aborting an overlapping agent turn (#6118)", () => {
+	it("silences TTS on the first Esc without aborting an overlapping agent turn (#6118)", () => {
 		const clear = vi.spyOn(vocalizer, "clear").mockImplementation(() => {});
 		vi.spyOn(vocalizer, "isSpeaking").mockReturnValue(true);
 		const { ctx, editor, spies } = createContext();
@@ -1040,6 +1163,29 @@ describe("InputController escape behavior", () => {
 		expect(clear).toHaveBeenCalledTimes(1);
 		expect(pauseLoop).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("stops the overlapping main stream on the next Esc after silencing TTS", () => {
+		const clock = installClock();
+		const clear = vi.spyOn(vocalizer, "clear").mockImplementation(() => {});
+		const isSpeaking = vi.spyOn(vocalizer, "isSpeaking").mockReturnValue(true);
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		isSpeaking.mockReturnValue(false);
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
 	it("silences a still-audible vocalizer on Esc instead of opening the tree selector (#4521)", () => {
