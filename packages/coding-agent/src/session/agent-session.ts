@@ -3797,11 +3797,21 @@ export class AgentSession {
 				return;
 			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
-			if (!sessionStopWillContinue) {
-				await this.#refinementController?.drainScheduled();
-				await this.#refinementController?.onTurnEnd(this);
-			}
 			await emitAgentEndNotification(sessionStopWillContinue ? { willContinue: true } : undefined);
+			if (!sessionStopWillContinue && this.#refinementController) {
+				const refinementController = this.#refinementController;
+				// Refinement is optional turn-boundary maintenance. Keep explicit drains ordered
+				// before automatic review, but never hold terminal agent_end, prompt settlement,
+				// or queued-message recovery behind an unbounded side-model request.
+				void (async () => {
+					await refinementController.drainScheduled();
+					await refinementController.onTurnEnd(this);
+				})().catch(error => {
+					logger.warn("Turn-boundary refinement failed", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			}
 		}
 	};
 

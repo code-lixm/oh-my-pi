@@ -900,6 +900,87 @@ describe("AgentSession concurrent prompt guard", () => {
 		await session.waitForIdle();
 	});
 
+	it("settles terminal turns and queued steer before scheduled refinement drains", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ responses: [{ content: ["Queued response"] }] });
+		const callMessages: Message[][] = [];
+		const firstStreamStarted = Promise.withResolvers<void>();
+		const secondModelCall = Promise.withResolvers<void>();
+		let firstStream: AssistantMessageEventStream | undefined;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: (model, context, options) => {
+				callMessages.push([...context.messages]);
+				if (callMessages.length > 1) {
+					secondModelCall.resolve();
+					return mock.stream(model, context, options);
+				}
+
+				const stream = new AssistantMessageEventStream();
+				firstStream = stream;
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					firstStreamStarted.resolve();
+				});
+				return stream;
+			},
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "refinement.enabled": true });
+		const modelRegistry = sharedModelRegistry;
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+			memoryAgentDir: tempDir,
+		});
+		const controller = session.getRefinementController();
+		if (!controller) throw new Error("Expected refinement controller");
+
+		const refinementGate = Promise.withResolvers<void>();
+		const drainStarted = Promise.withResolvers<void>();
+		const drainScheduled = vi.spyOn(controller, "drainScheduled").mockImplementation(() => {
+			drainStarted.resolve();
+			return refinementGate.promise;
+		});
+		const onTurnEndCalled = Promise.withResolvers<void>();
+		const onTurnEnd = vi.spyOn(controller, "onTurnEnd").mockImplementation(() => {
+			onTurnEndCalled.resolve();
+			return Promise.resolve();
+		});
+		const terminalAgentEnd = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "agent_end" && event.isTerminal) terminalAgentEnd.resolve();
+		});
+		controller.scheduleRefinement({ instructions: "Capture the queued-steer regression." });
+
+		const firstPrompt = session.prompt("First message");
+		await firstStreamStarted.promise;
+		if (!firstStream) throw new Error("Expected first stream");
+		firstStream.push({ type: "done", reason: "stop", message: createAssistantMessage("First response") });
+		await drainStarted.promise;
+		await session.steer("Queued while finalizing");
+
+		await terminalAgentEnd.promise;
+		await firstPrompt;
+		await secondModelCall.promise;
+		await session.waitForIdle();
+
+		expect(drainScheduled).toHaveBeenCalled();
+		expect(callMessages).toHaveLength(2);
+		expect(session.isStreaming).toBe(false);
+		expect(onTurnEnd).not.toHaveBeenCalled();
+
+		refinementGate.resolve();
+		await onTurnEndCalled.promise;
+		expect(onTurnEnd).toHaveBeenCalled();
+		await session.dispose();
+		session = undefined as unknown as AgentSession;
+	});
+
 	it("queues idle ACP client-triggered custom messages instead of starting an ownerless turn", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
