@@ -16,7 +16,14 @@ import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
 import { createNativeEditorInputShadow } from "@oh-my-pi/pi-tui/native-input";
 import type { AppKeybinding } from "../../config/keybindings";
 import { isSettingsInitialized, settings } from "../../config/settings";
-import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
+import {
+	hasImageMarker,
+	imageReferenceHyperlink,
+	PLACEHOLDER_REGEX,
+	type ResolvedImageReferences,
+	renderPlaceholders,
+	resolveImageReferences,
+} from "../image-references";
 import { hasMagicKeyword, highlightMagicKeywords } from "../magic-keywords";
 import { isQueuedMessageList, parseQueueShorthand, QUEUE_LIST_MARKER_RE } from "../queue-input";
 import { fgOrPlain, theme } from "../theme/theme";
@@ -391,6 +398,10 @@ export class CustomEditor extends Editor {
 	/** Per-image source links (file:// targets) parallel to {@link pendingImages};
 	 *  `undefined` entries are images without a backing reference yet. */
 	pendingImageLinks: (string | undefined)[] = [];
+	/** The current backing array is marker-managed once OMP has inserted or restored
+	 * positional image markers for it. Array identity makes `clearDraft()` and external
+	 * image-only drafts start a fresh, unmarked generation without another flag reset. */
+	#markerManagedImages: ImageContent[] | undefined;
 	#nativeAccelerationConfigured = false;
 
 	/**
@@ -470,6 +481,7 @@ export class CustomEditor extends Editor {
 		this.imageLinks = undefined;
 		this.pendingImages = [];
 		this.pendingImageLinks = [];
+		this.#markerManagedImages = undefined;
 	}
 
 	/** Replace the composer draft with a restored historical prompt: sets the text and
@@ -477,10 +489,30 @@ export class CustomEditor extends Editor {
 	 *  resubmit instead of degrading to literal text (esc-esc branch, `/tree`). Source
 	 *  links are unknown for restored drafts, so every link slot is `undefined`. */
 	setDraft(text: string, images?: readonly ImageContent[]): void {
-		this.setText(text);
 		this.imageLinks = undefined;
 		this.pendingImages = images ? [...images] : [];
 		this.pendingImageLinks = images ? images.map(() => undefined) : [];
+		this.#markerManagedImages = hasImageMarker(text) ? this.pendingImages : undefined;
+		this.setText(text);
+	}
+
+	/** Mark the current attachment generation as owned by positional image markers. */
+	markPendingImagesAsMarkerManaged(): void {
+		this.#markerManagedImages = this.pendingImages;
+	}
+
+	/** Resolve the draft's visible image markers into the exact ordered attachments to
+	 * submit. Legacy image-only drafts remain valid until OMP has associated this array
+	 * with markers; once associated, deleting every marker intentionally selects no images. */
+	resolvePendingImageReferences(text: string): ResolvedImageReferences {
+		const containsMarker = hasImageMarker(text);
+		if (containsMarker) this.#markerManagedImages = this.pendingImages;
+		return resolveImageReferences(
+			text,
+			this.pendingImages,
+			this.pendingImageLinks,
+			containsMarker || this.#markerManagedImages === this.pendingImages,
+		);
 	}
 
 	/** Treat image/paste markers as indivisible: a stray backspace deletes the whole token

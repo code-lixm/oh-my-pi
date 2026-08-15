@@ -38,6 +38,11 @@ const ONE_PX_PNG = Buffer.from(
 	"base64",
 );
 
+const SECOND_ONE_PX_PNG = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+	"base64",
+);
+
 function createCtx() {
 	const editor = new CustomEditor(getEditorTheme());
 	const requestRender = vi.fn();
@@ -265,5 +270,59 @@ describe("InputController + empty bracketed paste end-to-end (issue #3601)", () 
 		expect(showStatus).not.toHaveBeenCalled();
 		expect(pendingImages.length).toBe(1);
 		expect(pendingImages[0]?.mimeType).toBe("image/png");
+	});
+
+	it("keeps near-simultaneous image inserts in call order when blob writes complete in reverse", async () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const firstData = ONE_PX_PNG.toBase64();
+		const secondData = SECOND_ONE_PX_PNG.toBase64();
+		const firstBlob = Promise.withResolvers<{ hash: string; path: string; displayPath: string }>();
+		const secondBlob = Promise.withResolvers<{ hash: string; path: string; displayPath: string }>();
+		const firstBlobStarted = Promise.withResolvers<void>();
+		const putBlob = vi.fn((data: Buffer) => {
+			if (data.toBase64() === firstData) {
+				firstBlobStarted.resolve();
+				return firstBlob.promise;
+			}
+			if (data.toBase64() === secondData) return secondBlob.promise;
+			throw new Error("unexpected image bytes");
+		});
+		const requestRender = vi.fn();
+		const showStatus = vi.fn();
+		const ctx = {
+			editor,
+			ui: { requestRender, getFocused: () => null } as unknown as InteractiveModeContext["ui"],
+			sessionManager: {
+				getCwd: () => process.cwd(),
+				putBlob,
+			} as unknown as InteractiveModeContext["sessionManager"],
+			showStatus,
+		} as unknown as InteractiveModeContext;
+		const images = [ONE_PX_PNG, SECOND_ONE_PX_PNG];
+		const controller = new InputController(ctx, {
+			readImage: async () => {
+				const image = images.shift();
+				return image ? { data: image, mimeType: "image/png" } : null;
+			},
+			readText: async () => "",
+		});
+
+		const firstInsert = controller.handleImagePaste();
+		const secondInsert = controller.handleImagePaste();
+		await firstBlobStarted.promise;
+		// The second write becomes ready first. A non-serialized insertion path would append it as Image #1.
+		secondBlob.resolve({ hash: "second", path: "/tmp/second.png", displayPath: "second://image" });
+		await Promise.resolve();
+		firstBlob.resolve({ hash: "first", path: "/tmp/first.png", displayPath: "first://image" });
+		await Promise.all([firstInsert, secondInsert]);
+
+		expect(showStatus).not.toHaveBeenCalled();
+		expect(editor.pendingImages).toEqual([
+			{ type: "image", data: firstData, mimeType: "image/png" },
+			{ type: "image", data: secondData, mimeType: "image/png" },
+		]);
+		expect(editor.pendingImageLinks).toEqual(["first://image", "second://image"]);
+		expect(editor.imageLinks).toEqual(["first://image", "second://image"]);
+		expect(editor.getText()).toMatch(/^\[Image #1(?:, \d+x\d+)?\] \[Image #2(?:, \d+x\d+)?\] $/);
 	});
 });

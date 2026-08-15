@@ -2,10 +2,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { CURSOR_MARKER, TUI } from "@oh-my-pi/pi-tui";
 import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
-import { $ } from "bun";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { StressRenderScheduler } from "../../../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
 import { getDefaultPasteImageKeys } from "../../../src/config/keybindings";
+import { resetSettingsForTest, Settings } from "../../../src/config/settings";
 import {
 	CustomEditor,
 	extractBracketedImagePastePaths,
@@ -17,7 +18,9 @@ import {
 	SPACE_HOLD_RELEASE_MS,
 	SPACE_REPEAT_MAX_GAP_MS,
 } from "../../../src/modes/components/custom-editor";
+import { InputController } from "../../../src/modes/controllers/input-controller";
 import { getEditorTheme, initTheme, theme } from "../../../src/modes/theme/theme";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 
 function makeEditor() {
 	const editor = new CustomEditor(getEditorTheme());
@@ -71,11 +74,23 @@ const editor = new CustomEditor({});
 editor.imageLinks = ${JSON.stringify(imageLinks)};
 process.stdout.write(editor.decorateText(${JSON.stringify(text)}));
 `;
-	const child = await $`bun -e ${script}`.quiet().nothrow();
-	const stdout = child.stdout.toString();
-	const stderr = child.stderr.toString();
-	if (child.exitCode !== 0) throw new Error(stderr || stdout || `decorate subprocess exited with ${child.exitCode}`);
-	return stdout;
+	const tempDir = TempDir.createSync("@pi-custom-editor-decoration-child-");
+	try {
+		const scriptPath = tempDir.join("decorate-child.ts");
+		const stdoutPath = tempDir.join("stdout.txt");
+		const stderrPath = tempDir.join("stderr.log");
+		await Promise.all([Bun.write(scriptPath, script), Bun.write(stdoutPath, ""), Bun.write(stderrPath, "")]);
+		const child = Bun.spawn(["bun", scriptPath], {
+			stdout: Bun.file(stdoutPath),
+			stderr: Bun.file(stderrPath),
+		});
+		const exitCode = await child.exited;
+		const [stdout, stderr] = await Promise.all([Bun.file(stdoutPath).text(), Bun.file(stderrPath).text()]);
+		if (exitCode !== 0) throw new Error(stderr || stdout || `decorate subprocess exited with ${exitCode}`);
+		return stdout;
+	} finally {
+		await tempDir.remove();
+	}
 }
 
 describe("CustomEditor placeholder decoration", () => {
@@ -113,6 +128,104 @@ describe("CustomEditor restored image drafts", () => {
 		expect(submitted).toEqual({
 			text: "Inspect [Image #1, 1x1]",
 			images: [image],
+		});
+	});
+});
+
+describe("CustomEditor image placeholder submission", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	beforeEach(async () => {
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true });
+	});
+
+	afterEach(() => {
+		resetSettingsForTest();
+	});
+
+	function setupImageSubmission(editor: CustomEditor) {
+		const startPendingSubmission = vi.fn(input => ({ ...input, cancelled: false, started: false }));
+		const onInputCallback = vi.fn();
+		const ctx = {
+			editor,
+			ui: { requestRender: vi.fn() },
+			session: {
+				isStreaming: false,
+				isCompacting: false,
+				isBashRunning: false,
+				isEvalRunning: false,
+				queuedMessageCount: 0,
+				extensionRunner: undefined,
+				maybeStartTitleGeneration: vi.fn(),
+			},
+			compactionQueuedMessages: [],
+			locallySubmittedUserSignatures: new Set<string>(),
+			isBashMode: false,
+			isPythonMode: false,
+			loopModeEnabled: false,
+			flushPendingBashComponents: vi.fn(),
+			startPendingSubmission,
+			onInputCallback,
+			updatePendingMessagesDisplay: vi.fn(),
+			showError: vi.fn(),
+			showStatus: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		return { startPendingSubmission };
+	}
+
+	it("submits only surviving images after deleting a middle image placeholder", async () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const first: ImageContent = { type: "image", mimeType: "image/png", data: "b25l" };
+		const middle: ImageContent = { type: "image", mimeType: "image/png", data: "dHdv" };
+		const last: ImageContent = { type: "image", mimeType: "image/png", data: "dGhyZWU=" };
+		const links = ["file:///tmp/one.png", "file:///tmp/two.png", "file:///tmp/three.png"];
+		const middleMarker = "[Image #2, 800x600]";
+		const draft = `Inspect [Image #1, 640x480] ${middleMarker} [Image #3, 1024x768]`;
+
+		editor.pendingImages = [first, middle, last];
+		editor.pendingImageLinks = [...links];
+		editor.imageLinks = [...links];
+		editor.setText(draft);
+		for (let i = draft.length; i > draft.indexOf(middleMarker) + middleMarker.length; i--) {
+			editor.handleInput("\x1b[D");
+		}
+		editor.handleInput("\x7f");
+		expect(editor.getText()).not.toContain(middleMarker);
+
+		const { startPendingSubmission } = setupImageSubmission(editor);
+		await editor.onSubmit?.(editor.getText());
+
+		expect(startPendingSubmission).toHaveBeenCalledTimes(1);
+		expect(startPendingSubmission).toHaveBeenLastCalledWith({
+			text: "Inspect [Image #1, 640x480]  [Image #2, 1024x768]",
+			images: [first, last],
+			imageLinks: [links[0], links[2]],
+			streamingBehavior: "steer",
+		});
+	});
+
+	it("continues to submit an image-only draft without a placeholder", async () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
+		const imageLink = "file:///tmp/clipboard.png";
+		editor.pendingImages = [image];
+		editor.pendingImageLinks = [imageLink];
+		editor.imageLinks = [imageLink];
+
+		const { startPendingSubmission } = setupImageSubmission(editor);
+		await editor.onSubmit?.("");
+
+		expect(startPendingSubmission).toHaveBeenCalledTimes(1);
+		expect(startPendingSubmission).toHaveBeenLastCalledWith({
+			text: "",
+			images: [image],
+			imageLinks: [imageLink],
+			streamingBehavior: "steer",
 		});
 	});
 });

@@ -16,7 +16,11 @@ import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
-import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
+import {
+	materializeImageReferenceLinks,
+	type ResolvedImageReferences,
+	shiftImageMarkers,
+} from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
@@ -202,6 +206,7 @@ export class InputController {
 	#escapeCancellationTarget: EscapeCancellationTarget | undefined;
 	#escapeCancellationArmedAt = 0;
 	#escapeCancellationSessionSubscribed = false;
+	#imageInsertChain: Promise<void> = Promise.resolve();
 	// Sequential index for `local://paste-N.md` references created by the large-paste
 	// flow. Seeded from 0 and bumped past existing paste files.
 	#pasteCounter = 0;
@@ -275,6 +280,16 @@ export class InputController {
 
 	#abortStreamingTurn(): void {
 		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+	}
+
+	#resolveEditorImageReferences(text: string): ResolvedImageReferences {
+		const resolved = this.ctx.editor.resolvePendingImageReferences?.(text);
+		if (resolved) return resolved;
+		return {
+			text,
+			images: [...this.ctx.editor.pendingImages],
+			imageLinks: [...this.ctx.editor.pendingImageLinks],
+		};
 	}
 
 	#hasCancelableWork(): boolean {
@@ -770,7 +785,10 @@ export class InputController {
 	setupEditorSubmitHandler(): void {
 		this.ctx.editor.onSubmit = async (text: string) => {
 			text = text.trim();
-			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
+			const hadPendingImages = this.ctx.editor.pendingImages.length > 0;
+			const resolvedImages = this.#resolveEditorImageReferences(text);
+			text = resolvedImages.text.trim();
+			const hasPendingImages = resolvedImages.images.length > 0;
 			if ((!isSettingsInitialized() || settings.get("emojiAutocomplete")) && text) text = expandEmoticons(text);
 
 			// The fullscreen subagent view is observation-only. Its own component owns
@@ -780,6 +798,7 @@ export class InputController {
 			// Empty submit while streaming with queued messages: abort the active
 			// turn and let the post-unwind drain deliver the agent-core queue.
 			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
+				if (hadPendingImages) this.ctx.editor.clearDraft();
 				if (this.ctx.session.queuedMessageCount > 0) {
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
@@ -789,7 +808,10 @@ export class InputController {
 				return;
 			}
 
-			if (!text && !hasPendingImages) return;
+			if (!text && !hasPendingImages) {
+				if (hadPendingImages) this.ctx.editor.clearDraft();
+				return;
+			}
 
 			// Continue shortcuts: "." or "c" resume the agent with a hidden agent-authored
 			// developer directive (no visible user message) instead of an empty turn, so the
@@ -809,9 +831,8 @@ export class InputController {
 			}
 
 			const runner = this.ctx.session.extensionRunner;
-			let inputImages = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-			let inputImageLinks =
-				this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
+			let inputImages = hasPendingImages ? resolvedImages.images : undefined;
+			let inputImageLinks = hasPendingImages ? resolvedImages.imageLinks : undefined;
 			let hasInputImages = (inputImages?.length ?? 0) > 0;
 			const submittedImages = inputImages;
 
@@ -850,7 +871,10 @@ export class InputController {
 					this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
 			}
 
-			if (!text && !hasInputImages) return;
+			if (!text && !hasInputImages) {
+				if (hadPendingImages) this.ctx.editor.clearDraft();
+				return;
+			}
 
 			const queueBody = parseQueueShorthand(text);
 			if (queueBody !== undefined) {
@@ -1420,10 +1444,10 @@ export class InputController {
 
 	/** Queue `/queue` input behind an active turn, or start it immediately when idle. */
 	async handleQueueCommand(text: string): Promise<void> {
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-		const imageLinks =
-			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
-		await this.#queueForYield(text, { images, imageLinks });
+		const resolved = this.#resolveEditorImageReferences(text);
+		const images = resolved.images.length > 0 ? resolved.images : undefined;
+		const imageLinks = images ? resolved.imageLinks : undefined;
+		await this.#queueForYield(resolved.text, { images, imageLinks });
 	}
 
 	async #queueForYield(
@@ -1540,10 +1564,10 @@ export class InputController {
 
 	/** Send editor text as a follow-up message (queued behind current stream). */
 	async handleFollowUp(): Promise<void> {
-		let text = this.ctx.editor.getExpandedText().trim();
-		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
-		const imageLinks =
-			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
+		const resolved = this.#resolveEditorImageReferences(this.ctx.editor.getExpandedText().trim());
+		let text = resolved.text;
+		const images = resolved.images.length > 0 ? resolved.images : undefined;
+		const imageLinks = images ? resolved.imageLinks : undefined;
 		if (!text && !images) return;
 
 		// Subagent focus is observation-only; follow-ups remain a main-agent action.
@@ -1681,6 +1705,7 @@ export class InputController {
 			this.ctx.editor.pendingImages.push(...queuedImages);
 			this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
 			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+			this.ctx.editor.markPendingImagesAsMarkerManaged?.();
 		}
 		this.ctx.updatePendingMessagesDisplay();
 		if (options?.abort) {
@@ -1690,29 +1715,30 @@ export class InputController {
 	}
 
 	async #insertPendingImage(imageData: ImageContent): Promise<void> {
-		const imageLink = (
-			await materializeImageReferenceLinks(
-				[
-					{
-						type: "image",
-						data: imageData.data,
-						mimeType: imageData.mimeType,
-					},
-				],
+		const [imageLinks, dims] = await Promise.all([
+			materializeImageReferenceLinks(
+				[{ type: "image", data: imageData.data, mimeType: imageData.mimeType }],
 				this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
-			)
-		)?.[0];
+			),
+			this.#imageDimensions(imageData),
+		]);
+		const currentText = this.ctx.editor.getText?.() ?? "";
+		const resolved = this.#resolveEditorImageReferences(currentText);
+		if (resolved.text !== currentText) this.ctx.editor.setText?.(resolved.text);
+		this.ctx.editor.pendingImages.splice(0, this.ctx.editor.pendingImages.length, ...resolved.images);
+		this.ctx.editor.pendingImageLinks.splice(0, this.ctx.editor.pendingImageLinks.length, ...resolved.imageLinks);
+
 		this.ctx.editor.pendingImages.push({
 			type: "image",
 			data: imageData.data,
 			mimeType: imageData.mimeType,
 		});
-		this.ctx.editor.pendingImageLinks.push(imageLink);
+		this.ctx.editor.pendingImageLinks.push(imageLinks?.[0]);
 		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		const imageNum = this.ctx.editor.pendingImages.length;
-		const dims = await this.#imageDimensions(imageData);
 		const label = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
 		this.ctx.editor.insertText(`${label} `);
+		this.ctx.editor.markPendingImagesAsMarkerManaged?.();
 		this.ctx.ui.requestRender();
 	}
 
@@ -1729,6 +1755,17 @@ export class InputController {
 	}
 
 	async #normalizeAndInsertPastedImage(image: ImageContent, unsupportedMessage: string): Promise<boolean> {
+		const insertion = this.#imageInsertChain.then(() =>
+			this.#normalizeAndInsertPastedImageNow(image, unsupportedMessage),
+		);
+		this.#imageInsertChain = insertion.then(
+			() => undefined,
+			() => undefined,
+		);
+		return insertion;
+	}
+
+	async #normalizeAndInsertPastedImageNow(image: ImageContent, unsupportedMessage: string): Promise<boolean> {
 		let imageData = await ensureSupportedImageInput(image);
 		if (!imageData) {
 			this.ctx.showStatus(unsupportedMessage);
