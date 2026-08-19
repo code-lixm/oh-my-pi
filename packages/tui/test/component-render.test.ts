@@ -600,4 +600,47 @@ describe("TUI.requestDirectWrite", () => {
 			await term.flush();
 		}
 	});
+
+	it("tryDirectWrite rejects unsafe overlays without scheduling a render", async () => {
+		const term = new VirtualTerminal(40, 8, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new RenderCountingTUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new CountingLines(["msg-0"]);
+		const spinner = new CountingLines(["spin-0"]);
+		const footer = new CountingLines(["footer"]);
+		tui.addChild(transcript);
+		tui.addChild(spinner);
+		tui.addChild(footer);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			tui.showOverlay(new CountingLines(["modal"]), { width: 5, anchor: "top-left" });
+			await scheduler.drain(term);
+			expect(visible(term)).toEqual(["modal", "spin-0", "footer"]);
+
+			const tuiRenders = tui.renders;
+			const transcriptRenders = transcript.renders;
+			const spinnerRenders = spinner.renders;
+			spinner.set(["spin-1"]);
+
+			expect(tui.tryDirectWrite(spinner)).toBe(false);
+			await scheduler.drain(term);
+
+			expect(visible(term)).toEqual(["modal", "spin-0", "footer"]);
+			expect(tui.renders).toBe(tuiRenders);
+			expect(transcript.renders).toBe(transcriptRenders);
+			expect(spinner.renders).toBe(spinnerRenders);
+
+			tui.requestDirectWrite(spinner);
+			await scheduler.drain(term);
+
+			expect(visible(term)).toEqual(["modal", "spin-1", "footer"]);
+			expect(tui.renders).toBeGreaterThan(tuiRenders);
+			expect(transcript.renders).toBeGreaterThan(transcriptRenders);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
 });

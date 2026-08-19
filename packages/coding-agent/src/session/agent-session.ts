@@ -2020,6 +2020,7 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			messages: () => this.messages,
+			todoPhases: () => this.getTodoPhases(),
 			baseSystemPrompt: () => this.#tools.baseSystemPrompt,
 			goalModeState: () => this.#goalModeState,
 			planReferencePath: () => this.#planReferencePath,
@@ -5673,7 +5674,14 @@ export class AgentSession {
 		return this.#models.scopedModels;
 	}
 
-	/** Prompt templates */
+	/** Current evidence-backed runtime activity. */
+	getActivityState(): AgentActivityState {
+		return {
+			...this.#activity,
+			...(this.#activity.progress ? { progress: { ...this.#activity.progress } } : {}),
+		};
+	}
+
 	getPlanModeState(): PlanModeState | undefined {
 		return this.#planModeState;
 	}

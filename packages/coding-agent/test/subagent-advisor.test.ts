@@ -94,8 +94,45 @@ function sessionFixtureJsonl(id: string): string {
 	return `${JSON.stringify(header)}\n${JSON.stringify(userEntry)}\n${JSON.stringify(assistantEntry)}\n`;
 }
 
+/** Advisor metadata must stop before an arbitrarily large malformed history tail. */
+function advisorFixtureWithCorruptTailJsonl(id: string): string {
+	const timestamp = new Date().toISOString();
+	const header = { type: "session", version: CURRENT_SESSION_VERSION, id, timestamp, cwd: "/tmp" };
+	const sessionInit = {
+		type: "session_init",
+		id: "init",
+		parentId: null,
+		timestamp,
+		task: "Inspect a persisted transcript",
+		agent: "advisor",
+		readOnly: true,
+	};
+	const historicAssistantEntry = {
+		type: "message",
+		id: "historic-assistant",
+		parentId: "init",
+		timestamp,
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: "historic advisor reply" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test-model",
+			usage: { input: 19, output: 23 },
+			stopReason: "stop",
+			timestamp: 2,
+		},
+	};
+	return [
+		JSON.stringify(header),
+		JSON.stringify(sessionInit),
+		JSON.stringify(historicAssistantEntry),
+		`{"type":"message","content":"${"x".repeat(512 * 1024)}`,
+	].join("\n");
+}
+
 describe("subagent advisor transcript discovery", () => {
-	it("registers nested per-subagent __advisor.jsonl transcripts under their owning subagent", async () => {
+	it("registers advisor transcripts without replaying their corrupt history tails", async () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-subagent-advisor-"));
 		try {
 			// Main session advisor: <session>/__advisor.jsonl. Subagent advisor:
@@ -103,9 +140,15 @@ describe("subagent advisor transcript discovery", () => {
 			// derives the directory from the subagent's own session file.
 			fs.writeFileSync(path.join(dir, "main.jsonl"), sessionFixtureJsonl("main"));
 			fs.mkdirSync(path.join(dir, "main", "Sub1"), { recursive: true });
-			fs.writeFileSync(path.join(dir, "main", "__advisor.jsonl"), sessionFixtureJsonl("main-advisor"));
+			fs.writeFileSync(
+				path.join(dir, "main", "__advisor.jsonl"),
+				advisorFixtureWithCorruptTailJsonl("main-advisor"),
+			);
 			fs.writeFileSync(path.join(dir, "main", "Sub1.jsonl"), sessionFixtureJsonl("sub1"));
-			fs.writeFileSync(path.join(dir, "main", "Sub1", "__advisor.jsonl"), sessionFixtureJsonl("sub1-advisor"));
+			fs.writeFileSync(
+				path.join(dir, "main", "Sub1", "__advisor.jsonl"),
+				advisorFixtureWithCorruptTailJsonl("sub1-advisor"),
+			);
 
 			const registry = new AgentRegistry();
 			await registerPersistedSubagents(registry, path.join(dir, "main.jsonl"));
@@ -114,10 +157,17 @@ describe("subagent advisor transcript discovery", () => {
 			const mainAdvisor = registry.get(`${MAIN_AGENT_ID}/advisor`);
 			expect(mainAdvisor?.kind).toBe("advisor");
 			expect(mainAdvisor?.parentId).toBe(MAIN_AGENT_ID);
+			expect(mainAdvisor?.sessionFile).toBe(path.join(dir, "main", "__advisor.jsonl"));
 			const subAdvisor = registry.get("Sub1/advisor");
 			expect(subAdvisor?.kind).toBe("advisor");
 			expect(subAdvisor?.parentId).toBe("Sub1");
 			expect(subAdvisor?.sessionFile).toBe(path.join(dir, "main", "Sub1", "__advisor.jsonl"));
+			// The valid assistant before each corrupt tail would add metrics if the
+			// advisor transcript were replayed rather than registered as metadata only.
+			expect(mainAdvisor?.history?.metrics).toBeUndefined();
+			expect(subAdvisor?.history?.metrics).toBeUndefined();
+			// Ordinary subagent transcripts still receive their full history summary.
+			expect(registry.get("Sub1")?.history?.metrics?.requests).toBe(1);
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}

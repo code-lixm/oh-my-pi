@@ -246,6 +246,59 @@ describe("InteractiveMode working-message session accent cache", () => {
 	});
 });
 
+describe("InteractiveMode working activity animation", () => {
+	it("pauses waiting-peer animation paints and resumes them for thinking and tool activity", async () => {
+		const { mode } = await createHarness("Waiting peer animation");
+		vi.useFakeTimers();
+		let perfNow = 1_000;
+		const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => perfNow);
+		const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(true);
+		const activityAtMs = Date.now();
+		const waitingPeer = {
+			phase: "waiting-peer" as const,
+			label: "Waiting for peer",
+			phaseStartedAtMs: activityAtMs,
+			lastActivityAtMs: activityAtMs,
+		};
+		const activeActivities = [
+			{
+				phase: "thinking" as const,
+				label: "Thinking",
+				phaseStartedAtMs: activityAtMs,
+				lastActivityAtMs: activityAtMs,
+			},
+			{ phase: "tool" as const, label: "Read", phaseStartedAtMs: activityAtMs, lastActivityAtMs: activityAtMs },
+		];
+
+		try {
+			mode.ensureLoadingAnimation();
+
+			const initialPaints = directWrite.mock.calls.length;
+			perfNow += 100;
+			vi.advanceTimersByTime(100);
+			expect(directWrite.mock.calls.length).toBeGreaterThan(initialPaints);
+
+			for (const activity of activeActivities) {
+				mode.refreshWorkingActivitySummary(waitingPeer);
+				const pausedPaints = directWrite.mock.calls.length;
+				perfNow += 200;
+				vi.advanceTimersByTime(200);
+				expect(directWrite).toHaveBeenCalledTimes(pausedPaints);
+
+				mode.refreshWorkingActivitySummary(activity);
+				const resumedPaints = directWrite.mock.calls.length;
+				perfNow += 100;
+				vi.advanceTimersByTime(100);
+				expect(directWrite.mock.calls.length).toBeGreaterThan(resumedPaints);
+			}
+		} finally {
+			mode.stop();
+			perfSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("InteractiveMode loading activity summary", () => {
 	it("keeps event-backed Main activity visible beside a subagent card", async () => {
 		const { mode } = await createHarness("Working activity summary");

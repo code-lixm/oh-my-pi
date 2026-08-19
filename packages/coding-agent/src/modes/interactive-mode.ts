@@ -533,7 +533,12 @@ const DEFERRED_PREVIEW_VIEWPORT_FRACTION = 0.4;
 const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 const SUBAGENT_HUD_VISIBLE_LIMIT = 8;
+// Keep the first progress update responsive, then reserve terminal paint slots
+// for the working loader while a busy detached-task roster keeps streaming.
 const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
+const SUBAGENT_OBSERVER_BUSY_UI_COALESCE_MS = 250;
+const SUBAGENT_OBSERVER_BUSY_PROGRESS_THRESHOLD = 5;
+const SUBAGENT_OBSERVER_BUSY_COOLDOWN_MS = 1_000;
 
 function formatSubagentLifecycleNotice(payload: SubagentLifecyclePayload): string {
 	const agentId = oneLineLabel(sanitizeText(payload.id));
@@ -1150,6 +1155,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
+	#observerUiSyncDelayMs?: number;
+	#observerUiSyncProgressCount = 0;
+	#observerUiSyncBusyUntilMs = 0;
 	#observerUiSyncNeedsTodoReconcile = false;
 	#ircPendingReplyUnsubscribe?: () => void;
 	#agentRegistryUnsubscribe?: () => void;
@@ -2606,23 +2614,42 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#scheduleObserverUiSync(change: SessionObserverChange): void {
-		if (change.kind !== "progress") {
-			// Main/reset/lifecycle payloads are structural transitions and always
-			// request reconciliation under the observer contract.
+		const requiresResponsiveSync = change.kind !== "progress" || change.requiresTodoReconcile;
+		if (requiresResponsiveSync) {
+			// Main/reset/lifecycle payloads and terminal progress are structural
+			// transitions: keep their existing short path so todo state is current.
 			this.#observerUiSyncNeedsTodoReconcile = true;
-		} else if (change.requiresTodoReconcile) {
-			// A completed terminal snapshot can arrive without a lifecycle event.
-			this.#observerUiSyncNeedsTodoReconcile = true;
+		} else {
+			this.#observerUiSyncProgressCount++;
 		}
-		if (this.#observerUiSyncTimer) return;
+
+		const delayMs =
+			!requiresResponsiveSync && performance.now() < this.#observerUiSyncBusyUntilMs
+				? SUBAGENT_OBSERVER_BUSY_UI_COALESCE_MS
+				: SUBAGENT_OBSERVER_UI_COALESCE_MS;
+		if (this.#observerUiSyncTimer) {
+			if (delayMs >= (this.#observerUiSyncDelayMs ?? SUBAGENT_OBSERVER_UI_COALESCE_MS)) return;
+			clearTimeout(this.#observerUiSyncTimer);
+		}
+
+		this.#observerUiSyncDelayMs = delayMs;
 		this.#observerUiSyncTimer = setTimeout(() => {
 			this.#observerUiSyncTimer = undefined;
+			this.#observerUiSyncDelayMs = undefined;
 			this.#flushObserverUiSync();
-		}, SUBAGENT_OBSERVER_UI_COALESCE_MS);
+		}, delayMs);
 		this.#observerUiSyncTimer.unref?.();
 	}
 
+	#updateObserverUiSyncBusyWindow(): void {
+		if (this.#observerUiSyncProgressCount >= SUBAGENT_OBSERVER_BUSY_PROGRESS_THRESHOLD) {
+			this.#observerUiSyncBusyUntilMs = performance.now() + SUBAGENT_OBSERVER_BUSY_COOLDOWN_MS;
+		}
+		this.#observerUiSyncProgressCount = 0;
+	}
+
 	#flushObserverUiSync(): void {
+		this.#updateObserverUiSyncBusyWindow();
 		const roots: Component[] = [];
 		if (this.syncRunningSubagentBadge({ requestRender: false })) roots.push(this.editor);
 
@@ -2649,6 +2676,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(this.#observerUiSyncTimer);
 			this.#observerUiSyncTimer = undefined;
 		}
+		this.#observerUiSyncDelayMs = undefined;
+		this.#observerUiSyncProgressCount = 0;
+		this.#observerUiSyncBusyUntilMs = 0;
 		this.#observerUiSyncNeedsTodoReconcile = false;
 	}
 
@@ -5145,6 +5175,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#stopWorkingActivityRefresh();
 			return;
 		}
+		// Waiting is intentional and can last minutes. A spinner/shimmer paint every
+		// 30–80ms competes with editor input while no new work is happening, so keep
+		// the elapsed status updates but pause cosmetic animation until work resumes.
+		const animationEnabled = activity?.phase !== "waiting-user" && activity?.phase !== "waiting-peer";
+		loader.setAnimationEnabled(animationEnabled);
 		if (this.#pendingWorkingMessage !== undefined) return;
 		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);

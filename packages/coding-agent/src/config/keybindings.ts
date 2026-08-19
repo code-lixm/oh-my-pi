@@ -446,10 +446,10 @@ function loadRawConfig(filePath: string): unknown {
 function writeKeybindingsConfig(filePath: string, config: KeybindingsConfig): boolean {
 	try {
 		fs.writeFileSync(filePath, YAML.stringify(config, null, 2), "utf-8");
-		logger.debug("Migrated keybindings config", { path: filePath });
+		logger.debug("Wrote keybindings config", { path: filePath });
 		return true;
 	} catch (error) {
-		logger.warn("Failed to write migrated keybindings config", { path: filePath, error: String(error) });
+		logger.warn("Failed to write keybindings config", { path: filePath, error: String(error) });
 		return false;
 	}
 }
@@ -675,6 +675,30 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	 */
 	getEffectiveConfig(): KeybindingsConfig {
 		return this.getResolvedBindings();
+	}
+
+	/** Get a copy of the persisted user overrides without defaults. */
+	override getUserBindings(): KeybindingsConfig {
+		return { ...this.#userBindings };
+	}
+
+	/** Persist one binding and apply it to the live manager. An empty list disables the action. */
+	setBinding(keybinding: Keybinding, keys: KeyId[]): void {
+		if (!(keybinding in KEYBINDINGS)) throw new Error(`Unknown keybinding: ${keybinding}`);
+		const value: KeyId | KeyId[] = keys.length === 1 ? keys[0]! : [...keys];
+		this.#persistUserBindings({ ...this.#userBindings, [keybinding]: value });
+	}
+
+	/** Remove all user overrides, restoring the current OMP defaults. */
+	resetBindings(): void {
+		this.#persistUserBindings({});
+	}
+
+	#persistUserBindings(userBindings: KeybindingsConfig): void {
+		if (this.#configPath && !writeKeybindingsConfig(this.#configPath, orderKeybindingsConfig(userBindings))) {
+			throw new Error(`Failed to write keybindings config: ${this.#configPath}`);
+		}
+		this.setUserBindings(userBindings);
 	}
 
 	/**

@@ -15,6 +15,7 @@ import {
 	AUTO_HANDOFF_THRESHOLD_FOCUS,
 	applyShakeRegions,
 	CompactionCancelledError,
+	type CompactionDetails,
 	type CompactionPreparation,
 	type CompactionResult,
 	type CompactionSettings,
@@ -26,6 +27,7 @@ import {
 	DEFAULT_SHAKE_CONFIG,
 	effectiveReserveTokens,
 	estimateTokens,
+	getCompactionRetainedFacts,
 	hasContextTokenUsage,
 	NativeCompactionError,
 	prepareCompaction,
@@ -40,10 +42,14 @@ import {
 	shouldUseProviderNativeCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
+	applyPrunePlan,
 	DEFAULT_PRUNE_CONFIG,
-	pruneSupersededToolResults,
-	pruneToolOutputs,
+	type PruneCandidate,
+	type PrunePlan,
+	planSupersededToolResults,
+	planToolOutputPruning,
 	readToolSupersedeKey,
+	resolvePruneBudget,
 } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import type { ProtectedToolMatcher } from "@oh-my-pi/pi-agent-core/compaction/tool-protection";
 import type { AssistantMessage, CodexCompactionContext, Message, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
@@ -66,9 +72,11 @@ import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import type { AgentActivityPhase } from "../registry/agent-activity";
 import type { ConfiguredThinkingLevel } from "../thinking";
+import type { TodoPhase } from "../tools/todo";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import { findCompactMode } from "./compact-modes";
+import { withCompactionRetainedFacts } from "./compaction-retained-facts";
 import { convertToLlm, stripImagesFromMessage } from "./messages";
 import { isTerminalTextAssistantAnswer } from "./queued-messages";
 import {
@@ -137,15 +145,6 @@ export function createCodexCompactionContext(options: {
 }
 
 /**
- * Per-turn prune cache window. A tool result whose all-message suffix exceeds
- * this is in the warm, already-sent prompt-cache prefix: re-writing it costs the
- * cacheWrite premium on the whole suffix. Per-turn passes only reclaim inside
- * this tail (matches the supersede pass's default `suffixTokenLimit`); deeper
- * stale/age victims are left to compaction/shake, which rebuild the cache anyway.
- */
-const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
-
-/**
  * Idle gap after which the supersede pass may flush the whole sent region (the
  * provider cache is cold, so re-writing it is free). MUST exceed the maximum
  * Anthropic prompt-cache TTL — "long" retention (the OAuth default) is 1h — or a
@@ -192,6 +191,7 @@ export interface SessionMaintenanceHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	messages(): AgentMessage[];
+	todoPhases(): TodoPhase[];
 	baseSystemPrompt(): string[];
 	goalModeState(): GoalModeState | undefined;
 	planReferencePath(): string;
@@ -329,23 +329,99 @@ export class SessionMaintenance {
 		return { ...config, protectedTools: [...config.protectedTools, planMatcher] };
 	}
 
+	async #applyRecoverablePrunePlan(
+		plan: PrunePlan,
+		pass: "threshold" | "stale",
+	): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		if (plan.candidates.length === 0) {
+			logger.debug("Context pruning pass found no eligible candidates", { pass, metrics: plan.metrics });
+			return undefined;
+		}
+
+		const archived = plan.candidates.filter(candidate => candidate.requiresArchive);
+		const regionByCandidate = new Map<PruneCandidate, number>();
+		let artifactId: string | undefined;
+		let artifactBytes = 0;
+		let archiveFailed = false;
+		if (archived.length > 0 && this.#host.sessionManager.getArtifactManager() === null) {
+			archiveFailed = true;
+		} else if (archived.length > 0) {
+			const parts = ["# Context pruning archive", "", `pass: ${pass}`, ""];
+			for (let index = 0; index < archived.length; index++) {
+				const candidate = archived[index];
+				const region = index + 1;
+				regionByCandidate.set(candidate, region);
+				parts.push(
+					`## region ${region} (${candidate.reason}, ${candidate.toolName}, ~${candidate.tokens} tok)`,
+					"",
+					`entry: ${candidate.entry.id}`,
+					`arguments: ${candidate.canonicalArgs}`,
+					"",
+				);
+				for (let blockIndex = 0; blockIndex < candidate.textBlocks.length; blockIndex++) {
+					parts.push(`### content block ${blockIndex + 1}`, "", candidate.textBlocks[blockIndex], "");
+				}
+			}
+			const artifactText = parts.join("\n");
+			artifactBytes = Buffer.byteLength(artifactText);
+			try {
+				artifactId = await this.#host.sessionManager.saveArtifact(artifactText, "prune");
+				if (!artifactId) archiveFailed = true;
+			} catch (error) {
+				archiveFailed = true;
+				logger.warn("Context pruning archive write failed", {
+					pass,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+
+		const candidates = artifactId ? plan.candidates : plan.candidates.filter(candidate => !candidate.requiresArchive);
+		const replacements = new Map<PruneCandidate, string>();
+		if (artifactId) {
+			for (const candidate of archived) {
+				const region = regionByCandidate.get(candidate);
+				if (region === undefined) continue;
+				const body =
+					candidate.notice.startsWith("[") && candidate.notice.endsWith("]")
+						? candidate.notice.slice(1, -1)
+						: candidate.notice;
+				replacements.set(candidate, `[${body} — recover: artifact://${artifactId} (region ${region})]`);
+			}
+		}
+		const result = applyPrunePlan(plan, { candidates, replacements });
+		logger.debug("Context pruning pass completed", {
+			pass,
+			metrics: plan.metrics,
+			applied: result.prunedCount,
+			tokensSaved: result.tokensSaved,
+			artifactId,
+			artifactBytes,
+			archiveFailed,
+			archiveSkippedCandidates: artifactId ? 0 : archived.length,
+		});
+		return result.prunedCount > 0 ? result : undefined;
+	}
+
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
-		const result = pruneToolOutputs(
+		const settings = this.#host.settings.getGroup("compaction");
+		const budget = resolvePruneBudget(this.#model?.contextWindow, settings.pruneProtectTokens);
+		const plan = planToolOutputPruning(
 			branchEntries,
 			this.#withPlanProtection({
 				...DEFAULT_PRUNE_CONFIG,
-				pruneUseless: this.#host.settings.getGroup("compaction").dropUseless,
-				// Cache-stable boundary: never re-write the warm, already-sent prefix
-				// (deep stale/age victims) or summarized-away entries every turn.
+				...budget,
+				pruneUseless: settings.dropUseless,
+				pruneDuplicates: settings.deduplicateResults,
+				pruneResolvedErrors: settings.dropResolvedErrors,
+				resolvedErrorProtectTokens: budget.protectTokens,
 				keepBoundaryId,
-				cacheWarmSuffixTokens: PRUNE_CACHE_WARM_SUFFIX_TOKENS,
 			}),
 		);
-		if (result.prunedCount === 0) {
-			return undefined;
-		}
+		const result = await this.#applyRecoverablePrunePlan(plan, "threshold");
+		if (!result) return undefined;
 
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
@@ -356,39 +432,36 @@ export class SessionMaintenance {
 		return result;
 	}
 
-	/**
-	 * Per-turn stale-result pass: prune older `read` results that a newer read
-	 * of the same file has made stale, plus results their tool flagged
-	 * contextually useless. Cache-aware (only fires when the suffix after a
-	 * candidate is small or the session has been idle long enough that the
-	 * provider prompt cache is cold), so it is cheap to run every turn. Gated
-	 * on the `compaction.supersedeReads` and `compaction.dropUseless` settings.
-	 *
-	 * Persists via `rewriteEntries` like every other history rewrite — the
-	 * session file must match the live (pruned) context or file-based forks
-	 * (`/fork`, `/tan`) and resume rebuild a divergent prefix and cold-miss the
-	 * provider prompt cache.
-	 */
+	/** Cheap per-turn stale/duplicate pass with cold-cache resolved-error cleanup. */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
-		const { supersedeReads, dropUseless } = this.#host.settings.getGroup("compaction");
-		if (!supersedeReads && !dropUseless) return undefined;
+		const settings = this.#host.settings.getGroup("compaction");
+		if (
+			!settings.supersedeReads &&
+			!settings.dropUseless &&
+			!settings.deduplicateResults &&
+			!settings.dropResolvedErrors
+		) {
+			return undefined;
+		}
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
-		const result = pruneSupersededToolResults(
+		const budget = resolvePruneBudget(this.#model?.contextWindow, settings.pruneProtectTokens);
+		const plan = planSupersededToolResults(
 			branchEntries,
 			this.#withPlanProtection({
-				supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
-				pruneUseless: dropUseless,
+				supersedeKey: settings.supersedeReads ? readToolSupersedeKey : undefined,
+				pruneUseless: settings.dropUseless,
+				pruneDuplicates: settings.deduplicateResults,
+				pruneResolvedErrors: settings.dropResolvedErrors,
+				resolvedErrorProtectTokens: budget.protectTokens,
 				protectedTools: [...DEFAULT_PRUNE_CONFIG.protectedTools],
-				// Never re-write summarized-away entries; only flush the whole sent
-				// region once the cache is genuinely cold (idle exceeds the 1h TTL).
 				keepBoundaryId,
+				suffixTokenLimit: budget.cacheWarmSuffixTokens,
 				idleFlushMs: PRUNE_IDLE_FLUSH_MS,
 			}),
 		);
-		if (result.prunedCount === 0) {
-			return undefined;
-		}
+		const result = await this.#applyRecoverablePrunePlan(plan, "stale");
+		if (!result) return undefined;
 
 		await this.#host.sessionManager.rewriteEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
@@ -866,6 +939,9 @@ export class SessionMaintenance {
 
 			if (compactionAbortController.signal.aborted) {
 				throw new CompactionCancelledError();
+			}
+			if (!fromExtension) {
+				details = withCompactionRetainedFacts(details, preparation, pathEntries, this.#host.todoPhases());
 			}
 
 			this.#host.sessionManager.appendCompaction(
@@ -2109,12 +2185,18 @@ export class SessionMaintenance {
 		const rebuilt = snapcompact.getPreservedArchive(result.preserveData);
 		if (!rebuilt || rebuilt.frames.length >= archive.frames.length) return undefined;
 
+		const retainedFacts = getCompactionRetainedFacts(staleEntry.details);
+		const rebuiltDetails: CompactionDetails = {
+			readFiles: result.details?.readFiles ?? staleDetails?.readFiles ?? [],
+			modifiedFiles: result.details?.modifiedFiles ?? staleDetails?.modifiedFiles ?? [],
+			...(retainedFacts ? { retainedFacts } : {}),
+		};
 		const rebuiltEntryId = this.#host.sessionManager.appendCompaction(
 			result.summary,
 			result.shortSummary,
 			result.firstKeptEntryId,
 			result.tokensBefore,
-			result.details,
+			rebuiltDetails,
 			false,
 			result.preserveData,
 		);
@@ -2781,6 +2863,14 @@ export class SessionMaintenance {
 				return COMPACTION_CHECK_NONE;
 			}
 
+			if (!fromExtension) {
+				details = withCompactionRetainedFacts(
+					details,
+					preparation,
+					pathEntriesForCompaction,
+					this.#host.todoPhases(),
+				);
+			}
 			this.#host.sessionManager.appendCompaction(
 				summary,
 				shortSummary,

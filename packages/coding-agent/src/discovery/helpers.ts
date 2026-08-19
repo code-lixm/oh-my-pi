@@ -11,7 +11,7 @@ import {
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
-import type { ExtensionModule } from "../capability/extension-module";
+import { type ExtensionModule, isExtensionModuleFile } from "../capability/extension-module";
 import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../capability/fs";
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
 import type { Skill, SkillFrontmatter } from "../capability/skill";
@@ -619,7 +619,7 @@ async function readExtensionModuleManifest(
  * Discover extension module entry points in a directory.
  *
  * Discovery rules:
- * 1. Direct files: `extensions/*.ts` or `*.js` → load
+ * 1. Direct files: `extensions/*.ts` (excluding declarations) or `*.js` → load
  * 2. Subdirectory with index: `extensions/<ext>/index.ts` or `index.js` → load
  * 3. Subdirectory with package.json: `extensions/<ext>/package.json` with "omp"/"pi" field → load declared paths
  *
@@ -664,6 +664,7 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
+		if (!isExtensionModuleFile(match.path)) continue;
 		discovered.add(path.join(dir, match.path));
 	}
 	// Track which subdirectories have package.json manifests with declared extensions

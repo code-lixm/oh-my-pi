@@ -18,7 +18,11 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
-import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
+import {
+	type ExtensionModule,
+	extensionModuleCapability,
+	isExtensionModuleFile,
+} from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
 import { loadCapability } from "../../discovery";
@@ -490,10 +494,6 @@ async function readExtensionManifest(packageJsonPath: string): Promise<Extension
 	}
 }
 
-function isExtensionFile(name: string): boolean {
-	return name.endsWith(".ts") || name.endsWith(".js");
-}
-
 /**
  * Resolve extension entry points from a directory.
  */
@@ -547,7 +547,7 @@ async function resolveExtensionEntries(dir: string): Promise<string[] | null> {
  * Discover extensions in a directory.
  *
  * Discovery rules:
- * 1. Direct files: `extensions/*.ts` or `*.js` → load
+ * 1. Direct files: `extensions/*.ts` (excluding declarations) or `*.js` → load
  * 2. Subdirectory with index: `extensions/<ext>/index.ts` or `index.js` → load
  * 3. Subdirectory with package.json: `extensions/<ext>/package.json` with "omp"/"pi" field → load declared paths
  *
@@ -575,7 +575,7 @@ async function discoverExtensionsInDir(dir: string): Promise<string[]> {
 	for (const entry of entries) {
 		const entryPath = path.join(dir, entry.name);
 
-		if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionFile(entry.name)) {
+		if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionModuleFile(entry.name)) {
 			discovered.push(entryPath);
 			continue;
 		}
@@ -602,7 +602,7 @@ async function discoverHooksInPackageRoot(root: string): Promise<string[]> {
 			throw err;
 		}
 		for (const entry of entries) {
-			if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionFile(entry.name)) {
+			if ((entry.isFile() || entry.isSymbolicLink()) && isExtensionModuleFile(entry.name)) {
 				hooks.push(path.join(hookDir, entry.name));
 			}
 		}
@@ -681,7 +681,7 @@ export async function discoverExtensionPaths(
 		const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
 		for (const hookPath of hooks.items
 			.map(hook => hook.path)
-			.filter(hookPath => isExtensionFile(path.basename(hookPath)))) {
+			.filter(hookPath => isExtensionModuleFile(path.basename(hookPath)))) {
 			addPath(hookPath);
 		}
 	} else {

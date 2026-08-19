@@ -8,7 +8,9 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
+import type { CompactionRetainedFacts } from "./compaction";
 import branchSummaryContextPrompt from "./prompts/branch-summary-context.md" with { type: "text" };
+import compactionRetainedFactsPrompt from "./prompts/compaction-retained-facts.md" with { type: "text" };
 
 const BRANCH_SUMMARY_TEMPLATE = branchSummaryContextPrompt;
 
@@ -56,6 +58,8 @@ export interface CompactionSummaryMessage {
 	images?: ImageContent[];
 	/** Post-pass dead-end warning attached to this compaction (progress guard). */
 	warning?: string;
+	/** Deterministic state carried independently of the prose summary. */
+	retainedFacts?: CompactionRetainedFacts;
 	timestamp: number;
 }
 
@@ -84,8 +88,8 @@ export function renderBranchSummaryContext(summary: string): string {
 	return prompt.render(BRANCH_SUMMARY_TEMPLATE, { summary });
 }
 
-export function renderCompactionSummaryContext(summary: string): string {
-	return summary;
+export function renderCompactionSummaryContext(summary: string, retainedFacts?: CompactionRetainedFacts): string {
+	return prompt.render(compactionRetainedFactsPrompt, { summary, retainedFacts });
 }
 
 export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
@@ -106,6 +110,7 @@ export function createCompactionSummaryMessage(
 	images?: ImageContent[],
 	blocks?: (TextContent | ImageContent)[],
 	warning?: string,
+	retainedFacts?: CompactionRetainedFacts,
 ): CompactionSummaryMessage {
 	const imageBlocks =
 		blocks?.filter((block): block is ImageContent => block.type === "image") ??
@@ -119,6 +124,7 @@ export function createCompactionSummaryMessage(
 		blocks: blocks && blocks.length > 0 ? blocks : undefined,
 		images: imageBlocks && imageBlocks.length > 0 ? imageBlocks : undefined,
 		warning,
+		retainedFacts,
 		timestamp: new Date(timestamp).getTime(),
 	};
 }
@@ -192,16 +198,13 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 			case "compactionSummary":
 				return {
 					role: "user",
-					content:
-						message.blocks !== undefined
-							? [{ type: "text" as const, text: message.summary }, ...message.blocks]
-							: [
-									{
-										type: "text" as const,
-										text: renderCompactionSummaryContext(message.summary),
-									},
-									...(message.images ?? []),
-								],
+					content: [
+						{
+							type: "text" as const,
+							text: renderCompactionSummaryContext(message.summary, message.retainedFacts),
+						},
+						...(message.blocks ?? message.images ?? []),
+					],
 					attribution: "agent",
 					providerPayload: message.providerPayload,
 					timestamp: message.timestamp,

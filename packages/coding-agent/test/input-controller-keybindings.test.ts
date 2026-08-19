@@ -795,6 +795,7 @@ describe("InputController keybinding setup", () => {
 			streamingBehavior: "followUp",
 		});
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
 
 	it("marks idle follow-up submissions as local", async () => {

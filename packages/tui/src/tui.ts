@@ -2693,98 +2693,65 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Rewrite a quiet, visible component segment directly.
-	 *
-	 * Loader-style animation changes one already-positioned segment at a fixed
-	 * size. When the current frame geometry is still valid, rewrite just those
-	 * rows and update the diff baseline instead of scheduling a full render
-	 * cycle. Unsafe states fall back to `requestComponentRender()`, preserving
-	 * the ordinary renderer as the correctness path.
+	 * Rewrite a quiet, visible component segment directly. Unsafe states retain
+	 * the compatibility behavior and schedule a component render.
 	 */
 	requestDirectWrite(component: Component): void {
-		if (this.#stopped) return;
+		if (!this.tryDirectWrite(component)) this.requestComponentRender(component);
+	}
+
+	/**
+	 * Attempt a synchronous direct rewrite without scheduling fallback work.
+	 * Animation callers may safely drop a frame when this returns false.
+	 */
+	tryDirectWrite(component: Component): boolean {
+		if (this.#stopped) return false;
 		if (
 			this.#renderRequested ||
 			this.#postFullPaintSettleTimer !== undefined ||
 			this.#postFullPaintSettleDelay() > 0
 		) {
-			this.requestComponentRender(component);
-			return;
+			return false;
 		}
 
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		if (!this.#hasEverRendered || this.#resizeEventPending) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (!this.#hasEverRendered || this.#resizeEventPending) return false;
 		if (width !== this.#previousWidth || height !== this.#previousHeight || width !== this.#composeWidth) {
-			this.requestComponentRender(component);
-			return;
+			return false;
 		}
-		if (this.#clearScrollbackOnNextRender || this.#forceViewportRepaintOnNextRender) {
-			this.requestComponentRender(component);
-			return;
-		}
-		if (this.overlayStack.length > 0 || this.#altActive || !this.#imageBudget.quiescent) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (this.#clearScrollbackOnNextRender || this.#forceViewportRepaintOnNextRender) return false;
+		if (this.overlayStack.length > 0 || this.#altActive || !this.#imageBudget.quiescent) return false;
 
 		const children = this.children;
 		const segments = this.#frameSegments;
-		if (segments.length !== children.length) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (segments.length !== children.length) return false;
 		for (let i = 0; i < children.length; i++) {
-			if (segments[i]!.component !== children[i]) {
-				this.requestComponentRender(component);
-				return;
-			}
+			if (segments[i]!.component !== children[i]) return false;
 		}
 
 		const root = this.#resolveComponentRoot(component);
-		if (root === null) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (root === null) return false;
 		const segmentIndex = segments.findIndex(segment => segment.component === root);
-		if (segmentIndex === -1) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (segmentIndex === -1) return false;
 		const segment = segments[segmentIndex]!;
 		const fullyLiveUncommittedSegment = segment.liveLocalStart === 0 && segment.start >= this.#committedRows;
 		if (
 			(segment.liveLocalStart !== undefined && !fullyLiveUncommittedSegment) ||
 			segment.start < this.#committedRows
 		) {
-			this.requestComponentRender(component);
-			return;
+			return false;
 		}
 
 		const windowTop = Math.max(this.#committedRows, this.#composedFrame.length - height, 0);
-		if (windowTop !== this.#windowTopRow) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (windowTop !== this.#windowTopRow) return false;
 		const screenStart = segment.start - windowTop;
-		if (screenStart < 0 || screenStart + segment.rowCount > height) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (screenStart < 0 || screenStart + segment.rowCount > height) return false;
 
 		const nextLines = root.render(width);
-		if (nextLines.length !== segment.rowCount) {
-			this.requestComponentRender(component);
-			return;
-		}
+		if (nextLines.length !== segment.rowCount) return false;
 		for (const line of nextLines) {
-			if (line.includes(CURSOR_MARKER)) {
-				this.requestComponentRender(component);
-				return;
-			}
+			if (line.includes(CURSOR_MARKER)) return false;
 		}
 
 		let firstChanged = -1;
@@ -2819,7 +2786,7 @@ export class TUI extends Container {
 			this.#writeCursorPosition(cursorPos, this.#composedFrame.length);
 			this.#previousWidth = width;
 			this.#previousHeight = height;
-			return;
+			return true;
 		}
 
 		const currentScreenRow = Math.max(0, Math.min(height - 1, this.#hardwareCursorRow - windowTop));
@@ -2850,6 +2817,7 @@ export class TUI extends Container {
 		this.#writeTerminal(buffer);
 		this.#windowTopRow = windowTop;
 		this.#commit(this.#composedFrame, previousWindow, width, height, cursorControl);
+		return true;
 	}
 
 	#postFullPaintSettleDelay(): number {

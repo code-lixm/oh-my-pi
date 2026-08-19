@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { getCompactionRetainedFacts } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
@@ -424,6 +425,7 @@ export function buildSessionContext(
 			undefined,
 			snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 			compaction.warning,
+			getCompactionRetainedFacts(compaction.details),
 		);
 		// Agent context (non-transcript): summary first so the LLM sees the
 		// compacted context before recent messages.

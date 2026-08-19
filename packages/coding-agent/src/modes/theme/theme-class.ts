@@ -214,6 +214,18 @@ export class Theme {
 		return hex || (this.isLight ? "#000000" : "#e5e5e7");
 	}
 
+	/** Get a resolved CSS hex string for a semantic background color. */
+	getBackgroundColorHex(color: ThemeBg): string {
+		const hex = this.#hexBgColors[color];
+		if (hex === undefined) throw new Error(`Unknown theme background color: ${color}`);
+		return hex || this.#surfaceBgHex;
+	}
+
+	/** Get the resolved page surface used to compose theme backgrounds. */
+	getSurfaceBackgroundColorHex(): string {
+		return this.#surfaceBgHex;
+	}
+
 	/**
 	 * Get all foreground and background theme colors as CSS hex strings.
 	 * Skips colors resolved to the default terminal color (unstyled).

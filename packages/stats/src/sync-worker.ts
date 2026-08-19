@@ -13,7 +13,9 @@
 
 import { type ParseSessionResult, parseSessionFile } from "./parser";
 
-export type SyncWorkerRequest = { kind?: "parse"; sessionFile: string; fromOffset: number } | { kind: "ping" };
+export type SyncWorkerRequest =
+	| { kind?: "parse"; sessionFile: string; fromOffset: number; parserState?: unknown }
+	| { kind: "ping" };
 
 export type SyncWorkerResponse =
 	| { ok: true; kind?: "parse"; result: ParseSessionResult }
@@ -31,7 +33,10 @@ self.onmessage = async event => {
 			self.postMessage({ ok: true, kind: "pong" } satisfies SyncWorkerResponse);
 			return;
 		}
-		const result = await parseSessionFile(request.sessionFile, request.fromOffset);
+		const result = await parseSessionFile(request.sessionFile, {
+			fromOffset: request.fromOffset,
+			parserState: request.parserState,
+		});
 		self.postMessage({ ok: true, result } satisfies SyncWorkerResponse);
 	} catch (err) {
 		const error = err instanceof Error ? (err.stack ?? err.message) : String(err);

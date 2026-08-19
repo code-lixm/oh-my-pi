@@ -6,11 +6,15 @@
  */
 import type { AgentMessage, AgentToolResult, ThinkingLevel, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
+import type { GoalModeState } from "../../goals/state";
+import type { LspServerStatus } from "../../lsp";
+import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AsyncJobSnapshot } from "../../session/agent-session-types";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type {
@@ -19,16 +23,54 @@ import type {
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 } from "../../task";
+import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
+import type { VibeModeState } from "../../vibe/state";
 import type {
 	ApplyWorkspaceRestoreRequest,
+	CreateWorkspaceCheckpointRequest,
+	ListWorkspaceCheckpointsRequest,
 	PreviewWorkspaceRestoreRequest,
 	WorkspaceCheckpointRecord,
 	WorkspaceRestorePlan,
 	WorkspaceRestoreResult,
 	WorkspaceRestoreScope,
 } from "../../workspace-checkpoints/types";
+import type { RpcKeybindingsCatalog, RpcKeybindingsSnapshot } from "./rpc-keybindings-types";
+import type {
+	RpcMcpServerConfigInput,
+	RpcMcpServerInfo,
+	RpcPluginInfo,
+	RpcPluginSelector,
+} from "./rpc-management-types";
 import type { RpcMessagesPage } from "./rpc-messages";
+import type {
+	RpcSettingPath,
+	RpcSettingsCatalog,
+	RpcSettingsLocale,
+	RpcSettingsSnapshot,
+	RpcSettingValue,
+} from "./rpc-settings-types";
+
+export type * from "./rpc-keybindings-types";
+export type * from "./rpc-management-types";
+export type * from "./rpc-settings-types";
+
+export type RpcWorkspaceCheckpointCreateRequest = Omit<
+	Pick<CreateWorkspaceCheckpointRequest, "label" | "parentId" | "pinned">,
+	"label"
+> & {
+	label?: CreateWorkspaceCheckpointRequest["label"] | null;
+	rootPath?: CreateWorkspaceCheckpointRequest["rootPath"];
+};
+
+export type RpcWorkspaceCheckpointListRequest = Pick<ListWorkspaceCheckpointsRequest, "limit"> & {
+	rootPath?: ListWorkspaceCheckpointsRequest["rootPath"];
+};
+
+export type RpcWorkspaceRestorePreviewRequest = PreviewWorkspaceRestoreRequest & {
+	rootPath?: ListWorkspaceCheckpointsRequest["rootPath"];
+};
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -48,6 +90,29 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_async_jobs"; recentLimit?: number }
+	| { id?: string; type: "cancel_async_jobs" }
+	| { id?: string; type: "get_settings_catalog"; locale?: RpcSettingsLocale }
+	| { id?: string; type: "get_settings" }
+	| { id?: string; type: "update_settings"; path: RpcSettingPath; value: RpcSettingValue }
+	| { id?: string; type: "get_keybindings_catalog"; locale?: RpcSettingsLocale }
+	| { id?: string; type: "get_keybindings" }
+	| { id?: string; type: "update_keybinding"; keybinding: string; keys: string[] }
+	| { id?: string; type: "reset_keybindings" }
+	| { id?: string; type: "get_plugins" }
+	| { id?: string; type: "set_plugin_enabled"; plugin: RpcPluginSelector; enabled: boolean }
+	| { id?: string; type: "set_plugin_features"; name: string; features: string[] }
+	| { id?: string; type: "set_plugin_setting"; name: string; key: string; value: RpcSettingValue }
+	| { id?: string; type: "get_mcp_servers" }
+	| { id?: string; type: "set_mcp_server_enabled"; name: string; enabled: boolean }
+	| {
+			id?: string;
+			type: "add_mcp_server";
+			name: string;
+			scope: "user" | "project";
+			config: RpcMcpServerConfigInput;
+	  }
+	| { id?: string; type: "remove_mcp_server"; name: string; scope: "user" | "project" }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
@@ -63,7 +128,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_available_models" }
 
 	// Thinking
-	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_thinking_level"; level: ConfiguredThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
 
 	// Queue modes
@@ -87,13 +152,18 @@ export type RpcCommand =
 	| {
 			id?: string;
 			type: "workspace_checkpoint_create";
-			request: { label?: string | null; rootPath?: string; parentId?: string; pinned?: boolean };
+			request: RpcWorkspaceCheckpointCreateRequest;
 	  }
-	| { id?: string; type: "workspace_checkpoint_list"; rootPath?: string; limit?: number }
+	| {
+			id?: string;
+			type: "workspace_checkpoint_list";
+			rootPath?: RpcWorkspaceCheckpointListRequest["rootPath"];
+			limit?: RpcWorkspaceCheckpointListRequest["limit"];
+	  }
 	| {
 			id?: string;
 			type: "workspace_restore_preview";
-			request: PreviewWorkspaceRestoreRequest & { rootPath?: string };
+			request: RpcWorkspaceRestorePreviewRequest;
 	  }
 	| { id?: string; type: "workspace_restore_apply"; request: ApplyWorkspaceRestoreRequest }
 	| { id?: string; type: "workspace_undo"; scope?: WorkspaceRestoreScope }
@@ -124,7 +194,10 @@ export type RpcCommand =
 export interface RpcSessionState {
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
+	configuredThinkingLevel: ConfiguredThinkingLevel | undefined;
 	isStreaming: boolean;
+	isBashRunning?: boolean;
+	isEvalRunning?: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
@@ -144,6 +217,15 @@ export interface RpcSessionState {
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
+	/** Snapshot of session-scoped asynchronous work; absent on older RPC hosts. */
+	asyncJobs?: AsyncJobSnapshot | null;
+	/** Live language-server status; absent on older RPC hosts. */
+	lsp?: LspServerStatus[];
+	/** Structured main-agent activity and active autonomous mode states. */
+	activity?: AgentActivityState;
+	planMode?: PlanModeState;
+	goalMode?: GoalModeState;
+	vibeMode?: VibeModeState;
 }
 
 export interface RpcAvailableSlashCommand {
@@ -255,6 +337,42 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "get_async_jobs";
+			success: true;
+			data: { asyncJobs: AsyncJobSnapshot | null };
+	  }
+	| { id?: string; type: "response"; command: "cancel_async_jobs"; success: true; data: { cancelled: number } }
+	| { id?: string; type: "response"; command: "get_settings_catalog"; success: true; data: RpcSettingsCatalog }
+	| { id?: string; type: "response"; command: "get_settings"; success: true; data: RpcSettingsSnapshot }
+	| { id?: string; type: "response"; command: "update_settings"; success: true; data: RpcSettingsSnapshot }
+	| { id?: string; type: "response"; command: "get_keybindings_catalog"; success: true; data: RpcKeybindingsCatalog }
+	| { id?: string; type: "response"; command: "get_keybindings"; success: true; data: RpcKeybindingsSnapshot }
+	| {
+			id?: string;
+			type: "response";
+			command: "update_keybinding" | "reset_keybindings";
+			success: true;
+			data: RpcKeybindingsSnapshot;
+	  }
+	| { id?: string; type: "response"; command: "get_plugins"; success: true; data: { plugins: RpcPluginInfo[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_plugin_enabled" | "set_plugin_features" | "set_plugin_setting";
+			success: true;
+			data: { plugins: RpcPluginInfo[] };
+	  }
+	| { id?: string; type: "response"; command: "get_mcp_servers"; success: true; data: { servers: RpcMcpServerInfo[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_mcp_server_enabled" | "add_mcp_server" | "remove_mcp_server";
+			success: true;
+			data: { servers: RpcMcpServerInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
 			command: "set_fast_mode";
 			success: true;
 			data: { enabled: boolean; active: boolean };
@@ -321,7 +439,7 @@ export type RpcResponse =
 			type: "response";
 			command: "cycle_thinking_level";
 			success: true;
-			data: { level: Effort } | null;
+			data: { level: ConfiguredThinkingLevel } | null;
 	  }
 
 	// Queue modes

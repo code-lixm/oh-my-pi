@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
-import { USELESS_NOTICE } from "@oh-my-pi/pi-agent-core/compaction/pruning";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { DUPLICATE_NOTICE, SUPERSEDED_NOTICE, USELESS_NOTICE } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -11,14 +11,10 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 /**
- * Regression: the per-turn supersede/useless prune pass rewrote the LIVE agent
- * context but never persisted the rewrite, so the session file kept the
- * original (un-pruned) history. Anything that rebuilds from the file — `/tan`
- * and `/fork` clones, session resume — then produced a divergent, larger
- * prefix and cold-missed the provider prompt cache the parent had populated.
- *
- * Contract: after the prune fires, rebuilding the session from disk yields the
- * same message content as the live agent state.
+ * Regression: per-turn pruning must rewrite the live context and durable session
+ * atomically enough that resumed/forked sessions preserve the same recoverable
+ * placeholders. Archive-dependent candidates must never lose their raw output
+ * when artifact persistence fails, while cheap no-archive cleanup still runs.
  */
 describe("AgentSession per-turn prune persistence", () => {
 	let tempDir: TempDir;
@@ -26,7 +22,59 @@ describe("AgentSession per-turn prune persistence", () => {
 	let sessionManager: SessionManager;
 	let authStorage: AuthStorage;
 
-	const BIG_CALL_ID = "call-big-useless";
+	const STALE_READ_CALL_ID = "call-stale-read";
+	const LATEST_READ_CALL_ID = "call-latest-read";
+	const USELESS_CALL_ID = "call-useless-grep";
+	const FIRST_DUPLICATE_CALL_ID = "call-first-duplicate";
+	const LATEST_DUPLICATE_CALL_ID = "call-latest-duplicate";
+	const STALE_READ_OUTPUT = "raw stale read line\n".repeat(128);
+	const LATEST_READ_OUTPUT = "fresh read line\n".repeat(128);
+	const USELESS_OUTPUT = "no relevant match\n".repeat(128);
+	const DUPLICATE_OUTPUT = "same search result\n".repeat(128);
+	const usageZero = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+
+	function appendToolCall(
+		toolCallId: string,
+		name: string,
+		arguments_: Record<string, unknown>,
+		timestamp: number,
+	): void {
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: toolCallId, name, arguments: arguments_ }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "toolUse",
+			usage: usageZero,
+			timestamp,
+		});
+	}
+
+	function appendToolResult(
+		toolCallId: string,
+		toolName: string,
+		text: string,
+		timestamp: number,
+		options: { useless?: boolean } = {},
+	): void {
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text }],
+			isError: false,
+			...options,
+			timestamp,
+		});
+	}
 
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-prune-persistence-");
@@ -38,52 +86,22 @@ describe("AgentSession per-turn prune persistence", () => {
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!bundled) throw new Error("Expected built-in anthropic model to exist");
 		const model = { ...bundled, contextWindow: 200_000, maxTokens: 64_000 };
-
 		const now = Date.now();
-		const usageZero = {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		};
 		sessionManager.appendMessage({
 			role: "user",
-			content: "Investigate every module of the project.",
-			timestamp: now - 200,
+			content: "Inspect the current workspace.",
+			timestamp: now - 500,
 		});
-		sessionManager.appendMessage({
-			role: "assistant",
-			content: [{ type: "toolCall", id: BIG_CALL_ID, name: "grep", arguments: { pattern: "TODO" } }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-			stopReason: "toolUse",
-			usage: usageZero,
-			timestamp: now - 180,
-		});
-		// The only prune candidate: a big result flagged useless whose suffix
-		// stays inside the cache-warm window, so the pass rewrites it.
-		sessionManager.appendMessage({
-			role: "toolResult",
-			toolCallId: BIG_CALL_ID,
-			toolName: "grep",
-			content: [{ type: "text", text: "match line\n".repeat(20000) }],
-			isError: false,
-			useless: true,
-			timestamp: now - 170,
-		});
-		sessionManager.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "Nothing relevant found; moving on." }],
-			api: "anthropic-messages",
-			provider: "anthropic",
-			model: "claude-sonnet-4-5",
-			stopReason: "stop",
-			usage: usageZero,
-			timestamp: now - 160,
-		});
+		appendToolCall(STALE_READ_CALL_ID, "read", { path: "src/persisted.ts" }, now - 490);
+		appendToolResult(STALE_READ_CALL_ID, "read", STALE_READ_OUTPUT, now - 480);
+		appendToolCall(LATEST_READ_CALL_ID, "read", { path: "src/persisted.ts" }, now - 470);
+		appendToolResult(LATEST_READ_CALL_ID, "read", LATEST_READ_OUTPUT, now - 460);
+		appendToolCall(USELESS_CALL_ID, "grep", { pattern: "unrelated" }, now - 450);
+		appendToolResult(USELESS_CALL_ID, "grep", USELESS_OUTPUT, now - 440, { useless: true });
+		appendToolCall(FIRST_DUPLICATE_CALL_ID, "grep", { pattern: "same", path: "src" }, now - 430);
+		appendToolResult(FIRST_DUPLICATE_CALL_ID, "grep", DUPLICATE_OUTPUT, now - 420);
+		appendToolCall(LATEST_DUPLICATE_CALL_ID, "grep", { path: "src", pattern: "same" }, now - 410);
+		appendToolResult(LATEST_DUPLICATE_CALL_ID, "grep", DUPLICATE_OUTPUT, now - 400);
 
 		const agent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -95,6 +113,7 @@ describe("AgentSession per-turn prune persistence", () => {
 				"compaction.enabled": false,
 				"compaction.dropUseless": true,
 				"compaction.supersedeReads": true,
+				"compaction.deduplicateResults": true,
 			}),
 			modelRegistry,
 		});
@@ -102,6 +121,7 @@ describe("AgentSession per-turn prune persistence", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		try {
 			await session?.dispose();
 		} finally {
@@ -110,19 +130,23 @@ describe("AgentSession per-turn prune persistence", () => {
 		}
 	});
 
-	function liveResultText(): string {
-		const message = session.agent.state.messages.find(
-			candidate => candidate.role === "toolResult" && candidate.toolCallId === BIG_CALL_ID,
+	function resultTextForCall(messages: readonly AgentMessage[], toolCallId: string): string {
+		const message = messages.find(
+			candidate => candidate.role === "toolResult" && candidate.toolCallId === toolCallId,
 		);
 		if (message?.role !== "toolResult" || !Array.isArray(message.content)) {
-			throw new Error("Expected the seeded tool result in live agent state");
+			throw new Error(`Expected tool result ${toolCallId}`);
 		}
 		const text = message.content.find(block => block.type === "text");
-		if (text?.type !== "text") throw new Error("Expected text content on the seeded tool result");
+		if (text?.type !== "text") throw new Error(`Expected text content on ${toolCallId}`);
 		return text.text;
 	}
 
-	it("persists the pruned rewrite so a from-disk rebuild matches the live context", async () => {
+	function liveResultText(toolCallId: string): string {
+		return resultTextForCall(session.agent.state.messages, toolCallId);
+	}
+
+	async function finishTurn(): Promise<void> {
 		const finalAssistant = {
 			role: "assistant" as const,
 			content: [{ type: "text" as const, text: "Continuing." }],
@@ -130,36 +154,46 @@ describe("AgentSession per-turn prune persistence", () => {
 			provider: "anthropic" as const,
 			model: "claude-sonnet-4-5",
 			stopReason: "stop" as const,
-			usage: {
-				input: 100,
-				output: 10,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 110,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
+			usage: usageZero,
 			timestamp: Date.now(),
 		};
 		session.agent.emitExternalEvent({ type: "message_end", message: finalAssistant });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
 		await session.waitForIdle();
+	}
 
-		// The per-turn pass rewrote the live context…
-		expect(liveResultText()).toBe(USELESS_NOTICE);
+	it("archives a superseded read and rebuilds the same recoverable placeholder from disk", async () => {
+		await finishTurn();
 
-		// …and the persisted file must rebuild to the SAME content (fork/resume
-		// read this file; a divergent prefix cold-misses the provider cache).
+		const livePlaceholder = liveResultText(STALE_READ_CALL_ID);
+		const artifactId = livePlaceholder.match(/artifact:\/\/(\d+)/)?.[1];
+		if (!artifactId) throw new Error("Expected superseded read placeholder to expose an artifact URI");
+		expect(livePlaceholder).toBe(`${SUPERSEDED_NOTICE.slice(0, -1)} — recover: artifact://${artifactId} (region 1)]`);
+		expect(liveResultText(LATEST_READ_CALL_ID)).toBe(LATEST_READ_OUTPUT);
+
+		const artifactManager = sessionManager.getArtifactManager();
+		if (!artifactManager) throw new Error("Expected a persistent artifact manager");
+		expect((await artifactManager.listFiles()).filter(file => file.endsWith(".prune.log"))).toEqual([
+			`${artifactId}.prune.log`,
+		]);
+		const artifactPath = await sessionManager.getArtifactPath(artifactId);
+		if (!artifactPath) throw new Error("Expected placeholder artifact to be readable from disk");
+		expect(await Bun.file(artifactPath).text()).toContain(STALE_READ_OUTPUT);
+
 		await sessionManager.flush();
 		const sessionFile = sessionManager.getSessionFile();
 		if (!sessionFile) throw new Error("Expected a persisted session file");
 		const reloaded = await SessionManager.open(sessionFile, tempDir.path());
-		const rebuilt = reloaded
-			.buildSessionContext()
-			.messages.find(candidate => candidate.role === "toolResult" && candidate.toolCallId === BIG_CALL_ID);
-		if (rebuilt?.role !== "toolResult" || !Array.isArray(rebuilt.content)) {
-			throw new Error("Expected the seeded tool result in the from-disk rebuild");
-		}
-		const rebuiltText = rebuilt.content.find(block => block.type === "text");
-		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(USELESS_NOTICE);
+		expect(resultTextForCall(reloaded.buildSessionContext().messages, STALE_READ_CALL_ID)).toBe(livePlaceholder);
+	});
+
+	it("keeps archive-dependent reads when artifact storage fails but still applies useless and duplicate cleanup", async () => {
+		vi.spyOn(sessionManager, "saveArtifact").mockRejectedValueOnce(new Error("injected archive write failure"));
+		await finishTurn();
+
+		expect(liveResultText(STALE_READ_CALL_ID)).toBe(STALE_READ_OUTPUT);
+		expect(liveResultText(USELESS_CALL_ID)).toBe(USELESS_NOTICE);
+		expect(liveResultText(FIRST_DUPLICATE_CALL_ID)).toBe(DUPLICATE_NOTICE);
+		expect(liveResultText(LATEST_DUPLICATE_CALL_ID)).toBe(DUPLICATE_OUTPUT);
 	});
 });

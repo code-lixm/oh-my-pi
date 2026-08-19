@@ -90,6 +90,7 @@ function createContext(): {
 	};
 	inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined>;
 	sessionListeners: Array<(event: { type: string }) => void>;
+	setOverlayVisible(isVisible: boolean): void;
 } {
 	let editorText = "";
 	const abort = vi.fn();
@@ -108,6 +109,7 @@ function createContext(): {
 	const requestRender = vi.fn();
 	const resetDisplay = vi.fn();
 	const showStatus = vi.fn();
+	let overlayVisible = false;
 	const inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const sessionListeners: Array<(event: { type: string }) => void> = [];
 	const handleBtwCommand = vi.fn(async () => {});
@@ -148,6 +150,7 @@ function createContext(): {
 		ui: {
 			requestRender,
 			resetDisplay,
+			hasOverlay: () => overlayVisible,
 			getFocused: () => editor,
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
@@ -275,6 +278,9 @@ function createContext(): {
 		},
 		inputListeners,
 		sessionListeners,
+		setOverlayVisible(isVisible: boolean) {
+			overlayVisible = isVisible;
+		},
 	};
 }
 
@@ -795,25 +801,46 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
-	it("stops the main stream on the next Esc after leaving a focused subagent overlay", () => {
+	it("passes overlay Escape through, clears an armed main cancellation, and requires a fresh confirmation after closing", async () => {
 		const clock = installClock();
-		const { ctx, editor, spies } = createContext();
-		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
+		const { ctx, inputListeners, setOverlayVisible, spies } = createContext();
 		mutableSessionState(ctx).isStreaming = true;
 		const controller = new InputController(ctx);
 
-		controller.setupKeyHandlers();
-		editor.onEscape?.();
+		const dispatchInput = (data: string) => {
+			for (const listener of inputListeners) {
+				const result = listener(data);
+				if (result) return result;
+			}
+			return undefined;
+		};
 
-		expect(ctx.unfocusSession).toHaveBeenCalledTimes(1);
+		controller.setupKeyHandlers();
+		expect(dispatchInput("\x1b")).toBeUndefined();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).not.toHaveBeenCalled();
+		await Promise.resolve();
+
+		setOverlayVisible(true);
+		clock.advance(500);
+		expect(dispatchInput("\x1b")).toBeUndefined();
+		clock.advance(500);
+		expect(dispatchInput("\x1b")).toBeUndefined();
+		expectEscapeCancelPrompt(spies.showStatus, 1);
 		expect(spies.abort).not.toHaveBeenCalled();
 
-		Object.defineProperty(ctx, "focusedAgentId", { value: undefined, configurable: true });
+		setOverlayVisible(false);
 		clock.advance(500);
-		editor.onEscape?.();
+		expect(dispatchInput("\x1b")).toBeUndefined();
+		expectEscapeCancelPrompt(spies.showStatus, 2);
+		expect(spies.abort).not.toHaveBeenCalled();
+		await Promise.resolve();
 
+		clock.advance(500);
+		expect(dispatchInput("\x1b")).toEqual({ consume: true });
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expectEscapeCancelPrompt(spies.showStatus, 2);
 	});
 
 	it("returns focused subagent view to main on Esc without aborting its active maintenance (#2819)", () => {

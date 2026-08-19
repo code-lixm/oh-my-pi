@@ -20,6 +20,11 @@ export interface ExtensionModule {
 	_source: SourceMeta;
 }
 
+/** Whether a discovered file can provide runtime extension exports. */
+export function isExtensionModuleFile(name: string): boolean {
+	return (name.endsWith(".ts") && !name.endsWith(".d.ts")) || name.endsWith(".js");
+}
+
 export const extensionModuleCapability = defineCapability<ExtensionModule>({
 	id: "extension-modules",
 	displayName: "Extension Modules",

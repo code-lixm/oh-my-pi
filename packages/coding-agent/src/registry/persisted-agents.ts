@@ -512,12 +512,6 @@ async function registerPersistedSubagentsFromDir(
 					...(snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
 					...(snapshot.activityState ? { activityState: snapshot.activityState } : {}),
 				});
-				transcripts.push({
-					id: advisorId,
-					sessionFile,
-					createdAt: ref.createdAt,
-					lastActivity: ref.lastActivity,
-				});
 			}
 			if (ref) applyPersistedSnapshot(registry, ref, snapshot, ref.session === null);
 			continue;

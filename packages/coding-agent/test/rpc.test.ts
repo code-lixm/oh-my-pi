@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent";
 import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
 import type { BashExecutionMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { e2eApiKey } from "./utilities";
 
@@ -213,15 +214,17 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 		expect(textContent?.text).toContain(uniqueValue);
 	}, 90000);
 
-	test("should set and get thinking level", async () => {
+	test("keeps a user's configured thinking selector visible through RPC state, including automatic thinking", async () => {
 		await client.start();
 
-		// Set thinking level
 		await client.setThinkingLevel(Effort.High);
+		const fixed = await client.getState();
+		expect(fixed.thinkingLevel).toBe(Effort.High);
+		expect(fixed.configuredThinkingLevel).toBe(Effort.High);
 
-		// Verify via state
-		const state = await client.getState();
-		expect(state.thinkingLevel).toBe(Effort.High);
+		await client.setThinkingLevel(AUTO_THINKING);
+		const automatic = await client.getState();
+		expect(automatic.configuredThinkingLevel).toBe(AUTO_THINKING);
 	}, 30000);
 
 	test("should cycle thinking level", async () => {
@@ -238,7 +241,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("RPC mode", () => {
 
 		// Verify via state
 		const newState = await client.getState();
-		expect(newState.thinkingLevel).toBe(result!.level);
+		expect(newState.configuredThinkingLevel).toBe(result!.level);
 	}, 30000);
 
 	test("should get available models", async () => {

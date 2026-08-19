@@ -15,6 +15,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, readLines, Snowflake } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
+import { KeybindingsManager } from "../../config/keybindings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	type ExtensionUIContext,
@@ -25,6 +26,8 @@ import {
 } from "../../extensibility/extensions";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
+import { getLspStatus } from "../../lsp";
+import type { MCPManager } from "../../mcp/manager";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -38,7 +41,15 @@ import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./h
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
 import { claimRpcInput } from "./rpc-input";
+import {
+	buildRpcKeybindingsCatalog,
+	buildRpcKeybindingsSnapshot,
+	resetRpcKeybindings,
+	updateRpcKeybinding,
+} from "./rpc-keybindings";
+import { RpcManagementController } from "./rpc-management";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
+import { buildRpcSettingsCatalog, buildRpcSettingsSnapshot, updateRpcSetting } from "./rpc-settings";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
@@ -664,6 +675,7 @@ export async function runRpcMode(
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	eventBus?: EventBus,
 	input: ReadableStream<Uint8Array> = claimRpcInput(),
+	mcpManager?: MCPManager,
 ): Promise<never> {
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
@@ -671,6 +683,7 @@ export async function runRpcMode(
 	// breaks JSON.parse. In RPC mode stdout is the JSON protocol channel — nothing else
 	// may write there.
 	process.env.PI_NOTIFICATIONS = "off";
+	const keybindings = KeybindingsManager.create();
 
 	const frameEncoder = new RpcFrameEncoder();
 	// Ordered stdout writer honoring backpressure: chunked v2 frames are produced
@@ -966,6 +979,7 @@ export async function runRpcMode(
 	const emitAvailableCommandsUpdate = async () => {
 		output({ type: "available_commands_update", commands: await getAvailableCommands() });
 	};
+	const management = new RpcManagementController({ session, mcpManager, onPluginsChanged: reloadPluginState });
 	session.subscribeCommandMetadataChanged(() => {
 		void emitAvailableCommandsUpdate();
 	});
@@ -1074,8 +1088,11 @@ export async function runRpcMode(
 
 			case "get_state": {
 				const state: RpcSessionState = {
+					isBashRunning: session.isBashRunning,
+					isEvalRunning: session.isEvalRunning,
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
+					configuredThinkingLevel: session.configuredThinkingLevel(),
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
@@ -1099,8 +1116,164 @@ export async function runRpcMode(
 						examples: tool.examples,
 					})),
 					contextUsage: session.getContextUsage(),
+					asyncJobs: session.getAsyncJobSnapshot({ recentLimit: 5 }),
+					lsp: getLspStatus(),
+					activity: session.getActivityState(),
+					planMode: session.getPlanModeState(),
+					goalMode: session.getGoalModeState(),
+					vibeMode: session.getVibeModeState(),
 				};
 				return success(id, "get_state", state);
+			}
+
+			case "get_async_jobs": {
+				return success(id, "get_async_jobs", {
+					asyncJobs: session.getAsyncJobSnapshot({ recentLimit: command.recentLimit }),
+				});
+			}
+
+			case "cancel_async_jobs": {
+				return success(id, "cancel_async_jobs", { cancelled: session.cancelAsyncJobs() });
+			}
+
+			case "get_settings_catalog": {
+				return success(id, "get_settings_catalog", await buildRpcSettingsCatalog(session.settings, command.locale));
+			}
+
+			case "get_settings": {
+				return success(id, "get_settings", buildRpcSettingsSnapshot(session.settings));
+			}
+
+			case "update_settings": {
+				try {
+					return success(
+						id,
+						"update_settings",
+						await updateRpcSetting(session.settings, command.path, command.value),
+					);
+				} catch (err) {
+					return error(
+						id,
+						"update_settings",
+						err instanceof Error ? err.message : String(err),
+						"INVALID_SETTINGS",
+					);
+				}
+			}
+
+			case "get_keybindings_catalog": {
+				return success(id, "get_keybindings_catalog", buildRpcKeybindingsCatalog(command.locale));
+			}
+
+			case "get_keybindings": {
+				return success(id, "get_keybindings", buildRpcKeybindingsSnapshot(keybindings));
+			}
+
+			case "update_keybinding": {
+				try {
+					return success(
+						id,
+						"update_keybinding",
+						updateRpcKeybinding(keybindings, command.keybinding, command.keys),
+					);
+				} catch (err) {
+					return error(
+						id,
+						"update_keybinding",
+						err instanceof Error ? err.message : String(err),
+						"INVALID_KEYBINDING",
+					);
+				}
+			}
+
+			case "reset_keybindings": {
+				try {
+					return success(id, "reset_keybindings", resetRpcKeybindings(keybindings));
+				} catch (err) {
+					return error(
+						id,
+						"reset_keybindings",
+						err instanceof Error ? err.message : String(err),
+						"KEYBINDINGS_WRITE_ERROR",
+					);
+				}
+			}
+			case "get_plugins": {
+				return success(id, "get_plugins", { plugins: await management.plugins() });
+			}
+
+			case "set_plugin_enabled": {
+				try {
+					return success(id, "set_plugin_enabled", {
+						plugins: await management.setPluginEnabled(command.plugin, command.enabled),
+					});
+				} catch (err) {
+					return error(id, "set_plugin_enabled", err instanceof Error ? err.message : String(err), "PLUGIN_ERROR");
+				}
+			}
+
+			case "set_plugin_features": {
+				try {
+					return success(id, "set_plugin_features", {
+						plugins: await management.setPluginFeatures(command.name, command.features),
+					});
+				} catch (err) {
+					return error(
+						id,
+						"set_plugin_features",
+						err instanceof Error ? err.message : String(err),
+						"PLUGIN_ERROR",
+					);
+				}
+			}
+
+			case "set_plugin_setting": {
+				try {
+					return success(id, "set_plugin_setting", {
+						plugins: await management.setPluginSetting(command.name, command.key, command.value),
+					});
+				} catch (err) {
+					return error(id, "set_plugin_setting", err instanceof Error ? err.message : String(err), "PLUGIN_ERROR");
+				}
+			}
+
+			case "get_mcp_servers": {
+				return success(id, "get_mcp_servers", { servers: await management.mcpServers() });
+			}
+
+			case "set_mcp_server_enabled": {
+				try {
+					return success(id, "set_mcp_server_enabled", {
+						servers: await management.setMcpServerEnabled(command.name, command.enabled),
+					});
+				} catch (err) {
+					return error(
+						id,
+						"set_mcp_server_enabled",
+						err instanceof Error ? err.message : String(err),
+						"MCP_ERROR",
+					);
+				}
+			}
+
+			case "add_mcp_server": {
+				try {
+					return success(id, "add_mcp_server", {
+						servers: await management.addMcpServer(command.name, command.scope, command.config),
+					});
+				} catch (err) {
+					return error(id, "add_mcp_server", err instanceof Error ? err.message : String(err), "MCP_ERROR");
+				}
+			}
+
+			case "remove_mcp_server": {
+				try {
+					return success(id, "remove_mcp_server", {
+						servers: await management.removeMcpServer(command.name, command.scope),
+					});
+				} catch (err) {
+					return error(id, "remove_mcp_server", err instanceof Error ? err.message : String(err), "MCP_ERROR");
+				}
 			}
 
 			case "set_fast_mode": {
@@ -1348,13 +1521,13 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "get_messages": {
-				return success(id, "get_messages", { messages: session.messages });
+				return success(id, "get_messages", { messages: session.buildTranscriptSessionContext().messages });
 			}
 
 			case "get_messages_page": {
 				if (session.isStreaming || session.isCompacting)
 					return error(id, "get_messages_page", RPC_MESSAGES_PAGE_BUSY_ERROR, "session_busy");
-				const messages = session.messages;
+				const messages = session.buildTranscriptSessionContext().messages;
 				try {
 					return success(
 						id,
@@ -1457,10 +1630,10 @@ export async function runRpcMode(
 						parentId: command.request.parentId,
 						pinned: command.request.pinned,
 					});
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_checkpoint_create", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_checkpoint_create", { record: access.value as never });
+					return success(id, "workspace_checkpoint_create", { record: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_checkpoint_create", err instanceof Error ? err.message : String(err));
 				}
@@ -1471,10 +1644,10 @@ export async function runRpcMode(
 						rootPath: command.rootPath,
 						limit: command.limit,
 					});
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_checkpoint_list", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_checkpoint_list", { records: access.value as never[] });
+					return success(id, "workspace_checkpoint_list", { records: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_checkpoint_list", err instanceof Error ? err.message : String(err));
 				}
@@ -1482,10 +1655,10 @@ export async function runRpcMode(
 			case "workspace_restore_preview": {
 				try {
 					const access = await session.previewWorkspaceRestore(command.request);
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_restore_preview", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_restore_preview", { plan: access.value as never });
+					return success(id, "workspace_restore_preview", { plan: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_restore_preview", err instanceof Error ? err.message : String(err));
 				}
@@ -1496,10 +1669,10 @@ export async function runRpcMode(
 						command.request.planId,
 						command.request.allowConflicts,
 					);
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_restore_apply", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_restore_apply", { result: access.value as never });
+					return success(id, "workspace_restore_apply", { result: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_restore_apply", err instanceof Error ? err.message : String(err));
 				}
@@ -1507,10 +1680,10 @@ export async function runRpcMode(
 			case "workspace_undo": {
 				try {
 					const access = await session.undoWorkspace(command.scope);
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_undo", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_undo", { result: access.value as never });
+					return success(id, "workspace_undo", { result: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_undo", err instanceof Error ? err.message : String(err));
 				}
@@ -1518,10 +1691,10 @@ export async function runRpcMode(
 			case "workspace_redo": {
 				try {
 					const access = await session.redoWorkspace();
-					if (!access.available) {
+					if (!access.available || access.value === undefined) {
 						return error(id, "workspace_redo", access.reason ?? "workspace checkpoint unavailable");
 					}
-					return success(id, "workspace_redo", { result: access.value as never });
+					return success(id, "workspace_redo", { result: access.value });
 				} catch (err: unknown) {
 					return error(id, "workspace_redo", err instanceof Error ? err.message : String(err));
 				}

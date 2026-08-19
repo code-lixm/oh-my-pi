@@ -458,7 +458,16 @@ export class SessionPersistenceIndeterminateError extends AggregateError {
  * A trailing atomic rewrite still rewrites the header cwd after the path is
  * repointed.
  */
+export type SessionEntryAppendObserver = (sessionFile: string, entry: SessionEntry) => void;
+
 export class SessionManager {
+	static #entryAppendObservers = new Set<SessionEntryAppendObserver>();
+
+	static addEntryAppendedObserver(observer: SessionEntryAppendObserver): () => void {
+		SessionManager.#entryAppendObservers.add(observer);
+		return () => SessionManager.#entryAppendObservers.delete(observer);
+	}
+
 	#cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root). Normalized absolute, deduped, excludes cwd. */
 	#additionalDirectories: string[] = [];
@@ -1055,6 +1064,15 @@ export class SessionManager {
 				callback(entry);
 			} catch (err) {
 				logger.warn("collab entry hook failed", { error: String(err) });
+			}
+		}
+		const sessionFile = this.#sessionFile;
+		if (!sessionFile) return;
+		for (const observer of SessionManager.#entryAppendObservers) {
+			try {
+				observer(sessionFile, entry);
+			} catch (err) {
+				logger.warn("session entry observer failed", { error: String(err), sessionFile });
 			}
 		}
 	}

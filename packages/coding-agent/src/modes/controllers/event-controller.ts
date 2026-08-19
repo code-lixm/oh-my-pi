@@ -934,6 +934,7 @@ export class EventController {
 			this.#resolveDisplaceableTodo();
 			const wasOptimistic = this.ctx.optimisticUserMessageSignature === signature;
 			const matchedLocalSubmission = this.ctx.locallySubmittedUserSignatures.delete(signature);
+			const queuedLocalSubmission = matchedLocalSubmission && !wasOptimistic;
 			const replacesOptimistic =
 				this.ctx.optimisticUserMessageSignature !== undefined && !wasOptimistic && !matchedLocalSubmission;
 			const wasLocallySubmitted = matchedLocalSubmission || wasOptimistic || replacesOptimistic;
@@ -962,7 +963,14 @@ export class EventController {
 				}
 				this.ctx.updatePendingMessagesDisplay();
 			}
-			this.ctx.ui.requestRender();
+			if (queuedLocalSubmission) {
+				// The queued user bubble is appended synchronously above, while the pending
+				// bar owns its own scoped repaint. Avoid replaying the live transcript just
+				// to reveal the consumed queue entry.
+				this.ctx.ui.requestComponentRender(this.ctx.chatContainer);
+			} else {
+				this.ctx.ui.requestRender();
+			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
 			this.#finalizeHubActivityGroup();

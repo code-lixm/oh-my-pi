@@ -462,7 +462,14 @@ export class InputController {
 		if (!this.#globalEscapeListenerInstalled) {
 			this.#globalEscapeListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
-				if (isKeyRelease(data) || !matchesKey(data, "escape") || !this.#hasCancelableWork()) return undefined;
+				if (isKeyRelease(data) || !matchesKey(data, "escape")) return undefined;
+				// Fullscreen and modal overlays own Escape as a back/close gesture. Do
+				// not let page navigation arm or confirm Main's double-Escape stop.
+				if (this.ctx.ui.hasOverlay()) {
+					this.#clearEscapeCancellation();
+					return undefined;
+				}
+				if (!this.#hasCancelableWork()) return undefined;
 				if (!this.#confirmEscapeCancellation("global")) {
 					this.#escapePassThroughEvent = true;
 					queueMicrotask(() => {
@@ -1630,7 +1637,8 @@ export class InputController {
 				restoreOnError(error);
 			}
 			this.ctx.updatePendingMessagesDisplay();
-			this.ctx.ui.requestRender();
+			// Editor input and the pending-message refresh each schedule their own
+			// scoped paint; a full compose here would replay the transcript on every queue append.
 			return;
 		}
 

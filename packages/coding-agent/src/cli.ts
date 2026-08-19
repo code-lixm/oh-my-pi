@@ -15,6 +15,7 @@ try {
  * lightweight CLI runner from pi-utils.
  */
 import { parentPort } from "node:worker_threads";
+import { STATS_RECONCILE_WORKER_ARG, startStatsReconcileWorker } from "@oh-my-pi/omp-stats/reconcile-worker";
 import { APP_NAME, getActiveProfile, MIN_BUN_VERSION, resolveProfileEnv, setProfile } from "@oh-my-pi/pi-utils/dirs";
 import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
@@ -30,6 +31,7 @@ import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbou
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
+import { smokeTestStatsReconcileWorker } from "./slash-commands/helpers/stats-reconcile-client";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
@@ -80,6 +82,7 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestLspMux } = await import("./lsp/mux/daemon");
 	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	const { smokeTestFff } = await import("./tools/fff-smoke");
+	await smokeTestStatsReconcileWorker();
 	await smokeTestSyncWorker();
 	await smokeTestFff();
 
@@ -144,6 +147,10 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		if (handler && handler !== buffer) {
 			for (const event of pending) handler.call(scope, event);
 		}
+		return true;
+	}
+	if (arg === STATS_RECONCILE_WORKER_ARG) {
+		await runIpcSubprocessWorker(startStatsReconcileWorker);
 		return true;
 	}
 	// Bun flushes messages the parent posted before spawn once this entry's

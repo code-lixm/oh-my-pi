@@ -7,10 +7,12 @@
 - Added `AgentOptions.formatSkippedToolResult` and its loop-level equivalent so hosts can localize synthetic skipped-tool results produced by steering or peer interrupts.
 
 - Added digest-only Codex native-prompt identity to chat telemetry without recording vendor prompt text.
+- Added non-mutating tool-output pruning plans with reason metrics, context-window-adaptive and host-overridable protection budgets, exact duplicate detection, and conservative cleanup for errors proven resolved by a later successful retry.
 
 ### Changed
 
 - Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema, retain constraints, decisions and evidence, command outcomes, active/blocked work, recovery references, and next actions, then replay the summary directly so execution continues without repeating completed work or reopening settled decisions without new evidence.
+- Changed compaction replay to carry validated deterministic todos, command outcomes, unresolved failures, workspace checkpoints, and recoverable URIs independently of the model-generated prose summary.
 
 ### Fixed
 

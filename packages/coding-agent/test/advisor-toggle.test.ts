@@ -7,7 +7,11 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { loadAdvisorTranscriptCosts } from "@oh-my-pi/pi-coding-agent/advisor/transcript-recorder";
+import {
+	ADVISOR_TRANSCRIPT_FILENAME,
+	loadAdvisorTranscriptCosts,
+	migrateAdvisorTranscriptCostLedgers,
+} from "@oh-my-pi/pi-coding-agent/advisor/transcript-recorder";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -112,21 +116,18 @@ describe("AgentSession advisor toggle", () => {
 	}
 
 	/**
-	 * Persist advisor turns beside a session file the same way the recorder does,
-	 * so the fixture stays valid if the transcript format ever moves.
+	 * Build a pre-ledger advisor transcript. Callers must explicitly run the
+	 * offline migration before asking a runtime to restore its cost.
 	 */
-	async function writeAdvisorTranscript(sessionFile: string, filename: string, costs: number[]): Promise<void> {
+	async function writeLegacyAdvisorTranscript(sessionFile: string, costs: number[]): Promise<void> {
 		const dir = sessionFile.slice(0, -".jsonl".length);
 		await fs.mkdir(dir, { recursive: true });
-		const manager = await SessionManager.open(path.join(dir, filename), undefined, undefined, {
-			initialCwd: dir,
-			suppressBreadcrumb: true,
-		});
-		try {
-			for (const [index, cost] of costs.entries()) manager.appendMessage(advisorMessage(cost, index + 1));
-		} finally {
-			await manager.close();
-		}
+		await fs.writeFile(
+			path.join(dir, ADVISOR_TRANSCRIPT_FILENAME),
+			`${costs
+				.map((cost, index) => JSON.stringify({ type: "message", message: advisorMessage(cost, index + 1) }))
+				.join("\n")}\n`,
+		);
 	}
 
 	function prepareHandoffConversation(advisor: Agent): void {
@@ -444,7 +445,8 @@ describe("AgentSession advisor toggle", () => {
 		const advisor = enableAdvisor();
 		appendAdvisorCost(advisor, 0.5, 1);
 		const targetSessionFile = SessionManager.createEmptySessionFile(tempDir.path());
-		await writeAdvisorTranscript(targetSessionFile, "__advisor.jsonl", [0.25]);
+		await writeLegacyAdvisorTranscript(targetSessionFile, [0.25]);
+		expect(Object.fromEntries(await migrateAdvisorTranscriptCostLedgers(targetSessionFile))).toEqual({ "": 0.25 });
 		const setSessionFile = sessionManager.setSessionFile.bind(sessionManager);
 		vi.spyOn(sessionManager, "setSessionFile").mockImplementation(async file => {
 			await setSessionFile(file);
@@ -457,16 +459,15 @@ describe("AgentSession advisor toggle", () => {
 		await session.dispose();
 		expect((await loadAdvisorTranscriptCosts(targetSessionFile)).get("")).toBeCloseTo(0.25, 8);
 	});
-	it("hydrates persisted advisor cost during SDK session startup", async () => {
+	it("hydrates only the direct-session advisor ledger during SDK startup", async () => {
 		const sessionFile = SessionManager.createEmptySessionFile(tempDir.path());
-		await writeAdvisorTranscript(sessionFile, "__advisor.jsonl", [0.5]);
-		// A subagent advisor writes one directory deeper; its spend belongs to that
+		await writeLegacyAdvisorTranscript(sessionFile, [0.5]);
+		// A subagent advisor ledger sits one directory deeper; its spend belongs to that
 		// subagent and must not inflate the resumed primary conversation.
-		await writeAdvisorTranscript(
-			path.join(sessionFile.slice(0, -".jsonl".length), "SubAgent.jsonl"),
-			"__advisor.jsonl",
-			[9],
-		);
+		const subagentSessionFile = path.join(sessionFile.slice(0, -".jsonl".length), "SubAgent.jsonl");
+		await writeLegacyAdvisorTranscript(subagentSessionFile, [9]);
+		expect(Object.fromEntries(await migrateAdvisorTranscriptCostLedgers(sessionFile))).toEqual({ "": 0.5 });
+		expect(Object.fromEntries(await migrateAdvisorTranscriptCostLedgers(subagentSessionFile))).toEqual({ "": 9 });
 		const settings = Settings.isolated({
 			"async.enabled": false,
 			"advisor.enabled": true,

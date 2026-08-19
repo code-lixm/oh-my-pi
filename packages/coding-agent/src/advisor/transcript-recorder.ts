@@ -2,9 +2,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Message, UserMessage } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { SessionManager } from "../session/session-manager";
+import { FileSessionStorage } from "../session/session-storage";
 
 /**
  * Reserved transcript stem for advisor session files. Chosen so it cannot
@@ -15,6 +16,9 @@ export const ADVISOR_TRANSCRIPT_STEM = "__advisor";
 export const ADVISOR_TRANSCRIPT_FILENAME = `${ADVISOR_TRANSCRIPT_STEM}.jsonl`;
 
 const JSONL_SUFFIX = ".jsonl";
+const COST_LEDGER_SUFFIX = ".cost.json";
+const COST_LEDGER_VERSION = 1;
+const MAX_PERSISTED_ADVISOR_USER_BYTES = 64 * 1024;
 
 /**
  * Transcript filename for an advisor: `__advisor.jsonl` for the legacy/default
@@ -33,56 +37,108 @@ export function isAdvisorTranscriptName(name: string): boolean {
 	);
 }
 
-/**
- * Sum the advisor spend already persisted next to a primary session transcript,
- * keyed by advisor slug.
- *
- * The ledger a session keeps in memory only covers the current process, so a
- * resumed session would report zero until the next advisor turn. The recorded
- * transcripts are the durable copy of exactly the same finalized messages, so
- * they are read back through the shared loader - no lock, no writer, and no
- * second parser to keep in step with the session format.
- *
- * Only the session's own advisors count: subagent advisors write to
- * `<session>/<SubId>/__advisor.jsonl`, and their spend belongs to the subagent,
- * not to this roster. Hence the scan stays at the top level of the directory.
- */
+export function advisorCostLedgerFilename(transcriptFilename: string): string {
+	if (!isAdvisorTranscriptName(transcriptFilename)) {
+		throw new Error(`Invalid advisor transcript filename: ${transcriptFilename}`);
+	}
+	return `${transcriptFilename.slice(0, -JSONL_SUFFIX.length)}${COST_LEDGER_SUFFIX}`;
+}
+
+function isAdvisorCostLedgerName(name: string): boolean {
+	return (
+		name === `${ADVISOR_TRANSCRIPT_STEM}${COST_LEDGER_SUFFIX}` ||
+		(name.startsWith(`${ADVISOR_TRANSCRIPT_STEM}.`) && name.endsWith(COST_LEDGER_SUFFIX))
+	);
+}
+
+function advisorSlugFromFilename(name: string, suffix: string): string {
+	return name === `${ADVISOR_TRANSCRIPT_STEM}${suffix}`
+		? ""
+		: name.slice(`${ADVISOR_TRANSCRIPT_STEM}.`.length, -suffix.length);
+}
+
+interface AdvisorCostLedger {
+	version: typeof COST_LEDGER_VERSION;
+	total: number;
+}
+
+function advisorCostLedgerTotal(value: unknown): number | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const ledger = value as Partial<AdvisorCostLedger>;
+	return ledger.version === COST_LEDGER_VERSION && typeof ledger.total === "number" && Number.isFinite(ledger.total)
+		? ledger.total
+		: undefined;
+}
+
+async function readAdvisorCostLedger(file: string): Promise<number | undefined> {
+	try {
+		return advisorCostLedgerTotal(await Bun.file(file).json());
+	} catch (err) {
+		if (!isEnoent(err))
+			logger.debug("advisor cost ledger read failed", { file: path.basename(file), err: String(err) });
+		return undefined;
+	}
+}
+
+const ledgerStorage = new FileSessionStorage();
+
+async function writeAdvisorCostLedger(file: string, total: number): Promise<void> {
+	const ledger: AdvisorCostLedger = { version: COST_LEDGER_VERSION, total };
+	await ledgerStorage.writeTextAtomic(file, `${JSON.stringify(ledger)}\n`);
+}
+
+/** Load advisor spend from constant-size ledgers without scanning transcripts. */
 export async function loadAdvisorTranscriptCosts(sessionFile: string | undefined): Promise<Map<string, number>> {
 	const costs = new Map<string, number>();
 	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return costs;
 	const directory = sessionFile.slice(0, -JSONL_SUFFIX.length);
 	const dirents = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
 	for (const dirent of dirents) {
-		if (!dirent.isFile() || !isAdvisorTranscriptName(dirent.name)) continue;
-		const slug =
-			dirent.name === ADVISOR_TRANSCRIPT_FILENAME
-				? ""
-				: dirent.name.slice(`${ADVISOR_TRANSCRIPT_STEM}.`.length, -JSONL_SUFFIX.length);
-		let total = 0;
-		let validHeader: boolean | undefined;
-		try {
-			await visitEntriesFromFileStream(path.join(directory, dirent.name), entry => {
-				const isObject = typeof entry === "object" && entry !== null;
-				if (validHeader === undefined) {
-					validHeader = isObject && entry.type === "session" && typeof entry.id === "string";
-					return;
-				}
-				// A syntactically valid but non-object entry (e.g. a bare `null`
-				// line) must cost only itself, not crash entry.type access and
-				// discard everything accumulated for this transcript.
-				if (!validHeader || !isObject || entry.type !== "message") return;
-				const message = entry.message;
-				if (!message || typeof message !== "object" || message.role !== "assistant") return;
-				// One malformed usage block must cost that entry only, not the
-				// whole transcript's total.
-				const total_ = message.usage?.cost?.total;
-				if (typeof total_ === "number" && Number.isFinite(total_)) total += total_;
-			});
-		} catch (err) {
-			logger.debug("advisor transcript cost read failed", { file: dirent.name, err: String(err) });
-			continue;
+		if (!dirent.isFile() || !isAdvisorCostLedgerName(dirent.name)) continue;
+		const total = await readAdvisorCostLedger(path.join(directory, dirent.name));
+		if (total !== undefined && total > 0) {
+			costs.set(advisorSlugFromFilename(dirent.name, COST_LEDGER_SUFFIX), total);
 		}
-		if (total > 0) costs.set(slug, total);
+	}
+	return costs;
+}
+
+/**
+ * One-time offline migration for legacy advisor transcripts. Runtime resume
+ * deliberately never calls this because a transcript may be arbitrarily large.
+ */
+export async function migrateAdvisorTranscriptCostLedgers(
+	sessionFile: string | undefined,
+): Promise<Map<string, number>> {
+	const costs = new Map<string, number>();
+	if (!sessionFile?.endsWith(JSONL_SUFFIX)) return costs;
+	const directory = sessionFile.slice(0, -JSONL_SUFFIX.length);
+	const dirents = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+	for (const dirent of dirents) {
+		if (!dirent.isFile() || !isAdvisorTranscriptName(dirent.name)) continue;
+		const transcript = path.join(directory, dirent.name);
+		const ledger = path.join(directory, advisorCostLedgerFilename(dirent.name));
+		let total = await readAdvisorCostLedger(ledger);
+		if (total === undefined) {
+			let migratedTotal = 0;
+			try {
+				await visitEntriesFromFileStream(transcript, entry => {
+					if (typeof entry !== "object" || entry === null || entry.type !== "message") return;
+					const message = entry.message;
+					if (!message || typeof message !== "object" || message.role !== "assistant") return;
+					const cost = message.usage?.cost?.total;
+					if (typeof cost === "number" && Number.isFinite(cost)) migratedTotal += cost;
+				});
+			} catch (err) {
+				logger.debug("advisor transcript migration read failed", {
+					file: path.basename(transcript),
+					err: String(err),
+				});
+			}
+			total = migratedTotal;
+			await writeAdvisorCostLedger(ledger, total);
+		}
+		if (total > 0) costs.set(advisorSlugFromFilename(dirent.name, JSONL_SUFFIX), total);
 	}
 	return costs;
 }
@@ -112,6 +168,8 @@ export class AdvisorTranscriptRecorder {
 	#manager: SessionManager | undefined;
 	#file: string | undefined;
 	#filename: string;
+	#pendingUser: { file: string; cwd: string; message: UserMessage } | undefined;
+	#ledgerTotals = new Map<string, number>();
 	/** Serializes the async open/close against synchronous appends so records land in order. */
 	#queue: Promise<void>;
 
@@ -138,47 +196,37 @@ export class AdvisorTranscriptRecorder {
 			: Promise.resolve();
 	}
 
-	/**
-	 * Persist one finalized advisor message. Assistant turns carry the usage the
-	 * stats parser reads; tool results round out the Hub transcript; user deltas
-	 * (the advisor's "session update" prompts) are persisted but flagged
-	 * `synthetic`/agent-attributed so they never inflate user-message metrics.
-	 * Non-conversational message kinds are skipped.
-	 */
+	/** Persist finalized advisor messages while bounding replayed user batches. */
 	record(message: AgentMessage): void {
-		let persisted: Message;
-		switch (message.role) {
-			case "assistant":
-			case "toolResult":
-				persisted = message;
-				break;
-			case "user":
-				// Clone so the live advisor message stays untouched; mark synthetic so
-				// stats' user-message metrics skip these agent-internal review prompts.
-				persisted = { ...(message as UserMessage), synthetic: true, attribution: "agent" };
-				break;
-			default:
-				return;
-		}
+		if (message.role !== "assistant" && message.role !== "toolResult" && message.role !== "user") return;
 		const sessionFile = this.resolveSessionFile();
 		if (!sessionFile?.endsWith(JSONL_SUFFIX)) return;
 		const file = path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), this.#filename);
 		const cwd = this.resolveCwd();
+
+		if (message.role === "user") {
+			const persisted = { ...(message as UserMessage), synthetic: true, attribution: "agent" as const };
+			if (this.#pendingUser && this.#pendingUser.file !== file) this.#enqueuePendingUser();
+			this.#pendingUser = { file, cwd, message: persisted };
+			return;
+		}
+
+		const pendingUser = this.#pendingUser;
+		this.#pendingUser = undefined;
+		const persisted = message as Message;
+		const cost = message.role === "assistant" ? message.usage.cost.total : undefined;
 		this.#enqueue(async () => {
-			if (file !== this.#file) {
-				await this.#closeManager();
-				this.#manager = await SessionManager.open(file, undefined, undefined, {
-					initialCwd: cwd,
-					suppressBreadcrumb: true,
-				});
-				this.#file = file;
+			if (pendingUser) {
+				await this.#append(pendingUser.file, pendingUser.cwd, this.#boundedUserMessage(pendingUser.message));
 			}
-			this.#manager?.appendMessage(persisted);
+			await this.#append(file, cwd, persisted);
+			if (typeof cost === "number" && Number.isFinite(cost)) await this.#recordCost(file, cost);
 		});
 	}
 
 	/** Flush pending writes (best-effort). */
 	flush(): Promise<void> {
+		this.#enqueuePendingUser();
 		return this.#enqueueResult(async () => {
 			if (this.#manager) await this.#manager.flush();
 		});
@@ -186,7 +234,49 @@ export class AdvisorTranscriptRecorder {
 
 	/** Flush and close the writer, releasing the session file. */
 	close(): Promise<void> {
+		this.#enqueuePendingUser();
 		return this.#enqueueResult(() => this.#closeManager());
+	}
+
+	#enqueuePendingUser(): void {
+		const pending = this.#pendingUser;
+		if (!pending) return;
+		this.#pendingUser = undefined;
+		this.#enqueue(() => this.#append(pending.file, pending.cwd, this.#boundedUserMessage(pending.message)));
+	}
+
+	#boundedUserMessage(message: UserMessage): UserMessage {
+		const serializedBytes = Buffer.byteLength(JSON.stringify(message));
+		if (serializedBytes <= MAX_PERSISTED_ADVISOR_USER_BYTES) return message;
+		return {
+			...message,
+			content: [
+				{
+					type: "text",
+					text: `[advisor input omitted: ${serializedBytes} bytes]`,
+				},
+			],
+		};
+	}
+
+	async #append(file: string, cwd: string, message: Message): Promise<void> {
+		if (file !== this.#file) {
+			await this.#closeManager();
+			this.#manager = await SessionManager.open(file, undefined, undefined, {
+				initialCwd: cwd,
+				suppressBreadcrumb: true,
+			});
+			this.#file = file;
+		}
+		this.#manager?.appendMessage(message);
+	}
+
+	async #recordCost(transcript: string, increment: number): Promise<void> {
+		const ledger = path.join(path.dirname(transcript), advisorCostLedgerFilename(path.basename(transcript)));
+		const current = this.#ledgerTotals.get(ledger) ?? (await readAdvisorCostLedger(ledger)) ?? 0;
+		const total = current + increment;
+		await writeAdvisorCostLedger(ledger, total);
+		this.#ledgerTotals.set(ledger, total);
 	}
 
 	async #closeManager(): Promise<void> {

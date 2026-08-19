@@ -21,6 +21,7 @@ export class Loader extends Text {
 	#frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 	#currentFrame = 0;
 	#intervalId?: NodeJS.Timeout;
+	#animationEnabled = true;
 	#ui: TUI | null = null;
 	#lastSpinnerTick = 0;
 	#layoutSource?: readonly string[];
@@ -97,7 +98,7 @@ export class Loader extends Text {
 	start() {
 		this.#lastSpinnerTick = performance.now();
 		this.#syncText();
-		this.#requestPaint();
+		this.#requestSemanticPaint();
 		const intervalMs = this.messageColorFn.animated === true ? RENDER_INTERVAL_MS : SPINNER_ADVANCE_MS;
 		this.#scheduleTick(intervalMs, intervalMs);
 	}
@@ -114,18 +115,31 @@ export class Loader extends Text {
 		this.stop();
 	}
 
+	/** Pause cosmetic spinner/shimmer paints while the surrounding status is blocked. */
+	setAnimationEnabled(enabled: boolean): void {
+		if (enabled) {
+			if (this.#animationEnabled) return;
+			this.#animationEnabled = true;
+			this.start();
+			return;
+		}
+		if (!this.#animationEnabled) return;
+		this.#animationEnabled = false;
+		this.stop();
+	}
+
 	setMessage(message: string) {
 		if (message === this.message) {
 			return;
 		}
 		this.message = message;
 		this.#syncText();
-		this.#requestPaint();
+		this.#requestSemanticPaint();
 	}
 
 	#scheduleTick(intervalMs: number, delayMs: number): void {
 		const timer = setTimeout(() => {
-			if (this.#intervalId !== timer) return;
+			if (!this.#animationEnabled || this.#intervalId !== timer) return;
 			const startedAt = performance.now();
 			const elapsed = startedAt - this.#lastSpinnerTick;
 			const shouldAdvanceSpinner = elapsed >= SPINNER_ADVANCE_MS;
@@ -139,7 +153,7 @@ export class Loader extends Text {
 				this.#syncText();
 			}
 			if (shouldAdvanceSpinner || this.#ui?.synchronizedOutput === true) {
-				this.#requestPaint();
+				this.#requestAnimationPaint();
 			}
 
 			const frameCostMs = performance.now() - startedAt;
@@ -159,18 +173,25 @@ export class Loader extends Text {
 		return this.setText(`${layoutFrame} ${this.message}`);
 	}
 
-	#requestPaint() {
-		if (!this.#ui) {
+	#requestSemanticPaint() {
+		if (!this.#ui) return;
+		if (typeof this.#ui.tryDirectWrite === "function") {
+			if (!this.#ui.tryDirectWrite(this)) this.#ui.requestComponentRender(this);
 			return;
 		}
-		// Direct write: a loader tick changes only this component, so the TUI can
-		// update the already-positioned rows without driving the full
-		// compose/prepare/diff pipeline. Lightweight test stubs may not carry the
-		// newer API; keep their legacy component-scoped path working.
 		if (typeof this.#ui.requestDirectWrite === "function") {
 			this.#ui.requestDirectWrite(this);
-		} else {
-			this.#ui.requestComponentRender(this);
+			return;
 		}
+		this.#ui.requestComponentRender(this);
+	}
+
+	#requestAnimationPaint() {
+		if (!this.#ui) return;
+		if (typeof this.#ui.tryDirectWrite === "function") {
+			this.#ui.tryDirectWrite(this);
+			return;
+		}
+		if (typeof this.#ui.requestDirectWrite === "function") this.#ui.requestDirectWrite(this);
 	}
 }

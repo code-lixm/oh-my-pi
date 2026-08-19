@@ -58,9 +58,10 @@ Search several literal naming variants with OR semantics in one indexed call.
 
 ## Index lifecycle
 
-- One `FffFinderManager` is shared by live sessions with the same canonical agent directory and workspace root.
+- One process-local `FffFinderManager` is shared by live sessions with the same canonical agent directory and workspace root; independent CLI/RPC processes do not share the native index.
 - The main workspace index stores frecency and query history under `~/.omp/agent/fff/<workspace-hash>/`.
-- Tool construction warms the workspace index in the background; the first query waits for initialization when necessary.
+- Tool construction only leases the manager. The first `grep`, `find`, or `multi_grep` call initializes and waits for the workspace index.
+- If LMDB reader slots are exhausted, workspace initialization retries without the optional frecency/query-history stores; file/content search remains available with neutral durable ranking for that process.
 - Up to three auxiliary indexes cover filesystem paths outside the workspace. They are reused by covering root, evicted by age/capacity, and never enable unrestricted home/root scanning.
 - Session disposal releases its lease. The final owner destroys the native finder and watcher.
 - Initial scan wait is bounded at 15 seconds; a timeout logs a warning and allows partial indexed results.

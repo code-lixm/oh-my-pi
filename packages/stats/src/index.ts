@@ -24,6 +24,16 @@ export type {
 	GainSourceTotals,
 	GainTimeSeriesPoint,
 } from "./shared-types";
+export {
+	type DashboardSyncMode,
+	type DashboardSyncOptions,
+	type DashboardSyncResult,
+	DEFAULT_STATS_FRESHNESS_MS,
+	markStatsSessionDirty,
+	type StatsSyncBackend,
+	StatsSyncCoordinator,
+	syncDashboardSessions,
+} from "./sync-coordinator";
 export type {
 	AggregatedStats,
 	DashboardStats,

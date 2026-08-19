@@ -30,11 +30,18 @@ import {
 	insertToolCalls,
 	insertUserMessageStats,
 	markSessionBackfillsComplete,
+	replaceSessionStats,
 	setFileOffset,
 	updateToolResults,
 	updateUserMessageLinks,
 } from "./db";
-import { getSessionEntry, listAllSessionFiles, type ParseSessionResult, parseSessionFile } from "./parser";
+import {
+	getSessionEntry,
+	listAllSessionFiles,
+	type ParseSessionOptions,
+	type ParseSessionResult,
+	parseSessionFile,
+} from "./parser";
 import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so the compiled binary and npm bundle only need one
@@ -72,13 +79,18 @@ export async function withStatsSyncLock<T>(dbPath: string, fn: () => Promise<T>)
  * Apply a freshly parsed result to the database. Runs entirely on the
  * main thread so the single SQLite handle owns every write.
  */
-function applyParseResult(sessionFile: string, lastModified: number, result: ParseSessionResult): number {
+function applyParseResult(
+	sessionFile: string,
+	lastModified: number,
+	fileSize: number,
+	result: ParseSessionResult,
+): number {
 	if (result.stats.length > 0) insertMessageStats(result.stats);
 	if (result.userStats.length > 0) insertUserMessageStats(result.userStats);
 	if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
 	if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
 	if (result.toolResults.length > 0) updateToolResults(result.toolResults);
-	setFileOffset(sessionFile, result.newOffset, lastModified);
+	setFileOffset(sessionFile, result.newOffset, lastModified, fileSize, result.parserState);
 	return result.stats.length + result.userStats.length;
 }
 
@@ -238,19 +250,38 @@ export async function smokeTestSyncWorker({ timeoutMs = 5_000 }: { timeoutMs?: n
  * bar walks at a steady rate).
  */
 export async function syncAllSessions(opts?: SyncOptions): Promise<{ processed: number; files: number }> {
-	return withStatsSyncLock(getStatsDbPath(), () => syncAllSessionsLocked(opts));
+	return withStatsSyncLock(getStatsDbPath(), async () => {
+		const files = await listAllSessionFiles();
+		return await syncSessionFilesLocked(files, opts, true);
+	});
 }
 
-async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: number; files: number }> {
-	await initDb();
+/**
+ * Synchronize a caller-observed set of session files without walking every
+ * session directory. Global sync remains the cross-process reconciliation
+ * path; this is the hot path for local append notifications.
+ */
+export async function syncSessionFiles(
+	sessionFiles: readonly string[],
+	opts?: SyncOptions,
+): Promise<{ processed: number; files: number }> {
+	return withStatsSyncLock(getStatsDbPath(), async () => {
+		return await syncSessionFilesLocked([...new Set(sessionFiles)], opts, false);
+	});
+}
 
-	const files = await listAllSessionFiles();
+async function syncSessionFilesLocked(
+	files: readonly string[],
+	opts: SyncOptions | undefined,
+	completeBackfills: boolean,
+): Promise<{ processed: number; files: number }> {
+	await initDb();
 	let totalProcessed = 0;
 	let filesProcessed = 0;
 	let completed = 0;
 	let cursor = 0;
 	const finish = () => {
-		markSessionBackfillsComplete();
+		if (completeBackfills) markSessionBackfillsComplete();
 		return { processed: totalProcessed, files: filesProcessed };
 	};
 	if (files.length === 0) return finish();
@@ -267,7 +298,7 @@ async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: n
 
 	const processFile = async (
 		sessionFile: string,
-		parse: (sessionFile: string, fromOffset: number) => Promise<ParseSessionResult>,
+		parse: (sessionFile: string, options: ParseSessionOptions) => Promise<ParseSessionResult>,
 	): Promise<void> => {
 		let fileStats: fs.Stats;
 		try {
@@ -277,15 +308,33 @@ async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: n
 			return;
 		}
 		const lastModified = fileStats.mtimeMs;
+		const fileSize = fileStats.size;
 		const stored = getFileOffset(sessionFile);
-		if (stored && stored.lastModified >= lastModified) {
+		if (stored && stored.fileSize === fileSize && stored.lastModified === lastModified) {
 			report(sessionFile);
 			return;
 		}
 
-		const fromOffset = stored?.offset ?? 0;
-		const result = await parse(sessionFile, fromOffset);
-		const inserted = applyParseResult(sessionFile, lastModified, result);
+		// A normal session only grows. If an observed file changed without
+		// growing, shrank, or no longer contains the stored offset, it was
+		// rewritten externally and must replace rather than append aggregates.
+		const replaceExisting =
+			stored !== null &&
+			(stored.offset > fileSize ||
+				(stored.fileSize !== null &&
+					(fileSize < stored.fileSize || (fileSize === stored.fileSize && stored.lastModified !== lastModified))));
+		const result = await parse(sessionFile, {
+			fromOffset: replaceExisting ? 0 : (stored?.offset ?? 0),
+			parserState: replaceExisting ? undefined : stored?.parserState,
+		});
+		let inserted = 0;
+		if (replaceExisting) {
+			replaceSessionStats(sessionFile, () => {
+				inserted = applyParseResult(sessionFile, lastModified, fileSize, result);
+			});
+		} else {
+			inserted = applyParseResult(sessionFile, lastModified, fileSize, result);
+		}
 		if (inserted > 0) {
 			totalProcessed += inserted;
 			filesProcessed++;
@@ -302,7 +351,6 @@ async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: n
 	}
 
 	const poolSize = Math.min(files.length, requestedWorkers);
-
 	const handles: WorkerHandle[] = [];
 	for (let i = 0; i < poolSize; i++) handles.push(spawnWorker());
 
@@ -311,7 +359,13 @@ async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: n
 			const idx = cursor++;
 			if (idx >= files.length) return;
 			const sessionFile = files[idx];
-			await processFile(sessionFile, (file, fromOffset) => dispatch(handle, { sessionFile: file, fromOffset }));
+			await processFile(sessionFile, (file, options) =>
+				dispatch(handle, {
+					sessionFile: file,
+					fromOffset: options.fromOffset ?? 0,
+					parserState: options.parserState,
+				}),
+			);
 		}
 	}
 

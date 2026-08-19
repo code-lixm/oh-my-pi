@@ -384,20 +384,23 @@ function scanLastServiceTier(bytes: Uint8Array): ServiceTierByFamily | undefined
 }
 /**
  * Parse a session file and extract all assistant message stats.
- * Uses incremental reading with offset tracking.
  *
- * Service-tier carry-over: `currentServiceTier` is a session-scoped piece of
- * state derived from `service_tier_change` entries that affects whether
- * subsequent OpenAI assistant replies count as premium requests. Incremental
- * syncs that resume past the most-recent tier change would otherwise lose
- * that state and silently record `premiumRequests = 0` for priority traffic
- * (the coding-agent stopped folding the tier into `usage.premiumRequests`
- * after 13f59162e — the parser is now the sole source of truth). When
- * `fromOffset > 0` we therefore scan the bytes preceding `fromOffset`
- * for the latest service-tier value before parsing the unprocessed tail.
- * The scan only keeps the current tier and does not materialize prefix
- * entries, preserving offset-based memory behavior for large sessions.
+ * `ParserState` persists the session-scoped service tier and canonical project
+ * folder alongside the consumed byte offset. Append-only resumes can therefore
+ * read only `file.slice(fromOffset)`. Existing databases with no checkpoint
+ * state take one compatibility pass that scans the old prefix, then persist a
+ * stateful checkpoint for subsequent tails.
  */
+export interface ParserState {
+	folder: string;
+	serviceTier?: ServiceTierByFamily;
+}
+
+export interface ParseSessionOptions {
+	fromOffset?: number;
+	parserState?: unknown;
+}
+
 export interface ParseSessionResult {
 	stats: MessageStats[];
 	userStats: UserMessageStats[];
@@ -405,6 +408,7 @@ export interface ParseSessionResult {
 	toolCalls: ToolCallStats[];
 	toolResults: ToolResultLink[];
 	newOffset: number;
+	parserState: ParserState;
 }
 /**
  * Resolve the user message an assistant reply ultimately answers by walking
@@ -431,17 +435,54 @@ function resolveUserParentId(entryById: ReadonlyMap<string, SessionEntry>, start
 	return null;
 }
 
-export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
+export async function parseSessionFile(
+	sessionPath: string,
+	options: number | ParseSessionOptions = 0,
+): Promise<ParseSessionResult> {
+	const fromOffset = typeof options === "number" ? options : (options.fromOffset ?? 0);
+	const persistedState =
+		typeof options === "number" || !options.parserState || typeof options.parserState !== "object"
+			? undefined
+			: (options.parserState as { folder?: unknown; serviceTier?: unknown });
+	const restoredState =
+		persistedState && typeof persistedState.folder === "string"
+			? {
+					folder: persistedState.folder,
+					serviceTier: coerceServiceTierByFamily(persistedState.serviceTier),
+				}
+			: undefined;
+	const file = Bun.file(sessionPath);
 	let bytes: Uint8Array;
+	let folder: string;
+	let currentServiceTier: ServiceTierByFamily | undefined;
+	let start: number;
 	try {
-		bytes = await Bun.file(sessionPath).bytes();
+		if (fromOffset > 0 && restoredState) {
+			bytes = await file.slice(fromOffset).bytes();
+			folder = restoredState.folder;
+			currentServiceTier = restoredState.serviceTier;
+			start = fromOffset;
+		} else {
+			bytes = await file.bytes();
+			start = Math.max(0, Math.min(fromOffset, bytes.length));
+			folder = extractProjectFolderFromBytes(bytes, extractFolderFromPath(sessionPath));
+			if (start > 0) currentServiceTier = scanLastServiceTier(bytes.subarray(0, start));
+		}
 	} catch (err) {
-		if (isEnoent(err))
-			return { stats: [], userStats: [], userLinks: [], toolCalls: [], toolResults: [], newOffset: fromOffset };
+		if (isEnoent(err)) {
+			return {
+				stats: [],
+				userStats: [],
+				userLinks: [],
+				toolCalls: [],
+				toolResults: [],
+				newOffset: fromOffset,
+				parserState: restoredState ?? { folder: extractFolderFromPath(sessionPath) },
+			};
+		}
 		throw err;
 	}
 
-	const folder = extractProjectFolderFromBytes(bytes, extractFolderFromPath(sessionPath));
 	const agentType = classifyAgentType(sessionPath);
 	const stats: MessageStats[] = [];
 	const userStats: UserMessageStats[] = [];
@@ -456,13 +497,9 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	// to the reply tree of the latest user message, so this is a safe fallback
 	// when a parentId chain is cyclic, truncated, or spans sync passes.
 	let lastUserEntryId: string | null = null;
-	const start = Math.max(0, Math.min(fromOffset, bytes.length));
-	const unprocessed = bytes.subarray(start);
-	const { entries, read } = parseSessionEntriesLenient(unprocessed);
-	let currentServiceTier: ServiceTierByFamily | undefined;
-	if (start > 0) {
-		currentServiceTier = scanLastServiceTier(bytes.subarray(0, start));
-	}
+	const { entries, read } = parseSessionEntriesLenient(
+		fromOffset > 0 && restoredState ? bytes : bytes.subarray(start),
+	);
 	for (const entry of entries) {
 		if ("id" in entry && typeof entry.id === "string" && entry.id.length > 0) entryById.set(entry.id, entry);
 		if (isServiceTierChange(entry)) {
@@ -514,7 +551,15 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		}
 	}
 
-	return { stats, userStats, userLinks, toolCalls, toolResults, newOffset: start + read };
+	return {
+		stats,
+		userStats,
+		userLinks,
+		toolCalls,
+		toolResults,
+		newOffset: start + read,
+		parserState: { folder, serviceTier: currentServiceTier },
+	};
 }
 
 /**

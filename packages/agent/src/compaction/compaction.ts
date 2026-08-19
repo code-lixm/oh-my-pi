@@ -79,10 +79,116 @@ import {
 // File Operation Tracking
 // ============================================================================
 
-/** Details stored in CompactionEntry.details for file tracking */
+export interface CompactionTodoFact {
+	phase: string;
+	content: string;
+	status: "pending" | "in_progress" | "blocked";
+	blocker?: string;
+}
+
+export interface CompactionCommandFact {
+	command: string;
+	outcome: "passed" | "failed";
+	exitCode?: number;
+}
+
+export interface CompactionFailureFact {
+	operationKey: string;
+	tool: string;
+	operation: string;
+	error: string;
+}
+
+export interface CompactionCheckpointFact {
+	id: string;
+	label?: string;
+	reason: string;
+}
+
+export interface CompactionRetainedFacts {
+	todos: CompactionTodoFact[];
+	commands: CompactionCommandFact[];
+	unresolvedFailures: CompactionFailureFact[];
+	recoverableUris: string[];
+	workspaceCheckpoint?: CompactionCheckpointFact;
+}
+
+/** Details stored in CompactionEntry.details for deterministic state retention. */
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	retainedFacts?: CompactionRetainedFacts;
+}
+
+function isCompactionTodoFact(value: unknown): value is CompactionTodoFact {
+	return (
+		isRecord(value) &&
+		typeof value.phase === "string" &&
+		typeof value.content === "string" &&
+		(value.status === "pending" || value.status === "in_progress" || value.status === "blocked") &&
+		(value.blocker === undefined || typeof value.blocker === "string")
+	);
+}
+
+function isCompactionCommandFact(value: unknown): value is CompactionCommandFact {
+	return (
+		isRecord(value) &&
+		typeof value.command === "string" &&
+		(value.outcome === "passed" || value.outcome === "failed") &&
+		(value.exitCode === undefined || typeof value.exitCode === "number")
+	);
+}
+
+function isCompactionFailureFact(value: unknown): value is CompactionFailureFact {
+	return (
+		isRecord(value) &&
+		typeof value.operationKey === "string" &&
+		typeof value.tool === "string" &&
+		typeof value.operation === "string" &&
+		typeof value.error === "string"
+	);
+}
+
+/** Parse retained facts from persisted details without trusting extension-owned shapes. */
+export function getCompactionRetainedFacts(details: unknown): CompactionRetainedFacts | undefined {
+	if (!isRecord(details) || !isRecord(details.retainedFacts)) return undefined;
+	const facts = details.retainedFacts;
+	if (
+		!Array.isArray(facts.todos) ||
+		!facts.todos.every(isCompactionTodoFact) ||
+		!Array.isArray(facts.commands) ||
+		!facts.commands.every(isCompactionCommandFact) ||
+		!Array.isArray(facts.unresolvedFailures) ||
+		!facts.unresolvedFailures.every(isCompactionFailureFact) ||
+		!Array.isArray(facts.recoverableUris) ||
+		!facts.recoverableUris.every(uri => typeof uri === "string")
+	) {
+		return undefined;
+	}
+	let workspaceCheckpoint: CompactionCheckpointFact | undefined;
+	if (facts.workspaceCheckpoint !== undefined) {
+		const checkpoint = facts.workspaceCheckpoint;
+		if (
+			!isRecord(checkpoint) ||
+			typeof checkpoint.id !== "string" ||
+			typeof checkpoint.reason !== "string" ||
+			(checkpoint.label !== undefined && typeof checkpoint.label !== "string")
+		) {
+			return undefined;
+		}
+		workspaceCheckpoint = {
+			id: checkpoint.id,
+			reason: checkpoint.reason,
+			...(checkpoint.label === undefined ? {} : { label: checkpoint.label }),
+		};
+	}
+	return {
+		todos: facts.todos,
+		commands: facts.commands,
+		unresolvedFailures: facts.unresolvedFailures,
+		recoverableUris: facts.recoverableUris,
+		...(workspaceCheckpoint ? { workspaceCheckpoint } : {}),
+	};
 }
 
 /**

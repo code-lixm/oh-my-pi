@@ -166,6 +166,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Model, git, cost, context": "模型、Git、费用、上下文",
 	Settings: "设置",
 	Plugins: "插件",
+	Advanced: "高级配置",
+	"Canonical OMP configuration key: {path}": "OMP 规范配置键：{path}",
 	Appearance: "外观",
 	Model: "模型",
 	Interaction: "交互",
@@ -1637,6 +1639,9 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Check for Updates": "检查更新",
 	"Check for omp updates on startup": "启动时检查 omp 更新",
 	"Check for plugin updates on startup": "启动时检查插件更新",
+	"Archive Resolved Errors": "归档已解决错误",
+	"Archive old errors after the same operation succeeds, while preserving recent diagnostics":
+		"同一操作成功后归档旧错误，同时保留近期诊断信息",
 	"Check thresholds at safe mid-turn tool-loop boundaries before the next provider request":
 		"在下一次请求提供方之前，于回合中的安全工具循环边界检查阈值",
 	"Checking availability…": "正在检查可用性…",
@@ -1648,6 +1653,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Codex Auto-Redeem Min Block": "Codex 自动兑换最小阻塞值",
 	"Codex Auto-Redeem Reserve": "Codex 自动兑换保留值",
 	"Codex Auto-Redeem Saved Resets": "Codex 自动兑换已保存重置次数",
+	"Codex Reset Salvage Horizon": "Codex 重置到期挽救时限",
 	"Collapse Changelog": "折叠更新日志",
 	"Color-Blind Mode": "色盲模式",
 	"Colorblind colors": "色盲友好配色",
@@ -1678,6 +1684,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Debug Tools": "调试工具",
 	"Debug transcript written to:\n{path}": "调试 transcript 已写入：\n{path}",
 	"Deduplicate Diagnostics": "诊断去重",
+	"Deduplicate Tool Results": "工具结果去重",
+	"Prune earlier byte-identical results from the same tool operation": "裁剪同一工具操作中较早且逐字节相同的结果",
 	DeepSeek: "DeepSeek",
 	Default: "默认",
 	"Default Read Limit": "默认读取上限",
@@ -1945,6 +1953,12 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"自动工作区检查点失败时的会话处理方式：阻止会修改工作区的回合、显示警告后继续，或静默继续。",
 	warn: "警告后继续",
 	ignore: "忽略",
+	"Max checkpoints per session": "每个会话的检查点上限",
+	"Maximum workspace checkpoints retained per session before garbage collection prunes the oldest.":
+		"每个会话最多保留的工作区检查点数量；超过后，垃圾回收会裁剪最旧的检查点。",
+	"Max checkpoint age (days)": "检查点最长保留时长（天）",
+	"Drop workspace checkpoints older than this many days during garbage collection; set to 0 to skip age-based pruning.":
+		"垃圾回收时删除超过此保留天数的工作区检查点；设为 0 可跳过按时长裁剪。",
 	"Max total checkpoint storage (MiB)": "检查点总存储上限（MiB）",
 	"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.":
 		"所有工作区检查点 CAS 物理存储的软上限。垃圾回收会自动删除最旧且未受保护的检查点；受保护的恢复历史可能使占用超过上限。设为 0 可禁用总量限制。",
@@ -2096,8 +2110,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Multiplexer:": "复用器：",
 	"Name shown to other collab participants (default: OS username)": "向其他协作参与者显示的名称（默认：OS 用户名）",
 	"Native Terminal Progress": "原生终端进度",
-	"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically).":
-		"已保存重置次数低于该值时绝不自动消耗（0 = 最后一次额度也可自动消耗）。",
+	"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically). Credits about to expire are exempt — a reserved credit that expires preserves nothing.":
+		"绝不自动消耗已保存的重置次数，使其低于该值（0 = 最后一个额度也可自动消耗）。即将过期的额度不受此限制——保留会过期的额度毫无意义。",
 	"Never interrupt; inject warning after completion": "永不中断；完成后注入警告",
 	"Notify when the agent finishes a turn": "代理完成一轮时通知",
 	"Notify when the ask tool is waiting for input": "ask 工具等待输入时通知",
@@ -2202,6 +2216,13 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"web_search 永远不应使用的提供方，即使作为回退也不使用",
 	"Prune older read results when the same file is read again (cache-aware, runs every turn)":
 		"再次读取同一文件时裁剪较旧的读取结果（感知缓存，每轮运行）",
+	"Recent tool-result tokens kept verbatim before age or resolved-error pruning; 0 scales with the active model":
+		"在按时间或已解决错误裁剪前原样保留的近期工具结果 token 数；0 表示按当前模型自动缩放",
+	"Tool Result Protection Window": "工具结果保护窗",
+	"8K tokens": "8K token",
+	"16K tokens": "16K token",
+	"40K tokens": "40K token",
+	"80K tokens": "80K token",
 	"Push to a secret gist (needs authenticated gh), falling back to the share server":
 		"推送到私密 gist（需要已认证的 gh），失败时回退到共享服务器",
 	"Python Eval Backend": "Python 执行后端",
@@ -2418,8 +2439,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"The original snapcompact shape (pre-shape-table sessions rendered this).":
 		"原始的 snapcompact 形状（shape-table 之前的会话使用此形状渲染）。",
 	"The rule condition did not match any earlier assistant output.": "该规则条件未匹配到任何更早的 assistant 输出。",
-	"Theme used when the terminal has a dark background": "终端为深色背景时使用的主题",
-	"Theme used when the terminal has a light background": "终端为浅色背景时使用的主题",
+	"Theme used for dark color schemes in OMP Web and the CLI/TUI": "OMP Web 与 CLI/TUI 使用深色配色方案时采用的主题",
+	"Theme used for light color schemes in OMP Web and the CLI/TUI": "OMP Web 与 CLI/TUI 使用浅色配色方案时采用的主题",
 	"Use Terminal Palette": "使用终端调色板",
 	"Override the selected dark and light themes with adaptive themes that inherit the terminal ANSI palette":
 		"使用继承终端 ANSI 调色板的自适应主题，覆盖已选择的深色和浅色主题",
@@ -2978,8 +2999,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"OSC 9 (iTerm2/WezTerm)": "OSC 9（iTerm2/WezTerm）",
 	"OSC 99 (kitty desktop notifications)": "OSC 99（kitty 桌面通知）",
 	"OSC 99 (kitty)": "OSC 99（kitty）",
-	"Only auto-redeem when the natural weekly reset is at least this many minutes away (don't spend a ~30-day credit to save a short wait).":
-		"仅当自然每周重置至少还需这么多分钟时才自动兑换（不要为了省去短暂等待而花掉约 30 天的额度）。",
+	"Only auto-redeem when the natural unblock — the latest reset among the exhausted 5h/weekly windows — is at least this many minutes away (don't spend a scarce credit to save a short wait). Raise it (e.g. 360) to ignore 5h-only blocks.":
+		"仅当自然解除阻塞时间（已耗尽的 5h/每周窗口中最晚的重置）至少还需这么多分钟时才自动兑换（不要为省去短暂等待而花掉稀缺额度）。提高此值（例如 360）可忽略仅由 5h 窗口造成的阻塞。",
 	"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.":
 		"可选：指定确切 Julia 可执行文件的路径。设置后将跳过 Julia 运行时的自动发现。",
 	"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.":
@@ -3653,7 +3674,44 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Early maintenance": "较早压缩",
 	Edit: "Edit",
 	'Editing "{name}" · Enter / click edit field · Esc back': "正在编辑“{name}” · 按 Enter / 点击编辑字段 · 按 Esc 返回",
+	"Move cursor up": "向上移动光标",
+	"Move cursor down": "向下移动光标",
+	"Move cursor left": "向左移动光标",
+	"Move cursor right": "向右移动光标",
+	"Move cursor word left": "向左移动一个单词",
+	"Move cursor word right": "向右移动一个单词",
+	"Move to line start": "移动到行首",
+	"Move to line end": "移动到行尾",
+	"Jump forward to character": "向前跳转到字符",
+	"Jump backward to character": "向后跳转到字符",
+	"Page up": "向上翻页",
+	"Page down": "向下翻页",
+	"Delete character backward": "删除前一个字符",
+	"Delete character forward": "删除后一个字符",
+	"Delete word backward": "删除前一个单词",
+	"Delete word forward": "删除后一个单词",
+	"Delete to line start": "删除到行首",
+	"Delete to line end": "删除到行尾",
+	Yank: "粘贴已删除文本",
+	"Yank pop": "切换粘贴内容",
+	Undo: "撤销",
+	"Insert newline": "插入换行",
+	"Submit input": "提交输入",
+	"Tab / autocomplete": "Tab / 自动补全",
+	"Copy selection": "复制选中内容",
+	"Move selection up": "向上移动选择",
+	"Move selection down": "向下移动选择",
+	"Selection page up": "选择列表向上翻页",
+	"Selection page down": "选择列表向下翻页",
+	"Confirm selection": "确认选择",
+	"Cancel selection": "取消选择",
+	"Show or hide tool activity": "显示或隐藏工具活动",
+	"Send current draft to a new session and keep the current session running in the background":
+		"将当前草稿发送到新会话，并让当前会话继续在后台运行",
+	"Start or stop live voice mode (/live)": "启动或停止实时语音模式（/live）",
+	Application: "应用",
 	Editor: "编辑器",
+	Selection: "选择器",
 	"Editor exited without saving; todos unchanged.": "编辑器退出时未保存；todos 未更改。",
 	'Extension "{extensionPath}" error: {error}': "扩展“{extensionPath}”错误：{error}",
 	"Extension Modules": "扩展模块",
@@ -5193,6 +5251,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"每个提供商搜索传输的硬超时；超时后 web_search 会继续下一个回退，单位为秒（最大 300）",
 	"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.":
 		"自动使用已保存的 Codex 速率限制重置次数：当回合卡住、当前账号的 5h 或每周额度已耗尽且没有其他账号可接管时恢复该账号，并抢救即将过期的额度。unset 会在首次使用前询问，yes 不询问直接使用，no 会关闭这两项检查。",
+	"Spend a saved Codex reset automatically when it would otherwise expire within this many hours and either chat window (5h or weekly) has meaningful usage to restore (0 disables expiry salvage).":
+		"当已保存的 Codex 重置将在这么多小时内过期，且任一聊天窗口（5h 或每周）都有可恢复的实质用量时，自动使用该重置（0 禁用到期挽救）。",
 	Sync: "同步",
 	"S3 Storage": "S3 存储",
 	Credentials: "凭据",

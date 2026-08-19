@@ -1655,6 +1655,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			localProtocolOptions: this.session.localProtocolOptions,
 			skills: this.session.skills,
 		});
+		if (artifact.path.endsWith(".prune.log")) {
+			logger.debug("Recovered context pruning artifact", {
+				artifactId: artifact.id,
+				artifactSize: artifact.size,
+				selector: parsedSel.kind,
+			});
+		}
 		const artifactUrl = `artifact://${artifact.id}`;
 		const details: ReadToolDetails = {
 			resolvedPath: artifact.path,

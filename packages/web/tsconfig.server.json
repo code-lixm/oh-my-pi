@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "paths": {
+      "@oh-my-pi/pi-ai": ["./server/types/pi-ai.d.ts"],
+      "@oh-my-pi/pi-agent-core": ["./server/types/pi-agent-core.d.ts"],
+      "@oh-my-pi/pi-utils": ["./server/types/pi-utils.d.ts"],
+      "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client": ["./server/types/rpc-client.d.ts"],
+      "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types": ["./server/types/rpc-types.d.ts"],
+      "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-management-types": ["../coding-agent/src/modes/rpc/rpc-management-types.ts"],
+      "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-settings-types": ["../coding-agent/src/modes/rpc/rpc-settings-types.ts"],
+      "@oh-my-pi/pi-coding-agent/session/session-listing": ["./server/types/session-management.d.ts"],
+      "@oh-my-pi/pi-coding-agent/session/session-paths": ["./server/types/session-management.d.ts"],
+      "@oh-my-pi/pi-coding-agent/session/session-storage": ["./server/types/session-management.d.ts"],
+      "@oh-my-pi/pi-coding-agent/tools/fff-manager": ["./server/types/fff-manager.d.ts"],
+      "@oh-my-pi/pi-coding-agent/utils/git": ["./server/types/git.d.ts"]
+    }
+  },
+  "include": ["server/**/*.ts", "shared/**/*.ts"],
+  "exclude": ["server/**/*.test.ts"]
+}

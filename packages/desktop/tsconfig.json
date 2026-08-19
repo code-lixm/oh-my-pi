@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "outDir": "node_modules/.ts-dist",
+    "types": ["vite/client", "node", "electron"],
+    "paths": {
+      "@/*": ["../web/src/*"],
+      "@pierre/trees": ["../web/src/vendor/pierre-trees.ts"],
+      "@pierre/trees-base": ["../../node_modules/@pierre/trees/dist/index.d.ts"]
+    }
+  },
+  "include": ["src", "package.json", "../web/src/env.d.ts", "../web/src/custom-elements.d.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

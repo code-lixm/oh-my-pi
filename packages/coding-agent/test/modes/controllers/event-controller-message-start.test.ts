@@ -26,6 +26,9 @@ function createContext(options: {
 	locallySubmittedSignatures?: string[];
 }) {
 	let currentEditorText = options.editorText;
+	const chatContainer = new TranscriptContainer();
+	const requestRender = vi.fn();
+	const requestComponentRender = vi.fn();
 	const setText = vi.fn((text: string) => {
 		currentEditorText = text;
 	});
@@ -45,8 +48,9 @@ function createContext(options: {
 		isInitialized: true,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender, requestComponentRender },
 		editor,
+		chatContainer,
 		addMessageToChat,
 		updatePendingMessagesDisplay,
 		getUserMessageText: (message: UserMessage) =>
@@ -66,6 +70,9 @@ function createContext(options: {
 	} as unknown as InteractiveModeContext;
 	return {
 		ctx,
+		chatContainer,
+		requestRender,
+		requestComponentRender,
 		editor,
 		setText,
 		addMessageToChat,
@@ -80,13 +87,22 @@ describe("EventController message_start (user role)", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("preserves an in-progress editor draft when delivering a queued submission", async () => {
+	it("preserves an in-progress editor draft and scopes the chat render when delivering a queued submission", async () => {
 		// Reproduces the bug: user sends a message during streaming (queued) and then
 		// types a follow-up draft. When the queue drains and message_start fires,
 		// the editor MUST keep the draft.
 		const message = createUserMessage("queued during streaming");
 		const signature = "queued during streaming\u00000";
-		const { ctx, editor, setText, addMessageToChat, updatePendingMessagesDisplay } = createContext({
+		const {
+			ctx,
+			editor,
+			setText,
+			addMessageToChat,
+			updatePendingMessagesDisplay,
+			chatContainer,
+			requestComponentRender,
+			requestRender,
+		} = createContext({
 			editorText: "draft typed after queuing",
 			locallySubmittedSignatures: [signature],
 		});
@@ -98,6 +114,9 @@ describe("EventController message_start (user role)", () => {
 		expect(editor.getText()).toBe("draft typed after queuing");
 		// Queued message was not optimistically rendered, so it must still land in chat.
 		expect(addMessageToChat).toHaveBeenCalledWith(message);
+		// The queued bubble must repaint only the transcript root, not compose the full TUI.
+		expect(requestComponentRender).toHaveBeenCalledWith(chatContainer);
+		expect(requestRender).not.toHaveBeenCalled();
 		// Pending list always refreshes so the dequeued entry disappears.
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		// Signature is consumed so a future external message with the same shape still clears.

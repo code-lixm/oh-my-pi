@@ -25,6 +25,7 @@ import {
 	type SubmenuOption,
 	TAB_GROUPS,
 } from "../../config/settings-schema";
+import { isSettingsUiConditionMet } from "../../config/settings-ui-condition";
 import { LOCAL_SYNC_PASSPHRASE_SETTING_PATH } from "../../config-sync/local-secret";
 import { getSettingsUiLocale, type SettingsUiLocale, tSettingsUi } from "../../i18n/settings-locale";
 
@@ -47,6 +48,7 @@ interface BaseSettingDef<P extends SettingDefPath = SettingPath> {
 	 * setting is hidden from the UI. Applies to every variant — booleans,
 	 * enums, submenus, and text inputs.
 	 */
+	conditionName?: string;
 	condition?: () => boolean;
 }
 
@@ -61,11 +63,11 @@ export interface EnumSettingDef extends BaseSettingDef {
 
 type OptionList = ReadonlyArray<SubmenuOption>;
 
-function localizeOption(option: SubmenuOption): SubmenuOption {
+function localizeOption(option: SubmenuOption, locale: SettingsUiLocale): SubmenuOption {
 	return {
 		...option,
-		label: tSettingsUi(option.label),
-		...(option.description ? { description: tSettingsUi(option.description) } : {}),
+		label: tSettingsUi(option.label, undefined, locale),
+		...(option.description ? { description: tSettingsUi(option.description, undefined, locale) } : {}),
 	};
 }
 
@@ -119,90 +121,50 @@ export type SettingDef =
 // Condition Functions
 // ═══════════════════════════════════════════════════════════════════════════
 
-const CONDITIONS: Record<string, () => boolean> = {
-	hasImageProtocol: () => !!TERMINAL.imageProtocol,
-	advisorEnabled: () => {
+function conditionFor(name: string | undefined): (() => boolean) | undefined {
+	if (!name) return undefined;
+	return () => {
 		try {
-			return Settings.instance.get("advisor.enabled") === true;
+			return isSettingsUiConditionMet(name, Settings.instance, { hasImageProtocol: !!TERMINAL.imageProtocol });
 		} catch {
 			return false;
 		}
-	},
-	hindsightActive: () => {
-		try {
-			return Settings.instance.get("memory.backend") === "hindsight";
-		} catch {
-			return false;
-		}
-	},
-	mnemopiActive: () => {
-		try {
-			return Settings.instance.get("memory.backend") === "mnemopi";
-		} catch {
-			return false;
-		}
-	},
-	autolearnActive: () => {
-		try {
-			return Settings.instance.get("autolearn.enabled") === true;
-		} catch {
-			return false;
-		}
-	},
-	autoThinkingActive: () => {
-		try {
-			return Settings.instance.get("defaultThinkingLevel") === "auto";
-		} catch {
-			return false;
-		}
-	},
-	usageAwareFallbackEnabled: () => {
-		try {
-			return Settings.instance.get("retry.usageAwareFallback") === true;
-		} catch {
-			return false;
-		}
-	},
-	planModeEnabled: () => {
-		try {
-			return Settings.instance.get("plan.enabled");
-		} catch {
-			return false;
-		}
-	},
-};
+	};
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Schema to UI Conversion
 // ═══════════════════════════════════════════════════════════════════════════
 
-function resolveOptions(ui: AnyUiMetadata): OptionList | "runtime" | undefined {
+function resolveOptions(ui: AnyUiMetadata, locale: SettingsUiLocale): OptionList | "runtime" | undefined {
 	if (!ui.options) return undefined;
 	if (ui.options === "runtime") return "runtime";
-	return ui.options.map(localizeOption);
+	return ui.options.map(option => localizeOption(option, locale));
 }
 
-function pathToSettingDef(path: SettingPath): SettingDef | null {
+function pathToSettingDef(path: SettingPath, locale: SettingsUiLocale): SettingDef | null {
 	const ui = getUi(path);
 	if (!ui) return null;
-
 	const schemaType = getType(path);
-	const condition = ui.condition ? CONDITIONS[ui.condition] : undefined;
+
+	const conditionName = ui.condition;
+	const condition = conditionFor(conditionName);
 	const base = {
 		path,
-		label: tSettingsUi(ui.label),
-		description: tSettingsUi(ui.description),
+		label: tSettingsUi(ui.label, undefined, locale),
+		description: tSettingsUi(ui.description, undefined, locale),
 		tab: ui.tab,
 		group: ui.group,
-		groupLabel: ui.group ? tSettingsUi(ui.group) : undefined,
+		groupLabel: ui.group ? tSettingsUi(ui.group, undefined, locale) : undefined,
 		condition,
+		conditionName,
 	};
 
 	if (schemaType === "boolean") {
 		return { ...base, type: "boolean" };
 	}
 
-	const options = resolveOptions(ui);
+	const options = resolveOptions(ui, locale);
 
 	if (schemaType === "enum") {
 		if (options === undefined) {
@@ -266,25 +228,26 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 const cachedDefs = new Map<SettingsUiLocale, SettingDef[]>();
 
 /** Get all setting definitions with UI */
-export function getAllSettingDefs(): SettingDef[] {
-	const locale = getSettingsUiLocale();
+export function getAllSettingDefs(locale: SettingsUiLocale = getSettingsUiLocale()): SettingDef[] {
 	const cached = cachedDefs.get(locale);
 	if (cached) return cached;
 
 	const defs: SettingDef[] = [];
 	for (const tab of SETTING_TABS) {
 		for (const path of getPathsForTab(tab)) {
-			const def = pathToSettingDef(path);
+			const def = pathToSettingDef(path, locale);
 			if (tab === "sync" && path === "sync.passphraseEnv") {
 				defs.push({
 					path: LOCAL_SYNC_PASSPHRASE_SETTING_PATH,
-					label: tSettingsUi("Local Encryption Key"),
+					label: tSettingsUi("Local Encryption Key", undefined, locale),
 					description: tSettingsUi(
 						"Encryption key stored only in this device's local secret file; it is never written to config.yml or uploaded to S3.",
+						undefined,
+						locale,
 					),
 					tab: "sync",
 					group: "Credentials",
-					groupLabel: tSettingsUi("Credentials"),
+					groupLabel: tSettingsUi("Credentials", undefined, locale),
 					type: "text",
 					secret: true,
 					localSecret: true,

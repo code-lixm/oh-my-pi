@@ -1,5 +1,11 @@
 import * as stats from "@oh-my-pi/omp-stats";
+import { SessionManager } from "../../session/session-manager";
 import * as openUtils from "../../utils/open";
+import { reconcileStatsInSubprocess } from "./stats-reconcile-client";
+
+SessionManager.addEntryAppendedObserver(sessionFile => {
+	stats.markStatsSessionDirty(sessionFile);
+});
 
 export const DEFAULT_STATS_DASHBOARD_PORT = 3847;
 
@@ -55,12 +61,15 @@ export function parseStatsDashboardArgs(args: string): StatsDashboardArgs | { er
 }
 
 export async function launchStatsDashboard(args: StatsDashboardArgs): Promise<StatsDashboardLaunchResult> {
-	const { processed, files } = await stats.syncAllSessions();
+	const runFullSync = reconcileStatsInSubprocess;
+	const { processed, files } = await stats.syncDashboardSessions({ runFullSync });
 	const total = await stats.getTotalMessageCount();
 	let requestedPortIgnored = false;
 
 	if (!activeStatsServer) {
-		activeStatsServer = await stats.startServer(args.port);
+		activeStatsServer = await stats.startServer(args.port, {
+			sync: () => stats.syncDashboardSessions({ forceFull: true, runFullSync }),
+		});
 	} else if (args.port !== activeStatsServer.port) {
 		requestedPortIgnored = true;
 	}

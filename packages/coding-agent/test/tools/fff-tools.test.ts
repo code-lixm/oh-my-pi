@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import type {
 	FileFinderApi,
 	FileItem,
@@ -11,6 +11,7 @@ import type {
 	SearchOptions,
 	SearchResult,
 } from "@ff-labs/fff-bun";
+import { FileFinder } from "@ff-labs/fff-bun";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
@@ -399,6 +400,47 @@ describe("FFF built-in tools", () => {
 		expect(text).toContain("read only");
 		expect(text).toContain("write.ts");
 		expect(text).toContain("write only");
+	});
+
+	it("defers native finder creation until a search executes and shares it across FFF tools", async () => {
+		const session = createSession("/tmp/fff-tools-lazy-init-workspace");
+		const finder = new FakeFinder({
+			fileSearch: [{ ok: true, value: searchResult(["src/find.ts"]) }],
+			grep: [{ ok: true, value: grepResult([grepMatch("src/grep.ts", "needle")]) }],
+			multiGrep: [{ ok: true, value: grepResult([grepMatch("src/multi.ts", "needle")]) }],
+		});
+		const createSpy = spyOn(FileFinder, "create").mockImplementation(() => ({
+			ok: true,
+			value: finder as unknown as FileFinder,
+		}));
+
+		try {
+			const findTool = new FffFindTool(session);
+			const grepTool = new FffGrepTool(session);
+			const multiGrepTool = new FffMultiGrepTool(session);
+
+			expect(createSpy).not.toHaveBeenCalled();
+
+			const findResult = await findTool.execute("lazy-find", { pattern: "find", limit: 1 });
+			expect(findResult.details).toMatchObject({ files: ["src/find.ts"] });
+			expect(createSpy).toHaveBeenCalledTimes(1);
+
+			const grepToolResult = await grepTool.execute("lazy-grep", { pattern: "needle", literal: true, limit: 1 });
+			expect(grepToolResult.details).toMatchObject({ files: ["src/grep.ts"] });
+
+			const multiGrepToolResult = await multiGrepTool.execute("lazy-multi-grep", {
+				patterns: ["needle"],
+				limit: 1,
+			});
+			expect(multiGrepToolResult.details).toMatchObject({ files: ["src/multi.ts"] });
+			expect(createSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			try {
+				disposeSessionFffFinderManager(session);
+			} finally {
+				createSpy.mockRestore();
+			}
+		}
 	});
 
 	it("shares one injected finder across all FFF tools in a session and destroys it on disposal", async () => {

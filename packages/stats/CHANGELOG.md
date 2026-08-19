@@ -7,12 +7,14 @@
 - Added CJK (Chinese) behavioral signals to the Behavior dashboard: full-width drama runs (`！！！` / `？？？`), Chinese profanity / interjection / negation / repetition / blame word lists, pinyin abbreviations (`tmd`, `sb`, …), and repeated interjection characters (啊啊啊). English-only rows are re-derived once on the next database sync.
 - Added elapsed tool-call timing to the Tools dashboard, derived from assistant tool-call and tool-result timestamps.
 
+- Changed dashboard ingestion to reuse a short-lived clean result, sync process-observed dirty session files directly, and resume append-only JSONL from durable byte/parser checkpoints; cold global reconciliation remains available without rereading active session prefixes.
 ### Fixed
 
 - Fixed user messages being attributed to the `unknown` model bucket when the assistant reply's `parentId` points at a `custom` lifecycle event (`session_run_start` / `tool_execution_start`) instead of the user message itself - the parser now walks the parentId chain to the real user message (falling back to the most recent one), so by-model behavior views stop lumping everything into `unknown`. Rows are re-derived on the next database sync.
 - Fixed CJK profanity boundaries so 我操/我草/我日 no longer match 操作/草稿/日志 across character boundaries (measured against real corpus hits); rows are re-derived once on the next database sync.
 - Fixed one repository appearing as separate canonical and hashed projects by deriving project identity from each session header's normalized `cwd` and transactionally migrating historical message, behavior, and tool-call rows.
 - Fixed project and model token totals to include input, output, cache read, and cache write tokens, matching the overview conversation-token denominator.
+
 ## [17.3.0] - 2026-08-13
 
 ### Added

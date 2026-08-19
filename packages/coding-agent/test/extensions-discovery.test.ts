@@ -68,6 +68,21 @@ describe("extensions discovery", () => {
 		expect(result.extensions.map(e => path.basename(e.path)).sort()).toEqual(["bar.ts", "foo.ts"]);
 	});
 
+	it("ignores direct .d.ts declaration files in extensions/", async () => {
+		fs.writeFileSync(path.join(extensionsDir, "runtime.ts"), extensionCode);
+		fs.writeFileSync(
+			path.join(extensionsDir, "runtime-types.d.ts"),
+			"export interface RuntimeExtensionOptions { enabled: boolean }",
+		);
+
+		const result = await discoverForTest();
+		const returnedPaths = [...result.extensions, ...result.errors].map(entry => entry.path);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.map(extension => path.basename(extension.path))).toEqual(["runtime.ts"]);
+		expect(returnedPaths.every(resultPath => !resultPath.endsWith(".d.ts"))).toBe(true);
+	});
+
 	it("discovers direct .js files in extensions/", async () => {
 		fs.writeFileSync(path.join(extensionsDir, "foo.js"), extensionCode);
 

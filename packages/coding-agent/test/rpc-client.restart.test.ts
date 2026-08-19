@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import * as path from "node:path";
-import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
-import { ptree, TempDir } from "@oh-my-pi/pi-utils";
+import { RpcClient, RpcCommandError } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
+import { type ChildProcess, ptree, TempDir } from "@oh-my-pi/pi-utils";
 
 const MOCK_AGENT = path.join(import.meta.dir, "fixtures", "mock-rpc-agent.ts");
 
@@ -12,6 +12,145 @@ function isProcessAlive(pid: number): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function installManagementRpcHost(): {
+	requests: Record<string, unknown>[];
+	restore(): void;
+} {
+	const requests: Record<string, unknown>[] = [];
+	const encoder = new TextEncoder();
+	const exited = Promise.withResolvers<number>();
+	let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined;
+	let killed = false;
+	const asyncJobs = {
+		running: [
+			{
+				id: "job-web-bridge",
+				type: "task",
+				status: "running",
+				label: "Refresh Web bridge",
+				startTime: 10,
+			},
+		],
+		recent: [],
+		delivery: { queued: 1, delivering: true, pendingJobIds: ["job-web-bridge"] },
+	};
+	const initialSettings = {
+		version: 1,
+		values: { extensions: ["./existing-web-bridge.ts"] },
+		configured: ["extensions"],
+		redacted: [],
+	};
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			stdoutController = controller;
+			controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ type: "ready" })}\n`));
+		},
+	});
+	const respond = (frame: Record<string, unknown>) => {
+		if (!stdoutController) throw new Error("RPC host output stream is not ready");
+		stdoutController.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+	};
+	const fakeChild = {
+		stdout,
+		stdin: {
+			write(payload: string) {
+				const request = JSON.parse(payload) as Record<string, unknown>;
+				requests.push(request);
+				if (typeof request.id !== "string" || typeof request.type !== "string") {
+					throw new Error("RpcClient sent an invalid command envelope");
+				}
+				switch (request.type) {
+					case "get_async_jobs":
+						respond({
+							id: request.id,
+							type: "response",
+							command: "get_async_jobs",
+							success: true,
+							data: { asyncJobs },
+						});
+						break;
+					case "cancel_async_jobs":
+						respond({
+							id: request.id,
+							type: "response",
+							command: "cancel_async_jobs",
+							success: true,
+							data: { cancelled: 1 },
+						});
+						break;
+					case "get_settings":
+						respond({
+							id: request.id,
+							type: "response",
+							command: "get_settings",
+							success: true,
+							data: initialSettings,
+						});
+						break;
+					case "update_settings": {
+						if (request.path === "unsupported.web.setting") {
+							respond({
+								id: request.id,
+								type: "response",
+								command: "update_settings",
+								success: false,
+								error: "This RPC host does not support that setting",
+								code: "INVALID_SETTINGS",
+							});
+							break;
+						}
+						if (typeof request.path !== "string") {
+							throw new Error("RpcClient omitted the settings path");
+						}
+						respond({
+							id: request.id,
+							type: "response",
+							command: "update_settings",
+							success: true,
+							data: {
+								version: 1,
+								values: { [request.path]: request.value },
+								configured: [request.path],
+								redacted: [],
+							},
+						});
+						break;
+					}
+					default:
+						respond({
+							id: request.id,
+							type: "response",
+							command: request.type,
+							success: false,
+							error: `Unsupported RPC command: ${request.type}`,
+							code: "UNSUPPORTED_COMMAND",
+						});
+				}
+				return 0;
+			},
+			flush() {
+				return 0;
+			},
+		},
+		exited: exited.promise,
+		peekStderr() {
+			return "";
+		},
+		kill() {
+			if (killed) return;
+			killed = true;
+			exited.resolve(0);
+		},
+	};
+	const spawn = spyOn(ptree, "spawn").mockImplementation(() => fakeChild as unknown as ChildProcess);
+	return {
+		requests,
+		restore() {
+			spawn.mockRestore();
+		},
+	};
 }
 
 describe("RpcClient lifecycle (issue #4079 B)", () => {
@@ -248,5 +387,75 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 		await expect(client.getState()).rejects.toThrow(
 			"Agent process exited with code 23. Stderr: fixture worker failed",
 		);
+	});
+});
+
+describe("RpcClient Web management commands", () => {
+	test("serializes async-job and settings requests and projects their response payloads for Web RPC consumers", async () => {
+		const host = installManagementRpcHost();
+		try {
+			using client = new RpcClient({ cliPath: MOCK_AGENT });
+			await client.start();
+
+			expect(await client.getAsyncJobs(3)).toEqual({
+				running: [
+					{
+						id: "job-web-bridge",
+						type: "task",
+						status: "running",
+						label: "Refresh Web bridge",
+						startTime: 10,
+					},
+				],
+				recent: [],
+				delivery: { queued: 1, delivering: true, pendingJobIds: ["job-web-bridge"] },
+			});
+			expect(await client.cancelAsyncJobs()).toBe(1);
+			expect(await client.getSettings()).toEqual({
+				version: 1,
+				values: { extensions: ["./existing-web-bridge.ts"] },
+				configured: ["extensions"],
+				redacted: [],
+			});
+			expect(await client.updateSetting("extensions", ["./web-bridge-plugin.ts"])).toEqual({
+				version: 1,
+				values: { extensions: ["./web-bridge-plugin.ts"] },
+				configured: ["extensions"],
+				redacted: [],
+			});
+
+			expect(host.requests.map(({ id: _id, ...command }) => command)).toEqual([
+				{ type: "get_async_jobs", recentLimit: 3 },
+				{ type: "cancel_async_jobs" },
+				{ type: "get_settings" },
+				{ type: "update_settings", path: "extensions", value: ["./web-bridge-plugin.ts"] },
+			]);
+		} finally {
+			host.restore();
+		}
+	});
+
+	test("rejects an unsupported settings response instead of fabricating a Web-facing snapshot", async () => {
+		const host = installManagementRpcHost();
+		try {
+			using client = new RpcClient({ cliPath: MOCK_AGENT });
+			await client.start();
+
+			const failure = await client.updateSetting("unsupported.web.setting", true).then(
+				() => undefined,
+				error => error,
+			);
+			expect(failure).toBeInstanceOf(RpcCommandError);
+			expect(failure).toMatchObject({
+				message: "This RPC host does not support that setting",
+				command: "update_settings",
+				code: "INVALID_SETTINGS",
+			});
+			expect(host.requests.map(({ id: _id, ...command }) => command)).toEqual([
+				{ type: "update_settings", path: "unsupported.web.setting", value: true },
+			]);
+		} finally {
+			host.restore();
+		}
 	});
 });

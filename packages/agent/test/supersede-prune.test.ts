@@ -2,10 +2,14 @@ import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction";
 import {
-	DEFAULT_PRUNE_CONFIG,
+	applyPrunePlan,
+	DUPLICATE_NOTICE,
+	planSupersededToolResults,
 	pruneSupersededToolResults,
 	pruneToolOutputs,
+	RESOLVED_ERROR_NOTICE,
 	readToolSupersedeKey,
+	resolvePruneBudget,
 	SUPERSEDED_NOTICE,
 	type SupersedePruneConfig,
 	USELESS_NOTICE,
@@ -62,6 +66,23 @@ function readPair(path: string, text: string, timestamp: number): [SessionMessag
 			timestamp,
 		),
 		messageEntry(toolResultMessage("read", callId, text, timestamp), timestamp),
+	];
+}
+
+function toolPair(
+	toolName: string,
+	args: Record<string, unknown>,
+	text: string,
+	timestamp: number,
+	extra: Partial<ToolResultMessage> = {},
+): [SessionMessageEntry, SessionMessageEntry] {
+	const callId = `call-${idCounter++}`;
+	return [
+		messageEntry(
+			assistantMessage([{ type: "toolCall", id: callId, name: toolName, arguments: args }], timestamp),
+			timestamp,
+		),
+		messageEntry({ ...toolResultMessage(toolName, callId, text, timestamp), ...extra }, timestamp),
 	];
 }
 
@@ -355,11 +376,206 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 		expect(unprotectedRun.prunedCount).toBe(2);
 		expect(resultText(unprotectedFixture.oldResult)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
 		expect(resultText(unprotectedFixture.newResult)).toMatch(/^\[Output truncated - \d+ tokens\]$/);
+	});
+});
 
-		// Default config shape is untouched.
-		expect(DEFAULT_PRUNE_CONFIG.supersedeKey).toBeUndefined();
-		expect(DEFAULT_PRUNE_CONFIG.protectTokens).toBe(40_000);
-		expect(DEFAULT_PRUNE_CONFIG.minimumSavings).toBe(20_000);
+describe("plan/apply superseded tool results", () => {
+	test("marks only an earlier canonical-argument byte-identical output as duplicate", () => {
+		const firstArgs = {
+			path: "src/report.ts",
+			options: { raw: true, lines: [1, 2] },
+			pattern: "ERROR",
+		};
+		const laterArgs = {
+			pattern: "ERROR",
+			options: { lines: [1, 2], raw: true },
+			path: "src/report.ts",
+		};
+		const [call1, result1] = toolPair("search", firstArgs, BIG_TEXT, T0);
+		const [call2, result2] = toolPair("search", laterArgs, BIG_TEXT, T0 + 1_000);
+		const entries: SessionEntry[] = [call1, result1, call2, result2];
+
+		const plan = planSupersededToolResults(entries, {
+			protectedTools: [],
+			pruneDuplicates: true,
+			now: T0 + 1_000,
+		});
+
+		expect(plan.candidates).toHaveLength(1);
+		expect(plan.candidates[0]?.reason).toBe("duplicate");
+		// Planning is non-mutating; apply owns the observable rewrite.
+		expect(resultText(result1)).toBe(BIG_TEXT);
+		const applied = applyPrunePlan(plan);
+		expect(applied.prunedCount).toBe(1);
+		expect(resultText(result1)).toBe(DUPLICATE_NOTICE);
+		expect(resultText(result2)).toBe(BIG_TEXT);
+	});
+
+	test("keeps a changed response even when the tool and canonical arguments match", () => {
+		const args = { path: "src/report.ts", pattern: "ERROR" };
+		const [call1, result1] = toolPair("search", args, BIG_TEXT, T0);
+		const [call2, result2] = toolPair(
+			"search",
+			{ pattern: "ERROR", path: "src/report.ts" },
+			`${BIG_TEXT}\nchanged`,
+			T0 + 1_000,
+		);
+		const entries: SessionEntry[] = [call1, result1, call2, result2];
+
+		const plan = planSupersededToolResults(entries, {
+			protectedTools: [],
+			pruneDuplicates: true,
+			now: T0 + 1_000,
+		});
+
+		expect(plan.candidates).toHaveLength(0);
+		expect(applyPrunePlan(plan).prunedCount).toBe(0);
+		expect(resultText(result1)).toBe(BIG_TEXT);
+		expect(resultText(result2)).toBe(`${BIG_TEXT}\nchanged`);
+	});
+
+	test("marks an earlier error resolved only after the same operation explicitly succeeds", () => {
+		const [errorCall, errorResult] = toolPair(
+			"bash",
+			{ command: "npm run focused-check", env: { CI: "1", MODE: "strict" } },
+			"exit 1: assertion failed",
+			T0,
+			{ isError: true },
+		);
+		const [successCall, successResult] = toolPair(
+			"bash",
+			{ env: { MODE: "strict", CI: "1" }, command: "npm run focused-check" },
+			"all assertions passed",
+			T0 + 1_000,
+			{ details: { exitCode: 0 } },
+		);
+		const entries: SessionEntry[] = [errorCall, errorResult, successCall, successResult];
+
+		const plan = planSupersededToolResults(entries, {
+			protectedTools: [],
+			pruneResolvedErrors: true,
+			resolvedErrorProtectTokens: 0,
+			now: T0 + 31 * 60_000,
+		});
+
+		expect(plan.candidates).toHaveLength(1);
+		expect(plan.candidates[0]?.reason).toBe("resolved-error");
+		applyPrunePlan(plan);
+		expect(resultText(errorResult)).toBe(RESOLVED_ERROR_NOTICE);
+		expect(resultText(successResult)).toBe("all assertions passed");
+	});
+
+	test("keeps unresolved errors and async-running results when no conclusive retry exists", () => {
+		const [unresolvedCall, unresolvedResult] = toolPair("bash", { command: "npm run target" }, "target failed", T0, {
+			isError: true,
+		});
+		const [differentCall, differentResult] = toolPair(
+			"bash",
+			{ command: "npm run other" },
+			"other passed",
+			T0 + 1_000,
+		);
+		const [runningErrorCall, runningErrorResult] = toolPair(
+			"bash",
+			{ command: "npm run pending" },
+			"pending failed before retry settled",
+			T0 + 2_000,
+			{ isError: true },
+		);
+		const [runningCall, runningResult] = toolPair(
+			"bash",
+			{ command: "npm run pending" },
+			"still running",
+			T0 + 3_000,
+			{ details: { async: { state: "running" } } },
+		);
+		const entries: SessionEntry[] = [
+			unresolvedCall,
+			unresolvedResult,
+			differentCall,
+			differentResult,
+			runningErrorCall,
+			runningErrorResult,
+			runningCall,
+			runningResult,
+		];
+
+		const plan = planSupersededToolResults(entries, {
+			protectedTools: [],
+			pruneResolvedErrors: true,
+			now: T0 + 31 * 60_000,
+		});
+
+		expect(plan.candidates).toHaveLength(0);
+		expect(applyPrunePlan(plan).prunedCount).toBe(0);
+		expect(resultText(unresolvedResult)).toBe("target failed");
+		expect(resultText(runningErrorResult)).toBe("pending failed before retry settled");
+		expect(resultText(runningResult)).toBe("still running");
+		expect(resultText(differentResult)).toBe("other passed");
+	});
+
+	test("keeps a resolved error inside the recent protection window", () => {
+		const [errorCall, errorResult] = toolPair("bash", { command: "npm run recent" }, "recent failure", T0, {
+			isError: true,
+		});
+		const [successCall, successResult] = toolPair(
+			"bash",
+			{ command: "npm run recent" },
+			"recent success",
+			T0 + 1_000,
+		);
+		const entries: SessionEntry[] = [errorCall, errorResult, successCall, successResult];
+
+		const plan = planSupersededToolResults(entries, {
+			protectedTools: [],
+			pruneResolvedErrors: true,
+			resolvedErrorProtectTokens: 100_000,
+			idleFlushMs: 0,
+			now: T0 + 1_000,
+		});
+
+		expect(plan.candidates).toHaveLength(0);
+		expect(applyPrunePlan(plan).prunedCount).toBe(0);
+		expect(resultText(errorResult)).toBe("recent failure");
+		expect(resultText(successResult)).toBe("recent success");
+	});
+});
+
+describe("adaptive prune budgets", () => {
+	test("preserves the 200k budget and clamps small and large windows to safe bounds", () => {
+		expect(resolvePruneBudget(200_000)).toEqual({
+			protectTokens: 40_000,
+			minimumSavings: 20_000,
+			cacheWarmSuffixTokens: 8_000,
+		});
+		expect(resolvePruneBudget(1)).toEqual({
+			protectTokens: 8_000,
+			minimumSavings: 2_000,
+			cacheWarmSuffixTokens: 2_000,
+		});
+		expect(resolvePruneBudget(1_000_000)).toEqual({
+			protectTokens: 80_000,
+			minimumSavings: 40_000,
+			cacheWarmSuffixTokens: 16_000,
+		});
+	});
+
+	test("uses a positive protect override without changing adaptive companion budgets", () => {
+		expect(resolvePruneBudget(200_000, 12_345)).toEqual({
+			protectTokens: 12_345,
+			minimumSavings: 20_000,
+			cacheWarmSuffixTokens: 8_000,
+		});
+		expect(resolvePruneBudget(200_000, 0)).toEqual({
+			protectTokens: 40_000,
+			minimumSavings: 20_000,
+			cacheWarmSuffixTokens: 8_000,
+		});
+		expect(resolvePruneBudget(200_000, -1)).toEqual({
+			protectTokens: 40_000,
+			minimumSavings: 20_000,
+			cacheWarmSuffixTokens: 8_000,
+		});
 	});
 });
 

@@ -20,6 +20,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import {
 	type AgentProgress,
 	type SubagentProgressPayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
@@ -405,5 +406,44 @@ describe("InteractiveMode subagent HUD repainting", () => {
 		} finally {
 			columns.restore();
 		}
+	});
+
+	it("throttles busy detached progress HUD refreshes without delaying terminal lifecycle refreshes", () => {
+		enableSubagentHud();
+		vi.useFakeTimers();
+		const scopedRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+		for (const id of ["BurstWorker0", "BurstWorker1", "BurstWorker2", "BurstWorker3", "BurstWorker4"]) {
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload(id));
+		}
+		vi.advanceTimersByTime(99);
+		expect(scopedRender.mock.calls.filter(call => call[0] === mode.subagentContainer).length).toBe(0);
+		vi.advanceTimersByTime(1);
+		expect(scopedRender.mock.calls.filter(call => call[0] === mode.subagentContainer).length).toBe(1);
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).toContain("BurstWorker0");
+
+		scopedRender.mockClear();
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("BurstWorker0", { cost: 0.42 }));
+		vi.advanceTimersByTime(100);
+		expect(scopedRender.mock.calls.filter(call => call[0] === mode.subagentContainer).length).toBe(0);
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).not.toContain("$0.42");
+		vi.advanceTimersByTime(149);
+		expect(scopedRender.mock.calls.filter(call => call[0] === mode.subagentContainer).length).toBe(0);
+		vi.advanceTimersByTime(1);
+		expect(scopedRender.mock.calls.filter(call => call[0] === mode.subagentContainer).length).toBe(1);
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).toContain("$0.42");
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).toContain("BurstWorker0");
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "BurstWorker0",
+			index: 0,
+			agent: "task",
+			agentSource: "bundled",
+			description: "Task BurstWorker0",
+			status: "completed",
+			detached: true,
+		});
+		vi.advanceTimersByTime(100);
+		expect(Bun.stripANSI(mode.subagentContainer.render(160).join("\n"))).not.toContain("BurstWorker0");
 	});
 });

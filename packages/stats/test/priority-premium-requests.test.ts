@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
+import { syncAllSessions, syncSessionFiles } from "@oh-my-pi/omp-stats/aggregator";
 import { closeDb, getOverallStats, getRecentRequests } from "@oh-my-pi/omp-stats/db";
 import { parseSessionFile } from "@oh-my-pi/omp-stats/parser";
 import { getSessionsDir, getStatsDbPath } from "@oh-my-pi/pi-utils";
@@ -191,5 +191,37 @@ describe("priority service-tier premium-request backfill", () => {
 		expect(second.stats).toHaveLength(1);
 		expect(second.stats[0]?.entryId).toBe("d1");
 		expect(second.stats[0]?.usage.premiumRequests).toBe(1);
+	});
+
+	it("keeps priority attribution when an assistant arrives after a persisted sync checkpoint", async () => {
+		const sessionFile = await writeSession("--tmp--proj", "05.jsonl", {
+			lines: [
+				{ type: "session", version: 1, id: "s5", timestamp: new Date().toISOString(), cwd: "/tmp/proj" },
+				{ type: "service_tier_change", id: "stc", timestamp: new Date().toISOString(), serviceTier: "priority" },
+			],
+		});
+
+		await syncSessionFiles([sessionFile], { workers: 1 });
+
+		const appendedAssistant = assistantEntry({ id: "tail-priority-assistant", provider: "openai" });
+		await fs.appendFile(sessionFile, `${JSON.stringify(appendedAssistant)}\n`);
+		const bumped = new Date(Date.now() + 1_000);
+		await fs.utimes(sessionFile, bumped, bumped);
+
+		await syncSessionFiles([sessionFile], { workers: 1 });
+
+		const overall = getOverallStats();
+		expect(overall.totalRequests).toBe(1);
+		expect(overall.totalPremiumRequests).toBe(1);
+		expect(getRecentRequests(1)[0]).toMatchObject({
+			entryId: "tail-priority-assistant",
+			provider: "openai",
+			usage: {
+				input: 10,
+				output: 5,
+				totalTokens: 15,
+				premiumRequests: 1,
+			},
+		});
 	});
 });

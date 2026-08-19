@@ -177,6 +177,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Model, git, cost, context": "Model, git, cost, context",
 	Settings: "Settings",
 	Plugins: "Plugins",
+	Advanced: "Advanced",
+	"Canonical OMP configuration key: {path}": "Canonical OMP configuration key: {path}",
 	Appearance: "Appearance",
 	Model: "Model",
 	Interaction: "Interaction",
@@ -1641,6 +1643,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Auto Thinking Model": "Auto Thinking Model",
 	"Auto-Compact": "Auto-Compact",
 	"Auto-Learn (experimental)": "Auto-Learn (experimental)",
+	"Archive Resolved Errors": "Archive Resolved Errors",
+	"Archive old errors after the same operation succeeds, while preserving recent diagnostics":
+		"Archive old errors after the same operation succeeds, while preserving recent diagnostics",
 	"Auto-Promote Context": "Auto-Promote Context",
 	"Auto-Resize Images": "Auto-Resize Images",
 	"Auto-approve read-only tools; require confirmation for write and exec tools.":
@@ -1701,6 +1706,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Codex Auto-Redeem Min Block": "Codex Auto-Redeem Min Block",
 	"Codex Auto-Redeem Reserve": "Codex Auto-Redeem Reserve",
 	"Codex Auto-Redeem Saved Resets": "Codex Auto-Redeem Saved Resets",
+	"Codex Reset Salvage Horizon": "Codex Reset Salvage Horizon",
 	"Collapse Changelog": "Collapse Changelog",
 	"Color-Blind Mode": "Color-Blind Mode",
 	"Colorblind colors": "Colorblind colors",
@@ -1731,6 +1737,9 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Debug Tools": "Debug Tools",
 	"Debug transcript written to:\n{path}": "Debug transcript written to:\n{path}",
 	"Deduplicate Diagnostics": "Deduplicate Diagnostics",
+	"Deduplicate Tool Results": "Deduplicate Tool Results",
+	"Prune earlier byte-identical results from the same tool operation":
+		"Prune earlier byte-identical results from the same tool operation",
 	DeepSeek: "DeepSeek",
 	Default: "Default",
 	"Default Read Limit": "Default Read Limit",
@@ -2012,6 +2021,12 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"How the session reacts when an automatic workspace checkpoint fails: block the mutating turn, surface a warning and proceed, or silently continue.",
 	warn: "warn",
 	ignore: "ignore",
+	"Max checkpoints per session": "Max checkpoints per session",
+	"Maximum workspace checkpoints retained per session before garbage collection prunes the oldest.":
+		"Maximum workspace checkpoints retained per session before garbage collection prunes the oldest.",
+	"Max checkpoint age (days)": "Max checkpoint age (days)",
+	"Drop workspace checkpoints older than this many days during garbage collection; set to 0 to skip age-based pruning.":
+		"Drop workspace checkpoints older than this many days during garbage collection; set to 0 to skip age-based pruning.",
 	"Max total checkpoint storage (MiB)": "Max total checkpoint storage (MiB)",
 	"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.":
 		"Soft limit for physical checkpoint CAS storage across all workspaces. Garbage collection removes the oldest unprotected checkpoints automatically; protected restore history may keep usage above the limit. Set to 0 to disable the total limit.",
@@ -2171,8 +2186,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Name shown to other collab participants (default: OS username)":
 		"Name shown to other collab participants (default: OS username)",
 	"Native Terminal Progress": "Native Terminal Progress",
-	"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically).":
-		"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically).",
+	"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically). Credits about to expire are exempt — a reserved credit that expires preserves nothing.":
+		"Never auto-spend below this many saved resets (0 = the last credit may be spent automatically). Credits about to expire are exempt — a reserved credit that expires preserves nothing.",
 	"Never interrupt; inject warning after completion": "Never interrupt; inject warning after completion",
 	"Notify when the agent finishes a turn": "Notify when the agent finishes a turn",
 	"Notify when the ask tool is waiting for input": "Notify when the ask tool is waiting for input",
@@ -2282,6 +2297,13 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Providers that web_search should never use, even as fallbacks",
 	"Prune older read results when the same file is read again (cache-aware, runs every turn)":
 		"Prune older read results when the same file is read again (cache-aware, runs every turn)",
+	"Recent tool-result tokens kept verbatim before age or resolved-error pruning; 0 scales with the active model":
+		"Recent tool-result tokens kept verbatim before age or resolved-error pruning; 0 scales with the active model",
+	"Tool Result Protection Window": "Tool Result Protection Window",
+	"8K tokens": "8K tokens",
+	"16K tokens": "16K tokens",
+	"40K tokens": "40K tokens",
+	"80K tokens": "80K tokens",
 	"Push to a secret gist (needs authenticated gh), falling back to the share server":
 		"Push to a secret gist (needs authenticated gh), falling back to the share server",
 	"Python Eval Backend": "Python Eval Backend",
@@ -3087,8 +3109,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"OSC 9 (iTerm2/WezTerm)": "OSC 9 (iTerm2/WezTerm)",
 	"OSC 99 (kitty desktop notifications)": "OSC 99 (kitty desktop notifications)",
 	"OSC 99 (kitty)": "OSC 99 (kitty)",
-	"Only auto-redeem when the natural weekly reset is at least this many minutes away (don't spend a ~30-day credit to save a short wait).":
-		"Only auto-redeem when the natural weekly reset is at least this many minutes away (don't spend a ~30-day credit to save a short wait).",
+	"Only auto-redeem when the natural unblock — the latest reset among the exhausted 5h/weekly windows — is at least this many minutes away (don't spend a scarce credit to save a short wait). Raise it (e.g. 360) to ignore 5h-only blocks.":
+		"Only auto-redeem when the natural unblock — the latest reset among the exhausted 5h/weekly windows — is at least this many minutes away (don't spend a scarce credit to save a short wait). Raise it (e.g. 360) to ignore 5h-only blocks.",
 	"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.":
 		"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
 	"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.":
@@ -3783,7 +3805,44 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Early maintenance": "Early maintenance",
 	Edit: "Edit",
 	'Editing "{name}" · Enter / click edit field · Esc back': 'Editing "{name}" · Enter / click edit field · Esc back',
+	"Move cursor up": "Move cursor up",
+	"Move cursor down": "Move cursor down",
+	"Move cursor left": "Move cursor left",
+	"Move cursor right": "Move cursor right",
+	"Move cursor word left": "Move cursor word left",
+	"Move cursor word right": "Move cursor word right",
+	"Move to line start": "Move to line start",
+	"Move to line end": "Move to line end",
+	"Jump forward to character": "Jump forward to character",
+	"Jump backward to character": "Jump backward to character",
+	"Page up": "Page up",
+	"Page down": "Page down",
+	"Delete character backward": "Delete character backward",
+	"Delete character forward": "Delete character forward",
+	"Delete word backward": "Delete word backward",
+	"Delete word forward": "Delete word forward",
+	"Delete to line start": "Delete to line start",
+	"Delete to line end": "Delete to line end",
+	Yank: "Yank",
+	"Yank pop": "Yank pop",
+	Undo: "Undo",
+	"Insert newline": "Insert newline",
+	"Submit input": "Submit input",
+	"Tab / autocomplete": "Tab / autocomplete",
+	"Copy selection": "Copy selection",
+	"Move selection up": "Move selection up",
+	"Move selection down": "Move selection down",
+	"Selection page up": "Selection page up",
+	"Selection page down": "Selection page down",
+	"Confirm selection": "Confirm selection",
+	"Cancel selection": "Cancel selection",
+	"Show or hide tool activity": "Show or hide tool activity",
+	"Send current draft to a new session and keep the current session running in the background":
+		"Send current draft to a new session and keep the current session running in the background",
+	"Start or stop live voice mode (/live)": "Start or stop live voice mode (/live)",
+	Application: "Application",
 	Editor: "Editor",
+	Selection: "Selection",
 	"Editor exited without saving; todos unchanged.": "Editor exited without saving; todos unchanged.",
 	'Extension "{extensionPath}" error: {error}': 'Extension "{extensionPath}" error: {error}',
 	"Extension Modules": "Extension Modules",
@@ -5192,6 +5251,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Qwen3 0.6B": "Qwen3 0.6B",
 	"Most robust local option; slower first load, about 500 MB cached.":
 		"Most robust local option; slower first load, about 500 MB cached.",
+	"Spend a saved Codex reset automatically when it would otherwise expire within this many hours and either chat window (5h or weekly) has meaningful usage to restore (0 disables expiry salvage).":
+		"Spend a saved Codex reset automatically when it would otherwise expire within this many hours and either chat window (5h or weekly) has meaningful usage to restore (0 disables expiry salvage).",
 	"Gemma 270M": "Gemma 270M",
 	"Smallest viable local option; lower quality, lowest cache footprint.":
 		"Smallest viable local option; lower quality, lowest cache footprint.",

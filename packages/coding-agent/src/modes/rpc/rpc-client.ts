@@ -12,6 +12,16 @@ import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { ConfiguredThinkingLevel } from "../../thinking";
+import type { TodoPhase } from "../../tools/todo";
+import type {
+	ApplyWorkspaceRestoreRequest,
+	WorkspaceCheckpointRecord,
+	WorkspaceRestorePlan,
+	WorkspaceRestoreResult,
+	WorkspaceRestoreScope,
+} from "../../workspace-checkpoints/types";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
@@ -31,14 +41,27 @@ import type {
 	RpcHostToolDefinition,
 	RpcHostToolResult,
 	RpcHostToolUpdate,
+	RpcKeybindingsCatalog,
+	RpcKeybindingsSnapshot,
+	RpcMcpServerConfigInput,
+	RpcMcpServerInfo,
+	RpcPluginInfo,
 	RpcResponse,
 	RpcSessionState,
+	RpcSettingPath,
+	RpcSettingsCatalog,
+	RpcSettingsLocale,
+	RpcSettingsSnapshot,
+	RpcSettingValue,
 	RpcSubagentEventFrame,
 	RpcSubagentLifecycleFrame,
 	RpcSubagentMessagesResult,
 	RpcSubagentProgressFrame,
 	RpcSubagentSnapshot,
 	RpcSubagentSubscriptionLevel,
+	RpcWorkspaceCheckpointCreateRequest,
+	RpcWorkspaceCheckpointListRequest,
+	RpcWorkspaceRestorePreviewRequest,
 } from "./rpc-types";
 
 /** Distributive Omit that works with union types */
@@ -50,6 +73,10 @@ type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
 	cliPath?: string;
+	/** Full executable argv prefix; defaults to ["bun", cliPath] */
+	command?: string[];
+	/** RPC transport mode; rpc-ui enables bidirectional extension UI */
+	mode?: "rpc" | "rpc-ui";
 	/** Working directory for the agent */
 	cwd?: string;
 	/** Environment variables */
@@ -74,6 +101,7 @@ export type RpcSubagentLifecycleListener = (payload: RpcSubagentLifecycleFrame["
 export type RpcSubagentProgressListener = (payload: RpcSubagentProgressFrame["payload"]) => void;
 export type RpcSubagentEventListener = (payload: RpcSubagentEventFrame["payload"]) => void;
 export type RpcAvailableCommandsUpdateListener = (commands: RpcAvailableSlashCommand[]) => void;
+export type RpcExtensionUIListener = (request: RpcExtensionUIRequest) => void;
 
 export interface RpcClientToolContext<TDetails = unknown> {
 	toolCallId: string;
@@ -116,6 +144,8 @@ const agentEventTypes = new Set<AgentEvent["type"]>([
 
 const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	...agentEventTypes,
+	"memory_operation_start",
+	"memory_operation_end",
 	"auto_compaction_start",
 	"auto_compaction_end",
 	"auto_retry_start",
@@ -285,7 +315,7 @@ export class RpcClient {
 		this.#protocolVersion = 1;
 
 		const cliPath = this.options.cliPath ?? "dist/cli.js";
-		const args = ["--mode", "rpc"];
+		const args = ["--mode", this.options.mode ?? "rpc"];
 
 		if (this.options.provider) {
 			args.push("--provider", this.options.provider);
@@ -300,7 +330,9 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const child = ptree.spawn(["bun", cliPath, ...args], {
+		const command = this.options.command ?? ["bun", cliPath];
+		if (command.length === 0) throw new Error("RPC command must contain an executable");
+		const child = ptree.spawn([...command, ...args], {
 			cwd: this.options.cwd,
 			env: { ...Bun.env, ...this.options.env },
 			stdin: "pipe",
@@ -530,6 +562,17 @@ export class RpcClient {
 		return () => this.#availableCommandsUpdateListeners.delete(listener);
 	}
 
+	/** Subscribe to extension UI requests emitted by rpc-ui sessions. */
+	onExtensionUiRequest(listener: RpcExtensionUIListener): () => void {
+		this.#extensionUiListeners.add(listener);
+		return () => this.#extensionUiListeners.delete(listener);
+	}
+
+	/** Resolve one pending extension UI request. */
+	respondToExtensionUi(response: RpcExtensionUIResponse): void {
+		this.#writeFrame(response);
+	}
+
 	/**
 	 * Get collected stderr output (useful for debugging).
 	 */
@@ -611,6 +654,110 @@ export class RpcClient {
 		};
 	}
 
+	/** Return the current session-scoped asynchronous job snapshot. */
+	async getAsyncJobs(recentLimit?: number): Promise<AsyncJobSnapshot | null> {
+		const response = await this.#send({ type: "get_async_jobs", recentLimit });
+		return this.#getData<{ asyncJobs: AsyncJobSnapshot | null }>(response).asyncJobs;
+	}
+
+	/** Get the canonical OMP settings catalog for the active session scope. */
+	async getSettingsCatalog(locale?: RpcSettingsLocale): Promise<RpcSettingsCatalog> {
+		const response = await this.#send({ type: "get_settings_catalog", locale });
+		return this.#getData<RpcSettingsCatalog>(response);
+	}
+
+	/** Get effective canonical OMP settings without exposing credential values. */
+	async getSettings(): Promise<RpcSettingsSnapshot> {
+		const response = await this.#send({ type: "get_settings" });
+		return this.#getData<RpcSettingsSnapshot>(response);
+	}
+
+	/** Persist one canonical OMP setting and return the refreshed effective snapshot. */
+	async updateSetting(path: RpcSettingPath, value: RpcSettingValue): Promise<RpcSettingsSnapshot> {
+		const response = await this.#send({ type: "update_settings", path, value });
+		return this.#getData<RpcSettingsSnapshot>(response);
+	}
+
+	/** Get the current OMP keybinding registry and localized labels. */
+	async getKeybindingsCatalog(locale?: RpcSettingsLocale): Promise<RpcKeybindingsCatalog> {
+		const response = await this.#send({ type: "get_keybindings_catalog", locale });
+		return this.#getData<RpcKeybindingsCatalog>(response);
+	}
+
+	/** Get effective OMP keybindings, including defaults and persisted overrides. */
+	async getKeybindings(): Promise<RpcKeybindingsSnapshot> {
+		const response = await this.#send({ type: "get_keybindings" });
+		return this.#getData<RpcKeybindingsSnapshot>(response);
+	}
+
+	/** Persist one OMP keybinding override. */
+	async updateKeybinding(keybinding: string, keys: string[]): Promise<RpcKeybindingsSnapshot> {
+		const response = await this.#send({ type: "update_keybinding", keybinding, keys });
+		return this.#getData<RpcKeybindingsSnapshot>(response);
+	}
+
+	/** Remove every OMP keybinding override and restore current defaults. */
+	async resetKeybindings(): Promise<RpcKeybindingsSnapshot> {
+		const response = await this.#send({ type: "reset_keybindings" });
+		return this.#getData<RpcKeybindingsSnapshot>(response);
+	}
+
+	/** List canonical OMP plugins from npm and marketplace registries. */
+	async getPlugins(): Promise<RpcPluginInfo[]> {
+		const response = await this.#send({ type: "get_plugins" });
+		return this.#getData<{ plugins: RpcPluginInfo[] }>(response).plugins;
+	}
+
+	/** Enable or disable one canonical OMP plugin. */
+	async setPluginEnabled(plugin: RpcPluginInfo, enabled: boolean): Promise<RpcPluginInfo[]> {
+		const response = await this.#send({
+			type: "set_plugin_enabled",
+			plugin: { id: plugin.id, kind: plugin.kind, scope: plugin.scope },
+			enabled,
+		});
+		return this.#getData<{ plugins: RpcPluginInfo[] }>(response).plugins;
+	}
+
+	/** Select the enabled feature set for one npm plugin. */
+	async setPluginFeatures(name: string, features: string[]): Promise<RpcPluginInfo[]> {
+		const response = await this.#send({ type: "set_plugin_features", name, features });
+		return this.#getData<{ plugins: RpcPluginInfo[] }>(response).plugins;
+	}
+
+	/** Persist one validated npm plugin setting. */
+	async setPluginSetting(name: string, key: string, value: RpcSettingValue): Promise<RpcPluginInfo[]> {
+		const response = await this.#send({ type: "set_plugin_setting", name, key, value });
+		return this.#getData<{ plugins: RpcPluginInfo[] }>(response).plugins;
+	}
+
+	/** List canonical OMP MCP servers without exposing credentials. */
+	async getMcpServers(): Promise<RpcMcpServerInfo[]> {
+		const response = await this.#send({ type: "get_mcp_servers" });
+		return this.#getData<{ servers: RpcMcpServerInfo[] }>(response).servers;
+	}
+
+	/** Persist and apply one MCP enablement change. */
+	async setMcpServerEnabled(name: string, enabled: boolean): Promise<RpcMcpServerInfo[]> {
+		const response = await this.#send({ type: "set_mcp_server_enabled", name, enabled });
+		return this.#getData<{ servers: RpcMcpServerInfo[] }>(response).servers;
+	}
+
+	/** Add an OMP-owned user or project MCP server. */
+	async addMcpServer(
+		name: string,
+		scope: "user" | "project",
+		config: RpcMcpServerConfigInput,
+	): Promise<RpcMcpServerInfo[]> {
+		const response = await this.#send({ type: "add_mcp_server", name, scope, config });
+		return this.#getData<{ servers: RpcMcpServerInfo[] }>(response).servers;
+	}
+
+	/** Remove an OMP-owned user or project MCP server. */
+	async removeMcpServer(name: string, scope: "user" | "project"): Promise<RpcMcpServerInfo[]> {
+		const response = await this.#send({ type: "remove_mcp_server", name, scope });
+		return this.#getData<{ servers: RpcMcpServerInfo[] }>(response).servers;
+	}
+
 	/**
 	 * Enable or disable fast mode for the active model family.
 	 */
@@ -689,17 +836,23 @@ export class RpcClient {
 		return this.#getData<{ commands: RpcAvailableSlashCommand[] }>(response).commands;
 	}
 
+	/** Replace the session's current todo phases. */
+	async setTodos(phases: TodoPhase[]): Promise<TodoPhase[]> {
+		const response = await this.#send({ type: "set_todos", phases });
+		return this.#getData<{ todoPhases: TodoPhase[] }>(response).todoPhases;
+	}
+
 	/**
 	 * Set thinking level.
 	 */
-	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
+	async setThinkingLevel(level: ConfiguredThinkingLevel): Promise<void> {
 		await this.#send({ type: "set_thinking_level", level });
 	}
 
 	/**
 	 * Cycle thinking level.
 	 */
-	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
+	async cycleThinkingLevel(): Promise<{ level: ConfiguredThinkingLevel } | null> {
 		const response = await this.#send({ type: "cycle_thinking_level" });
 		return this.#getData(response);
 	}
@@ -716,6 +869,11 @@ export class RpcClient {
 	 */
 	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.#send({ type: "set_follow_up_mode", mode });
+	}
+
+	/** Set whether interruption applies immediately or waits for a safe boundary. */
+	async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
+		await this.#send({ type: "set_interrupt_mode", mode });
 	}
 
 	/**
@@ -762,12 +920,63 @@ export class RpcClient {
 		await this.#send({ type: "abort_bash" });
 	}
 
+	/** Create a manual workspace checkpoint. */
+	async createWorkspaceCheckpoint(
+		request: RpcWorkspaceCheckpointCreateRequest = {},
+	): Promise<WorkspaceCheckpointRecord> {
+		const response = await this.#send({ type: "workspace_checkpoint_create", request });
+		return this.#getData<{ record: WorkspaceCheckpointRecord }>(response).record;
+	}
+
+	/** List workspace checkpoints visible to the active session. */
+	async listWorkspaceCheckpoints(
+		request: RpcWorkspaceCheckpointListRequest = {},
+	): Promise<WorkspaceCheckpointRecord[]> {
+		const response = await this.#send({ type: "workspace_checkpoint_list", ...request });
+		return this.#getData<{ records: WorkspaceCheckpointRecord[] }>(response).records;
+	}
+
+	/** Build a workspace restore plan without applying it. */
+	async previewWorkspaceRestore(request: RpcWorkspaceRestorePreviewRequest): Promise<WorkspaceRestorePlan> {
+		const response = await this.#send({ type: "workspace_restore_preview", request });
+		return this.#getData<{ plan: WorkspaceRestorePlan }>(response).plan;
+	}
+
+	/** Apply a previously previewed workspace restore plan. */
+	async applyWorkspaceRestore(request: ApplyWorkspaceRestoreRequest): Promise<WorkspaceRestoreResult> {
+		const response = await this.#send({ type: "workspace_restore_apply", request });
+		return this.#getData<{ result: WorkspaceRestoreResult }>(response).result;
+	}
+
+	/** Undo the latest workspace restore in the selected scope. */
+	async undoWorkspace(scope?: WorkspaceRestoreScope): Promise<WorkspaceRestoreResult> {
+		const response = await this.#send({ type: "workspace_undo", scope });
+		return this.#getData<{ result: WorkspaceRestoreResult }>(response).result;
+	}
+
+	/** Redo the workspace restore that was most recently undone. */
+	async redoWorkspace(): Promise<WorkspaceRestoreResult> {
+		const response = await this.#send({ type: "workspace_redo" });
+		return this.#getData<{ result: WorkspaceRestoreResult }>(response).result;
+	}
+
+	/** Cancel session-owned background work and return the number of running jobs signalled. */
+	async cancelAsyncJobs(): Promise<number> {
+		const response = await this.#send({ type: "cancel_async_jobs" });
+		return this.#getData<{ cancelled: number }>(response).cancelled;
+	}
+
 	/**
 	 * Get session statistics.
 	 */
 	async getSessionStats(): Promise<SessionStats> {
 		const response = await this.#send({ type: "get_session_stats" });
 		return this.#getData(response);
+	}
+
+	/** Set the current session's display name. */
+	async setSessionName(name: string): Promise<void> {
+		await this.#send({ type: "set_session_name", name });
 	}
 
 	/**

@@ -317,6 +317,7 @@ describe("RpcInputDispatcher", () => {
 					success: true,
 					data: {
 						thinkingLevel: undefined,
+						configuredThinkingLevel: undefined,
 						isStreaming: false,
 						isCompacting: false,
 						steeringMode: "all",

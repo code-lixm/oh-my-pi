@@ -144,6 +144,11 @@ Important edge behavior from runtime:
 - `{ id?, type: "set_thinking_level", level: ThinkingLevel }`
 - `{ id?, type: "cycle_thinking_level" }`
 
+`get_state` reports `thinkingLevel` as the effective model effort and
+`configuredThinkingLevel` as the user's selector. The latter preserves `"auto"`
+instead of collapsing it to the currently resolved effort; `cycle_thinking_level`
+returns the configured selector for the same reason.
+
 ### Queue modes
 
 - `{ id?, type: "set_steering_mode", mode: "all" | "one-at-a-time" }`
@@ -191,6 +196,8 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 `get_messages_page` returns a stable chronological page with `messages`, `totalMessages`, and an opaque `nextCursor` when more messages remain. Cursors are bound to the session ID, durable leaf, and message count. The server rejects stale cursors if the session changes between requests, and refuses to start a paging walk while the session is streaming or compacting. Failed page requests carry a machine-readable `code` on the error response — `session_busy` (session is streaming or compacting) or `stale_cursor` (the snapshot behind the cursor changed, e.g. a background bash appended a message between pages) — so clients can react without matching error-message text. Pages contain at most 256 messages and normally stay below the v1 physical-frame ceiling. A v1 caller can page ordinary histories, but an individual message whose response exceeds that ceiling produces an overflow error; retrieving it losslessly requires negotiated v2 framing.
 
 The bundled TypeScript `RpcClient.getMessages()` and Python `RpcClient.get_messages()` drain this paged endpoint automatically after negotiating v2. They retain the legacy monolithic command when connected to a v1 server, and on either `session_busy` or `stale_cursor` they discard partial pages and fall back to the legacy best-effort snapshot. Direct `getMessagesPage()` and `get_messages_page()` calls remain strict so incremental hosts never mix snapshots silently.
+
+Both commands expose the current branch's display transcript, not the compacted/pruned provider context. User-visible turns therefore remain available to RPC clients after context maintenance rewrites the model-facing history.
 
 ### Login
 

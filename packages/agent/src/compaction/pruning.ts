@@ -2,7 +2,7 @@
  * Tool output pruning utilities for compaction.
  */
 
-import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { AgentMessage, AgentToolCall } from "../types";
 import { estimateTokens } from "./compaction";
 import type { SessionEntry, SessionMessageEntry } from "./entries";
@@ -31,6 +31,10 @@ export interface PruneConfig {
 	supersedeKey?: SupersedeKeyFn;
 	/** Useless-flagged results bypass the protect window (see {@link USELESS_NOTICE}). Default true. */
 	pruneUseless?: boolean;
+	/** Prune earlier exact duplicate results. Default false unless enabled by the caller. */
+	pruneDuplicates?: boolean;
+	/** Prune errors only after the same operation later succeeds. Default false unless enabled by the caller. */
+	pruneResolvedErrors?: boolean;
 	/**
 	 * Compaction boundary: the `firstKeptEntryId` of the latest compaction on
 	 * the branch. Entries at indices BEFORE this id are summarized away and never
@@ -49,6 +53,8 @@ export interface PruneConfig {
 	 * no cache guard (legacy: superseded/useless prune at any depth).
 	 */
 	cacheWarmSuffixTokens?: number;
+	/** Recent suffix retained before a proven-resolved error becomes eligible. Defaults to {@link protectTokens}. */
+	resolvedErrorProtectTokens?: number;
 }
 
 export const DEFAULT_PRUNE_CONFIG: PruneConfig = {
@@ -57,6 +63,44 @@ export const DEFAULT_PRUNE_CONFIG: PruneConfig = {
 	protectedTools: ["skill", isSkillReadToolResult],
 	pruneUseless: true,
 };
+
+export type PruneReason = "superseded" | "useless" | "duplicate" | "resolved-error" | "age";
+
+export interface PruneCandidate {
+	entry: SessionMessageEntry;
+	index: number;
+	tokens: number;
+	reason: PruneReason;
+	notice: string;
+	requiresArchive: boolean;
+	toolName: string;
+	canonicalArgs: string;
+	textBlocks: readonly string[];
+}
+
+export interface PruneMetrics {
+	considered: number;
+	selected: number;
+	byReason: Record<PruneReason, number>;
+	skippedBoundary: number;
+	skippedWarmPrefix: number;
+	skippedProtected: number;
+	skippedRecent: number;
+	skippedSmall: number;
+	skippedMinimumSavings: number;
+	estimatedTokensSaved: number;
+}
+
+export interface PrunePlan {
+	candidates: PruneCandidate[];
+	metrics: PruneMetrics;
+}
+
+export interface PruneBudget {
+	protectTokens: number;
+	minimumSavings: number;
+	cacheWarmSuffixTokens: number;
+}
 
 export interface PruneResult {
 	prunedCount: number;
@@ -68,6 +112,12 @@ export const SUPERSEDED_NOTICE = "[Superseded by a newer read of this file]";
 
 /** Exact placeholder written over an elided useless tool result. */
 export const USELESS_NOTICE = "[Uneventful result elided]";
+
+/** Exact placeholder written over an earlier byte-identical result. */
+export const DUPLICATE_NOTICE = "[Duplicate of a later identical tool result]";
+
+/** Exact placeholder written over an error proven obsolete by a later successful retry. */
+export const RESOLVED_ERROR_NOTICE = "[Earlier error resolved by a later successful retry]";
 
 /**
  * Maps a tool call to a supersede key. Results sharing a key form a group in
@@ -83,6 +133,12 @@ export interface SupersedePruneConfig {
 	supersedeKey?: SupersedeKeyFn;
 	/** Also prune results flagged useless by their tool. Default false. */
 	pruneUseless?: boolean;
+	/** Also prune earlier exact duplicate results. Default false. */
+	pruneDuplicates?: boolean;
+	/** Also prune errors proven resolved by a later successful result. Default false. */
+	pruneResolvedErrors?: boolean;
+	/** Recent all-message suffix retained before a resolved error becomes eligible. Default 40 000. */
+	resolvedErrorProtectTokens?: number;
 	/** Prune a candidate now when all messages after it total at most this many estimated tokens. Default 8 000. */
 	suffixTokenLimit?: number;
 	/**
@@ -107,6 +163,81 @@ export interface SupersedePruneConfig {
 
 const DEFAULT_SUFFIX_TOKEN_LIMIT = 8_000;
 const DEFAULT_IDLE_FLUSH_MS = 30 * 60_000;
+
+const BASELINE_CONTEXT_WINDOW = 200_000;
+
+function scaleBudget(contextWindow: number, baseline: number, minimum: number, maximum: number): number {
+	if (!Number.isFinite(contextWindow) || contextWindow <= 0) return baseline;
+	return Math.min(maximum, Math.max(minimum, Math.round((contextWindow / BASELINE_CONTEXT_WINDOW) * baseline)));
+}
+
+/** Resolve pruning budgets while preserving the established 200k-window behavior. */
+export function resolvePruneBudget(
+	contextWindow: number | null | undefined,
+	protectTokensOverride?: number,
+): PruneBudget {
+	const window = contextWindow ?? BASELINE_CONTEXT_WINDOW;
+	const adaptiveProtectTokens = scaleBudget(window, 40_000, 8_000, 80_000);
+	const protectTokens =
+		protectTokensOverride !== undefined && Number.isFinite(protectTokensOverride) && protectTokensOverride > 0
+			? Math.round(protectTokensOverride)
+			: adaptiveProtectTokens;
+	return {
+		protectTokens,
+		minimumSavings: scaleBudget(window, 20_000, 2_000, 40_000),
+		cacheWarmSuffixTokens: scaleBudget(window, 8_000, 2_000, 16_000),
+	};
+}
+
+function emptyReasonCounts(): Record<PruneReason, number> {
+	return { superseded: 0, useless: 0, duplicate: 0, "resolved-error": 0, age: 0 };
+}
+
+function createMetrics(): PruneMetrics {
+	return {
+		considered: 0,
+		selected: 0,
+		byReason: emptyReasonCounts(),
+		skippedBoundary: 0,
+		skippedWarmPrefix: 0,
+		skippedProtected: 0,
+		skippedRecent: 0,
+		skippedSmall: 0,
+		skippedMinimumSavings: 0,
+		estimatedTokensSaved: 0,
+	};
+}
+
+function emptyPlan(metrics = createMetrics()): PrunePlan {
+	return { candidates: [], metrics };
+}
+
+function canonicalizeJson(value: unknown): string {
+	if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "number") return Number.isFinite(value) ? String(value) : "null";
+	if (Array.isArray(value)) return `[${value.map(item => canonicalizeJson(item)).join(",")}]`;
+	if (typeof value !== "object") return "null";
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record)
+		.sort()
+		.filter(key => record[key] !== undefined)
+		.map(key => `${JSON.stringify(key)}:${canonicalizeJson(record[key])}`)
+		.join(",")}}`;
+}
+
+/** Stable operation identity shared by pruning and deterministic compaction facts. */
+export function toolOperationKey(toolName: string, args: unknown): string {
+	return `${toolName}\u0000${canonicalizeJson(args)}`;
+}
+
+function textBlocks(message: ToolResultMessage): readonly string[] | undefined {
+	if (!message.content.every((block): block is TextContent => block.type === "text")) return undefined;
+	return message.content.map(block => block.text);
+}
+
+function sameTextBlocks(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((text, index) => text === right[index]);
+}
 
 function createPrunedNotice(tokens: number): string {
 	return `[Output truncated - ${tokens} tokens]`;
@@ -163,100 +294,209 @@ function resolveBoundaryIndex(entries: readonly SessionEntry[], keepBoundaryId: 
 	return index < 0 ? 0 : index;
 }
 
-interface SupersedeCandidate {
-	entry: SessionMessageEntry;
-	message: ToolResultMessage;
-	/** Index of the entry within the `entries` array. */
-	index: number;
-	tokens: number;
-	/** Placeholder text written over the blanked result. */
-	notice: string;
+function createCandidate(
+	entry: SessionEntry,
+	index: number,
+	message: ToolResultMessage,
+	toolCall: AgentToolCall | undefined,
+	reason: PruneReason,
+	notice: string,
+	requiresArchive: boolean,
+): PruneCandidate | undefined {
+	const blocks = textBlocks(message);
+	if (!blocks) return undefined;
+	return {
+		entry: entry as SessionMessageEntry,
+		index,
+		tokens: estimateTokens(message as AgentMessage),
+		reason,
+		notice,
+		requiresArchive,
+		toolName: toolCall?.name ?? message.toolName,
+		canonicalArgs: canonicalizeJson(toolCall?.arguments ?? {}),
+		textBlocks: blocks,
+	};
 }
 
-/**
- * Collect superseded tool results: for every unpruned, unprotected tool result
- * whose paired call resolves a supersede key, a LATER result with the same key
- * — or with a key that is the `"\u0000"`-prefix parent of this one — marks it
- * superseded. Returned in message order.
- */
+/** Collect stale results superseded by a later call in the same key group. */
 function collectSupersededResults(
 	entries: readonly SessionEntry[],
 	toolCallsById: ReadonlyMap<string, AgentToolCall>,
 	supersedeKey: SupersedeKeyFn,
 	protectedTools: readonly ProtectedToolMatcher[],
-): SupersedeCandidate[] {
-	const candidates: SupersedeCandidate[] = [];
+): PruneCandidate[] {
+	const candidates: PruneCandidate[] = [];
 	const seenKeys = new Set<string>();
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		const message = getToolResultMessage(entry);
 		if (!message || message.prunedAt !== undefined) continue;
 		const toolCall = toolCallsById.get(message.toolCallId);
-		if (!toolCall) continue;
-		if (isProtectedToolResult(message, toolCall, protectedTools)) continue;
+		if (!toolCall || isProtectedToolResult(message, toolCall, protectedTools)) continue;
 		const key = supersedeKey(toolCall.name, toolCall.arguments as Record<string, unknown>);
 		if (key === undefined) continue;
 		const separator = key.indexOf("\u0000");
 		const superseded = seenKeys.has(key) || (separator >= 0 && seenKeys.has(key.slice(0, separator)));
 		seenKeys.add(key);
 		if (!superseded) continue;
-		candidates.push({
-			entry: entry as SessionMessageEntry,
-			message,
-			index: i,
-			tokens: estimateTokens(message as AgentMessage),
-			notice: SUPERSEDED_NOTICE,
-		});
+		const candidate = createCandidate(entry, i, message, toolCall, "superseded", SUPERSEDED_NOTICE, true);
+		if (candidate) candidates.push(candidate);
 	}
 	return candidates.reverse();
 }
 
-/**
- * Collect tool results their tool flagged contextually useless (zero matches,
- * elapsed wait): unpruned, non-error, unprotected, not in `exclude`, and large
- * enough that blanking to {@link USELESS_NOTICE} actually saves tokens.
- * Returned in message order.
- */
+/** Collect exact text duplicates while retaining the newest byte-identical result. */
+function collectDuplicateResults(
+	entries: readonly SessionEntry[],
+	toolCallsById: ReadonlyMap<string, AgentToolCall>,
+	protectedTools: readonly ProtectedToolMatcher[],
+	exclude: ReadonlySet<ToolResultMessage>,
+): PruneCandidate[] {
+	type SeenResult = { blocks: readonly string[] };
+	const seen = new Map<string, Map<string, SeenResult[]>>();
+	const candidates: PruneCandidate[] = [];
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		const message = getToolResultMessage(entry);
+		if (!message || message.prunedAt !== undefined) continue;
+		const toolCall = toolCallsById.get(message.toolCallId);
+		if (!toolCall || isProtectedToolResult(message, toolCall, protectedTools)) continue;
+		const blocks = textBlocks(message);
+		if (!blocks) continue;
+		const operation = `${toolOperationKey(toolCall.name, toolCall.arguments)}\u0000${message.isError ? "error" : "success"}`;
+		let hashes = seen.get(operation);
+		if (!hashes) {
+			hashes = new Map();
+			seen.set(operation, hashes);
+		}
+		const hashInput = blocks.length === 1 ? blocks[0] : blocks.join("\u0000");
+		const hash = String(Bun.hash(hashInput));
+		let bucket = hashes.get(hash);
+		if (!bucket) {
+			bucket = [];
+			hashes.set(hash, bucket);
+		}
+		const duplicate = bucket.some(result => sameTextBlocks(result.blocks, blocks));
+		bucket.push({ blocks });
+		if (!duplicate || exclude.has(message)) continue;
+		const candidate = createCandidate(entry, i, message, toolCall, "duplicate", DUPLICATE_NOTICE, false);
+		if (candidate) candidates.push(candidate);
+	}
+	return candidates.reverse();
+}
+
+function isConclusiveSuccess(message: ToolResultMessage): boolean {
+	if (message.isError) return false;
+	const details = message.details;
+	if (details === null || typeof details !== "object" || !("async" in details)) return true;
+	const asyncDetails = details.async;
+	if (asyncDetails === null || typeof asyncDetails !== "object" || !("state" in asyncDetails)) return true;
+	return asyncDetails.state !== "running";
+}
+
+/** Collect errors whose exact operation key later produced a conclusive success. */
+function collectResolvedErrors(
+	entries: readonly SessionEntry[],
+	toolCallsById: ReadonlyMap<string, AgentToolCall>,
+	protectedTools: readonly ProtectedToolMatcher[],
+	exclude: ReadonlySet<ToolResultMessage>,
+): PruneCandidate[] {
+	const laterSuccesses = new Set<string>();
+	const candidates: PruneCandidate[] = [];
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		const message = getToolResultMessage(entry);
+		if (!message || message.prunedAt !== undefined) continue;
+		const toolCall = toolCallsById.get(message.toolCallId);
+		if (!toolCall || isProtectedToolResult(message, toolCall, protectedTools)) continue;
+		const operation = toolOperationKey(toolCall.name, toolCall.arguments);
+		if (isConclusiveSuccess(message)) {
+			laterSuccesses.add(operation);
+			continue;
+		}
+		if (!message.isError || !laterSuccesses.has(operation) || exclude.has(message)) continue;
+		const candidate = createCandidate(entry, i, message, toolCall, "resolved-error", RESOLVED_ERROR_NOTICE, true);
+		if (candidate) candidates.push(candidate);
+	}
+	return candidates.reverse();
+}
+
+/** Collect non-error results explicitly marked contextually useless by their tool. */
 function collectUselessResults(
 	entries: readonly SessionEntry[],
 	toolCallsById: ReadonlyMap<string, AgentToolCall>,
 	protectedTools: readonly ProtectedToolMatcher[],
 	exclude: ReadonlySet<ToolResultMessage>,
-): SupersedeCandidate[] {
-	const candidates: SupersedeCandidate[] = [];
+): PruneCandidate[] {
+	const candidates: PruneCandidate[] = [];
 	for (let i = 0; i < entries.length; i++) {
 		const entry = entries[i];
 		const message = getToolResultMessage(entry);
-		if (message?.useless !== true || message.prunedAt !== undefined || message.isError === true) continue;
-		if (exclude.has(message)) continue;
-		if (isProtectedToolResult(message, toolCallsById.get(message.toolCallId), protectedTools)) continue;
+		if (message?.useless !== true || message.prunedAt !== undefined || message.isError || exclude.has(message))
+			continue;
+		const toolCall = toolCallsById.get(message.toolCallId);
+		if (!toolCall || isProtectedToolResult(message, toolCall, protectedTools)) continue;
 		const tokens = estimateTokens(message as AgentMessage);
 		if (estimatePrunedSavings(tokens, USELESS_NOTICE) <= 0) continue;
-		candidates.push({ entry: entry as SessionMessageEntry, message, index: i, tokens, notice: USELESS_NOTICE });
+		const candidate = createCandidate(entry, i, message, toolCall, "useless", USELESS_NOTICE, false);
+		if (candidate) candidates.push(candidate);
 	}
 	return candidates;
 }
 
-/**
- * Prune superseded tool results (e.g. stale `read` outputs replaced by a newer
- * read of the same file) and, when `pruneUseless` is set, results their tool
- * flagged contextually useless. Cheap, incremental, and prompt-cache-aware: a
- * candidate is pruned now only when the suffix after it is small (tail case —
- * the read→edit→read loop) or when the context has been idle long enough that
- * the provider cache is cold anyway (then all still-sent candidates flush).
- * Never mutates entries before `keepBoundaryId` (summarized away — not sent).
- */
-export function pruneSupersededToolResults(entries: SessionEntry[], config: SupersedePruneConfig): PruneResult {
+function candidateMessage(candidate: PruneCandidate): ToolResultMessage {
+	return candidate.entry.message as ToolResultMessage;
+}
+
+function countBaseCandidates(
+	entries: readonly SessionEntry[],
+	toolCallsById: ReadonlyMap<string, AgentToolCall>,
+	protectedTools: readonly ProtectedToolMatcher[],
+	metrics: PruneMetrics,
+): void {
+	for (const entry of entries) {
+		const message = getToolResultMessage(entry);
+		if (!message || message.prunedAt !== undefined) continue;
+		metrics.considered++;
+		if (isProtectedToolResult(message, toolCallsById.get(message.toolCallId), protectedTools)) {
+			metrics.skippedProtected++;
+		}
+	}
+}
+
+function finalizePlan(candidates: PruneCandidate[], metrics: PruneMetrics): PrunePlan {
+	metrics.selected = candidates.length;
+	for (const candidate of candidates) {
+		metrics.byReason[candidate.reason]++;
+		metrics.estimatedTokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
+	}
+	return { candidates, metrics };
+}
+
+/** Plan cheap per-turn pruning without mutating session history. */
+export function planSupersededToolResults(entries: readonly SessionEntry[], config: SupersedePruneConfig): PrunePlan {
+	const metrics = createMetrics();
 	const toolCallsById = collectToolCallsById(entries);
+	countBaseCandidates(entries, toolCallsById, config.protectedTools, metrics);
 	const candidates = config.supersedeKey
 		? collectSupersededResults(entries, toolCallsById, config.supersedeKey, config.protectedTools)
 		: [];
-	if (config.pruneUseless) {
-		const exclude = new Set(candidates.map(candidate => candidate.message));
-		candidates.push(...collectUselessResults(entries, toolCallsById, config.protectedTools, exclude));
-		candidates.sort((a, b) => a.index - b.index);
+	const excluded = new Set(candidates.map(candidateMessage));
+	if (config.pruneDuplicates) {
+		const duplicates = collectDuplicateResults(entries, toolCallsById, config.protectedTools, excluded);
+		candidates.push(...duplicates);
+		for (const candidate of duplicates) excluded.add(candidateMessage(candidate));
 	}
-	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	if (config.pruneUseless) {
+		const useless = collectUselessResults(entries, toolCallsById, config.protectedTools, excluded);
+		candidates.push(...useless);
+		for (const candidate of useless) excluded.add(candidateMessage(candidate));
+	}
+	if (config.pruneResolvedErrors) {
+		candidates.push(...collectResolvedErrors(entries, toolCallsById, config.protectedTools, excluded));
+	}
+	if (candidates.length === 0) return emptyPlan(metrics);
+	candidates.sort((left, right) => left.index - right.index);
 
 	const now = config.now ?? Date.now();
 	let lastMessageTimestamp: number | undefined;
@@ -269,142 +509,175 @@ export function pruneSupersededToolResults(entries: SessionEntry[], config: Supe
 	}
 	const idle =
 		lastMessageTimestamp !== undefined && now - lastMessageTimestamp >= (config.idleFlushMs ?? DEFAULT_IDLE_FLUSH_MS);
-
 	const boundaryIndex = resolveBoundaryIndex(entries, config.keepBoundaryId);
-
-	let toPrune: SupersedeCandidate[];
-	if (idle) {
-		// Provider cache is cold (idle exceeds the retention TTL), so re-writing
-		// the sent region costs nothing. Entries before the compaction boundary
-		// are summarized away and never sent — skip them to avoid pointless churn.
-		toPrune = candidates.filter(candidate => candidate.index >= boundaryIndex);
-	} else {
-		const suffixTokenLimit = config.suffixTokenLimit ?? DEFAULT_SUFFIX_TOKEN_LIMIT;
-		// suffixTokens[i] = estimated tokens of all messages strictly after entry i.
-		// Mutating a candidate re-writes its suffix in the warm cache, so prune only
-		// when that suffix is small (cheap-to-recache tail) and the candidate sits
-		// at/after the compaction boundary.
-		const suffixTokens = computeMessageSuffixTokens(entries);
-		toPrune = candidates.filter(
-			candidate => candidate.index >= boundaryIndex && suffixTokens[candidate.index] <= suffixTokenLimit,
-		);
+	const suffixTokens = computeMessageSuffixTokens(entries);
+	const suffixTokenLimit = config.suffixTokenLimit ?? DEFAULT_SUFFIX_TOKEN_LIMIT;
+	const resolvedErrorProtectTokens = config.resolvedErrorProtectTokens ?? DEFAULT_PRUNE_CONFIG.protectTokens;
+	const selected: PruneCandidate[] = [];
+	for (const candidate of candidates) {
+		if (candidate.index < boundaryIndex) {
+			metrics.skippedBoundary++;
+			continue;
+		}
+		if (candidate.reason === "resolved-error") {
+			if (!idle || suffixTokens[candidate.index] < resolvedErrorProtectTokens) {
+				metrics.skippedRecent++;
+				continue;
+			}
+		} else if (!idle && suffixTokens[candidate.index] > suffixTokenLimit) {
+			metrics.skippedWarmPrefix++;
+			continue;
+		}
+		selected.push(candidate);
 	}
-	if (toPrune.length === 0) return { prunedCount: 0, tokensSaved: 0 };
-
-	const prunedAt = Date.now();
-	let tokensSaved = 0;
-	for (const candidate of toPrune) {
-		candidate.message.content = [{ type: "text", text: candidate.notice }];
-		candidate.message.prunedAt = prunedAt;
-		invalidateMessageCache(candidate.message as AgentMessage);
-		tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
-	}
-	return { prunedCount: toPrune.length, tokensSaved };
+	return selected.length > 0 ? finalizePlan(selected, metrics) : emptyPlan(metrics);
 }
 
-export function pruneToolOutputs(entries: SessionEntry[], config: PruneConfig = DEFAULT_PRUNE_CONFIG): PruneResult {
-	let accumulatedTokens = 0;
+/** Apply a prepared plan. Callers may substitute recoverable placeholders or omit candidates after archival failure. */
+export function applyPrunePlan(
+	plan: PrunePlan,
+	options?: {
+		candidates?: readonly PruneCandidate[];
+		replacements?: ReadonlyMap<PruneCandidate, string>;
+	},
+): PruneResult {
+	const candidates = options?.candidates ?? plan.candidates;
+	if (candidates.length === 0) return { prunedCount: 0, tokensSaved: 0 };
+	const prunedAt = Date.now();
 	let tokensSaved = 0;
-	let prunedCount = 0;
+	for (const candidate of candidates) {
+		const message = candidateMessage(candidate);
+		const notice = options?.replacements?.get(candidate) ?? candidate.notice;
+		message.content = [{ type: "text", text: notice }];
+		message.prunedAt = prunedAt;
+		invalidateMessageCache(message as AgentMessage);
+		tokensSaved += estimatePrunedSavings(candidate.tokens, notice);
+	}
+	return { prunedCount: candidates.length, tokensSaved };
+}
 
-	const candidates: Array<{ entry: SessionMessageEntry; tokens: number; superseded: boolean; useless: boolean }> = [];
+/** Backward-compatible synchronous convenience wrapper. */
+export function pruneSupersededToolResults(entries: SessionEntry[], config: SupersedePruneConfig): PruneResult {
+	return applyPrunePlan(planSupersededToolResults(entries, config));
+}
+
+/** Plan threshold-based pruning without mutating session history. */
+export function planToolOutputPruning(
+	entries: readonly SessionEntry[],
+	config: PruneConfig = DEFAULT_PRUNE_CONFIG,
+): PrunePlan {
+	const metrics = createMetrics();
 	const toolCallsById = collectToolCallsById(entries);
-	const supersededMessages = config.supersedeKey
-		? new Set(
-				collectSupersededResults(entries, toolCallsById, config.supersedeKey, config.protectedTools).map(
-					candidate => candidate.message,
-				),
-			)
-		: undefined;
-	const uselessMessages =
-		config.pruneUseless !== false
-			? new Set(
-					collectUselessResults(
-						entries,
-						toolCallsById,
-						config.protectedTools,
-						supersededMessages ?? new Set(),
-					).map(candidate => candidate.message),
-				)
-			: undefined;
+	countBaseCandidates(entries, toolCallsById, config.protectedTools, metrics);
+	const classified = new Map<ToolResultMessage, PruneCandidate>();
+	if (config.supersedeKey) {
+		for (const candidate of collectSupersededResults(
+			entries,
+			toolCallsById,
+			config.supersedeKey,
+			config.protectedTools,
+		)) {
+			classified.set(candidateMessage(candidate), candidate);
+		}
+	}
+	let excluded = new Set(classified.keys());
+	if (config.pruneDuplicates) {
+		for (const candidate of collectDuplicateResults(entries, toolCallsById, config.protectedTools, excluded)) {
+			classified.set(candidateMessage(candidate), candidate);
+		}
+		excluded = new Set(classified.keys());
+	}
+	if (config.pruneUseless !== false) {
+		for (const candidate of collectUselessResults(entries, toolCallsById, config.protectedTools, excluded)) {
+			classified.set(candidateMessage(candidate), candidate);
+		}
+		excluded = new Set(classified.keys());
+	}
+	if (config.pruneResolvedErrors) {
+		for (const candidate of collectResolvedErrors(entries, toolCallsById, config.protectedTools, excluded)) {
+			classified.set(candidateMessage(candidate), candidate);
+		}
+	}
 
+	let accumulatedTokens = 0;
+	const candidates: PruneCandidate[] = [];
 	const boundaryIndex = resolveBoundaryIndex(entries, config.keepBoundaryId);
 	const cacheWarmSuffixTokens = config.cacheWarmSuffixTokens;
-	// All-message suffix per index, only when the cache guard is armed.
 	const messageSuffix = cacheWarmSuffixTokens === undefined ? undefined : computeMessageSuffixTokens(entries);
-
+	const resolvedErrorProtectTokens = config.resolvedErrorProtectTokens ?? config.protectTokens;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		const message = getToolResultMessage(entry);
 		if (!message) continue;
-
 		const tokens = estimateTokens(message as AgentMessage);
-		const isProtected = isProtectedToolResult(message, toolCallsById.get(message.toolCallId), config.protectedTools);
-
 		if (message.prunedAt !== undefined) {
 			accumulatedTokens += tokens;
 			continue;
 		}
-
-		// Prompt-cache guard: a result whose all-message suffix exceeds the
-		// warm-cache window sits in the already-sent cached prefix — mutating it
-		// re-writes the whole suffix (cacheWrite premium). Entries before the
-		// compaction boundary are summarized away (never sent). Both are skipped
-		// before any prune decision, so superseded/useless cannot reach a deep,
-		// still-cached copy; compaction/shake reclaim those when they rebuild.
-		const inWarmPrefix =
-			messageSuffix !== undefined && cacheWarmSuffixTokens !== undefined && messageSuffix[i] > cacheWarmSuffixTokens;
-		if (inWarmPrefix || i < boundaryIndex) {
+		if (i < boundaryIndex) {
+			metrics.skippedBoundary++;
+			accumulatedTokens += tokens;
+			continue;
+		}
+		if (
+			messageSuffix !== undefined &&
+			cacheWarmSuffixTokens !== undefined &&
+			messageSuffix[i] > cacheWarmSuffixTokens
+		) {
+			metrics.skippedWarmPrefix++;
+			accumulatedTokens += tokens;
+			continue;
+		}
+		const toolCall = toolCallsById.get(message.toolCallId);
+		if (isProtectedToolResult(message, toolCall, config.protectedTools)) {
 			accumulatedTokens += tokens;
 			continue;
 		}
 
-		// Superseded and useless results bypass the age-based protect window
-		// (a stale re-read copy, or a result the tool flagged as uninformative,
-		// is dead weight at any age) — but only within the cache-warm tail: the
-		// guard above already excluded deeper, still-cached copies.
-		const superseded = supersededMessages?.has(message) ?? false;
-		const useless = uselessMessages?.has(message) ?? false;
-		const tooSmall = tokens < MIN_PRUNE_TOKENS;
-		if (!superseded && !useless && (accumulatedTokens < config.protectTokens || isProtected || tooSmall)) {
+		let candidate = classified.get(message);
+		if (message.isError && candidate?.reason !== "resolved-error") {
 			accumulatedTokens += tokens;
 			continue;
 		}
-
-		candidates.push({ entry: entry as SessionMessageEntry, tokens, superseded, useless });
+		const bypassRecent =
+			candidate?.reason === "superseded" || candidate?.reason === "useless" || candidate?.reason === "duplicate";
+		const protectTokens = candidate?.reason === "resolved-error" ? resolvedErrorProtectTokens : config.protectTokens;
+		if (!bypassRecent && accumulatedTokens < protectTokens) {
+			metrics.skippedRecent++;
+			accumulatedTokens += tokens;
+			continue;
+		}
+		if (!candidate) {
+			if (tokens < MIN_PRUNE_TOKENS) {
+				metrics.skippedSmall++;
+				accumulatedTokens += tokens;
+				continue;
+			}
+			candidate = createCandidate(entry, i, message, toolCall, "age", createPrunedNotice(tokens), true);
+		}
+		if (!candidate || estimatePrunedSavings(candidate.tokens, candidate.notice) <= 0) {
+			metrics.skippedSmall++;
+			accumulatedTokens += tokens;
+			continue;
+		}
+		candidates.push(candidate);
 		accumulatedTokens += tokens;
 	}
 
-	for (const candidate of candidates) {
-		tokensSaved += estimatePrunedSavings(
-			candidate.tokens,
-			candidate.superseded
-				? SUPERSEDED_NOTICE
-				: candidate.useless
-					? USELESS_NOTICE
-					: createPrunedNotice(candidate.tokens),
-		);
+	const tokensSaved = candidates.reduce(
+		(total, candidate) => total + estimatePrunedSavings(candidate.tokens, candidate.notice),
+		0,
+	);
+	if (candidates.length === 0 || tokensSaved < config.minimumSavings) {
+		metrics.skippedMinimumSavings = candidates.length;
+		return emptyPlan(metrics);
 	}
+	return finalizePlan(candidates, metrics);
+}
 
-	if (tokensSaved < config.minimumSavings || candidates.length === 0) {
-		return { prunedCount: 0, tokensSaved: 0 };
-	}
-
-	const prunedAt = Date.now();
-	for (const candidate of candidates) {
-		const message = candidate.entry.message as ToolResultMessage;
-		const notice = candidate.superseded
-			? SUPERSEDED_NOTICE
-			: candidate.useless
-				? USELESS_NOTICE
-				: createPrunedNotice(candidate.tokens);
-		message.content = [{ type: "text", text: notice }];
-		message.prunedAt = prunedAt;
-		invalidateMessageCache(message as AgentMessage);
-		prunedCount++;
-	}
-
-	return { prunedCount, tokensSaved };
+/** Backward-compatible synchronous convenience wrapper. */
+export function pruneToolOutputs(entries: SessionEntry[], config: PruneConfig = DEFAULT_PRUNE_CONFIG): PruneResult {
+	return applyPrunePlan(planToolOutputPruning(entries, config));
 }
 
 /**

@@ -165,7 +165,9 @@ export async function initDb(): Promise<Database> {
 		CREATE TABLE IF NOT EXISTS file_offsets (
 			session_file TEXT PRIMARY KEY,
 			offset INTEGER NOT NULL,
-			last_modified INTEGER NOT NULL
+			last_modified INTEGER NOT NULL,
+			file_size INTEGER,
+			parser_state TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS user_messages (
@@ -217,6 +219,13 @@ export async function initDb(): Promise<Database> {
 			value TEXT NOT NULL
 		);
 	`);
+	const fileOffsetColumns = db.prepare("PRAGMA table_info(file_offsets)").all() as { name: string }[];
+	if (!fileOffsetColumns.some(column => column.name === "file_size")) {
+		db.run("ALTER TABLE file_offsets ADD COLUMN file_size INTEGER");
+	}
+	if (!fileOffsetColumns.some(column => column.name === "parser_state")) {
+		db.run("ALTER TABLE file_offsets ADD COLUMN parser_state TEXT");
+	}
 	const toolCallColumns = db.prepare("PRAGMA table_info(tool_calls)").all() as { name: string }[];
 	if (!toolCallColumns.some(column => column.name === "duration_ms")) {
 		db.run("ALTER TABLE tool_calls ADD COLUMN duration_ms INTEGER");
@@ -508,28 +517,74 @@ function backfillNoCacheInputCosts(database: Database): void {
 }
 
 /**
- * Get the stored offset for a session file.
+ * Get the durable parse checkpoint for a session file.
  */
-export function getFileOffset(sessionFile: string): { offset: number; lastModified: number } | null {
+export function getFileOffset(sessionFile: string): {
+	offset: number;
+	lastModified: number;
+	fileSize: number | null;
+	parserState: unknown;
+} | null {
 	if (!db) return null;
 
-	const stmt = db.prepare("SELECT offset, last_modified FROM file_offsets WHERE session_file = ?");
-	const row = stmt.get(sessionFile) as { offset: number; last_modified: number } | undefined;
-
-	return row ? { offset: row.offset, lastModified: row.last_modified } : null;
+	const stmt = db.prepare(
+		"SELECT offset, last_modified, file_size, parser_state FROM file_offsets WHERE session_file = ?",
+	);
+	const row = stmt.get(sessionFile) as
+		| { offset: number; last_modified: number; file_size: number | null; parser_state: string | null }
+		| undefined;
+	if (!row) return null;
+	let parserState: unknown;
+	if (row.parser_state) {
+		try {
+			parserState = JSON.parse(row.parser_state);
+		} catch {
+			parserState = undefined;
+		}
+	}
+	return {
+		offset: row.offset,
+		lastModified: row.last_modified,
+		fileSize: row.file_size,
+		parserState,
+	};
 }
 
 /**
- * Update the stored offset for a session file.
+ * Persist the completed JSONL offset and the parser state needed to resume
+ * append-only files without rereading their historical prefix.
  */
-export function setFileOffset(sessionFile: string, offset: number, lastModified: number): void {
+export function setFileOffset(
+	sessionFile: string,
+	offset: number,
+	lastModified: number,
+	fileSize: number,
+	parserState: unknown,
+): void {
 	if (!db) return;
 
 	const stmt = db.prepare(`
-		INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified)
-		VALUES (?, ?, ?)
+		INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified, file_size, parser_state)
+		VALUES (?, ?, ?, ?, ?)
 	`);
-	stmt.run(sessionFile, offset, lastModified);
+	stmt.run(sessionFile, offset, lastModified, fileSize, JSON.stringify(parserState));
+}
+
+/**
+ * Replace a rewritten session's aggregates in the same transaction that stores
+ * the freshly parsed content. Parsing completes before this function is called,
+ * so malformed source files never erase the prior durable aggregate.
+ */
+export function replaceSessionStats(sessionFile: string, apply: () => void): void {
+	const database = db;
+	if (!database) return;
+	database.transaction(() => {
+		database.run("DELETE FROM messages WHERE session_file = ?", [sessionFile]);
+		database.run("DELETE FROM user_messages WHERE session_file = ?", [sessionFile]);
+		database.run("DELETE FROM tool_calls WHERE session_file = ?", [sessionFile]);
+		database.run("DELETE FROM file_offsets WHERE session_file = ?", [sessionFile]);
+		apply();
+	})();
 }
 
 /**

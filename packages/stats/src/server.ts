@@ -31,6 +31,10 @@ import {
 
 const EMBEDDED_CLIENT_ARCHIVE = decodeEmbeddedClientArchive(embeddedClientArchiveTxt);
 
+export interface StatsServerOptions {
+	sync?: () => Promise<{ processed: number; files: number }>;
+}
+
 const CLIENT_DIR = path.join(import.meta.dir, "client");
 const STATIC_DIR = path.join(import.meta.dir, "..", "dist", "client");
 const IS_BUN_COMPILED =
@@ -192,7 +196,10 @@ const ensureClientBuild = async () => {
 /**
  * Handle API requests.
  */
-export async function handleApi(req: Request): Promise<Response> {
+export async function handleApi(
+	req: Request,
+	sync: () => Promise<{ processed: number; files: number }> = syncAllSessions,
+): Promise<Response> {
 	const url = new URL(req.url);
 	const path = url.pathname;
 
@@ -270,7 +277,7 @@ export async function handleApi(req: Request): Promise<Response> {
 	}
 
 	if (path === "/api/sync") {
-		const result = await syncAllSessions();
+		const result = await sync();
 		const count = await getTotalMessageCount();
 		return Response.json({ ...result, totalMessages: count });
 	}
@@ -306,7 +313,7 @@ async function handleStatic(requestPath: string): Promise<Response> {
 	return new Response("Not Found", { status: 404 });
 }
 
-function createDashboardServer(port: number) {
+function createDashboardServer(port: number, options?: StatsServerOptions) {
 	const server = Bun.serve({
 		port,
 		hostname: STATS_DASHBOARD_HOSTNAME,
@@ -328,7 +335,7 @@ function createDashboardServer(port: number) {
 				let response: Response;
 
 				if (path.startsWith("/api/")) {
-					response = await handleApi(req);
+					response = await handleApi(req, options?.sync);
 				} else {
 					response = await handleStatic(path);
 				}
@@ -358,7 +365,10 @@ function createDashboardServer(port: number) {
 /**
  * Start the HTTP server, reusing a live dashboard or reclaiming a stale omp listener.
  */
-export async function startServer(port = 3847): Promise<{ hostname: string; port: number; stop: () => void }> {
+export async function startServer(
+	port = 3847,
+	options?: StatsServerOptions,
+): Promise<{ hostname: string; port: number; stop: () => void }> {
 	await ensureClientBuild();
 	const preparation = await prepareStatsPort(port);
 	if (preparation === "reuse") {
@@ -366,7 +376,7 @@ export async function startServer(port = 3847): Promise<{ hostname: string; port
 	}
 
 	try {
-		const server = createDashboardServer(port);
+		const server = createDashboardServer(port, options);
 		return {
 			hostname: STATS_DASHBOARD_HOSTNAME,
 			port: server.port ?? port,
@@ -381,7 +391,7 @@ export async function startServer(port = 3847): Promise<{ hostname: string; port
 		}
 
 		try {
-			const server = createDashboardServer(port);
+			const server = createDashboardServer(port, options);
 			return {
 				hostname: STATS_DASHBOARD_HOSTNAME,
 				port: server.port ?? port,

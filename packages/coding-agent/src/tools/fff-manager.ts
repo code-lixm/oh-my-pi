@@ -115,14 +115,32 @@ export class FffFinderManager {
 			this.#aux = this.#aux.filter(entry => entry !== oldest);
 		}
 
-		const created = this.#finderStatic.create({
+		const createOptions: InitOptions = {
 			basePath: root,
 			...(main && this.#frecencyDbPath ? { frecencyDbPath: this.#frecencyDbPath } : {}),
 			...(main && this.#historyDbPath ? { historyDbPath: this.#historyDbPath } : {}),
 			aiMode: true,
 			enableFsRootScanning: this.#enableFsRootScanning,
 			enableHomeDirScanning: this.#enableHomeDirScanning,
-		});
+		};
+		let created = this.#finderStatic.create(createOptions);
+		if (
+			!created.ok &&
+			main &&
+			(this.#frecencyDbPath || this.#historyDbPath) &&
+			created.error.includes("MDB_READERS_FULL")
+		) {
+			logger.warn("FFF durable ranking databases unavailable; retrying without them", {
+				root,
+				error: created.error,
+			});
+			created = this.#finderStatic.create({
+				basePath: root,
+				aiMode: true,
+				enableFsRootScanning: this.#enableFsRootScanning,
+				enableHomeDirScanning: this.#enableHomeDirScanning,
+			});
+		}
 		if (!created.ok) throw new Error(`Failed to create FFF index for ${root}: ${created.error}`);
 		const finder = created.value;
 		const ready = await finder.waitForScan(FFF_SCAN_TIMEOUT_MS);
@@ -337,9 +355,6 @@ export function getSessionFffFinderManager(session: ToolSession): FffFinderManag
 			references: 0,
 		};
 		sharedManagers.set(sharedKey, shared);
-		void shared.manager.acquireWorkspace(workspaceRoot).catch(error => {
-			logger.warn("FFF workspace warmup failed", { cwd: workspaceRoot, error });
-		});
 	}
 	shared.references++;
 	sessionManagers.set(session, { manager: shared.manager, sharedKey });

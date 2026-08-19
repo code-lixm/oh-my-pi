@@ -565,7 +565,11 @@ export const SETTINGS_SCHEMA = {
 				},
 				{ value: "1", label: tSettingsUi("1 turn") },
 				{ value: "2", label: tSettingsUi("2 turns") },
-				{ value: "3", label: tSettingsUi("3 turns"), description: tSettingsUi("Default.") },
+				{
+					value: "3",
+					label: tSettingsUi("3 turns"),
+					description: tSettingsUi("Default."),
+				},
 				{ value: "4", label: tSettingsUi("4 turns") },
 				{ value: "5", label: tSettingsUi("5 turns") },
 			],
@@ -653,7 +657,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: tSettingsUi("Theme"),
 			label: tSettingsUi("Dark Theme"),
-			description: tSettingsUi("Theme used when the terminal has a dark background"),
+			description: tSettingsUi("Theme used for dark color schemes in OMP Web and the CLI/TUI"),
 			options: "runtime",
 		},
 	},
@@ -665,7 +669,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "appearance",
 			group: tSettingsUi("Theme"),
 			label: tSettingsUi("Light Theme"),
-			description: tSettingsUi("Theme used when the terminal has a light background"),
+			description: tSettingsUi("Theme used for light color schemes in OMP Web and the CLI/TUI"),
 			options: "runtime",
 		},
 	},
@@ -693,9 +697,21 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Symbol Preset"),
 			description: tSettingsUi("Glyph set for icons and symbols (Unicode, Nerd Font, or ASCII)"),
 			options: [
-				{ value: "unicode", label: tSettingsUi("Unicode"), description: tSettingsUi("Standard symbols (default)") },
-				{ value: "nerd", label: tSettingsUi("Nerd Font"), description: tSettingsUi("Requires Nerd Font") },
-				{ value: "ascii", label: tSettingsUi("ASCII"), description: tSettingsUi("Maximum compatibility") },
+				{
+					value: "unicode",
+					label: tSettingsUi("Unicode"),
+					description: tSettingsUi("Standard symbols (default)"),
+				},
+				{
+					value: "nerd",
+					label: tSettingsUi("Nerd Font"),
+					description: tSettingsUi("Requires Nerd Font"),
+				},
+				{
+					value: "ascii",
+					label: tSettingsUi("ASCII"),
+					description: tSettingsUi("Maximum compatibility"),
+				},
 			],
 		},
 	},
@@ -727,16 +743,36 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Default"),
 					description: tSettingsUi("Model, path, git, context, tokens, cost"),
 				},
-				{ value: "minimal", label: tSettingsUi("Minimal"), description: tSettingsUi("Path and git only") },
-				{ value: "compact", label: tSettingsUi("Compact"), description: tSettingsUi("Model, git, cost, context") },
-				{ value: "full", label: tSettingsUi("Full"), description: tSettingsUi("All segments including time") },
+				{
+					value: "minimal",
+					label: tSettingsUi("Minimal"),
+					description: tSettingsUi("Path and git only"),
+				},
+				{
+					value: "compact",
+					label: tSettingsUi("Compact"),
+					description: tSettingsUi("Model, git, cost, context"),
+				},
+				{
+					value: "full",
+					label: tSettingsUi("Full"),
+					description: tSettingsUi("All segments including time"),
+				},
 				{
 					value: "nerd",
 					label: tSettingsUi("Nerd"),
 					description: tSettingsUi("Maximum info with Nerd Font icons"),
 				},
-				{ value: "ascii", label: tSettingsUi("ASCII"), description: tSettingsUi("No special characters") },
-				{ value: "custom", label: tSettingsUi("Custom"), description: tSettingsUi("User-defined segments") },
+				{
+					value: "ascii",
+					label: tSettingsUi("ASCII"),
+					description: tSettingsUi("No special characters"),
+				},
+				{
+					value: "custom",
+					label: tSettingsUi("Custom"),
+					description: tSettingsUi("User-defined segments"),
+				},
 			],
 		},
 	},
@@ -753,7 +789,10 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"statusLine.customPresets": { type: "record", default: {} as Record<string, unknown> },
+	"statusLine.customPresets": {
+		type: "record",
+		default: {} as Record<string, unknown>,
+	},
 
 	"statusLine.separator": {
 		type: "enum",
@@ -775,11 +814,31 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Thin chevron"),
 					description: tSettingsUi("Thin arrows (Nerd Font)"),
 				},
-				{ value: "slash", label: tSettingsUi("Slash"), description: tSettingsUi("Forward slashes") },
-				{ value: "pipe", label: tSettingsUi("Pipe"), description: tSettingsUi("Vertical pipes") },
-				{ value: "block", label: tSettingsUi("Block"), description: tSettingsUi("Solid blocks") },
-				{ value: "none", label: tSettingsUi("None"), description: tSettingsUi("Space only") },
-				{ value: "ascii", label: tSettingsUi("ASCII"), description: tSettingsUi("Greater-than signs") },
+				{
+					value: "slash",
+					label: tSettingsUi("Slash"),
+					description: tSettingsUi("Forward slashes"),
+				},
+				{
+					value: "pipe",
+					label: tSettingsUi("Pipe"),
+					description: tSettingsUi("Vertical pipes"),
+				},
+				{
+					value: "block",
+					label: tSettingsUi("Block"),
+					description: tSettingsUi("Solid blocks"),
+				},
+				{
+					value: "none",
+					label: tSettingsUi("None"),
+					description: tSettingsUi("Space only"),
+				},
+				{
+					value: "ascii",
+					label: tSettingsUi("ASCII"),
+					description: tSettingsUi("Greater-than signs"),
+				},
 			],
 		},
 	},
@@ -828,18 +887,66 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Artifact Spill Threshold (KB)"),
 			description: tSettingsUi("Tool output above this size is saved as an artifact; tail is kept inline"),
 			options: [
-				{ value: "1", label: tSettingsUi("1 KB"), description: tSettingsUi("~250 tokens") },
-				{ value: "2.5", label: tSettingsUi("2.5 KB"), description: tSettingsUi("~625 tokens") },
-				{ value: "5", label: tSettingsUi("5 KB"), description: tSettingsUi("~1.25K tokens") },
-				{ value: "10", label: tSettingsUi("10 KB"), description: tSettingsUi("~2.5K tokens") },
-				{ value: "20", label: tSettingsUi("20 KB"), description: tSettingsUi("~5K tokens") },
-				{ value: "30", label: tSettingsUi("30 KB"), description: tSettingsUi("~7.5K tokens") },
-				{ value: "50", label: tSettingsUi("50 KB"), description: tSettingsUi("Default; ~12.5K tokens") },
-				{ value: "75", label: tSettingsUi("75 KB"), description: tSettingsUi("~19K tokens") },
-				{ value: "100", label: tSettingsUi("100 KB"), description: tSettingsUi("~25K tokens") },
-				{ value: "200", label: tSettingsUi("200 KB"), description: tSettingsUi("~50K tokens") },
-				{ value: "500", label: tSettingsUi("500 KB"), description: tSettingsUi("~125K tokens") },
-				{ value: "1000", label: tSettingsUi("1 MB"), description: tSettingsUi("~250K tokens") },
+				{
+					value: "1",
+					label: tSettingsUi("1 KB"),
+					description: tSettingsUi("~250 tokens"),
+				},
+				{
+					value: "2.5",
+					label: tSettingsUi("2.5 KB"),
+					description: tSettingsUi("~625 tokens"),
+				},
+				{
+					value: "5",
+					label: tSettingsUi("5 KB"),
+					description: tSettingsUi("~1.25K tokens"),
+				},
+				{
+					value: "10",
+					label: tSettingsUi("10 KB"),
+					description: tSettingsUi("~2.5K tokens"),
+				},
+				{
+					value: "20",
+					label: tSettingsUi("20 KB"),
+					description: tSettingsUi("~5K tokens"),
+				},
+				{
+					value: "30",
+					label: tSettingsUi("30 KB"),
+					description: tSettingsUi("~7.5K tokens"),
+				},
+				{
+					value: "50",
+					label: tSettingsUi("50 KB"),
+					description: tSettingsUi("Default; ~12.5K tokens"),
+				},
+				{
+					value: "75",
+					label: tSettingsUi("75 KB"),
+					description: tSettingsUi("~19K tokens"),
+				},
+				{
+					value: "100",
+					label: tSettingsUi("100 KB"),
+					description: tSettingsUi("~25K tokens"),
+				},
+				{
+					value: "200",
+					label: tSettingsUi("200 KB"),
+					description: tSettingsUi("~50K tokens"),
+				},
+				{
+					value: "500",
+					label: tSettingsUi("500 KB"),
+					description: tSettingsUi("~125K tokens"),
+				},
+				{
+					value: "1000",
+					label: tSettingsUi("1 MB"),
+					description: tSettingsUi("~250K tokens"),
+				},
 			],
 		},
 	},
@@ -852,14 +959,46 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Artifact Tail Size (KB)"),
 			description: tSettingsUi("Amount of tail content kept inline when output spills to artifact"),
 			options: [
-				{ value: "1", label: tSettingsUi("1 KB"), description: tSettingsUi("~250 tokens") },
-				{ value: "2.5", label: tSettingsUi("2.5 KB"), description: tSettingsUi("~625 tokens") },
-				{ value: "5", label: tSettingsUi("5 KB"), description: tSettingsUi("~1.25K tokens") },
-				{ value: "10", label: tSettingsUi("10 KB"), description: tSettingsUi("~2.5K tokens") },
-				{ value: "20", label: tSettingsUi("20 KB"), description: tSettingsUi("Default; ~5K tokens") },
-				{ value: "50", label: tSettingsUi("50 KB"), description: tSettingsUi("~12.5K tokens") },
-				{ value: "100", label: tSettingsUi("100 KB"), description: tSettingsUi("~25K tokens") },
-				{ value: "200", label: tSettingsUi("200 KB"), description: tSettingsUi("~50K tokens") },
+				{
+					value: "1",
+					label: tSettingsUi("1 KB"),
+					description: tSettingsUi("~250 tokens"),
+				},
+				{
+					value: "2.5",
+					label: tSettingsUi("2.5 KB"),
+					description: tSettingsUi("~625 tokens"),
+				},
+				{
+					value: "5",
+					label: tSettingsUi("5 KB"),
+					description: tSettingsUi("~1.25K tokens"),
+				},
+				{
+					value: "10",
+					label: tSettingsUi("10 KB"),
+					description: tSettingsUi("~2.5K tokens"),
+				},
+				{
+					value: "20",
+					label: tSettingsUi("20 KB"),
+					description: tSettingsUi("Default; ~5K tokens"),
+				},
+				{
+					value: "50",
+					label: tSettingsUi("50 KB"),
+					description: tSettingsUi("~12.5K tokens"),
+				},
+				{
+					value: "100",
+					label: tSettingsUi("100 KB"),
+					description: tSettingsUi("~25K tokens"),
+				},
+				{
+					value: "200",
+					label: tSettingsUi("200 KB"),
+					description: tSettingsUi("~50K tokens"),
+				},
 			],
 		},
 	},
@@ -874,15 +1013,51 @@ export const SETTINGS_SCHEMA = {
 				"Amount of head content kept inline alongside the tail when output spills to artifact (middle elision). 0 disables — keep tail only.",
 			),
 			options: [
-				{ value: "0", label: tSettingsUi("0 KB"), description: tSettingsUi("Disabled; tail-only truncation") },
-				{ value: "1", label: tSettingsUi("1 KB"), description: tSettingsUi("~250 tokens") },
-				{ value: "2.5", label: tSettingsUi("2.5 KB"), description: tSettingsUi("~625 tokens") },
-				{ value: "5", label: tSettingsUi("5 KB"), description: tSettingsUi("~1.25K tokens") },
-				{ value: "10", label: tSettingsUi("10 KB"), description: tSettingsUi("~2.5K tokens") },
-				{ value: "20", label: tSettingsUi("20 KB"), description: tSettingsUi("Default; ~5K tokens") },
-				{ value: "50", label: tSettingsUi("50 KB"), description: tSettingsUi("~12.5K tokens") },
-				{ value: "100", label: tSettingsUi("100 KB"), description: tSettingsUi("~25K tokens") },
-				{ value: "200", label: tSettingsUi("200 KB"), description: tSettingsUi("~50K tokens") },
+				{
+					value: "0",
+					label: tSettingsUi("0 KB"),
+					description: tSettingsUi("Disabled; tail-only truncation"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1 KB"),
+					description: tSettingsUi("~250 tokens"),
+				},
+				{
+					value: "2.5",
+					label: tSettingsUi("2.5 KB"),
+					description: tSettingsUi("~625 tokens"),
+				},
+				{
+					value: "5",
+					label: tSettingsUi("5 KB"),
+					description: tSettingsUi("~1.25K tokens"),
+				},
+				{
+					value: "10",
+					label: tSettingsUi("10 KB"),
+					description: tSettingsUi("~2.5K tokens"),
+				},
+				{
+					value: "20",
+					label: tSettingsUi("20 KB"),
+					description: tSettingsUi("Default; ~5K tokens"),
+				},
+				{
+					value: "50",
+					label: tSettingsUi("50 KB"),
+					description: tSettingsUi("~12.5K tokens"),
+				},
+				{
+					value: "100",
+					label: tSettingsUi("100 KB"),
+					description: tSettingsUi("~25K tokens"),
+				},
+				{
+					value: "200",
+					label: tSettingsUi("200 KB"),
+					description: tSettingsUi("~50K tokens"),
+				},
 			],
 		},
 	},
@@ -897,13 +1072,29 @@ export const SETTINGS_SCHEMA = {
 				"Per-line byte cap for streaming tool outputs (bash, python, js eval) and `read`. Lines wider than this are ellipsis-truncated; remaining bytes up to the next newline are dropped. 0 disables.",
 			),
 			options: [
-				{ value: "0", label: tSettingsUi("Off"), description: tSettingsUi("No per-line cap") },
-				{ value: "256", label: tSettingsUi("256"), description: tSettingsUi("Tight") },
+				{
+					value: "0",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("No per-line cap"),
+				},
+				{
+					value: "256",
+					label: tSettingsUi("256"),
+					description: tSettingsUi("Tight"),
+				},
 				{ value: "512", label: tSettingsUi("512") },
-				{ value: "768", label: tSettingsUi("768"), description: tSettingsUi("Default") },
+				{
+					value: "768",
+					label: tSettingsUi("768"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "1024", label: tSettingsUi("1024") },
 				{ value: "2048", label: tSettingsUi("2048") },
-				{ value: "4096", label: tSettingsUi("4096"), description: tSettingsUi("Loose") },
+				{
+					value: "4096",
+					label: tSettingsUi("4096"),
+					description: tSettingsUi("Loose"),
+				},
 			],
 		},
 	},
@@ -916,13 +1107,41 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Artifact Tail Lines"),
 			description: tSettingsUi("Maximum lines of tail content kept inline when output spills to artifact"),
 			options: [
-				{ value: "50", label: tSettingsUi("50 lines"), description: tSettingsUi("~250 tokens") },
-				{ value: "100", label: tSettingsUi("100 lines"), description: tSettingsUi("~500 tokens") },
-				{ value: "250", label: tSettingsUi("250 lines"), description: tSettingsUi("~1.25K tokens") },
-				{ value: "500", label: tSettingsUi("500 lines"), description: tSettingsUi("Default; ~2.5K tokens") },
-				{ value: "1000", label: tSettingsUi("1000 lines"), description: tSettingsUi("~5K tokens") },
-				{ value: "2000", label: tSettingsUi("2000 lines"), description: tSettingsUi("~10K tokens") },
-				{ value: "5000", label: tSettingsUi("5000 lines"), description: tSettingsUi("~25K tokens") },
+				{
+					value: "50",
+					label: tSettingsUi("50 lines"),
+					description: tSettingsUi("~250 tokens"),
+				},
+				{
+					value: "100",
+					label: tSettingsUi("100 lines"),
+					description: tSettingsUi("~500 tokens"),
+				},
+				{
+					value: "250",
+					label: tSettingsUi("250 lines"),
+					description: tSettingsUi("~1.25K tokens"),
+				},
+				{
+					value: "500",
+					label: tSettingsUi("500 lines"),
+					description: tSettingsUi("Default; ~2.5K tokens"),
+				},
+				{
+					value: "1000",
+					label: tSettingsUi("1000 lines"),
+					description: tSettingsUi("~5K tokens"),
+				},
+				{
+					value: "2000",
+					label: tSettingsUi("2000 lines"),
+					description: tSettingsUi("~10K tokens"),
+				},
+				{
+					value: "5000",
+					label: tSettingsUi("5000 lines"),
+					description: tSettingsUi("~25K tokens"),
+				},
 			],
 		},
 	},
@@ -938,11 +1157,20 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"statusLine.leftSegments": { type: "array", default: [] as StatusLineSegmentId[] },
+	"statusLine.leftSegments": {
+		type: "array",
+		default: [] as StatusLineSegmentId[],
+	},
 
-	"statusLine.rightSegments": { type: "array", default: [] as StatusLineSegmentId[] },
+	"statusLine.rightSegments": {
+		type: "array",
+		default: [] as StatusLineSegmentId[],
+	},
 
-	"statusLine.segmentOptions": { type: "record", default: {} as Record<string, unknown> },
+	"statusLine.segmentOptions": {
+		type: "record",
+		default: {} as Record<string, unknown>,
+	},
 
 	// Images and terminal
 	"terminal.showImages": {
@@ -1633,12 +1861,36 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Temperature"),
 			description: tSettingsUi("Sampling temperature (0 = deterministic, 1 = creative, -1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "0", label: tSettingsUi("0"), description: tSettingsUi("Deterministic") },
-				{ value: "0.2", label: tSettingsUi("0.2"), description: tSettingsUi("Focused") },
-				{ value: "0.5", label: tSettingsUi("0.5"), description: tSettingsUi("Balanced") },
-				{ value: "0.7", label: tSettingsUi("0.7"), description: tSettingsUi("Creative") },
-				{ value: "1", label: tSettingsUi("1"), description: tSettingsUi("Maximum variety") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "0",
+					label: tSettingsUi("0"),
+					description: tSettingsUi("Deterministic"),
+				},
+				{
+					value: "0.2",
+					label: tSettingsUi("0.2"),
+					description: tSettingsUi("Focused"),
+				},
+				{
+					value: "0.5",
+					label: tSettingsUi("0.5"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "0.7",
+					label: tSettingsUi("0.7"),
+					description: tSettingsUi("Creative"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1"),
+					description: tSettingsUi("Maximum variety"),
+				},
 			],
 		},
 	},
@@ -1652,12 +1904,36 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Top P"),
 			description: tSettingsUi("Nucleus sampling cutoff (0-1, -1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "0.1", label: tSettingsUi("0.1"), description: tSettingsUi("Very focused") },
-				{ value: "0.3", label: tSettingsUi("0.3"), description: tSettingsUi("Focused") },
-				{ value: "0.5", label: tSettingsUi("0.5"), description: tSettingsUi("Balanced") },
-				{ value: "0.9", label: tSettingsUi("0.9"), description: tSettingsUi("Broad") },
-				{ value: "1", label: tSettingsUi("1"), description: tSettingsUi("No nucleus filtering") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "0.1",
+					label: tSettingsUi("0.1"),
+					description: tSettingsUi("Very focused"),
+				},
+				{
+					value: "0.3",
+					label: tSettingsUi("0.3"),
+					description: tSettingsUi("Focused"),
+				},
+				{
+					value: "0.5",
+					label: tSettingsUi("0.5"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "0.9",
+					label: tSettingsUi("0.9"),
+					description: tSettingsUi("Broad"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1"),
+					description: tSettingsUi("No nucleus filtering"),
+				},
 			],
 		},
 	},
@@ -1671,11 +1947,31 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Top K"),
 			description: tSettingsUi("Sample from top-K tokens (-1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "1", label: tSettingsUi("1"), description: tSettingsUi("Greedy top token") },
-				{ value: "20", label: tSettingsUi("20"), description: tSettingsUi("Focused") },
-				{ value: "40", label: tSettingsUi("40"), description: tSettingsUi("Balanced") },
-				{ value: "100", label: tSettingsUi("100"), description: tSettingsUi("Broad") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1"),
+					description: tSettingsUi("Greedy top token"),
+				},
+				{
+					value: "20",
+					label: tSettingsUi("20"),
+					description: tSettingsUi("Focused"),
+				},
+				{
+					value: "40",
+					label: tSettingsUi("40"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "100",
+					label: tSettingsUi("100"),
+					description: tSettingsUi("Broad"),
+				},
 			],
 		},
 	},
@@ -1689,10 +1985,26 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Min P"),
 			description: tSettingsUi("Minimum probability threshold (0-1, -1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "0.01", label: tSettingsUi("0.01"), description: tSettingsUi("Very permissive") },
-				{ value: "0.05", label: tSettingsUi("0.05"), description: tSettingsUi("Balanced") },
-				{ value: "0.1", label: tSettingsUi("0.1"), description: tSettingsUi("Strict") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "0.01",
+					label: tSettingsUi("0.01"),
+					description: tSettingsUi("Very permissive"),
+				},
+				{
+					value: "0.05",
+					label: tSettingsUi("0.05"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "0.1",
+					label: tSettingsUi("0.1"),
+					description: tSettingsUi("Strict"),
+				},
 			],
 		},
 	},
@@ -1706,11 +2018,31 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Presence Penalty"),
 			description: tSettingsUi("Penalty for introducing already-present tokens (-1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "0", label: tSettingsUi("0"), description: tSettingsUi("No penalty") },
-				{ value: "0.5", label: tSettingsUi("0.5"), description: tSettingsUi("Mild novelty") },
-				{ value: "1", label: tSettingsUi("1"), description: tSettingsUi("Encourage novelty") },
-				{ value: "2", label: tSettingsUi("2"), description: tSettingsUi("Strong novelty") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "0",
+					label: tSettingsUi("0"),
+					description: tSettingsUi("No penalty"),
+				},
+				{
+					value: "0.5",
+					label: tSettingsUi("0.5"),
+					description: tSettingsUi("Mild novelty"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1"),
+					description: tSettingsUi("Encourage novelty"),
+				},
+				{
+					value: "2",
+					label: tSettingsUi("2"),
+					description: tSettingsUi("Strong novelty"),
+				},
 			],
 		},
 	},
@@ -1724,12 +2056,36 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Repetition Penalty"),
 			description: tSettingsUi("Penalty for repeated tokens (-1 = provider default)"),
 			options: [
-				{ value: "-1", label: tSettingsUi("Default"), description: tSettingsUi("Use provider default") },
-				{ value: "0.8", label: tSettingsUi("0.8"), description: tSettingsUi("Allow repetition") },
-				{ value: "1", label: tSettingsUi("1"), description: tSettingsUi("No penalty") },
-				{ value: "1.1", label: tSettingsUi("1.1"), description: tSettingsUi("Mild penalty") },
-				{ value: "1.2", label: tSettingsUi("1.2"), description: tSettingsUi("Balanced") },
-				{ value: "1.5", label: tSettingsUi("1.5"), description: tSettingsUi("Strong penalty") },
+				{
+					value: "-1",
+					label: tSettingsUi("Default"),
+					description: tSettingsUi("Use provider default"),
+				},
+				{
+					value: "0.8",
+					label: tSettingsUi("0.8"),
+					description: tSettingsUi("Allow repetition"),
+				},
+				{
+					value: "1",
+					label: tSettingsUi("1"),
+					description: tSettingsUi("No penalty"),
+				},
+				{
+					value: "1.1",
+					label: tSettingsUi("1.1"),
+					description: tSettingsUi("Mild penalty"),
+				},
+				{
+					value: "1.2",
+					label: tSettingsUi("1.2"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "1.5",
+					label: tSettingsUi("1.5"),
+					description: tSettingsUi("Strong penalty"),
+				},
 			],
 		},
 	},
@@ -1744,13 +2100,21 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Text Verbosity"),
 			description: tSettingsUi("OpenAI Responses and Codex response verbosity (low, medium, or high)"),
 			options: [
-				{ value: "low", label: tSettingsUi("Low"), description: tSettingsUi("Prefer concise responses") },
+				{
+					value: "low",
+					label: tSettingsUi("Low"),
+					description: tSettingsUi("Prefer concise responses"),
+				},
 				{
 					value: "medium",
 					label: tSettingsUi("Medium"),
 					description: tSettingsUi("Balance brevity and detail (default)"),
 				},
-				{ value: "high", label: tSettingsUi("High"), description: tSettingsUi("Prefer detailed responses") },
+				{
+					value: "high",
+					label: tSettingsUi("High"),
+					description: tSettingsUi("Prefer detailed responses"),
+				},
 			],
 		},
 	},
@@ -1893,7 +2257,11 @@ export const SETTINGS_SCHEMA = {
 				"Treat a coding-plan model as near its limit below this remaining percentage. Unknown or unmapped usage keeps the primary model.",
 			condition: "usageAwareFallbackEnabled",
 			options: [
-				{ value: "5", label: "5%", description: "Act only when nearly exhausted" },
+				{
+					value: "5",
+					label: "5%",
+					description: "Act only when nearly exhausted",
+				},
 				{ value: "10", label: "10%", description: "Balanced safety margin" },
 				{ value: "15", label: "15%", description: "Conservative" },
 				{ value: "20", label: "20%", description: "Early protection" },
@@ -2253,7 +2621,11 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Marketplace Auto-Update"),
 			description: tSettingsUi("Check for plugin updates on startup"),
 			options: [
-				{ value: "off", label: tSettingsUi("Off"), description: tSettingsUi("Don't check for plugin updates") },
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Don't check for plugin updates"),
+				},
 				{
 					value: "notify",
 					label: tSettingsUi("Notify"),
@@ -2665,18 +3037,66 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Default"),
 					description: tSettingsUi("Legacy reserve-based threshold"),
 				},
-				{ value: "10", label: tSettingsUi("10%"), description: tSettingsUi("Extremely early maintenance") },
-				{ value: "20", label: tSettingsUi("20%"), description: tSettingsUi("Very early maintenance") },
-				{ value: "30", label: tSettingsUi("30%"), description: tSettingsUi("Early maintenance") },
-				{ value: "40", label: tSettingsUi("40%"), description: tSettingsUi("Moderately early maintenance") },
-				{ value: "50", label: tSettingsUi("50%"), description: tSettingsUi("Halfway point") },
-				{ value: "60", label: tSettingsUi("60%"), description: tSettingsUi("Moderate context usage") },
-				{ value: "70", label: tSettingsUi("70%"), description: tSettingsUi("Balanced") },
-				{ value: "75", label: tSettingsUi("75%"), description: tSettingsUi("Slightly aggressive") },
-				{ value: "80", label: tSettingsUi("80%"), description: tSettingsUi("Typical threshold") },
-				{ value: "85", label: tSettingsUi("85%"), description: tSettingsUi("Aggressive context usage") },
-				{ value: "90", label: tSettingsUi("90%"), description: tSettingsUi("Very aggressive") },
-				{ value: "95", label: tSettingsUi("95%"), description: tSettingsUi("Near context limit") },
+				{
+					value: "10",
+					label: tSettingsUi("10%"),
+					description: tSettingsUi("Extremely early maintenance"),
+				},
+				{
+					value: "20",
+					label: tSettingsUi("20%"),
+					description: tSettingsUi("Very early maintenance"),
+				},
+				{
+					value: "30",
+					label: tSettingsUi("30%"),
+					description: tSettingsUi("Early maintenance"),
+				},
+				{
+					value: "40",
+					label: tSettingsUi("40%"),
+					description: tSettingsUi("Moderately early maintenance"),
+				},
+				{
+					value: "50",
+					label: tSettingsUi("50%"),
+					description: tSettingsUi("Halfway point"),
+				},
+				{
+					value: "60",
+					label: tSettingsUi("60%"),
+					description: tSettingsUi("Moderate context usage"),
+				},
+				{
+					value: "70",
+					label: tSettingsUi("70%"),
+					description: tSettingsUi("Balanced"),
+				},
+				{
+					value: "75",
+					label: tSettingsUi("75%"),
+					description: tSettingsUi("Slightly aggressive"),
+				},
+				{
+					value: "80",
+					label: tSettingsUi("80%"),
+					description: tSettingsUi("Typical threshold"),
+				},
+				{
+					value: "85",
+					label: tSettingsUi("85%"),
+					description: tSettingsUi("Aggressive context usage"),
+				},
+				{
+					value: "90",
+					label: tSettingsUi("90%"),
+					description: tSettingsUi("Very aggressive"),
+				},
+				{
+					value: "95",
+					label: tSettingsUi("95%"),
+					description: tSettingsUi("Near context limit"),
+				},
 			],
 		},
 	},
@@ -2694,9 +3114,21 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Default"),
 					description: tSettingsUi("Use percentage-based threshold"),
 				},
-				{ value: "25000", label: tSettingsUi("25K tokens"), description: tSettingsUi("Quarter of a 200K window") },
-				{ value: "50000", label: tSettingsUi("50K tokens"), description: tSettingsUi("Half of a 200K window") },
-				{ value: "100000", label: tSettingsUi("100K tokens"), description: tSettingsUi("Half of a 200K window") },
+				{
+					value: "25000",
+					label: tSettingsUi("25K tokens"),
+					description: tSettingsUi("Quarter of a 200K window"),
+				},
+				{
+					value: "50000",
+					label: tSettingsUi("50K tokens"),
+					description: tSettingsUi("Half of a 200K window"),
+				},
+				{
+					value: "100000",
+					label: tSettingsUi("100K tokens"),
+					description: tSettingsUi("Half of a 200K window"),
+				},
 				{
 					value: "150000",
 					label: tSettingsUi("150K tokens"),
@@ -2707,7 +3139,11 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("200K tokens"),
 					description: tSettingsUi("Full standard context window"),
 				},
-				{ value: "300000", label: tSettingsUi("300K tokens"), description: tSettingsUi("Large context window") },
+				{
+					value: "300000",
+					label: tSettingsUi("300K tokens"),
+					description: tSettingsUi("Large context window"),
+				},
 				{
 					value: "500000",
 					label: tSettingsUi("500K tokens"),
@@ -2843,6 +3279,50 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.deduplicateResults": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Deduplicate Tool Results"),
+			description: tSettingsUi("Prune earlier byte-identical results from the same tool operation"),
+		},
+	},
+
+	"compaction.dropResolvedErrors": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Archive Resolved Errors"),
+			description: tSettingsUi(
+				"Archive old errors after the same operation succeeds, while preserving recent diagnostics",
+			),
+		},
+	},
+
+	"compaction.pruneProtectTokens": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "context",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Tool Result Protection Window"),
+			description: tSettingsUi(
+				"Recent tool-result tokens kept verbatim before age or resolved-error pruning; 0 scales with the active model",
+			),
+			options: [
+				{ value: "0", label: tSettingsUi("Auto") },
+				{ value: "8000", label: tSettingsUi("8K tokens") },
+				{ value: "16000", label: tSettingsUi("16K tokens") },
+				{ value: "40000", label: tSettingsUi("40K tokens") },
+				{ value: "80000", label: tSettingsUi("80K tokens") },
+			],
+		},
+	},
+
 	// Experimental: snapcompact inline imaging (transient, per-request; never persisted)
 	"snapcompact.systemPrompt": {
 		type: "enum",
@@ -2856,7 +3336,11 @@ export const SETTINGS_SCHEMA = {
 				"Experimental: render selected system prompt text as dense PNG image(s) and attach to the first user message (vision models only). Saves tokens; loses prompt caching for imaged text.",
 			),
 			options: [
-				{ value: "none", label: tSettingsUi("None"), description: tSettingsUi("Keep the system prompt as text.") },
+				{
+					value: "none",
+					label: tSettingsUi("None"),
+					description: tSettingsUi("Keep the system prompt as text."),
+				},
 				{
 					value: "agents-md",
 					label: tSettingsUi("AGENTS.md"),
@@ -2922,7 +3406,11 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Native"),
 					description: tSettingsUi("Use provider-native tool calls."),
 				},
-				{ value: "glm", label: tSettingsUi("GLM"), description: tSettingsUi("Use GLM-style in-band tool calls.") },
+				{
+					value: "glm",
+					label: tSettingsUi("GLM"),
+					description: tSettingsUi("Use GLM-style in-band tool calls."),
+				},
 				{
 					value: "hermes",
 					label: tSettingsUi("Hermes"),
@@ -2953,13 +3441,21 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Harmony"),
 					description: tSettingsUi("Use Harmony-style in-band tool calls."),
 				},
-				{ value: "qwen3", label: tSettingsUi("Qwen3"), description: tSettingsUi("Use the Qwen3 owned dialect.") },
+				{
+					value: "qwen3",
+					label: tSettingsUi("Qwen3"),
+					description: tSettingsUi("Use the Qwen3 owned dialect."),
+				},
 				{
 					value: "gemini",
 					label: tSettingsUi("Gemini"),
 					description: tSettingsUi("Use the Gemini owned dialect."),
 				},
-				{ value: "gemma", label: tSettingsUi("Gemma"), description: tSettingsUi("Use the Gemma owned dialect.") },
+				{
+					value: "gemma",
+					label: tSettingsUi("Gemma"),
+					description: tSettingsUi("Use the Gemma owned dialect."),
+				},
 				{
 					value: "minimax",
 					label: tSettingsUi("MiniMax"),
@@ -3154,7 +3650,11 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Memory Backend"),
 			description: tSettingsUi("Off, local summary pipeline, Mnemopi SQLite, or Hindsight remote memory"),
 			options: [
-				{ value: "off", label: tSettingsUi("Off"), description: tSettingsUi("No memory subsystem runs") },
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("No memory subsystem runs"),
+				},
 				{
 					value: "local",
 					label: tSettingsUi("Local"),
@@ -3599,7 +4099,10 @@ export const SETTINGS_SCHEMA = {
 	"hindsight.recallMaxTokens": { type: "number", default: 1024 },
 	"hindsight.recallContextTurns": { type: "number", default: 1 },
 	"hindsight.recallMaxQueryChars": { type: "number", default: 800 },
-	"hindsight.recallTypes": { type: "array", default: HINDSIGHT_RECALL_TYPES_DEFAULT },
+	"hindsight.recallTypes": {
+		type: "array",
+		default: HINDSIGHT_RECALL_TYPES_DEFAULT,
+	},
 
 	"hindsight.debug": { type: "boolean", default: false },
 
@@ -3634,7 +4137,10 @@ export const SETTINGS_SCHEMA = {
 			condition: "hindsightActive",
 		},
 	},
-	"hindsight.mentalModelRefreshIntervalMs": { type: "number", default: 5 * 60 * 1000 },
+	"hindsight.mentalModelRefreshIntervalMs": {
+		type: "number",
+		default: 5 * 60 * 1000,
+	},
 	"hindsight.mentalModelMaxRenderChars": { type: "number", default: 16_000 },
 
 	// TTSR
@@ -3788,10 +4294,26 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Fuzzy Match Threshold"),
 			description: tSettingsUi("Similarity threshold (0-1) for accepting fuzzy matches"),
 			options: [
-				{ value: "0.85", label: tSettingsUi("0.85"), description: tSettingsUi("Lenient") },
-				{ value: "0.90", label: tSettingsUi("0.90"), description: tSettingsUi("Moderate") },
-				{ value: "0.95", label: tSettingsUi("0.95"), description: tSettingsUi("Default") },
-				{ value: "0.98", label: tSettingsUi("0.98"), description: tSettingsUi("Strict") },
+				{
+					value: "0.85",
+					label: tSettingsUi("0.85"),
+					description: tSettingsUi("Lenient"),
+				},
+				{
+					value: "0.90",
+					label: tSettingsUi("0.90"),
+					description: tSettingsUi("Moderate"),
+				},
+				{
+					value: "0.95",
+					label: tSettingsUi("0.95"),
+					description: tSettingsUi("Default"),
+				},
+				{
+					value: "0.98",
+					label: tSettingsUi("0.98"),
+					description: tSettingsUi("Strict"),
+				},
 			],
 		},
 	},
@@ -4103,7 +4625,10 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi("Block shell commands that have dedicated tools"),
 		},
 	},
-	"bashInterceptor.patterns": { type: "array", default: DEFAULT_BASH_INTERCEPTOR_RULES },
+	"bashInterceptor.patterns": {
+		type: "array",
+		default: DEFAULT_BASH_INTERCEPTOR_RULES,
+	},
 
 	"bash.direnv": {
 		type: "enum",
@@ -4546,7 +5071,10 @@ export const SETTINGS_SCHEMA = {
 				"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
 			),
 			options: [
-				{ value: "auto", label: tSettingsUi("Auto (only for models without vision)") },
+				{
+					value: "auto",
+					label: tSettingsUi("Auto (only for models without vision)"),
+				},
 				{ value: "on", label: tSettingsUi("On") },
 				{ value: "off", label: tSettingsUi("Off") },
 			],
@@ -4982,13 +5510,21 @@ export const SETTINGS_SCHEMA = {
 			description:
 				"Choose which mounted-device docs and schemas are inlined in the system prompt. Built-ins keeps core tools inline while MCP and extension tools stay on-demand.",
 			options: [
-				{ value: "inline", label: "All Devices", description: "Inline docs and schemas for every mounted device." },
+				{
+					value: "inline",
+					label: "All Devices",
+					description: "Inline docs and schemas for every mounted device.",
+				},
 				{
 					value: "builtins",
 					label: "Built-ins Only",
 					description: "Inline built-in docs; fetch MCP and extension docs on demand.",
 				},
-				{ value: "catalog", label: "Catalog Only", description: "List every device; fetch all docs on demand." },
+				{
+					value: "catalog",
+					label: "Catalog Only",
+					description: "List every device; fetch all docs on demand.",
+				},
 			],
 		},
 	},
@@ -5353,15 +5889,31 @@ export const SETTINGS_SCHEMA = {
 				'Isolation backend for subagents. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
 			),
 			options: [
-				{ value: "none", label: tSettingsUi("None"), description: tSettingsUi("No isolation") },
+				{
+					value: "none",
+					label: tSettingsUi("None"),
+					description: tSettingsUi("No isolation"),
+				},
 				{
 					value: "auto",
 					label: tSettingsUi("Auto"),
 					description: tSettingsUi("Let the PAL pick the best available backend"),
 				},
-				{ value: "apfs", label: tSettingsUi("APFS"), description: tSettingsUi("macOS clonefile reflink (APFS)") },
-				{ value: "btrfs", label: tSettingsUi("btrfs"), description: tSettingsUi("btrfs subvolume snapshot") },
-				{ value: "zfs", label: tSettingsUi("ZFS"), description: tSettingsUi("ZFS snapshot + clone") },
+				{
+					value: "apfs",
+					label: tSettingsUi("APFS"),
+					description: tSettingsUi("macOS clonefile reflink (APFS)"),
+				},
+				{
+					value: "btrfs",
+					label: tSettingsUi("btrfs"),
+					description: tSettingsUi("btrfs subvolume snapshot"),
+				},
+				{
+					value: "zfs",
+					label: tSettingsUi("ZFS"),
+					description: tSettingsUi("ZFS snapshot + clone"),
+				},
 				{
 					value: "reflink",
 					label: tSettingsUi("Reflink"),
@@ -5413,7 +5965,11 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Isolation Merge Strategy"),
 			description: tSettingsUi("How isolated task changes are integrated (patch apply or branch merge)"),
 			options: [
-				{ value: "patch", label: tSettingsUi("Patch"), description: tSettingsUi("Combine diffs and git apply") },
+				{
+					value: "patch",
+					label: tSettingsUi("Patch"),
+					description: tSettingsUi("Combine diffs and git apply"),
+				},
 				{
 					value: "branch",
 					label: tSettingsUi("Branch"),
@@ -5433,7 +5989,11 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Isolation Commit Style"),
 			description: tSettingsUi("Commit message style for nested repo changes (generic or AI-generated)"),
 			options: [
-				{ value: "generic", label: tSettingsUi("Generic"), description: tSettingsUi("Static commit message") },
+				{
+					value: "generic",
+					label: tSettingsUi("Generic"),
+					description: tSettingsUi("Static commit message"),
+				},
 				{
 					value: "ai",
 					label: tSettingsUi("AI"),
@@ -5526,7 +6086,11 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1", label: tSettingsUi("1 task") },
 				{ value: "2", label: tSettingsUi("2 tasks") },
 				{ value: "4", label: tSettingsUi("4 tasks") },
-				{ value: "8", label: tSettingsUi("8 tasks"), description: tSettingsUi("Default") },
+				{
+					value: "8",
+					label: tSettingsUi("8 tasks"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "16", label: tSettingsUi("16 tasks") },
 				{ value: "32", label: tSettingsUi("32 tasks") },
 				{ value: "64", label: tSettingsUi("64 tasks") },
@@ -5549,7 +6113,11 @@ export const SETTINGS_SCHEMA = {
 				{ value: "1", label: tSettingsUi("1 task") },
 				{ value: "2", label: tSettingsUi("2 tasks") },
 				{ value: "4", label: tSettingsUi("4 tasks") },
-				{ value: "8", label: tSettingsUi("8 tasks"), description: tSettingsUi("Default") },
+				{
+					value: "8",
+					label: tSettingsUi("8 tasks"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "16", label: tSettingsUi("16 tasks") },
 				{ value: "32", label: tSettingsUi("32 tasks") },
 				{ value: "64", label: tSettingsUi("64 tasks") },
@@ -5581,7 +6149,11 @@ export const SETTINGS_SCHEMA = {
 			options: [
 				{ value: "-1", label: tSettingsUi("Unlimited") },
 				{ value: "0", label: tSettingsUi("None") },
-				{ value: "1", label: tSettingsUi("Single"), description: tSettingsUi("Default") },
+				{
+					value: "1",
+					label: tSettingsUi("Single"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "2", label: tSettingsUi("Double") },
 				{ value: "3", label: tSettingsUi("Triple") },
 			],
@@ -5601,7 +6173,11 @@ export const SETTINGS_SCHEMA = {
 			options: [
 				{ value: "0", label: tSettingsUi("Unlimited") },
 				{ value: "300000", label: tSettingsUi("5 minutes") },
-				{ value: "900000", label: tSettingsUi("15 minutes"), description: tSettingsUi("Default") },
+				{
+					value: "900000",
+					label: tSettingsUi("15 minutes"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "1800000", label: tSettingsUi("30 minutes") },
 				{ value: "3600000", label: tSettingsUi("1 hour") },
 			],
@@ -5646,7 +6222,11 @@ export const SETTINGS_SCHEMA = {
 			),
 			options: [
 				{ value: "0", label: tSettingsUi("Disabled") },
-				{ value: "90", label: tSettingsUi("90 requests"), description: tSettingsUi("Default") },
+				{
+					value: "90",
+					label: tSettingsUi("90 requests"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "150", label: tSettingsUi("150 requests") },
 				{ value: "200", label: tSettingsUi("200 requests") },
 			],
@@ -5721,7 +6301,11 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi("Delay before completed or abandoned todos are removed from the todo widget"),
 			options: [
 				{ value: "0", label: tSettingsUi("Instant") },
-				{ value: "60", label: tSettingsUi("1 minute"), description: tSettingsUi("Default") },
+				{
+					value: "60",
+					label: tSettingsUi("1 minute"),
+					description: tSettingsUi("Default"),
+				},
 				{ value: "300", label: tSettingsUi("5 minutes") },
 				{ value: "900", label: tSettingsUi("15 minutes") },
 				{ value: "1800", label: tSettingsUi("30 minutes") },
@@ -6190,8 +6774,16 @@ export const SETTINGS_SCHEMA = {
 				"Highest effort the `auto` classifier may resolve. `xhigh` keeps the classifier one tier below the top, so only an explicit `ultrathink` reaches `max`; `max` lets a turn the classifier judges exceptional bill the top tier on models that expose it.",
 			condition: "autoThinkingActive",
 			options: [
-				{ value: "xhigh", label: "xhigh", description: "Classifier stops at xhigh (default)" },
-				{ value: "max", label: "max", description: "Classifier may resolve max where the model supports it" },
+				{
+					value: "xhigh",
+					label: "xhigh",
+					description: "Classifier stops at xhigh (default)",
+				},
+				{
+					value: "max",
+					label: "max",
+					description: "Classifier may resolve max where the model supports it",
+				},
 			],
 		},
 	},
@@ -6238,8 +6830,16 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Auto"),
 					description: tSettingsUi("Use the model's server-declared protocol"),
 				},
-				{ value: "openai", label: tSettingsUi("OpenAI"), description: tSettingsUi("api.kimi.com") },
-				{ value: "anthropic", label: tSettingsUi("Anthropic"), description: tSettingsUi("api.moonshot.ai") },
+				{
+					value: "openai",
+					label: tSettingsUi("OpenAI"),
+					description: tSettingsUi("api.kimi.com"),
+				},
+				{
+					value: "anthropic",
+					label: tSettingsUi("Anthropic"),
+					description: tSettingsUi("api.moonshot.ai"),
+				},
 			],
 		},
 	},
@@ -6321,7 +6921,11 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Auto"),
 					description: tSettingsUi("Use provider defaults and PI_* timeout env vars"),
 				},
-				{ value: "0", label: tSettingsUi("Off"), description: tSettingsUi("Disable first-event timeout") },
+				{
+					value: "0",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Disable first-event timeout"),
+				},
 				{ value: "300", label: tSettingsUi("5 minutes") },
 				{ value: "600", label: tSettingsUi("10 minutes") },
 				{ value: "1800", label: tSettingsUi("30 minutes") },
@@ -6345,7 +6949,11 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Auto"),
 					description: tSettingsUi("Use provider defaults and PI_* timeout env vars"),
 				},
-				{ value: "0", label: tSettingsUi("Off"), description: tSettingsUi("Disable idle timeout") },
+				{
+					value: "0",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Disable idle timeout"),
+				},
 				{ value: "300", label: tSettingsUi("5 minutes") },
 				{ value: "600", label: tSettingsUi("10 minutes") },
 				{ value: "1800", label: tSettingsUi("30 minutes") },
@@ -6418,7 +7026,11 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Trafilatura"),
 					description: tSettingsUi("Auto-installs via uv/pip"),
 				},
-				{ value: "lynx", label: tSettingsUi("Lynx"), description: tSettingsUi("Requires lynx system package") },
+				{
+					value: "lynx",
+					label: tSettingsUi("Lynx"),
+					description: tSettingsUi("Requires lynx system package"),
+				},
 				{
 					value: "parallel",
 					label: tSettingsUi("Parallel"),
@@ -6516,8 +7128,16 @@ export const SETTINGS_SCHEMA = {
 					label: tSettingsUi("Auto"),
 					description: tSettingsUi("Enable for known prefix-cache providers (recommended)"),
 				},
-				{ value: "on", label: tSettingsUi("On"), description: tSettingsUi("Always enable append-only context") },
-				{ value: "off", label: tSettingsUi("Off"), description: tSettingsUi("Disable append-only context") },
+				{
+					value: "on",
+					label: tSettingsUi("On"),
+					description: tSettingsUi("Always enable append-only context"),
+				},
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Disable append-only context"),
+				},
 			],
 		},
 	},
@@ -6893,8 +7513,54 @@ type Schema = typeof SETTINGS_SCHEMA;
 /** All valid setting paths */
 export type SettingPath = keyof Schema;
 
+/** Product surfaces that consume a canonical setting. Web-only settings live outside this schema. */
+export type SettingScope = "shared" | "cli";
+
+const CLI_ONLY_SETTING_PREFIXES = [
+	"display.",
+	"live.",
+	"speech.",
+	"startup.",
+	"statusLine.",
+	"stt.",
+	"terminal.",
+	"tui.",
+] as const;
+
+const CLI_ONLY_SETTING_PATHS = new Set<SettingPath>([
+	"ask.notify",
+	"autoResume",
+	"autocompleteMaxVisible",
+	"colorBlindMode",
+	"completion.notify",
+	"displayLanguage",
+	"doubleEscapeAction",
+	"emojiAutocomplete",
+	"error.notify",
+	"git.enabled",
+	"goal.statusInFooter",
+	"marketplace.autoUpdate",
+	"paste.largeMenuThreshold",
+	"recap.enabled",
+	"recap.idleSeconds",
+	"showHardwareCursor",
+	"symbolPreset",
+	"theme.terminalPalette",
+	"thinkingDisplay",
+	"treeFilterMode",
+]);
+
+/** Whether a canonical setting is shared by CLI/Web runtimes or belongs only to the CLI/TUI surface. */
+export function getSettingScope(path: SettingPath): SettingScope {
+	if (CLI_ONLY_SETTING_PATHS.has(path)) return "cli";
+	return CLI_ONLY_SETTING_PREFIXES.some(prefix => path.startsWith(prefix)) ? "cli" : "shared";
+}
+
 /** Infer the value type for a setting path */
-export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: undefined }
+export type SettingValue<P extends SettingPath> = Schema[P] extends {
+	type: "boolean";
+	default: undefined;
+}
 	? boolean | undefined
 	: Schema[P] extends { type: "boolean" }
 		? boolean
@@ -7002,6 +7668,9 @@ export interface CompactionSettings {
 	idleTimeoutSeconds: number;
 	supersedeReads: boolean;
 	dropUseless: boolean;
+	deduplicateResults: boolean;
+	dropResolvedErrors: boolean;
+	pruneProtectTokens: number;
 }
 
 export interface RecapSettings {
