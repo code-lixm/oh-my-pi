@@ -25,7 +25,7 @@ import { SETTINGS_SCHEMA } from "../config/settings-schema";
 import { initializeConfigSyncAutoPushRuntime } from "../config-sync/auto-push-runtime";
 import { exportEncryptedBundle, importEncryptedBundle } from "../config-sync/bundle";
 import { assertEncryptedConfigBundle } from "../config-sync/crypto";
-import { DEFAULT_SYNC_PASSPHRASE_ENV } from "../config-sync/profile";
+import { DEFAULT_SYNC_PASSPHRASE_ENV, loadSyncProfile, requireSyncPassphrase } from "../config-sync/profile";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { theme } from "../modes/theme/theme";
 
@@ -300,11 +300,23 @@ export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
 }
 
 async function handlePortableBundle(cmd: ConfigCommandArgs, authStorage: AuthStorage): Promise<void> {
-	const passphraseEnv = cmd.flags.passphraseEnv ?? DEFAULT_SYNC_PASSPHRASE_ENV;
-	const passphrase = process.env[passphraseEnv];
+	const agentDir = getAgentDir();
+	const syncSettings = cmd.flags.passphraseEnv
+		? undefined
+		: await Settings.loadReadOnly({ agentDir, cwd: agentDir });
+	const profile = syncSettings
+		? await loadSyncProfile(agentDir, syncSettings, { allowDisabled: true })
+		: undefined;
+	const passphraseEnv =
+		cmd.flags.passphraseEnv ??
+		(syncSettings?.isConfigured("sync.passphraseEnv") ? syncSettings.get("sync.passphraseEnv") : profile?.passphraseEnv) ??
+		DEFAULT_SYNC_PASSPHRASE_ENV;
+	const passphrase = cmd.flags.passphraseEnv
+		? process.env[passphraseEnv]
+		: requireSyncPassphrase(agentDir, passphraseEnv);
 	if (!passphrase) throw new Error(`Configuration bundle passphrase environment variable ${passphraseEnv} is not set`);
 	if (cmd.action === "export") {
-		const { bundle } = await exportEncryptedBundle(getAgentDir(), authStorage, passphrase);
+		const { bundle } = await exportEncryptedBundle(agentDir, authStorage, passphrase);
 		const serialized = `${JSON.stringify(bundle, null, 2)}\n`;
 		if (cmd.key && cmd.key !== "-") await fs.writeFile(cmd.key, serialized, { encoding: "utf8", mode: 0o600 });
 		else await writeStdout(serialized);
@@ -314,7 +326,7 @@ async function handlePortableBundle(cmd: ConfigCommandArgs, authStorage: AuthSto
 	const serialized = cmd.key === "-" ? await new Response(Bun.stdin.stream()).text() : await Bun.file(cmd.key).text();
 	const bundle: unknown = JSON.parse(serialized);
 	assertEncryptedConfigBundle(bundle);
-	const { summary } = await importEncryptedBundle(getAgentDir(), authStorage, bundle, passphrase, {
+	const { summary } = await importEncryptedBundle(agentDir, authStorage, bundle, passphrase, {
 		dryRun: cmd.flags.dryRun,
 		replace: cmd.flags.replace,
 	});

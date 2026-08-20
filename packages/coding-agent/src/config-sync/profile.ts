@@ -258,12 +258,14 @@ export async function saveSyncState(agentDir: string, state: SyncState): Promise
 	);
 }
 
-export function requireSyncPassphrase(agentDir: string, profile: SyncProfile): string {
+export function requireSyncPassphrase(agentDir: string, profileOrPassphraseEnv: SyncProfile | string): string {
 	const localPassphrase = readLocalSyncPassphrase(agentDir);
 	if (localPassphrase) return localPassphrase;
-	const environmentPassphrase = process.env[profile.passphraseEnv];
+	const passphraseEnv =
+		typeof profileOrPassphraseEnv === "string" ? profileOrPassphraseEnv : profileOrPassphraseEnv.passphraseEnv;
+	const environmentPassphrase = process.env[passphraseEnv];
 	if (environmentPassphrase) return environmentPassphrase;
 	throw new Error(
-		`Set a local encryption key in /settings → Sync or set ${profile.passphraseEnv} before syncing configuration`,
+		`Set a local encryption key in /settings → Sync or set ${passphraseEnv} before syncing configuration`,
 	);
 }

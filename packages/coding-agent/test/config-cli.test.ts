@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { runConfigCommand } from "@oh-my-pi/pi-coding-agent/cli/config-cli";
-import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getConfigRootDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { decryptConfigBundle } from "../src/config-sync/crypto";
+import { removeLocalSyncPassphrase, writeLocalSyncPassphrase } from "../src/config-sync/local-secret";
 
 let testAgentDir: TempDir | undefined;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -217,5 +219,67 @@ describe("config CLI schema coverage", () => {
 			value: "max",
 			type: "enum",
 		});
+	});
+});
+
+describe("config CLI portable bundle passphrases", () => {
+	const PASSPHRASE_ENV = "OMP_CONFIG_CLI_PORTABLE_BUNDLE_TEST_PASSPHRASE";
+	const LOCAL_PASSPHRASE = "local-portable-bundle-passphrase";
+	const ENVIRONMENT_PASSPHRASE = "environment-portable-bundle-passphrase";
+	const RULES_CONTENT = "portable bundle passphrase regression coverage\n";
+	let previousPassphrase: string | undefined;
+
+	beforeEach(() => {
+		previousPassphrase = process.env[PASSPHRASE_ENV];
+		delete process.env[PASSPHRASE_ENV];
+	});
+
+	afterEach(() => {
+		if (previousPassphrase === undefined) delete process.env[PASSPHRASE_ENV];
+		else process.env[PASSPHRASE_ENV] = previousPassphrase;
+	});
+
+	function agentDir(): string {
+		if (!testAgentDir) throw new Error("Test agent directory was not initialized");
+		return testAgentDir.path();
+	}
+
+	async function configurePassphraseEnvironment(): Promise<void> {
+		const directory = agentDir();
+		const settings = await Settings.init({ agentDir: directory, cwd: directory });
+		settings.set("sync.passphraseEnv", PASSPHRASE_ENV);
+		await settings.flush();
+		resetSettingsForTest();
+	}
+
+	async function exportAndDecrypt(passphrase: string): Promise<void> {
+		const directory = agentDir();
+		const bundlePath = path.join(directory, "portable-bundle.json");
+		await Bun.write(path.join(directory, "RULES.md"), RULES_CONTENT);
+
+		await runConfigCommand({ action: "export", key: bundlePath, flags: {} });
+
+		const bundle = JSON.parse(await Bun.file(bundlePath).text());
+		const snapshot = await decryptConfigBundle(bundle, passphrase);
+		const rules = snapshot.files.find(file => file.path === "RULES.md");
+		expect(rules).toMatchObject({
+			path: "RULES.md",
+			content: Buffer.from(RULES_CONTENT).toString("base64"),
+		});
+	}
+
+	it("exports with the Settings local encryption key when no fallback environment value is set", async () => {
+		await configurePassphraseEnvironment();
+		writeLocalSyncPassphrase(agentDir(), LOCAL_PASSPHRASE);
+
+		await exportAndDecrypt(LOCAL_PASSPHRASE);
+	});
+
+	it("falls back to the configured Sync passphrase environment variable when the local key is absent", async () => {
+		await configurePassphraseEnvironment();
+		removeLocalSyncPassphrase(agentDir());
+		process.env[PASSPHRASE_ENV] = ENVIRONMENT_PASSPHRASE;
+
+		await exportAndDecrypt(ENVIRONMENT_PASSPHRASE);
 	});
 });
