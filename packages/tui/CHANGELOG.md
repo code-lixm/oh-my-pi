@@ -23,7 +23,8 @@
 - Fixed the loader spinner advancing multiple frames in a single animation tick after a long event-loop stall (e.g. model or mode switches, GC, or other long sync work): each setInterval callback now advances at most one spinner frame and discards the wall-time surplus instead of catch-up math, while the normal 80 ms cadence is preserved by keeping the per-tick 33 ms remainder.
 - Fixed explicit history-replacement redraws inside terminal multiplexers clearing pane-owned scrollback; replacements now repaint the current frame without ED3 while direct terminals still clear and replay native history.
 - Fixed Loader spinner and shimmer ticks from falling back to component or full transcript renders when direct geometry is unsafe; animation frames are now dropped while semantic message changes retain a correctness fallback.
-- Fixed cosmetic Loader spinner and shimmer paints competing with editor input during intentional `waiting-user` and `waiting-peer` states; waiting now preserves semantic elapsed-status updates without scheduling 30–80 ms animation frames, and resumes animation immediately when work restarts.
+- Fixed cosmetic Loader spinner and shimmer paints competing with editor input during intentional `waiting-user` and `waiting-peer` states; waiting now freezes the phase label, spinner, and shimmer without elapsed-time refreshes, then resumes animation when work restarts.
+- Fixed low-priority Loader status updates, such as elapsed activity time, scheduling component renders when a direct terminal rewrite is unsafe. The update now remains available to the next valid render without competing with editor input.
 ## [17.3.0] - 2026-08-13
 
 ### Fixed

@@ -5164,34 +5164,46 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#cacheWorkingMessageAccent(key, main && dim ? { main, dim } : undefined);
 	}
 
+	#waitingActivityMessage(activity: AgentActivityState | undefined): string | undefined {
+		if (activity?.phase === "waiting-user") return tSettingsUi("Waiting for user");
+		if (activity?.phase === "waiting-peer") return tSettingsUi("Waiting for peer");
+		return undefined;
+	}
+
 	/** Reconcile the bottom loader with the latest Main activity snapshot. */
 	refreshWorkingActivitySummary(activity?: AgentActivityState): void {
 		this.#refreshWorkingActivityMessage(activity);
 	}
 
-	#refreshWorkingActivityMessage(activity: AgentActivityState = this.viewSession.activity): void {
+	#refreshWorkingActivityMessage(activity: AgentActivityState = this.viewSession.activity, cosmetic = false): void {
 		const loader = this.loadingAnimation;
 		if (!loader) {
 			this.#stopWorkingActivityRefresh();
 			return;
 		}
-		// Waiting is intentional and can last minutes. A spinner/shimmer paint every
-		// 30–80ms competes with editor input while no new work is happening, so keep
-		// the elapsed status updates but pause cosmetic animation until work resumes.
-		const animationEnabled = activity?.phase !== "waiting-user" && activity?.phase !== "waiting-peer";
+		const waitingMessage = this.#waitingActivityMessage(activity);
+		const animationEnabled = waitingMessage === undefined;
 		loader.setAnimationEnabled(animationEnabled);
+		if (waitingMessage) this.#stopWorkingActivityRefresh();
 		if (this.#pendingWorkingMessage !== undefined) return;
+		const hint = interruptHint();
+		if (waitingMessage) {
+			loader.setCosmeticMessage(`${waitingMessage}${hint}`);
+			return;
+		}
+		this.#startWorkingActivityRefresh();
 		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);
-		const hint = interruptHint();
 		const summary = formatWorkingActivityMessage(activity, Math.max(1, maxWidth - visibleWidth(hint)));
-		loader.setMessage(summary ? `${summary}${hint}` : this.#defaultWorkingMessage);
+		const message = summary ? `${summary}${hint}` : this.#defaultWorkingMessage;
+		if (cosmetic) loader.setCosmeticMessage(message);
+		else loader.setMessage(message);
 	}
 
 	#startWorkingActivityRefresh(): void {
 		if (this.#workingActivityRefreshTimer) return;
 		this.#workingActivityRefreshTimer = setInterval(
-			() => this.#refreshWorkingActivityMessage(),
+			() => this.#refreshWorkingActivityMessage(undefined, true),
 			WORKING_ACTIVITY_REFRESH_MS,
 		);
 		this.#workingActivityRefreshTimer.unref?.();

@@ -27,6 +27,7 @@ export class Loader extends Text {
 	#layoutSource?: readonly string[];
 	#layout?: readonly { leading: string; content: string; trailing: string }[];
 	#layoutFrames: readonly string[];
+	#frozenMessageColors = new Map<string, string>();
 	#layoutFrame: string;
 
 	constructor(
@@ -86,10 +87,10 @@ export class Loader extends Text {
 				const separator = remainder.startsWith(" ") ? " " : "";
 				const message = remainder.slice(separator.length);
 				lines.push(
-					`${leading}${this.spinnerColorFn(frame)}${separator}${message ? this.messageColorFn(message) : ""}${trailing}`,
+					`${leading}${this.spinnerColorFn(frame)}${separator}${message ? this.#colorMessage(message) : ""}${trailing}`,
 				);
 			} else {
-				lines.push(`${leading}${content ? this.messageColorFn(content) : ""}${trailing}`);
+				lines.push(`${leading}${content ? this.#colorMessage(content) : ""}${trailing}`);
 			}
 		}
 		return lines;
@@ -115,15 +116,19 @@ export class Loader extends Text {
 		this.stop();
 	}
 
-	/** Pause cosmetic spinner/shimmer paints while the surrounding status is blocked. */
+	/** Pause all loader motion, including shimmer produced during unrelated full renders. */
 	setAnimationEnabled(enabled: boolean): void {
 		if (enabled) {
 			if (this.#animationEnabled) return;
 			this.#animationEnabled = true;
+			this.#frozenMessageColors.clear();
 			this.start();
 			return;
 		}
 		if (!this.#animationEnabled) return;
+		const frozenMessage = this.messageColorFn(this.message);
+		this.#frozenMessageColors.clear();
+		this.#frozenMessageColors.set(this.message, frozenMessage);
 		this.#animationEnabled = false;
 		this.stop();
 	}
@@ -135,6 +140,23 @@ export class Loader extends Text {
 		this.message = message;
 		this.#syncText();
 		this.#requestSemanticPaint();
+	}
+
+	/** Update non-essential status text without scheduling a component render when direct writes are unsafe. */
+	setCosmeticMessage(message: string): void {
+		if (message === this.message) return;
+		this.message = message;
+		this.#syncText();
+		this.#ui?.tryDirectWrite(this);
+	}
+
+	#colorMessage(message: string): string {
+		if (this.#animationEnabled) return this.messageColorFn(message);
+		const frozen = this.#frozenMessageColors.get(message);
+		if (frozen !== undefined) return frozen;
+		const colored = this.messageColorFn(message);
+		this.#frozenMessageColors.set(message, colored);
+		return colored;
 	}
 
 	#scheduleTick(intervalMs: number, delayMs: number): void {

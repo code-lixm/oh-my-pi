@@ -73,6 +73,31 @@ describe("Loader component", () => {
 		loader.stop();
 	});
 
+	it("freezes animated ANSI bytes across external renders while paused", () => {
+		vi.useFakeTimers();
+		setSystemTime(new Date(1_000));
+		const ui = { synchronizedOutput: true, tryDirectWrite: vi.fn(() => true), requestComponentRender: vi.fn() };
+		const colorMessage = ((text: string) =>
+			`\x1b[38;5;${Date.now() % 256}m${text}\x1b[0m`) as LoaderMessageColorFn & { animated: true };
+		colorMessage.animated = true;
+		const loader = new Loader(ui as unknown as TUI, text => text, colorMessage, "Checking", ["0", "1"]);
+
+		const initial = loader.render(40);
+		loader.setAnimationEnabled(false);
+		const pausedPaints = ui.tryDirectWrite.mock.calls.length;
+
+		vi.advanceTimersByTime(200);
+		const firstPausedRender = loader.render(40);
+		vi.advanceTimersByTime(200);
+		const secondPausedRender = loader.render(40);
+
+		expect(firstPausedRender).toEqual(initial);
+		expect(secondPausedRender).toEqual(firstPausedRender);
+		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(pausedPaints);
+
+		loader.stop();
+	});
+
 	it("falls back for semantic changes but drops unsafe spinner frames", () => {
 		vi.useFakeTimers();
 		const ui = { tryDirectWrite: vi.fn(() => false), requestComponentRender: vi.fn() };
@@ -95,6 +120,29 @@ describe("Loader component", () => {
 		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(3);
 		expect(ui.requestComponentRender).toHaveBeenCalledTimes(2);
 		expect(loader.render(30).join("\n")).toContain("1 Still checking");
+
+		loader.stop();
+	});
+
+	it("drops unsafe cosmetic message updates while preserving text for the next render", () => {
+		vi.useFakeTimers();
+		const ui = { tryDirectWrite: vi.fn(() => false), requestComponentRender: vi.fn() };
+		const loader = new Loader(
+			ui as unknown as TUI,
+			text => text,
+			text => text,
+			"Checking",
+			["0"],
+		);
+
+		ui.tryDirectWrite.mockClear();
+		ui.requestComponentRender.mockClear();
+
+		loader.setCosmeticMessage("Still checking");
+
+		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(1);
+		expect(ui.requestComponentRender).not.toHaveBeenCalled();
+		expect(loader.render(30).join("\n")).toContain("0 Still checking");
 
 		loader.stop();
 	});

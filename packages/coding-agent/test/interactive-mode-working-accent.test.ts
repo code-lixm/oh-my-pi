@@ -322,6 +322,47 @@ describe("InteractiveMode loading activity summary", () => {
 		expect(alongsideCard).not.toContain("Working…");
 	});
 
+	it("renders waiting-peer as a localized static activity without periodic paints", async () => {
+		const { mode } = await createHarness("Waiting peer static activity");
+		const previousLocale = getSettingsUiLocale();
+		const phaseStartedAtMs = 1_700_000_000_000;
+		const detail = "UNIQUE_WAITING_PEER_DETAIL";
+		const waitingPeer = {
+			phase: "waiting-peer" as const,
+			label: "Waiting for peer",
+			detail,
+			phaseStartedAtMs,
+			lastActivityAtMs: phaseStartedAtMs,
+		};
+
+		setSettingsUiLocale("zh-CN");
+		vi.useFakeTimers();
+		try {
+			setSystemTime(phaseStartedAtMs + 125_000);
+			startStableLoader(mode);
+			const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(false);
+			const componentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+			mode.refreshWorkingActivitySummary(waitingPeer);
+			const rendered = Bun.stripANSI(renderLoader(mode));
+			expect(rendered).toContain("等待协作者");
+			expect(rendered).toContain("esc");
+			expect(rendered).not.toContain(detail);
+			expect(rendered).not.toContain("阶段");
+
+			directWrite.mockClear();
+			componentRender.mockClear();
+			vi.advanceTimersByTime(2_000);
+			expect(directWrite).toHaveBeenCalledTimes(0);
+			expect(componentRender).toHaveBeenCalledTimes(0);
+		} finally {
+			mode.stop();
+			vi.useRealTimers();
+			setSystemTime();
+			setSettingsUiLocale(previousLocale);
+		}
+	});
+
 	it("renders a real thinking snapshot as active, then quiet after 15 seconds without a new event", async () => {
 		const { mode } = await createHarness("Thinking activity summary");
 		const previousLocale = getSettingsUiLocale();
