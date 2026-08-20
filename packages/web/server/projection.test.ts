@@ -221,6 +221,7 @@ describe("projectMessages", () => {
 			mime: "image/png",
 			url: "data:image/png;base64,dXNlci1hdHRhY2htZW50",
 		});
+		expect(attachment.source).toBeUndefined();
 		expect(message.parts[2]).toMatchObject({ type: "text", text: "after attachment" });
 	});
 
@@ -256,6 +257,7 @@ describe("projectMessages", () => {
 			mime: "image/png",
 			url: "data:image/png;base64,YXNzaXN0YW50LWltYWdl",
 		});
+		expect(attachment.source).toBeUndefined();
 	});
 
 	test("keeps mixed tool-result text and image content in the originating assistant message", () => {
@@ -289,6 +291,7 @@ describe("projectMessages", () => {
 			mime: "image/png",
 			url: "data:image/png;base64,dG9vbC1yZXN1bHQtaW1hZ2U=",
 		});
+		expect(attachment.source).toBeUndefined();
 	});
 
 	test("renders an orphan tool result with its text and image instead of silently dropping it", () => {
@@ -324,12 +327,19 @@ describe("projectMessages", () => {
 		});
 	});
 
-	test("projects compaction and branch summaries as semantic compaction parts while retaining warnings and images", () => {
-		const image = {
-			type: "image" as const,
-			data: "Y29tcGFjdGlvbi1pbWFnZQ==",
-			mimeType: "image/png",
-		};
+	test("projects compaction frames as downloadable resources while retaining semantic summary metadata", () => {
+		const images = [
+			{
+				type: "image" as const,
+				data: "Y29tcGFjdGlvbi1pbWFnZQ==",
+				mimeType: "image/png",
+			},
+			{
+				type: "image" as const,
+				data: "c2Vjb25kLWNvbXBhY3Rpb24taW1hZ2U=",
+				mimeType: "image/webp",
+			},
+		];
 		const projected = projectMessages(
 			[
 				{
@@ -338,7 +348,7 @@ describe("projectMessages", () => {
 					summary: "Compacted earlier work",
 					tokensBefore: 8_192,
 					warning: "Retained facts need review",
-					images: [image],
+					images,
 				},
 				{
 					role: "branchSummary",
@@ -363,13 +373,30 @@ describe("projectMessages", () => {
 			warning: "Retained facts need review",
 			tokensBefore: 8_192,
 		});
-		const attachment = compaction.parts.find(part => part.type === "file");
-		if (attachment?.type !== "file") throw new Error("Expected compaction images to remain visible");
-		expect(attachment).toMatchObject({
-			messageID: compaction.info.id,
-			mime: "image/png",
-			url: "data:image/png;base64,Y29tcGFjdGlvbi1pbWFnZQ==",
-		});
+		const attachments = compaction.parts.filter(part => part.type === "file");
+		expect(attachments).toHaveLength(2);
+		expect(attachments).toMatchObject([
+			{
+				messageID: compaction.info.id,
+				mime: "image/png",
+				url: "data:image/png;base64,Y29tcGFjdGlvbi1pbWFnZQ==",
+				source: {
+					type: "resource",
+					clientName: "omp-snapcompact",
+					uri: `omp://snapcompact/${session.id}/${compaction.info.id}/1`,
+				},
+			},
+			{
+				messageID: compaction.info.id,
+				mime: "image/webp",
+				url: "data:image/webp;base64,c2Vjb25kLWNvbXBhY3Rpb24taW1hZ2U=",
+				source: {
+					type: "resource",
+					clientName: "omp-snapcompact",
+					uri: `omp://snapcompact/${session.id}/${compaction.info.id}/2`,
+				},
+			},
+		]);
 
 		const branchPart = branch.parts.find(part => part.type === "compaction");
 		if (branchPart?.type !== "compaction") throw new Error("Expected a branch summary compaction part");

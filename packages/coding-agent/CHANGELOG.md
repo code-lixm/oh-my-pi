@@ -104,6 +104,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed task subagents entering a direct `hub wait` for their parent while the parent awaited the task; such waits now fail immediately with actionable `hub send`/terminal-`yield` guidance, preventing a parent-child deadlock.
 - Fixed busy detached-subagent progress bursts repeatedly repainting the todo and subagent HUDs at 10 Hz, which starved the bottom working loader; high-volume progress now coalesces at 250 ms after an initial responsive refresh, while lifecycle and todo-reconciliation updates remain on the 100 ms path.
 - Fixed streaming follow-up queue submission escalating the pending-message repaint into a full terminal compose; the editor and queued-message bar now retain scoped rendering without walking the active transcript.
 - Fixed consumed queued follow-up messages restoring their user bubbles with a full TUI compose; the transcript and pending-message roots now repaint together through scoped rendering while preserving synchronous message order.

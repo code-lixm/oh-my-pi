@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { isPartRenderable } from "./part-renderability"
-import { compactionDisplayText, readPartText, visibleUserMessageText } from "./message-part-text"
+import {
+  compactionDisplayText,
+  isSnapcompactArchiveSource,
+  readPartText,
+  visibleUserMessageText,
+} from "./message-part-text"
 
 describe("readPartText", () => {
   test("returns empty string when accum is undefined and part text is undefined", () => {
@@ -62,5 +67,40 @@ describe("compactionDisplayText", () => {
     expect(compactionDisplayText("Compaction summary marker", "Compaction warning marker")).toBe(
       "Compaction summary marker\n\n> Compaction warning marker",
     )
+  })
+})
+
+describe("isSnapcompactArchiveSource", () => {
+  test.each([
+    {
+      name: "snapcompact resource image",
+      source: {
+        type: "resource",
+        clientName: "omp-snapcompact",
+        uri: "omp://snapcompact/session_1/message_1/1",
+      },
+      expected: true,
+    },
+    {
+      name: "ordinary image without a source",
+      source: undefined,
+      expected: false,
+    },
+    {
+      name: "resource from another client",
+      source: {
+        type: "resource",
+        clientName: "mcp-server",
+        uri: "mcp://server/image",
+      },
+      expected: false,
+    },
+    {
+      name: "non-resource source",
+      source: { type: "file" },
+      expected: false,
+    },
+  ])("returns $expected for $name", ({ source, expected }) => {
+    expect(isSnapcompactArchiveSource(source)).toBe(expected)
   })
 })

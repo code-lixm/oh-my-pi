@@ -22,6 +22,8 @@ interface ProjectedImageContent {
 	data: string;
 	mimeType: string;
 }
+const SNAPCOMPACT_RESOURCE_CLIENT = "omp-snapcompact";
+
 
 function projectedContent(content: unknown): { text: string; images: ProjectedImageContent[] } {
 	if (typeof content === "string") return { text: content, images: [] };
@@ -60,6 +62,32 @@ function projectedImageParts(content: unknown, sessionID: string, messageID: str
 		mime: image.mimeType,
 		url: image.data.startsWith("data:") ? image.data : `data:${image.mimeType};base64,${image.data}`,
 	}));
+}
+function projectedSnapcompactArchiveParts(
+	content: unknown,
+	sessionID: string,
+	messageID: string,
+	idPrefix: string,
+): FilePart[] {
+	return projectedContent(content).images.map((image, index) => {
+		const filename = `omp-snapcompact-frame-${index + 1}.png`;
+		const resourceText = `@${filename}`;
+		return {
+			id: `${idPrefix}_file_${index}`,
+			sessionID,
+			messageID,
+			type: "file",
+			mime: image.mimeType,
+			filename,
+			url: image.data.startsWith("data:") ? image.data : `data:${image.mimeType};base64,${image.data}`,
+			source: {
+				text: { value: resourceText, start: 0, end: resourceText.length },
+				type: "resource",
+				clientName: SNAPCOMPACT_RESOURCE_CLIENT,
+				uri: `omp://snapcompact/${encodeURIComponent(sessionID)}/${encodeURIComponent(messageID)}/${index + 1}`,
+			},
+		};
+	});
 }
 
 type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
@@ -378,7 +406,7 @@ function summaryProjection(
 	const imageContent = compaction ? (message.blocks ?? message.images ?? []) : [];
 	return {
 		info: eventAssistantInfo(session, id, message.timestamp),
-		parts: [part, ...projectedImageParts(imageContent, session.id, id, `${id}_summary`)],
+		parts: [part, ...projectedSnapcompactArchiveParts(imageContent, session.id, id, `${id}_summary`)],
 	};
 }
 

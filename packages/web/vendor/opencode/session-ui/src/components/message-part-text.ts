@@ -15,3 +15,7 @@ export function compactionDisplayText(summary: string, warning?: string): string
   const warningText = warning?.trim()
   return [body, warningText ? `> ${warningText}` : ""].filter(Boolean).join("\n\n")
 }
+
+export function isSnapcompactArchiveSource(source: { type?: unknown; clientName?: unknown } | undefined): boolean {
+  return source?.type === "resource" && source.clientName === "omp-snapcompact"
+}

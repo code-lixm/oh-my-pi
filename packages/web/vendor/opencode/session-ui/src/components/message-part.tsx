@@ -65,7 +65,7 @@ import { patchFiles } from "./apply-patch-file"
 import { partDefaultOpen } from "./part-default-open"
 import { animate } from "motion"
 import { attached, inline, kind, typeLabel } from "./message-file"
-import { compactionDisplayText, readPartText, visibleUserMessageText } from "./message-part-text"
+import { compactionDisplayText, isSnapcompactArchiveSource, readPartText, visibleUserMessageText } from "./message-part-text"
 import { SessionProgressIndicatorV2 } from "../v2/components/session-progress-indicator-v2"
 import { isContextGroupToolName } from "./tool-visibility"
 import { isXdToolTransport, presentationToolName } from "../../../../../shared/tool-presentation"
@@ -1805,25 +1805,37 @@ PART_MAPPING["file"] = function FilePartDisplay(props) {
   const part = () => props.part as FilePart
   const name = createMemo(() => part().filename ?? i18n.t("ui.message.attachment.alt"))
   const image = createMemo(() => part().mime.startsWith("image/"))
+  const snapcompactArchive = createMemo(() => isSnapcompactArchiveSource(part().source))
 
   return (
     <div data-component="assistant-file-part" data-timeline-part-id={part().id}>
       <Show
-        when={image()}
+        when={snapcompactArchive()}
         fallback={
-          <AttachmentCardV2 title={getFilename(name())} hover={name()}>
-            {typeLabel(name(), part().mime, i18n.t("ui.common.file"))}
-          </AttachmentCardV2>
+          <Show
+            when={image()}
+            fallback={
+              <AttachmentCardV2 title={getFilename(name())} hover={name()}>
+                {typeLabel(name(), part().mime, i18n.t("ui.common.file"))}
+              </AttachmentCardV2>
+            }
+          >
+            <button
+              type="button"
+              data-slot="assistant-file-preview"
+              aria-label={name()}
+              onClick={() => dialog.show(() => <ImagePreview src={part().url} alt={name()} />)}
+            >
+              <img data-slot="assistant-file-image" src={part().url} alt={name()} />
+            </button>
+          </Show>
         }
       >
-        <button
-          type="button"
-          data-slot="assistant-file-preview"
-          aria-label={name()}
-          onClick={() => dialog.show(() => <ImagePreview src={part().url} alt={name()} />)}
-        >
-          <img data-slot="assistant-file-image" src={part().url} alt={name()} />
-        </button>
+        <a data-slot="assistant-file-resource" href={part().url} download={name()} aria-label={name()}>
+          <AttachmentCardV2 title={getFilename(name())} hover={name()} clickable>
+            {typeLabel(name(), part().mime, i18n.t("ui.common.file"))}
+          </AttachmentCardV2>
+        </a>
       </Show>
     </div>
   )

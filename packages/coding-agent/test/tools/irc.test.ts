@@ -1089,6 +1089,88 @@ describe("IRC", () => {
 			expect(text).toContain('agent "0-Sub" is not running');
 		});
 
+		it("op=wait rejects a child waiting for its parent instead of hanging in a direct wait cycle", async () => {
+			const parent = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: parent.session });
+			const child = makeFakeSession();
+			registry.register({
+				id: "Child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session: child.session,
+				status: "running",
+			});
+
+			const tool = new HubTool(makeToolSession(registry, "Child"));
+			vi.useFakeTimers();
+			const pending = tool.execute("call-1", {
+				op: "wait",
+				from: "Main",
+				timeoutMs: 60_000,
+			});
+			try {
+				let settled = false;
+				void pending.then(
+					() => {
+						settled = true;
+					},
+					() => {
+						settled = true;
+					},
+				);
+				// A missing guard would leave this on the fake 60s timer; do not wait for it.
+				for (let index = 0; index < 4; index++) await Promise.resolve();
+				expect(settled).toBe(true);
+
+				const result = await pending;
+				expect(result.isError).toBe(true);
+				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+				expect(text).toContain("cannot wait for its parent");
+				expect(text).toContain("hub send");
+				expect(text).toContain("terminal-yield");
+
+				const receipt = await bus.send({ from: "Main", to: "Child", body: "parent update" });
+				expect(receipt.outcome).toBe("injected");
+				expect(child.delivered.map(msg => msg.body)).toEqual(["parent update"]);
+			} finally {
+				vi.runAllTimers();
+				await pending.catch(() => undefined);
+				vi.useRealTimers();
+			}
+		});
+
+		it("op=wait lets a child wait for a running sibling and returns the normal timeout instead of a parent-cycle error", async () => {
+			const parent = makeFakeSession();
+			registry.register({ id: "Main", displayName: "main", kind: "main", session: parent.session });
+			const child = makeFakeSession();
+			registry.register({
+				id: "Child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session: child.session,
+				status: "running",
+			});
+			const sibling = makeFakeSession();
+			registry.register({
+				id: "Sibling",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session: sibling.session,
+				status: "running",
+			});
+
+			const tool = new HubTool(makeToolSession(registry, "Child"));
+			const result = await tool.execute("call-1", { op: "wait", from: "Sibling", timeoutMs: 5 });
+			expect(result.isError).toBeFalsy();
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited).toBeNull();
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+			expect(text).toContain("No message from Sibling");
+		});
+
 		it("op=wait consumes a pending IRC aside before honoring a queued interrupt abort", async () => {
 			const { session } = createRealSession();
 			sessions.push(session);

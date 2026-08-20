@@ -29,6 +29,7 @@
 - Kept the OMP thinking and approval selectors in the main prompt input's bottom toolbar as semantic icon-plus-value controls, removed the advisor toggle from both main prompt implementations, and kept child-session transcripts read-only without an advisor toggle or disabled-composer placeholder card; the main submit button remains pinned and prompt text reclaims the removed control's horizontal space.
 - Replaced the Web and Desktop tab and notification favicons with the PI mark, cache-busted the active assets to `v4`, and made the square background fully opaque so all four corner pixels match without white seams.
 - Fixed vendored UI locale fallbacks to import OMP English copy through an exported package subpath, so consumers using the UI as a file dependency resolve the same runtime text.
+- Fixed snapcompact compaction frames overwhelming Web session history as dense inline bitmaps: archived frames now render as individually named, downloadable resource cards while ordinary user, assistant, and tool-result images retain their existing previews.
 ### Removed
 
 - Removed inherited WSL server management because OMP Web and Desktop do not ship a WSL OMP runtime.

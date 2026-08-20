@@ -38,6 +38,8 @@ Currently reachable agents:
 - Need a small piece of context? Ask the relevant agent directly.
 - Share large content through `local://` or `artifact://`; NEVER paste it into messages.
 - Set `replyTo` when replying; use `await: true` only when you cannot proceed without the answer.
+- Need a decision from Main? `hub send` a concrete question; use `await: true` only when no reply can proceed. NEVER `hub wait` for your parent.
+- No local work? Terminal `yield`; NEVER wait for a future assignment.
 {{/if}}
 
 COMPLETION

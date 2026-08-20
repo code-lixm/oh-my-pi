@@ -48,6 +48,16 @@ export interface OmpFilePart extends OmpBasePart {
   mime: string
   url: string
   filename?: string
+  source?: {
+    text: {
+      value: string
+      start: number
+      end: number
+    }
+    type: "resource"
+    clientName: string
+    uri: string
+  }
 }
 
 export interface OmpCompactionPart extends OmpBasePart {

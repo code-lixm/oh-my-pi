@@ -249,6 +249,20 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		return { registry, senderId, settings: this.session.settings };
 	}
 
+	/** A child waiting for its parent can deadlock while the parent awaits the child task. */
+	#parentWaitError(params: HubParams): AgentToolResult<HubDetails> | undefined {
+		if (params.name?.trim()) return undefined;
+		const from = params.from?.trim();
+		if (!from) return undefined;
+		const messaging = this.#messaging();
+		const parentId = messaging?.registry.get(messaging.senderId)?.parentId;
+		if (!parentId || from !== parentId) return undefined;
+		return hubErrorResult(
+			`A subagent cannot wait for its parent (${parentId}): this can deadlock while the parent awaits this task. Send the parent a concrete message with \`hub send\` (use \`await: true\` only when necessary), or terminal-yield the blocker.`,
+			{ op: "wait", from },
+		);
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: HubParams,
@@ -281,7 +295,9 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });
 				return executeInbox(messaging.registry, messaging.senderId, params.peek);
 			}
-			case "wait":
+			case "wait": {
+				const parentWaitError = this.#parentWaitError(params);
+				if (parentWaitError) return parentWaitError;
 				return this.#withRunnableAgentSuspended(
 					() =>
 						params.name?.trim()
@@ -289,6 +305,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 							: this.#executeWait(params, signal, onUpdate),
 					signal,
 				);
+			}
 			case "cancel": {
 				const manager = this.session.asyncJobManager;
 				if (!manager) return this.#asyncDisabled("cancel");

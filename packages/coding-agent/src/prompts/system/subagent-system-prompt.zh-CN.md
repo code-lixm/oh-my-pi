@@ -46,6 +46,8 @@
 - 需要少量上下文？直接询问相关代理。
 - 大段内容通过 `local://` 或 `artifact://` 分享，NEVER 粘贴进消息。
 - 回复协作消息时设置 `replyTo`；只有缺少回复就无法继续时，才设置 `await: true`。
+- 需要 Main 决策？用 `hub send` 发送具体问题；只有没有回复就无法继续时才设置 `await: true`。你 NEVER `hub wait` 等待父代理。
+- 没有本地工作？最终 `yield`；你 NEVER 等待未来分配。
 {{/if}}
 
 完成
