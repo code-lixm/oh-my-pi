@@ -18,7 +18,6 @@ import type {
 	AutocompleteProvider,
 	Component,
 	EditorTheme,
-	LoaderMessageColorFn,
 	NativeScrollbackLiveRegion,
 	OverlayHandle,
 	SlashCommand,
@@ -221,12 +220,10 @@ import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "./theme/mermaid-cache";
-import { type ShimmerPalette, shimmerEnabled, shimmerSegments, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
 import {
 	getEditorTheme,
 	getMarkdownTheme,
-	getSymbolTheme,
 	onTerminalAppearanceChange,
 	onThemeChange,
 	setMarkdownHeadingStyle,
@@ -252,11 +249,6 @@ import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
 
-const HINT_SHIMMER_PALETTE: ShimmerPalette = {
-	low: "dim",
-	mid: "muted",
-	high: "borderAccent",
-};
 // OSC 11 already allows a 100 ms sentinel grace; a second 100 ms covers the
 // multiplexer passthrough round trip without delaying fresh sessions.
 const RESUME_APPEARANCE_WAIT_MS = 200;
@@ -264,35 +256,6 @@ const RESUME_APPEARANCE_WAIT_MS = 200;
 // that swallows mode reports cannot stall resumed sessions indefinitely.
 const RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS = 200;
 
-// Cap shimmer time so a long event-loop stall does not visibly jump the band
-// (or the spinner frame) by multiple cells at once. Sized to the worst-case
-// non-synchronized-output render cadence (~80ms) so normal speed is preserved
-// while a stall discards the surplus into a single step. Each working loader
-// owns its own clock via `createCappedClock` so unrelated animations are not
-// coupled through shared module state.
-const SHIMMER_MAX_DELTA_MS = 80;
-const WORKING_ACTIVITY_REFRESH_MS = 1_000;
-
-function createCappedClock(
-	maxDeltaMs: number,
-	options?: { wall?: () => number; animationStart?: number },
-): () => number {
-	// `wall` measures real elapsed time (monotonic, advances during stalls);
-	// `animationTime` is the time we *hand to consumers* (shimmer, spinner)
-	// and never advances faster than `maxDeltaMs` per call. The wall clock is
-	// always advanced to `cur` after a cap so a 300 ms stall discards the 220 ms
-	// surplus into one step — not paid back across the next few ticks.
-	const wall = options?.wall ?? (() => performance.now());
-	let lastWall = wall();
-	let animationTime = options?.animationStart ?? Date.now();
-	return () => {
-		const cur = wall();
-		const delta = Math.max(0, Math.min(cur - lastWall, maxDeltaMs));
-		lastWall = cur;
-		animationTime += delta;
-		return animationTime;
-	};
-}
 interface WorkingMessageAccent {
 	main: string;
 	dim: string;
@@ -304,41 +267,8 @@ interface WorkingMessageAccentCacheKey {
 	sessionAccentEnabled: boolean;
 }
 
-/**
- * Intern the shimmer palettes for each `WorkingMessageAccent` so `compile()`
- * inside `shimmerSegments` sees a stable palette object between animation
- * ticks. Allocating fresh palette literals every frame guaranteed a cache miss
- * on the Symbol-keyed compiled-ANSI slot and forced `resolveTierAnsi` to walk
- * every tier open/close for the ~30fps loader redraw (issue #4377).
- */
-const workingMessagePaletteCache = new WeakMap<WorkingMessageAccent, { main: ShimmerPalette; hint: ShimmerPalette }>();
-
-function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPalette; hint: ShimmerPalette } {
-	let entry = workingMessagePaletteCache.get(accent);
-	if (!entry) {
-		entry = {
-			main: { low: "dim", mid: { ansi: accent.main }, high: { ansi: accent.main }, bold: true },
-			hint: { low: "dim", mid: { ansi: accent.dim }, high: { ansi: accent.dim } },
-		};
-		workingMessagePaletteCache.set(accent, entry);
-	}
-	return entry;
-}
-
-function renderWorkingMessage(message: string, accent?: WorkingMessageAccent, time: number = Date.now()): string {
-	const palettes = accent ? workingMessagePalettes(accent) : undefined;
-	const palette = palettes?.main;
-	const hint = interruptHint();
-	if (!message.endsWith(hint)) return shimmerText(message, theme, palette, time);
-	const header = message.slice(0, -hint.length);
-	return shimmerSegments(
-		[
-			{ text: header, palette },
-			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
-		],
-		theme,
-		time,
-	);
+function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
+	return accent ? `${accent.main}${message}\x1b[39m` : theme.fg("muted", message);
 }
 
 function formatWorkingActivityMessage(
@@ -722,7 +652,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
-	#workingActivityRefreshTimer?: NodeJS.Timeout;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
 	#workingMessageAccentCacheHasValue = false;
@@ -5172,26 +5101,26 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Reconcile the bottom loader with the latest Main activity snapshot. */
 	refreshWorkingActivitySummary(activity?: AgentActivityState): void {
-		this.#refreshWorkingActivityMessage(activity);
+		// Agent events can arrive at the model's token cadence. Never turn an
+		// elapsed-label update into a full compose when a direct rewrite is unsafe.
+		this.#refreshWorkingActivityMessage(activity, true);
 	}
 
 	#refreshWorkingActivityMessage(activity: AgentActivityState = this.viewSession.activity, cosmetic = false): void {
 		const loader = this.loadingAnimation;
 		if (!loader) {
-			this.#stopWorkingActivityRefresh();
 			return;
 		}
 		const waitingMessage = this.#waitingActivityMessage(activity);
-		const animationEnabled = waitingMessage === undefined;
-		loader.setAnimationEnabled(animationEnabled);
-		if (waitingMessage) this.#stopWorkingActivityRefresh();
+		// The working row is status text, not progress animation. A stable frame
+		// cannot starve the editor or visibly stall behind concurrent tool output.
+		loader.setAnimationEnabled(false);
 		if (this.#pendingWorkingMessage !== undefined) return;
 		const hint = interruptHint();
 		if (waitingMessage) {
 			loader.setCosmeticMessage(`${waitingMessage}${hint}`);
 			return;
 		}
-		this.#startWorkingActivityRefresh();
 		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);
 		const summary = formatWorkingActivityMessage(activity, Math.max(1, maxWidth - visibleWidth(hint)));
@@ -5200,47 +5129,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		else loader.setMessage(message);
 	}
 
-	#startWorkingActivityRefresh(): void {
-		if (this.#workingActivityRefreshTimer) return;
-		this.#workingActivityRefreshTimer = setInterval(
-			() => this.#refreshWorkingActivityMessage(undefined, true),
-			WORKING_ACTIVITY_REFRESH_MS,
-		);
-		this.#workingActivityRefreshTimer.unref?.();
-	}
-
-	#stopWorkingActivityRefresh(): void {
-		if (!this.#workingActivityRefreshTimer) return;
-		clearInterval(this.#workingActivityRefreshTimer);
-		this.#workingActivityRefreshTimer = undefined;
-	}
-
 	ensureLoadingAnimation(): void {
 		if (!this.loadingAnimation) {
-			this.#clearWorkingMessageAccentCache();
-			this.statusContainer.disposeChildren();
-			// Each working-loader owns a private capped clock so a long event-loop
-			// stall discards surplus time instead of jumping the shimmer band
-			// several cells at once. See `createCappedClock` for the contract.
-			const shimmerClock = createCappedClock(SHIMMER_MAX_DELTA_MS);
-			const messageColorFn = ((message: string) =>
-				renderWorkingMessage(message, this.#getWorkingMessageAccent(), shimmerClock())) as LoaderMessageColorFn & {
-				animated?: true;
-			};
-			// Shimmer drives the 30fps redraw; when it is disabled the working
-			// message is static, so leave `animated` unset and let the loader use
-			// the spinner-only ~12.5fps cadence instead of repainting a frozen line.
-			if (shimmerEnabled()) messageColorFn.animated = true;
 			this.loadingAnimation = new Loader(
 				this.ui,
 				spinner => {
 					const accent = this.#getWorkingMessageAccent();
 					return accent ? `${accent.main}${spinner}\x1b[39m` : theme.fg("accent", spinner);
 				},
-				messageColorFn,
+				message => renderWorkingMessage(message, this.#getWorkingMessageAccent()),
 				this.#defaultWorkingMessage,
-				getSymbolTheme().spinnerFrames,
+				["·"],
 			);
+			this.loadingAnimation.setAnimationEnabled(false);
 			this.statusContainer.addChild(this.loadingAnimation);
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.disposeChildren();
@@ -5248,12 +5149,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		}
 		this.applyPendingWorkingMessage();
-		this.#startWorkingActivityRefresh();
 		this.#refreshWorkingActivityMessage();
 	}
 
 	#stopLoadingAnimation(clearStatusContainer: boolean): void {
-		this.#stopWorkingActivityRefresh();
 		if (!this.loadingAnimation) return;
 		this.loadingAnimation.stop();
 		this.loadingAnimation = undefined;
@@ -5267,13 +5166,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (message === undefined) {
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
-				this.loadingAnimation.setMessage(this.#defaultWorkingMessage);
+				this.loadingAnimation.setCosmeticMessage(this.#defaultWorkingMessage);
 			}
 			return;
 		}
 
 		if (this.loadingAnimation) {
-			this.loadingAnimation.setMessage(message);
+			this.loadingAnimation.setCosmeticMessage(message);
 			return;
 		}
 

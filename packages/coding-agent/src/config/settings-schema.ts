@@ -1473,7 +1473,7 @@ export const SETTINGS_SCHEMA = {
 
 	"display.smoothStreaming": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "appearance",
 			group: tSettingsUi("Display"),

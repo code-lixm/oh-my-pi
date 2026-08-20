@@ -328,6 +328,11 @@ describe("settings layout", () => {
 			"作为附加根目录加入每个会话的额外工作区目录（多根工作区）。可通过 /add-dir 和 /remove-dir 实时管理。相对路径基于 cwd 解析，建议使用绝对路径。代理会获知这些根目录，并可对其执行 read/grep/find。",
 		);
 	});
+
+	it("defaults fresh profiles to low-latency streaming", () => {
+		expect(SETTINGS_SCHEMA["display.smoothStreaming"].default).toBe(false);
+	});
+
 	it("exposes fixed localized Ask timeout choices", () => {
 		expect(SETTINGS_SCHEMA["ask.timeout"].default).toBe(30);
 

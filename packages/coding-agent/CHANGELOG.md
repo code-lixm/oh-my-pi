@@ -102,6 +102,7 @@
 - Changed `retry.maxRetries` in `/settings` from fixed presets to a validated numeric input, allowing any non-negative integer API-error retry limit.
 
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
+- Changed `display.smoothStreaming` to opt in. Fresh profiles now render the latest coalesced assistant and tool-input chunks immediately instead of maintaining a separate 30fps reveal queue; existing explicit settings are preserved.
 
 ### Fixed
 - Fixed `omp config export` and `omp config import` to use the local Sync encryption key first, then the configured `sync.passphraseEnv` fallback; an explicit `--passphrase-env` still selects that environment variable.
@@ -111,7 +112,7 @@
 - Fixed streaming follow-up queue submission escalating the pending-message repaint into a full terminal compose; the editor and queued-message bar now retain scoped rendering without walking the active transcript.
 - Fixed consumed queued follow-up messages restoring their user bubbles with a full TUI compose; the transcript and pending-message roots now repaint together through scoped rendering while preserving synchronous message order.
 - Fixed `/stats` repeatedly scanning and parsing every session on each invocation: local session appends now mark scoped dirty files, clean dashboard launches reuse fresh aggregates, and cold global reconciliation runs in an isolated subprocess so it does not monopolize the TUI isolate.
-- Fixed the bottom working indicator continuing to animate while Main was intentionally waiting for a user or peer response; activity transitions now pause cosmetic Loader paints during the wait and resume them for thinking or tool work.
+- Fixed the bottom working indicator animating while Main waited or generated a response. It now uses a stable activity marker and updates only when activity meaningfully changes; unsafe updates defer to the next valid paint instead of competing with the input compositor.
 
 - Fixed global canonical session discovery being limited to the default agent directory by allowing managed consumers to scan an explicit sessions root.
 - Fixed RPC and Web history reads returning the compacted provider context instead of the display transcript, which could omit every user turn and leave resumed sessions visually empty.
