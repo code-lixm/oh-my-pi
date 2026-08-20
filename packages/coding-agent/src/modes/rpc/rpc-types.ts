@@ -24,6 +24,7 @@ import type {
 	SubagentProgressPayload,
 } from "../../task";
 import type { ConfiguredThinkingLevel } from "../../thinking";
+import type { AskToolDetails, AskToolInput } from "../../tools/ask";
 import type { TodoPhase } from "../../tools/todo";
 import type { VibeModeState } from "../../vibe/state";
 import type {
@@ -72,6 +73,21 @@ export type RpcWorkspaceRestorePreviewRequest = PreviewWorkspaceRestoreRequest &
 	rootPath?: ListWorkspaceCheckpointsRequest["rootPath"];
 };
 
+export type RpcNavigateTreeOptions = {
+	summarize?: boolean;
+	customInstructions?: string;
+	allowAskReopen?: boolean;
+	reanswerAskResult?: AgentToolResult<AskToolDetails>;
+};
+
+export type RpcNavigateTreeResult = {
+	editorText?: string;
+	editorImages?: ImageContent[];
+	cancelled: boolean;
+	aborted?: boolean;
+	reopenAsk?: { toolCallId: string; questions: AskToolInput["questions"] };
+	askReanswerCommitted?: boolean;
+};
 // ============================================================================
 // RPC Commands (stdin)
 // ============================================================================
@@ -79,7 +95,7 @@ export type RpcWorkspaceRestorePreviewRequest = PreviewWorkspaceRestoreRequest &
 export type RpcCommand =
 	// Protocol
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
-
+	| { id?: string; type: "initialize_extensions" }
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
@@ -116,9 +132,12 @@ export type RpcCommand =
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
+	| { id?: string; type: "set_active_tools"; toolNames: string[] }
+	| { id?: string; type: "set_active_tool_presentation"; toolNames: string[]; mountedToolNames: string[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
 	| { id?: string; type: "set_host_uri_schemes"; schemes: RpcHostUriSchemeDefinition[] }
 	| { id?: string; type: "set_subagent_subscription"; level: RpcSubagentSubscriptionLevel }
+	| { id?: string; type: "maybe_start_title_generation"; firstMessage: string }
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
 
@@ -174,6 +193,9 @@ export type RpcCommand =
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "branch"; entryId: string }
+	| { id?: string; type: "navigate_tree"; entryId: string; options?: RpcNavigateTreeOptions }
+	| { id?: string; type: "abort_branch_summary" }
+	| { id?: string; type: "resume_after_ask_reanswer" }
 	| { id?: string; type: "get_branch_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
@@ -211,6 +233,8 @@ export interface RpcSessionState {
 	tokensPerSecond: number | null;
 	messageCount: number;
 	queuedMessageCount: number;
+	/** User-visible queued steering and follow-up messages; absent on older RPC hosts. */
+	queuedMessages?: { steering: readonly string[]; followUp: readonly string[] };
 	todoPhases: TodoPhase[];
 	/** For session dump / export (plain-text parity with /dump). */
 	systemPrompt?: string[];
@@ -385,6 +409,13 @@ export type RpcResponse =
 			data: { commands: RpcAvailableSlashCommand[] };
 	  }
 	| { id?: string; type: "response"; command: "set_todos"; success: true; data: { todoPhases: TodoPhase[] } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_active_tools" | "set_active_tool_presentation";
+			success: true;
+			data: { activeToolNames: string[]; mountedToolNames: string[] };
+	  }
 	| { id?: string; type: "response"; command: "set_host_tools"; success: true; data: { toolNames: string[] } }
 	| { id?: string; type: "response"; command: "set_host_uri_schemes"; success: true; data: { schemes: string[] } }
 	| {
@@ -479,6 +510,7 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| { id?: string; type: "response"; command: "maybe_start_title_generation"; success: true }
 	| { id?: string; type: "response"; command: "handoff"; success: true; data: RpcHandoffResult | null }
 
 	// Messages

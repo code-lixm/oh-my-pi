@@ -1473,7 +1473,7 @@ export const SETTINGS_SCHEMA = {
 
 	"display.smoothStreaming": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "appearance",
 			group: tSettingsUi("Display"),
@@ -6799,6 +6799,18 @@ export const SETTINGS_SCHEMA = {
 			),
 		},
 	},
+	"features.processIsolation": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Agent"),
+			label: tSettingsUi("Process Isolation"),
+			description: tSettingsUi(
+				"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering",
+			),
+		},
+	},
 	"providers.unexpectedStopModel": {
 		type: "enum",
 		values: TINY_MEMORY_MODEL_VALUES,
@@ -7537,6 +7549,7 @@ const CLI_ONLY_SETTING_PATHS = new Set<SettingPath>([
 	"doubleEscapeAction",
 	"emojiAutocomplete",
 	"error.notify",
+	"features.processIsolation",
 	"git.enabled",
 	"goal.statusInFooter",
 	"marketplace.autoUpdate",

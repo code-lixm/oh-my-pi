@@ -113,15 +113,19 @@ export const SMOKE_TEST_TIMEOUT_MS = 30_000;
  * package's own `src/cli.ts` when no host entry is declared (bun test, SDK
  * embedding).
  */
-export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
+export function resolveCliSpawnCmd(args: string[] = []): WorkerSpawnCommand {
 	const executable = stripWindowsExtendedLengthPathPrefix(process.execPath);
-	if (isCompiledBinary()) return { cmd: [executable, workerArg] };
+	if (isCompiledBinary()) return { cmd: [executable, ...args] };
 	const hostEntry = workerHostEntry();
 	if (hostEntry) {
-		return { cmd: [executable, path.basename(hostEntry), workerArg], cwd: path.dirname(hostEntry) };
+		return { cmd: [executable, path.basename(hostEntry), ...args], cwd: path.dirname(hostEntry) };
 	}
 	const packageRoot = path.resolve(import.meta.dir, "..", "..");
-	return { cmd: [executable, "src/cli.ts", workerArg], cwd: packageRoot };
+	return { cmd: [executable, "src/cli.ts", ...args], cwd: packageRoot };
+}
+
+export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
+	return resolveCliSpawnCmd([workerArg]);
 }
 
 /**

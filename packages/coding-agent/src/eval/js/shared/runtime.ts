@@ -15,6 +15,10 @@ import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
 import { wrapCode } from "./rewrite-imports";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
+type TableCapableConsole = Console & {
+	table(...args: unknown[]): void;
+};
+
 /**
  * Per-run callbacks. Runtime globals resolve these from AsyncLocalStorage so
  * overlapping async cells can route output/tool calls back to their own run.
@@ -377,7 +381,7 @@ export class JsRuntime {
 					},
 				});
 				const tableConsole = new Console({ stdout: stream, colorMode: false });
-				(tableConsole.table as (...a: unknown[]) => void)(...args);
+				(tableConsole as TableCapableConsole).table(...args);
 				hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
 			},
 			__omp_display__: (value: unknown) => this.displayValue(value),

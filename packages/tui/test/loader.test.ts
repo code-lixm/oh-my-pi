@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, setSystemTime, spyOn, vi } from "bun:test";
-import { Container, TUI } from "@oh-my-pi/pi-tui";
+import { Container, Text, TUI } from "@oh-my-pi/pi-tui";
 import { Loader, type LoaderMessageColorFn } from "@oh-my-pi/pi-tui/components/loader";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import { StressRenderScheduler } from "./render-stress-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
+
+function visible(term: VirtualTerminal): string[] {
+	return term
+		.getViewport()
+		.map(line => Bun.stripANSI(line).trim())
+		.filter(Boolean);
+}
 
 describe("Loader component", () => {
 	afterEach(() => {
@@ -32,6 +40,46 @@ describe("Loader component", () => {
 
 		loader.stop();
 		tui.stop();
+	});
+
+	it("shows semantic status text after a failed direct write through its nested status-root fallback", async () => {
+		const term = new VirtualTerminal(48, 6, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const statusRoot = new Container();
+		const loader = new Loader(
+			tui,
+			text => text,
+			text => text,
+			"Thinking · Active · phase 0ms",
+			["0"],
+		);
+		loader.stop();
+		statusRoot.addChild(loader);
+		tui.addChild(new Text("transcript remains visible"));
+		tui.addChild(statusRoot);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			expect(visible(term).join("\n")).toContain("Thinking · Active · phase 0ms");
+
+			const directWrite = spyOn(tui, "tryDirectWrite").mockReturnValue(false);
+			const componentRender = spyOn(tui, "requestComponentRender");
+			loader.setMessage("Thinking · Active · phase 1.0s");
+			expect(directWrite).toHaveBeenCalledWith(loader);
+			expect(componentRender).toHaveBeenCalledWith(loader);
+
+			await scheduler.drain(term);
+			const finalFrame = visible(term).join("\n");
+			expect(finalFrame).toContain("transcript remains visible");
+			expect(finalFrame).toContain("Thinking · Active · phase 1.0s");
+			expect(finalFrame).not.toContain("Thinking · Active · phase 0ms");
+		} finally {
+			loader.stop();
+			tui.stop();
+			await term.flush();
+		}
 	});
 
 	it("keeps spinner cadence when animated messages repaint at 30fps", () => {

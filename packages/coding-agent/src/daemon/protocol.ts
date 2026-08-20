@@ -1,4 +1,10 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { RpcCommand, RpcExtensionUIResponse } from "../modes/rpc/rpc-types";
+import type {
+	InteractiveSessionReliableFrame,
+	InteractiveSessionSnapshot,
+	InteractiveSessionViewFrame,
+} from "../modes/session-port";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 
 /** Stable identifier for the local daemon JSONL protocol. */
@@ -8,7 +14,7 @@ export const OMP_DAEMON_PROTOCOL_NAME = "omp.daemon";
 export const OMP_DAEMON_PROTOCOL_VERSION = 1;
 
 /** Monotonic schema revision for additive, field-sensitive compatibility checks. */
-export const OMP_DAEMON_SCHEMA_REVISION = 2;
+export const OMP_DAEMON_SCHEMA_REVISION = 3;
 /** Hard bounds shared by daemon client, supervisor, and worker JSONL endpoints. */
 export const OMP_DAEMON_MAX_JSONL_RECORD_BYTES = 1024 * 1024;
 /** Leave room for the snapshot event envelope and cursor. */
@@ -99,7 +105,14 @@ export function boundOmpSessionSnapshot(snapshot: OmpSessionSnapshot): OmpSessio
 }
 
 /** Features a daemon client understands. */
-export type OmpDaemonClientCapability = "attach_snapshot" | "event_sequence" | "extension_ui" | "chunked_snapshot";
+export type OmpDaemonClientCapability =
+	| "attach_snapshot"
+	| "event_sequence"
+	| "extension_ui"
+	| "chunked_snapshot"
+	| "interactive_projection"
+	| "latest_view_frames"
+	| "ui_owner_epoch";
 
 /** Features a daemon supervisor advertises to connected clients. */
 export type OmpDaemonServerCapability =
@@ -173,6 +186,16 @@ export type OmpDaemonCommand =
 	| { id?: string; type: "agent_message_send"; target: string; message: string }
 	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "stop_session"; activeSessionId: string }
+	| { id?: string; type: "session_command"; activeSessionId: string; payload: RpcCommand }
+	| { id?: string; type: "ui_owner_acquire"; activeSessionId: string }
+	| { id?: string; type: "ui_owner_release"; activeSessionId: string }
+	| {
+			id?: string;
+			type: "extension_ui_response";
+			activeSessionId: string;
+			ownerEpoch: number;
+			payload: RpcExtensionUIResponse;
+	  }
 	| { id?: string; type: "shutdown" };
 
 /** Events the supervisor streams to a daemon client as JSONL records. */
@@ -202,6 +225,14 @@ export type OmpDaemonEvent =
 			state: OmpSessionSnapshot;
 			cursor?: OmpDaemonEventCursor;
 	  }
+	| {
+			type: "projection_snapshot";
+			activeSessionId: string;
+			snapshot: InteractiveSessionSnapshot;
+	  }
+	| { type: "reliable"; activeSessionId: string; frame: InteractiveSessionReliableFrame }
+	| { type: "view"; activeSessionId: string; frame: InteractiveSessionViewFrame }
+	| { type: "ui_owner"; activeSessionId: string; ownerEpoch: number }
 	| { type: "replay_complete"; activeSessionId: string; cursor?: OmpDaemonEventCursor; resyncRequired?: boolean }
 	| { type: "session_list"; sessions: readonly OmpSessionSummary[] }
 	| { type: "error"; message: string; id?: string };

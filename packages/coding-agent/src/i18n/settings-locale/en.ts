@@ -5598,4 +5598,11 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Rollback of refinement {resultId} scheduled for the next idle boundary.",
 	"Refinement scheduled. It will run at the next idle boundary.":
 		"Refinement scheduled. It will run at the next idle boundary.",
+	"Theme used for dark color schemes in OMP Web and the CLI/TUI":
+		"Theme used for dark color schemes in OMP Web and the CLI/TUI",
+	"Theme used for light color schemes in OMP Web and the CLI/TUI":
+		"Theme used for light color schemes in OMP Web and the CLI/TUI",
+	"Process Isolation": "Process Isolation",
+	"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering":
+		"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering",
 };

@@ -224,6 +224,7 @@ import type { Theme } from "./theme/theme";
 import {
 	getEditorTheme,
 	getMarkdownTheme,
+	getSymbolTheme,
 	onTerminalAppearanceChange,
 	onThemeChange,
 	setMarkdownHeadingStyle,
@@ -255,6 +256,7 @@ const RESUME_APPEARANCE_WAIT_MS = 200;
 // DECRQM uses the same multiplexer passthrough path. Bound the wait so a mux
 // that swallows mode reports cannot stall resumed sessions indefinitely.
 const RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS = 200;
+const WORKING_ACTIVITY_REFRESH_MS = 1_000;
 
 interface WorkingMessageAccent {
 	main: string;
@@ -652,6 +654,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
 	#pendingWorkingMessage: string | undefined;
+	#workingActivityRefreshTimer?: NodeJS.Timeout;
+	#workingActivity?: AgentActivityState;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
 	#workingMessageAccentCacheHasValue = false;
@@ -1035,7 +1039,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		return true;
 	}
 
-	#rebuildSessionCommands(): void {
+	#sessionRuntimeCommands(): SlashCommand[] {
+		const session = this.session as AgentSession & { getInteractiveSlashCommands?: () => SlashCommand[] };
+		if (session.getInteractiveSlashCommands) return session.getInteractiveSlashCommands();
 		const hookCommands = (
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
 		).map(cmd => ({
@@ -1047,10 +1053,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			name: loaded.command.name,
 			description: `${loaded.command.description} (${loaded.source})`,
 		}));
+		return [...hookCommands, ...customCommands];
+	}
+
+	#rebuildSessionCommands(): void {
+		const runtimeCommands = this.#sessionRuntimeCommands();
 		this.#pendingSlashCommands = [
 			...buildTuiBuiltinSlashCommands({ ctx: this }),
-			...hookCommands,
-			...customCommands,
+			...runtimeCommands,
 			...this.#rebuildSkillCommandsFromSession(),
 		];
 		void this.refreshSlashCommandState(this.sessionManager.getCwd());
@@ -1225,25 +1235,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hideThinkingBlock = thinkingDisplay === "hidden";
 		this.proseOnlyThinking = thinkingDisplay === "prose";
 
-		const hookCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
-		).map(cmd => ({
-			name: cmd.name,
-			description: cmd.description ?? tSettingsUi("(hook command)"),
-			getArgumentCompletions: cmd.getArgumentCompletions,
-		}));
-
-		// Convert custom commands (TypeScript) to SlashCommand format
-		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
-			name: loaded.command.name,
-			description: `${loaded.command.description} (${loaded.source})`,
-		}));
-
+		const runtimeCommands = this.#sessionRuntimeCommands();
 		const skillCommandList = this.#rebuildSkillCommandsFromSession();
-
 		const builtinCommands = buildTuiBuiltinSlashCommands({ ctx: this });
-		// Store pending commands for init() where file commands are loaded async
-		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
+		// Store pending commands for init() where file commands are loaded async.
+		this.#pendingSlashCommands = [...builtinCommands, ...runtimeCommands, ...skillCommandList];
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
@@ -5101,32 +5097,48 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Reconcile the bottom loader with the latest Main activity snapshot. */
 	refreshWorkingActivitySummary(activity?: AgentActivityState): void {
-		// Agent events can arrive at the model's token cadence. Never turn an
-		// elapsed-label update into a full compose when a direct rewrite is unsafe.
-		this.#refreshWorkingActivityMessage(activity, true);
+		this.#refreshWorkingActivityMessage(activity);
 	}
 
-	#refreshWorkingActivityMessage(activity: AgentActivityState = this.viewSession.activity, cosmetic = false): void {
+	#refreshWorkingActivityMessage(
+		activity: AgentActivityState = this.#workingActivity ?? this.viewSession.activity,
+	): void {
+		this.#workingActivity = activity;
 		const loader = this.loadingAnimation;
 		if (!loader) {
+			this.#stopWorkingActivityRefresh();
 			return;
 		}
 		const waitingMessage = this.#waitingActivityMessage(activity);
-		// The working row is status text, not progress animation. A stable frame
-		// cannot starve the editor or visibly stall behind concurrent tool output.
-		loader.setAnimationEnabled(false);
+		loader.setAnimationEnabled(waitingMessage === undefined);
+		if (waitingMessage) this.#stopWorkingActivityRefresh();
 		if (this.#pendingWorkingMessage !== undefined) return;
 		const hint = interruptHint();
 		if (waitingMessage) {
-			loader.setCosmeticMessage(`${waitingMessage}${hint}`);
+			loader.setMessage(`${waitingMessage}${hint}`);
 			return;
 		}
+		this.#startWorkingActivityRefresh();
 		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);
 		const summary = formatWorkingActivityMessage(activity, Math.max(1, maxWidth - visibleWidth(hint)));
 		const message = summary ? `${summary}${hint}` : this.#defaultWorkingMessage;
-		if (cosmetic) loader.setCosmeticMessage(message);
-		else loader.setMessage(message);
+		loader.setMessage(message);
+	}
+
+	#startWorkingActivityRefresh(): void {
+		if (this.#workingActivityRefreshTimer) return;
+		this.#workingActivityRefreshTimer = setInterval(
+			() => this.#refreshWorkingActivityMessage(),
+			WORKING_ACTIVITY_REFRESH_MS,
+		);
+		this.#workingActivityRefreshTimer.unref?.();
+	}
+
+	#stopWorkingActivityRefresh(): void {
+		if (!this.#workingActivityRefreshTimer) return;
+		clearInterval(this.#workingActivityRefreshTimer);
+		this.#workingActivityRefreshTimer = undefined;
 	}
 
 	ensureLoadingAnimation(): void {
@@ -5139,9 +5151,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				},
 				message => renderWorkingMessage(message, this.#getWorkingMessageAccent()),
 				this.#defaultWorkingMessage,
-				["·"],
+				getSymbolTheme().spinnerFrames,
 			);
-			this.loadingAnimation.setAnimationEnabled(false);
 			this.statusContainer.addChild(this.loadingAnimation);
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.disposeChildren();
@@ -5153,6 +5164,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#stopLoadingAnimation(clearStatusContainer: boolean): void {
+		this.#stopWorkingActivityRefresh();
+		this.#workingActivity = undefined;
 		if (!this.loadingAnimation) return;
 		this.loadingAnimation.stop();
 		this.loadingAnimation = undefined;
@@ -5166,13 +5179,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (message === undefined) {
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
-				this.loadingAnimation.setCosmeticMessage(this.#defaultWorkingMessage);
+				this.loadingAnimation.setMessage(this.#defaultWorkingMessage);
 			}
 			return;
 		}
 
 		if (this.loadingAnimation) {
-			this.loadingAnimation.setCosmeticMessage(message);
+			this.loadingAnimation.setMessage(message);
 			return;
 		}
 

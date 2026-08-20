@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import Daemon from "../../src/commands/daemon";
+import { ensureDaemonSupervisor } from "../../src/daemon/ensure";
 import {
 	OMP_DAEMON_PROTOCOL_NAME,
 	OMP_DAEMON_PROTOCOL_VERSION,
@@ -320,6 +321,23 @@ describe("daemon command lifecycle", () => {
 
 		const secondStatusAfterFirstStops = await runDaemon(["status", "--agent-dir", second.agentDir]);
 		expect(secondStatusAfterFirstStops).toEqual({ stdout: "daemon: running\n", stderr: "", exitCode: undefined });
+	});
+
+	it("hands the startup socket lease to the spawned supervisor before waiting for it", async () => {
+		const { agentDir, socketPath } = await makeRoot("omp-daemon-supervisor-handoff-");
+		let started = false;
+		try {
+			const result = await ensureDaemonSupervisor({ agentDir, socketPath });
+			started = result.started;
+			expect(result).toEqual({ agentDir, socketPath, started: true });
+			expect(await runDaemon(["status", "--agent-dir", agentDir])).toEqual({
+				stdout: "daemon: running\n",
+				stderr: "",
+				exitCode: undefined,
+			});
+		} finally {
+			if (started) await runDaemon(["stop", "--agent-dir", agentDir]);
+		}
 	});
 
 	it("cleans a dead daemon socket before reporting status", async () => {

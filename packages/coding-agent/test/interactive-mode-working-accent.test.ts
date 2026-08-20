@@ -201,8 +201,8 @@ describe("InteractiveMode working-message session accent cache", () => {
 		expect(getHex).toHaveBeenCalledTimes(2);
 	});
 
-	it("keeps active working-status ANSI bytes stable across external renders", async () => {
-		const { mode } = await createHarness("Stable active working status");
+	it("advances the visible active working spinner after 80ms without changing its semantic status", async () => {
+		const { mode } = await createHarness("Active working spinner");
 		const activityAtMs = 1_700_000_000_000;
 		const activeActivity = {
 			phase: "thinking" as const,
@@ -220,17 +220,14 @@ describe("InteractiveMode working-message session accent cache", () => {
 			settings.set("statusLine.sessionAccent", false);
 			mode.ensureLoadingAnimation();
 			mode.refreshWorkingActivitySummary(activeActivity);
-
-			const baseline = renderLoader(mode);
-			expect(Bun.stripANSI(baseline)).toContain("Thinking · Active");
+			const before = renderLoader(mode);
+			expect(Bun.stripANSI(before)).toContain("Thinking · Active");
 
 			perfNow += 80;
 			vi.advanceTimersByTime(80);
-			expect(renderLoader(mode)).toBe(baseline);
-
-			perfNow += 1_920;
-			vi.advanceTimersByTime(1_920);
-			expect(renderLoader(mode)).toBe(baseline);
+			const after = renderLoader(mode);
+			expect(Bun.stripANSI(after)).not.toBe(Bun.stripANSI(before));
+			expect(Bun.stripANSI(after)).toContain("Thinking · Active");
 		} finally {
 			mode.stop();
 			perfSpy.mockRestore();
@@ -241,8 +238,8 @@ describe("InteractiveMode working-message session accent cache", () => {
 });
 
 describe("InteractiveMode working activity refresh", () => {
-	it("keeps active loader paints quiet and defers unsafe elapsed updates to the next render", async () => {
-		const { mode } = await createHarness("Working loader stability");
+	it("drops unsafe 80ms active spinner frames instead of scheduling a fallback render", async () => {
+		const { mode } = await createHarness("Active spinner direct write");
 		const activityAtMs = 1_700_000_000_000;
 		const activeActivity = {
 			phase: "thinking" as const,
@@ -255,7 +252,7 @@ describe("InteractiveMode working activity refresh", () => {
 		setSystemTime(activityAtMs);
 		let perfNow = 1_000;
 		const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => perfNow);
-		const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(true);
+		const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(false);
 		const componentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
 
 		try {
@@ -265,22 +262,62 @@ describe("InteractiveMode working activity refresh", () => {
 			directWrite.mockClear();
 			componentRender.mockClear();
 
-			perfNow += 2_000;
-			vi.advanceTimersByTime(2_000);
+			perfNow += 79;
+			vi.advanceTimersByTime(79);
 			expect(directWrite).not.toHaveBeenCalled();
 			expect(componentRender).not.toHaveBeenCalled();
 
-			setSystemTime(activityAtMs + 3_000);
-			directWrite.mockReturnValue(false);
-			mode.refreshWorkingActivitySummary(activeActivity);
+			perfNow += 1;
+			vi.advanceTimersByTime(1);
 			expect(directWrite).toHaveBeenCalledTimes(1);
 			expect(componentRender).not.toHaveBeenCalled();
-			expect(Bun.stripANSI(renderLoader(mode))).toContain("Thinking · Active · phase 3.0s");
 		} finally {
 			mode.stop();
 			perfSpy.mockRestore();
 			vi.useRealTimers();
 			setSystemTime();
+		}
+	});
+
+	it("publishes elapsed active status every second through a component fallback when direct writes fail", async () => {
+		const { mode } = await createHarness("Elapsed status fallback");
+		const activityAtMs = 1_700_000_000_000;
+		const activeActivity = {
+			phase: "thinking" as const,
+			label: "Thinking",
+			phaseStartedAtMs: activityAtMs,
+			lastActivityAtMs: activityAtMs,
+		};
+
+		vi.useFakeTimers();
+		let now = activityAtMs;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const perfSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
+		const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(false);
+		const componentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+
+		try {
+			settings.set("display.shimmer", "classic");
+			mode.ensureLoadingAnimation();
+			mode.refreshWorkingActivitySummary(activeActivity);
+			directWrite.mockClear();
+			componentRender.mockClear();
+
+			vi.advanceTimersByTime(999);
+			expect(componentRender).not.toHaveBeenCalled();
+
+			now += 1_000;
+			directWrite.mockClear();
+			vi.advanceTimersByTime(1);
+			expect(directWrite).toHaveBeenCalledWith(defined(mode.loadingAnimation));
+			expect(componentRender).toHaveBeenCalledTimes(1);
+			expect(componentRender).toHaveBeenCalledWith(defined(mode.loadingAnimation));
+			expect(Bun.stripANSI(renderLoader(mode))).toContain("Thinking · Active · phase 1.0s");
+		} finally {
+			mode.stop();
+			perfSpy.mockRestore();
+			nowSpy.mockRestore();
+			vi.useRealTimers();
 		}
 	});
 });
@@ -308,50 +345,64 @@ describe("InteractiveMode loading activity summary", () => {
 		expect(alongsideCard).not.toContain("Working…");
 	});
 
-	it("renders waiting-peer as a localized static activity without periodic paints", async () => {
-		const { mode } = await createHarness("Waiting peer static activity");
-		const previousLocale = getSettingsUiLocale();
-		const phaseStartedAtMs = 1_700_000_000_000;
-		const detail = "UNIQUE_WAITING_PEER_DETAIL";
-		const waitingPeer = {
-			phase: "waiting-peer" as const,
-			label: "Waiting for peer",
-			detail,
-			phaseStartedAtMs,
-			lastActivityAtMs: phaseStartedAtMs,
-		};
+	for (const { phase, localizedLabel } of [
+		{ phase: "waiting-user" as const, localizedLabel: "等待用户" },
+		{ phase: "waiting-peer" as const, localizedLabel: "等待协作者" },
+	]) {
+		it(`renders ${phase} as a localized static activity without periodic paints`, async () => {
+			const { mode } = await createHarness(`${phase} static activity`);
+			const previousLocale = getSettingsUiLocale();
+			const phaseStartedAtMs = 1_700_000_000_000;
+			const detail = `UNIQUE_${phase.toUpperCase()}_DETAIL`;
+			const activeActivity = {
+				phase: "thinking" as const,
+				label: "Thinking",
+				phaseStartedAtMs,
+				lastActivityAtMs: phaseStartedAtMs,
+			};
+			const waitingActivity = {
+				phase,
+				label: phase === "waiting-user" ? "Waiting for user" : "Waiting for peer",
+				detail,
+				phaseStartedAtMs,
+				lastActivityAtMs: phaseStartedAtMs,
+			};
 
-		setSettingsUiLocale("zh-CN");
-		vi.useFakeTimers();
-		let perfNow = 1_000;
-		const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => perfNow);
-		try {
-			setSystemTime(phaseStartedAtMs + 125_000);
-			mode.ensureLoadingAnimation();
-			const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(false);
-			const componentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+			setSettingsUiLocale("zh-CN");
+			vi.useFakeTimers();
+			let perfNow = 1_000;
+			const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => perfNow);
+			try {
+				setSystemTime(phaseStartedAtMs);
+				mode.ensureLoadingAnimation();
+				mode.refreshWorkingActivitySummary(activeActivity);
+				perfNow += 80;
+				vi.advanceTimersByTime(80);
 
-			mode.refreshWorkingActivitySummary(waitingPeer);
-			const rendered = Bun.stripANSI(renderLoader(mode));
-			expect(rendered).toContain("等待协作者");
-			expect(rendered).toContain("esc");
-			expect(rendered).not.toContain(detail);
-			expect(rendered).not.toContain("阶段");
+				const directWrite = vi.spyOn(mode.ui, "tryDirectWrite").mockReturnValue(false);
+				const componentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+				mode.refreshWorkingActivitySummary(waitingActivity);
+				const rendered = Bun.stripANSI(renderLoader(mode));
+				expect(rendered).toContain(localizedLabel);
+				expect(rendered).toContain("esc");
+				expect(rendered).not.toContain(detail);
+				expect(rendered).not.toContain("阶段");
 
-			directWrite.mockClear();
-			componentRender.mockClear();
-			perfNow += 2_000;
-			vi.advanceTimersByTime(2_000);
-			expect(directWrite).toHaveBeenCalledTimes(0);
-			expect(componentRender).toHaveBeenCalledTimes(0);
-		} finally {
-			mode.stop();
-			perfSpy.mockRestore();
-			vi.useRealTimers();
-			setSystemTime();
-			setSettingsUiLocale(previousLocale);
-		}
-	});
+				directWrite.mockClear();
+				componentRender.mockClear();
+				perfNow += 2_000;
+				vi.advanceTimersByTime(2_000);
+				expect(directWrite).not.toHaveBeenCalled();
+				expect(componentRender).not.toHaveBeenCalled();
+			} finally {
+				mode.stop();
+				perfSpy.mockRestore();
+				vi.useRealTimers();
+				setSystemTime();
+				setSettingsUiLocale(previousLocale);
+			}
+		});
+	}
 
 	it("renders a real thinking snapshot as active, then quiet after 15 seconds without a new event", async () => {
 		const { mode } = await createHarness("Thinking activity summary");

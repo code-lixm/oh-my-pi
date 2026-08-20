@@ -8,8 +8,7 @@ import { isPromise } from "node:util/types";
 import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
-import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
-import type { FileSink } from "bun";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { AsyncJobSnapshot } from "../../session/agent-session-types";
@@ -22,6 +21,7 @@ import type {
 	WorkspaceRestoreResult,
 	WorkspaceRestoreScope,
 } from "../../workspace-checkpoints/types";
+import { ChildProcessRpcTransport } from "./child-process-rpc-transport";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
@@ -29,6 +29,7 @@ import {
 	type RpcMessagesPage,
 	type RpcMessagesPageOptions,
 } from "./rpc-messages";
+import type { RpcTransport } from "./rpc-transport";
 import type {
 	RpcAvailableCommandsUpdateFrame,
 	RpcAvailableSlashCommand,
@@ -45,6 +46,8 @@ import type {
 	RpcKeybindingsSnapshot,
 	RpcMcpServerConfigInput,
 	RpcMcpServerInfo,
+	RpcNavigateTreeOptions,
+	RpcNavigateTreeResult,
 	RpcPluginInfo,
 	RpcResponse,
 	RpcSessionState,
@@ -91,6 +94,8 @@ export interface RpcClientOptions {
 	args?: string[];
 	/** Custom tools owned by the embedding host and exposed over the RPC transport */
 	customTools?: RpcClientCustomTool[];
+	/** Physical transport override; defaults to a child coding-agent process. */
+	transport?: RpcTransport;
 }
 
 export type ModelInfo = Pick<Model, "provider" | "id" | "contextWindow" | "reasoning" | "thinking">;
@@ -274,8 +279,10 @@ function isPageFallbackError(error: unknown): boolean {
 // ============================================================================
 
 export class RpcClient {
-	#process: ptree.ChildProcess | null = null;
-	#reaping: Promise<void> | null = null;
+	#activeTransport: RpcTransport | null = null;
+	#stopping: Promise<void> | null = null;
+	#transport: RpcTransport;
+	#transportUnsubscribes: (() => void)[] = [];
 	#eventListeners: RpcEventListener[] = [];
 	#sessionEventListeners: RpcSessionEventListener[] = [];
 	#subagentLifecycleListeners = new Set<RpcSubagentLifecycleListener>();
@@ -289,9 +296,12 @@ export class RpcClient {
 	#requestId = 0;
 	#protocolVersion: RpcProtocolVersion = 1;
 	#extensionUiListeners: Set<(req: RpcExtensionUIRequest) => void> = new Set();
+	#pendingExtensionUiRequests: RpcExtensionUIRequest[] = [];
 	#abortController = new AbortController();
+	#startFailure: ((error: Error) => void) | null = null;
 
-	constructor(private options: RpcClientOptions = {}) {
+	constructor(options: RpcClientOptions = {}) {
+		this.#transport = options.transport ?? new ChildProcessRpcTransport(options);
 		this.#customTools = [...(options.customTools ?? [])];
 	}
 
@@ -304,140 +314,116 @@ export class RpcClient {
 	 * retry without leaking processes.
 	 */
 	async start(): Promise<void> {
-		await this.#reaping;
-		if (this.#process) {
+		await this.#stopping;
+		if (this.#activeTransport) {
 			throw new Error("Client already started");
 		}
 
 		// Mint a fresh controller so a previous stop()'s abort does not
-		// short-circuit the new stdout reader (issue #4079).
+		// short-circuit the new transport reader (issue #4079).
 		this.#abortController = new AbortController();
 		this.#protocolVersion = 1;
-
-		const cliPath = this.options.cliPath ?? "dist/cli.js";
-		const args = ["--mode", this.options.mode ?? "rpc"];
-
-		if (this.options.provider) {
-			args.push("--provider", this.options.provider);
-		}
-		if (this.options.model) {
-			args.push("--model", this.options.model);
-		}
-		if (this.options.sessionDir) {
-			args.push("--session-dir", this.options.sessionDir);
-		}
-		if (this.options.args) {
-			args.push(...this.options.args);
-		}
-
-		const command = this.options.command ?? ["bun", cliPath];
-		if (command.length === 0) throw new Error("RPC command must contain an executable");
-		const child = ptree.spawn([...command, ...args], {
-			cwd: this.options.cwd,
-			env: { ...Bun.env, ...this.options.env },
-			stdin: "pipe",
-		});
-		this.#process = child;
-
-		// Wait for the "ready" signal or process exit
+		const transport = this.#transport;
+		const abortController = this.#abortController;
+		const isCurrentTransport = (): boolean =>
+			this.#activeTransport === transport && this.#abortController === abortController;
 		const { promise: readyPromise, resolve: readyResolve, reject: readyReject } = Promise.withResolvers<void>();
 		let readySettled = false;
 		let protocolV2Supported = false;
 		let protocolV2Enabled = false;
 		const frameDecoder = new RpcFrameDecoder();
 
-		const reapAfterOutputFailure = async (error: Error) => {
-			if (this.#process !== child) return;
-
-			this.#process = null;
-			this.#abortController.abort(error);
-			const pendingRequests = Array.from(this.#pendingRequests.values());
-			this.#pendingRequests.clear();
-			for (const pendingCall of this.#pendingHostToolCalls.values()) pendingCall.controller.abort(error);
-			this.#pendingHostToolCalls.clear();
-
-			try {
-				child.kill();
-			} catch {
-				// The process may already have exited.
-			}
-			await this.#waitForExit(child);
-			for (const request of pendingRequests) request.reject(error);
-		};
-
-		// Process lines in background, intercepting the ready signal.
-		const lines = readJsonl(child.stdout, this.#abortController.signal);
-		void (async () => {
-			for await (const line of lines) {
-				if (!readySettled && isRecord(line) && line.type === "ready") {
-					protocolV2Supported = supportsRpcProtocolV2(line);
-					readySettled = true;
-					readyResolve();
-					continue;
-				}
-				if (isRecord(line) && line.type === "rpc_chunk" && !protocolV2Enabled)
-					throw new Error("RPC chunk received before protocol negotiation");
-				const decoded = frameDecoder.push(line);
-				if (decoded) this.#handleLine(decoded);
-			}
-			// A closed stdout is terminal even if the child remains alive. Startup
-			// failures are reaped by the readyPromise catch below; established
-			// workers are reaped here so pending requests cannot hang indefinitely.
-			if (!readySettled) {
-				readySettled = true;
-				readyReject(new Error(`Agent output stream ended before ready. Stderr: ${child.peekStderr()}`));
-				return;
-			}
-			const exitResult = await Promise.race([
-				child.exited.then(
-					exitCode => ({ exitCode }),
-					cause => ({ cause }),
-				),
-				Bun.sleep(100).then(() => null),
-			]);
-			const error =
-				exitResult === null
-					? new Error(`Agent output stream ended unexpectedly. Stderr: ${child.peekStderr()}`)
-					: "exitCode" in exitResult
-						? new Error(`Agent process exited with code ${exitResult.exitCode}. Stderr: ${child.peekStderr()}`)
-						: new Error(`Agent output stream ended. Stderr: ${child.peekStderr()}`, {
-								cause: exitResult.cause,
-							});
-			await reapAfterOutputFailure(error);
-		})().catch(async (cause: unknown) => {
-			const error = cause instanceof Error ? cause : new Error(String(cause));
-			if (!readySettled) {
-				readySettled = true;
-				readyReject(error);
-				return;
-			}
-			await reapAfterOutputFailure(new Error(`Agent output reader failed: ${error.message}`, { cause: error }));
-		});
-
-		// Also race against process exit (in case stdout closes before we read it)
-		void child.exited.then(
-			(exitCode: number) => {
-				if (readySettled) return;
-				readySettled = true;
-				readyReject(new Error(`Agent process exited with code ${exitCode}. Stderr: ${child.peekStderr()}`));
-			},
-			(err: Error) => {
-				// Killed or reaped without an exit code (e.g. stop() during
-				// startup); surface it instead of leaking an unhandled rejection.
-				if (readySettled) return;
-				readySettled = true;
-				readyReject(new Error(`Agent process exited before ready. Stderr: ${child.peekStderr()}`, { cause: err }));
-			},
-		);
-
-		// Timeout to prevent hanging forever
-		const readyTimeout = this.#startTimeout(30000, () => {
+		const rejectReady = (error: Error): void => {
 			if (readySettled) return;
 			readySettled = true;
-			readyReject(new Error(`Timeout waiting for agent to become ready. Stderr: ${child.peekStderr()}`));
+			readyReject(error);
+		};
+		const failTransport = async (error: Error): Promise<void> => {
+			if (!isCurrentTransport()) return;
+			rejectReady(error);
+			await this.#stopTransport(transport, error, { rejectPendingAfterStop: true });
+		};
+		const handleTransportFailure = (error: Error): void => {
+			if (!isCurrentTransport()) return;
+			rejectReady(error);
+			void failTransport(error);
+		};
+
+		this.#startFailure = rejectReady;
+		this.#activeTransport = transport;
+		const unsubscribeError = transport.onError(handleTransportFailure);
+		const unsubscribeClose = transport.onClose(() => {
+			handleTransportFailure(
+				new Error(
+					readySettled
+						? `Agent transport closed. Stderr: ${transport.getStderr()}`
+						: `Agent process exited before ready. Stderr: ${transport.getStderr()}`,
+				),
+			);
+		});
+		if (isCurrentTransport()) {
+			this.#transportUnsubscribes = [unsubscribeError, unsubscribeClose];
+		} else {
+			unsubscribeError();
+			unsubscribeClose();
+		}
+
+		const readyTimeout = this.#startTimeout(30000, () => {
+			handleTransportFailure(
+				new Error(`Timeout waiting for agent to become ready. Stderr: ${transport.getStderr()}`),
+			);
 		});
 
 		try {
+			await transport.start();
+			if (!isCurrentTransport()) {
+				await readyPromise;
+				return;
+			}
+
+			// Process parsed JSONL records in the background. Physical frame
+			// decoding remains here so every transport shares the same protocol.
+			void (async () => {
+				try {
+					for await (const line of transport.read(abortController.signal)) {
+						if (!isCurrentTransport()) return;
+						if (!readySettled && isRecord(line) && line.type === "ready") {
+							protocolV2Supported = supportsRpcProtocolV2(line);
+							readySettled = true;
+							readyResolve();
+							continue;
+						}
+						if (isRecord(line) && line.type === "rpc_chunk" && !protocolV2Enabled) {
+							throw new Error("RPC chunk received before protocol negotiation");
+						}
+						const decoded = frameDecoder.push(line);
+						if (decoded) this.#handleLine(decoded);
+					}
+
+					const closeError = await transport.waitForClose?.(1_000);
+					if (!isCurrentTransport()) return;
+					if (closeError) {
+						await failTransport(closeError);
+						return;
+					}
+					await failTransport(
+						new Error(
+							readySettled
+								? `Agent output stream ended unexpectedly. Stderr: ${transport.getStderr()}`
+								: `Agent output stream ended before ready. Stderr: ${transport.getStderr()}`,
+						),
+					);
+				} catch (cause) {
+					if (!isCurrentTransport()) return;
+					const error = cause instanceof Error ? cause : new Error(String(cause));
+					if (!readySettled) {
+						await failTransport(error);
+						return;
+					}
+					await failTransport(new Error(`Agent output reader failed: ${error.message}`, { cause: error }));
+				}
+			})();
+
 			await readyPromise;
 			if (protocolV2Supported) {
 				protocolV2Enabled = true;
@@ -455,13 +441,15 @@ export class RpcClient {
 				await this.setCustomTools(this.#customTools);
 			}
 		} catch (cause) {
-			// Startup failed after spawning the child. Reap it before returning
+			// Startup failed after opening the transport. Reap it before returning
 			// so a retry cannot inherit a live worker or its session lock.
 			const error = cause instanceof Error ? cause : new Error(String(cause));
-			await reapAfterOutputFailure(error);
+			await failTransport(error);
+			await this.#stopping;
 			throw cause;
 		} finally {
 			clearTimeout(readyTimeout);
+			if (this.#startFailure === rejectReady) this.#startFailure = null;
 		}
 	}
 
@@ -469,20 +457,9 @@ export class RpcClient {
 	 * Stop the RPC agent process.
 	 */
 	stop(): Promise<void> {
-		if (!this.#process) return this.#reaping ?? Promise.resolve();
-
-		const error = new Error("Client stopped");
-		const child = this.#process;
-		child.kill();
-		this.#abortController.abort(error);
-		this.#process = null;
-		for (const request of this.#pendingRequests.values()) request.reject(error);
-		this.#pendingRequests.clear();
-		for (const pendingCall of this.#pendingHostToolCalls.values()) {
-			pendingCall.controller.abort(error);
-		}
-		this.#pendingHostToolCalls.clear();
-		return this.#waitForExit(child);
+		const transport = this.#activeTransport;
+		if (!transport) return this.#stopping ?? Promise.resolve();
+		return this.#stopTransport(transport, new Error("Client stopped"));
 	}
 
 	/**
@@ -490,18 +467,6 @@ export class RpcClient {
 	 */
 	[Symbol.dispose](): void {
 		void this.stop();
-	}
-
-	#waitForExit(child: ptree.ChildProcess): Promise<void> {
-		const reaping = child.exited.then(
-			() => {},
-			() => {},
-		);
-		this.#reaping = reaping;
-		void reaping.then(() => {
-			if (this.#reaping === reaping) this.#reaping = null;
-		});
-		return reaping;
 	}
 
 	/**
@@ -565,6 +530,7 @@ export class RpcClient {
 	/** Subscribe to extension UI requests emitted by rpc-ui sessions. */
 	onExtensionUiRequest(listener: RpcExtensionUIListener): () => void {
 		this.#extensionUiListeners.add(listener);
+		for (const request of this.#pendingExtensionUiRequests.splice(0)) listener(request);
 		return () => this.#extensionUiListeners.delete(listener);
 	}
 
@@ -577,7 +543,7 @@ export class RpcClient {
 	 * Get collected stderr output (useful for debugging).
 	 */
 	getStderr(): string {
-		return this.#process?.peekStderr() ?? "";
+		return this.#transport.getStderr();
 	}
 
 	#startTimeout(timeoutMs: number, onTimeout: () => void): NodeJS.Timeout {
@@ -586,9 +552,59 @@ export class RpcClient {
 		return timer;
 	}
 
+	#stopTransport(
+		transport: RpcTransport,
+		error: Error,
+		options: { rejectPendingAfterStop?: boolean } = {},
+	): Promise<void> {
+		if (this.#activeTransport !== transport) return this.#stopping ?? Promise.resolve();
+
+		this.#activeTransport = null;
+		this.#startFailure?.(error);
+		this.#abortController.abort(error);
+		this.#clearTransportSubscriptions();
+		const pendingRequests = Array.from(this.#pendingRequests.values());
+		this.#pendingRequests.clear();
+		for (const pendingCall of this.#pendingHostToolCalls.values()) {
+			pendingCall.controller.abort(error);
+		}
+		this.#pendingHostToolCalls.clear();
+		this.#pendingExtensionUiRequests = [];
+
+		let stopPromise: Promise<void>;
+		try {
+			stopPromise = transport.stop();
+		} catch {
+			stopPromise = Promise.resolve();
+		}
+		const stopping = stopPromise.catch(() => undefined);
+		this.#stopping = stopping;
+		if (options.rejectPendingAfterStop) {
+			void stopping.then(() => {
+				for (const request of pendingRequests) request.reject(error);
+			});
+		} else {
+			for (const request of pendingRequests) request.reject(error);
+		}
+		void stopping.then(() => {
+			if (this.#stopping === stopping) this.#stopping = null;
+		});
+		return stopping;
+	}
+
+	#clearTransportSubscriptions(): void {
+		for (const unsubscribe of this.#transportUnsubscribes.splice(0)) unsubscribe();
+	}
+
 	// =========================================================================
 	// Command Methods
 	// =========================================================================
+
+	/** Send one typed RPC command through the active transport. */
+	dispatch(command: RpcCommand): Promise<RpcResponse> {
+		const { id: _id, ...body } = command;
+		return this.#send(body as RpcCommandBody);
+	}
 
 	/**
 	 * Send a prompt to the agent.
@@ -635,6 +651,11 @@ export class RpcClient {
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
 		const response = await this.#send({ type: "new_session", parentSession });
 		return this.#getData(response);
+	}
+
+	/** Initialize extensions after the foreground RPC UI can receive their requests. */
+	async initializeExtensions(): Promise<void> {
+		await this.#send({ type: "initialize_extensions" });
 	}
 
 	/**
@@ -842,6 +863,19 @@ export class RpcClient {
 		return this.#getData<{ todoPhases: TodoPhase[] }>(response).todoPhases;
 	}
 
+	async setActiveTools(toolNames: string[]): Promise<{ activeToolNames: string[]; mountedToolNames: string[] }> {
+		const response = await this.#send({ type: "set_active_tools", toolNames });
+		return this.#getData(response);
+	}
+
+	async setActiveToolPresentation(
+		toolNames: string[],
+		mountedToolNames: string[],
+	): Promise<{ activeToolNames: string[]; mountedToolNames: string[] }> {
+		const response = await this.#send({ type: "set_active_tool_presentation", toolNames, mountedToolNames });
+		return this.#getData(response);
+	}
+
 	/**
 	 * Set thinking level.
 	 */
@@ -979,6 +1013,11 @@ export class RpcClient {
 		await this.#send({ type: "set_session_name", name });
 	}
 
+	/** Ask the agent process to generate a title when this is the first eligible user message. */
+	async maybeStartTitleGeneration(firstMessage: string): Promise<void> {
+		await this.#send({ type: "maybe_start_title_generation", firstMessage });
+	}
+
 	/**
 	 * Hand off session context to a new session.
 	 */
@@ -1006,11 +1045,27 @@ export class RpcClient {
 
 	/**
 	 * Branch from a specific message.
-	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
+	 * @returns Selected user text and image attachments, plus cancellation status.
 	 */
-	async branch(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+	async branch(entryId: string): Promise<{ text: string; images: ImageContent[]; cancelled: boolean }> {
 		const response = await this.#send({ type: "branch", entryId });
 		return this.#getData(response);
+	}
+
+	/** Navigate the active session tree and return the foreground editor state. */
+	async navigateTree(entryId: string, options?: RpcNavigateTreeOptions): Promise<RpcNavigateTreeResult> {
+		const response = await this.#send({ type: "navigate_tree", entryId, ...(options ? { options } : {}) });
+		return this.#getData(response);
+	}
+
+	/** Cancel in-progress tree branch summarization. */
+	async abortBranchSummary(): Promise<void> {
+		await this.#send({ type: "abort_branch_summary" });
+	}
+
+	/** Resume the child agent after a committed tree ask re-answer. */
+	async resumeAfterAskReanswer(): Promise<void> {
+		await this.#send({ type: "resume_after_ask_reanswer" });
 	}
 
 	/**
@@ -1142,7 +1197,7 @@ export class RpcClient {
 	 */
 	async setCustomTools(tools: RpcClientCustomTool[]): Promise<string[]> {
 		this.#customTools = [...tools];
-		if (!this.#process) {
+		if (!this.#activeTransport) {
 			return this.#customTools.map(tool => tool.name);
 		}
 		const definitions: RpcHostToolDefinition[] = this.#customTools.map(tool => ({
@@ -1181,7 +1236,7 @@ export class RpcClient {
 			if (settled) return;
 			settled = true;
 			unsubscribe();
-			reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.#process?.peekStderr() ?? ""}`));
+			reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.#transport.getStderr()}`));
 		});
 		return promise;
 	}
@@ -1207,7 +1262,7 @@ export class RpcClient {
 			if (settled) return;
 			settled = true;
 			unsubscribe();
-			reject(new Error(`Timeout collecting events. Stderr: ${this.#process?.peekStderr() ?? ""}`));
+			reject(new Error(`Timeout collecting events. Stderr: ${this.#transport.getStderr()}`));
 		});
 		return promise;
 	}
@@ -1243,6 +1298,10 @@ export class RpcClient {
 		}
 
 		if (isRpcExtensionUiRequest(data)) {
+			if (this.#extensionUiListeners.size === 0) {
+				this.#pendingExtensionUiRequests.push(data);
+				return;
+			}
 			for (const listener of this.#extensionUiListeners) {
 				listener(data);
 			}
@@ -1296,7 +1355,7 @@ export class RpcClient {
 	}
 
 	#send(command: RpcCommandBody, timeoutMs = 30_000): Promise<RpcResponse> {
-		if (!this.#process?.stdin) {
+		if (!this.#activeTransport) {
 			throw new Error("Client not started");
 		}
 
@@ -1308,9 +1367,7 @@ export class RpcClient {
 			if (settled) return;
 			this.#pendingRequests.delete(id);
 			settled = true;
-			reject(
-				new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.#process?.peekStderr() ?? ""}`),
-			);
+			reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.#transport.getStderr()}`));
 		});
 
 		this.#pendingRequests.set(id, {
@@ -1397,16 +1454,26 @@ export class RpcClient {
 		frame: RpcCommand | RpcExtensionUIResponse | RpcHostToolResult | RpcHostToolUpdate,
 		onError?: (error: Error) => void,
 	): void {
-		if (!this.#process?.stdin) {
+		const transport = this.#activeTransport;
+		if (!transport) {
 			throw new Error("Client not started");
 		}
-		const stdin = this.#process.stdin as FileSink;
-		stdin.write(`${JSON.stringify(frame)}\n`);
-		const flushResult = stdin.flush();
-		if (isPromise(flushResult)) {
-			flushResult.catch((err: Error) => {
-				onError?.(err);
-			});
+
+		try {
+			const writeResult = transport.write(frame);
+			if (isPromise(writeResult)) {
+				void writeResult.catch((cause: unknown) => {
+					const error = cause instanceof Error ? cause : new Error(String(cause));
+					onError?.(error);
+				});
+			}
+		} catch (cause) {
+			const error = cause instanceof Error ? cause : new Error(String(cause));
+			if (onError) {
+				onError(error);
+				return;
+			}
+			throw error;
 		}
 	}
 

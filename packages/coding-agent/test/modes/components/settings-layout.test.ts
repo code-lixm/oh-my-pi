@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	getEnumValues,
+	getSettingScope,
 	getUi,
 	SETTING_TABS,
 	SETTINGS_SCHEMA,
@@ -111,6 +112,10 @@ describe("settings layout", () => {
 			}
 		}
 		expect(violations).toEqual([]);
+	});
+
+	it("scopes process isolation to the CLI runtime", () => {
+		expect(getSettingScope("features.processIsolation")).toBe("cli");
 	});
 
 	it("getSettingsForTab returns contiguous groups in TAB_GROUPS order", () => {
@@ -329,8 +334,8 @@ describe("settings layout", () => {
 		);
 	});
 
-	it("defaults fresh profiles to low-latency streaming", () => {
-		expect(SETTINGS_SCHEMA["display.smoothStreaming"].default).toBe(false);
+	it("enables smooth streaming for fresh profiles", () => {
+		expect(Settings.instance.get("display.smoothStreaming")).toBe(true);
 	});
 
 	it("exposes fixed localized Ask timeout choices", () => {

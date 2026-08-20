@@ -5421,4 +5421,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Rollback of refinement {resultId} scheduled for the next idle boundary.":
 		"持续优化 {resultId} 的回滚已安排在下一个空闲边界执行。",
 	"Refinement scheduled. It will run at the next idle boundary.": "持续优化已安排，将在下一个空闲边界执行。",
+	"Process Isolation": "进程隔离",
+	"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering":
+		"将当前 Agent、模型提供商和工具运行在独立进程中，避免后端工作阻塞终端输入与渲染",
 };

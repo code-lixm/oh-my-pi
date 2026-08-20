@@ -1,5 +1,8 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
+import type { RpcCommand, RpcExtensionUIResponse } from "../modes/rpc/rpc-types";
+import { LocalInteractiveSessionPort } from "../modes/session-port/local-session-port";
+import type { InteractiveSessionPort } from "../modes/session-port/port";
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
@@ -46,6 +49,9 @@ export type OmpDaemonWorkerCommand =
 	| { id?: string; type: "worker_subscribe"; activeSessionId: string }
 	| { id?: string; type: "worker_unsubscribe"; activeSessionId: string }
 	| { id?: string; type: "worker_snapshot"; resumeCursor?: OmpDaemonEventCursor }
+	| { id?: string; type: "worker_projection_snapshot"; activeSessionId: string }
+	| { id?: string; type: "worker_ui_owner_acquire"; activeSessionId: string; ownerEpoch: number }
+	| { id?: string; type: "worker_ui_owner_release"; activeSessionId: string; ownerEpoch: number }
 	| { id?: string; type: "worker_deliver_message"; message: string; sender?: string }
 	| { id?: string; type: "worker_archive_and_shutdown" };
 
@@ -74,7 +80,9 @@ export type OmpDaemonWorkerWireMessage =
 interface WorkerRuntime {
 	session: AgentSession;
 	sessionManager: SessionManager;
+	port: InteractiveSessionPort;
 	unsubscribe: () => void;
+	unsubscribeProjection: () => void;
 }
 
 interface InFlightPrompt {
@@ -102,6 +110,20 @@ function hasString(value: Record<string, unknown>, key: string): boolean {
 
 function isCursor(value: unknown): value is OmpDaemonEventCursor {
 	return isRecord(value) && typeof value.generation === "string" && typeof value.sequence === "number";
+}
+
+function isOwnerEpoch(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isRpcCommandPayload(value: unknown): value is RpcCommand {
+	return isRecord(value) && hasString(value, "type") && hasOptionalId(value);
+}
+
+function isRpcExtensionUiResponse(value: unknown): value is RpcExtensionUIResponse {
+	if (!isRecord(value) || value.type !== "extension_ui_response" || typeof value.id !== "string") return false;
+	if (typeof value.value === "string" || typeof value.confirmed === "boolean") return true;
+	return value.cancelled === true && (value.timedOut === undefined || typeof value.timedOut === "boolean");
 }
 
 /** Validates public client commands before a supervisor or worker acts on them. */
@@ -142,6 +164,17 @@ export function isOmpDaemonCommand(value: unknown): value is OmpDaemonCommand {
 			return hasString(value, "target") && hasString(value, "message");
 		case "stop_session":
 			return hasString(value, "activeSessionId");
+		case "session_command":
+			return hasString(value, "activeSessionId") && isRpcCommandPayload(value.payload);
+		case "ui_owner_acquire":
+		case "ui_owner_release":
+			return hasString(value, "activeSessionId");
+		case "extension_ui_response":
+			return (
+				hasString(value, "activeSessionId") &&
+				isOwnerEpoch(value.ownerEpoch) &&
+				isRpcExtensionUiResponse(value.payload)
+			);
 		default:
 			return false;
 	}
@@ -184,6 +217,11 @@ export function isOmpDaemonWorkerCommand(value: unknown): value is OmpDaemonWork
 			return value.resumeCursor === undefined || isCursor(value.resumeCursor);
 		case "worker_deliver_message":
 			return hasString(value, "message") && (value.sender === undefined || typeof value.sender === "string");
+		case "worker_projection_snapshot":
+			return hasString(value, "activeSessionId");
+		case "worker_ui_owner_acquire":
+		case "worker_ui_owner_release":
+			return hasString(value, "activeSessionId") && isOwnerEpoch(value.ownerEpoch);
 		case "worker_archive_and_shutdown":
 			return true;
 		default:
@@ -224,6 +262,8 @@ export class OmpDaemonWorker {
 	#turnInFlight: InFlightPrompt | undefined;
 	/** Settle promises of background turns (prompt/steer/agent message) for archive draining. */
 	#backgroundTurns = new Set<Promise<void>>();
+	/** Last supervisor-issued UI owner epoch; stale extension responses must never cross this fence. */
+	#uiOwnerEpoch = 0;
 
 	constructor(options: OmpDaemonWorkerStartOptions) {
 		this.#options = options;
@@ -330,7 +370,23 @@ export class OmpDaemonWorker {
 			await this.#writeRecoveryEntry("create", sessionManager);
 		}
 		const unsubscribe = session.subscribe(event => this.#forwardSessionEvent(event));
-		this.#runtime = { session, sessionManager, unsubscribe };
+		const port = new LocalInteractiveSessionPort(session);
+		const unsubscribeReliable = port.onReliable(frame => {
+			this.#write({ type: "reliable", activeSessionId: this.#options.activeSessionId, frame });
+		});
+		const unsubscribeView = port.onView(frame => {
+			this.#write({ type: "view", activeSessionId: this.#options.activeSessionId, frame });
+		});
+		this.#runtime = {
+			session,
+			sessionManager,
+			port,
+			unsubscribe,
+			unsubscribeProjection: () => {
+				unsubscribeReliable();
+				unsubscribeView();
+			},
+		};
 		await this.#writeRecoveryEntry("ready", sessionManager);
 	}
 
@@ -389,6 +445,28 @@ export class OmpDaemonWorker {
 					return;
 				case "worker_snapshot":
 					this.#respond(command.id, true, this.#snapshot());
+					return;
+				case "worker_projection_snapshot": {
+					this.#assertActiveSession(command.activeSessionId);
+					const snapshot = await this.#runtimeOrThrow().port.requestSnapshot();
+					this.#respond(command.id, true, snapshot);
+					return;
+				}
+				case "worker_ui_owner_acquire":
+					this.#assertActiveSession(command.activeSessionId);
+					if (command.ownerEpoch <= this.#uiOwnerEpoch) {
+						throw new Error(`Stale UI owner epoch: ${command.ownerEpoch}`);
+					}
+					this.#uiOwnerEpoch = command.ownerEpoch;
+					this.#respond(command.id, true, { ownerEpoch: this.#uiOwnerEpoch });
+					return;
+				case "worker_ui_owner_release":
+					this.#assertActiveSession(command.activeSessionId);
+					if (command.ownerEpoch <= this.#uiOwnerEpoch) {
+						throw new Error(`Stale UI owner epoch: ${command.ownerEpoch}`);
+					}
+					this.#uiOwnerEpoch = command.ownerEpoch;
+					this.#respond(command.id, true, { ownerEpoch: this.#uiOwnerEpoch });
 					return;
 				case "worker_deliver_message": {
 					const runtime = this.#runtimeOrThrow();
@@ -470,6 +548,25 @@ export class OmpDaemonWorker {
 					this.#respond(command.id, true, { model: modelName(session) });
 					return;
 				}
+				case "session_command": {
+					this.#assertActiveSession(command.activeSessionId);
+					const response = await this.#runtimeOrThrow().port.dispatch(command.payload);
+					this.#respond(command.id, true, response);
+					return;
+				}
+				case "extension_ui_response":
+					this.#assertActiveSession(command.activeSessionId);
+					if (command.ownerEpoch !== this.#uiOwnerEpoch) {
+						this.#respond(command.id, false, undefined, "Stale UI owner epoch");
+						return;
+					}
+					this.#respond(command.id, false, undefined, "interactive session controller unavailable");
+					return;
+				case "ui_owner_acquire":
+				case "ui_owner_release":
+					this.#assertActiveSession(command.activeSessionId);
+					this.#respond(command.id, false, undefined, "UI owner changes must be routed by daemon supervisor");
+					return;
 				case "attach":
 					this.#respond(command.id, true, this.#snapshot());
 					return;
@@ -683,6 +780,8 @@ export class OmpDaemonWorker {
 		if (!runtime) return;
 		this.#runtime = undefined;
 		runtime.unsubscribe();
+		runtime.unsubscribeProjection();
+		await runtime.port.dispose();
 		try {
 			await runtime.session.dispose();
 		} finally {

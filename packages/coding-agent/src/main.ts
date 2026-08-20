@@ -62,6 +62,7 @@ import { tSettingsUi } from "./i18n/settings-locale";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
 import { InteractiveMode } from "./modes/interactive-mode";
+import { asInteractiveSession, createIsolatedInteractiveSession } from "./modes/isolated-interactive-session";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
@@ -109,6 +110,7 @@ type RunRpcMode = (
 	eventBus?: EventBus,
 	input?: ReadableStream<Uint8Array>,
 	mcpManager?: MCPManager,
+	deferExtensionInitialization?: boolean,
 ) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
@@ -1590,6 +1592,11 @@ export async function runRootCommand(
 		}
 	}
 
+	const processIsolationEnabled = isInteractive && settingsInstance.get("features.processIsolation");
+	if (processIsolationEnabled && !sessionManager) {
+		sessionManager = await SessionManager.open(SessionManager.createEmptySessionFile(cwd));
+	}
+
 	await pluginPreloadPromise;
 	if (deps === DEFAULT_RUN_ROOT_DEPENDENCIES) {
 		await logger.time("registerDaemonProjectPresence", registerDaemonProjectPresence, cwd);
@@ -1744,40 +1751,93 @@ export async function runRootCommand(
 				)
 			: undefined;
 
-		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
-			...sessionOptions,
-			eventBus,
-			preloadedExtensions: extensionsResult,
-		});
+		let session: AgentSession;
+		let setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+		let modelFallbackMessage: string | undefined;
+		let lspServers: LspStartupServerInfo[] | undefined;
+		let mcpManager: MCPManager | undefined;
+		if (processIsolationEnabled) {
+			const sessionPath = sessionManager?.getSessionFile();
+			if (!sessionPath) throw new Error("Process isolation requires a persisted session path");
+			const remoteSession = await createIsolatedInteractiveSession({
+				cwd,
+				settings: settingsInstance,
+				modelRegistry,
+				sessionPath,
+				eventBus,
+				cliArgs: rawArgs,
+				extensionFlags: initialArgs.unknownFlags,
+				...(sessionOptions.model
+					? { provider: sessionOptions.model.provider, model: sessionOptions.model.id }
+					: {}),
+				...(parsedArgs.apiKey ? { apiKey: parsedArgs.apiKey } : {}),
+			});
+			session = asInteractiveSession(remoteSession);
+			setToolUIContext = remoteSession.setToolUIContext.bind(remoteSession);
+		} else {
+			const createdSession = await createSession({
+				...sessionOptions,
+				eventBus,
+				preloadedExtensions: extensionsResult,
+			});
+			session = createdSession.session;
+			setToolUIContext = createdSession.setToolUIContext;
+			modelFallbackMessage = createdSession.modelFallbackMessage;
+			lspServers = createdSession.lspServers;
+			mcpManager = createdSession.mcpManager;
+		}
 
-		const interactiveRuntimeFactory: InteractiveRuntimeFactory | undefined = isInteractive
-			? async nextCwd => {
-					const nextSessionManager = SessionManager.create(nextCwd);
-					const nextEventBus = new EventBus();
-					const nextExtensions = await loadSessionExtensions(
-						sessionOptions,
-						nextCwd,
-						settingsInstance,
-						nextEventBus,
-					);
-					const next = await createSession({
-						...sessionOptions,
-						cwd: nextCwd,
-						sessionManager: nextSessionManager,
-						eventBus: nextEventBus,
-						preloadedExtensions: nextExtensions,
-						agentId: `top-level:${nextSessionManager.getSessionId()}`,
-						ownsAgentLifecycle: false,
-					});
-					return {
-						session: next.session,
-						setToolUIContext: next.setToolUIContext,
-						lspServers: next.lspServers,
-						mcpManager: next.mcpManager,
-						eventBus: nextEventBus,
+		const interactiveRuntimeFactory: InteractiveRuntimeFactory | undefined = !isInteractive
+			? undefined
+			: processIsolationEnabled
+				? async nextCwd => {
+						const nextEventBus = new EventBus();
+						const remoteSession = await createIsolatedInteractiveSession({
+							cwd: nextCwd,
+							settings: settingsInstance,
+							modelRegistry,
+							eventBus: nextEventBus,
+							cliArgs: rawArgs,
+							extensionFlags: initialArgs.unknownFlags,
+							...(sessionOptions.model
+								? { provider: sessionOptions.model.provider, model: sessionOptions.model.id }
+								: {}),
+							...(parsedArgs.apiKey ? { apiKey: parsedArgs.apiKey } : {}),
+						});
+						return {
+							session: asInteractiveSession(remoteSession),
+							setToolUIContext: remoteSession.setToolUIContext.bind(remoteSession),
+							lspServers: undefined,
+							mcpManager: undefined,
+							eventBus: nextEventBus,
+						};
+					}
+				: async nextCwd => {
+						const nextSessionManager = SessionManager.create(nextCwd);
+						const nextEventBus = new EventBus();
+						const nextExtensions = await loadSessionExtensions(
+							sessionOptions,
+							nextCwd,
+							settingsInstance,
+							nextEventBus,
+						);
+						const next = await createSession({
+							...sessionOptions,
+							cwd: nextCwd,
+							sessionManager: nextSessionManager,
+							eventBus: nextEventBus,
+							preloadedExtensions: nextExtensions,
+							agentId: `top-level:${nextSessionManager.getSessionId()}`,
+							ownsAgentLifecycle: false,
+						});
+						return {
+							session: next.session,
+							setToolUIContext: next.setToolUIContext,
+							lspServers: next.lspServers,
+							mcpManager: next.mcpManager,
+							eventBus: nextEventBus,
+						};
 					};
-				}
-			: undefined;
 
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
@@ -1786,18 +1846,20 @@ export async function runRootCommand(
 		// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
 		// bootstrap: ACP keeps several concurrent top-level sessions and a single
 		// process-global factory must not be clobbered by the most recent one.
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
-			createPersistedSubagentReviverFactory({
-				session,
-				authStorage,
-				modelRegistry,
-				settings: settingsInstance,
-				enableLsp: sessionOptions.enableLsp ?? true,
-				eventBus,
-			}),
-			Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
-			Math.max(0, Math.trunc(Number(settingsInstance.get("task.maxLiveIdleAgents") ?? 8) || 0)),
-		);
+		if (!processIsolationEnabled) {
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				createPersistedSubagentReviverFactory({
+					session,
+					authStorage,
+					modelRegistry,
+					settings: settingsInstance,
+					enableLsp: sessionOptions.enableLsp ?? true,
+					eventBus,
+				}),
+				Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+				Math.max(0, Math.trunc(Number(settingsInstance.get("task.maxLiveIdleAgents") ?? 8) || 0)),
+			);
+		}
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 		}
@@ -1832,7 +1894,14 @@ export async function runRootCommand(
 			// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 			const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 			stopStartupWatchdog();
-			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput, mcpManager);
+			await runRpcMode(
+				session,
+				mode === "rpc-ui" ? setToolUIContext : undefined,
+				eventBus,
+				rpcInput,
+				mcpManager,
+				mode === "rpc-ui",
+			);
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 			const startupChangelog = await startupChangelogPromise;

@@ -2,6 +2,11 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type {
+	InteractiveSessionReliableFrame,
+	InteractiveSessionSnapshot,
+	InteractiveSessionViewFrame,
+} from "../modes/session-port";
 import { resolveWorkerSpawnCmd, SMOKE_TEST_TIMEOUT_MS } from "../subprocess/worker-client";
 import { sendDaemonCommand } from "./client";
 import type {
@@ -66,6 +71,10 @@ const MAX_REPLAY_EVENTS = 1024;
 const SERVER_CAPABILITIES: readonly OmpDaemonServerCapability[] = [
 	"attach_snapshot",
 	"event_sequence",
+	"extension_ui",
+	"interactive_projection",
+	"latest_view_frames",
+	"ui_owner_epoch",
 	"agent_messaging",
 	"model_catalog",
 	"prompt_cancellation",
@@ -104,9 +113,9 @@ interface WorkerReadyGate {
 	reject: (error: Error) => void;
 }
 
-interface BufferedSessionEvent {
+interface BufferedReplayEvent {
 	cursor: OmpDaemonEventCursor;
-	event: Extract<OmpDaemonEvent, { type: "session_event" }>;
+	event: Extract<OmpDaemonEvent, { type: "session_event" | "reliable" }>;
 }
 
 interface WorkerRecord {
@@ -122,7 +131,9 @@ interface WorkerRecord {
 	ready: WorkerReadyGate;
 	generation: string;
 	sequence: number;
-	events: BufferedSessionEvent[];
+	uiOwnerConnectionId: string | undefined;
+	ownerEpoch: number;
+	events: BufferedReplayEvent[];
 	resident: boolean;
 	recoveryAttempts: number;
 	recoveryJournaled: boolean;
@@ -154,6 +165,74 @@ function isSessionEvent(value: unknown): value is Extract<OmpDaemonEvent, { type
 
 function isDaemonError(value: unknown): value is Extract<OmpDaemonEvent, { type: "error" }> {
 	return isRecord(value) && value.type === "error" && typeof value.message === "string";
+}
+
+function isEventCursor(value: unknown): value is OmpDaemonEventCursor {
+	return (
+		isRecord(value) &&
+		typeof value.generation === "string" &&
+		typeof value.sequence === "number" &&
+		Number.isSafeInteger(value.sequence) &&
+		value.sequence >= 0
+	);
+}
+
+function isInteractiveSessionSnapshot(value: unknown): value is InteractiveSessionSnapshot {
+	return isRecord(value) && isEventCursor(value.cursor) && isRecord(value.projection);
+}
+
+function isInteractiveReliableFrame(value: unknown): value is InteractiveSessionReliableFrame {
+	return (
+		isRecord(value) &&
+		typeof value.generation === "string" &&
+		typeof value.sequence === "number" &&
+		Number.isSafeInteger(value.sequence) &&
+		value.sequence >= 0 &&
+		isRecord(value.patch) &&
+		(value.finalViewKey === undefined || typeof value.finalViewKey === "string")
+	);
+}
+
+function isInteractiveViewFrame(value: unknown): value is InteractiveSessionViewFrame {
+	return (
+		isRecord(value) &&
+		typeof value.generation === "string" &&
+		typeof value.key === "string" &&
+		typeof value.revision === "number" &&
+		Number.isSafeInteger(value.revision) &&
+		value.revision >= 0 &&
+		typeof value.baseReliableSequence === "number" &&
+		Number.isSafeInteger(value.baseReliableSequence) &&
+		value.baseReliableSequence >= 0 &&
+		isRecord(value.patch)
+	);
+}
+
+function isProjectionSnapshot(value: unknown): value is Extract<OmpDaemonEvent, { type: "projection_snapshot" }> {
+	return (
+		isRecord(value) &&
+		value.type === "projection_snapshot" &&
+		typeof value.activeSessionId === "string" &&
+		isInteractiveSessionSnapshot(value.snapshot)
+	);
+}
+
+function isReliableProjectionFrame(value: unknown): value is Extract<OmpDaemonEvent, { type: "reliable" }> {
+	return (
+		isRecord(value) &&
+		value.type === "reliable" &&
+		typeof value.activeSessionId === "string" &&
+		isInteractiveReliableFrame(value.frame)
+	);
+}
+
+function isViewProjectionFrame(value: unknown): value is Extract<OmpDaemonEvent, { type: "view" }> {
+	return (
+		isRecord(value) &&
+		value.type === "view" &&
+		typeof value.activeSessionId === "string" &&
+		isInteractiveViewFrame(value.frame)
+	);
 }
 
 function isSnapshot(value: unknown): value is OmpSessionSnapshot {
@@ -373,6 +452,21 @@ export class OmpDaemonSupervisor {
 			this.#routeSessionEvent(worker, parsed);
 			return;
 		}
+		if (isProjectionSnapshot(parsed)) {
+			if (parsed.activeSessionId !== worker.activeSessionId) return;
+			this.#routeProjectionSnapshot(worker, parsed);
+			return;
+		}
+		if (isReliableProjectionFrame(parsed)) {
+			if (parsed.activeSessionId !== worker.activeSessionId) return;
+			this.#routeReliableProjectionFrame(worker, parsed);
+			return;
+		}
+		if (isViewProjectionFrame(parsed)) {
+			if (parsed.activeSessionId !== worker.activeSessionId) return;
+			this.#routeViewProjectionFrame(worker, parsed);
+			return;
+		}
 		if (isDaemonError(parsed)) {
 			this.#publishError(worker, parsed.message);
 			return;
@@ -445,6 +539,18 @@ export class OmpDaemonSupervisor {
 				case "set_model":
 					await this.#routeSessionCommand(connection, command);
 					return;
+				case "session_command":
+					await this.#routeInteractiveSessionCommand(connection, command);
+					return;
+				case "extension_ui_response":
+					await this.#routeExtensionUiResponse(connection, command);
+					return;
+				case "ui_owner_acquire":
+					await this.#acquireUiOwner(connection, command);
+					return;
+				case "ui_owner_release":
+					await this.#releaseUiOwnerForConnection(connection, command);
+					return;
 				case "heartbeat_set":
 				case "heartbeat_clear":
 				case "heartbeat_status":
@@ -474,6 +580,8 @@ export class OmpDaemonSupervisor {
 			ready: createReadyGate(),
 			generation: randomUUID(),
 			sequence: 0,
+			uiOwnerConnectionId: undefined,
+			ownerEpoch: 0,
 			events: [],
 			recoveryAttempts: 0,
 			recoveryJournaled: false,
@@ -545,6 +653,14 @@ export class OmpDaemonSupervisor {
 		);
 		try {
 			await this.#waitForWorkerReady(worker);
+			if (worker.uiOwnerConnectionId !== undefined) {
+				const response = await this.#requestWorker(worker, {
+					type: "worker_ui_owner_acquire",
+					activeSessionId: worker.activeSessionId,
+					ownerEpoch: worker.ownerEpoch,
+				});
+				if (!response.ok) throw new Error(response.error);
+			}
 		} catch (error) {
 			if (worker.process === processRef) {
 				worker.process = undefined;
@@ -662,6 +778,7 @@ export class OmpDaemonSupervisor {
 
 	async #stopWorker(worker: WorkerRecord): Promise<void> {
 		if (worker.stopRequested) return;
+		await this.#releaseUiOwner(worker);
 		worker.stopRequested = true;
 		this.#leaseOwners.delete(worker.activeSessionId);
 		const socket = worker.socket;
@@ -764,11 +881,14 @@ export class OmpDaemonSupervisor {
 	async #detachClient(connection: ConnectionState, activeSessionId: string | undefined): Promise<void> {
 		const targets = activeSessionId ? [activeSessionId] : [...connection.attachedSessionIds];
 		for (const sessionId of targets) {
+			const worker = this.#workers.get(sessionId);
+			if (worker?.uiOwnerConnectionId === connection.id) {
+				await this.#releaseUiOwner(worker, connection.id);
+			}
 			connection.attachedSessionIds.delete(sessionId);
 			connection.initializingSessionIds.delete(sessionId);
 			if (connection.activeSessionId === sessionId) connection.activeSessionId = undefined;
 			if (this.#leaseOwners.get(sessionId) === connection.id) this.#leaseOwners.delete(sessionId);
-			const worker = this.#workers.get(sessionId);
 			if (!worker) continue;
 			const hasAttachedClient = [...this.#connections.values()].some(
 				candidate => !candidate.worker && !candidate.closed && candidate.attachedSessionIds.has(sessionId),
@@ -783,6 +903,143 @@ export class OmpDaemonSupervisor {
 			} catch {
 				// A detached client must not retain a lease because its worker is unavailable.
 			}
+		}
+	}
+
+	async #acquireUiOwner(
+		connection: ConnectionState,
+		command: Extract<OmpDaemonCommand, { type: "ui_owner_acquire" }>,
+	): Promise<void> {
+		const worker = this.#attachedWorkerForClient(connection, command.activeSessionId);
+		if (worker.uiOwnerConnectionId === connection.id) {
+			await this.#sendProjectionSnapshot(worker, connection);
+			this.#writeResponse(connection, command.id, true, { ownerEpoch: worker.ownerEpoch });
+			return;
+		}
+		if (worker.uiOwnerConnectionId !== undefined) {
+			throw new Error(`Session ${worker.activeSessionId} already has a UI owner`);
+		}
+
+		worker.ownerEpoch++;
+		worker.uiOwnerConnectionId = connection.id;
+		try {
+			const response = await this.#requestWorker(worker, {
+				type: "worker_ui_owner_acquire",
+				activeSessionId: worker.activeSessionId,
+				ownerEpoch: worker.ownerEpoch,
+			});
+			if (!response.ok) throw new Error(response.error);
+		} catch (error) {
+			await this.#releaseUiOwner(worker, connection.id);
+			throw error;
+		}
+
+		this.#publishUiOwner(worker);
+		await this.#sendProjectionSnapshot(worker, connection);
+		this.#writeResponse(connection, command.id, true, { ownerEpoch: worker.ownerEpoch });
+	}
+
+	async #releaseUiOwnerForConnection(
+		connection: ConnectionState,
+		command: Extract<OmpDaemonCommand, { type: "ui_owner_release" }>,
+	): Promise<void> {
+		const worker = this.#attachedWorkerForClient(connection, command.activeSessionId);
+		this.#assertUiOwner(worker, connection.id);
+		await this.#releaseUiOwner(worker, connection.id);
+		this.#writeResponse(connection, command.id, true, { ownerEpoch: worker.ownerEpoch });
+	}
+
+	async #releaseUiOwner(worker: WorkerRecord, connectionId?: string): Promise<boolean> {
+		if (
+			worker.uiOwnerConnectionId === undefined ||
+			(connectionId !== undefined && worker.uiOwnerConnectionId !== connectionId)
+		) {
+			return false;
+		}
+
+		worker.uiOwnerConnectionId = undefined;
+		worker.ownerEpoch++;
+		this.#publishUiOwner(worker);
+		if (!worker.socket) return true;
+		try {
+			const response = await this.#requestWorker(worker, {
+				type: "worker_ui_owner_release",
+				activeSessionId: worker.activeSessionId,
+				ownerEpoch: worker.ownerEpoch,
+			});
+			if (!response.ok) this.#publishError(worker, response.error);
+		} catch {
+			// The ownership fence remains closed even if the worker has already disappeared.
+		}
+		return true;
+	}
+
+	async #routeInteractiveSessionCommand(
+		connection: ConnectionState,
+		command: Extract<OmpDaemonCommand, { type: "session_command" }>,
+	): Promise<void> {
+		const worker = this.#attachedWorkerForClient(connection, command.activeSessionId);
+		this.#assertUiOwner(worker, connection.id);
+		const response = await this.#requestWorker(worker, command);
+		if (connection.closed) return;
+		this.#writeResponse(
+			connection,
+			command.id,
+			response.ok,
+			response.ok ? response.data : undefined,
+			responseError(response),
+		);
+	}
+
+	async #routeExtensionUiResponse(
+		connection: ConnectionState,
+		command: Extract<OmpDaemonCommand, { type: "extension_ui_response" }>,
+	): Promise<void> {
+		const worker = this.#attachedWorkerForClient(connection, command.activeSessionId);
+		this.#assertUiOwner(worker, connection.id);
+		if (command.ownerEpoch !== worker.ownerEpoch) {
+			throw new Error(`Stale UI owner epoch for session ${worker.activeSessionId}`);
+		}
+		const response = await this.#requestWorker(worker, command);
+		if (connection.closed) return;
+		this.#writeResponse(
+			connection,
+			command.id,
+			response.ok,
+			response.ok ? response.data : undefined,
+			responseError(response),
+		);
+	}
+
+	#attachedWorkerForClient(connection: ConnectionState, activeSessionId: string): WorkerRecord {
+		if (!connection.attachedSessionIds.has(activeSessionId)) {
+			throw new Error(`Client is not attached to daemon session: ${activeSessionId}`);
+		}
+		const worker = this.#workers.get(activeSessionId);
+		if (!worker || worker.status === "stopped") throw new Error(`Unknown active session: ${activeSessionId}`);
+		return worker;
+	}
+
+	#assertUiOwner(worker: WorkerRecord, connectionId: string): void {
+		if (worker.uiOwnerConnectionId !== connectionId) {
+			throw new Error(`Client is not the UI owner for session ${worker.activeSessionId}`);
+		}
+	}
+
+	async #sendProjectionSnapshot(worker: WorkerRecord, connection: ConnectionState): Promise<void> {
+		try {
+			const response = await this.#requestWorker(worker, {
+				type: "worker_projection_snapshot",
+				activeSessionId: worker.activeSessionId,
+			});
+			if (!response.ok || !isInteractiveSessionSnapshot(response.data) || connection.closed) return;
+			this.#write(connection, {
+				type: "projection_snapshot",
+				activeSessionId: worker.activeSessionId,
+				snapshot: this.#normalizeProjectionSnapshot(worker, response.data),
+			});
+		} catch {
+			// Projection support is optional while an older worker is being recovered.
 		}
 	}
 
@@ -965,6 +1222,104 @@ export class OmpDaemonSupervisor {
 				!connection.initializingSessionIds.has(worker.activeSessionId)
 			) {
 				this.#write(connection, withCursor);
+			}
+		}
+	}
+
+	#routeProjectionSnapshot(
+		worker: WorkerRecord,
+		event: Extract<OmpDaemonEvent, { type: "projection_snapshot" }>,
+	): void {
+		const owner = this.#uiOwnerConnection(worker);
+		if (!owner) return;
+		this.#write(owner, {
+			...event,
+			snapshot: this.#normalizeProjectionSnapshot(worker, event.snapshot),
+		});
+	}
+
+	#routeReliableProjectionFrame(worker: WorkerRecord, event: Extract<OmpDaemonEvent, { type: "reliable" }>): void {
+		const cursor: OmpDaemonEventCursor = {
+			generation: worker.generation,
+			sequence: worker.sequence + 1,
+		};
+		const frame: InteractiveSessionReliableFrame = {
+			...event.frame,
+			generation: cursor.generation,
+			sequence: cursor.sequence,
+		};
+		const normalized: Extract<OmpDaemonEvent, { type: "reliable" }> = {
+			type: "reliable",
+			activeSessionId: worker.activeSessionId,
+			frame,
+		};
+		if (!encodeOmpDaemonRecord(normalized)) {
+			this.#publishError(worker, "Daemon reliable projection frame exceeds the JSONL size limit");
+			return;
+		}
+		worker.sequence = cursor.sequence;
+		worker.events.push({ cursor, event: normalized });
+		if (worker.events.length > MAX_REPLAY_EVENTS) worker.events.shift();
+		for (const connection of this.#connections.values()) {
+			if (
+				!connection.worker &&
+				connection.attachedSessionIds.has(worker.activeSessionId) &&
+				!connection.initializingSessionIds.has(worker.activeSessionId)
+			) {
+				this.#write(connection, normalized);
+			}
+		}
+	}
+
+	#routeViewProjectionFrame(worker: WorkerRecord, event: Extract<OmpDaemonEvent, { type: "view" }>): void {
+		if (event.frame.baseReliableSequence > worker.sequence) return;
+		const normalized: Extract<OmpDaemonEvent, { type: "view" }> = {
+			type: "view",
+			activeSessionId: worker.activeSessionId,
+			frame: { ...event.frame, generation: worker.generation },
+		};
+		for (const connection of this.#connections.values()) {
+			if (
+				!connection.worker &&
+				connection.attachedSessionIds.has(worker.activeSessionId) &&
+				!connection.initializingSessionIds.has(worker.activeSessionId)
+			) {
+				this.#write(connection, normalized);
+			}
+		}
+	}
+
+	#normalizeProjectionSnapshot(
+		worker: WorkerRecord,
+		snapshot: InteractiveSessionSnapshot,
+	): InteractiveSessionSnapshot {
+		return { ...snapshot, cursor: this.#cursor(worker) };
+	}
+
+	#uiOwnerConnection(worker: WorkerRecord): ConnectionState | undefined {
+		const ownerId = worker.uiOwnerConnectionId;
+		if (!ownerId) return undefined;
+		for (const connection of this.#connections.values()) {
+			if (
+				!connection.closed &&
+				!connection.worker &&
+				connection.id === ownerId &&
+				connection.attachedSessionIds.has(worker.activeSessionId)
+			) {
+				return connection;
+			}
+		}
+		return undefined;
+	}
+
+	#publishUiOwner(worker: WorkerRecord): void {
+		for (const connection of this.#connections.values()) {
+			if (!connection.worker && connection.attachedSessionIds.has(worker.activeSessionId)) {
+				this.#write(connection, {
+					type: "ui_owner",
+					activeSessionId: worker.activeSessionId,
+					ownerEpoch: worker.ownerEpoch,
+				});
 			}
 		}
 	}

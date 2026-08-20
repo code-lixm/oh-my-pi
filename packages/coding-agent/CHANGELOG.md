@@ -12,6 +12,7 @@
 - Added opt-in Python-backed skills with validated package discovery, a dedicated `~/.omp/python-skill-venv`, trust-gated editable installation, PEP 621 dependency handling, kernel preload wrappers, and Python import metadata in the prompt.
 - Added opt-in autonomous continuation with persisted session state, bounded quality gates, worktree-aware retry, process cleanup, resume-safe accounting, and the existing protected session-stop continuation path.
 - Added a partial daemon control plane: private Unix socket lease/cleanup, JSONL protocol, supervisor/worker startup and timeouts, session leases, create/list/attach/prompt routing, snapshot/replay, and worker lifecycle handling. It does not yet provide TUI `DaemonAgentConnection`, a `daemon.enabled` mode switch, daemon-backed heartbeat/cron, or daemon-backed agent routing.
+- Added opt-in `features.processIsolation`: interactive agent execution now runs in an `rpc-ui` child process while the foreground TUI retains terminal I/O, and bridges session projections, extension UI requests, and subagent lifecycle activity back to the UI.
 - Added active-turn prompt cancellation to the daemon control plane: `cancel` accepts an optional `activeSessionId` for targeted cancellation that bypasses the session lease (a second client can interrupt a turn started by another client); the `prompt_cancellation` capability advertises `cancel` -> `session.abort()` semantics (active-turn abort, not Prime's pre-ownership `prompt_admission_cancellation` admission withdrawal); `daemon prompt` streams session-event progress and interrupts the in-flight turn on SIGINT; a new `daemon cancel` subcommand sends a targeted cancel. Worker turns run off the command queue so a cancel is never queued behind an open-ended prompt, and archive/shutdown drain in-flight turns (abort + await) before disposing the runtime. The `hello` handshake now uses protocol constants and the schema revision is 2.
 - Added encrypted cross-device configuration synchronization through Bun S3, with portable PBKDF2/AES-GCM bundles, immutable publication DAGs, three-way conflict resolution, auth migration through `AuthStorage`, automatic push after settings persistence, and explicit garbage collection.
 - Added a dedicated localized `/settings → Sync` module for S3-compatible configuration sync, with a masked device-local encryption key that never enters `config.yml` or S3, environment-variable credential fallbacks, atomic profile persistence, explicit enable/auto-push controls, and read-only `sync.yml` compatibility that no longer republishes the legacy file.
@@ -102,9 +103,10 @@
 - Changed `retry.maxRetries` in `/settings` from fixed presets to a validated numeric input, allowing any non-negative integer API-error retry limit.
 
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
-- Changed `display.smoothStreaming` to opt in. Fresh profiles now render the latest coalesced assistant and tool-input chunks immediately instead of maintaining a separate 30fps reveal queue; existing explicit settings are preserved.
 
 ### Fixed
+- Fixed `omp daemon start` blocking a first supervisor from binding its socket by releasing the bootstrap lease before spawning it.
+- Fixed `features.processIsolation` losing startup extension UI requests, deadlocking extension initialization, and exposing an incomplete foreground session facade for `/tools`, `/new`, `/resume`, branch, and tree navigation; the setting is now CLI-only.
 - Fixed `omp config export` and `omp config import` to use the local Sync encryption key first, then the configured `sync.passphraseEnv` fallback; an explicit `--passphrase-env` still selects that environment variable.
 
 - Fixed task subagents entering a direct `hub wait` for their parent while the parent awaited the task; such waits now fail immediately with actionable `hub send`/terminal-`yield` guidance, preventing a parent-child deadlock.
@@ -112,7 +114,7 @@
 - Fixed streaming follow-up queue submission escalating the pending-message repaint into a full terminal compose; the editor and queued-message bar now retain scoped rendering without walking the active transcript.
 - Fixed consumed queued follow-up messages restoring their user bubbles with a full TUI compose; the transcript and pending-message roots now repaint together through scoped rendering while preserving synchronous message order.
 - Fixed `/stats` repeatedly scanning and parsing every session on each invocation: local session appends now mark scoped dirty files, clean dashboard launches reuse fresh aggregates, and cold global reconciliation runs in an isolated subprocess so it does not monopolize the TUI isolate.
-- Fixed the bottom working indicator animating while Main waited or generated a response. It now uses a stable activity marker and updates only when activity meaningfully changes; unsafe updates defer to the next valid paint instead of competing with the input compositor.
+- Fixed the bottom working indicator appearing frozen during concurrent tool output: active work now keeps a low-cost spinner whose unsafe animation frames are dropped, semantic activity and elapsed-time updates fall back to status-scoped paints, and intentional user/peer waits remain static.
 
 - Fixed global canonical session discovery being limited to the default agent directory by allowing managed consumers to scan an explicit sessions root.
 - Fixed RPC and Web history reads returning the compacted provider context instead of the display transcript, which could omit every user turn and leave resumed sessions visually empty.
