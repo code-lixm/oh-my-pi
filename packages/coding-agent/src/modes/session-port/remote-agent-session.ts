@@ -13,6 +13,7 @@ import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSession } from "../../session/agent-session";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
 import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AdvisorStats } from "../../session/session-advisors";
 import type { SessionContext } from "../../session/session-context";
 import type { SessionManager } from "../../session/session-manager";
 import {
@@ -48,6 +49,29 @@ export interface RemoteAgentSessionOptions {
 function responseError(response: RpcResponse): Error | undefined {
 	return response.success ? undefined : new Error(response.error);
 }
+
+function queuesEqual(
+	left: InteractiveSessionProjection["queue"],
+	right: InteractiveSessionProjection["queue"],
+): boolean {
+	return (
+		left.steering.length === right.steering.length &&
+		left.followUp.length === right.followUp.length &&
+		left.steering.every((message, index) => message === right.steering[index]) &&
+		left.followUp.every((message, index) => message === right.followUp[index])
+	);
+}
+
+const DISABLED_ADVISOR_STATS: AdvisorStats = {
+	configured: false,
+	active: false,
+	contextWindow: 0,
+	contextTokens: 0,
+	tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	cost: 0,
+	messages: { user: 0, assistant: 0, total: 0 },
+	advisors: [],
+};
 
 /**
  * Explicit AgentSession-compatible facade used while InteractiveMode migrates to
@@ -118,10 +142,14 @@ export class RemoteAgentSession {
 		this.#unsubscribers.push(
 			this.#port.onReliable(frame => {
 				const previousCommands = this.#projection.commands;
+				const previousQueue = this.#projection.queue;
 				this.#projection = { ...this.#projection, ...frame.patch };
 				this.#state = this.#buildAgentState();
 				if (this.#projection.commands !== previousCommands) {
 					for (const listener of this.#commandMetadataListeners) listener();
+				}
+				if (!queuesEqual(previousQueue, this.#projection.queue)) {
+					for (const listener of this.#eventListeners) listener({ type: "queue_changed" });
 				}
 			}),
 			this.#port.onView(frame => {
@@ -360,6 +388,10 @@ export class RemoteAgentSession {
 				lastActivityAtMs: Date.now(),
 			}
 		);
+	}
+
+	getAdvisorStats(): AdvisorStats {
+		return this.#projection.advisorStats ?? DISABLED_ADVISOR_STATS;
 	}
 
 	get activity(): AgentActivityState {

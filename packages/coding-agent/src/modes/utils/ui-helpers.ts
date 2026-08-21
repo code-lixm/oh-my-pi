@@ -391,9 +391,9 @@ export class UiHelpers {
 		// Read-only invisible turns attach the metrics to their shared compact
 		// group; every other turn keeps the standalone row below its tool blocks.
 		let hubActivityGroup: HubActivityGroupComponent | null = null;
-		const finalizeHubActivityGroup = () => {
-			hubActivityGroup?.finalize();
-			hubActivityGroup = null;
+		const finalizeHubActivityGroup = (target: HubActivityGroupComponent | null = hubActivityGroup) => {
+			target?.finalize();
+			if (target === hubActivityGroup) hubActivityGroup = null;
 		};
 		const ensureHubActivityGroup = () => {
 			if (!hubActivityGroup?.canAppend) {
@@ -576,6 +576,7 @@ export class UiHelpers {
 								false,
 								content.id,
 							);
+							if (group.shouldFinalizeAfterResult(content.id)) finalizeHubActivityGroup(group);
 						} else {
 							this.ctx.pendingTools.set(content.id, group);
 						}
@@ -756,6 +757,13 @@ export class UiHelpers {
 					this.ctx.pendingTools.delete(message.toolCallId);
 					if (
 						message.toolName === "hub" &&
+						component instanceof HubActivityGroupComponent &&
+						component.shouldFinalizeAfterResult(message.toolCallId)
+					) {
+						finalizeHubActivityGroup(component);
+					}
+					if (
+						message.toolName === "hub" &&
 						component instanceof ToolExecutionComponent &&
 						component.isDisplaceableBlock()
 					) {
@@ -775,6 +783,15 @@ export class UiHelpers {
 			} else {
 				readGroup?.seal();
 				readGroup = null;
+				const group = hubActivityGroup as HubActivityGroupComponent | null;
+				if (
+					message.role === "custom" &&
+					message.customType === "async-result" &&
+					message.display &&
+					group?.appendAsyncResult(message.details)
+				) {
+					continue;
+				}
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();

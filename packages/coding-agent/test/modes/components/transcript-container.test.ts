@@ -559,6 +559,59 @@ describe("TranscriptContainer", () => {
 		expect(container.render(40)).toEqual(["committed", "", "tail"]);
 		expect(committed.renderCount).toBe(2);
 	});
+	it("reuses an uncommitted versioned prefix while a live tail changes, then re-renders on version, width, invalidation, or position changes", () => {
+		const container = new TranscriptContainer();
+		const prefix = new VersionedFinalizedBlock(["settled v1"]);
+		const liveTail = new StreamingBlock(["live 1"]);
+		container.addChild(prefix);
+		container.addChild(liveTail);
+
+		expect(container.render(40)).toEqual(["settled v1", "", "live 1"]);
+		expect(prefix.renderCount).toBe(1);
+		// A second identical frame must reuse the prefix even before the tail has
+		// received another snapshot.
+		expect(container.render(40)).toEqual(["settled v1", "", "live 1"]);
+		expect(prefix.renderCount).toBe(1);
+
+		// The finalized prefix remains uncommitted because the foreground tail is
+		// still live. Its stable version and geometry make its cached rows safe
+		// to reuse while only the tail receives newer snapshots.
+		liveTail.set(["live 2"]);
+		expect(container.render(40)).toEqual(["settled v1", "", "live 2"]);
+		liveTail.set(["live 3"]);
+		expect(container.render(40)).toEqual(["settled v1", "", "live 3"]);
+		liveTail.set(["live 4"]);
+		expect(container.render(40)).toEqual(["settled v1", "", "live 4"]);
+		expect(prefix.renderCount).toBe(1);
+
+		prefix.mutate(["settled v2"]);
+		expect(container.render(40)).toEqual(["settled v2", "", "live 4"]);
+		expect(prefix.renderCount).toBe(2);
+
+		liveTail.set(["live at a wider viewport"]);
+		expect(container.render(80)).toEqual(["settled v2", "", "live at a wider viewport"]);
+		expect(prefix.renderCount).toBe(3);
+
+		container.invalidate();
+		expect(container.render(80)).toEqual(["settled v2", "", "live at a wider viewport"]);
+		expect(prefix.renderCount).toBe(4);
+
+		const positioned = new TranscriptContainer();
+		const preceding = new MutableBlock(["before"]);
+		const positionedPrefix = new VersionedFinalizedBlock(["positioned"]);
+		const positionedTail = new StreamingBlock(["live"]);
+		positioned.addChild(preceding);
+		positioned.addChild(positionedPrefix);
+		positioned.addChild(positionedTail);
+		expect(positioned.render(40)).toEqual(["before", "", "positioned", "", "live"]);
+		expect(positionedPrefix.renderCount).toBe(1);
+
+		// Its own bytes and version are unchanged, but a preceding block moves the
+		// prefix's row offset, so its cached contribution is no longer reusable.
+		preceding.set(["before", "moved"]);
+		expect(positioned.render(40)).toEqual(["before", "moved", "", "positioned", "", "live"]);
+		expect(positionedPrefix.renderCount).toBe(2);
+	});
 	it("re-renders a committed finalized block when its version changes", () => {
 		const container = new TranscriptContainer();
 		const block = new VersionedFinalizedBlock(["original"]);

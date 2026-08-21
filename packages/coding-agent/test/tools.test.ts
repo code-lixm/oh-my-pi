@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import * as zlib from "node:zlib";
-import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { type } from "@oh-my-pi/omptype";
+import type { AgentTool, AgentToolContext, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { DEFAULT_BASH_INTERCEPTOR_RULES, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
@@ -28,6 +29,57 @@ function getTextOutput(result: any): string {
 			.map((c: any) => c.text)
 			.join("\n") || ""
 	);
+}
+
+const partialPreviewSchema = type({});
+
+interface PartialPreviewDetails {
+	phase: "streaming" | "complete";
+	sequence?: number;
+	meta?: { truncation?: { artifactId?: string } };
+}
+
+function createOversizedPartialTool(
+	partials: readonly string[],
+	finalOutput: string,
+): AgentTool<typeof partialPreviewSchema, PartialPreviewDetails> {
+	return {
+		name: "oversized_partial_fixture",
+		label: "Oversized partial fixture",
+		description: "Streams oversized partial snapshots before producing a recoverable final result.",
+		parameters: partialPreviewSchema,
+		async execute(_toolCallId, _params, _signal, onUpdate) {
+			for (let index = 0; index < partials.length; index += 1) {
+				onUpdate?.({
+					content: [{ type: "text", text: partials[index]! }],
+					details: { phase: "streaming", sequence: index + 1 },
+				});
+			}
+			return { content: [{ type: "text", text: finalOutput }], details: { phase: "complete" } };
+		},
+	};
+}
+
+function createUntrustedOversizedPartialTool(
+	flags: { isError?: unknown; useless?: unknown },
+	finalOutput: string,
+): AgentTool<typeof partialPreviewSchema, PartialPreviewDetails> {
+	return {
+		name: "untrusted_oversized_partial_fixture",
+		label: "Untrusted oversized partial fixture",
+		description: "Emits an oversized extension partial before producing a normal final result.",
+		parameters: partialPreviewSchema,
+		async execute(_toolCallId, _params, _signal, onUpdate) {
+			// An extension can violate its TypeScript declaration at this runtime boundary.
+			const untrustedPartial = {
+				content: [{ type: "text", text: "x".repeat(4 * 1024) }],
+				details: { phase: "streaming" },
+				...flags,
+			} as unknown as AgentToolResult<PartialPreviewDetails>;
+			onUpdate?.(untrustedPartial);
+			return { content: [{ type: "text", text: finalOutput }], details: { phase: "complete" } };
+		},
+	};
 }
 
 function writeFileWithMtime(filePath: string, content: string, mtimeMs: number): void {
@@ -504,6 +556,144 @@ describe("Coding Agent Tools", () => {
 			Bun.env.PI_EDIT_VARIANT = originalEditVariant;
 		}
 		AsyncJobManager.resetForTests();
+	});
+
+	describe("meta output wrapper", () => {
+		it("bounds oversized live partial previews, preserves small updates, and keeps the final artifact recoverable", async () => {
+			const smallPartial = "small partial remains unchanged";
+			const largeText = Array.from({ length: 1024 }, () => "x".repeat(512)).join("\n");
+			const partials = [smallPartial, largeText];
+			const spillSettings = Settings.isolated({
+				"tools.artifactSpillThreshold": 1,
+				"tools.artifactTailBytes": 1,
+				"tools.artifactTailLines": 10,
+				"tools.artifactHeadBytes": 1,
+			});
+			const spillManager = SessionManager.create(testDir, path.join(testDir, "partial-preview-sessions"));
+			await spillManager.ensureOnDisk();
+			const spillSession = createTestToolSession(testDir, spillSettings, {
+				getSessionFile: () => spillManager.getSessionFile() ?? null,
+				getArtifactsDir: () => spillManager.getArtifactsDir(),
+				localProtocolOptions: {
+					getArtifactsDir: () => spillManager.getArtifactsDir(),
+					getSessionId: () => spillManager.getSessionId(),
+				},
+			});
+			const context = {
+				...createTestToolContext(["oversized_partial_fixture"]),
+				settings: spillSettings,
+				sessionManager: spillManager,
+			};
+
+			try {
+				const updates: AgentToolResult[] = [];
+				const tool = wrapToolWithMetaNotice(createOversizedPartialTool(partials, largeText));
+				const result = await tool.execute(
+					"oversized-partial-call",
+					{},
+					undefined,
+					update => updates.push(update),
+					context,
+				);
+
+				expect(updates).toHaveLength(partials.length);
+				const smallUpdate = updates[0];
+				if (!smallUpdate) throw new Error("expected a small partial update");
+				expect(smallUpdate).toEqual({
+					content: [{ type: "text", text: smallPartial }],
+					details: { phase: "streaming", sequence: 1 },
+				});
+				const livePreview = updates[1];
+				if (!livePreview) throw new Error("expected an oversized live partial preview");
+				const serializedLivePreview = JSON.stringify(livePreview);
+				if (!serializedLivePreview) throw new Error("expected a serializable partial preview");
+				const livePreviewByteCeiling = spillSettings.get("tools.artifactSpillThreshold") * 1024;
+				expect(Buffer.byteLength(serializedLivePreview, "utf8")).toBeLessThanOrEqual(livePreviewByteCeiling);
+				expect(getTextOutput(livePreview)).toMatch(/[^\nx]/);
+
+				const artifactId = result.details?.meta?.truncation?.artifactId;
+				if (!artifactId) throw new Error("expected the final result to spill to an artifact");
+				expect(getTextOutput(result)).toContain(`artifact://${artifactId}`);
+
+				const artifactResult = await wrapToolWithMetaNotice(new ReadTool(spillSession)).execute(
+					"recover-oversized-partial-final",
+					{ path: `artifact://${artifactId}:raw:1-3000` },
+					undefined,
+					undefined,
+					context,
+				);
+				expect(getTextOutput(artifactResult)).toBe(largeText);
+			} finally {
+				await spillManager.close();
+			}
+		});
+
+		it("preserves truthy third-party error semantics in bounded live partial previews", async () => {
+			const livePreviewSettings = Settings.isolated({
+				"tools.artifactSpillThreshold": 1,
+				"tools.artifactTailBytes": 1,
+				"tools.artifactTailLines": 10,
+				"tools.artifactHeadBytes": 1,
+			});
+			const temporarySession = createTestToolSession(testDir, livePreviewSettings);
+			const finalOutput = "normal third-party final result";
+			const updates: AgentToolResult[] = [];
+			const result = await wrapToolWithMetaNotice(
+				createUntrustedOversizedPartialTool(
+					{ isError: "third-party failure", useless: "also truthy" },
+					finalOutput,
+				),
+			).execute("untrusted-error-partial", {}, undefined, update => updates.push(update), {
+				...createTestToolContext(["untrusted_oversized_partial_fixture"]),
+				settings: temporarySession.settings,
+			});
+
+			expect(updates).toHaveLength(1);
+			const preview = updates[0]!;
+			const serializedPreview = JSON.stringify(preview);
+			if (!serializedPreview) throw new Error("expected a serializable bounded partial preview");
+			expect(Buffer.byteLength(serializedPreview, "utf8")).toBeLessThanOrEqual(
+				livePreviewSettings.get("tools.artifactSpillThreshold") * 1024,
+			);
+			expect(preview.isError).toBe(true);
+			expect(preview.useless).toBeUndefined();
+			expect(result).toEqual({
+				content: [{ type: "text", text: finalOutput }],
+				details: { phase: "complete" },
+			});
+		});
+
+		it("preserves truthy third-party useless semantics in bounded non-error live partial previews", async () => {
+			const livePreviewSettings = Settings.isolated({
+				"tools.artifactSpillThreshold": 1,
+				"tools.artifactTailBytes": 1,
+				"tools.artifactTailLines": 10,
+				"tools.artifactHeadBytes": 1,
+			});
+			const temporarySession = createTestToolSession(testDir, livePreviewSettings);
+			const finalOutput = "normal third-party final result";
+			const updates: AgentToolResult[] = [];
+			const result = await wrapToolWithMetaNotice(
+				createUntrustedOversizedPartialTool({ useless: 1 }, finalOutput),
+			).execute("untrusted-useless-partial", {}, undefined, update => updates.push(update), {
+				...createTestToolContext(["untrusted_oversized_partial_fixture"]),
+				settings: temporarySession.settings,
+			});
+
+			expect(updates).toHaveLength(1);
+			const preview = updates[0]!;
+			const serializedPreview = JSON.stringify(preview);
+			if (!serializedPreview) throw new Error("expected a serializable bounded partial preview");
+			expect(Buffer.byteLength(serializedPreview, "utf8")).toBeLessThanOrEqual(
+				livePreviewSettings.get("tools.artifactSpillThreshold") * 1024,
+			);
+			expect(preview.isError).toBeUndefined();
+			expect(preview.useless).toBe(true);
+			expect(result).toEqual({
+				content: [{ type: "text", text: finalOutput }],
+				details: { phase: "complete" },
+			});
+		});
 	});
 
 	describe("read tool", () => {

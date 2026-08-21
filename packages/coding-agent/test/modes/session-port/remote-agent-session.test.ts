@@ -221,6 +221,14 @@ async function flushQueuedMicrotasks(): Promise<void> {
 	for (let index = 0; index < 4; index++) await Promise.resolve();
 }
 
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let index = 0; index < 100; index++) {
+		if (predicate()) return;
+		await Bun.sleep(10);
+	}
+	throw new Error("Timed out waiting for remote session state");
+}
+
 async function sendExtensionUiRequest(transport: InMemoryRpcTransport, request: RpcExtensionUIRequest): Promise<void> {
 	await transport.sendFromServer(request);
 	await flushQueuedMicrotasks();
@@ -480,6 +488,31 @@ describe("RemoteAgentSession RPC state projection", () => {
 			await session.dispose();
 		}
 	});
+
+	test("refreshes and announces a queued message consumed by the backend", async () => {
+		let state: RpcSessionState = {
+			...initialState,
+			queuedMessageCount: 1,
+			queuedMessages: { steering: [], followUp: ["queued follow-up"] },
+		};
+		const { session, transport } = await createRemoteSession({ state: () => state });
+		const observedEvents: string[] = [];
+		const unsubscribe = session.subscribe(event => observedEvents.push(event.type));
+		try {
+			state = { ...state, queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } };
+			await transport.sendFromServer({
+				type: "message_start",
+				message: { role: "user", content: "queued follow-up", timestamp: 1 },
+			});
+			await waitFor(() => session.queuedMessageCount === 0 && observedEvents.includes("queue_changed"));
+
+			expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+			expect(observedEvents).toContain("message_start");
+		} finally {
+			unsubscribe();
+			await session.dispose();
+		}
+	});
 });
 
 describe("RemoteAgentSession interactive facade", () => {
@@ -490,6 +523,37 @@ describe("RemoteAgentSession interactive facade", () => {
 			facade.goalRuntime.clearAccounting();
 
 			expect(session.getGoalModeState()).toBeUndefined();
+			expect(facade.getAdvisorStats()).toEqual({
+				configured: false,
+				active: false,
+				contextWindow: 0,
+				contextTokens: 0,
+				tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				cost: 0,
+				messages: { user: 0, assistant: 0, total: 0 },
+				advisors: [],
+			});
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("exposes advisor statistics projected by the RPC host", async () => {
+		const advisorStats = {
+			configured: true,
+			active: true,
+			contextWindow: 128_000,
+			contextTokens: 4096,
+			tokens: { input: 3000, output: 800, reasoning: 200, cacheRead: 96, cacheWrite: 0, total: 4096 },
+			cost: 0.25,
+			messages: { user: 2, assistant: 2, total: 4 },
+			advisors: [],
+		};
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, advisorStats }),
+		});
+		try {
+			expect(session.asAgentSession().getAdvisorStats()).toEqual(advisorStats);
 		} finally {
 			await session.dispose();
 		}

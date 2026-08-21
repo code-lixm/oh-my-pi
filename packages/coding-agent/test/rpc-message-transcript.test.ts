@@ -5,7 +5,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runRpcMode } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
@@ -346,6 +346,130 @@ describe("RPC state projection", () => {
 				await trackedEvaluation;
 				input.close();
 				await modeOutcome;
+				stdoutSpy.mockRestore();
+				exitSpy.mockRestore();
+				restoreEnvironmentValue("PI_NOTIFICATIONS", previousNotifications);
+			}
+		} finally {
+			if (session) await session.dispose();
+			else await sessionManager?.close();
+			authStorage.close();
+		}
+	});
+	it("keeps the last pending session event in JSONL and drains stdout backpressure before EOF exit", async () => {
+		using tempDir = TempDir.createSync("@omp-rpc-eof-session-event-");
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		let sessionManager: SessionManager | undefined;
+		let session: AgentSession | undefined;
+
+		try {
+			sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+			const modelRegistry = new ModelRegistry(authStorage);
+			const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled claude-sonnet-4-5 model");
+			session = new AgentSession({
+				agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+				sessionManager,
+				settings: Settings.isolated(),
+				modelRegistry,
+			});
+			sessionManager = undefined;
+
+			const input = makeLiveInputStream();
+			const outputFrames: Record<string, unknown>[] = [];
+			const rpcSubscribed = Promise.withResolvers<void>();
+			const sessionEventDelivered = Promise.withResolvers<void>();
+			const pendingFrameWritten = Promise.withResolvers<void>();
+			const pendingToolCallId = "teardown-pending-update";
+			const pendingText = "pending update must survive EOF";
+			const exitOrder: string[] = [];
+			let outputBuffer = "";
+			let releasePendingBackpressure = false;
+			let unsubscribeSessionEvent: (() => void) | undefined;
+			const previousNotifications = process.env.PI_NOTIFICATIONS;
+			const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+				let backpressuredWrite = false;
+				outputBuffer += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+				for (let newline = outputBuffer.indexOf("\n"); newline !== -1; newline = outputBuffer.indexOf("\n")) {
+					const line = outputBuffer.slice(0, newline).trim();
+					outputBuffer = outputBuffer.slice(newline + 1);
+					if (!line) continue;
+					const frame = JSON.parse(line) as Record<string, unknown>;
+					outputFrames.push(frame);
+					if (frame.type === "available_commands_update") rpcSubscribed.resolve();
+					if (frame.type === "tool_execution_update" && frame.toolCallId === pendingToolCallId) {
+						exitOrder.push("pending session event");
+						backpressuredWrite = true;
+						pendingFrameWritten.resolve();
+					}
+				}
+				if (!backpressuredWrite) return true;
+				if (releasePendingBackpressure) queueMicrotask(() => process.stdout.emit("drain"));
+				return false;
+			});
+			const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+				exitOrder.push("exit");
+				throw new ProcessExitSignal(code ?? 0);
+			}) as typeof process.exit);
+			const mode = runRpcMode(session, undefined, undefined, input.input);
+			const modeOutcome = mode.then(
+				() => ({ returned: true as const, error: new Error("runRpcMode unexpectedly returned") }),
+				error => ({ returned: false as const, error }),
+			);
+
+			try {
+				await rpcSubscribed.promise;
+				vi.useFakeTimers();
+				unsubscribeSessionEvent = session.subscribe(event => {
+					if (event.type === "tool_execution_update" && event.toolCallId === pendingToolCallId) {
+						sessionEventDelivered.resolve();
+					}
+				});
+				const pendingEvent: Extract<AgentSessionEvent, { type: "tool_execution_update" }> = {
+					type: "tool_execution_update",
+					toolCallId: pendingToolCallId,
+					toolName: "bash",
+					args: {},
+					partialResult: { content: [{ type: "text", text: pendingText }] },
+				};
+				session.agent.emitExternalEvent(pendingEvent);
+				await sessionEventDelivered.promise;
+				expect(
+					outputFrames.some(
+						frame => frame.type === "tool_execution_update" && frame.toolCallId === pendingToolCallId,
+					),
+				).toBe(false);
+
+				input.close();
+				const firstTeardownBoundary = await Promise.race([
+					pendingFrameWritten.promise.then(() => "pending JSONL frame" as const),
+					modeOutcome.then(() => "exit" as const),
+				]);
+				expect(firstTeardownBoundary).toBe("pending JSONL frame");
+				expect(exitSpy).not.toHaveBeenCalled();
+				const pendingFrame = outputFrames.at(-1);
+				expect(pendingFrame).toMatchObject({
+					type: "tool_execution_update",
+					toolCallId: pendingToolCallId,
+					toolName: "bash",
+					partialResult: { content: [{ type: "text", text: pendingText }] },
+				});
+
+				releasePendingBackpressure = true;
+				process.stdout.emit("drain");
+				const outcome = await modeOutcome;
+				if (outcome.returned) throw outcome.error;
+				if (!(outcome.error instanceof ProcessExitSignal)) throw outcome.error;
+				expect(outcome.error.code).toBe(0);
+				expect(exitOrder).toEqual(["pending session event", "exit"]);
+			} finally {
+				releasePendingBackpressure = true;
+				input.close();
+				process.stdout.emit("drain");
+				await modeOutcome;
+				unsubscribeSessionEvent?.();
+				vi.clearAllTimers();
+				vi.useRealTimers();
 				stdoutSpy.mockRestore();
 				exitSpy.mockRestore();
 				restoreEnvironmentValue("PI_NOTIFICATIONS", previousNotifications);

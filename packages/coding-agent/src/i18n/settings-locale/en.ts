@@ -898,6 +898,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Jobs Hub": "Jobs Hub",
 	"Job Details": "Job Details",
 	"Live output tail": "Live output tail",
+	"Live preview limited to {size}; this update has no artifact. The final tool result will follow.":
+		"Live preview limited to {size}; this update has no artifact. The final tool result will follow.",
 	Result: "Result",
 	"No retained background jobs.": "No retained background jobs.",
 	"open details": "open details",

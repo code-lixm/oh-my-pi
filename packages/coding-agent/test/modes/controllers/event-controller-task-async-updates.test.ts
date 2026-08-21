@@ -20,6 +20,7 @@ import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { BashToolDetails } from "@oh-my-pi/pi-coding-agent/tools/bash";
 
@@ -51,6 +52,7 @@ describe("EventController async update finalization", () => {
 
 	afterEach(() => {
 		for (const component of sealed.splice(0)) component.seal();
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
 	});
@@ -60,6 +62,7 @@ describe("EventController async update finalization", () => {
 		const pendingTools = new Map<string, ToolExecutionComponent>();
 		const requestRender = vi.fn();
 		const requestComponentRender = vi.fn();
+		const listeners: Array<(event: AgentSessionEvent) => void | Promise<void>> = [];
 		const ctx = {
 			isInitialized: true,
 			init: vi.fn(async () => {}),
@@ -70,13 +73,28 @@ describe("EventController async update finalization", () => {
 			transcriptMessageComponents: new WeakMap(),
 			pendingTools,
 			chatContainer,
-			session: { getToolByName: () => undefined, hasBuiltInTool: () => true, isStreaming: true },
+			session: {
+				getToolByName: () => undefined,
+				hasBuiltInTool: () => true,
+				isStreaming: true,
+				subscribe: (listener: (event: AgentSessionEvent) => void | Promise<void>) => {
+					listeners.push(listener);
+					return () => {};
+				},
+			},
 			showWarning: vi.fn(),
 			viewSession: { getToolByName: () => undefined, hasBuiltInTool: () => true },
 			sessionManager: { getCwd: () => process.cwd() },
 			setTodos: vi.fn(),
 		} as unknown as InteractiveModeContext;
-		return { controller: new EventController(ctx), pendingTools, requestRender, requestComponentRender };
+		const emit = (event: AgentSessionEvent): void => {
+			for (const listener of listeners) void listener(event);
+		};
+		return { controller: new EventController(ctx), pendingTools, requestRender, requestComponentRender, emit };
+	}
+
+	async function flushMicrotasks(): Promise<void> {
+		for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
 	}
 
 	async function startTask(controller: EventController, pendingTools: Map<string, ToolExecutionComponent>) {
@@ -206,5 +224,290 @@ describe("EventController async update finalization", () => {
 
 		expect(pendingTools.has("tc-bash")).toBe(false);
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
+	});
+
+	it("applies only the newest subscribed tool snapshot per window, then flushes it before the terminal result", async () => {
+		vi.useFakeTimers();
+		const { controller, pendingTools, emit } = createFixture();
+		controller.subscribeToAgent();
+
+		emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: { context: "ctx", tasks: [{ agent: "task", task: "work" }] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await flushMicrotasks();
+		const component = pendingTools.get("tc-task");
+		if (!component) throw new Error("expected a pending task component");
+		sealed.push(component);
+		const updateResult = vi.spyOn(component, "updateResult");
+
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "intermediate 1"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "intermediate 2"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "latest normal snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+		expect(updateResult).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(32);
+		await flushMicrotasks();
+		expect(updateResult).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+		await flushMicrotasks();
+		expect(updateResult).toHaveBeenCalledTimes(1);
+		expect(updateResult).toHaveBeenLastCalledWith(
+			expect.objectContaining({ content: [{ type: "text", text: "latest normal snapshot" }] }),
+			true,
+			"tc-task",
+		);
+
+		updateResult.mockClear();
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "pending before end 1"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "pending before end 2"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-task",
+			toolName: "task",
+			result: taskResult("completed", "terminal result is visible now"),
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+		await flushMicrotasks();
+
+		expect(updateResult).toHaveBeenCalledTimes(2);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ content: [{ type: "text", text: "pending before end 2" }] }),
+			true,
+			"tc-task",
+		);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ content: [{ type: "text", text: "terminal result is visible now" }] }),
+			false,
+			"tc-task",
+		);
+		expect(Bun.stripANSI(component.render(100).join("\n"))).toContain("terminal result is visible now");
+	});
+
+	it("flushes interleaved tool and message snapshots in arrival order before a subscribed tool end", async () => {
+		vi.useFakeTimers();
+		const { controller, pendingTools, emit } = createFixture();
+		controller.subscribeToAgent();
+
+		emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: { context: "ctx", tasks: [{ agent: "task", task: "work" }] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await flushMicrotasks();
+		const component = pendingTools.get("tc-task");
+		if (!component) throw new Error("expected a pending task component");
+		sealed.push(component);
+		const updateResult = vi.spyOn(component, "updateResult");
+		const handleEvent = vi.spyOn(controller, "handleEvent");
+		const messageUpdate = {
+			type: "message_update",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "interleaved message snapshot" }],
+			},
+			assistantMessageEvent: { type: "text_delta", delta: "interleaved message snapshot" },
+		} as Extract<AgentSessionEvent, { type: "message_update" }>;
+
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "stale tool snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit(messageUpdate);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "latest interleaved tool snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+		expect(handleEvent).not.toHaveBeenCalled();
+		expect(updateResult).not.toHaveBeenCalled();
+
+		emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-task",
+			toolName: "task",
+			result: taskResult("completed", "terminal result after interleaved snapshots"),
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+		await flushMicrotasks();
+
+		expect(handleEvent.mock.calls.map(([event]) => event.type)).toEqual([
+			"tool_execution_update",
+			"message_update",
+			"tool_execution_end",
+		]);
+		expect(handleEvent.mock.calls[0]?.[0]).toMatchObject({
+			type: "tool_execution_update",
+			partialResult: { content: [{ type: "text", text: "latest interleaved tool snapshot" }] },
+		});
+		expect(handleEvent.mock.calls[1]?.[0]).toBe(messageUpdate);
+		expect(handleEvent.mock.calls[2]?.[0]).toMatchObject({
+			type: "tool_execution_end",
+			result: { content: [{ type: "text", text: "terminal result after interleaved snapshots" }] },
+		});
+		expect(updateResult).toHaveBeenCalledTimes(2);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ content: [{ type: "text", text: "latest interleaved tool snapshot" }] }),
+			true,
+			"tc-task",
+		);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ content: [{ type: "text", text: "terminal result after interleaved snapshots" }] }),
+			false,
+			"tc-task",
+		);
+	});
+
+	it("flushes pending subscribed updates before an error terminal task snapshot without waiting for the window", async () => {
+		vi.useFakeTimers();
+		const { controller, pendingTools, emit } = createFixture();
+		controller.subscribeToAgent();
+
+		emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: { context: "ctx", tasks: [{ agent: "task", task: "work" }] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await flushMicrotasks();
+		const component = pendingTools.get("tc-task");
+		if (!component) throw new Error("expected a pending task component");
+		sealed.push(component);
+
+		// A running task end keeps its card alive for the later terminal async frame.
+		emit({
+			type: "tool_execution_end",
+			toolCallId: "tc-task",
+			toolName: "task",
+			result: taskResult("running", "background task is running"),
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+		await flushMicrotasks();
+		expect(pendingTools.get("tc-task")).toBe(component);
+
+		const updateResult = vi.spyOn(component, "updateResult");
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "stale running snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "latest running snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+		expect(updateResult).not.toHaveBeenCalled();
+
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: { ...taskResult("running", "error update is visible immediately"), isError: true },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+
+		expect(updateResult).toHaveBeenCalledTimes(2);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ content: [{ type: "text", text: "latest running snapshot" }] }),
+			true,
+			"tc-task",
+		);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				content: [{ type: "text", text: "error update is visible immediately" }],
+				isError: true,
+			}),
+			true,
+			"tc-task",
+		);
+		expect(pendingTools.get("tc-task")).toBe(component);
+
+		updateResult.mockClear();
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "latest update before failure"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("failed", "background task failed immediately"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+
+		expect(updateResult).toHaveBeenCalledTimes(2);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ content: [{ type: "text", text: "latest update before failure" }] }),
+			true,
+			"tc-task",
+		);
+		expect(updateResult).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				content: [{ type: "text", text: "background task failed immediately" }],
+				isError: true,
+			}),
+			false,
+			"tc-task",
+		);
+		expect(pendingTools.has("tc-task")).toBe(false);
+		expect(Bun.stripANSI(component.render(100).join("\n"))).toContain("background task failed immediately");
 	});
 });

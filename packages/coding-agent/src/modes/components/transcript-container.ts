@@ -18,13 +18,12 @@ import { isToolActivityComponent } from "./tool-activity";
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
 	/**
-	 * Monotonic content version for blocks that can still mutate *after*
-	 * reporting finalized (e.g. `AssistantMessageComponent`: the inline error
-	 * restored at the next turn's `agent_start`, late tool-result images). The
-	 * committed-scrollback render bypass only replays a block's previous rows
-	 * when the version is unchanged; without this signal a post-finalize
-	 * mutation would stay invisible until a global invalidation. Blocks that
-	 * never mutate post-finalize simply omit the method.
+	 * Monotonic content version for finalized blocks that can still mutate
+	 * afterwards (e.g. `AssistantMessageComponent`: the inline error restored at
+	 * the next turn's `agent_start`, late tool-result images). A matching version
+	 * makes a prior segment safe to replay before it reaches committed scrollback;
+	 * a mismatch forces a render so a post-finalize mutation remains visible.
+	 * Blocks that never mutate post-finalize simply omit the method.
 	 */
 	getTranscriptBlockVersion?(): number;
 	/**
@@ -134,29 +133,34 @@ const EMPTY_SEGMENTS: BlockSegment[] = [];
 const EMPTY_TAIL: readonly string[] = [];
 
 /**
- * Transcript container that renders every block's current content each frame
- * and reports the native-scrollback exactness boundary
- * (`NativeScrollbackLiveRegion`): the frame row below which every rendered
- * row is final. The boundary covers the leading run of finalized blocks plus
- * the first still-live block's declared settled rows
- * ({@link FinalizableBlock.getTranscriptBlockSettledRows}). Rows below it
- * commit to native scrollback as exact, audited content; rows above it that
- * scroll off the window commit as frozen visual snapshots the engine never
+ * Transcript container that renders each block's current content unless its
+ * finalized segment can safely reuse its prior output. A versioned finalized
+ * segment may do so before it reaches native scrollback; once fully committed,
+ * terminal history makes a finalized segment immutable. It reports the
+ * native-scrollback exactness boundary (`NativeScrollbackLiveRegion`): the
+ * frame row below which every rendered row is final. The boundary covers the
+ * leading run of finalized blocks plus the first still-live block's declared
+ * settled rows ({@link FinalizableBlock.getTranscriptBlockSettledRows}). Rows
+ * below it commit to native scrollback as exact, audited content; rows above it
+ * that scroll off the window commit as frozen visual snapshots the engine never
  * re-anchors or recommits (the tape records what was on screen).
- *
+
  * The engine never rewrites committed history: rows that have entered the
  * tape keep whatever bytes they were committed with ("let the history be"),
  * while the visible window always repaints from each block's latest render —
- * a late tool result, a post-finalize error pin, or an expand toggle is
- * always reflected on screen while it remains in the window.
- *
+ * a late tool result, a post-finalize error pin, or an expand toggle is always
+ * reflected on screen while it remains in the window.
+
  * Assembly is incremental: the returned array is persistent and mutated in
- * place. Each block's render is still called every frame, but a block whose
- * render returned the same array reference at an unchanged offset reuses its
- * previously assembled rows; the array is truncated and re-pushed only from
- * the first divergent block. The leading byte-identical row count is reported
- * through {@link RenderStablePrefix} so the engine can skip marker scanning,
- * line preparation, and the committed-prefix audit for those rows.
+ * place. A finalized versioned block with a matching content version replays
+ * its prior raw array without calling render before commit; a finalized
+ * committed segment can also replay its immutable history. Other blocks render
+ * each frame. A block whose rendered raw array is unchanged at an unchanged
+ * offset reuses its previously assembled rows; the array is truncated and
+ * re-pushed only from the first divergent block. The leading byte-identical row
+ * count is reported through {@link RenderStablePrefix} so the engine can skip
+ * marker scanning, line preparation, and the committed-prefix audit for those
+ * rows.
  */
 export class TranscriptContainer
 	extends Container
@@ -182,8 +186,8 @@ export class TranscriptContainer
 	#segments: BlockSegment[] = EMPTY_SEGMENTS;
 	#renderWidth = -1;
 	// Local rows already committed to native scrollback by the previous frame.
-	// Finalized blocks wholly before this boundary are immutable on-screen history;
-	// their previous contribution can be replayed without calling render().
+	// Finalized segments wholly before this boundary are immutable terminal history.
+	// They may replay even when their block does not provide a version signal.
 	#committedRows = 0;
 	#widthEpochBoundaries = new WeakMap<
 		object,
@@ -518,36 +522,34 @@ export class TranscriptContainer
 
 			// This child's contribution: its current render with plain-blank
 			// top/bottom edges stripped (the container owns inter-block gaps).
-			// Finalized blocks wholly inside committed native scrollback can reuse
-			// their previous contribution without calling render(): those rows are
-			// immutable terminal history for the current width/generation. Blocks
-			// outside committed history still render normally so late results,
-			// post-finalize re-layouts, and expand toggles remain visible.
+			// A finalized block with a stable explicit version can replay its prior
+			// segment before commit; unversioned blocks retain per-frame rendering
+			// until terminal history makes their bytes immutable.
 			const previous = previousSegments[i];
 			const finalized = isBlockFinalized(child);
 			const version = getBlockVersion(child);
-			const committedReusable =
+			const finalizedSegmentMatches =
 				previous !== undefined &&
 				previous.component === child &&
 				previous.width === width &&
 				previous.generation === this.#generation &&
 				previous.startRow === row &&
-				previous.startRow + previous.rowCount <= this.#committedRows &&
 				finalized &&
-				// Only replay bytes that were themselves produced by a finalized
-				// render: a block finalizing between frames may have changed content
-				// while its rows were already committed via the append-only live
-				// path, so the first post-transition frame must render. Defense in
-				// depth on the transcript side — the TUI commit policy should keep
-				// that window closed, but the safety must not live there alone.
+				// The first observed finalized frame must render: a block can settle
+				// after its prior live rows have already entered terminal history.
 				previous.finalized &&
-				// Post-finalize mutations (inline error restore, late tool images)
-				// bump the block version; a mismatch forces a real render so the
-				// committed-prefix audit can observe and re-anchor the change.
 				previous.version === version;
-			const raw = committedReusable ? previous.rawRef : child.render(width);
+			const committedReusable =
+				finalizedSegmentMatches &&
+				previous !== undefined &&
+				previous.startRow + previous.rowCount <= this.#committedRows;
+			// Before commit, only an explicit, unchanged version proves the segment
+			// cannot have mutated outside render().
+			const versionedFinalizedReusable = finalizedSegmentMatches && version !== undefined;
+			const raw = committedReusable || versionedFinalizedReusable ? previous.rawRef : child.render(width);
 			const reusable =
 				committedReusable ||
+				versionedFinalizedReusable ||
 				(previous !== undefined &&
 					previous.component === child &&
 					previous.rawRef === raw &&

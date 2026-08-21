@@ -6,7 +6,7 @@ import {
 	kCursorExecResolved,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
-import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
@@ -72,6 +72,28 @@ import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
+type MessageUpdateEvent = Extract<AgentSessionEvent, { type: "message_update" }>;
+type ToolExecutionUpdateEvent = Extract<AgentSessionEvent, { type: "tool_execution_update" }>;
+type CoalescedStreamingUpdate = MessageUpdateEvent | ToolExecutionUpdateEvent;
+
+function getToolExecutionUpdateAsyncState(partialResult: unknown): string | undefined {
+	if (!isRecord(partialResult) || !isRecord(partialResult.details) || !isRecord(partialResult.details.async)) {
+		return undefined;
+	}
+	const state = partialResult.details.async.state;
+	return typeof state === "string" ? state : undefined;
+}
+
+function isToolExecutionUpdateError(event: ToolExecutionUpdateEvent): boolean {
+	const partialResult = event.partialResult;
+	if (isRecord(partialResult) && partialResult.isError === true) return true;
+	return getToolExecutionUpdateAsyncState(partialResult) === "failed";
+}
+
+function isImmediateToolExecutionUpdate(event: ToolExecutionUpdateEvent): boolean {
+	if (isToolExecutionUpdateError(event)) return true;
+	return getToolExecutionUpdateAsyncState(event.partialResult) === "completed";
+}
 
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
@@ -220,16 +242,12 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
-	// Coalescing window for `message_update` events at the subscription boundary.
-	// `message_update` carries the CUMULATIVE assistant message (every update
-	// re-lists all content blocks), so when a burst of deltas arrives faster than
-	// this window only the latest snapshot needs to rebuild streaming state — the
-	// intermediate rebuilds are redundant work. The TUI already caps the paint
-	// rate via its own render cadence; this caps the per-token handler work that
-	// feeds it. Speech stays intact: `#vocalizeDelta` runs at ARRIVAL for every
-	// delta before the snapshot is coalesced away.
-	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
-	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
+	// Coalesce cumulative message snapshots and keyed tool snapshots through one
+	// first-arrival-ordered queue. Replacing a pending key preserves its original
+	// slot while bounding each stream to its latest useful frame. A single window
+	// avoids cross-type reorder when a barrier flushes tool → message updates.
+	#pendingStreamingUpdates = new Map<string, CoalescedStreamingUpdate>();
+	#streamingUpdateTimer: NodeJS.Timeout | undefined = undefined;
 	/** Tail of the serialized dispatch chain; see #runSerialized. */
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
@@ -239,7 +257,7 @@ export class EventController {
 	// keeps working — the WeakSet makes the coalesced path speak each delta exactly
 	// once instead of twice.
 	#vocalizedMessageUpdates = new WeakSet<object>();
-	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
+	static readonly #STREAMING_UPDATE_COALESCE_MS = 33;
 
 	constructor(private ctx: InteractiveModeContext) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
@@ -293,6 +311,7 @@ export class EventController {
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
+			queue_changed: async () => this.ctx.updatePendingMessagesDisplay(),
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
 			model_changed: async () => {
@@ -332,14 +351,14 @@ export class EventController {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
 		this.#clearApprovalPreviewGates();
-		if (this.#messageUpdateTimer) {
-			clearTimeout(this.#messageUpdateTimer);
-			this.#messageUpdateTimer = undefined;
+		if (this.#streamingUpdateTimer) {
+			clearTimeout(this.#streamingUpdateTimer);
+			this.#streamingUpdateTimer = undefined;
 		}
 		this.#clearRetryCountdown();
 		this.ctx.retryLoader?.stop();
 		this.ctx.retryLoader = undefined;
-		this.#pendingMessageUpdate = undefined;
+		this.#pendingStreamingUpdates.clear();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#cancelIdleCompaction();
@@ -627,24 +646,31 @@ export class EventController {
 		// the final message (issue #7443 follow-up). When the tail has settled,
 		// dispatch stays synchronous: the flush's streaming rebuild runs before
 		// the listener's first await, preserving the timing the coalescing
-		// tests assert on. `message_update` enqueue is itself synchronous and
-		// needs no serialization.
+		// tests assert on. Regular streaming-update enqueue is itself synchronous and
+		// needs no serialization; control and terminal/error updates join the chain.
 		this.ctx.unsubscribe = this.ctx.session.subscribe(async (event: AgentSessionEvent) => {
-			// Coalesce the cumulative `message_update` deltas of a streaming turn
-			// into at most one handler run per window. `#handleMessageUpdate` is
-			// synchronous, so without this every token re-runs the whole
-			// streaming rebuild (splitAssistantMessageToolTimeline, reveal
-			// setTarget, per-block tool-call reconciliation) even though the TUI
-			// paints at most ~30fps — at 40-100 tps the handler work then
-			// dominates the CPU profile of an idle-looking streaming session
-			// (issue #7443). Only the latest snapshot is meaningful; non-update
-			// events flush the pending snapshot first so ordering is preserved.
+			// Coalesce cumulative message snapshots and keyed tool snapshots into at
+			// most one handler run per window. `#handleMessageUpdate` is synchronous,
+			// so without this every token re-runs the whole streaming rebuild
+			// (splitAssistantMessageToolTimeline, reveal setTarget, per-block tool-call
+			// reconciliation) even though the TUI paints at most ~30fps — at 40-100 tps
+			// the handler work then dominates the CPU profile of an idle-looking
+			// streaming session (issue #7443). Only the latest normal snapshot is
+			// meaningful; non-update and terminal/error updates flush pending snapshots
+			// first so ordering is preserved.
 			if (event.type === "message_update") {
-				this.#enqueueMessageUpdate(event);
+				const isError = event.message.role === "assistant" && event.message.stopReason === "error";
+				if (!isError) {
+					this.#enqueueMessageUpdate(event);
+					return;
+				}
+			}
+			if (event.type === "tool_execution_update" && !isImmediateToolExecutionUpdate(event)) {
+				this.#enqueueToolExecutionUpdate(event);
 				return;
 			}
 			await this.#runSerialized(async () => {
-				await this.#flushPendingMessageUpdate();
+				await this.#flushPendingUpdates();
 				await this.handleEvent(event);
 			});
 		});
@@ -707,45 +733,50 @@ export class EventController {
 	 * Speech is per-delta, so the delta is vocalized at arrival before the
 	 * snapshot is (possibly) superseded by a newer one.
 	 */
-	#enqueueMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
+	#enqueueMessageUpdate(event: MessageUpdateEvent): void {
 		// Speech is per-delta: every delta is spoken at arrival even when its
 		// cumulative snapshot is later superseded and never rebuilt.
 		this.#vocalizeDelta(event);
 		this.#vocalizedMessageUpdates.add(event);
-		this.#pendingMessageUpdate = event;
-		if (this.#messageUpdateTimer) return;
-		this.#messageUpdateTimer = setTimeout(() => {
-			this.#messageUpdateTimer = undefined;
+		this.#pendingStreamingUpdates.set("message", event);
+		this.#scheduleStreamingUpdateFlush();
+	}
+
+	/** Queue a keyed streaming tool update for the next coalesced handler run. */
+	#enqueueToolExecutionUpdate(event: ToolExecutionUpdateEvent): void {
+		this.#pendingStreamingUpdates.set(`tool:${event.toolCallId}`, event);
+		this.#scheduleStreamingUpdateFlush();
+	}
+
+	/** Start one shared update window so pending message/tool order remains stable. */
+	#scheduleStreamingUpdateFlush(): void {
+		if (this.#streamingUpdateTimer) return;
+		this.#streamingUpdateTimer = setTimeout(() => {
+			this.#streamingUpdateTimer = undefined;
 			// Mirror AgentSession.#emit: attach a catch so a streaming rebuild
 			// failure surfaces as a logged warning instead of a process-level
 			// unhandled rejection (the timer path has no listener to attach one).
-			// Runs inside the serialized dispatch chain so a message_end /
-			// agent_end landing mid-window cannot overtake this flush (issue
-			// #7443 follow-up).
 			void this.#runSerialized(async () => {
-				await this.#flushPendingMessageUpdate();
+				await this.#flushPendingUpdates();
 			}).catch(err => {
-				logger.warn("Message update flush rejected", {
+				logger.warn("Streaming update flush rejected", {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
-		}, EventController.#MESSAGE_UPDATE_COALESCE_MS);
+		}, EventController.#STREAMING_UPDATE_COALESCE_MS);
 	}
 
-	/**
-	 * Run the coalesced `message_update` handler on the latest pending snapshot
-	 * (dropping any superseded intermediates) and clear the queue. Safe to call
-	 * more than once; no-ops when nothing is pending.
-	 */
-	async #flushPendingMessageUpdate(): Promise<void> {
-		if (this.#messageUpdateTimer) {
-			clearTimeout(this.#messageUpdateTimer);
-			this.#messageUpdateTimer = undefined;
+	/** Flush the latest pending update for each key in first-arrival order. */
+	async #flushPendingUpdates(): Promise<void> {
+		if (this.#streamingUpdateTimer) {
+			clearTimeout(this.#streamingUpdateTimer);
+			this.#streamingUpdateTimer = undefined;
 		}
-		const event = this.#pendingMessageUpdate;
-		if (!event) return;
-		this.#pendingMessageUpdate = undefined;
-		await this.handleEvent(event);
+		const events = Array.from(this.#pendingStreamingUpdates.values());
+		this.#pendingStreamingUpdates.clear();
+		for (const event of events) {
+			await this.handleEvent(event);
+		}
 	}
 	/**
 	 * Clear every transcript-anchored/turn-scoped piece of state. Used by the
@@ -754,11 +785,11 @@ export class EventController {
 	 * session's transcript and must not bleed into the new one.
 	 */
 	resetTranscriptAnchors(): void {
-		if (this.#messageUpdateTimer) {
-			clearTimeout(this.#messageUpdateTimer);
-			this.#messageUpdateTimer = undefined;
+		if (this.#streamingUpdateTimer) {
+			clearTimeout(this.#streamingUpdateTimer);
+			this.#streamingUpdateTimer = undefined;
 		}
-		this.#pendingMessageUpdate = undefined;
+		this.#pendingStreamingUpdates.clear();
 		this.#resetReadGroup();
 		this.#hubActivityGroup?.seal();
 		this.#hubActivityGroup = undefined;
@@ -896,7 +927,15 @@ export class EventController {
 			if (this.#renderedCustomMessages.has(signature)) return;
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
+			const hubActivityGroup = this.#hubActivityGroup;
 			if (
+				event.message.customType === "async-result" &&
+				event.message.display &&
+				hubActivityGroup &&
+				hubActivityGroup.appendAsyncResult(event.message.details)
+			) {
+				this.ctx.ui.requestComponentRender(hubActivityGroup);
+			} else if (
 				event.message.customType === "irc:incoming" ||
 				event.message.customType === "irc:autoreply" ||
 				event.message.customType === "irc:relay"
@@ -1711,16 +1750,14 @@ export class EventController {
 		return resolveApproval(tool, args, mode, userPolicies).policy === "prompt";
 	}
 
-	async #handleToolExecutionUpdate(
-		event: Extract<AgentSessionEvent, { type: "tool_execution_update" }>,
-	): Promise<void> {
+	async #handleToolExecutionUpdate(event: ToolExecutionUpdateEvent): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		const component = this.ctx.pendingTools.get(event.toolCallId);
 		if (component) {
 			if (component instanceof HubActivityGroupComponent) {
 				component.setPeerCommunicationVisible(this.ctx.settings.get("display.showAgentCommunication"));
 			}
-			const asyncState = (event.partialResult.details as { async?: { state?: string } } | undefined)?.async?.state;
+			const asyncState = getToolExecutionUpdateAsyncState(event.partialResult);
 			const isFinalAsyncState = asyncState === "completed" || asyncState === "failed";
 			// A final async snapshot is terminal only for a parked background
 			// block (the call already returned and was kept alive for its jobs).
@@ -1729,7 +1766,7 @@ export class EventController {
 			// partial frame: `tool_execution_end` still owns the terminal result.
 			const isTerminal = isFinalAsyncState && this.#backgroundTaskCallIds.has(event.toolCallId);
 			component.updateResult(
-				{ ...event.partialResult, isError: asyncState === "failed" },
+				{ ...event.partialResult, isError: isToolExecutionUpdateError(event) },
 				!isTerminal,
 				event.toolCallId,
 			);
@@ -1889,6 +1926,14 @@ export class EventController {
 				} else {
 					this.ctx.pendingTools.delete(event.toolCallId);
 					this.#backgroundTaskCallIds.delete(event.toolCallId);
+				}
+				if (
+					event.toolName === "hub" &&
+					component instanceof HubActivityGroupComponent &&
+					this.#hubActivityGroup === component &&
+					component.shouldFinalizeAfterResult(event.toolCallId)
+				) {
+					this.#finalizeHubActivityGroup();
 				}
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
 					if (event.toolName === "hub" && component.canBeDisplacedBy("hub")) {

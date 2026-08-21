@@ -15,6 +15,7 @@ import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AdvisorStats } from "../../session/session-advisors";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type {
@@ -248,6 +249,8 @@ export interface RpcSessionState {
 	lsp?: LspServerStatus[];
 	/** Structured main-agent activity and active autonomous mode states. */
 	activity?: AgentActivityState;
+	/** Advisor status and usage; absent on older RPC hosts. */
+	advisorStats?: AdvisorStats;
 	planMode?: PlanModeState;
 	goalMode?: GoalModeState;
 	vibeMode?: VibeModeState;

@@ -31,6 +31,7 @@ import { getLspStatus } from "../../lsp";
 import type { MCPManager } from "../../mcp/manager";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import type { AgentSessionEvent } from "../../session/agent-session-events";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
@@ -110,6 +111,79 @@ type RpcOutput = (
 		| RpcHostUriCancelRequest
 		| object,
 ) => void;
+type RpcCoalescedUpdate = Extract<AgentSessionEvent, { type: "message_update" | "tool_execution_update" }>;
+
+const RPC_EVENT_UPDATE_COALESCE_MS = 33;
+
+/**
+ * Coalesces cumulative streaming session updates before they become JSONL
+ * frames. Control events and terminal/error updates synchronously flush the
+ * pending snapshots, preserving their wire order without forwarding every
+ * partial across the RPC boundary.
+ */
+export class RpcSessionEventCoalescer {
+	#pendingUpdates = new Map<string, RpcCoalescedUpdate>();
+	#timer: NodeJS.Timeout | undefined;
+	#closed = false;
+
+	constructor(private readonly output: (event: AgentSessionEvent) => void) {}
+
+	emit(event: AgentSessionEvent): void {
+		if (this.#closed) {
+			this.output(event);
+			return;
+		}
+		if (event.type === "message_update") {
+			const isError = event.message.role === "assistant" && event.message.stopReason === "error";
+			if (!isError) {
+				this.#enqueue("message", event);
+				return;
+			}
+		} else if (event.type === "tool_execution_update") {
+			const partialResult = event.partialResult;
+			const asyncState =
+				isRecord(partialResult) && isRecord(partialResult.details) && isRecord(partialResult.details.async)
+					? partialResult.details.async.state
+					: undefined;
+			const isError = isRecord(partialResult) && Boolean(partialResult.isError);
+			const isTerminalAsync = asyncState === "completed" || asyncState === "failed";
+			if (!isError && !isTerminalAsync) {
+				this.#enqueue(`tool:${event.toolCallId}`, event);
+				return;
+			}
+		}
+		this.flush();
+		this.output(event);
+	}
+
+	#enqueue(key: string, event: RpcCoalescedUpdate): void {
+		this.#pendingUpdates.set(key, event);
+		if (this.#timer !== undefined) return;
+		this.#timer = setTimeout(() => {
+			this.#timer = undefined;
+			this.flush();
+		}, RPC_EVENT_UPDATE_COALESCE_MS);
+	}
+
+	/** Write the latest pending update for each key in first-arrival order. */
+	flush(): void {
+		if (this.#timer !== undefined) {
+			clearTimeout(this.#timer);
+			this.#timer = undefined;
+		}
+		const pendingUpdates = Array.from(this.#pendingUpdates.values());
+		this.#pendingUpdates.clear();
+		for (const event of pendingUpdates) {
+			this.output(event);
+		}
+	}
+
+	/** Flush before teardown, then bypass coalescing for any late terminal event. */
+	dispose(): void {
+		this.flush();
+		this.#closed = true;
+	}
+}
 
 export type RpcSessionChangeCommand = Extract<
 	RpcCommand,
@@ -719,6 +793,7 @@ export async function runRpcMode(
 		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol" && obj.success === true)
 			frameEncoder.setProtocolVersion(2);
 	};
+	const sessionEventCoalescer = new RpcSessionEventCoalescer(event => output(event));
 	const emitRpcTitles = shouldEmitRpcTitles();
 
 	const success = <T extends RpcCommand["type"]>(
@@ -775,7 +850,13 @@ export async function runRpcMode(
 			// the process exits. dispose() also emits `session_shutdown`, so we
 			// must NOT emit it separately here or the event fires twice. Skipping
 			// dispose left OMP-owned Chromium alive after RPC shutdown (#5643).
-			await session.dispose();
+			subagentRegistry?.dispose();
+			try {
+				await session.dispose();
+			} finally {
+				sessionEventCoalescer.dispose();
+			}
+			await stdoutQueue;
 			process.exit(0);
 		},
 	});
@@ -1047,9 +1128,9 @@ export async function runRpcMode(
 		return extensionInitialization;
 	};
 
-	// Output all agent events as JSON
+	// Output all agent events as JSON, coalescing only cumulative streaming updates.
 	session.subscribe(event => {
-		output(event);
+		sessionEventCoalescer.emit(event);
 	});
 
 	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
@@ -1210,6 +1291,7 @@ export async function runRpcMode(
 					asyncJobs: session.getAsyncJobSnapshot({ recentLimit: 5 }),
 					lsp: getLspStatus(),
 					activity: session.getActivityState(),
+					advisorStats: session.getAdvisorStats(),
 					planMode: session.getPlanModeState(),
 					goalMode: session.getGoalModeState(),
 					vibeMode: session.getVibeModeState(),
@@ -1855,6 +1937,11 @@ export async function runRpcMode(
 	// bounded teardown run on the stdin-EOF path too (#5643). Idempotent: a
 	// prior pi.shutdown() through the coordinator makes this await settle
 	// immediately.
-	await session.dispose();
+	try {
+		await session.dispose();
+	} finally {
+		sessionEventCoalescer.dispose();
+	}
+	await stdoutQueue;
 	process.exit(0);
 }

@@ -14,9 +14,17 @@ import type {
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { getDefault, type Settings } from "../config/settings";
+import { tSettingsUi } from "../i18n/settings-locale";
 import { formatGroupedDiagnosticMessages } from "../lsp/utils";
 import type { Theme } from "../modes/theme/theme";
-import { type OutputSummary, type TruncationResult, truncateMiddle, truncateTail } from "../session/streaming-output";
+import {
+	type OutputSummary,
+	type TruncationResult,
+	truncateHeadBytes,
+	truncateMiddle,
+	truncateTail,
+	truncateTailBytes,
+} from "../session/streaming-output";
 import { formatBytes, wrapBrackets } from "./render-utils";
 import { renderError } from "./tool-errors";
 
@@ -626,6 +634,632 @@ function getSpillConfig(s: Settings | undefined) {
 }
 
 /**
+ * Live tool updates are transient UI/RPC snapshots, not recoverable tool
+ * results. Keep them materially smaller than a final inline result even when
+ * a user configured a large artifact threshold: a slow consumer otherwise
+ * repeatedly serializes the same growing buffer before the final spill runs.
+ */
+const LIVE_PARTIAL_HARD_MAX_BYTES = 64 * 1024;
+const LIVE_PARTIAL_MIN_BYTES = 1024;
+const LIVE_PARTIAL_MAX_LINES = 500;
+const LIVE_PARTIAL_MAX_DEPTH = 8;
+const LIVE_PARTIAL_MAX_ARRAY_ITEMS = 32;
+const LIVE_PARTIAL_MAX_OBJECT_ITEMS = 48;
+const LIVE_PARTIAL_FAST_MAX_ENTRIES = 192;
+const LIVE_PARTIAL_TRUNCATION_SLACK_BYTES = 128;
+const LIVE_PARTIAL_DIRECT_SCAN_MAX_CHARS = LIVE_PARTIAL_HARD_MAX_BYTES * 2;
+const LIVE_PARTIAL_FALLBACK_FIELD_MAX_CHARS = 32;
+const kLivePreviewOmitted = Symbol("OutputMeta.LivePreviewOmitted");
+
+type LivePreviewValue = unknown | typeof kLivePreviewOmitted;
+
+interface LivePartialBudget {
+	maxBytes: number;
+	contentBytes: number;
+	detailBytes: number;
+	headBytes: number;
+	tailLines: number;
+}
+
+/** Safe fallback when an extension-provided settings accessor cannot be read. */
+const LIVE_PARTIAL_SETTINGS_FAILURE_BUDGET: LivePartialBudget = {
+	maxBytes: LIVE_PARTIAL_MIN_BYTES,
+	contentBytes: Math.floor(LIVE_PARTIAL_MIN_BYTES / 2),
+	detailBytes: Math.floor(LIVE_PARTIAL_MIN_BYTES / 4),
+	headBytes: 0,
+	tailLines: 1,
+};
+
+interface LivePreviewState {
+	remaining: number;
+	seen: WeakSet<object>;
+	truncated: boolean;
+}
+
+interface LivePreviewEstimateState {
+	remaining: number;
+	seen: WeakSet<object>;
+	entries: number;
+}
+
+const LIVE_PARTIAL_DETAIL_PRIORITY_KEYS = [
+	"terminalId",
+	"jobId",
+	"state",
+	"status",
+	"async",
+	"isError",
+	"error",
+	"message",
+	"notice",
+	"meta",
+	"language",
+	"languages",
+	"statusEvents",
+	"cells",
+	"images",
+	"jsonOutputs",
+	"xdev",
+] as const;
+
+function clampLivePartialInteger(value: number, min: number, max: number, fallback: number): number {
+	if (!Number.isFinite(value)) return fallback;
+	return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/** Resolve one hard byte budget from the existing artifact display settings. */
+function resolveLivePartialBudget(settings: Settings | undefined): LivePartialBudget {
+	const { threshold, tailBytes, tailLines, headBytes } = getSpillConfig(settings);
+	const safeThreshold = clampLivePartialInteger(
+		threshold,
+		LIVE_PARTIAL_MIN_BYTES,
+		LIVE_PARTIAL_HARD_MAX_BYTES,
+		LIVE_PARTIAL_MIN_BYTES,
+	);
+	const safeTailBytes = clampLivePartialInteger(tailBytes, 0, LIVE_PARTIAL_HARD_MAX_BYTES, 0);
+	const safeHeadBytes = clampLivePartialInteger(headBytes, 0, LIVE_PARTIAL_HARD_MAX_BYTES, 0);
+	const displayBytes = Math.max(1, Math.min(LIVE_PARTIAL_HARD_MAX_BYTES, safeHeadBytes + safeTailBytes));
+	const maxBytes = Math.max(LIVE_PARTIAL_MIN_BYTES, Math.min(safeThreshold, displayBytes));
+
+	return {
+		maxBytes,
+		contentBytes: Math.max(128, Math.floor(maxBytes * 0.5)),
+		detailBytes: Math.max(128, Math.floor(maxBytes * 0.35)),
+		headBytes: Math.min(safeHeadBytes, Math.floor(maxBytes * 0.3)),
+		tailLines: clampLivePartialInteger(tailLines, 1, LIVE_PARTIAL_MAX_LINES, LIVE_PARTIAL_MAX_LINES),
+	};
+}
+
+function formatLivePartialPreviewNotice(maxBytes: number): string {
+	return `\n\n[${tSettingsUi(
+		"Live preview limited to {size}; this update has no artifact. The final tool result will follow.",
+		{
+			size: formatBytes(maxBytes),
+		},
+	)}]`;
+}
+
+function serializedByteLength(value: unknown): number | undefined {
+	try {
+		const serialized = JSON.stringify(value);
+		return serialized === undefined ? 0 : Buffer.byteLength(serialized, "utf-8");
+	} catch {
+		return undefined;
+	}
+}
+
+function consumeLivePreviewBudget(state: LivePreviewState, bytes: number): boolean {
+	if (!Number.isFinite(bytes) || bytes > state.remaining) {
+		state.truncated = true;
+		return false;
+	}
+	state.remaining -= bytes;
+	return true;
+}
+
+function copyLivePreviewImage(image: ImageContent): ImageContent {
+	return image.detail === undefined
+		? { type: "image", data: image.data, mimeType: image.mimeType }
+		: { type: "image", data: image.data, mimeType: image.mimeType, detail: image.detail };
+}
+
+function truncateLivePreviewText(text: string, maxBytes: number, budget: LivePartialBudget): string {
+	if (maxBytes <= 0) return "";
+	if (text.length <= maxBytes && Buffer.byteLength(text, "utf-8") <= maxBytes) return text;
+
+	const bodyBytes = Math.max(1, maxBytes - LIVE_PARTIAL_TRUNCATION_SLACK_BYTES);
+	if (text.length > LIVE_PARTIAL_DIRECT_SCAN_MAX_CHARS) {
+		if (budget.headBytes > 0 && bodyBytes > 2) {
+			const headBytes = Math.min(budget.headBytes, Math.max(1, Math.floor(bodyBytes * 0.6)));
+			const tailBytes = Math.max(1, bodyBytes - headBytes);
+			const head = truncateHeadBytes(text, headBytes).text;
+			const tail = truncateTailBytes(text, tailBytes).text;
+			if (head && tail) return `${head}\n[…live preview elided…]\n${tail}`;
+			return head || tail;
+		}
+		return truncateTailBytes(text, bodyBytes).text;
+	}
+
+	if (budget.headBytes > 0) {
+		return truncateMiddle(text, {
+			maxBytes: bodyBytes,
+			maxLines: Math.max(2, budget.tailLines * 2),
+			maxHeadBytes: Math.min(budget.headBytes, Math.max(1, Math.floor(bodyBytes * 0.6))),
+			maxHeadLines: budget.tailLines,
+		}).content;
+	}
+	return truncateTail(text, { maxBytes: bodyBytes, maxLines: budget.tailLines }).content;
+}
+
+function appendLivePartialPreviewNotice(
+	content: (TextContent | ImageContent)[],
+	notice: string,
+): (TextContent | ImageContent)[] {
+	const result = [...content];
+	for (let i = result.length - 1; i >= 0; i--) {
+		const block = result[i];
+		if (block.type === "text") {
+			result[i] = { type: "text", text: block.text + notice };
+			return result;
+		}
+	}
+	result.push({ type: "text", text: notice.trim() });
+	return result;
+}
+
+function previewLivePartialContent(
+	rawContent: unknown,
+	budget: LivePartialBudget,
+): { content: (TextContent | ImageContent)[]; truncated: boolean } {
+	if (!Array.isArray(rawContent)) return { content: [], truncated: true };
+
+	const noticeBytes = Buffer.byteLength(formatLivePartialPreviewNotice(budget.maxBytes), "utf-8");
+	let remaining = Math.max(0, budget.contentBytes - noticeBytes);
+	let truncated = false;
+	const content: (TextContent | ImageContent)[] = [];
+	const count = Math.min(rawContent.length, LIVE_PARTIAL_MAX_ARRAY_ITEMS);
+	if (rawContent.length > count) truncated = true;
+
+	for (let i = 0; i < count; i++) {
+		const block = rawContent[i];
+		if (!block || typeof block !== "object") {
+			truncated = true;
+			continue;
+		}
+		const candidate = block as {
+			type?: unknown;
+			text?: unknown;
+			data?: unknown;
+			mimeType?: unknown;
+			detail?: unknown;
+		};
+
+		if (candidate.type === "text" && typeof candidate.text === "string") {
+			if (remaining <= 0) {
+				truncated = true;
+				continue;
+			}
+			const text = truncateLivePreviewText(candidate.text, remaining, budget);
+			const textBytes = Buffer.byteLength(text, "utf-8");
+			if (text !== candidate.text) truncated = true;
+			if (text || !candidate.text) content.push({ type: "text", text });
+			remaining = Math.max(0, remaining - textBytes);
+			continue;
+		}
+
+		if (candidate.type === "image" && typeof candidate.data === "string" && typeof candidate.mimeType === "string") {
+			const detail = candidate.detail;
+			const image: ImageContent =
+				detail === "auto" || detail === "low" || detail === "high" || detail === "original"
+					? { type: "image", data: candidate.data, mimeType: candidate.mimeType, detail }
+					: { type: "image", data: candidate.data, mimeType: candidate.mimeType };
+			if (image.data.length > remaining) {
+				truncated = true;
+				continue;
+			}
+			const imageBytes = serializedByteLength(image);
+			if (imageBytes === undefined || imageBytes > remaining) {
+				truncated = true;
+				continue;
+			}
+			content.push(copyLivePreviewImage(image));
+			remaining -= imageBytes;
+			continue;
+		}
+
+		truncated = true;
+	}
+
+	return { content, truncated };
+}
+
+function isPlainLivePreviewRecord(value: object): value is Record<string, unknown> {
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
+function hasUnsafeToJson(value: object): boolean {
+	const descriptor = Object.getOwnPropertyDescriptor(value, "toJSON");
+	return descriptor !== undefined && (descriptor.get !== undefined || typeof descriptor.value === "function");
+}
+
+function consumeLiveEstimate(state: LivePreviewEstimateState, bytes: number): boolean {
+	if (!Number.isFinite(bytes) || bytes > state.remaining) return false;
+	state.remaining -= bytes;
+	return true;
+}
+
+function consumeLiveStringEstimate(state: LivePreviewEstimateState, value: string): boolean {
+	const remainingForText = state.remaining - 2;
+	if (remainingForText < 0 || value.length > Math.floor(remainingForText / 6)) return false;
+	state.remaining -= 2 + value.length * 6;
+	return true;
+}
+
+function isOmittedByJson(value: unknown): boolean {
+	return value === undefined || typeof value === "function" || typeof value === "symbol";
+}
+
+function estimateLiveJsonValue(
+	value: unknown,
+	state: LivePreviewEstimateState,
+	depth: number,
+	inArray: boolean,
+): boolean {
+	if (state.entries++ >= LIVE_PARTIAL_FAST_MAX_ENTRIES || depth > LIVE_PARTIAL_MAX_DEPTH) return false;
+	if (value === null) return consumeLiveEstimate(state, 4);
+	if (typeof value === "string") return consumeLiveStringEstimate(state, value);
+	if (typeof value === "boolean") return consumeLiveEstimate(state, value ? 4 : 5);
+	if (typeof value === "number") return consumeLiveEstimate(state, Number.isFinite(value) ? 32 : 4);
+	if (typeof value === "bigint") return false;
+	if (isOmittedByJson(value)) return !inArray || consumeLiveEstimate(state, 4);
+	if (typeof value !== "object") return false;
+
+	if (state.seen.has(value)) return false;
+	if (hasUnsafeToJson(value)) return false;
+	state.seen.add(value);
+	try {
+		if (Array.isArray(value)) {
+			if (value.length > LIVE_PARTIAL_FAST_MAX_ENTRIES || !consumeLiveEstimate(state, 2)) return false;
+			for (let i = 0; i < value.length; i++) {
+				if (i > 0 && !consumeLiveEstimate(state, 1)) return false;
+				const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+				if (descriptor?.get !== undefined || descriptor?.set !== undefined) return false;
+				if (!estimateLiveJsonValue(descriptor?.value ?? null, state, depth + 1, true)) return false;
+			}
+			return true;
+		}
+
+		if (!isPlainLivePreviewRecord(value) || !consumeLiveEstimate(state, 2)) return false;
+		let propertyCount = 0;
+		let hasProperty = false;
+		for (const key in value) {
+			if (!Object.hasOwn(value, key)) continue;
+			if (++propertyCount > LIVE_PARTIAL_FAST_MAX_ENTRIES) return false;
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) return false;
+			if (isOmittedByJson(descriptor.value)) continue;
+			if (hasProperty && !consumeLiveEstimate(state, 1)) return false;
+			if (!consumeLiveStringEstimate(state, key) || !consumeLiveEstimate(state, 1)) return false;
+			if (!estimateLiveJsonValue(descriptor.value, state, depth + 1, false)) return false;
+			hasProperty = true;
+		}
+		return true;
+	} finally {
+		state.seen.delete(value);
+	}
+}
+
+function isLivePartialWithinBudget(partialResult: AgentToolResult, budget: LivePartialBudget): boolean {
+	try {
+		return estimateLiveJsonValue(
+			partialResult,
+			{ remaining: budget.maxBytes, seen: new WeakSet<object>(), entries: 0 },
+			0,
+			false,
+		);
+	} catch {
+		return false;
+	}
+}
+
+function previewLiveString(value: string, state: LivePreviewState, budget: LivePartialBudget): LivePreviewValue {
+	if (value.length <= state.remaining) {
+		const bytes = serializedByteLength(value);
+		if (bytes !== undefined && consumeLivePreviewBudget(state, bytes)) return value;
+	}
+
+	state.truncated = true;
+	const text = truncateLivePreviewText(value, Math.max(1, Math.floor(state.remaining / 2)), budget);
+	const bytes = serializedByteLength(text);
+	if (bytes !== undefined && consumeLivePreviewBudget(state, bytes)) return text;
+	if (consumeLivePreviewBudget(state, 5)) return "…";
+	return kLivePreviewOmitted;
+}
+
+function previewLiveImage(value: ImageContent, state: LivePreviewState): LivePreviewValue {
+	if (value.data.length > state.remaining) {
+		state.truncated = true;
+		return kLivePreviewOmitted;
+	}
+	const image = copyLivePreviewImage(value);
+	const bytes = serializedByteLength(image);
+	if (bytes !== undefined && consumeLivePreviewBudget(state, bytes)) return image;
+	state.truncated = true;
+	return kLivePreviewOmitted;
+}
+
+function previewLiveArray(
+	value: unknown[],
+	state: LivePreviewState,
+	budget: LivePartialBudget,
+	depth: number,
+): LivePreviewValue {
+	if (state.seen.has(value)) {
+		state.truncated = true;
+		return previewLiveString("[circular reference omitted]", state, budget);
+	}
+	if (!consumeLivePreviewBudget(state, 2)) return kLivePreviewOmitted;
+
+	state.seen.add(value);
+	try {
+		const result: unknown[] = [];
+		const count = Math.min(value.length, LIVE_PARTIAL_MAX_ARRAY_ITEMS);
+		if (value.length > count) state.truncated = true;
+		for (let i = 0; i < count; i++) {
+			const before = state.remaining;
+			if (result.length > 0 && !consumeLivePreviewBudget(state, 1)) break;
+			const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+			if (descriptor?.get !== undefined || descriptor?.set !== undefined) {
+				state.remaining = before;
+				state.truncated = true;
+				continue;
+			}
+			const item = previewLiveValue(descriptor?.value ?? null, state, budget, depth + 1, true);
+			if (item === kLivePreviewOmitted) {
+				state.remaining = before;
+				continue;
+			}
+			result.push(item);
+		}
+		return result;
+	} finally {
+		state.seen.delete(value);
+	}
+}
+
+function previewLiveRecord(
+	value: Record<string, unknown>,
+	state: LivePreviewState,
+	budget: LivePartialBudget,
+	depth: number,
+): LivePreviewValue {
+	if (state.seen.has(value)) {
+		state.truncated = true;
+		return previewLiveString("[circular reference omitted]", state, budget);
+	}
+	if (!consumeLivePreviewBudget(state, 2)) return kLivePreviewOmitted;
+
+	state.seen.add(value);
+	try {
+		const result: Record<string, unknown> = Object.create(null);
+		const seenKeys = new Set<string>();
+		let propertyCount = 0;
+		let hasProperty = false;
+
+		const addProperty = (key: string): boolean => {
+			if (++propertyCount > LIVE_PARTIAL_MAX_OBJECT_ITEMS) {
+				state.truncated = true;
+				return false;
+			}
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) {
+				state.truncated = true;
+				return true;
+			}
+			if (isOmittedByJson(descriptor.value)) return true;
+
+			const before = state.remaining;
+			const keyBytes = key.length <= state.remaining ? serializedByteLength(key) : undefined;
+			if (keyBytes === undefined || !consumeLivePreviewBudget(state, keyBytes + 1 + (hasProperty ? 1 : 0))) {
+				state.remaining = before;
+				state.truncated = true;
+				return false;
+			}
+			const item = previewLiveValue(descriptor.value, state, budget, depth + 1, false);
+			if (item === kLivePreviewOmitted) {
+				state.remaining = before;
+				return true;
+			}
+			Object.defineProperty(result, key, {
+				value: item,
+				enumerable: true,
+				configurable: true,
+				writable: true,
+			});
+			hasProperty = true;
+			return true;
+		};
+
+		for (const key of LIVE_PARTIAL_DETAIL_PRIORITY_KEYS) {
+			if (!Object.hasOwn(value, key)) continue;
+			seenKeys.add(key);
+			if (!addProperty(key)) return result;
+		}
+		for (const key in value) {
+			if (!Object.hasOwn(value, key) || seenKeys.has(key)) continue;
+			if (!addProperty(key)) break;
+		}
+		return result;
+	} finally {
+		state.seen.delete(value);
+	}
+}
+
+function asLivePreviewImage(value: object): ImageContent | undefined {
+	const candidate = value as { type?: unknown; data?: unknown; mimeType?: unknown; detail?: unknown };
+	if (candidate.type !== "image" || typeof candidate.data !== "string" || typeof candidate.mimeType !== "string") {
+		return undefined;
+	}
+	return candidate.detail === "auto" ||
+		candidate.detail === "low" ||
+		candidate.detail === "high" ||
+		candidate.detail === "original"
+		? { type: "image", data: candidate.data, mimeType: candidate.mimeType, detail: candidate.detail }
+		: { type: "image", data: candidate.data, mimeType: candidate.mimeType };
+}
+
+function previewLiveValue(
+	value: unknown,
+	state: LivePreviewState,
+	budget: LivePartialBudget,
+	depth: number,
+	inArray: boolean,
+): LivePreviewValue {
+	if (depth > LIVE_PARTIAL_MAX_DEPTH) {
+		state.truncated = true;
+		return kLivePreviewOmitted;
+	}
+	if (value === null) return consumeLivePreviewBudget(state, 4) ? null : kLivePreviewOmitted;
+	if (typeof value === "string") return previewLiveString(value, state, budget);
+	if (typeof value === "boolean") return consumeLivePreviewBudget(state, value ? 4 : 5) ? value : kLivePreviewOmitted;
+	if (typeof value === "number") {
+		return consumeLivePreviewBudget(state, Number.isFinite(value) ? 32 : 4) ? value : kLivePreviewOmitted;
+	}
+	if (typeof value === "bigint") {
+		state.truncated = true;
+		return previewLiveString("[bigint omitted from live preview]", state, budget);
+	}
+	if (isOmittedByJson(value)) {
+		return inArray && consumeLivePreviewBudget(state, 4) ? null : kLivePreviewOmitted;
+	}
+	if (typeof value !== "object") {
+		state.truncated = true;
+		return kLivePreviewOmitted;
+	}
+
+	const image = asLivePreviewImage(value);
+	if (image) return previewLiveImage(image, state);
+	if (value instanceof Error) {
+		return previewLiveRecord({ name: value.name, message: value.message }, state, budget, depth);
+	}
+	if (value instanceof Date) {
+		try {
+			return previewLiveString(value.toISOString(), state, budget);
+		} catch {
+			state.truncated = true;
+			return kLivePreviewOmitted;
+		}
+	}
+	if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+		return previewLiveString("[binary data omitted from live preview]", state, budget);
+	}
+	if (Array.isArray(value)) return previewLiveArray(value, state, budget, depth);
+	if (isPlainLivePreviewRecord(value)) return previewLiveRecord(value, state, budget, depth);
+
+	state.truncated = true;
+	return previewLiveString(`[${value.constructor?.name ?? "object"} omitted from live preview]`, state, budget);
+}
+
+/** Read an own data property without evaluating extension-provided accessors. */
+function getOwnLivePreviewDataProperty(value: unknown, key: string): unknown {
+	if (value === null || typeof value !== "object") return undefined;
+	const descriptor = Object.getOwnPropertyDescriptor(value, key);
+	if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) return undefined;
+	return descriptor.value;
+}
+
+function truncateLivePartialFallbackField(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	return value.length <= LIVE_PARTIAL_FALLBACK_FIELD_MAX_CHARS
+		? value
+		: value.slice(0, LIVE_PARTIAL_FALLBACK_FIELD_MAX_CHARS);
+}
+
+/** Preserve the minimal async shape that drives terminal-update delivery. */
+function fallbackLivePartialAsyncDetails(
+	partialResult: AgentToolResult,
+): { async: { state: string; jobId?: string; type?: string } } | undefined {
+	try {
+		const details = getOwnLivePreviewDataProperty(partialResult, "details");
+		const async = getOwnLivePreviewDataProperty(details, "async");
+		const state = truncateLivePartialFallbackField(getOwnLivePreviewDataProperty(async, "state"));
+		if (state === undefined) return undefined;
+
+		const fallbackAsync: { state: string; jobId?: string; type?: string } = { state };
+		const jobId = truncateLivePartialFallbackField(getOwnLivePreviewDataProperty(async, "jobId"));
+		if (jobId !== undefined) fallbackAsync.jobId = jobId;
+		const type = truncateLivePartialFallbackField(getOwnLivePreviewDataProperty(async, "type"));
+		if (type !== undefined) fallbackAsync.type = type;
+		return { async: fallbackAsync };
+	} catch {
+		return undefined;
+	}
+}
+
+function fallbackLivePartialPreview(partialResult: AgentToolResult, budget: LivePartialBudget): AgentToolResult {
+	let isError = false;
+	let useless = false;
+	try {
+		isError = Boolean(getOwnLivePreviewDataProperty(partialResult, "isError"));
+		useless = Boolean(getOwnLivePreviewDataProperty(partialResult, "useless"));
+	} catch {
+		// A hostile extension object still gets a serializable, bounded fallback.
+	}
+	const details = fallbackLivePartialAsyncDetails(partialResult);
+	return {
+		content: [{ type: "text", text: formatLivePartialPreviewNotice(budget.maxBytes).trim() }],
+		...(details === undefined ? {} : { details }),
+		...(isError ? { isError: true } : {}),
+		...(useless && !isError ? { useless: true } : {}),
+	};
+}
+
+function previewLivePartialResult(partialResult: AgentToolResult, settings: Settings | undefined): AgentToolResult {
+	let budget = LIVE_PARTIAL_SETTINGS_FAILURE_BUDGET;
+	try {
+		budget = resolveLivePartialBudget(settings);
+		if (isLivePartialWithinBudget(partialResult, budget)) return partialResult;
+
+		const raw = partialResult as unknown as Record<string, unknown>;
+		const contentPreview = previewLivePartialContent(raw.content, budget);
+		const state: LivePreviewState = {
+			remaining: budget.detailBytes,
+			seen: new WeakSet<object>(),
+			truncated: false,
+		};
+		const result: AgentToolResult = { content: contentPreview.content };
+
+		if (Object.hasOwn(raw, "details")) {
+			const details = previewLiveValue(raw.details, state, budget, 0, false);
+			if (details !== kLivePreviewOmitted) result.details = details;
+		}
+		if (Object.hasOwn(raw, "providerMetadata")) {
+			const providerMetadata = previewLiveValue(raw.providerMetadata, state, budget, 0, false);
+			if (providerMetadata !== kLivePreviewOmitted) {
+				result.providerMetadata = providerMetadata as AgentToolResult["providerMetadata"];
+			}
+		}
+		if (getOwnLivePreviewDataProperty(raw, "isError")) result.isError = true;
+		if (getOwnLivePreviewDataProperty(raw, "useless") && !result.isError) result.useless = true;
+
+		if (contentPreview.truncated || state.truncated) {
+			result.content = appendLivePartialPreviewNotice(
+				result.content,
+				formatLivePartialPreviewNotice(budget.maxBytes),
+			);
+		}
+
+		const bytes = serializedByteLength(result);
+		return bytes !== undefined && bytes <= budget.maxBytes
+			? result
+			: fallbackLivePartialPreview(partialResult, budget);
+	} catch {
+		return fallbackLivePartialPreview(partialResult, budget);
+	}
+}
+
+/**
  * Resolve the OutputSink `headBytes` budget from session settings.
  * Exposed so streaming executors (bash/python/ssh/eval) can opt into
  * middle elision with the same per-user configuration.
@@ -810,9 +1444,12 @@ async function wrappedExecute(
 	context?: AgentToolContext,
 ): Promise<AgentToolResult> {
 	const originalExecute = this[kUnwrappedExecute];
+	const boundedOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
+		? partialResult => onUpdate(previewLivePartialResult(partialResult, context?.settings))
+		: undefined;
 
 	try {
-		let result = await originalExecute.call(this, toolCallId, params, signal, onUpdate, context);
+		let result = await originalExecute.call(this, toolCallId, params, signal, boundedOnUpdate, context);
 
 		// Spill large results to artifact, truncate to tail
 		result = await spillLargeResultToArtifact(result, this.name, context);

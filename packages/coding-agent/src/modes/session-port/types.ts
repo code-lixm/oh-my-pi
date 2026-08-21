@@ -6,6 +6,7 @@ import type { GoalModeState } from "../../goals/state";
 import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AdvisorStats } from "../../session/session-advisors";
 import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
 import type { VibeModeState } from "../../vibe/state";
@@ -65,6 +66,7 @@ export interface InteractiveSessionProjection {
 	readonly configuredThinkingLevel: ConfiguredThinkingLevel | undefined;
 	readonly busy: InteractiveSessionBusyFlags;
 	readonly activity?: AgentActivityState;
+	readonly advisorStats?: AdvisorStats;
 	readonly todo: readonly TodoPhase[];
 	readonly queue: { readonly steering: readonly string[]; readonly followUp: readonly string[] };
 	readonly modes: InteractiveSessionModes;

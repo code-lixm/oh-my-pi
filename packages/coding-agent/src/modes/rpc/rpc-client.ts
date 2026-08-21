@@ -161,6 +161,7 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"ttsr_triggered",
 	"todo_reminder",
 	"todo_auto_clear",
+	"queue_changed",
 	"irc_message",
 	"notice",
 	"thinking_level_changed",

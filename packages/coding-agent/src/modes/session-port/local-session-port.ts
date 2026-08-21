@@ -49,6 +49,7 @@ function localState(session: AgentSession): RpcSessionState {
 		contextUsage: session.getContextUsage(),
 		asyncJobs: session.getAsyncJobSnapshot({ recentLimit: 5 }),
 		activity: session.getActivityState(),
+		advisorStats: session.getAdvisorStats(),
 		planMode: session.getPlanModeState(),
 		goalMode: session.getGoalModeState(),
 		vibeMode: session.getVibeModeState(),
@@ -76,6 +77,7 @@ function localProjection(session: AgentSession): InteractiveSessionProjection {
 			isCompacting: state.isCompacting,
 		},
 		activity: state.activity,
+		advisorStats: state.advisorStats,
 		todo: state.todoPhases,
 		queue: state.queuedMessages ?? { steering: [], followUp: [] },
 		modes: {

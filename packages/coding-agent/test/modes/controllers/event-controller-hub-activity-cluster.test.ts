@@ -119,7 +119,7 @@ function createLiveFixture(focusedAgentId?: string, hideToolActivity = false) {
 		showSubagentFeedback,
 		lastAssistantUsage: emptyUsage(),
 	} as unknown as InteractiveModeContext;
-	return { controller: new EventController(ctx), chatContainer, pendingTools, showSubagentFeedback };
+	return { controller: new EventController(ctx), chatContainer, pendingTools, addMessageToChat, showSubagentFeedback };
 }
 
 async function completeHubWait(controller: EventController, toolCallId: string, body: string): Promise<void> {
@@ -522,6 +522,144 @@ describe("EventController hub activity cluster", () => {
 		expect(rendered).toContain("running");
 		expect(rendered).toContain("Job");
 		expect(rendered).not.toContain("IRC");
+	});
+
+	it("keeps async job completion and later waits in one Hub card instead of adding a card per background task", async () => {
+		const { controller, chatContainer, pendingTools, addMessageToChat } = createLiveFixture();
+		const firstWaitId = "hub-wait-before-async-result";
+		const completedJobId = "async-completed-task";
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: firstWaitId,
+			toolName: "hub",
+			args: { op: "wait", ids: ["background-task"] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(hubGroups(chatContainer)).toHaveLength(1);
+		const [group] = hubGroups(chatContainer);
+		if (!group) throw new Error("expected grouped Hub job activity");
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: firstWaitId,
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "background task is still running" }],
+				details: {
+					op: "wait",
+					jobs: [
+						{ id: "background-task", type: "task", status: "running", label: "Background task", durationMs: 12 },
+					],
+				},
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(hubGroups(chatContainer)).toHaveLength(1);
+		expect(group.canAppend).toBe(true);
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: {
+				role: "custom",
+				customType: "async-result",
+				content: `Background job ${completedJobId} has completed.`,
+				display: true,
+				attribution: "agent",
+				details: {
+					jobs: [{ jobId: completedJobId, type: "task", status: "completed", durationMs: 24 }],
+				},
+				timestamp: 1_700_000_000_600,
+			},
+		} as Extract<AgentSessionEvent, { type: "message_start" }>);
+
+		expect(addMessageToChat).not.toHaveBeenCalled();
+		expect(hubGroups(chatContainer)).toHaveLength(1);
+		expect(hubGroups(chatContainer)[0]).toBe(group);
+		expect(group.canAppend).toBe(true);
+		expect(renderText(group)).toContain(completedJobId);
+
+		const nextWaitId = "hub-wait-after-async-result";
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: nextWaitId,
+			toolName: "hub",
+			args: { op: "wait", ids: ["next-background-task"] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(hubGroups(chatContainer)).toHaveLength(1);
+		expect(hubGroups(chatContainer)[0]).toBe(group);
+		expect(pendingTools.get(nextWaitId)).toBe(group);
+		expect(group.canAppend).toBe(true);
+	});
+
+	it("keeps a settled Hub wait immutable when a displayed async result arrives", async () => {
+		const { controller, chatContainer, addMessageToChat } = createLiveFixture();
+		const waitId = "hub-wait-with-settled-job";
+		const settledJobId = "job-already-committed";
+		const asyncJobId = "async-job-must-stay-standalone";
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: waitId,
+			toolName: "hub",
+			args: { op: "wait", ids: [settledJobId] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		const [group] = hubGroups(chatContainer);
+		if (!group) throw new Error("expected grouped Hub job activity");
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: waitId,
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: "job completed" }],
+				details: {
+					op: "wait",
+					jobs: [{ id: settledJobId, type: "task", status: "completed", label: "Committed job", durationMs: 24 }],
+				},
+			},
+			isError: false,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		// A terminal wait is sealed at tool_execution_end, before any later
+		// message can append to or rewrite its native-scrollback frame.
+		expect(group.canAppend).toBe(false);
+		expect(group.isTranscriptBlockFinalized()).toBe(true);
+		const settledRows = [...chatContainer.render(120)];
+		expect(settledRows.join("\n")).toContain("Committed job");
+		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
+		chatContainer.setNativeScrollbackCommittedRows(settledRows.length);
+		expect(chatContainer.isBlockUncommitted(group)).toBe(false);
+
+		const settledGroupRows = [...group.render(120)];
+		const settledVersion = group.getTranscriptBlockVersion();
+		const asyncResultMessage = {
+			role: "custom" as const,
+			customType: "async-result",
+			content: `Background job ${asyncJobId} has completed.`,
+			display: true,
+			attribution: "agent",
+			details: {
+				jobs: [{ jobId: asyncJobId, type: "task", status: "completed", durationMs: 48 }],
+			},
+			timestamp: 1_700_000_000_700,
+		};
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: asyncResultMessage,
+		} as Extract<AgentSessionEvent, { type: "message_start" }>);
+
+		expect(addMessageToChat).toHaveBeenCalledTimes(1);
+		expect(addMessageToChat).toHaveBeenCalledWith(asyncResultMessage);
+		// The standalone fallback must not touch the sealed group's render state.
+		expect(group.getTranscriptBlockVersion()).toBe(settledVersion);
+		expect([...group.render(120)]).toEqual(settledGroupRows);
+		expect([...chatContainer.render(120)]).toEqual(settledRows);
+		expect(group.canAppend).toBe(false);
 	});
 
 	it("keeps the IRC title for peer Hub activity when communication is enabled", async () => {

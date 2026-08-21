@@ -1,4 +1,5 @@
 import { type Component, Container, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { formatDuration } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { parseXdUrl } from "../../internal-urls/xd-protocol";
 import type { IrcDeliveryReceipt } from "../../irc/bus";
@@ -44,19 +45,23 @@ type HubIrcActivityEntry = HubIrcActivityEvent & {
 	age: string;
 	settled: boolean;
 };
-type HubActivityEntry = HubToolActivityEntry | HubIrcActivityEntry;
+type HubAsyncResultActivityEntry = {
+	kind: "async-result";
+	id: string;
+	jobs: Array<{ jobId?: string; type?: string; durationMs?: number }>;
+};
+type HubActivityEntry = HubToolActivityEntry | HubIrcActivityEntry | HubAsyncResultActivityEntry;
 
 function resultText(result: HubActivityResult | undefined): string {
 	return result?.content.find(part => part.type === "text")?.text?.trim() ?? "";
 }
 function isWaitingPollEntry(entry: HubToolActivityEntry): boolean {
-	if (entry.args.op !== "wait" || !Array.isArray(entry.args.ids) || entry.partial || !entry.result) return false;
+	if (entry.args.op !== "wait" || entry.partial || !entry.result || entry.result.isError) return false;
 	const details = entry.result.details as Partial<CoordinationDetails> | undefined;
 	const jobs = details?.jobs ?? [];
 	if (jobs.length > 0) return jobs.every(job => job.status === "running");
-	// Job-less waits can still carry the running-subagent roster; repeated
-	// polls of that roster must displace like job-backed waits instead of
-	// stacking "agent 运行中" rows in the transcript.
+	// Bare waits can carry the running-subagent roster too; both bare and
+	// ID-targeted all-running snapshots remain replaceable live activity.
 	return (details?.agents?.length ?? 0) > 0;
 }
 
@@ -296,6 +301,53 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#invalidate();
 	}
 
+	/** A terminal wait must become history before another Hub call can join this block. */
+	shouldFinalizeAfterResult(toolCallId?: string): boolean {
+		if (!toolCallId) return false;
+		const entry = this.#toolEntries.get(toolCallId);
+		return entry?.args.op === "wait" && entry.result !== undefined && !entry.partial && !isWaitingPollEntry(entry);
+	}
+
+	#hasAppendableAsyncJobTail(): boolean {
+		if (!this.canAppend) return false;
+		let hasJobWait = false;
+		for (const entry of this.#entries) {
+			if (entry.kind === "async-result") continue;
+			if (
+				entry.kind !== "tool" ||
+				entry.args.op !== "wait" ||
+				typeof entry.args.name === "string" ||
+				typeof entry.args.from === "string" ||
+				(entry.result !== undefined && !entry.partial && !isWaitingPollEntry(entry))
+			) {
+				return false;
+			}
+			hasJobWait = true;
+		}
+		return hasJobWait;
+	}
+
+	/** Append automatic task delivery only while the trailing job tail remains fully live. */
+	appendAsyncResult(details: unknown): boolean {
+		if (!this.#hasAppendableAsyncJobTail()) return false;
+		if (!details || typeof details !== "object" || !("jobs" in details) || !Array.isArray(details.jobs)) return false;
+		const jobs = details.jobs.flatMap(job => {
+			if (!job || typeof job !== "object") return [];
+			const jobId = "jobId" in job && typeof job.jobId === "string" ? job.jobId : undefined;
+			if (!jobId) return [];
+			const type = "type" in job && typeof job.type === "string" ? job.type : undefined;
+			const durationMs =
+				"durationMs" in job && typeof job.durationMs === "number" && Number.isFinite(job.durationMs)
+					? job.durationMs
+					: undefined;
+			return [{ jobId, type, durationMs }];
+		});
+		if (jobs.length === 0) return false;
+		this.#entries.push({ kind: "async-result", id: `async:${this.#customSequence++}`, jobs });
+		this.#invalidate();
+		return true;
+	}
+
 	discardHiddenMessageActivity(result: HubActivityResult, toolCallId?: string): boolean {
 		if (!toolCallId) return false;
 		const entry = this.#toolEntries.get(toolCallId);
@@ -344,7 +396,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 
 	getIrcEventRefs(): Array<{ sourceId: string; eventId: string; timestamp: number | undefined }> {
 		return this.#entries.flatMap(entry =>
-			entry.kind !== "tool" && entry.sourceId
+			entry.kind !== "tool" && entry.kind !== "async-result" && entry.sourceId
 				? [{ sourceId: entry.sourceId, eventId: entry.id, timestamp: entry.timestamp }]
 				: [],
 		);
@@ -423,7 +475,10 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		for (const entry of this.#entries) {
 			const entryRows = this.#entryLines(entry, renderExpanded).map(line => truncateToWidth(line, width));
 			if (entryRows.length > 0 && headerKind === undefined) {
-				headerKind = entry.kind === "tool" && !isHubPeerCommunicationArgs(entry.args) ? "job" : "irc";
+				headerKind =
+					entry.kind === "async-result" || (entry.kind === "tool" && !isHubPeerCommunicationArgs(entry.args))
+						? "job"
+						: "irc";
 			}
 			rows.push(...entryRows);
 			const settled =
@@ -431,7 +486,9 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 					? entry.result !== undefined &&
 						!entry.partial &&
 						(this.#finalized || (!isWaitingPollEntry(entry) && entry.args.op !== "list"))
-					: entry.settled;
+					: entry.kind === "async-result"
+						? this.#finalized
+						: entry.settled;
 			if (stablePrefix && settled) settledContentRows += entryRows.length;
 			else stablePrefix = false;
 		}
@@ -469,6 +526,7 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 	}
 
 	#entryLines(entry: HubActivityEntry, expanded: boolean): string[] {
+		if (entry.kind === "async-result") return this.#asyncResultLines(entry);
 		if (entry.kind === "tool" && !this.#peerCommunicationVisible && isHubPeerCommunicationArgs(entry.args)) return [];
 		if (entry.kind === "tool" && (entry.hidden || !this.#toolActivityVisible)) return [];
 		if (entry.kind !== "tool") return this.#peerCommunicationVisible ? this.#ircLines(entry, expanded) : [];
@@ -554,6 +612,21 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 			);
 		}
 		return lines;
+	}
+
+	#asyncResultLines(entry: HubAsyncResultActivityEntry): string[] {
+		return entry.jobs.map(job => {
+			const typeLabel = job.type ? `[${job.type}]` : tSettingsUi("[job]");
+			const duration = job.durationMs === undefined ? undefined : formatDuration(job.durationMs);
+			return [
+				theme.fg("success", `${theme.status.done} ${tSettingsUi("Background job completed")}`),
+				theme.fg("dim", typeLabel),
+				theme.fg("accent", replaceTabs(job.jobId ?? tSettingsUi("unknown"))),
+				duration ? theme.fg("dim", `(${duration})`) : undefined,
+			]
+				.filter(Boolean)
+				.join(" ");
+		});
 	}
 
 	#ircLines(entry: HubIrcActivityEntry, expanded: boolean): string[] {

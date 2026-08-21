@@ -66,6 +66,7 @@ function buildProjection(
 			isCompacting: state.isCompacting,
 		},
 		...(state.activity ? { activity: state.activity } : {}),
+		...(state.advisorStats ? { advisorStats: state.advisorStats } : {}),
 		todo: state.todoPhases,
 		queue: state.queuedMessages ?? { steering: [], followUp: [] },
 		modes: {
@@ -218,6 +219,7 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 			case "message_end": {
 				const messages = replaceMessage(this.#projection.messages, event.message);
 				this.#emitReliable({ messages }, event.type === "message_end" ? "assistant-message" : undefined);
+				if (event.type === "message_start" && event.message.role === "user") void this.#scheduleRefresh();
 				return;
 			}
 			case "agent_start":

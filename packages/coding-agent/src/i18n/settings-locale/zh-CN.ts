@@ -889,6 +889,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Jobs Hub": "任务中心",
 	"Job Details": "任务详情",
 	"Live output tail": "实时输出末尾",
+	"Live preview limited to {size}; this update has no artifact. The final tool result will follow.":
+		"实时预览已限制为 {size}；此更新没有 artifact，最终工具结果将随后返回。",
 	Result: "结果",
 	"No retained background jobs.": "暂无保留的后台任务。",
 	"open details": "打开详情",

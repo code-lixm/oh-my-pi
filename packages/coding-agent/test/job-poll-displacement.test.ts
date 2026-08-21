@@ -201,7 +201,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 			clearTransientSessionUi: vi.fn(),
 			lastAssistantUsage: undefined,
 		} as unknown as InteractiveModeContext;
-		return { controller: new EventController(ctx), children, pendingTools };
+		return { controller: new EventController(ctx), chatContainer, children, pendingTools };
 	}
 
 	function hubGroups(children: Component[]) {
@@ -226,6 +226,7 @@ describe("EventController displaces consecutive waiting polls", () => {
 		toolCallId: string,
 		statuses: JobStatus[] = ["running"],
 		waitStyle: "bare" | "ids" = "ids",
+		resultOptions: { isError?: boolean } = {},
 	) {
 		await controller.handleEvent({
 			type: "tool_execution_start",
@@ -238,8 +239,8 @@ describe("EventController displaces consecutive waiting polls", () => {
 			type: "tool_execution_end",
 			toolCallId,
 			toolName: "hub",
-			result: pollResult(statuses, {}, `${toolCallId} job`),
-			isError: false,
+			result: pollResult(statuses, resultOptions, `${toolCallId} job`),
+			isError: resultOptions.isError ?? false,
 		});
 		return group;
 	}
@@ -255,6 +256,26 @@ describe("EventController displaces consecutive waiting polls", () => {
 
 		// The stale row is displaced inside the current grouped hub block; the group
 		// stays live so another hub poll can replace this one instead of stacking.
+		expect(secondGroup).toBe(firstGroup);
+		expect(hubGroups(children)).toHaveLength(1);
+		const rendered = renderText(secondGroup);
+		expect(rendered).not.toContain("t1 job 0");
+		expect(rendered).toContain("t2 job 0");
+		expect(secondGroup.canAppend).toBe(true);
+		expect(secondGroup.isTranscriptBlockFinalized()).toBe(false);
+	});
+
+	it("removes the previous bare waiting poll when the next bare wait starts", async () => {
+		const { controller, children } = createFixture();
+
+		const firstGroup = await runPoll(controller, children, "t1", ["running"], "bare");
+		expect(children).toContain(firstGroup);
+		expect(renderText(firstGroup)).toContain("t1 job 0");
+
+		const secondGroup = await runPoll(controller, children, "t2", ["running"], "bare");
+
+		// A bare wait observes the same live all-running snapshot as an ID-targeted
+		// wait, so its stale row is replaced rather than accumulated in the Hub group.
 		expect(secondGroup).toBe(firstGroup);
 		expect(hubGroups(children)).toHaveLength(1);
 		const rendered = renderText(secondGroup);
@@ -287,20 +308,63 @@ describe("EventController displaces consecutive waiting polls", () => {
 		expect(pollGroup.isTranscriptBlockFinalized()).toBe(true);
 	});
 
-	it("does not displace a poll group that observed completions", async () => {
-		const { controller, children } = createFixture();
+	it("seals a settled wait before a later running wait starts a new Hub group", async () => {
+		const { controller, chatContainer, children } = createFixture();
 
 		const settled = await runPoll(controller, children, "t1", ["completed", "running"]);
-		const next = await runPoll(controller, children, "t2");
+		const settledTranscript = renderText(settled);
+		expect(settledTranscript).toContain("t1 job 0");
+		expect(settledTranscript).toContain("t1 job 1");
+		expect(settled.canAppend).toBe(false);
+		expect(settled.isTranscriptBlockFinalized()).toBe(true);
 
-		// A poll that carried real results is kept in the grouped history; only the
-		// all-running predecessor-removal path is skipped.
-		expect(next).toBe(settled);
-		expect(hubGroups(children)).toHaveLength(1);
-		const rendered = renderText(settled);
-		expect(rendered).toContain("t1 job 0");
-		expect(rendered).toContain("t2 job 0");
-		expect(settled.canAppend).toBe(true);
+		// Simulate the terminal committing the finalized frame before the next wait
+		// starts. A later grouped wait must not rewrite these native-scrollback rows.
+		const terminalRows = chatContainer.render(120);
+		chatContainer.setNativeScrollbackCommittedRows(terminalRows.length);
+		expect(chatContainer.isBlockUncommitted(settled)).toBe(false);
+
+		const next = await runPoll(controller, children, "t2", ["running"]);
+
+		const groups = hubGroups(children);
+		expect(groups).toHaveLength(2);
+		expect(groups[0]).toBe(settled);
+		expect(groups[1]).toBe(next);
+		expect(renderText(settled)).toBe(settledTranscript);
+		expect(renderText(settled)).not.toContain("t2 job 0");
+		const nextTranscript = renderText(next);
+		expect(nextTranscript).toContain("t2 job 0");
+		expect(nextTranscript).not.toContain("t1 job 0");
+		expect(next.canAppend).toBe(true);
+		expect(next.isTranscriptBlockFinalized()).toBe(false);
+	});
+
+	it("seals a failed wait before a later running wait starts a new Hub group", async () => {
+		const { controller, chatContainer, children } = createFixture();
+
+		const failed = await runPoll(controller, children, "t1", ["running"], "ids", { isError: true });
+		const failedTranscript = renderText(failed);
+		expect(failedTranscript).toContain("poll failed");
+		expect(failed.canAppend).toBe(false);
+		expect(failed.isTranscriptBlockFinalized()).toBe(true);
+
+		const terminalRows = chatContainer.render(120);
+		chatContainer.setNativeScrollbackCommittedRows(terminalRows.length);
+		expect(chatContainer.isBlockUncommitted(failed)).toBe(false);
+
+		const next = await runPoll(controller, children, "t2", ["running"]);
+
+		const groups = hubGroups(children);
+		expect(groups).toHaveLength(2);
+		expect(groups[0]).toBe(failed);
+		expect(groups[1]).toBe(next);
+		expect(renderText(failed)).toBe(failedTranscript);
+		expect(renderText(failed)).not.toContain("t2 job 0");
+		const nextTranscript = renderText(next);
+		expect(nextTranscript).toContain("t2 job 0");
+		expect(nextTranscript).not.toContain("poll failed");
+		expect(next.canAppend).toBe(true);
+		expect(next.isTranscriptBlockFinalized()).toBe(false);
 	});
 });
 
@@ -382,6 +446,19 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		} as unknown as AgentMessage;
 	}
 
+	function assistantText(text: string) {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: usage(),
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+	}
+
 	function todoToolResult(toolCallId: string, items: string[], errorText?: string) {
 		return {
 			role: "toolResult",
@@ -401,6 +478,17 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 			toolName: "hub",
 			content: [{ type: "text", text: "" }],
 			details: pollResult(statuses, {}, `${toolCallId} job`).details,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+	}
+
+	function asyncTaskResult(jobId: string) {
+		return {
+			role: "custom",
+			customType: "async-result",
+			content: "",
+			display: true,
+			details: { jobs: [{ jobId, type: "task", label: "completed fixture task", durationMs: 1_000 }] },
 			timestamp: Date.now(),
 		} as unknown as AgentMessage;
 	}
@@ -506,6 +594,103 @@ describe("UiHelpers.renderSessionContext collapses repeated todo snapshots", () 
 		expect(eventController.inheritHubActivityGroup).toHaveBeenCalledTimes(1);
 		expect(eventController.inheritHubActivityGroup.mock.calls[0]?.[0]).toBe(groups[0]);
 		expect(groups[0]!.canAppend).toBe(true);
+	});
+
+	it("rebuild seals a terminal hub wait before a later running wait starts another group", () => {
+		const { helpers, chatContainer } = createHelpersFixture({ streaming: true });
+		const terminalWait = assistantWithToolCalls([
+			{ id: "hub-terminal", name: "hub", arguments: { op: "wait", ids: ["j0", "j1"] } },
+		]);
+		const runningWait = assistantWithToolCalls([
+			{ id: "hub-running", name: "hub", arguments: { op: "wait", ids: ["j2"] } },
+		]);
+
+		helpers.renderSessionContext({
+			messages: [
+				terminalWait,
+				hubToolResult("hub-terminal", ["completed", "running"]),
+				runningWait,
+				hubToolResult("hub-running", ["running"]),
+			],
+		} as SessionContext);
+
+		const groups = chatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(groups).toHaveLength(2);
+		const [terminalGroup, liveGroup] = groups;
+		const terminalTranscript = renderText(terminalGroup!);
+		const liveTranscript = renderText(liveGroup!);
+		expect(terminalTranscript).toContain("hub-terminal job 0");
+		expect(terminalTranscript).toContain("hub-terminal job 1");
+		expect(terminalTranscript).not.toContain("hub-running job 0");
+		expect(terminalGroup!.canAppend).toBe(false);
+		expect(terminalGroup!.isTranscriptBlockFinalized()).toBe(true);
+		expect(liveTranscript).toContain("hub-running job 0");
+		expect(liveTranscript).not.toContain("hub-terminal job 0");
+		expect(liveGroup!.canAppend).toBe(true);
+		expect(liveGroup!.isTranscriptBlockFinalized()).toBe(false);
+	});
+	it("rebuild does not split hub activity around async task delivery", () => {
+		const completedTaskMarker = "completed-async-task";
+		const firstWait = assistantWithToolCalls([{ id: "hub-before-async", name: "hub", arguments: { op: "wait" } }]);
+		const secondWait = assistantWithToolCalls([{ id: "hub-after-async", name: "hub", arguments: { op: "wait" } }]);
+		const delivery = asyncTaskResult(completedTaskMarker);
+
+		const { helpers, chatContainer } = createHelpersFixture({ streaming: true });
+		helpers.renderSessionContext({
+			messages: [
+				firstWait,
+				hubToolResult("hub-before-async", ["running"]),
+				delivery,
+				secondWait,
+				hubToolResult("hub-after-async", ["running"]),
+			],
+		} as SessionContext);
+
+		const continuousGroups = chatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(continuousGroups).toHaveLength(1);
+		const continuousGroup = continuousGroups[0]!;
+		expect(renderText(continuousGroup)).toContain(completedTaskMarker);
+		expect(renderText(continuousGroup)).toContain("hub-after-async job 0");
+		const markerComponents = chatContainer.children.filter(component =>
+			renderText(component).includes(completedTaskMarker),
+		);
+		expect(markerComponents).toHaveLength(1);
+		expect(markerComponents[0]).toBe(continuousGroup);
+
+		const visibleBoundary = "Visible assistant boundary.";
+		const { helpers: boundedHelpers, chatContainer: boundedChatContainer } = createHelpersFixture({
+			streaming: true,
+		});
+		boundedHelpers.renderSessionContext({
+			messages: [
+				firstWait,
+				hubToolResult("hub-before-async", ["running"]),
+				delivery,
+				assistantText(visibleBoundary),
+				secondWait,
+				hubToolResult("hub-after-async", ["running"]),
+			],
+		} as SessionContext);
+
+		const boundedGroups = boundedChatContainer.children.filter(
+			(child): child is HubActivityGroupComponent => child instanceof HubActivityGroupComponent,
+		);
+		expect(boundedGroups).toHaveLength(2);
+		const [beforeBoundaryGroup, afterBoundaryGroup] = boundedGroups;
+		expect(renderText(beforeBoundaryGroup!)).toContain(completedTaskMarker);
+		expect(renderText(afterBoundaryGroup!)).toContain("hub-after-async job 0");
+		const beforeBoundaryIndex = boundedChatContainer.children.indexOf(beforeBoundaryGroup!);
+		const afterBoundaryIndex = boundedChatContainer.children.indexOf(afterBoundaryGroup!);
+		expect(
+			boundedChatContainer.children
+				.slice(beforeBoundaryIndex + 1, afterBoundaryIndex)
+				.some(component => renderText(component).includes(visibleBoundary)),
+		).toBe(true);
+		expect(beforeBoundaryGroup!.canAppend).toBe(false);
 	});
 
 	it("separates hub activity groups around visible assistant text during mid-turn rebuild", () => {
