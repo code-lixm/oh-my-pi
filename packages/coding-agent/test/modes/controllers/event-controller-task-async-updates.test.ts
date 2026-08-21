@@ -319,6 +319,54 @@ describe("EventController async update finalization", () => {
 		expect(Bun.stripANSI(component.render(100).join("\n"))).toContain("terminal result is visible now");
 	});
 
+	it("widens subscribed task update coalescing after two slow completed compose samples", async () => {
+		vi.useFakeTimers();
+		const { controller, pendingTools, emit } = createFixture();
+		controller.subscribeToAgent();
+
+		emit({
+			type: "tool_execution_start",
+			toolCallId: "tc-adaptive-task",
+			toolName: "task",
+			args: { context: "ctx", tasks: [{ agent: "task", task: "work" }] },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+		await flushMicrotasks();
+		const component = pendingTools.get("tc-adaptive-task");
+		if (!component) throw new Error("expected a pending adaptive task component");
+		sealed.push(component);
+
+		controller.observeCompletedComposeMs(50);
+		controller.observeCompletedComposeMs(50);
+
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-adaptive-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "adaptive first snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		emit({
+			type: "tool_execution_update",
+			toolCallId: "tc-adaptive-task",
+			toolName: "task",
+			args: {},
+			partialResult: taskResult("running", "adaptive latest snapshot"),
+		} as Extract<AgentSessionEvent, { type: "tool_execution_update" }>);
+		await flushMicrotasks();
+
+		vi.advanceTimersByTime(33);
+		await flushMicrotasks();
+		const beforeAdaptiveWindow = Bun.stripANSI(component.render(100).join("\n"));
+		expect(beforeAdaptiveWindow).not.toContain("adaptive first snapshot");
+		expect(beforeAdaptiveWindow).not.toContain("adaptive latest snapshot");
+
+		vi.advanceTimersByTime(25);
+		await flushMicrotasks();
+		const afterAdaptiveWindow = Bun.stripANSI(component.render(100).join("\n"));
+		expect(afterAdaptiveWindow).toContain("adaptive latest snapshot");
+		expect(afterAdaptiveWindow).not.toContain("adaptive first snapshot");
+	});
+
 	it("flushes interleaved tool and message snapshots in arrival order before a subscribed tool end", async () => {
 		vi.useFakeTimers();
 		const { controller, pendingTools, emit } = createFixture();

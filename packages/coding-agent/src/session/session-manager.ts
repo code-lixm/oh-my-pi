@@ -7,6 +7,7 @@ import type {
 	ServiceTierByFamily,
 	TextContent,
 	Usage,
+	UserMessage,
 } from "@oh-my-pi/pi-ai";
 import {
 	directoryExists,
@@ -14,6 +15,7 @@ import {
 	getProjectDir,
 	getSessionsDir,
 	isEnoent,
+	isRecord,
 	logger,
 	stringifyJson,
 	toError,
@@ -87,6 +89,56 @@ import {
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
+const PENDING_USER_MESSAGES_FILE = "pending-user-messages.json";
+const PENDING_USER_MESSAGES_VERSION = 1;
+
+export type PendingUserMessageMode = "steer" | "followUp";
+
+export interface PendingUserMessage {
+	id: string;
+	mode: PendingUserMessageMode;
+	message: UserMessage;
+}
+
+function parsePendingUserContent(value: unknown): UserMessage["content"] | undefined {
+	if (typeof value === "string") return value;
+	if (!Array.isArray(value)) return undefined;
+	const content: Array<TextContent | ImageContent> = [];
+	for (const part of value) {
+		if (!isRecord(part) || typeof part.type !== "string") return undefined;
+		if (part.type === "text" && typeof part.text === "string") {
+			content.push({ type: "text", text: part.text });
+			continue;
+		}
+		if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") {
+			content.push({ type: "image", data: part.data, mimeType: part.mimeType });
+			continue;
+		}
+		return undefined;
+	}
+	return content;
+}
+
+function parsePendingUserMessage(value: unknown): PendingUserMessage | undefined {
+	if (!isRecord(value) || typeof value.id !== "string") return undefined;
+	if (value.mode !== "steer" && value.mode !== "followUp") return undefined;
+	if (!isRecord(value.message) || value.message.role !== "user" || typeof value.message.timestamp !== "number") {
+		return undefined;
+	}
+	const content = parsePendingUserContent(value.message.content);
+	if (content === undefined) return undefined;
+	return {
+		id: value.id,
+		mode: value.mode,
+		message: {
+			role: "user",
+			content,
+			attribution: "user",
+			steering: value.mode === "steer" ? true : undefined,
+			timestamp: value.message.timestamp,
+		},
+	};
+}
 
 function mintSessionId(): string {
 	return Bun.randomUUIDv7();
@@ -200,7 +252,13 @@ function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
 
 async function hasRecoverableSessionState(sessionFile: string, storage: SessionStorage): Promise<boolean> {
 	const artifactsDir = artifactsDirectoryFor(sessionFile);
-	if (artifactsDir && storage.existsSync(path.join(artifactsDir, "draft.txt"))) return true;
+	if (
+		artifactsDir &&
+		(storage.existsSync(path.join(artifactsDir, "draft.txt")) ||
+			storage.existsSync(path.join(artifactsDir, PENDING_USER_MESSAGES_FILE)))
+	) {
+		return true;
+	}
 
 	const entries = await loadEntriesFromFile(sessionFile, storage);
 	return entries.some(entry => entry.type !== "session" && !isDraftOnlyMetadataEntry(entry as SessionEntry));
@@ -1202,6 +1260,11 @@ export class SessionManager {
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
 	}
 
+	#pendingUserMessagesPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, PENDING_USER_MESSAGES_FILE) : null;
+	}
+
 	#draftOnlySessionMarkerPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, DRAFT_ONLY_SESSION_MARKER) : null;
@@ -2026,6 +2089,44 @@ export class SessionManager {
 			this.#draftOnlySessionCleanupArmed = true;
 
 		return draft;
+	}
+
+	async loadPendingUserMessages(): Promise<PendingUserMessage[]> {
+		const pendingPath = this.#pendingUserMessagesPath();
+		if (!pendingPath || !this.#persist) return [];
+		try {
+			const parsed: unknown = JSON.parse(await this.#storage.readText(pendingPath));
+			if (!isRecord(parsed) || parsed.version !== PENDING_USER_MESSAGES_VERSION || !Array.isArray(parsed.messages)) {
+				throw new Error("Invalid pending user messages sidecar");
+			}
+			const messages = parsed.messages.map(parsePendingUserMessage);
+			if (messages.some(message => message === undefined)) {
+				throw new Error("Invalid pending user message entry");
+			}
+			return messages.filter(message => message !== undefined);
+		} catch (err) {
+			if (isEnoent(err)) return [];
+			logger.warn("Failed to load pending user messages", { path: pendingPath, error: toError(err).message });
+			return [];
+		}
+	}
+
+	async savePendingUserMessages(messages: readonly PendingUserMessage[]): Promise<void> {
+		const pendingPath = this.#pendingUserMessagesPath();
+		if (!pendingPath || !this.#persist) return;
+		if (messages.length === 0) {
+			try {
+				await this.#storage.unlink(pendingPath);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+			return;
+		}
+		await this.ensureOnDisk();
+		await this.#storage.writeTextAtomic(
+			pendingPath,
+			JSON.stringify({ version: PENDING_USER_MESSAGES_VERSION, messages }),
+		);
 	}
 
 	/** The source that set the session name: "user" (manual/RPC) or "auto" (generated title). */

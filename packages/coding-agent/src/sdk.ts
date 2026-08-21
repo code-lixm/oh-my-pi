@@ -4334,6 +4334,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			);
 		}
 
+		await session.restorePendingUserQueue();
 		startDeferredMCPDiscovery?.(session);
 
 		return {

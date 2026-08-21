@@ -162,10 +162,16 @@ export function isHubPeerCommunicationToolCall(toolName: string, value: unknown)
 	}
 }
 
-/** True while streamed Hub args do not yet carry enough discriminators to choose a renderer. */
+/** True while Hub args cannot yet select a stable transcript renderer. */
 export function isHubActivityRoutePending(value: unknown, hasPartialJson: boolean): boolean {
+	// Some providers publish a tool-call shell with `{}` before exposing raw
+	// partial JSON. Rendering that shell as a generic Hub card is irreversible:
+	// a later `wait` route creates the grouped job card beside it, and native
+	// scrollback cannot retract the empty first header. Wait for an operation in
+	// both raw-stream and parser-lag cases; tool_execution_start owns invalid or
+	// otherwise unclassified final arguments.
+	if (!isRecord(value) || typeof value.op !== "string") return true;
 	if (!hasPartialJson) return false;
-	if (!isRecord(value)) return true;
 	switch (value.op) {
 		case "inbox":
 		case "list":

@@ -1247,6 +1247,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#omfgController = new OmfgController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
+		this.ui.setComposeSampleObserver(composeMs => this.#eventController.observeCompletedComposeMs(composeMs));
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#liveCommandController = new LiveCommandController(this);

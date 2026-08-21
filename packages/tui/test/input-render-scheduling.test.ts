@@ -234,6 +234,62 @@ describe("TUI input/render scheduling", () => {
 		}
 	});
 
+	it("notifies the compose observer once after a completed ordinary frame", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const probe = new InputProbe([]);
+		const samples: number[] = [];
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(probe);
+
+		try {
+			tui.start();
+			scheduler.drain();
+			tui.setComposeSampleObserver(composeMs => samples.push(composeMs));
+			probe.revision++;
+			tui.requestRender();
+			scheduler.drain();
+
+			expect(samples).toHaveLength(1);
+			const composeMs = samples[0]!;
+			expect(Number.isFinite(composeMs)).toBe(true);
+			expect(composeMs).toBeGreaterThanOrEqual(0);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not notify the compose observer when compose fails", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const probe = new InputProbe([]);
+		const samples: number[] = [];
+		let failCompose = false;
+		const tui = new TUI(term, undefined, {
+			renderScheduler: scheduler,
+			responsivenessTestHooks: {
+				injectStall: stage => {
+					if (failCompose && stage === "render.compose") throw new Error("compose failed");
+				},
+			},
+		});
+		tui.addChild(probe);
+
+		try {
+			tui.start();
+			scheduler.drain();
+			tui.setComposeSampleObserver(composeMs => samples.push(composeMs));
+			failCompose = true;
+			probe.revision++;
+			tui.requestRender();
+
+			expect(() => scheduler.drain()).toThrow("compose failed");
+			expect(samples).toEqual([]);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps repeated slow-frame evidence bounded while preserving event counts", () => {
 		const fixture = createResponsivenessFixture({
 			"render.compose": 60,

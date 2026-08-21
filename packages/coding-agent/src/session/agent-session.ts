@@ -400,7 +400,12 @@ import {
 	SessionMaintenance,
 	type SessionMaintenanceHost,
 } from "./session-maintenance";
-import { cleanupEmptyMoveSession, type SessionManager } from "./session-manager";
+import {
+	cleanupEmptyMoveSession,
+	type PendingUserMessage,
+	type PendingUserMessageMode,
+	type SessionManager,
+} from "./session-manager";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -726,6 +731,9 @@ export class AgentSession {
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
+	#pendingUserMessages: PendingUserMessage[] = [];
+	#pendingUserMessagesPersistenceTail: Promise<void> = Promise.resolve();
+	#pendingUserMessagesRestored = false;
 	/**
 	 * Timing for thinking blocks in the assistant message currently streaming.
 	 * Finalized values remain until `message_end` so its distinct final snapshot
@@ -3080,6 +3088,33 @@ export class AgentSession {
 			return;
 		}
 		this.#persistSessionMessageIfMissing(message);
+		this.#acknowledgePendingUserMessage(message);
+	}
+
+	#persistPendingUserMessages(): Promise<void> {
+		const snapshot = structuredClone(this.#pendingUserMessages);
+		const operation = this.#pendingUserMessagesPersistenceTail
+			.catch(() => {})
+			.then(() => this.sessionManager.savePendingUserMessages(snapshot));
+		this.#pendingUserMessagesPersistenceTail = operation.catch(error => {
+			logger.error("Failed to persist pending user messages", { error });
+		});
+		return operation;
+	}
+
+	#acknowledgePendingUserMessage(message: AgentMessage): void {
+		if (message.role !== "user") return;
+		const index = this.#pendingUserMessages.findIndex(
+			pending => pending.message.timestamp === message.timestamp && sameMessageContent(pending.message, message),
+		);
+		if (index < 0) return;
+		this.#pendingUserMessages.splice(index, 1);
+		void this.#persistPendingUserMessages();
+	}
+
+	async #clearPendingUserMessages(): Promise<void> {
+		this.#pendingUserMessages = [];
+		await this.#persistPendingUserMessages();
 	}
 
 	/**
@@ -5031,6 +5066,7 @@ export class AgentSession {
 		this.#promptGeneration++;
 		await this.#cancelPostPromptTasks();
 		this.#cancelOwnAsyncJobs();
+		await this.#clearPendingUserMessages();
 
 		// Drop the conversation: messages, queued steers/follow-ups, pending tool
 		// calls, and error state. agent.reset() keeps the model and system prompt.
@@ -7056,7 +7092,7 @@ export class AgentSession {
 	async #queueUserMessage(
 		text: string,
 		images: ImageContent[] | undefined,
-		mode: "steer" | "followUp",
+		mode: PendingUserMessageMode,
 		nextStepHandled = false,
 	): Promise<void> {
 		if (!nextStepHandled) text = this.#resolveNextStepUserText(text);
@@ -7069,31 +7105,50 @@ export class AgentSession {
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
-		// Text-only model + image attachment: describe via a vision model and enqueue the
-		// description as a hidden companion immediately before the user message.
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
-		this.#allowQueuedMessageDrainRetry();
-		if (mode === "followUp") {
-			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
-			this.agent.followUp({
-				role: "user",
-				content,
-				attribution: "user",
-				timestamp: Date.now(),
-			});
-		} else {
-			if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
-			this.agent.steer({
-				role: "user",
-				content,
-				steering: true,
-				attribution: "user",
-				timestamp: Date.now(),
-			});
+		const message: UserMessage = {
+			role: "user",
+			content,
+			attribution: "user",
+			steering: mode === "steer" ? true : undefined,
+			timestamp: Date.now(),
+		};
+		const pending: PendingUserMessage = { id: Bun.randomUUIDv7(), mode, message };
+		this.#pendingUserMessages.push(pending);
+		try {
+			await this.#persistPendingUserMessages();
+		} catch (error) {
+			this.#pendingUserMessages = this.#pendingUserMessages.filter(candidate => candidate.id !== pending.id);
+			await this.#persistPendingUserMessages();
+			throw error;
 		}
+		await this.#enqueuePendingUserMessage(pending);
 		this.#scheduleIdleQueueDrain();
+	}
+
+	async #enqueuePendingUserMessage(pending: PendingUserMessage): Promise<void> {
+		const images = Array.isArray(pending.message.content)
+			? pending.message.content.filter((part): part is ImageContent => part.type === "image")
+			: [];
+		// This companion is derived runtime context; only the user-authored message is durable.
+		const imageDescriptionNotice = images.length > 0 ? await this.#buildImageDescriptionNotice(images) : undefined;
+		this.#allowQueuedMessageDrainRetry();
+		if (pending.mode === "followUp") {
+			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
+			this.agent.followUp(pending.message);
+			return;
+		}
+		if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
+		this.agent.steer(pending.message);
+	}
+
+	async restorePendingUserQueue(): Promise<void> {
+		if (this.#pendingUserMessagesRestored) return;
+		this.#pendingUserMessagesRestored = true;
+		const loaded = await this.sessionManager.loadPendingUserMessages();
+		this.#pendingUserMessages = loaded.filter(pending => !this.#sessionMessageAlreadyPersisted(pending.message));
+		if (this.#pendingUserMessages.length !== loaded.length) await this.#persistPendingUserMessages();
+		for (const pending of this.#pendingUserMessages) await this.#enqueuePendingUserMessage(pending);
+		if (this.#pendingUserMessages.length > 0) this.#scheduleIdleQueueDrain();
 	}
 
 	#scheduleIdleQueueDrain(): void {
@@ -7498,6 +7553,8 @@ export class AgentSession {
 			? isAdvisorCard
 			: m => !isUserQueuedMessage(m) && !isHiddenUserCompanion(m);
 		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
+		this.#pendingUserMessages = [];
+		void this.#persistPendingUserMessages();
 		this.#reconcileQueuedMessageDrain();
 		return { steering, followUp };
 	}
@@ -7548,6 +7605,7 @@ export class AgentSession {
 		if (fromSteer >= 0) {
 			const removed = steering[fromSteer];
 			this.agent.replaceQueues(removeWithCompanions(steering, fromSteer), followUp.slice());
+			this.#acknowledgePendingUserMessage(removed);
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
 		}
@@ -7555,6 +7613,7 @@ export class AgentSession {
 		if (fromFollowUp >= 0) {
 			const removed = followUp[fromFollowUp];
 			this.agent.replaceQueues(steering.slice(), removeWithCompanions(followUp, fromFollowUp));
+			this.#acknowledgePendingUserMessage(removed);
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
 		}
@@ -7823,6 +7882,7 @@ export class AgentSession {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
 			try {
+				await this.#clearPendingUserMessages();
 				this.agent.reset();
 				if (options?.drop && previousSessionFile) {
 					try {

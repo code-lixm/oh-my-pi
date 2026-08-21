@@ -14,11 +14,20 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import {
+	finishToolOutputTelemetry,
+	recordToolUpdateCoalesced,
+	recordToolUpdateDispatched,
+	recordToolUpdateEnqueued,
+	recordToolUpdateRendered,
+	resetToolOutputTelemetryForTests,
+} from "@oh-my-pi/pi-coding-agent/tools/tool-output-telemetry";
 import * as toolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { openArchive, readArchiveEntries, unzip } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import * as piNatives from "@oh-my-pi/pi-natives";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import { HubTool } from "../src/tools/hub";
 
 // Helper to extract text from content blocks
@@ -545,6 +554,7 @@ describe("Coding Agent Tools", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		resetToolOutputTelemetryForTests();
 
 		// Clean up test directory
 		removeSyncWithRetries(testDir);
@@ -625,6 +635,126 @@ describe("Coding Agent Tools", () => {
 				expect(getTextOutput(artifactResult)).toBe(largeText);
 			} finally {
 				await spillManager.close();
+			}
+		});
+
+		it("attributes oversized live partial previews through the terminal telemetry lifecycle", async () => {
+			const toolCallId = "oversized-partial-telemetry";
+			const oversizedText = "x".repeat(8 * 1024);
+			const rawPartial = {
+				content: [{ type: "text" as const, text: oversizedText }],
+				details: { phase: "streaming" as const, sequence: 1 },
+			};
+			const livePreviewSettings = Settings.isolated({
+				"tools.artifactSpillThreshold": 1,
+				"tools.artifactTailBytes": 1,
+				"tools.artifactTailLines": 10,
+				"tools.artifactHeadBytes": 1,
+			});
+			const updates: AgentToolResult[] = [];
+			const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+			resetToolOutputTelemetryForTests();
+			try {
+				await wrapToolWithMetaNotice(createOversizedPartialTool([oversizedText], "final output")).execute(
+					toolCallId,
+					{},
+					undefined,
+					update => updates.push(update),
+					{
+						...createTestToolContext(["oversized_partial_fixture"]),
+						settings: livePreviewSettings,
+					},
+				);
+
+				expect(updates).toHaveLength(1);
+				const livePreview = updates[0];
+				if (!livePreview) throw new Error("expected an oversized live partial preview");
+				const rawSerialized = JSON.stringify(rawPartial);
+				if (rawSerialized === undefined) throw new Error("expected a serializable raw partial");
+				const previewSerialized = JSON.stringify(livePreview);
+				if (previewSerialized === undefined) throw new Error("expected a serializable bounded partial");
+				const originalBytes = Buffer.byteLength(rawSerialized, "utf8");
+				const trimmedBytes = Buffer.byteLength(previewSerialized, "utf8");
+				expect(trimmedBytes).toBeLessThan(originalBytes);
+
+				const lifecycleAt = performance.now();
+				recordToolUpdateEnqueued(toolCallId, lifecycleAt);
+				recordToolUpdateDispatched(toolCallId, lifecycleAt + 1);
+				recordToolUpdateRendered(toolCallId, lifecycleAt + 2);
+				finishToolOutputTelemetry(toolCallId, lifecycleAt + 3);
+
+				const telemetryCall = debugSpy.mock.calls.find(([message]) => message === "tool.partial.backpressure");
+				expect(telemetryCall).toBeDefined();
+				expect(telemetryCall?.[1]).toMatchObject({
+					toolCallId,
+					tool: "oversized_partial_fixture",
+					maxOriginalBytes: originalBytes,
+					maxTrimmedBytes: trimmedBytes,
+					receivedCount: 1,
+					dispatchedCount: 1,
+				});
+			} finally {
+				resetToolOutputTelemetryForTests();
+			}
+		});
+
+		it("records real bytes for an unbounded wrapper partial after high-frequency coalescing", async () => {
+			const toolCallId = "small-partial-high-frequency";
+			const partialText = "small partial under one KiB";
+			const rawPartial = {
+				content: [{ type: "text" as const, text: partialText }],
+				details: { phase: "streaming" as const, sequence: 1 },
+			};
+			const updates: AgentToolResult[] = [];
+			const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+
+			resetToolOutputTelemetryForTests();
+			try {
+				await wrapToolWithMetaNotice(createOversizedPartialTool([partialText], "final output")).execute(
+					toolCallId,
+					{},
+					undefined,
+					update => updates.push(update),
+					{
+						...createTestToolContext(["oversized_partial_fixture"]),
+						settings: Settings.isolated({ "tools.artifactSpillThreshold": 1 }),
+					},
+				);
+
+				expect(updates).toHaveLength(1);
+				const livePreview = updates[0];
+				if (!livePreview) throw new Error("expected a small live partial preview");
+				const rawSerialized = JSON.stringify(rawPartial);
+				if (rawSerialized === undefined) throw new Error("expected a serializable raw partial");
+				const previewSerialized = JSON.stringify(livePreview);
+				if (previewSerialized === undefined) throw new Error("expected a serializable live preview");
+				const originalBytes = Buffer.byteLength(rawSerialized, "utf8");
+				const previewBytes = Buffer.byteLength(previewSerialized, "utf8");
+
+				expect(originalBytes).toBeLessThan(1024);
+				expect(livePreview).toEqual(rawPartial);
+				expect(previewBytes).toBe(originalBytes);
+
+				recordToolUpdateCoalesced(toolCallId);
+				recordToolUpdateCoalesced(toolCallId);
+				recordToolUpdateCoalesced(toolCallId);
+				finishToolOutputTelemetry(toolCallId);
+
+				expect(debugSpy).toHaveBeenCalledTimes(1);
+				const telemetryCall = debugSpy.mock.calls.find(([message]) => message === "tool.partial.backpressure");
+				expect(telemetryCall).toBeDefined();
+				expect(telemetryCall?.[1]).toMatchObject({
+					toolCallId,
+					tool: "oversized_partial_fixture",
+					wasLimited: false,
+					maxOriginalBytes: originalBytes,
+					maxTrimmedBytes: previewBytes,
+					receivedCount: 1,
+					coalescedCount: 3,
+				});
+			} finally {
+				resetToolOutputTelemetryForTests();
 			}
 		});
 

@@ -756,6 +756,88 @@ describe("EventController hub activity cluster", () => {
 		group.setToolActivityVisible(true);
 		expect(renderText(group)).toContain(toolMarker);
 	});
+	it("defers an empty streamed Hub shell until cumulative args identify a job wait", async () => {
+		const { controller, chatContainer } = createLiveFixture();
+		const toolCallId = "hub-streamed-empty-shell";
+		const jobId = "job-1";
+		const started = makeAssistantMessage([]);
+		const unresolved = makeAssistantMessage([{ type: "toolCall", id: toolCallId, name: "hub", arguments: {} }]);
+		const jobWait = makeAssistantMessage([
+			{ type: "toolCall", id: toolCallId, name: "hub", arguments: { op: "wait", ids: [jobId] } },
+		]);
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: started,
+		} as Extract<AgentSessionEvent, { type: "message_start" }>);
+		await controller.handleEvent({
+			type: "message_update",
+			message: unresolved,
+			assistantMessageEvent: undefined as never,
+		} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+		expect(chatContainer.children.filter(child => child instanceof ToolExecutionComponent)).toHaveLength(0);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId,
+			toolName: "hub",
+			args: {},
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		expect(chatContainer.children.filter(child => child instanceof ToolExecutionComponent)).toHaveLength(0);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+
+		await controller.handleEvent({
+			type: "message_update",
+			message: jobWait,
+			assistantMessageEvent: undefined as never,
+		} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+		const groups = hubGroups(chatContainer);
+		expect(groups).toHaveLength(1);
+		expect(chatContainer.children.filter(child => child instanceof ToolExecutionComponent)).toHaveLength(0);
+		const [group] = groups;
+		if (!group) throw new Error("expected grouped Hub job activity after args resolved");
+		const rendered = renderText(group);
+		expect(rendered).toContain(jobId);
+		expect(rendered).toContain("pending");
+	});
+	it("keeps malformed non-empty Hub args visible through their error result", async () => {
+		const { controller, chatContainer, pendingTools } = createLiveFixture();
+		const toolCallId = "hub-malformed-nonempty-args";
+		const errorMarker = "HUB_MALFORMED_ARGS_ERROR_MARKER";
+
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId,
+			toolName: "hub",
+			args: { foo: 1 },
+		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
+
+		const genericCards = chatContainer.children.filter(
+			(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
+		);
+		expect(genericCards).toHaveLength(1);
+		expect(hubGroups(chatContainer)).toHaveLength(0);
+		const [component] = genericCards;
+		if (!component) throw new Error("expected generic Hub card for malformed args");
+		expect(pendingTools.get(toolCallId)).toBe(component);
+
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "hub",
+			result: {
+				content: [{ type: "text", text: errorMarker }],
+				details: {},
+			},
+			isError: true,
+		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
+
+		expect(renderText(component)).toContain(errorMarker);
+	});
 });
 
 describe("ChatTranscriptBuilder hub activity cluster", () => {

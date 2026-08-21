@@ -36,6 +36,12 @@ import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/m
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
+import {
+	finishToolOutputTelemetry,
+	recordToolUpdateCoalesced,
+	recordToolUpdateDispatched,
+	recordToolUpdateEnqueued,
+} from "../../tools/tool-output-telemetry";
 import type { EventBus } from "../../utils/event-bus";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
 import { initializeExtensions } from "../runtime-init";
@@ -128,9 +134,15 @@ export class RpcSessionEventCoalescer {
 
 	constructor(private readonly output: (event: AgentSessionEvent) => void) {}
 
+	#forward(event: AgentSessionEvent): void {
+		if (event.type === "tool_execution_update") recordToolUpdateDispatched(event.toolCallId);
+		this.output(event);
+		if (event.type === "tool_execution_end") finishToolOutputTelemetry(event.toolCallId);
+	}
+
 	emit(event: AgentSessionEvent): void {
 		if (this.#closed) {
-			this.output(event);
+			this.#forward(event);
 			return;
 		}
 		if (event.type === "message_update") {
@@ -153,10 +165,14 @@ export class RpcSessionEventCoalescer {
 			}
 		}
 		this.flush();
-		this.output(event);
+		this.#forward(event);
 	}
 
 	#enqueue(key: string, event: RpcCoalescedUpdate): void {
+		if (event.type === "tool_execution_update") {
+			recordToolUpdateEnqueued(event.toolCallId);
+			if (this.#pendingUpdates.has(key)) recordToolUpdateCoalesced(event.toolCallId);
+		}
 		this.#pendingUpdates.set(key, event);
 		if (this.#timer !== undefined) return;
 		this.#timer = setTimeout(() => {
@@ -173,9 +189,7 @@ export class RpcSessionEventCoalescer {
 		}
 		const pendingUpdates = Array.from(this.#pendingUpdates.values());
 		this.#pendingUpdates.clear();
-		for (const event of pendingUpdates) {
-			this.output(event);
-		}
+		for (const event of pendingUpdates) this.#forward(event);
 	}
 
 	/** Flush before teardown, then bypass coalescing for any late terminal event. */

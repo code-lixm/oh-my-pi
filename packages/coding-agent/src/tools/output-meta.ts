@@ -27,6 +27,7 @@ import {
 } from "../session/streaming-output";
 import { formatBytes, wrapBrackets } from "./render-utils";
 import { renderError } from "./tool-errors";
+import { recordLiveToolPreview } from "./tool-output-telemetry";
 
 /**
  * Truncation metadata for the output notice.
@@ -660,6 +661,11 @@ interface LivePartialBudget {
 	headBytes: number;
 	tailLines: number;
 }
+type LivePartialPreviewObserver = (
+	originalBytes: number | undefined,
+	previewBytes: number | undefined,
+	wasLimited: boolean,
+) => void;
 
 /** Safe fallback when an extension-provided settings accessor cannot be read. */
 const LIVE_PARTIAL_SETTINGS_FAILURE_BUDGET: LivePartialBudget = {
@@ -1215,11 +1221,20 @@ function fallbackLivePartialPreview(partialResult: AgentToolResult, budget: Live
 	};
 }
 
-function previewLivePartialResult(partialResult: AgentToolResult, settings: Settings | undefined): AgentToolResult {
+function previewLivePartialResult(
+	partialResult: AgentToolResult,
+	settings: Settings | undefined,
+	onPreview?: LivePartialPreviewObserver,
+): AgentToolResult {
 	let budget = LIVE_PARTIAL_SETTINGS_FAILURE_BUDGET;
+	const originalBytes = serializedByteLength(partialResult);
+	const reportPreview = (result: AgentToolResult, wasLimited: boolean): AgentToolResult => {
+		onPreview?.(originalBytes, serializedByteLength(result), wasLimited);
+		return result;
+	};
 	try {
 		budget = resolveLivePartialBudget(settings);
-		if (isLivePartialWithinBudget(partialResult, budget)) return partialResult;
+		if (isLivePartialWithinBudget(partialResult, budget)) return reportPreview(partialResult, false);
 
 		const raw = partialResult as unknown as Record<string, unknown>;
 		const contentPreview = previewLivePartialContent(raw.content, budget);
@@ -1251,11 +1266,12 @@ function previewLivePartialResult(partialResult: AgentToolResult, settings: Sett
 		}
 
 		const bytes = serializedByteLength(result);
-		return bytes !== undefined && bytes <= budget.maxBytes
-			? result
-			: fallbackLivePartialPreview(partialResult, budget);
+		return reportPreview(
+			bytes !== undefined && bytes <= budget.maxBytes ? result : fallbackLivePartialPreview(partialResult, budget),
+			true,
+		);
 	} catch {
-		return fallbackLivePartialPreview(partialResult, budget);
+		return reportPreview(fallbackLivePartialPreview(partialResult, budget), true);
 	}
 }
 
@@ -1445,7 +1461,16 @@ async function wrappedExecute(
 ): Promise<AgentToolResult> {
 	const originalExecute = this[kUnwrappedExecute];
 	const boundedOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
-		? partialResult => onUpdate(previewLivePartialResult(partialResult, context?.settings))
+		? partialResult => {
+				const preview = previewLivePartialResult(
+					partialResult,
+					context?.settings,
+					(originalBytes, previewBytes, wasLimited) => {
+						recordLiveToolPreview(toolCallId, this.name, originalBytes, previewBytes, undefined, wasLimited);
+					},
+				);
+				onUpdate(preview);
+			}
 		: undefined;
 
 	try {

@@ -48,6 +48,7 @@
 
 ### Changed
 - Changed transcript rendering to reuse unchanged finalized block segments before native scrollback commit, and coalesced ordinary message/tool partial updates into 33ms latest-wins ordered windows in both TUI and RPC paths while error and terminal updates remain immediate barriers.
+- Changed interactive tool partial coalescing to adapt from 33ms to 250ms only after completed committed TUI compose samples, with hysteretic slow/fast recovery; threshold-limited live previews now emit terminal `tool.partial.backpressure` debug records with call identity, original/trimmed maximum bytes, received/coalesced/dispatched/rendered counts, and enqueue-to-dispatch/render delay.
 - Changed RPC thinking state to expose both the effective level and the configured selector, preserving `auto` for external clients while keeping model-specific effective effort available.
 - Changed RPC settings and keybinding catalogs to accept an explicit locale, preserve protocol values while localizing enum labels, and include complete English and Simplified Chinese copy for newly added Codex-reset and workspace-checkpoint settings.
 - Expanded the RPC management contract with worker restart, live agent/Bash/Eval activity snapshots, replace-all transcript events, paginated full-transcript reads, and deterministic async-job cancellation errors so graphical clients can expose the same runtime controls and state as the CLI.
@@ -106,10 +107,11 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Persisted queued user steers and follow-ups so they recover after an abnormal session exit.
 - Fixed process-isolated `/switch` and role-model cycling by projecting picker state and forwarding temporary and role-based model changes to the session backend.
 - Fixed process-isolated sessions crashing slash-command autocomplete when Advisor status was read, and clearing queued follow-up UI after the backend consumes the message.
 - Fixed oversized live tool partials retaining unbounded payloads or losing async/error semantics; final results and artifacts remain unmodified. RPC EOF and shutdown now drain queued session-event frames before exit.
-- Fixed bare `hub wait` snapshots and automatic task deliveries splitting into repeated Hub transcript cards; all-running polls now replace prior snapshots, terminal waits seal before later Hub calls, and async deliveries merge only into an entirely live job tail without mutating native-scrollback history.
+- Fixed bare `hub wait` snapshots, parser-lagged empty Hub shells, and automatic task deliveries splitting into repeated Hub transcript cards; unresolved `{}` starts now defer renderer selection, all-running polls replace prior snapshots, terminal waits seal before later Hub calls, and async deliveries merge only into an entirely live job tail without mutating native-scrollback history.
 - Fixed `omp daemon start` blocking a first supervisor from binding its socket by releasing the bootstrap lease before spawning it.
 - Fixed `features.processIsolation` losing startup extension UI requests, deadlocking extension initialization, and exposing an incomplete foreground session facade for `/tools`, `/new`, `/resume`, branch, and tree navigation; the setting is now CLI-only.
 - Fixed isolated interactive sessions omitting automatic idle compaction by forwarding `runIdleCompaction()` through their RPC session port.

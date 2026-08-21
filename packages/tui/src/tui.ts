@@ -1544,6 +1544,8 @@ export class TUI extends Container {
 	// render() call inside #doRender (the scratch set below, reused per frame).
 	#partialComposeRoots: Set<Component> | null = null;
 	#partialComposeRootsScratch = new Set<Component>();
+	#composeSampleObserver: ((composeMs: number) => void) | undefined;
+	#lastComposeMs: number | undefined;
 	// Target component -> containing root child, so animation-rate requests do
 	// not re-walk a huge transcript subtree every frame.
 	#componentRootCache = new WeakMap<Component, Component>();
@@ -2665,6 +2667,11 @@ export class TUI extends Container {
 		this.#scopedInputRenderComponents.add(component);
 	}
 
+	/** Observe successful full/component compose costs without changing render semantics. */
+	setComposeSampleObserver(observer: ((composeMs: number) => void) | undefined): void {
+		this.#composeSampleObserver = observer;
+	}
+
 	/**
 	 * Schedule a render on behalf of `component` after a self-contained change
 	 * (spinner frame, blink) that cannot have affected any other component.
@@ -3123,6 +3130,7 @@ export class TUI extends Container {
 	 */
 	#executeRender(): void {
 		this.#inputRenderUrgent = false;
+		this.#lastComposeMs = undefined;
 		const start = this.#renderScheduler.now();
 		this.#responsivenessTelemetry.beginFrame(start);
 		this.#lastRenderAt = start;
@@ -3833,7 +3841,8 @@ export class TUI extends Container {
 		const partialRoots = componentScopedOnly ? this.#resolvePartialComposeRoots(width, height) : null;
 		this.#componentRenderTargets.clear();
 		let rawFrame: readonly string[];
-		this.#responsivenessTelemetry.beginCompose(this.#renderScheduler.now());
+		const composeStartedAt = this.#renderScheduler.now();
+		this.#responsivenessTelemetry.beginCompose(composeStartedAt);
 		this.#runResponsivenessTestStage("render.compose");
 		try {
 			if (partialRoots !== null) {
@@ -3849,6 +3858,7 @@ export class TUI extends Container {
 				this.#imageBudget.endPass();
 			}
 		} finally {
+			this.#lastComposeMs = this.#renderScheduler.now() - composeStartedAt;
 			this.#responsivenessTelemetry.endCompose(this.#renderScheduler.now());
 		}
 		// Ghostty initial-image deferral must run before any render state is
@@ -4781,6 +4791,10 @@ export class TUI extends Container {
 		this.#previousWidth = width;
 		this.#previousHeight = height;
 		this.#recordHardwareCursorUpdate(hardwareCursor);
+		if (this.#lastComposeMs !== undefined) {
+			this.#composeSampleObserver?.(this.#lastComposeMs);
+			this.#lastComposeMs = undefined;
+		}
 	}
 
 	#targetHardwareCursorState(

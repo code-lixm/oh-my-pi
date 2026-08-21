@@ -54,11 +54,19 @@ import { createIrcCustomMessageCard } from "../../tools/hub/messaging";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
+import {
+	finishToolOutputTelemetry,
+	recordToolUpdateCoalesced,
+	recordToolUpdateDispatched,
+	recordToolUpdateEnqueued,
+	recordToolUpdateRendered,
+} from "../../tools/tool-output-telemetry";
 import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import { interruptHint } from "../shared";
+import { AdaptiveStreamingUpdateWindow } from "../streaming-update-coalescing";
 import { createAssistantMessageComponent, openRichContentImage } from "../utils/interactive-context-helpers";
 import {
 	type AssistantErrorAggregation,
@@ -248,6 +256,7 @@ export class EventController {
 	// avoids cross-type reorder when a barrier flushes tool → message updates.
 	#pendingStreamingUpdates = new Map<string, CoalescedStreamingUpdate>();
 	#streamingUpdateTimer: NodeJS.Timeout | undefined = undefined;
+	#streamingUpdateWindow = new AdaptiveStreamingUpdateWindow();
 	/** Tail of the serialized dispatch chain; see #runSerialized. */
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
@@ -257,7 +266,7 @@ export class EventController {
 	// keeps working — the WeakSet makes the coalesced path speak each delta exactly
 	// once instead of twice.
 	#vocalizedMessageUpdates = new WeakSet<object>();
-	static readonly #STREAMING_UPDATE_COALESCE_MS = 33;
+	#pendingToolUpdateRenderIds = new Set<string>();
 
 	constructor(private ctx: InteractiveModeContext) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
@@ -345,6 +354,13 @@ export class EventController {
 			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
+	}
+
+	/** Feed completed compose cost into coalescing and close visible tool-update latency spans. */
+	observeCompletedComposeMs(composeMs: number): void {
+		this.#streamingUpdateWindow.observeComposeMs(composeMs);
+		for (const toolCallId of this.#pendingToolUpdateRenderIds) recordToolUpdateRendered(toolCallId);
+		this.#pendingToolUpdateRenderIds.clear();
 	}
 
 	dispose(): void {
@@ -671,7 +687,9 @@ export class EventController {
 			}
 			await this.#runSerialized(async () => {
 				await this.#flushPendingUpdates();
+				if (event.type === "tool_execution_update") recordToolUpdateDispatched(event.toolCallId);
 				await this.handleEvent(event);
+				if (event.type === "tool_execution_end") finishToolOutputTelemetry(event.toolCallId);
 			});
 		});
 	}
@@ -744,7 +762,10 @@ export class EventController {
 
 	/** Queue a keyed streaming tool update for the next coalesced handler run. */
 	#enqueueToolExecutionUpdate(event: ToolExecutionUpdateEvent): void {
-		this.#pendingStreamingUpdates.set(`tool:${event.toolCallId}`, event);
+		const key = `tool:${event.toolCallId}`;
+		recordToolUpdateEnqueued(event.toolCallId);
+		if (this.#pendingStreamingUpdates.has(key)) recordToolUpdateCoalesced(event.toolCallId);
+		this.#pendingStreamingUpdates.set(key, event);
 		this.#scheduleStreamingUpdateFlush();
 	}
 
@@ -763,7 +784,7 @@ export class EventController {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
-		}, EventController.#STREAMING_UPDATE_COALESCE_MS);
+		}, this.#streamingUpdateWindow.delayMs);
 	}
 
 	/** Flush the latest pending update for each key in first-arrival order. */
@@ -775,6 +796,7 @@ export class EventController {
 		const events = Array.from(this.#pendingStreamingUpdates.values());
 		this.#pendingStreamingUpdates.clear();
 		for (const event of events) {
+			if (event.type === "tool_execution_update") recordToolUpdateDispatched(event.toolCallId);
 			await this.handleEvent(event);
 		}
 	}
@@ -789,6 +811,7 @@ export class EventController {
 			clearTimeout(this.#streamingUpdateTimer);
 			this.#streamingUpdateTimer = undefined;
 		}
+		this.#pendingToolUpdateRenderIds.clear();
 		this.#pendingStreamingUpdates.clear();
 		this.#resetReadGroup();
 		this.#hubActivityGroup?.seal();
@@ -1628,6 +1651,21 @@ export class EventController {
 		}
 		if (
 			event.toolName === "hub" &&
+			typeof event.args === "object" &&
+			event.args !== null &&
+			!Array.isArray(event.args) &&
+			Object.keys(event.args).length === 0
+		) {
+			// A provider may emit tool_execution_start before the parsed Hub args
+			// catch up. A generic card created for `{}` cannot be retracted after
+			// its empty header reaches native scrollback; the later wait route would
+			// then add a second grouped Hub card. Defer until a stable op arrives.
+			this.#toolArgsReveal.finish(event.toolCallId);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		if (
+			event.toolName === "hub" &&
 			(this.ctx.focusedAgentId !== undefined ||
 				(!settings.get("display.showHubProcessActivity") && isHubProcessActivityArgs(event.args)))
 		) {
@@ -1774,6 +1812,7 @@ export class EventController {
 				this.ctx.pendingTools.delete(event.toolCallId);
 				this.#backgroundTaskCallIds.delete(event.toolCallId);
 			}
+			this.#pendingToolUpdateRenderIds.add(event.toolCallId);
 			this.ctx.ui.requestComponentRender(component);
 		}
 	}
