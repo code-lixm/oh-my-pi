@@ -107,6 +107,7 @@
 ### Fixed
 - Fixed `omp daemon start` blocking a first supervisor from binding its socket by releasing the bootstrap lease before spawning it.
 - Fixed `features.processIsolation` losing startup extension UI requests, deadlocking extension initialization, and exposing an incomplete foreground session facade for `/tools`, `/new`, `/resume`, branch, and tree navigation; the setting is now CLI-only.
+- Fixed isolated interactive sessions omitting automatic idle compaction by forwarding `runIdleCompaction()` through their RPC session port.
 - Fixed `omp config export` and `omp config import` to use the local Sync encryption key first, then the configured `sync.passphraseEnv` fallback; an explicit `--passphrase-env` still selects that environment variable.
 
 - Fixed task subagents entering a direct `hub wait` for their parent while the parent awaited the task; such waits now fail immediately with actionable `hub send`/terminal-`yield` guidance, preventing a parent-child deadlock.

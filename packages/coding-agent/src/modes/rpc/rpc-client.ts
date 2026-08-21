@@ -918,6 +918,11 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
+	/** Run automatic compaction triggered by an idle session. */
+	async runIdleCompaction(): Promise<void> {
+		await this.#send({ type: "run_idle_compaction" });
+	}
+
 	/**
 	 * Set auto-compaction enabled/disabled.
 	 */

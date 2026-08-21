@@ -157,6 +157,7 @@ export type RpcCommand =
 
 	// Compaction
 	| { id?: string; type: "compact"; customInstructions?: string }
+	| { id?: string; type: "run_idle_compaction" }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Retry
@@ -480,6 +481,7 @@ export type RpcResponse =
 
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }
+	| { id?: string; type: "response"; command: "run_idle_compaction"; success: true }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
 
 	// Retry

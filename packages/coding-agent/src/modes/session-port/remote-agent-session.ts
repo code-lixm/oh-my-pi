@@ -649,6 +649,10 @@ export class RemoteAgentSession {
 		return this.#client.compact(customInstructions);
 	}
 
+	runIdleCompaction(): Promise<void> {
+		return this.#client.runIdleCompaction();
+	}
+
 	abortCompaction(): void {
 		void this.#client.abort();
 	}

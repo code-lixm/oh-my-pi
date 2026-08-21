@@ -249,6 +249,9 @@ export class LocalInteractiveSessionPort implements InteractiveSessionPort {
 				return success(command);
 			case "compact":
 				return success(command, await this.#session.compact(command.customInstructions));
+			case "run_idle_compaction":
+				await this.#session.runIdleCompaction();
+				return success(command);
 			case "set_auto_compaction":
 				this.#session.setAutoCompactionEnabled(command.enabled);
 				return success(command);

@@ -1543,6 +1543,11 @@ export async function runRpcMode(
 				return success(id, "compact", result);
 			}
 
+			case "run_idle_compaction": {
+				await session.runIdleCompaction();
+				return success(id, "run_idle_compaction");
+			}
+
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);
 				return success(id, "set_auto_compaction");
