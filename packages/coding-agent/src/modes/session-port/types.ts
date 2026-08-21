@@ -5,7 +5,7 @@ import type { SlashCommandInfo } from "../../extensibility/slash-commands";
 import type { GoalModeState } from "../../goals/state";
 import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
-import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AsyncJobSnapshot, RoleModelCycle } from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
@@ -67,6 +67,8 @@ export interface InteractiveSessionProjection {
 	readonly busy: InteractiveSessionBusyFlags;
 	readonly activity?: AgentActivityState;
 	readonly advisorStats?: AdvisorStats;
+	readonly scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	readonly roleModelCycle?: { readonly roleOrder: readonly string[]; readonly cycle: RoleModelCycle };
 	readonly todo: readonly TodoPhase[];
 	readonly queue: { readonly steering: readonly string[]; readonly followUp: readonly string[] };
 	readonly modes: InteractiveSessionModes;

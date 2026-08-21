@@ -14,7 +14,7 @@ import type { LspServerStatus } from "../../lsp";
 import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AsyncJobSnapshot, RoleModelCycle, RoleModelCycleResult } from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -144,6 +144,20 @@ export type RpcCommand =
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| {
+			id?: string;
+			type: "set_model_temporary";
+			provider: string;
+			modelId: string;
+			thinkingLevel?: ConfiguredThinkingLevel;
+	  }
+	| { id?: string; type: "apply_role_model"; role: string }
+	| {
+			id?: string;
+			type: "cycle_role_models";
+			roleOrder: string[];
+			direction: "forward" | "backward";
+	  }
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "get_available_models" }
 
@@ -251,6 +265,10 @@ export interface RpcSessionState {
 	activity?: AgentActivityState;
 	/** Advisor status and usage; absent on older RPC hosts. */
 	advisorStats?: AdvisorStats;
+	/** Session-scoped picker models; absent on older RPC hosts. */
+	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	/** Resolved configured role cycle for the host's current cycle order. */
+	roleModelCycle?: { roleOrder: string[]; cycle: RoleModelCycle };
 	planMode?: PlanModeState;
 	goalMode?: GoalModeState;
 	vibeMode?: VibeModeState;
@@ -451,6 +469,15 @@ export type RpcResponse =
 			command: "set_model";
 			success: true;
 			data: Model;
+	  }
+	| { id?: string; type: "response"; command: "set_model_temporary"; success: true; data: Model }
+	| { id?: string; type: "response"; command: "apply_role_model"; success: true; data: RoleModelCycleResult }
+	| {
+			id?: string;
+			type: "response";
+			command: "cycle_role_models";
+			success: true;
+			data: RoleModelCycleResult | null;
 	  }
 	| {
 			id?: string;

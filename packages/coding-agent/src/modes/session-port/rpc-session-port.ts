@@ -67,6 +67,8 @@ function buildProjection(
 		},
 		...(state.activity ? { activity: state.activity } : {}),
 		...(state.advisorStats ? { advisorStats: state.advisorStats } : {}),
+		scopedModels: state.scopedModels ?? [],
+		...(state.roleModelCycle ? { roleModelCycle: state.roleModelCycle } : {}),
 		todo: state.todoPhases,
 		queue: state.queuedMessages ?? { steering: [], followUp: [] },
 		modes: {

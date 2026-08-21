@@ -106,6 +106,7 @@
 - Changed collapsed tool details to use configurable `display.toolDetailMaxLines` budgets (default 3 rows), preserving the beginning and end with a middle omission row while `Ctrl+O` reveals full details.
 
 ### Fixed
+- Fixed process-isolated `/switch` and role-model cycling by projecting picker state and forwarding temporary and role-based model changes to the session backend.
 - Fixed process-isolated sessions crashing slash-command autocomplete when Advisor status was read, and clearing queued follow-up UI after the backend consumes the message.
 - Fixed oversized live tool partials retaining unbounded payloads or losing async/error semantics; final results and artifacts remain unmodified. RPC EOF and shutdown now drain queued session-event frames before exit.
 - Fixed bare `hub wait` snapshots and automatic task deliveries splitting into repeated Hub transcript cards; all-running polls now replace prior snapshots, terminal waits seal before later Hub calls, and async deliveries merge only into an entirely live job tail without mutating native-scrollback history.

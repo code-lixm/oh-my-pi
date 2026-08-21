@@ -17,6 +17,8 @@ import type {
 } from "./types";
 
 function localState(session: AgentSession): RpcSessionState {
+	const roleOrder = session.settings.get("cycleOrder");
+	const roleModelCycle = session.getRoleModelCycle(roleOrder);
 	return {
 		model: session.model,
 		thinkingLevel: session.thinkingLevel,
@@ -50,6 +52,8 @@ function localState(session: AgentSession): RpcSessionState {
 		asyncJobs: session.getAsyncJobSnapshot({ recentLimit: 5 }),
 		activity: session.getActivityState(),
 		advisorStats: session.getAdvisorStats(),
+		scopedModels: [...session.scopedModels],
+		...(roleModelCycle ? { roleModelCycle: { roleOrder: [...roleOrder], cycle: roleModelCycle } } : {}),
 		planMode: session.getPlanModeState(),
 		goalMode: session.getGoalModeState(),
 		vibeMode: session.getVibeModeState(),
@@ -78,6 +82,8 @@ function localProjection(session: AgentSession): InteractiveSessionProjection {
 		},
 		activity: state.activity,
 		advisorStats: state.advisorStats,
+		scopedModels: state.scopedModels ?? [],
+		...(state.roleModelCycle ? { roleModelCycle: state.roleModelCycle } : {}),
 		todo: state.todoPhases,
 		queue: state.queuedMessages ?? { steering: [], followUp: [] },
 		modes: {
@@ -221,15 +227,31 @@ export class LocalInteractiveSessionPort implements InteractiveSessionPort {
 					active: this.#session.isFastModeActive(),
 				});
 			}
-			case "set_model": {
+			case "set_model":
+			case "set_model_temporary": {
 				await this.#session.modelRegistry.awaitBackgroundRefresh();
 				const model = this.#session
 					.getAvailableModels()
 					.find(candidate => candidate.provider === command.provider && candidate.id === command.modelId);
 				if (!model) return failure(command, `Model not found: ${command.provider}/${command.modelId}`);
-				await this.#session.setModel(model);
+				if (command.type === "set_model") await this.#session.setModel(model);
+				else {
+					const thinkingLevel = command.thinkingLevel ?? this.#session.resolveTemporaryModelThinkingLevel(model);
+					await this.#session.setModelTemporary(model, thinkingLevel);
+				}
 				return success(command, model);
 			}
+			case "apply_role_model": {
+				const entry = this.#session.getRoleModelCycle([command.role])?.models[0];
+				if (!entry) return failure(command, `Role model not found: ${command.role}`);
+				await this.#session.applyRoleModel(entry);
+				return success(command, { model: entry.model, thinkingLevel: entry.thinkingLevel, role: entry.role });
+			}
+			case "cycle_role_models":
+				return success(
+					command,
+					(await this.#session.cycleRoleModels(command.roleOrder, command.direction)) ?? null,
+				);
 			case "cycle_model":
 				return success(command, (await this.#session.cycleModel()) ?? null);
 			case "get_available_models":

@@ -1258,6 +1258,8 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "get_state": {
+				const roleOrder = session.settings.get("cycleOrder");
+				const roleModelCycle = session.getRoleModelCycle(roleOrder);
 				const state: RpcSessionState = {
 					isBashRunning: session.isBashRunning,
 					isEvalRunning: session.isEvalRunning,
@@ -1292,6 +1294,8 @@ export async function runRpcMode(
 					lsp: getLspStatus(),
 					activity: session.getActivityState(),
 					advisorStats: session.getAdvisorStats(),
+					scopedModels: [...session.scopedModels],
+					...(roleModelCycle ? { roleModelCycle: { roleOrder: [...roleOrder], cycle: roleModelCycle } } : {}),
 					planMode: session.getPlanModeState(),
 					goalMode: session.getGoalModeState(),
 					vibeMode: session.getVibeModeState(),
@@ -1545,7 +1549,8 @@ export async function runRpcMode(
 			// Model
 			// =================================================================
 
-			case "set_model": {
+			case "set_model":
+			case "set_model_temporary": {
 				let models = session.getAvailableModels();
 				let model = models.find(m => m.provider === command.provider && m.id === command.modelId);
 				if (!model) {
@@ -1560,10 +1565,30 @@ export async function runRpcMode(
 					model = models.find(m => m.provider === command.provider && m.id === command.modelId);
 				}
 				if (!model) {
-					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+					return error(id, command.type, `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
-				return success(id, "set_model", model);
+				if (command.type === "set_model") await session.setModel(model);
+				else {
+					const thinkingLevel = command.thinkingLevel ?? session.resolveTemporaryModelThinkingLevel(model);
+					await session.setModelTemporary(model, thinkingLevel);
+				}
+				return success(id, command.type, model);
+			}
+
+			case "apply_role_model": {
+				const entry = session.getRoleModelCycle([command.role])?.models[0];
+				if (!entry) return error(id, "apply_role_model", `Role model not found: ${command.role}`);
+				await session.applyRoleModel(entry);
+				return success(id, "apply_role_model", {
+					model: entry.model,
+					thinkingLevel: entry.thinkingLevel,
+					role: entry.role,
+				});
+			}
+
+			case "cycle_role_models": {
+				const result = await session.cycleRoleModels(command.roleOrder, command.direction);
+				return success(id, "cycle_role_models", result ?? null);
 			}
 
 			case "cycle_model": {

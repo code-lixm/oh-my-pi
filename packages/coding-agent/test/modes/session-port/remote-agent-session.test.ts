@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../../../src/config/model-registry";
 import type { Settings } from "../../../src/config/settings";
 import type {
@@ -114,6 +116,12 @@ type RpcCommandEnvelope = {
 	id: string;
 	type: string;
 	level?: unknown;
+	provider?: unknown;
+	modelId?: unknown;
+	thinkingLevel?: unknown;
+	role?: unknown;
+	roleOrder?: unknown;
+	direction?: unknown;
 };
 
 function isRpcCommandEnvelope(value: unknown): value is RpcCommandEnvelope {
@@ -533,6 +541,84 @@ describe("RemoteAgentSession interactive facade", () => {
 				messages: { user: 0, assistant: 0, total: 0 },
 				advisors: [],
 			});
+			expect(facade.scopedModels).toEqual([]);
+			expect(facade.getRoleModelCycle(["default"])).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("projects model-picker roles and forwards temporary and role model changes", async () => {
+		const primaryModel = {
+			provider: "anthropic",
+			id: "claude-sonnet",
+			name: "Claude Sonnet",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		} as Model;
+		const fastModel = { ...primaryModel, id: "claude-haiku", name: "Claude Haiku" };
+		const roleOrder = ["default", "fast"];
+		const cycle = {
+			models: [
+				{ role: "default", model: primaryModel, thinkingLevel: Effort.High, explicitThinkingLevel: true },
+				{ role: "fast", model: fastModel, explicitThinkingLevel: false },
+			],
+			currentIndex: 0,
+		};
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			state: () => ({
+				...initialState,
+				model: primaryModel,
+				scopedModels: [{ model: fastModel, thinkingLevel: ThinkingLevel.Medium }],
+				roleModelCycle: { roleOrder, cycle },
+			}),
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "set_model_temporary":
+					case "apply_role_model":
+						received.push(command);
+						respond(primaryModel);
+						return true;
+					case "cycle_role_models":
+						received.push(command);
+						respond({ model: fastModel, thinkingLevel: undefined, role: "fast" });
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(facade.scopedModels).toEqual([{ model: fastModel, thinkingLevel: ThinkingLevel.Medium }]);
+			expect(facade.getRoleModelCycle(roleOrder)).toEqual(cycle);
+			expect(facade.getRoleModelCycle(["fast", "default"])).toBeUndefined();
+			expect(facade.resolveTemporaryModelThinkingLevel(primaryModel)).toBe(Effort.High);
+			expect(facade.resolveTemporaryModelThinkingLevel(fastModel)).toBeUndefined();
+
+			await facade.setModelTemporary(primaryModel, Effort.High);
+			await facade.applyRoleModel(cycle.models[1]);
+			expect(await facade.cycleRoleModels(roleOrder, "backward")).toEqual({
+				model: fastModel,
+				thinkingLevel: undefined,
+				role: "fast",
+			});
+			expect(received).toEqual([
+				expect.objectContaining({
+					type: "set_model_temporary",
+					provider: primaryModel.provider,
+					modelId: primaryModel.id,
+					thinkingLevel: Effort.High,
+				}),
+				expect.objectContaining({ type: "apply_role_model", role: "fast" }),
+				expect.objectContaining({ type: "cycle_role_models", roleOrder, direction: "backward" }),
+			]);
 		} finally {
 			await session.dispose();
 		}

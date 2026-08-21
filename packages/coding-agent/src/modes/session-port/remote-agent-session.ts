@@ -1,5 +1,13 @@
-import type { Agent, AgentMessage, AgentState, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type {
+	Agent,
+	AgentMessage,
+	AgentState,
+	AgentTool,
+	AgentToolContext,
+	ThinkingLevel,
+} from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { SlashCommand } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -12,7 +20,12 @@ import type { FileSlashCommand } from "../../extensibility/slash-commands";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSession } from "../../session/agent-session";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
-import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type {
+	AsyncJobSnapshot,
+	ResolvedRoleModel,
+	RoleModelCycle,
+	RoleModelCycleResult,
+} from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { SessionContext } from "../../session/session-context";
 import type { SessionManager } from "../../session/session-manager";
@@ -293,6 +306,10 @@ export class RemoteAgentSession {
 
 	get model(): Model | undefined {
 		return this.#projection.model;
+	}
+
+	get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
+		return this.#projection.scopedModels;
 	}
 
 	get thinkingLevel() {
@@ -634,6 +651,52 @@ export class RemoteAgentSession {
 		await this.#client.setModel(model.provider, model.id);
 	}
 
+	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
+		const projected = this.#projection.roleModelCycle;
+		if (
+			!projected ||
+			projected.roleOrder.length !== roleOrder.length ||
+			!projected.roleOrder.every((role, index) => role === roleOrder[index])
+		)
+			return undefined;
+		return projected.cycle;
+	}
+
+	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
+		const entry = this.#projection.roleModelCycle?.cycle.models.find(candidate =>
+			modelsAreEqual(candidate.model, model),
+		);
+		return entry?.explicitThinkingLevel ? entry.thinkingLevel : undefined;
+	}
+
+	async setModelTemporary(model: Model, thinkingLevel?: ConfiguredThinkingLevel): Promise<void> {
+		await this.#dispatch({
+			type: "set_model_temporary",
+			provider: model.provider,
+			modelId: model.id,
+			...(thinkingLevel ? { thinkingLevel } : {}),
+		});
+		await this.#refreshProjection();
+	}
+
+	async applyRoleModel(entry: ResolvedRoleModel): Promise<void> {
+		await this.#dispatch({ type: "apply_role_model", role: entry.role });
+		await this.#refreshProjection();
+	}
+
+	async cycleRoleModels(
+		roleOrder: readonly string[],
+		direction: "forward" | "backward" = "forward",
+	): Promise<RoleModelCycleResult | undefined> {
+		const response = await this.#dispatch({
+			type: "cycle_role_models",
+			roleOrder: [...roleOrder],
+			direction,
+		});
+		await this.#refreshProjection();
+		return response.success && response.command === "cycle_role_models" ? (response.data ?? undefined) : undefined;
+	}
+
 	getAvailableModels(): Model[] {
 		return this.modelRegistry.getAvailable();
 	}
@@ -762,10 +825,11 @@ export class RemoteAgentSession {
 		}
 	}
 
-	async #dispatch(command: RpcCommand): Promise<void> {
+	async #dispatch(command: RpcCommand): Promise<RpcResponse> {
 		const response = await this.#port.dispatch(command);
 		const error = responseError(response);
 		if (error) throw error;
+		return response;
 	}
 
 	#replaceMessages(messages: AgentMessage[]): void {
