@@ -221,13 +221,13 @@ describe("InteractiveMode working-message session accent cache", () => {
 			mode.ensureLoadingAnimation();
 			mode.refreshWorkingActivitySummary(activeActivity);
 			const before = renderLoader(mode);
-			expect(Bun.stripANSI(before)).toContain("Thinking · Active");
+			expect(Bun.stripANSI(before)).toContain("Thinking · phase 0ms");
 
 			perfNow += 80;
 			vi.advanceTimersByTime(80);
 			const after = renderLoader(mode);
 			expect(Bun.stripANSI(after)).not.toBe(Bun.stripANSI(before));
-			expect(Bun.stripANSI(after)).toContain("Thinking · Active");
+			expect(Bun.stripANSI(after)).toContain("Thinking · phase 0ms");
 		} finally {
 			mode.stop();
 			perfSpy.mockRestore();
@@ -312,7 +312,7 @@ describe("InteractiveMode working activity refresh", () => {
 			expect(directWrite).toHaveBeenCalledWith(defined(mode.loadingAnimation));
 			expect(componentRender).toHaveBeenCalledTimes(1);
 			expect(componentRender).toHaveBeenCalledWith(defined(mode.loadingAnimation));
-			expect(Bun.stripANSI(renderLoader(mode))).toContain("Thinking · Active · phase 1.0s");
+			expect(Bun.stripANSI(renderLoader(mode))).toContain("Thinking · phase 1.0s");
 		} finally {
 			mode.stop();
 			perfSpy.mockRestore();
@@ -422,13 +422,15 @@ describe("InteractiveMode loading activity summary", () => {
 			startStableLoader(mode);
 			mode.refreshWorkingActivitySummary(thinkingActivity);
 			const active = Bun.stripANSI(renderLoader(mode));
-			expect(active).toContain("Thinking · Active · phase 2m15s");
+			expect(active).toContain("Thinking · phase 2m15s");
+			expect(active).not.toContain("Active");
 
 			setSystemTime(thinkingActivity.lastActivityAtMs + 15_000);
 			mode.refreshWorkingActivitySummary(thinkingActivity);
 			const quiet = Bun.stripANSI(renderLoader(mode));
-			expect(quiet).toContain("Quiet · Thinking · phase 2m30s");
-			expect(quiet).not.toContain("Thinking · Active");
+			expect(quiet).toContain("Thinking · quiet 15.0s");
+			expect(quiet).not.toContain("Quiet");
+			expect(quiet).not.toContain("phase 2m30s");
 		} finally {
 			vi.useRealTimers();
 			setSystemTime();

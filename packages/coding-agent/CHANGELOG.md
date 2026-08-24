@@ -47,6 +47,7 @@
 - Added the `thinkingDisplay` setting with `full`, `prose`, and `hidden` modes for live Main and subagent thinking streams; legacy `hideThinkingBlock` and `proseOnlyThinking` settings migrate automatically.
 
 ### Changed
+- Changed active-work status rows to show one actionable elapsed clock instead of repeating phase and inactivity timing, suppress redundant active/quiet health copy, and use compact block-corner activity frames that render consistently across terminal font stacks.
 - Changed transcript rendering to reuse unchanged finalized block segments before native scrollback commit, and coalesced ordinary message/tool partial updates into 33ms latest-wins ordered windows in both TUI and RPC paths while error and terminal updates remain immediate barriers.
 - Changed interactive tool partial coalescing to adapt from 33ms to 250ms only after completed committed TUI compose samples, with hysteretic slow/fast recovery; threshold-limited live previews now emit terminal `tool.partial.backpressure` debug records with call identity, original/trimmed maximum bytes, received/coalesced/dispatched/rendered counts, and enqueue-to-dispatch/render delay.
 - Changed RPC thinking state to expose both the effective level and the configured selector, preserving `auto` for external clients while keeping model-specific effective effort available.
@@ -115,6 +116,8 @@
 - Fixed `omp daemon start` blocking a first supervisor from binding its socket by releasing the bootstrap lease before spawning it.
 - Fixed `features.processIsolation` losing startup extension UI requests, deadlocking extension initialization, and exposing an incomplete foreground session facade for `/tools`, `/new`, `/resume`, branch, and tree navigation; the setting is now CLI-only.
 - Fixed isolated interactive sessions omitting automatic idle compaction by forwarding `runIdleCompaction()` through their RPC session port.
+- Fixed process-isolated settings, Advisor controls/history, usage/reset selection, and `/fast` invoking absent foreground facade methods by forwarding their mutations and queries through RPC; backend errors now surface to the TUI and confirmed fast-mode state drives its status.
+- Fixed confirmed double-Esc cancellation crashing process-isolated TUI sessions because the remote session facade omitted async-job state and cancellation; it now reports projected running jobs and forwards cancellation to the RPC child.
 - Fixed `omp config export` and `omp config import` to use the local Sync encryption key first, then the configured `sync.passphraseEnv` fallback; an explicit `--passphrase-env` still selects that environment variable.
 
 - Fixed task subagents entering a direct `hub wait` for their parent while the parent awaited the task; such waits now fail immediately with actionable `hub send`/terminal-`yield` guidance, preventing a parent-child deadlock.

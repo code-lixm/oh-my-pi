@@ -141,6 +141,9 @@ export class OmfgController {
 
 		for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 			if (this.#shouldStop(request)) return undefined;
+			if (typeof this.ctx.session.runEphemeralTurn !== "function") {
+				throw new Error("This session does not support temporary turns.");
+			}
 			request.component.setRule("");
 			request.component.setStatus(
 				"generating",

@@ -83,7 +83,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			if (!verb || verb === "toggle") {
-				const active = runtime.session.toggleAdvisorEnabled();
+				const active = await runtime.session.toggleAdvisorEnabled();
 				const configured = runtime.session.isAdvisorEnabled();
 				if (active) {
 					await runtime.output("Advisor enabled.");
@@ -95,14 +95,14 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return commandConsumed();
 			}
 			if (verb === "on") {
-				const active = runtime.session.setAdvisorEnabled(true);
+				const active = await runtime.session.setAdvisorEnabled(true);
 				await runtime.output(
 					active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
 				);
 				return commandConsumed();
 			}
 			if (verb === "off") {
-				runtime.session.setAdvisorEnabled(false);
+				await runtime.session.setAdvisorEnabled(false);
 				await runtime.output("Advisor disabled.");
 				return commandConsumed();
 			}
@@ -126,54 +126,76 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			if (!verb || verb === "toggle") {
-				const active = runtime.ctx.session.toggleAdvisorEnabled();
-				const configured = runtime.ctx.session.isAdvisorEnabled();
-				if (active) {
-					runtime.ctx.showStatus("Advisor enabled.");
-				} else if (configured) {
-					runtime.ctx.showStatus("Advisor setting enabled, but no model is assigned to the 'advisor' role.");
-				} else {
-					runtime.ctx.showStatus("Advisor disabled.");
+			try {
+				if (!verb || verb === "toggle") {
+					if (
+						typeof runtime.ctx.session.toggleAdvisorEnabled !== "function" ||
+						typeof runtime.ctx.session.isAdvisorEnabled !== "function"
+					) {
+						runtime.ctx.showError("Advisor controls are unavailable in the current session.");
+						runtime.ctx.editor.setText("");
+						return;
+					}
+					const active = await runtime.ctx.session.toggleAdvisorEnabled();
+					const configured = runtime.ctx.session.isAdvisorEnabled();
+					if (active) {
+						runtime.ctx.showStatus("Advisor enabled.");
+					} else if (configured) {
+						runtime.ctx.showStatus("Advisor setting enabled, but no model is assigned to the 'advisor' role.");
+					} else {
+						runtime.ctx.showStatus("Advisor disabled.");
+					}
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.editor.setText("");
+					return;
 				}
-				refreshStatusLine(runtime.ctx);
+				if (verb === "on") {
+					if (typeof runtime.ctx.session.setAdvisorEnabled !== "function") {
+						runtime.ctx.showError("Advisor controls are unavailable in the current session.");
+						runtime.ctx.editor.setText("");
+						return;
+					}
+					const active = await runtime.ctx.session.setAdvisorEnabled(true);
+					runtime.ctx.showStatus(
+						active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
+					);
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (verb === "off") {
+					if (typeof runtime.ctx.session.setAdvisorEnabled !== "function") {
+						runtime.ctx.showError("Advisor controls are unavailable in the current session.");
+						runtime.ctx.editor.setText("");
+						return;
+					}
+					await runtime.ctx.session.setAdvisorEnabled(false);
+					runtime.ctx.showStatus("Advisor disabled.");
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (verb === "status") {
+					await runtime.ctx.handleAdvisorStatusCommand();
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (verb === "dump") {
+					const isRaw = rest.toLowerCase() === "raw";
+					await runtime.ctx.handleAdvisorDumpCommand(isRaw);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (verb === "configure") {
+					runtime.ctx.showAdvisorConfigure();
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				runtime.ctx.showStatus("Usage: /advisor [on|off|status|dump [raw]|configure]");
 				runtime.ctx.editor.setText("");
-				return;
+			} catch (error) {
+				runtime.ctx.showError(error instanceof Error ? error.message : String(error));
 			}
-			if (verb === "on") {
-				const active = runtime.ctx.session.setAdvisorEnabled(true);
-				runtime.ctx.showStatus(
-					active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
-				);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "off") {
-				runtime.ctx.session.setAdvisorEnabled(false);
-				runtime.ctx.showStatus("Advisor disabled.");
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "status") {
-				await runtime.ctx.handleAdvisorStatusCommand();
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "dump") {
-				const isRaw = rest.toLowerCase() === "raw";
-				runtime.ctx.handleAdvisorDumpCommand(isRaw);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (verb === "configure") {
-				runtime.ctx.showAdvisorConfigure();
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /advisor [on|off|status|dump [raw]|configure]");
-			runtime.ctx.editor.setText("");
 		},
 	},
 	{

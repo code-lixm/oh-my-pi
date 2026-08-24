@@ -128,13 +128,13 @@ function formatWorkingActivityMessage(activity: AgentActivityState): string {
 	});
 	const phase = tSettingsUi(formatted.phaseLabel);
 	const health = tSettingsUi(formatted.healthLabel);
-	const state = formatted.health === "active" || phase === health ? phase : `${health} · ${phase}`;
-	const elapsed = [
-		formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
-		formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
+	const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && phase !== health;
+	const state = showHealth ? `${health} · ${phase}` : phase;
+	const elapsed = formatted.quietElapsed
+		? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
+		: formatted.phaseElapsed
+			? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
+			: "";
 	return previewLine(
 		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(" · "),
 		TRUNCATE_LENGTHS.LINE,
@@ -2611,6 +2611,7 @@ export class EventController {
 		const abort = new AbortController();
 		this.#idleRecapAbort = abort;
 		try {
+			if (typeof this.ctx.viewSession.runEphemeralTurn !== "function") return;
 			const { replyText } = await this.ctx.viewSession.runEphemeralTurn({ promptText, signal: abort.signal });
 			if (this.#idleRecapAbort !== abort || abort.signal.aborted || !this.#idleConditionsHold()) return;
 			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);

@@ -160,4 +160,38 @@ describe("CommandController /usage", () => {
 		expect(output).toContain(`(${futureIso.slice(0, 10)})`);
 		expect(output).toContain(`expired (${expiredIso.slice(0, 10)})`);
 	});
+
+	it("awaits remote usage selectors before rendering models with usage data", async () => {
+		const present = vi.fn();
+		const selectorsReady = Promise.withResolvers<string[]>();
+		const getUsageReportingModelSelectors = vi.fn(() => selectorsReady.promise);
+		const reports: UsageReport[] = [
+			{
+				provider: "anthropic",
+				fetchedAt: 1_700_000_000_000,
+				limits: [],
+			},
+		];
+		const ctx = {
+			session: { getUsageReportingModelSelectors },
+			ui: { terminal: { columns: 100 } },
+			presentCommandOutput: present,
+			showWarning: vi.fn(),
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext;
+		const controller = new CommandController(ctx);
+
+		const rendering = controller.handleUsageCommand(reports);
+		expect(getUsageReportingModelSelectors).toHaveBeenCalledWith(reports);
+		expect(present).not.toHaveBeenCalled();
+
+		selectorsReady.resolve(["anthropic/claude-remote"]);
+		await rendering;
+
+		const firstCall = present.mock.calls[0];
+		expect(firstCall).toBeDefined();
+		const output = renderPresentedBlocks(firstCall?.[0]);
+		expect(output).toContain("Models with usage data");
+		expect(output).toContain("anthropic/claude-remote");
+	});
 });

@@ -286,18 +286,13 @@ function formatWorkingActivityMessage(
 	});
 	const phase = tSettingsUi(formatted.phaseLabel);
 	const health = tSettingsUi(formatted.healthLabel);
-	const state =
-		activity.phase === "thinking" && formatted.health === "active"
-			? `${phase}${theme.sep.dot}${health}`
-			: formatted.health === "active" || phase === health
-				? phase
-				: `${health}${theme.sep.dot}${phase}`;
-	const elapsed = [
-		formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
-		formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
-	]
-		.filter(Boolean)
-		.join(theme.sep.dot);
+	const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && phase !== health;
+	const state = showHealth ? `${health}${theme.sep.dot}${phase}` : phase;
+	const elapsed = formatted.quietElapsed
+		? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
+		: formatted.phaseElapsed
+			? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
+			: "";
 	return truncateToWidth(
 		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(theme.sep.dot),
 		width,

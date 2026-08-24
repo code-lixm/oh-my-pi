@@ -543,17 +543,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => {
 			const arg = command.args.toLowerCase();
 			if (!arg || arg === "toggle") {
-				const enabled = runtime.session.toggleFastMode();
+				const enabled = await runtime.session.toggleFastMode();
 				await runtime.output(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
 				return commandConsumed();
 			}
 			if (arg === "on") {
-				const supported = runtime.session.setFastMode(true);
-				await runtime.output(supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.");
+				const enabled = await runtime.session.setFastMode(true);
+				await runtime.output(enabled ? "Fast mode enabled." : "Fast mode is unavailable for the current model.");
 				return commandConsumed();
 			}
 			if (arg === "off") {
-				runtime.session.setFastMode(false);
+				await runtime.session.setFastMode(false);
 				await runtime.output("Fast mode disabled.");
 				return commandConsumed();
 			}
@@ -563,38 +563,42 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			return usage("Usage: /fast [on|off|status]", runtime);
 		},
-		handleTui: (command, runtime) => {
+		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
-			if (!arg || arg === "toggle") {
-				const enabled = runtime.ctx.session.toggleFastMode();
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
+			try {
+				if (!arg || arg === "toggle") {
+					const enabled = await runtime.ctx.session.setFastMode(!runtime.ctx.session.isFastModeEnabled());
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.showStatus(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (arg === "on") {
+					const enabled = await runtime.ctx.session.setFastMode(true);
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.showStatus(
+						enabled ? "Fast mode enabled." : "Fast mode is unavailable for the current model.",
+					);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (arg === "off") {
+					await runtime.ctx.session.setFastMode(false);
+					refreshStatusLine(runtime.ctx);
+					runtime.ctx.showStatus("Fast mode disabled.");
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				if (arg === "status") {
+					runtime.ctx.showStatus(`Fast mode is ${formatFastModeStatus(runtime.ctx.session)}.`);
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				runtime.ctx.showStatus("Usage: /fast [on|off|status]");
 				runtime.ctx.editor.setText("");
-				return;
+			} catch (error) {
+				runtime.ctx.showError(error instanceof Error ? error.message : String(error));
 			}
-			if (arg === "on") {
-				const supported = runtime.ctx.session.setFastMode(true);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus(
-					supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.",
-				);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "off") {
-				runtime.ctx.session.setFastMode(false);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus("Fast mode disabled.");
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "status") {
-				runtime.ctx.showStatus(`Fast mode is ${formatFastModeStatus(runtime.ctx.session)}.`);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /fast [on|off|status]");
-			runtime.ctx.editor.setText("");
 		},
 	},
 	{

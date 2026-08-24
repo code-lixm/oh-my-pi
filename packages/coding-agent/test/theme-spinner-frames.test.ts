@@ -15,6 +15,11 @@ const DARK_THEME_PATH = path.join(import.meta.dir, "..", "src", "modes", "theme"
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
+const ACTIVITY_CORNER_FRAMES = ["▖", "▘", "▝", "▗"];
+const UNICODE_STATUS_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+const NERD_STATUS_FRAMES = ["󱑖", "󱑋", "󱑌", "󱑍", "󱑎", "󱑏", "󱑐", "󱑑", "󱑒", "󱑓", "󱑔", "󱑕"];
+const ASCII_STATUS_FRAMES = ["|", "/", "-", "\\"];
+const ASCII_ACTIVITY_FRAMES = ["-", "\\", "|", "/"];
 
 let tmpAgentDir: string;
 
@@ -59,17 +64,14 @@ describe("theme symbols.spinnerFrames", () => {
 		expect(theme!.spinnerFrames).toEqual(frames);
 	});
 
-	it("object override sets each spinner type independently and falls back to preset", async () => {
+	it("object status override wins while unoverridden activity falls back to Unicode corners", async () => {
 		const statusFrames = ["A", "B", "C"];
-		// `unicode` preset's activity frames — the default we expect to surface
-		// when only `status` is overridden.
-		const presetActivity = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 		await writeCustomTheme("custom-status-only", { spinnerFrames: { status: statusFrames } });
 
 		const theme = await getThemeByName("custom-status-only");
 		expect(theme).toBeDefined();
 		expect(theme!.getSpinnerFrames("status")).toEqual(statusFrames);
-		expect(theme!.getSpinnerFrames("activity")).toEqual(presetActivity);
+		expect(theme!.getSpinnerFrames("activity")).toEqual(ACTIVITY_CORNER_FRAMES);
 	});
 
 	it("rejects empty arrays and empty objects at validation time", async () => {
@@ -80,16 +82,26 @@ describe("theme symbols.spinnerFrames", () => {
 		await expect(getThemeByName("custom-empty-object")).resolves.toBeUndefined();
 	});
 
-	it("falls through to preset frames when `spinnerFrames` is absent", async () => {
-		// `dark` ships with `symbols.preset: "unicode"`; we only assert that the
-		// default status frames match the preset table when no override is set.
-		await writeCustomTheme("custom-no-override", {});
+	it("uses preset activity fallbacks without changing status or ASCII frames", async () => {
+		const presets = [
+			{
+				name: "unicode",
+				preset: "unicode",
+				statusFrames: UNICODE_STATUS_FRAMES,
+				activityFrames: ACTIVITY_CORNER_FRAMES,
+			},
+			{ name: "nerd", preset: "nerd", statusFrames: NERD_STATUS_FRAMES, activityFrames: ACTIVITY_CORNER_FRAMES },
+			{ name: "ascii", preset: "ascii", statusFrames: ASCII_STATUS_FRAMES, activityFrames: ASCII_ACTIVITY_FRAMES },
+		] as const;
 
-		const theme = await getThemeByName("custom-no-override");
-		expect(theme).toBeDefined();
-		const status = theme!.getSpinnerFrames("status");
-		expect(status.length).toBeGreaterThan(1);
-		expect(status).not.toContain("A");
+		for (const { name, preset, statusFrames, activityFrames } of presets) {
+			await writeCustomTheme(`custom-${name}-preset`, { preset });
+
+			const theme = await getThemeByName(`custom-${name}-preset`);
+			expect(theme).toBeDefined();
+			expect(theme!.getSpinnerFrames("status")).toEqual(statusFrames);
+			expect(theme!.getSpinnerFrames("activity")).toEqual(activityFrames);
+		}
 	});
 
 	it("derives live tool spinner frames from a shared clock", () => {

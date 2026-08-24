@@ -40,6 +40,11 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.editor.setText("");
 				return;
 			}
+			if (typeof runtime.ctx.session.setForcedToolChoice !== "function") {
+				runtime.ctx.showError("Forcing a tool is unavailable in the current session.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
 
 			try {
 				runtime.ctx.session.setForcedToolChoice(toolName);

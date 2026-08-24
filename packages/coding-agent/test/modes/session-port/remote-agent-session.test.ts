@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { Effort, type Model } from "@oh-my-pi/pi-ai";
+import {
+	Effort,
+	type Model,
+	type ResetCreditAccountStatus,
+	type ResetCreditRedeemOutcome,
+	type ResetCreditTarget,
+	type UsageReport,
+} from "@oh-my-pi/pi-ai";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import type { AdvisorConfig } from "../../../src/advisor";
 import type { ModelRegistry } from "../../../src/config/model-registry";
 import type { Settings } from "../../../src/config/settings";
 import type {
@@ -10,9 +19,15 @@ import type {
 } from "../../../src/extensibility/extensions/types";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client";
 import type { RpcTransport } from "../../../src/modes/rpc/rpc-transport";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSessionState } from "../../../src/modes/rpc/rpc-types";
+import type {
+	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcSessionState,
+} from "../../../src/modes/rpc/rpc-types";
 import { RemoteAgentSession } from "../../../src/modes/session-port/remote-agent-session";
 import { buildToolsMarkdown } from "../../../src/modes/utils/tools-markdown";
+import type { AsyncJobSnapshot } from "../../../src/session/agent-session-types";
 import { SessionManager } from "../../../src/session/session-manager";
 import { MemorySessionStorage } from "../../../src/session/session-storage";
 import {
@@ -112,17 +127,7 @@ class InMemoryRpcTransport implements RpcTransport {
 	}
 }
 
-type RpcCommandEnvelope = {
-	id: string;
-	type: string;
-	level?: unknown;
-	provider?: unknown;
-	modelId?: unknown;
-	thinkingLevel?: unknown;
-	role?: unknown;
-	roleOrder?: unknown;
-	direction?: unknown;
-};
+type RpcCommandEnvelope = RpcCommand & { id: string };
 
 function isRpcCommandEnvelope(value: unknown): value is RpcCommandEnvelope {
 	return (
@@ -158,7 +163,11 @@ const initialState: RpcSessionState = {
 
 type BootstrapRpcServerOptions = {
 	readonly state?: () => RpcSessionState;
-	readonly onCommand?: (command: RpcCommandEnvelope, respond: (data: unknown) => void) => boolean;
+	readonly onCommand?: (
+		command: RpcCommandEnvelope,
+		respond: (data: unknown) => void,
+		reject: (error: string, code?: string) => void,
+	) => boolean;
 };
 
 function installBootstrapRpcServer(transport: InMemoryRpcTransport, options: BootstrapRpcServerOptions = {}): void {
@@ -173,7 +182,17 @@ function installBootstrapRpcServer(transport: InMemoryRpcTransport, options: Boo
 				data,
 			});
 		};
-		if (options.onCommand?.(frame, respond)) return;
+		const reject = (error: string, code?: string) => {
+			void transport.sendFromServer({
+				id: frame.id,
+				type: "response",
+				command: frame.type,
+				success: false,
+				error,
+				...(code ? { code } : {}),
+			});
+		};
+		if (options.onCommand?.(frame, respond, reject)) return;
 
 		switch (frame.type) {
 			case "set_subagent_subscription":
@@ -548,6 +567,37 @@ describe("RemoteAgentSession interactive facade", () => {
 		}
 	});
 
+	test("reports projected jobs and forwards confirmed Esc cancellation to the RPC child", async () => {
+		const projectedJobs: AsyncJobSnapshot = {
+			running: [
+				{ id: "bg-1", type: "bash", status: "running", label: "sleep 30", startTime: 1 },
+				{ id: "bg-2", type: "bash", status: "running", label: "sleep 60", startTime: 2 },
+			],
+			recent: [{ id: "bg-completed", type: "task", status: "completed", label: "finished task", startTime: 0 }],
+			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+		};
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, asyncJobs: projectedJobs }),
+			onCommand: (command, respond) => {
+				if (command.type !== "cancel_async_jobs") return false;
+				received.push(command);
+				respond({ cancelled: 0 });
+				return true;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+
+			expect(facade.runningAsyncJobCount).toBe(2);
+			expect(facade.cancelAsyncJobs()).toBe(2);
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([expect.objectContaining({ type: "cancel_async_jobs" })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("projects model-picker roles and forwards temporary and role model changes", async () => {
 		const primaryModel = {
 			provider: "anthropic",
@@ -640,6 +690,391 @@ describe("RemoteAgentSession interactive facade", () => {
 		});
 		try {
 			expect(session.asAgentSession().getAdvisorStats()).toEqual(advisorStats);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("exposes supported thinking levels for the projected model", async () => {
+		const primaryModel = {
+			provider: "anthropic",
+			id: "claude-sonnet",
+			name: "Claude Sonnet",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		} as Model;
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, model: primaryModel }),
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(facade.getAvailableThinkingLevels()).toEqual(getSupportedEfforts(primaryModel));
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("toggles fast mode against the projected enabled state", async () => {
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, fastModeEnabled: false }),
+		});
+		try {
+			const facade = session.asAgentSession();
+			const setFastMode = vi.spyOn(session, "setFastMode").mockImplementation(async (next: boolean) => {
+				expect(next).toBe(true);
+				return true;
+			});
+			expect(facade.isFastModeEnabled()).toBe(false);
+			expect(await facade.toggleFastMode()).toBe(true);
+			expect(setFastMode).toHaveBeenCalledWith(true);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("returns and projects disabled after an enabled-to-disabled fast-mode confirmation", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "set_fast_mode") return false;
+				received.push(command);
+				respond({ enabled: command.enabled, active: command.enabled });
+				return true;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(await facade.setFastMode(true)).toBe(true);
+			expect(facade.isFastModeEnabled()).toBe(true);
+			expect(facade.isFastModeActive()).toBe(true);
+
+			expect(await facade.setFastMode(false)).toBe(false);
+			expect(facade.isFastModeEnabled()).toBe(false);
+			expect(facade.isFastModeActive()).toBe(false);
+			expect(received).toEqual([
+				expect.objectContaining({ type: "set_fast_mode", enabled: true }),
+				expect.objectContaining({ type: "set_fast_mode", enabled: false }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards tool, prompt, and memory settings through RPC and returns daemon results", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "set_think_tool":
+						received.push(command);
+						respond({ enabled: false });
+						return true;
+					case "apply_inspect_image_mode":
+						received.push(command);
+						respond({ enabled: true });
+						return true;
+					case "apply_memory_backend":
+					case "refresh_base_system_prompt":
+						received.push(command);
+						respond(undefined);
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(await facade.setThinkToolEnabled(true)).toBe(false);
+			expect(await facade.applyInspectImageModeChange()).toBe(true);
+			await expect(facade.applyMemoryBackend()).resolves.toBeUndefined();
+			await expect(facade.refreshBaseSystemPrompt()).resolves.toBeUndefined();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "set_think_tool", enabled: true }),
+				expect.objectContaining({ type: "apply_inspect_image_mode" }),
+				expect.objectContaining({ type: "apply_memory_backend" }),
+				expect.objectContaining({ type: "refresh_base_system_prompt" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("propagates asynchronous daemon errors through the facade", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, _respond, reject) => {
+				if (command.type !== "apply_memory_backend") return false;
+				received.push(command);
+				reject("Memory backend rejected the requested configuration.", "memory_backend_rejected");
+				return true;
+			},
+		});
+		try {
+			await expect(session.asAgentSession().applyMemoryBackend()).rejects.toMatchObject({
+				name: "RpcCommandError",
+				command: "apply_memory_backend",
+				code: "memory_backend_rejected",
+				message: "Memory backend rejected the requested configuration.",
+			});
+			expect(received).toEqual([expect.objectContaining({ type: "apply_memory_backend" })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards advisor settings and returns daemon results", async () => {
+		const advisors = [
+			{
+				name: "security-reviewer",
+				model: "anthropic/claude-sonnet",
+				tools: ["read", "grep"],
+				instructions: "Find concrete security risks before proposing a patch.",
+				enabled: true,
+			},
+		] satisfies AdvisorConfig[];
+		const sharedInstructions = "Prioritize externally observable regressions.";
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "set_advisor_enabled":
+						received.push(command);
+						respond({ active: false });
+						return true;
+					case "apply_advisor_configs":
+						received.push(command);
+						respond({ count: advisors.length });
+						return true;
+					case "get_advisor_available_tools":
+						received.push(command);
+						respond({ toolNames: ["read", "grep"] });
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(await facade.setAdvisorEnabled(true)).toBe(false);
+			expect(await facade.applyAdvisorConfigs(advisors, sharedInstructions)).toBe(1);
+			expect(await facade.getAdvisorAvailableToolNames()).toEqual(["read", "grep"]);
+			expect(received).toEqual([
+				expect.objectContaining({ type: "set_advisor_enabled", enabled: true }),
+				expect.objectContaining({
+					type: "apply_advisor_configs",
+					advisors,
+					sharedInstructions,
+				}),
+				expect.objectContaining({ type: "get_advisor_available_tools" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards usage and reset-credit queries with their structured daemon results", async () => {
+		const reports = [
+			{
+				provider: "openai-codex",
+				fetchedAt: 1_725_000_000_000,
+				limits: [
+					{
+						id: "openai-codex:5h",
+						label: "5 Hour",
+						scope: { provider: "openai-codex", accountId: "acct-primary", windowId: "5h" },
+						window: { id: "5h", label: "5 Hour", durationMs: 18_000_000, resetsAt: 1_725_010_800_000 },
+						amount: { used: 25, limit: 100, usedFraction: 0.25, unit: "percent" },
+						status: "warning",
+					},
+				],
+				resetCredits: {
+					availableCount: 1,
+					credits: [
+						{
+							grantedAt: "2024-08-01T00:00:00.000Z",
+							expiresAt: "2024-08-02T00:00:00.000Z",
+							status: "available",
+						},
+					],
+				},
+				metadata: { accountId: "acct-primary", email: "primary@example.test" },
+			},
+		] satisfies UsageReport[];
+		const resetCreditStatuses = [
+			{
+				credentialId: 17,
+				accountId: "acct-primary",
+				email: "primary@example.test",
+				availableCount: 1,
+				credits: [
+					{
+						id: "RateLimitResetCredit_primary",
+						resetType: "codex_rate_limits",
+						status: "available",
+						grantedAt: "2024-08-01T00:00:00.000Z",
+						expiresAt: "2024-08-02T00:00:00.000Z",
+					},
+				],
+				active: true,
+			},
+		] satisfies ResetCreditAccountStatus[];
+		const target = {
+			credentialId: 17,
+			accountId: "acct-primary",
+			email: "primary@example.test",
+		} satisfies ResetCreditTarget;
+		const outcome = {
+			ok: true,
+			code: "reset",
+			accountId: "acct-primary",
+			email: "primary@example.test",
+			creditId: "RateLimitResetCredit_primary",
+		} satisfies ResetCreditRedeemOutcome;
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "fetch_usage_reports":
+						received.push(command);
+						respond({ reports });
+						return true;
+					case "list_reset_credits":
+						received.push(command);
+						respond({ statuses: resetCreditStatuses });
+						return true;
+					case "redeem_reset_credit":
+						received.push(command);
+						respond({ outcome });
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(await facade.fetchUsageReports()).toEqual(reports);
+			expect(await facade.listResetCredits()).toEqual(resetCreditStatuses);
+			expect(await facade.redeemResetCredit(target)).toEqual(outcome);
+			expect(received).toEqual([
+				expect.objectContaining({ type: "fetch_usage_reports" }),
+				expect.objectContaining({ type: "list_reset_credits" }),
+				expect.objectContaining({ type: "redeem_reset_credit", target }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards usage reports to the model selector resolver and returns daemon selectors", async () => {
+		const reports = [
+			{
+				provider: "anthropic",
+				fetchedAt: 1_725_000_000_000,
+				limits: [
+					{
+						id: "anthropic:5h:claude-sonnet",
+						label: "Claude Sonnet 5 Hour",
+						scope: {
+							provider: "anthropic",
+							accountId: "acct-selector",
+							modelId: "claude-sonnet",
+							windowId: "5h",
+						},
+						window: { id: "5h", label: "5 Hour", durationMs: 18_000_000, resetsAt: 1_725_010_800_000 },
+						amount: { used: 40, limit: 100, usedFraction: 0.4, unit: "percent" },
+						status: "warning",
+					},
+				],
+			},
+		] satisfies UsageReport[];
+		const selectors = ["anthropic/claude-sonnet", "anthropic/claude-haiku"];
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "get_usage_reporting_model_selectors") return false;
+				received.push(command);
+				respond({ selectors });
+				return true;
+			},
+		});
+		try {
+			expect(await session.asAgentSession().getUsageReportingModelSelectors(reports)).toEqual(selectors);
+			expect(received).toEqual([expect.objectContaining({ type: "get_usage_reporting_model_selectors", reports })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards advisor history compactness and preserves string-or-null daemon results", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "format_advisor_history") return false;
+				received.push(command);
+				respond({ history: command.compact ? null : "Advisor security-reviewer: no unresolved findings." });
+				return true;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(await facade.formatAdvisorHistoryAsText({ compact: false })).toBe(
+				"Advisor security-reviewer: no unresolved findings.",
+			);
+			expect(await facade.formatAdvisorHistoryAsText({ compact: true })).toBeNull();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "format_advisor_history", compact: false }),
+				expect.objectContaining({ type: "format_advisor_history", compact: true }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("preserves omitted advisor history compactness and returns the daemon's complete history", async () => {
+		const completeHistory = "Advisor security-reviewer: no unresolved findings.";
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "format_advisor_history") return false;
+				received.push(command);
+				respond({ history: command.compact === undefined ? completeHistory : null });
+				return true;
+			},
+		});
+		try {
+			expect(await session.asAgentSession().formatAdvisorHistoryAsText()).toBe(completeHistory);
+			expect(received).toEqual([expect.objectContaining({ type: "format_advisor_history", compact: undefined })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("rejects an aborted foreground usage request after issuing its RPC command", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const controller = new AbortController();
+		const reason = new Error("Usage overlay closed");
+		controller.abort(reason);
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "fetch_usage_reports") return false;
+				received.push(command);
+				respond({ reports: null });
+				return true;
+			},
+		});
+		try {
+			const request = session.asAgentSession().fetchUsageReports(controller.signal);
+			await expect(request).rejects.toBe(reason);
+			expect(received).toEqual([expect.objectContaining({ type: "fetch_usage_reports" })]);
+			await flushQueuedMicrotasks();
 		} finally {
 			await session.dispose();
 		}

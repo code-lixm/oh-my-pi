@@ -7,8 +7,16 @@
 import { isPromise } from "node:util/types";
 import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Model,
+	ResetCreditAccountStatus,
+	ResetCreditRedeemOutcome,
+	ResetCreditTarget,
+	UsageReport,
+} from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import type { AdvisorConfig } from "../../advisor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { AsyncJobSnapshot } from "../../session/agent-session-types";
@@ -786,6 +794,74 @@ export class RpcClient {
 	async setFastMode(enabled: boolean): Promise<{ enabled: boolean; active: boolean }> {
 		const response = await this.#send({ type: "set_fast_mode", enabled });
 		return this.#getData(response);
+	}
+
+	async clearQueue(options?: { forInterrupt?: boolean }): Promise<{ steering: string[]; followUp: string[] }> {
+		const response = await this.#send({ type: "clear_queue", forInterrupt: options?.forInterrupt });
+		return this.#getData(response);
+	}
+
+	/** All asynchronous settings operations await the backend response; transport shutdown rejects the pending request. */
+	async setThinkToolEnabled(enabled: boolean): Promise<boolean> {
+		const response = await this.#send({ type: "set_think_tool", enabled });
+		return this.#getData<{ enabled: boolean }>(response).enabled;
+	}
+
+	async applyInspectImageModeChange(): Promise<boolean> {
+		const response = await this.#send({ type: "apply_inspect_image_mode" });
+		return this.#getData<{ enabled: boolean }>(response).enabled;
+	}
+
+	async applyMemoryBackend(): Promise<void> {
+		const response = await this.#send({ type: "apply_memory_backend" });
+		this.#getData<void>(response);
+	}
+
+	async refreshBaseSystemPrompt(): Promise<void> {
+		const response = await this.#send({ type: "refresh_base_system_prompt" });
+		this.#getData<void>(response);
+	}
+
+	async setAdvisorEnabled(enabled: boolean): Promise<boolean> {
+		const response = await this.#send({ type: "set_advisor_enabled", enabled });
+		return this.#getData<{ active: boolean }>(response).active;
+	}
+
+	async applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): Promise<number> {
+		const response = await this.#send({ type: "apply_advisor_configs", advisors, sharedInstructions });
+		return this.#getData<{ count: number }>(response).count;
+	}
+
+	async getAdvisorAvailableToolNames(): Promise<string[]> {
+		const response = await this.#send({ type: "get_advisor_available_tools" });
+		return this.#getData<{ toolNames: string[] }>(response).toolNames;
+	}
+
+	/** Caller AbortSignal is intentionally not serialized; transport shutdown rejects this request. */
+	async fetchUsageReports(): Promise<UsageReport[] | null> {
+		const response = await this.#send({ type: "fetch_usage_reports" });
+		return this.#getData<{ reports: UsageReport[] | null }>(response).reports;
+	}
+
+	async listResetCredits(): Promise<ResetCreditAccountStatus[]> {
+		const response = await this.#send({ type: "list_reset_credits" });
+		return this.#getData<{ statuses: ResetCreditAccountStatus[] }>(response).statuses;
+	}
+
+	/** Caller AbortSignal is intentionally not serialized; transport shutdown rejects this request. */
+	async redeemResetCredit(target: ResetCreditTarget): Promise<ResetCreditRedeemOutcome> {
+		const response = await this.#send({ type: "redeem_reset_credit", target });
+		return this.#getData<{ outcome: ResetCreditRedeemOutcome }>(response).outcome;
+	}
+
+	async getUsageReportingModelSelectors(reports: readonly UsageReport[]): Promise<string[]> {
+		const response = await this.#send({ type: "get_usage_reporting_model_selectors", reports: [...reports] });
+		return this.#getData<{ selectors: string[] }>(response).selectors;
+	}
+
+	async formatAdvisorHistoryAsText(options?: { compact?: boolean }): Promise<string | null> {
+		const response = await this.#send({ type: "format_advisor_history", compact: options?.compact });
+		return this.#getData<{ history: string | null }>(response).history;
 	}
 
 	/**

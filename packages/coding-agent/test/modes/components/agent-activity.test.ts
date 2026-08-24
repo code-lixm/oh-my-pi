@@ -190,8 +190,8 @@ describe("agent activity display contracts", () => {
 				const later = render(registryStatus);
 
 				expect(later).toBe(first);
-				expect(first).toContain("phase");
 				expect(first).toContain("quiet");
+				expect(first).not.toContain("phase");
 				expect(first).toContain("Ended");
 				expect(first).toContain("Duration 1h2m");
 			}

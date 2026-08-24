@@ -397,7 +397,7 @@ export interface InteractiveModeContext {
 	handleContextCommand(): void;
 	handleCheckpointCommand(label: string | undefined): Promise<WorkspaceCheckpointAccessResult<unknown>>;
 	handleDumpCommand(): Promise<void>;
-	handleAdvisorDumpCommand(isRaw?: boolean): void;
+	handleAdvisorDumpCommand(isRaw?: boolean): Promise<void>;
 	handleDebugTranscriptCommand(): Promise<void>;
 	showSessionHistory(): void;
 	handleClearCommand(): Promise<void>;

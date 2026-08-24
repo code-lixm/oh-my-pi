@@ -6,10 +6,21 @@ import type {
 	AgentToolContext,
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import type {
+	Effort,
+	ImageContent,
+	Model,
+	ResetCreditAccountStatus,
+	ResetCreditRedeemOutcome,
+	ResetCreditTarget,
+	UsageReport,
+} from "@oh-my-pi/pi-ai";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { SlashCommand } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { AdvisorConfig } from "../../advisor";
+import type { WorkspaceCheckpointAccessResult } from "../../commands/workspace-checkpoint-support";
 import type { ModelRegistry } from "../../config/model-registry";
 import { formatModelString } from "../../config/model-resolver";
 import type { PromptTemplate } from "../../config/prompt-templates";
@@ -38,6 +49,7 @@ import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
 import type { EventBus } from "../../utils/event-bus";
 import type { InspectImageMode } from "../../utils/inspect-image-mode";
+import type { WorkspaceRestoreResult, WorkspaceRestoreScope } from "../../workspace-checkpoints";
 import type { RpcClient } from "../rpc/rpc-client";
 import type {
 	RpcCommand,
@@ -46,7 +58,7 @@ import type {
 	RpcNavigateTreeResult,
 	RpcResponse,
 } from "../rpc/rpc-types";
-import type { InteractiveSessionPort } from "./port";
+import type { InteractiveSessionPort, InteractiveSessionSettingsCapabilities } from "./port";
 import { RpcInteractiveSessionPort } from "./rpc-session-port";
 import type { InteractiveSessionProjection } from "./types";
 
@@ -91,7 +103,7 @@ const DISABLED_ADVISOR_STATS: AdvisorStats = {
  * the transport-neutral port. Provider execution and tools remain in the RPC
  * child; this object owns only cached serializable state and typed commands.
  */
-export class RemoteAgentSession {
+export class RemoteAgentSession implements InteractiveSessionSettingsCapabilities {
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
 	readonly modelRegistry: ModelRegistry;
@@ -452,6 +464,10 @@ export class RemoteAgentSession {
 	getVisibleAsyncJobCount(): number {
 		return this.#projection.jobs?.running.length ?? 0;
 	}
+	/** Number of running background jobs reported by the isolated session. */
+	get runningAsyncJobCount(): number {
+		return this.#projection.jobs?.running.length ?? 0;
+	}
 
 	getAgentId(): string | undefined {
 		return this.#projection.identity.agentId;
@@ -735,9 +751,128 @@ export class RemoteAgentSession {
 		void this.#client.setAutoCompaction(enabled);
 	}
 
-	setFastMode(enabled: boolean): boolean {
-		void this.#client.setFastMode(enabled);
-		return true;
+	async setFastMode(enabled: boolean): Promise<boolean> {
+		const result = await this.#client.setFastMode(enabled);
+		this.#projection = {
+			...this.#projection,
+			modes: { ...this.#projection.modes, fastModeEnabled: result.enabled, fastModeActive: result.active },
+		};
+		this.#state = this.#buildAgentState();
+		return result.enabled;
+	}
+
+	async toggleFastMode(): Promise<boolean> {
+		return this.setFastMode(!this.isFastModeEnabled());
+	}
+
+	setThinkToolEnabled(enabled: boolean): Promise<boolean> {
+		return this.#client.setThinkToolEnabled(enabled);
+	}
+
+	applyInspectImageModeChange(): Promise<boolean> {
+		return this.#client.applyInspectImageModeChange();
+	}
+
+	applyMemoryBackend(): Promise<void> {
+		return this.#client.applyMemoryBackend();
+	}
+
+	refreshBaseSystemPrompt(): Promise<void> {
+		return this.#client.refreshBaseSystemPrompt();
+	}
+	async setAdvisorEnabled(enabled: boolean): Promise<boolean> {
+		const active = await this.#client.setAdvisorEnabled(enabled);
+		const advisorStats = this.getAdvisorStats();
+		this.#projection = {
+			...this.#projection,
+			advisorStats: { ...advisorStats, configured: enabled, active },
+		};
+		return active;
+	}
+
+	isAdvisorEnabled(): boolean {
+		return this.getAdvisorStats().configured;
+	}
+
+	toggleAdvisorEnabled(): Promise<boolean> {
+		return this.setAdvisorEnabled(!this.isAdvisorEnabled());
+	}
+
+	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): Promise<number> {
+		return this.#client.applyAdvisorConfigs(advisors, sharedInstructions);
+	}
+
+	getAdvisorAvailableToolNames(): Promise<string[]> {
+		return this.#client.getAdvisorAvailableToolNames();
+	}
+
+	/**
+	 * AbortSignal only stops the foreground caller from waiting. The RPC protocol
+	 * has no per-request cancellation frame; backend work remains bounded by its
+	 * response or session transport teardown.
+	 */
+	fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
+		return this.#awaitRpcRequest(this.#client.fetchUsageReports(), signal);
+	}
+
+	listResetCredits(signal?: AbortSignal): Promise<ResetCreditAccountStatus[]> {
+		return this.#awaitRpcRequest(this.#client.listResetCredits(), signal);
+	}
+
+	/** See {@link RemoteAgentSession.fetchUsageReports} for remote cancellation semantics. */
+	redeemResetCredit(target: ResetCreditTarget, signal?: AbortSignal): Promise<ResetCreditRedeemOutcome> {
+		return this.#awaitRpcRequest(this.#client.redeemResetCredit(target), signal);
+	}
+
+	getUsageReportingModelSelectors(reports: readonly UsageReport[]): Promise<string[]> {
+		return this.#client.getUsageReportingModelSelectors(reports);
+	}
+
+	formatAdvisorHistoryAsText(options?: { compact?: boolean }): Promise<string | null> {
+		return this.#client.formatAdvisorHistoryAsText(options);
+	}
+
+	/** Lists thinking levels supported by the active model (facade for the daemon projection). */
+	getAvailableThinkingLevels(): ReadonlyArray<Effort> {
+		const model = this.model;
+		if (!model) return [];
+		return getSupportedEfforts(model);
+	}
+
+	clearQueue(options?: { forInterrupt?: boolean }): {
+		steering: Array<{ text: string }>;
+		followUp: Array<{ text: string }>;
+	} {
+		const queue = this.#projection.queue;
+		this.#projection = { ...this.#projection, queue: { steering: [], followUp: [] } };
+		this.#state = this.#buildAgentState();
+		void this.#client.clearQueue(options).catch(error => {
+			logger.warn("Failed to clear remote session queue", { error: String(error) });
+			void this.#refreshProjection();
+		});
+		return {
+			steering: queue.steering.map(text => ({ text })),
+			followUp: queue.followUp.map(text => ({ text })),
+		};
+	}
+	/** Signal cancellation without blocking synchronous InteractiveMode input handling. */
+	cancelAsyncJobs(): number {
+		const running = this.runningAsyncJobCount;
+		void this.#client.cancelAsyncJobs().catch(error => {
+			logger.warn("Failed to cancel remote async jobs", { error: String(error) });
+			void this.#refreshProjection();
+		});
+		return running;
+	}
+
+	async undoWorkspace(
+		scope?: WorkspaceRestoreScope,
+	): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
+		return { available: true, value: await this.#client.undoWorkspace(scope) };
+	}
+
+	async redoWorkspace(): Promise<WorkspaceCheckpointAccessResult<WorkspaceRestoreResult>> {
+		return { available: true, value: await this.#client.redoWorkspace() };
 	}
 
 	compact(customInstructions?: string) {
@@ -813,6 +948,19 @@ export class RemoteAgentSession {
 			tools: this.#projection.tools.map(tool => ({ ...tool, enabled: active.has(tool.name) })),
 		};
 		this.#state = this.#buildAgentState();
+	}
+
+	async #awaitRpcRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+		if (!signal) return await request;
+		if (signal.aborted) throw signal.reason;
+		const { promise: aborted, reject } = Promise.withResolvers<never>();
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			return await Promise.race([request, aborted]);
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	async #refreshProjection(reloadSessionManager = false): Promise<void> {

@@ -272,16 +272,13 @@ export function renderAgentActivityDisplay(options: {
 	if (formatted.phase) {
 		const phaseLabel = tSettingsUi(formatted.phaseLabel);
 		const healthLabel = tSettingsUi(formatted.healthLabel);
-		const phaseText =
-			formatted.health === "active" || healthLabel === phaseLabel
-				? phaseLabel
-				: `${healthLabel} ${theme.sep.dot} ${phaseLabel}`;
-		const elapsed = [
-			formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "",
-			formatted.quietElapsed ? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed }) : "",
-		]
-			.filter(Boolean)
-			.join(theme.sep.dot);
+		const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && healthLabel !== phaseLabel;
+		const phaseText = showHealth ? `${healthLabel} ${theme.sep.dot} ${phaseLabel}` : phaseLabel;
+		const elapsed = formatted.quietElapsed
+			? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
+			: formatted.phaseElapsed
+				? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
+				: "";
 		activityLine = joinFitted(
 			[
 				{ text: theme.fg(activityHealthColor(formatted.health), phaseText) },

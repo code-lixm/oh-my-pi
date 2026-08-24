@@ -38,6 +38,7 @@ import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move
 import { TranscriptBlock } from "../../modes/components/transcript-container";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
+import type { InteractiveSessionSettingsCapabilities } from "../session-port/port";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
@@ -132,9 +133,10 @@ export class CommandController {
 		}
 	}
 
-	handleAdvisorDumpCommand(isRaw = false) {
+	async handleAdvisorDumpCommand(isRaw = false): Promise<void> {
 		try {
-			const advisorHistory = this.ctx.session.formatAdvisorHistoryAsText({ compact: !isRaw });
+			const session: InteractiveSessionSettingsCapabilities = this.ctx.session;
+			const advisorHistory = await session.formatAdvisorHistoryAsText({ compact: !isRaw });
 			if (advisorHistory === null) {
 				this.ctx.showError(tSettingsUi("Advisor is not active for this session."));
 				return;
@@ -590,7 +592,8 @@ export class CommandController {
 					this.ctx.session.sessionId,
 				)
 			: undefined;
-		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(usageReports);
+		const session: InteractiveSessionSettingsCapabilities = this.ctx.session;
+		const usageModelSelectors = await session.getUsageReportingModelSelectors(usageReports);
 		const output = renderUsageReports(
 			usageReports,
 			theme,

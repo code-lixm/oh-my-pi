@@ -1478,6 +1478,63 @@ export async function runRpcMode(
 				});
 			}
 
+			case "set_think_tool": {
+				return success(id, "set_think_tool", { enabled: await session.setThinkToolEnabled(command.enabled) });
+			}
+
+			case "apply_inspect_image_mode": {
+				return success(id, "apply_inspect_image_mode", { enabled: await session.applyInspectImageModeChange() });
+			}
+
+			case "apply_memory_backend": {
+				await session.applyMemoryBackend();
+				return success(id, "apply_memory_backend");
+			}
+
+			case "refresh_base_system_prompt": {
+				await session.refreshBaseSystemPrompt();
+				return success(id, "refresh_base_system_prompt");
+			}
+
+			case "set_advisor_enabled": {
+				return success(id, "set_advisor_enabled", { active: session.setAdvisorEnabled(command.enabled) });
+			}
+
+			case "apply_advisor_configs": {
+				return success(id, "apply_advisor_configs", {
+					count: session.applyAdvisorConfigs(command.advisors, command.sharedInstructions),
+				});
+			}
+
+			case "get_advisor_available_tools": {
+				return success(id, "get_advisor_available_tools", { toolNames: session.getAdvisorAvailableToolNames() });
+			}
+
+			case "fetch_usage_reports": {
+				return success(id, "fetch_usage_reports", { reports: await session.fetchUsageReports() });
+			}
+
+			case "list_reset_credits": {
+				return success(id, "list_reset_credits", { statuses: await session.listResetCredits() });
+			}
+
+			case "redeem_reset_credit": {
+				return success(id, "redeem_reset_credit", { outcome: await session.redeemResetCredit(command.target) });
+			}
+
+			case "get_usage_reporting_model_selectors": {
+				return success(id, "get_usage_reporting_model_selectors", {
+					selectors: session.getUsageReportingModelSelectors(command.reports),
+				});
+			}
+
+			case "format_advisor_history": {
+				const options = command.compact === undefined ? undefined : { compact: command.compact };
+				return success(id, "format_advisor_history", {
+					history: session.formatAdvisorHistoryAsText(options),
+				});
+			}
+
 			case "get_available_commands": {
 				return success(id, "get_available_commands", { commands: await getAvailableCommands() });
 			}
@@ -1639,6 +1696,9 @@ export async function runRpcMode(
 			// =================================================================
 			// Queue Modes
 			// =================================================================
+
+			case "clear_queue":
+				return success(id, "clear_queue", session.clearQueue({ forInterrupt: command.forInterrupt }));
 
 			case "set_steering_mode": {
 				session.setSteeringMode(command.mode);

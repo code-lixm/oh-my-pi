@@ -227,6 +227,40 @@ export class LocalInteractiveSessionPort implements InteractiveSessionPort {
 					active: this.#session.isFastModeActive(),
 				});
 			}
+			case "clear_queue":
+				return success(command, this.#session.clearQueue({ forInterrupt: command.forInterrupt }));
+			case "set_think_tool":
+				return success(command, { enabled: await this.#session.setThinkToolEnabled(command.enabled) });
+			case "apply_inspect_image_mode":
+				return success(command, { enabled: await this.#session.applyInspectImageModeChange() });
+			case "apply_memory_backend":
+				await this.#session.applyMemoryBackend();
+				return success(command);
+			case "refresh_base_system_prompt":
+				await this.#session.refreshBaseSystemPrompt();
+				return success(command);
+			case "set_advisor_enabled":
+				return success(command, { active: this.#session.setAdvisorEnabled(command.enabled) });
+			case "apply_advisor_configs":
+				return success(command, {
+					count: this.#session.applyAdvisorConfigs(command.advisors, command.sharedInstructions),
+				});
+			case "get_advisor_available_tools":
+				return success(command, { toolNames: this.#session.getAdvisorAvailableToolNames() });
+			case "fetch_usage_reports":
+				return success(command, { reports: await this.#session.fetchUsageReports() });
+			case "list_reset_credits":
+				return success(command, { statuses: await this.#session.listResetCredits() });
+			case "redeem_reset_credit":
+				return success(command, { outcome: await this.#session.redeemResetCredit(command.target) });
+			case "get_usage_reporting_model_selectors":
+				return success(command, {
+					selectors: this.#session.getUsageReportingModelSelectors(command.reports),
+				});
+			case "format_advisor_history": {
+				const options = command.compact === undefined ? undefined : { compact: command.compact };
+				return success(command, { history: this.#session.formatAdvisorHistoryAsText(options) });
+			}
 			case "set_model":
 			case "set_model_temporary": {
 				await this.#session.modelRegistry.awaitBackgroundRefresh();

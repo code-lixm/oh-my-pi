@@ -6,7 +6,16 @@
  */
 import type { AgentMessage, AgentToolResult, ThinkingLevel, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
-import type { ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Model,
+	ResetCreditAccountStatus,
+	ResetCreditRedeemOutcome,
+	ResetCreditTarget,
+	ToolExample,
+	UsageReport,
+} from "@oh-my-pi/pi-ai";
+import type { AdvisorConfig } from "../../advisor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { GoalModeState } from "../../goals/state";
@@ -131,6 +140,18 @@ export type RpcCommand =
 	  }
 	| { id?: string; type: "remove_mcp_server"; name: string; scope: "user" | "project" }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
+	| { id?: string; type: "set_think_tool"; enabled: boolean }
+	| { id?: string; type: "apply_inspect_image_mode" }
+	| { id?: string; type: "apply_memory_backend" }
+	| { id?: string; type: "refresh_base_system_prompt" }
+	| { id?: string; type: "set_advisor_enabled"; enabled: boolean }
+	| { id?: string; type: "apply_advisor_configs"; advisors: AdvisorConfig[]; sharedInstructions?: string }
+	| { id?: string; type: "get_advisor_available_tools" }
+	| { id?: string; type: "fetch_usage_reports" }
+	| { id?: string; type: "list_reset_credits" }
+	| { id?: string; type: "get_usage_reporting_model_selectors"; reports: UsageReport[] }
+	| { id?: string; type: "format_advisor_history"; compact?: boolean }
+	| { id?: string; type: "redeem_reset_credit"; target: ResetCreditTarget }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
 	| { id?: string; type: "set_active_tools"; toolNames: string[] }
@@ -166,6 +187,7 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_thinking_level" }
 
 	// Queue modes
+	| { id?: string; type: "clear_queue"; forInterrupt?: boolean }
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
 	| { id?: string; type: "set_follow_up_mode"; mode: "all" | "one-at-a-time" }
 	| { id?: string; type: "set_interrupt_mode"; mode: "immediate" | "wait" }
@@ -426,6 +448,58 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "set_think_tool" | "apply_inspect_image_mode";
+			success: true;
+			data: { enabled: boolean };
+	  }
+	| { id?: string; type: "response"; command: "apply_memory_backend" | "refresh_base_system_prompt"; success: true }
+	| { id?: string; type: "response"; command: "set_advisor_enabled"; success: true; data: { active: boolean } }
+	| { id?: string; type: "response"; command: "apply_advisor_configs"; success: true; data: { count: number } }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_advisor_available_tools";
+			success: true;
+			data: { toolNames: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "fetch_usage_reports";
+			success: true;
+			data: { reports: UsageReport[] | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "list_reset_credits";
+			success: true;
+			data: { statuses: ResetCreditAccountStatus[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "redeem_reset_credit";
+			success: true;
+			data: { outcome: ResetCreditRedeemOutcome };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_usage_reporting_model_selectors";
+			success: true;
+			data: { selectors: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "format_advisor_history";
+			success: true;
+			data: { history: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
 			command: "get_available_commands";
 			success: true;
 			data: { commands: RpcAvailableSlashCommand[] };
@@ -505,6 +579,13 @@ export type RpcResponse =
 	  }
 
 	// Queue modes
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_follow_up_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_interrupt_mode"; success: true }

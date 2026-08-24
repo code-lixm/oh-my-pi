@@ -365,7 +365,7 @@ export class SelectorController {
 				modelRegistry: this.ctx.session.modelRegistry,
 				settings: this.ctx.settings,
 				scopedModels: this.ctx.session.scopedModels,
-				availableToolNames: this.ctx.session.getAdvisorAvailableToolNames(),
+				availableToolNames: await this.ctx.session.getAdvisorAvailableToolNames(),
 				defaultModelLabel: defaultAdvisorModel
 					? `${defaultAdvisorModel.provider}/${defaultAdvisorModel.id}`
 					: undefined,
@@ -377,7 +377,10 @@ export class SelectorController {
 					// Re-discover the merged roster (project + user) so the live advisors
 					// reflect cross-level precedence, not just the edited file.
 					const discovered = await discoverAdvisorConfigs(cwd, agentDir);
-					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
+					const count = await this.ctx.session.applyAdvisorConfigs(
+						discovered.advisors,
+						discovered.sharedInstructions,
+					);
 					this.ctx.statusLine.invalidate();
 					this.ctx.showStatus(
 						count > 0
@@ -628,9 +631,17 @@ export class SelectorController {
 				this.ctx.statusLine.setAutoCompactEnabled(value as boolean);
 				break;
 			case "advisor.enabled":
-				this.ctx.session.setAdvisorEnabled(value as boolean);
-				this.ctx.statusLine.invalidate();
-				this.ctx.ui.requestRender();
+				void (async () => {
+					try {
+						await this.ctx.session.setAdvisorEnabled(value as boolean);
+						this.ctx.statusLine.invalidate();
+						this.ctx.ui.requestRender();
+					} catch (error) {
+						this.ctx.showError(
+							tSettingsUi("Failed to apply advisor setting: {error}", { error: String(error) }),
+						);
+					}
+				})();
 				break;
 			case "steeringMode":
 				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time");

@@ -182,6 +182,10 @@ export class BtwController {
 
 	async #runRequest(request: BtwRequest): Promise<void> {
 		try {
+			if (typeof this.ctx.session.runEphemeralTurn !== "function") {
+				request.component.markError("This session does not support temporary turns.");
+				return;
+			}
 			const promptText = prompt.render(selectPrompt(btwUserPrompt, btwUserPromptZh), { question: request.question });
 			const { replyText, assistantMessage } = await this.ctx.session.runEphemeralTurn({
 				promptText,
