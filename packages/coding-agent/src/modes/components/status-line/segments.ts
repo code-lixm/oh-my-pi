@@ -4,7 +4,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../../i18n/settings-locale";
-import { type ThemeColor, theme } from "../../../modes/theme/theme";
+import { type Theme, type ThemeColor, theme } from "../../../modes/theme/theme";
 import {
 	AgentRegistry,
 	agentDisplayLabel,
@@ -69,6 +69,24 @@ function stripDisplayRoot(pwd: string): string {
 
 function normalizePremiumRequests(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+function formatSpend(amount: number, usingSubscription: boolean, uiTheme: Theme): string {
+	const formatted = amount.toFixed(2);
+	if (!usingSubscription) return `$${formatted}`;
+	if (uiTheme.getSymbolPreset() === "nerd") {
+		const icon = uiTheme.icon.subscription;
+		return icon ? `${icon} ${formatted}` : `S${formatted}`;
+	}
+	return `S${formatted}`;
+}
+
+function formatAdvisorSpend(amount: number, usingSubscription: boolean, uiTheme: Theme): string {
+	const spend = formatSpend(amount, usingSubscription, uiTheme);
+	const icon = uiTheme.icon.advisor;
+	if (icon && icon !== "(adv)") {
+		return `${icon} ${spend}`;
+	}
+	return `${spend} (${tSettingsUi("Advisor")})`;
 }
 
 const SCRATCH_ROOTS: readonly string[] = (() => {
@@ -153,8 +171,8 @@ const modelSegment: StatusLineSegment = {
 		const modelIcon = compact ? thinkingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are
-		// colored together with it as `statusLineModel`. The advisor "++" badge
-		// sits between the name and that tail, so it reads as a distinct marker.
+		// colored together with it as `statusLineModel`. The advisor symbol sits
+		// between the name and that tail, so it reads as a distinct marker.
 		// theme.fg resets only the fg, so the spans are concatenated (not
 		// nested) to keep each color intact.
 		let tail = "";
@@ -168,14 +186,15 @@ const modelSegment: StatusLineSegment = {
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses status colors to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		// Advisor "++" badge, colored by the worst status in the roster:
+		// Advisor symbol, colored by the worst status in the roster:
 		// success = all running, warning = quota-exhausted, error = failed,
 		// dim = everything paused/no-model. Per-advisor detail lives in
 		// `/advisor status`.
 		// Optional chaining: lightweight session doubles (test mocks) that don't
 		// implement getAdvisorStatusOverview skip the badge instead of crashing.
+		const advisorIcon = theme.icon.advisor;
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
-		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
+		if (advisorIcon && advisorStats?.configured && advisorStats.advisors.length > 0) {
 			const statuses = advisorStats.advisors.map(a => a.status);
 			const badgeColor = statuses.includes("error")
 				? "error"
@@ -184,7 +203,7 @@ const modelSegment: StatusLineSegment = {
 					: statuses.includes("running")
 						? "success"
 						: "dim";
-			content += theme.fg(badgeColor, "++");
+			content += theme.fg(badgeColor, ` ${advisorIcon}`);
 		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);
@@ -460,18 +479,27 @@ const costSegment: StatusLineSegment = {
 		const advisorCost = ctx.session.getAdvisorCost?.() ?? 0;
 		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
 		const state = ctx.session.state;
-		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
+		const usingSubscription = state.model ? (ctx.session.modelRegistry?.isUsingOAuth(state.model) ?? false) : false;
+		const advisorUsingSubscription = ctx.session.isAdvisorUsingSubscription?.() ?? false;
 
 		if (!cost && !advisorCost && !usingSubscription && !normalizedPremiumRequests) {
 			return { content: "", visible: false };
 		}
 
 		const billingParts: string[] = [];
-		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
+		if (cost) {
+			billingParts.push(formatSpend(cost, usingSubscription, theme));
+		} else if (usingSubscription) {
+			billingParts.push(
+				theme.getSymbolPreset() === "nerd" && theme.icon.subscription ? theme.icon.subscription : "(sub)",
+			);
+		}
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-		if (usingSubscription) billingParts.push(tSettingsUi("(sub)"));
-		if (advisorCost)
-			billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} (${tSettingsUi("Advisor")})`);
+		if (advisorCost) {
+			const prefix = billingParts.length ? "+ " : "";
+			billingParts.push(`${prefix}${formatAdvisorSpend(advisorCost, advisorUsingSubscription, theme)}`);
+		}
+		if (billingParts.length === 0) return { content: "", visible: false };
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},
@@ -482,11 +510,24 @@ const contextPctSegment: StatusLineSegment = {
 	render(ctx) {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
-		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.icon.auto}` : "";
-		const text = `${formatContextUsage(pct, window, ctx.contextTokens)}${autoIcon}`;
-
+		// Async-compaction indicator: pulse the auto icon while a background
+		// speculation runs, hold it in accent once a result is armed.
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
-		const content = withIcon(theme.icon.context, text, color);
+		let autoIcon = "";
+		if (ctx.autoCompactEnabled && theme.icon.auto) {
+			const speculation = ctx.compactionSpeculation;
+			const iconColor =
+				speculation === "running"
+					? ctx.speculationBlinkOn
+						? "accent"
+						: "muted"
+					: speculation === "armed"
+						? "accent"
+						: color;
+			autoIcon = ` ${theme.fg(iconColor, theme.icon.auto)}`;
+		}
+		const text = theme.fg(color, formatContextUsage(pct, window, ctx.contextTokens));
+		const content = withIcon(theme.icon.context, `${text}${autoIcon}`);
 
 		return { content, visible: true };
 	},
@@ -611,7 +652,7 @@ const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
 		const sessionManager = ctx.session.sessionManager;
-		const name = sessionManager?.getSessionName();
+		const name = sessionManager?.getSessionName() || ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
 
 		const accentEnabled = ctx.sessionAccent !== false;

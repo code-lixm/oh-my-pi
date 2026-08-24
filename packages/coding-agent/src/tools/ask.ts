@@ -57,9 +57,9 @@ function getOtherOptionLabel(): string {
  *  regardless of the user's settings UI locale. The localized Other display
  *  string comes from `getOtherOptionLabel()`; runtime matchers accept either
  *  form so cross-locale usage remains correct. */
-const RESERVED_OTHER_LABEL = "Other (type your own)";
+export const OTHER_OPTION = "Other (type your own)";
+const RESERVED_OTHER_LABEL = OTHER_OPTION;
 const RESERVED_CHAT_LABEL = "Chat about this";
-
 const NEXT_OPTION = "Next →";
 
 const OptionItem = arkType({
@@ -222,9 +222,9 @@ interface CustomInputContext {
 const MAX_CUSTOM_INPUT_OPTION_ROWS = 8;
 const MAX_CUSTOM_INPUT_TITLE_ROWS = 16;
 const MIN_CUSTOM_INPUT_CONTENT_WIDTH = 20;
-/** Subtracted from the terminal width to leave room for the surrounding
- *  `Text(... padX=1)` padding + DynamicBorder vertical chrome. */
-const CUSTOM_INPUT_CHROME_COLUMNS = 4;
+/** Subtracted from the terminal width to leave room for `Text` padding and
+ *  surrounding {@link OverlayPanel} chrome. */
+const CUSTOM_INPUT_CHROME_COLUMNS = 8;
 const CUSTOM_INPUT_DESCRIPTION_INDENT = "    ";
 
 function customInputContentWidth(): number {
@@ -757,7 +757,7 @@ function formatQuestionResult(result: QuestionResult): string {
 			? `${result.id}: [${result.selectedOptions.join(", ")}]${suffix}`
 			: `${result.id}: ${result.selectedOptions[0]}${suffix}`;
 	}
-	return `${result.id}: (cancelled)${noteSuffix}`;
+	return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
 }
 
 function formatSingleQuestionResponse(result: {
@@ -794,7 +794,8 @@ function formatSingleQuestionResponse(result: {
 				: `User added note: ${result.note}`,
 		);
 	}
-	return responseParts.length > 0 ? responseParts.join("\n") : "User cancelled the selection";
+	if (responseParts.length > 0) return responseParts.join("\n");
+	return result.multi ? "User did not select any options" : "User cancelled the selection";
 }
 
 // =============================================================================
@@ -870,11 +871,12 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
-		return session.hasUI ? new AskTool(session) : null;
+		return (session.canPromptUser ?? session.hasUI) ? new AskTool(session) : null;
 	}
 
 	/** Send terminal notification when ask tool is waiting for input */
 	#sendAskNotification(): void {
+		if (!this.session.hasUI) return;
 		const method = this.session.settings.get("ask.notify");
 		if (method === "off") return;
 		TERMINAL.sendNotification({
@@ -999,9 +1001,15 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				}
 				if (params.questions.length === 1) {
 					const result = results[0];
+					// An empty multi-select submission is a valid "select none"
+					// answer (#8265 review); only a truly empty single-select
+					// result counts as cancellation.
 					if (
 						!result ||
-						(!result.timedOut && result.selectedOptions.length === 0 && result.customInput === undefined)
+						(!result.timedOut &&
+							!result.multi &&
+							result.selectedOptions.length === 0 &&
+							result.customInput === undefined)
 					) {
 						context.abort();
 						throw new ToolAbortError("Ask tool was cancelled by the user");

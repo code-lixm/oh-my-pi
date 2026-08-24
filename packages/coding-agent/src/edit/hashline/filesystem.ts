@@ -26,6 +26,7 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
+import { deleteFileWithFallback, writeFileWithFallback } from "../../tools/file-write-fallback";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
@@ -155,7 +156,7 @@ export class HashlineFilesystem extends Filesystem {
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
 			await prepareFileMutation(this.session, absolutePath, "delete");
-			await fs.rm(absolutePath);
+			await deleteFileWithFallback(absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
@@ -177,8 +178,13 @@ export class HashlineFilesystem extends Filesystem {
 		const toAbsolute = this.resolveAbsolute(toRelative);
 		await prepareFileMutation(this.session, toAbsolute, "rename", { previousPath: fromAbsolute });
 		if (content !== undefined) {
-			await Bun.write(toAbsolute, content);
-			await fs.rm(fromAbsolute);
+			// The one `edit` write that does not pass through the writethrough, so it
+			// routes to the fallback seam directly. `patcher.ts` always supplies
+			// `content` for a hashline `MV`, making this the live branch. The source
+			// unlink is a separate primitive with its own seam, so a move out of the
+			// workspace and a move out of denied territory both complete.
+			await writeFileWithFallback(toAbsolute, content);
+			await deleteFileWithFallback(fromAbsolute);
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}

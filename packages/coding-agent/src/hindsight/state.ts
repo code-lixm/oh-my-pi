@@ -186,7 +186,7 @@ function retentionPrefixKey(messages: HindsightMessage[], count: number): string
 	for (let i = 0; i < count; i++) {
 		const m = messages[i];
 		if (m === undefined) break;
-		key = Bun.hash(`${key}\u0000${m.role}\u0000${m.content}`).toString(36);
+		key = Bun.hash(`${key}\u0000${m.role}\u0000${m.content}\u0000${m.timestamp ?? ""}`).toString(36);
 	}
 	return key;
 }
@@ -326,8 +326,19 @@ export class HindsightSessionState {
 		}
 	}
 
+	#sessionSourceTimestamp(): Date | undefined {
+		const header = this.session.sessionManager?.getHeader?.();
+		const timestamp = header?.timestamp;
+		if (typeof timestamp !== "string") return undefined;
+		const trimmed = timestamp.trim();
+		if (!trimmed) return undefined;
+		const parsed = new Date(trimmed);
+		return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+	}
+
 	async retainSession(messages: HindsightMessage[]): Promise<void> {
 		const retainedAt = new Date();
+		const sourceTimestamp = this.#sessionSourceTimestamp() ?? retainedAt;
 		const retainFullWindow = this.config.retainMode === "full-session";
 		let documentId: string;
 		let transcript: string;
@@ -342,7 +353,7 @@ export class HindsightSessionState {
 				this.#lastRetainedPrefixKey = "";
 			}
 			const newMessages = messages.slice(this.#lastRetainedMessageIndex);
-			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true);
+			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
 			transcript = nextCachedTranscript;
@@ -353,7 +364,7 @@ export class HindsightSessionState {
 			this.#lastRetainedMessageIndex = 0;
 			this.#cachedTranscript = "";
 			this.#lastRetainedPrefixKey = "";
-			const { transcript: windowTranscript } = prepareRetentionTranscript(target, true);
+			const { transcript: windowTranscript } = prepareRetentionTranscript(target, true, { includeTimestamps: true });
 			if (!windowTranscript) return;
 			transcript = windowTranscript;
 		}
@@ -364,7 +375,7 @@ export class HindsightSessionState {
 			context: this.config.retainContext,
 			metadata: { session_id: this.sessionId },
 			tags: this.retainTags,
-			timestamp: retainedAt,
+			timestamp: sourceTimestamp,
 			async: true,
 		});
 		if (nextCachedTranscript !== undefined) {

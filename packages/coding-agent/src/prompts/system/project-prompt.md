@@ -48,7 +48,7 @@ Additional workspace directories. This CURRENT workspace state supersedes worksp
 {{/each}}
 </workspace-roots>
 {{/if}}
-Today is {{date}}, and the current working directory is '{{cwd}}'.
+
 
 <critical>
 - Each response MUST advance the task. There is no stopping condition other than completion.

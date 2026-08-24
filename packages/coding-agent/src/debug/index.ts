@@ -7,7 +7,6 @@ import * as fs from "node:fs/promises";
 import * as url from "node:url";
 import { getWorkProfile } from "@oh-my-pi/pi-natives";
 import {
-	Container,
 	isNotificationSuppressed,
 	Loader,
 	type OverlayHandle,
@@ -21,6 +20,7 @@ import {
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { DynamicBorder } from "../modes/components/dynamic-border";
+import { OverlayPanel } from "../modes/components/overlay-box";
 import { TranscriptBlock } from "../modes/components/transcript-container";
 import { getSelectListTheme, getSymbolTheme, theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
@@ -117,18 +117,15 @@ const formatFilesCount = (count: number): string => tSettingsUi("Files: {count}"
 /**
  * Debug selector component.
  */
-export class DebugSelectorComponent extends Container {
+export class DebugSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 
 	constructor(
 		private ctx: InteractiveModeContext,
 		onDone: () => void,
 	) {
-		super();
+		super("Debug Tools");
 
-		// Title
-		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("Debug Tools"))), 1, 0));
 		this.addChild(new Spacer(1));
 
 		// Select list
@@ -148,7 +145,6 @@ export class DebugSelectorComponent extends Container {
 		};
 
 		this.addChild(this.#selectList);
-		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(keyData: string): void {

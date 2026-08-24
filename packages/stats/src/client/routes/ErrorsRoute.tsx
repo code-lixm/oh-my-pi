@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { getRecentErrors } from "../api";
-import { formatCost, formatInteger, formatRelativeTime } from "../data/formatters";
+import { formatInteger, formatMessageCost, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { t } from "../locale/catalog";
 import type { MessageStats, TimeRange } from "../types";
@@ -64,7 +64,7 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 				key: "cost",
 				header: t("table.column.cost"),
 				numeric: true,
-				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
+				render: (item: MessageStats) => formatMessageCost(item, 4),
 			},
 		],
 		[locale],
@@ -86,7 +86,7 @@ export function ErrorsRoute({ active, range, refreshTrigger, onRequestClick }: E
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("errors.mobile.cost")}</div>
-					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
+					<div className="stats-mobile-card-value">{formatMessageCost(item, 4)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("errors.mobile.tokens")}</div>

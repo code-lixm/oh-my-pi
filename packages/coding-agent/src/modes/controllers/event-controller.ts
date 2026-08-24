@@ -48,7 +48,13 @@ import type {
 	MemoryOperationEndEvent,
 	MemoryOperationStartEvent,
 } from "../../session/agent-session";
-import { type CustomMessage, isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import {
+	type CustomMessage,
+	isSilentAbort,
+	isUserInvokedSkillPrompt,
+	readQueueChipText,
+	resolveAbortLabel,
+} from "../../session/messages";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { createIrcCustomMessageCard } from "../../tools/hub/messaging";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -189,6 +195,7 @@ export class EventController {
 	// those calls arrive so the normal no-pending path cannot recreate the
 	// retracted card below the rewind's fresh blocks (#6879).
 	#retractedToolCallIds = new Set<string>();
+	#executionStartedCallIds = new Set<string>();
 	// Cards settled by a synthetic aborted/error `tool_execution_end` (agent-loop
 	// emits one per never-run call on a terminal error/abort). They stay visible
 	// for a genuinely terminal failure, but if an auto-retry then supersedes the
@@ -352,7 +359,7 @@ export class EventController {
 					this.ctx.streamingComponent.setHideThinkingBlock(hideThinking);
 					this.#streamingReveal.resyncVisibility();
 				}
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.requestRender(true);
 			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
@@ -513,6 +520,9 @@ export class EventController {
 		// The reveal controller is id-keyed; drop the stale target so the loop's
 		// setTarget/bind under the new id owns the paced reveal.
 		this.#toolArgsReveal.finish(oldId);
+		if (this.#executionStartedCallIds.delete(oldId)) {
+			this.#executionStartedCallIds.add(newId);
+		}
 		const readArgs = this.#readToolCallArgs.get(oldId);
 		if (readArgs !== undefined) {
 			this.#readToolCallArgs.delete(oldId);
@@ -565,7 +575,7 @@ export class EventController {
 		const children = this.ctx.chatContainer.children;
 		const anchorIndex = anchor ? children.indexOf(anchor) : -1;
 		if (anchorIndex < 0) return false;
-		if (children.slice(anchorIndex + 1).some(child => !this.ctx.chatContainer.isBlockUncommitted(child))) {
+		if (children.slice(anchorIndex + 1).some(child => !this.ctx.chatContainer.canRemoveBlock(child))) {
 			return false;
 		}
 		this.ctx.chatContainer.addChild(component);
@@ -802,6 +812,12 @@ export class EventController {
 			await this.handleEvent(event);
 		}
 	}
+
+	/** Whether `#handleToolExecutionStart` has fired for this call id this turn. */
+	hasToolExecutionStarted(toolCallId: string): boolean {
+		return this.#executionStartedCallIds.has(toolCallId);
+	}
+
 	/**
 	 * Clear every transcript-anchored/turn-scoped piece of state. Used by the
 	 * session focus proxy when re-pointing the transcript at another session:
@@ -824,6 +840,7 @@ export class EventController {
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
+		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#serverResolvedTodoCallIds.clear();
@@ -917,6 +934,7 @@ export class EventController {
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
+		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#serverResolvedTodoCallIds.clear();
@@ -973,8 +991,19 @@ export class EventController {
 				this.#surfaceIrcMessage(event.message as CustomMessage);
 			} else {
 				if (event.message.display) this.#finalizeHubActivityGroup();
-				this.ctx.addMessageToChat(event.message);
+				if (
+					event.message.role === "custom" &&
+					this.ctx.optimisticSkillMessagePending &&
+					isUserInvokedSkillPrompt(event.message)
+				) {
+					// The optimistic `/skill:` row painted at submit time (issue #8895):
+					// swap it for the canonical message instead of appending a duplicate.
+					this.ctx.reconcileOptimisticSkillMessage(event.message);
+				} else {
+					this.ctx.addMessageToChat(event.message);
+				}
 			}
+			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.
 			if (event.message.role === "custom" && readQueueChipText(event.message.details)) {
@@ -1038,7 +1067,7 @@ export class EventController {
 				// to reveal the consumed queue entry.
 				this.ctx.ui.requestComponentRender(this.ctx.chatContainer);
 			} else {
-				this.ctx.ui.requestRender();
+				this.ctx.ui.requestRender(true);
 			}
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
@@ -1046,6 +1075,18 @@ export class EventController {
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "assistant") {
+			// A streaming component left over from an attempt that never saw its
+			// message_end (a mid-stream throw the loop could not pair) must not stay
+			// live: one unfinalized block at the transcript frontier blocks history
+			// retirement — and therefore transcript layout — forever. Drop it when
+			// still removable, and finalize it regardless so it can retire.
+			const abandoned = this.ctx.streamingComponent;
+			if (abandoned) {
+				if (this.ctx.chatContainer.canRemoveBlock(abandoned)) {
+					this.ctx.chatContainer.removeChild(abandoned);
+				}
+				abandoned.markTranscriptBlockFinalized();
+			}
 			this.#lastVisibleBlockCount = 0;
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
@@ -1101,6 +1142,38 @@ export class EventController {
 	}
 
 	/**
+	 * Remove an expired/evicted IRC card only while its transcript entry remains
+	 * active. Pending or committed entries already belong to an immutable
+	 * ordered history batch and remain as final history.
+	 */
+	#retireIrcCard(signature: string): void {
+		const components = this.#liveIrcCards.get(signature);
+		this.#liveIrcCards.delete(signature);
+		if (!components) return;
+		let removed = false;
+		for (const component of components) {
+			if (!this.ctx.chatContainer.canRemoveBlock(component)) continue;
+			this.ctx.chatContainer.removeChild(component);
+			removed = true;
+		}
+		if (removed) this.ctx.ui.requestRender();
+	}
+
+	/** Evict oldest live-region cards beyond {@link MAX_LIVE_IRC_CARDS}. */
+	#enforceIrcCardCap(latestSignature: string): void {
+		while (this.#liveIrcCards.size > MAX_LIVE_IRC_CARDS) {
+			const oldest = this.#liveIrcCards.keys().next().value;
+			if (oldest === undefined || oldest === latestSignature) return;
+			const timer = this.#ircExpiryTimers.get(oldest);
+			if (timer) {
+				clearTimeout(timer);
+				this.#ircExpiryTimers.delete(oldest);
+			}
+			this.#retireIrcCard(oldest);
+		}
+	}
+
+	/**
 	 * Resolve the pending displaceable poll block before the next block lands.
 	 * A follow-up `hub` call displaces it — the stale "waiting on N jobs" frame
 	 * is removed so repeated polls read as one persistent poll — while anything
@@ -1113,11 +1186,7 @@ export class EventController {
 		const previous = this.#displaceablePollComponent;
 		if (!previous) return;
 		this.#displaceablePollComponent = undefined;
-		if (
-			nextToolName === "hub" &&
-			previous.isDisplaceableBlock() &&
-			this.ctx.chatContainer.isBlockUncommitted(previous)
-		) {
+		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.ctx.chatContainer.canRemoveBlock(previous)) {
 			this.ctx.chatContainer.removeChild(previous);
 		}
 		// Sealing stops the waiting-poll spinner and freezes the block (for a
@@ -1135,7 +1204,7 @@ export class EventController {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#displaceableTodoComponent = undefined;
-			if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+			if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 				this.ctx.chatContainer.removeChild(previous);
 			}
 			previous.seal();
@@ -1519,7 +1588,7 @@ export class EventController {
 						) {
 							continue;
 						}
-						if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+						if (this.ctx.chatContainer.canRemoveBlock(component)) {
 							this.#retractToolCardEntry(toolCallId, component);
 							this.#retractedToolCallIds.add(toolCallId);
 						} else {
@@ -1743,10 +1812,7 @@ export class EventController {
 					snapshots: getFileSnapshotStore(this.ctx.viewSession),
 					clipboard: getEditClipboard(this.ctx.viewSession),
 					showImages: settings.get("terminal.showImages"),
-					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
-					liveRegion: this.ctx.chatContainer,
-					openImage: image => openRichContentImage(this.ctx, image),
+
 				},
 				tool,
 				this.ctx.ui,
@@ -1754,6 +1820,8 @@ export class EventController {
 				event.toolCallId,
 			);
 			component.setArgsComplete(event.toolCallId);
+			component.setExecutionStarted(event.toolCallId);
+			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(component);
 			this.ctx.pendingTools.set(event.toolCallId, component);
@@ -1777,6 +1845,10 @@ export class EventController {
 				if (typeof component.setArgsComplete === "function") {
 					component.setArgsComplete(event.toolCallId);
 				}
+				if (typeof component.setExecutionStarted === "function") {
+					component.setExecutionStarted(event.toolCallId);
+				}
+				this.#executionStartedCallIds.add(event.toolCallId);
 				this.ctx.ui.requestRender();
 			}
 		}
@@ -1857,7 +1929,7 @@ export class EventController {
 			const previous = this.#displaceableTodoComponent;
 			if (previous && previous !== component && previous.isDisplaceableBlock()) {
 				this.#displaceableTodoComponent = undefined;
-				if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+				if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 					this.ctx.chatContainer.removeChild(previous);
 				}
 				previous.seal();
@@ -1876,6 +1948,7 @@ export class EventController {
 		const isPeerHubDispatch = dispatch?.tool === "hub" && isHubPeerCommunicationArgs(dispatch.args);
 		const hiddenPeerCommunicationDispatch =
 			isPeerHubDispatch && !this.ctx.settings.get("display.showAgentCommunication");
+		this.#executionStartedCallIds.delete(event.toolCallId);
 		// A synthetic aborted/error completion (agent-loop's placeholder for a
 		// never-run call on a terminal error/abort) settles the card in place so a
 		// terminal failure stays visible. Remember it so `#handleAutoRetryStart`
@@ -1973,6 +2046,7 @@ export class EventController {
 				const isBackgroundTask = event.toolName === "task" && asyncState === "running";
 				component.updateResult(renderResult, isBackgroundTask, event.toolCallId);
 				if (isBackgroundTask) {
+					component.parkAsBackground();
 					this.#backgroundTaskCallIds.add(event.toolCallId);
 				} else {
 					this.ctx.pendingTools.delete(event.toolCallId);
@@ -1997,7 +2071,7 @@ export class EventController {
 						const previous = this.#displaceableTodoComponent;
 						if (previous && previous !== component && previous.isDisplaceableBlock()) {
 							this.#displaceableTodoComponent = undefined;
-							if (this.ctx.chatContainer.isBlockUncommitted(previous)) {
+							if (this.ctx.chatContainer.canRemoveBlock(previous)) {
 								this.ctx.chatContainer.removeChild(previous);
 							}
 							previous.seal();
@@ -2124,6 +2198,9 @@ export class EventController {
 		}
 		if (this.ctx.streamingComponent) {
 			this.ctx.chatContainer.removeChild(this.ctx.streamingComponent);
+			// Removal is refused for blocks already offered/committed to history;
+			// finalize so a kept block can never jam transcript retirement.
+			this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
 		}
@@ -2156,6 +2233,7 @@ export class EventController {
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
 		this.#retractedToolCallIds.clear();
+		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#serverResolvedTodoCallIds.clear();
@@ -2229,13 +2307,15 @@ export class EventController {
 						? tSettingsUi("Idle ")
 						: "";
 		const actionLabel =
-			event.action === "handoff"
-				? tSettingsUi("Auto-handoff")
-				: event.action === "shake"
-					? tSettingsUi("Auto-shake")
-					: event.action === "snapcompact"
-						? tSettingsUi("Auto-snapcompact")
-						: tSettingsUi("Auto context-full maintenance");
+			event.action === "remote"
+				? tSettingsUi("Auto server compaction")
+				: event.action === "handoff"
+					? tSettingsUi("Auto-handoff")
+					: event.action === "shake"
+						? tSettingsUi("Auto-shake")
+						: event.action === "snapcompact"
+							? tSettingsUi("Auto-snapcompact")
+							: tSettingsUi("Auto context-full maintenance");
 		this.ctx.autoCompactionLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
@@ -2257,17 +2337,21 @@ export class EventController {
 			this.ctx.statusContainer.disposeChildren();
 		}
 		const isHandoffAction = event.action === "handoff";
+		const isRemoteAction = event.action === "remote";
 		const isShakeAction = event.action === "shake";
 		const isSnapcompactAction = event.action === "snapcompact";
 		if (event.aborted) {
 			this.ctx.showStatus(
 				isHandoffAction
+				isHandoffAction
 					? tSettingsUi("Auto-handoff cancelled")
-					: isShakeAction
-						? tSettingsUi("Auto-shake cancelled")
-						: isSnapcompactAction
-							? tSettingsUi("Auto-snapcompact cancelled")
-							: tSettingsUi("Auto context-full maintenance cancelled"),
+					: isRemoteAction
+						? tSettingsUi("Auto server compaction cancelled")
+						: isShakeAction
+							? tSettingsUi("Auto-shake cancelled")
+							: isSnapcompactAction
+								? tSettingsUi("Auto-snapcompact cancelled")
+								: tSettingsUi("Auto context-full maintenance cancelled"),
 			);
 		} else if (isShakeAction) {
 			// Shake produces no CompactionResult; rebuild on success, suppress benign skips.
@@ -2320,6 +2404,8 @@ export class EventController {
 			// to compact yet. Not a failure — suppress the warning.
 		} else if (isSnapcompactAction) {
 			this.ctx.showWarning(tSettingsUi("Auto-snapcompact maintenance failed; continuing without maintenance"));
+		} else if (isRemoteAction) {
+			this.ctx.showWarning(tSettingsUi("Auto server compaction failed; continuing without maintenance"));
 		} else {
 			this.ctx.showWarning(tSettingsUi("Auto context-full maintenance failed; continuing without maintenance"));
 		}
@@ -2380,7 +2466,7 @@ export class EventController {
 		// fresh cards don't render the same call twice (#6879). Only uncommitted
 		// cards are removable; one already on the scrollback tape stays as history.
 		for (const [toolCallId, component] of this.#syntheticFailureCards) {
-			if (this.ctx.chatContainer.isBlockUncommitted(component)) {
+			if (this.ctx.chatContainer.canRemoveBlock(component)) {
 				this.#retractToolCardEntry(toolCallId, component);
 			}
 		}
@@ -2425,14 +2511,17 @@ export class EventController {
 			this.#pinnedErrorComponent !== undefined &&
 			pinnedError !== undefined &&
 			pinnedError === event.finalError;
+		let stalePinnedErrorCleared = false;
 		if (!event.success && this.#pinnedErrorComponent && !terminalFailurePinned) {
 			this.#pinnedErrorComponent.setErrorPinned(false);
 			this.#pinnedErrorComponent = undefined;
 			this.#pinnedErrorMessage = undefined;
 			this.#restorePinnedErrorInline = true;
 			this.ctx.clearPinnedError();
+			stalePinnedErrorCleared = true;
 		}
 		let clearedPinnedComponent = false;
+		let appliedRetryUpdate = false;
 		for (const retryError of event.retryErrors ?? []) {
 			const component = this.#takeRetrySupersededAssistantComponent(retryError.persistenceKey);
 			if (!component) continue;
@@ -2443,6 +2532,14 @@ export class EventController {
 				this.#restorePinnedErrorInline = true;
 				clearedPinnedComponent = true;
 			}
+			appliedRetryUpdate = true;
+		}
+		if (
+			!terminalFailurePinned &&
+			!stalePinnedErrorCleared &&
+			(appliedRetryUpdate || (event.retryErrors?.length ?? 0) > 0)
+		) {
+			this.ctx.clearPinnedError();
 		}
 		// Only clear the banner when this retry actually superseded its pinned
 		// component; a newer terminal error must remain visible.
@@ -2539,7 +2636,7 @@ export class EventController {
 		if (
 			previous &&
 			this.ctx.chatContainer.children.at(-1) === previous &&
-			this.ctx.chatContainer.isBlockUncommitted(previous)
+			this.ctx.chatContainer.canRemoveBlock(previous)
 		) {
 			previous.addRules(event.rules);
 			this.ctx.ui.requestRender();

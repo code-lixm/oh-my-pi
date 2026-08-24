@@ -57,6 +57,7 @@ export interface TodoTrackerHost {
 	promptGeneration(): number;
 	hasPendingAsyncWake(): boolean;
 	getActiveToolNames(): string[];
+	getEnabledToolNames(): string[];
 	toolRegistry(): Map<string, AgentTool>;
 	planModeEnabled(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
@@ -185,7 +186,7 @@ export class TodoTracker {
 			const trimmed = promptText.trimEnd();
 			if (trimmed.endsWith("?") || trimmed.endsWith("!")) return undefined;
 		}
-		if (!this.#host.getActiveToolNames().includes("task")) return undefined;
+		if (!this.#host.getEnabledToolNames().includes("task")) return undefined;
 		return {
 			role: "custom",
 			customType: "eager-task-prelude",

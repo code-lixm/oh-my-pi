@@ -192,7 +192,7 @@ function renderOpenOrCloseLine(
 	let title: string;
 	if (action === "close") {
 		const all = args.all === true || (args.name === undefined && details?.name === undefined);
-		title = all ? tSettingsUi("Close all tabs") : tSettingsUi("Close {target}", { target: tabLabel(args, details) });
+		title = all ? tSettingsUi("Release all tabs") : tSettingsUi("Release {target}", { target: tabLabel(args, details) });
 		if (args.kill) title += tSettingsUi(" (kill)");
 	} else {
 		title = tSettingsUi("Open {target}", { target: tabLabel(args, details) });

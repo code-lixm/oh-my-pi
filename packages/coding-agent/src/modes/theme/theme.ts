@@ -9,6 +9,7 @@ import {
 	getBuiltinThemes,
 	loadTheme,
 	loadThemeJson,
+	loadThemeSync,
 	resolveThemeExportColors,
 } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";
@@ -127,6 +128,48 @@ function getCurrentThemeOptions(): CreateThemeOptions {
 		colorBlindMode: currentColorBlindMode,
 	};
 }
+function configureTheme(
+	symbolPreset?: SymbolPreset,
+	colorBlindMode?: boolean,
+	darkTheme?: string,
+	lightTheme?: string,
+): string {
+	autoDetectedTheme = true;
+	autoDarkTheme = darkTheme ?? "dark";
+	autoLightTheme = lightTheme ?? "light";
+	currentSymbolPresetOverride = symbolPreset;
+	currentColorBlindMode = colorBlindMode ?? false;
+	const name = getDefaultTheme();
+	currentThemeName = name;
+	return name;
+}
+
+/** Initialize the active theme synchronously before the first terminal paint. */
+export function initThemeSync(
+	symbolPreset?: SymbolPreset,
+	colorBlindMode?: boolean,
+	darkTheme?: string,
+	lightTheme?: string,
+): void {
+	const name = configureTheme(symbolPreset, colorBlindMode, darkTheme, lightTheme);
+	const options: CreateThemeOptions = {
+		symbolPresetOverride: currentSymbolPresetOverride,
+		colorBlindMode: currentColorBlindMode,
+	};
+	try {
+		theme = loadThemeSync(name, options);
+	} catch (error) {
+		logger.debug("Theme loading failed, falling back to dark theme", { error: String(error) });
+		currentThemeName = "dark";
+		theme = loadThemeSync("dark", options);
+	}
+}
+
+/** Initialize the default theme only when no earlier prepaint initialized one. */
+export async function ensureTheme(): Promise<void> {
+	if (typeof theme !== "undefined") return;
+	await initTheme();
+}
 
 export async function initTheme(
 	enableWatcher: boolean = false,
@@ -136,14 +179,8 @@ export async function initTheme(
 	lightTheme?: string,
 	useTerminalPalette: boolean = false,
 ): Promise<void> {
-	autoDetectedTheme = true;
-	autoDarkTheme = darkTheme ?? "dark";
-	autoLightTheme = lightTheme ?? "light";
 	terminalPaletteOverride = useTerminalPalette;
-	const name = getDefaultTheme();
-	currentThemeName = name;
-	currentSymbolPresetOverride = symbolPreset;
-	currentColorBlindMode = colorBlindMode ?? false;
+	const name = configureTheme(symbolPreset, colorBlindMode, darkTheme, lightTheme);
 	try {
 		theme = await loadTheme(name, getCurrentThemeOptions());
 		if (enableWatcher) {

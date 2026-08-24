@@ -5,6 +5,11 @@
 ### Fixed
 
 - Fixed guest Agent Drawer and AgentsPanel rows showing stale lifecycle or idle states after late joins and terminal updates; both now use the host's authoritative `terminalStatus` consistently.
+## [17.3.8] - 2026-08-19
+
+### Fixed
+
+- The ask tool card now renders the note the user attached to their answer; previously it was dropped from HTML exports and the collab guest view.
 
 ## [17.2.10] - 2026-08-06
 

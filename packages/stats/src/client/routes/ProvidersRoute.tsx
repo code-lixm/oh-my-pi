@@ -13,6 +13,7 @@ import {
 import {
 	formatCompact,
 	formatCost,
+	formatEstimatedCost,
 	formatInteger,
 	formatPercent,
 	formatRelativeTime,
@@ -74,6 +75,10 @@ export function ProvidersRoute({ active, range, refreshTrigger }: ProvidersRoute
 
 function ProviderTotalsPanel({ providers }: { providers: ProviderAggregate[] }) {
 	const grandTotal = useMemo(() => providers.reduce((sum, p) => sum + p.totalTokens, 0), [providers]);
+	const unpricedRequests = useMemo(
+		() => providers.reduce((sum, provider) => sum + provider.unpricedRequests, 0),
+		[providers],
+	);
 
 	const columns: DataTableColumn<ProviderAggregate>[] = [
 		{
@@ -117,7 +122,12 @@ function ProviderTotalsPanel({ providers }: { providers: ProviderAggregate[] }) 
 			numeric: true,
 			render: p => formatPercent(grandTotal > 0 ? p.totalTokens / grandTotal : 0),
 		},
-		{ key: "cost", header: t("providers.column.cost"), numeric: true, render: p => formatCost(p.totalCost) },
+		{
+			key: "cost",
+			header: t("providers.column.cost"),
+			numeric: true,
+			render: provider => formatEstimatedCost(provider.totalCost, provider.unpricedRequests),
+		},
 		{
 			key: "tps",
 			header: t("providers.column.tps"),
@@ -127,7 +137,14 @@ function ProviderTotalsPanel({ providers }: { providers: ProviderAggregate[] }) 
 	];
 
 	return (
-		<Panel title={t("providers.totals.title")} subtitle={t("providers.totals.subtitle")}>
+		<Panel
+			title={t("providers.totals.title")}
+			subtitle={
+				unpricedRequests > 0
+					? t("providers.totals.subtitleUnpriced", { n: unpricedRequests })
+					: t("providers.totals.subtitle")
+			}
+		>
 			<DataTable
 				columns={columns}
 				data={providers}
@@ -147,6 +164,10 @@ function ProviderTrendPanel({ stats }: { stats: ProviderDashboardStats }) {
 	const locale = useLocale();
 	const theme = useSystemTheme();
 	const chartTheme = CHART_THEMES[theme];
+	const unpricedRequests = useMemo(
+		() => stats.providers.reduce((sum, provider) => sum + provider.unpricedRequests, 0),
+		[stats.providers],
+	);
 
 	// buildTopNByModelSeries keys on `model`; feed it the provider name so we
 	// get the same top-N + "Other" rollup without a parallel implementation.
@@ -199,7 +220,11 @@ function ProviderTrendPanel({ stats }: { stats: ProviderDashboardStats }) {
 	return (
 		<Panel
 			title={t("providers.trend.title")}
-			subtitle={t("providers.trend.subtitle")}
+			subtitle={
+				metric === "cost" && unpricedRequests > 0
+					? t("providers.trend.subtitleUnpriced", { n: unpricedRequests })
+					: t("providers.trend.subtitle")
+			}
 			actions={
 				<SegmentedControl
 					options={[

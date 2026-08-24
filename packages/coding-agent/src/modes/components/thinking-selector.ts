@@ -1,15 +1,15 @@
 import type { Effort } from "@oh-my-pi/pi-ai";
-import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { getThinkingLevelMetadata } from "../../thinking";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
 /**
  * Component that renders a thinking level selector with borders
  */
-export class ThinkingSelectorComponent extends Container {
+export class ThinkingSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 
 	constructor(
@@ -18,7 +18,7 @@ export class ThinkingSelectorComponent extends Container {
 		onSelect: (level: Effort) => void,
 		onCancel: () => void,
 	) {
-		super();
+		super("Thinking Level");
 
 		const thinkingLevels: SelectItem[] = availableLevels.map(level => {
 			const metadata = getThinkingLevelMetadata(level);
@@ -28,9 +28,6 @@ export class ThinkingSelectorComponent extends Container {
 				description: tSettingsUi(metadata.description),
 			};
 		});
-
-		// Add top border
-		this.addChild(new DynamicBorder());
 
 		// Create selector
 		this.#selectList = new SelectList(thinkingLevels, thinkingLevels.length, getSelectListTheme());
@@ -50,9 +47,6 @@ export class ThinkingSelectorComponent extends Container {
 		};
 
 		this.addChild(this.#selectList);
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
 	}
 
 	getSelectList(): SelectList {

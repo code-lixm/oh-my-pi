@@ -18,7 +18,7 @@ import {
 	TrendEmpty,
 } from "../components/models-table-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
-import { formatPercent } from "../data/formatters";
+import { formatEstimatedCost, formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildModelPerformanceLookup, sumConversationTokens } from "../data/view-models";
 import { t } from "../locale/catalog";
@@ -300,7 +300,7 @@ function ModelsTable({
 									{model.totalRequests.toLocaleString()}
 								</div>,
 								<div key="cost" className="text-right text-[var(--text-secondary)] font-mono text-sm">
-									${model.totalCost.toFixed(2)}
+									{formatEstimatedCost(model.totalCost, model.unpricedRequests)}
 								</div>,
 								<div key="tokens" className="text-right text-[var(--text-secondary)] font-mono text-sm">
 									{sumConversationTokens(model).toLocaleString()}

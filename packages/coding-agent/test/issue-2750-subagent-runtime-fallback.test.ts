@@ -51,6 +51,7 @@ function createYieldingSession(fallbackOrOnRestored: "served" | "unproven" | (()
 		getEnabledToolNames: () => ["yield"],
 		setActiveToolsByName: async () => {},
 		setIrcWakeTurnObserver: () => {},
+		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => {
 			listeners.push(listener);
 			return () => {};
@@ -87,6 +88,8 @@ function createYieldingSession(fallbackOrOnRestored: "served" | "unproven" | (()
 			});
 		},
 		waitForIdle: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},

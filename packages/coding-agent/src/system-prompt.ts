@@ -10,7 +10,16 @@ import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
 import { createCodexFallbackPromptFingerprint, createCodexNativePromptFingerprint } from "@oh-my-pi/pi-ai/types";
 import { renderCodexPromptInstructions } from "@oh-my-pi/pi-catalog/discovery/codex";
 import type { CodexPromptModelMessages, CodexPromptProfile } from "@oh-my-pi/pi-catalog/types";
-import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	getAgentDir,
+	getGpuCachePath,
+	getProjectDir,
+	hasFsCode,
+	isEnoent,
+	logger,
+	prompt,
+} from "@oh-my-pi/pi-utils";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
 import { findConfigFile } from "./config";
@@ -53,7 +62,6 @@ import type { HarnessState } from "./refinement/types";
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { usesCodexTaskPrompt } from "./task/prompt-policy";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
-import { formatLocalCalendarDate } from "./utils/local-date";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
 
@@ -115,23 +123,49 @@ function normalizePromptBlock(content: string): string {
 function splitComparablePromptBlocks(content: string | null | undefined): string[] {
 	const normalized = firstNonEmpty(content);
 	if (!normalized) return [];
-
-	return normalizePromptBlock(normalized)
-		.split(/\n{2,}/)
-		.map(block => block.trim())
-		.filter(block => block.length > 0);
+	const rendered = normalizePromptBlock(normalized);
+	// Split on blank-line paragraph boundaries, but not inside fenced code
+	// blocks. A rule that appears only inside a fenced example in another file
+	// is an example, not an instruction, so it must not count as containment.
+	const blocks: string[] = [];
+	let current: string[] = [];
+	let inFence = false;
+	for (const line of rendered.split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			current.push(line);
+			continue;
+		}
+		if (!inFence && line.trim() === "" && current.length > 0 && current[current.length - 1].trim() !== "") {
+			const block = current.join("\n").trim();
+			if (block.length > 0) blocks.push(block);
+			current = [];
+			continue;
+		}
+		current.push(line);
+	}
+	const tail = current.join("\n").trim();
+	if (tail.length > 0) blocks.push(tail);
+	return blocks;
 }
 
-function promptSourceContainsRule(source: string | null | undefined, ruleContent: string): boolean {
-	const sourceBlocks = splitComparablePromptBlocks(source);
-	const ruleBlocks = splitComparablePromptBlocks(ruleContent);
-	if (sourceBlocks.length === 0 || ruleBlocks.length === 0 || ruleBlocks.length > sourceBlocks.length) return false;
-
+/**
+ * Check whether `ruleBlocks` appears as a contiguous subsequence of
+ * `sourceBlocks`. Both inputs must already be normalized and split via
+ * {@link splitComparablePromptBlocks}.
+ */
+function promptBlocksContain(sourceBlocks: string[], ruleBlocks: string[]): boolean {
+	if (sourceBlocks.length === 0 || ruleBlocks.length === 0 || ruleBlocks.length > sourceBlocks.length) {
+		return false;
+	}
 	for (let start = 0; start <= sourceBlocks.length - ruleBlocks.length; start += 1) {
 		if (ruleBlocks.every((block, offset) => sourceBlocks[start + offset] === block)) return true;
 	}
-
 	return false;
+}
+
+function promptSourceContainsRule(source: string | null | undefined, ruleContent: string): boolean {
+	return promptBlocksContain(splitComparablePromptBlocks(source), splitComparablePromptBlocks(ruleContent));
 }
 
 function dedupeAlwaysApplyRules(
@@ -464,16 +498,39 @@ export interface LoadContextFilesOptions {
 	disabledExtensions?: string[];
 }
 
-function dedupeExactContextFiles(
+/**
+ * Deduplicate context files by paragraph containment.
+ *
+ * Files are sorted by depth descending (farther from cwd first) so that a
+ * file is omitted only when a more-authoritative (closer-to-cwd) file
+ * contains its entire normalized paragraph sequence as a contiguous run.
+ * This makes the function self-contained — it does not rely on callers
+ * pre-sorting the array, which matters because some callers concatenate
+ * independently sorted workspace roots where array position does not reflect
+ * authority. Files whose paragraphs are merely paraphrased or interleaved are
+ * kept — containment is exact after normalization, not fuzzy.
+ *
+ * @internal Exported for testing.
+ */
+export function dedupeContainedContextFiles(
 	contextFiles: Array<{ path: string; content: string; depth?: number }>,
 ): Array<{ path: string; content: string; depth?: number }> {
-	const lastIndexByContent = new Map<string, number>();
-	for (const [index, file] of contextFiles.entries()) {
-		// Keep the closest matching context entry when content is byte-for-byte identical.
-		lastIndexByContent.set(file.content, index);
-	}
-
-	return contextFiles.filter((file, index) => lastIndexByContent.get(file.content) === index);
+	// Sort by depth descending: higher depth (farther from cwd, less
+	// authoritative) first, lower depth (closer to cwd, more authoritative)
+	// last. Stable sort preserves caller order among equal-depth files.
+	const sorted = [...contextFiles].sort((a, b) => {
+		const depthA = a.depth ?? Number.POSITIVE_INFINITY;
+		const depthB = b.depth ?? Number.POSITIVE_INFINITY;
+		return depthB - depthA;
+	});
+	const blocks = sorted.map(file => splitComparablePromptBlocks(file.content));
+	return sorted.filter(
+		(_file, index) =>
+			!blocks.some(
+				(candidateBlocks, candidateIndex) =>
+					candidateIndex > index && promptBlocksContain(candidateBlocks, blocks[index]),
+			),
+	);
 }
 
 /**
@@ -514,7 +571,7 @@ export async function loadProjectContextFiles(
 		return depthB - depthA;
 	});
 
-	return dedupeExactContextFiles(files);
+	return dedupeContainedContextFiles(files);
 }
 
 /**
@@ -617,6 +674,13 @@ export interface BuildSystemPromptOptions {
 	tools?: Map<string, SystemPromptToolMetadata>;
 	/** Tool names to include in prompt. */
 	toolNames?: string[];
+	/**
+	 * Names actually exposed as provider-callable tools. Defaults to `toolNames`.
+	 * Code Mode passes its direct keep-set so the rendered tool inventory matches
+	 * the wire surface while capability and safety gates still see every
+	 * bridge-reachable tool in `toolNames`.
+	 */
+	directToolNames?: readonly string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
 	/** Optional continual-harness state rendered as a supplemental prompt block. */
@@ -731,6 +795,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		nativeTools = true,
 		skillsSettings,
 		toolNames: providedToolNames,
+		directToolNames,
 		cwd,
 		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
@@ -770,7 +835,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedCustomPrompt: undefined as string | undefined,
 		resolvedAppendPrompt: undefined as string | undefined,
 		systemPromptCustomization: null as string | null,
-		contextFiles: dedupeExactContextFiles(providedContextFiles ?? []),
+		contextFiles: dedupeContainedContextFiles(providedContextFiles ?? []),
 		skills: providedSkills ?? ([] as Skill[]),
 		workspaceTree: {
 			rootPath: resolvedCwd,
@@ -834,7 +899,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		const extra = await Promise.all(
 			additionalRoots.map(root => loadProjectContextFiles({ cwd: root }).catch(() => [])),
 		);
-		return dedupeExactContextFiles([...primary, ...extra.flat()]);
+		return dedupeContainedContextFiles([...primary, ...extra.flat()]);
 	})();
 	const additionalRootsForTree = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
 	const workspaceTreePromise = (async () => {
@@ -872,6 +937,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			: logger.time("resolveActiveRepoContext", () => resolveActiveRepoContext(resolvedCwd));
 	const cpuModelPromise = logger.time("getCpuModel", getCpuModel);
 	const gpuPromise = logger.time("getCachedGpu", getCachedGpu);
+	// "none" (explicit off — and every subagent) omits the block and skips the file lookup.
+	const bundledPersonality = personality === "none" ? "" : PERSONALITY_SPECS[personality].trim();
+	const personalityPromise: Promise<string> =
+		personality === "none"
+			? Promise.resolve("")
+			: logger
+					.time("loadPersonalityOverride", loadPersonalityOverride)
+					.then(override => override ?? bundledPersonality);
 
 	const [
 		resolvedCustomPrompt,
@@ -883,6 +956,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		activeRepoContext,
 		cpuModel,
 		gpu,
+		personalityBlock,
 	] = await Promise.all([
 		withDeadline(
 			"customPrompt",
@@ -900,13 +974,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		),
 		withDeadline("loadSystemPromptFiles", systemPromptCustomizationPromise, prepDefaults.systemPromptCustomization),
 		withDeadline("loadProjectContextFiles", contextFilesPromise, prepDefaults.contextFiles).then(
-			dedupeExactContextFiles,
+			dedupeContainedContextFiles,
 		),
 		withDeadline("loadSkills", skillsPromise, prepDefaults.skills),
 		withDeadline("buildWorkspaceTree", workspaceTreePromise, prepDefaults.workspaceTree),
 		withDeadline("resolveActiveRepoContext", activeRepoContextPromise, prepDefaults.activeRepoContext),
 		withDeadline("getCpuModel", cpuModelPromise, prepDefaults.cpuModel),
 		withDeadline("getCachedGpu", gpuPromise, prepDefaults.gpu),
+		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
 	]);
 	clearTimeout(deadlineTimer);
 	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
@@ -931,8 +1006,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		}
 	}
 
-	const date = formatLocalCalendarDate();
-	const dateTime = date;
 	const promptCwd = normalizePromptPath(resolvedCwd);
 	const activeRepoContextPrompt = renderActiveRepoContextPrompt(activeRepoContext);
 
@@ -959,8 +1032,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const xdevToolNames = new Set(xdevTools.map(mounted => mounted.name));
 	// A direct custom tool can share a name with a retained built-in device.
 	// Presence in both toolNames and tools proves it still has a top-level definition.
+	// Bridge-only Code Mode tools stay out of the callable inventory: the eval
+	// description documents their `tool.*` access path instead.
+	const directSet = directToolNames === undefined ? undefined : new Set(directToolNames);
+	const directInventoryNames = directSet === undefined ? toolNames : toolNames.filter(name => directSet.has(name));
 	const inventoryToolNames =
-		xdevToolNames.size === 0 ? toolNames : toolNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
+		xdevToolNames.size === 0
+			? directInventoryNames
+			: directInventoryNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
 	const toolInfo = inventoryToolNames.map(name => ({
 		name: toolPromptNames.get(name) ?? name,
 		internalName: name,
@@ -1017,13 +1096,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		skills: filteredSkills,
 		rules: rules ?? [],
 		alwaysApplyRules: injectedAlwaysApplyRules,
-		date,
-		dateTime,
 		cwd: promptCwd,
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
-		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].value.trim(),
+		personality: personalityBlock,
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		eagerTasks,

@@ -7,18 +7,17 @@ import {
 	type AgentTurnEndContext,
 	AppendOnlyContextManager,
 	type CompactionSummaryMessage,
-	countTokens,
 	resolveTelemetry,
 	type StreamFn,
 	ThinkingLevel,
+	type Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type CompactionResult,
-	calculateContextTokens,
 	compact,
 	compactionContextTokens,
 	createCompactionSummaryMessage,
-	estimateTokens,
+	estimateTranscriptTokens,
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionMessageEntry,
@@ -87,6 +86,7 @@ import {
 import type { FffGrepToolOptions } from "../tools/fff-tools";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ClientBridge } from "./client-bridge";
+import { resolveCompactionMethodOrder } from "./compaction-methods";
 import type { CustomMessage, CustomMessagePayload } from "./messages";
 import { isAdvisorCard, isTerminalTextAssistantAnswer } from "./queued-messages";
 import {
@@ -273,6 +273,11 @@ export interface SessionAdvisorsHost {
 		currentModel?: Model | null,
 		roleHint?: string,
 	): string | undefined;
+	retryFallbackChainKeys(
+		currentSelector: string,
+		currentModel?: Model | null,
+		options?: { pinnedRole?: string; roleHint?: string },
+	): string[];
 	findRetryFallbackCandidates(
 		role: string,
 		currentSelector: string,
@@ -310,6 +315,7 @@ export class SessionAdvisors {
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveTerminalYieldAdvice = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	#skipPrimaryTurnAtAgentEnd = false;
 	#advisorInterruptImmuneTurnStart: number | undefined;
@@ -381,6 +387,38 @@ export class SessionAdvisors {
 		if (!this.#advisorEnabled || this.#host.isDisposed()) return;
 		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
+	}
+
+	/**
+	 * True when the enabled advisor roster still has an entry left at `no_model`.
+	 *
+	 * At construction the advisor role is resolved against whatever the model
+	 * catalog holds at that instant. Discovery-backed providers (e.g. GitHub
+	 * Copilot) may not have populated the registry yet, so a valid configured
+	 * model can transiently fail to resolve and record `no_model`. See #9010.
+	 */
+	hasInactiveNoModelAdvisor(): boolean {
+		if (!this.#advisorEnabled) return false;
+		for (const entry of this.#advisorStatuses.values()) {
+			if (entry.status === "no_model") return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Reactivate an enabled advisor stuck at `no_model` after the initial
+	 * background model discovery settles, so a valid configured model that was
+	 * merely late to the catalog starts without a manual `/advisor` toggle. The
+	 * rebuild is quiet (no warnings) because a warning was already emitted at
+	 * construction. Returns true when the rebuild brought an advisor online so the
+	 * caller can refresh the status line. See #9010.
+	 */
+	retryAfterModelDiscovery(): boolean {
+		if (this.#host.isDisposed() || !this.hasInactiveNoModelAdvisor()) return false;
+		const before = this.#advisors.length;
+		if (before > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
+		this.#buildAdvisorRuntime(true, false);
+		return this.#advisors.length > before;
 	}
 
 	/** Starts configured advisor runtimes when they are eligible. */
@@ -680,7 +718,7 @@ export class SessionAdvisors {
 		return true;
 	}
 
-	#buildAdvisorRuntime(seedToCurrent = false): boolean {
+	#buildAdvisorRuntime(seedToCurrent = false, emitWarnings = true): boolean {
 		if (this.#host.isDisposed()) return false;
 		if (this.#advisors.length > 0) return true;
 		if (!this.#advisorEnabled) return false;
@@ -690,7 +728,7 @@ export class SessionAdvisors {
 		// entry (`paused`/`no_model`/`running`) in roster order; the build loop
 		// below confirms `running` for successfully built advisors.
 		this.#advisorStatuses.clear();
-		const descriptors = this.#resolveAdvisorRuntimeDescriptors(true);
+		const descriptors = this.#resolveAdvisorRuntimeDescriptors(emitWarnings);
 
 		// Advisor service tier (`tier.advisor`): "none" (default) runs the advisor
 		// on standard processing; "inherit" tracks the session's live per-family
@@ -1046,7 +1084,7 @@ export class SessionAdvisors {
 			// Key on the live agent-core loop, not session `isStreaming` (which also
 			// counts `#promptInFlightCount` during post-turn unwind). Only a running
 			// loop consumes a steer at its next boundary.
-			streaming: this.#host.agent.state.isStreaming,
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
 			planMode: this.#host.planModeState()?.enabled === true,
@@ -1317,10 +1355,13 @@ export class SessionAdvisors {
 				})
 			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (
-			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
-			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
-		) {
+		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
+		const contextWindow = currentModel.contextWindow ?? 0;
+		const overflowVeto =
+			(AIError.is(errorId, AIError.Flag.ContextOverflow) ||
+				(assistantFailure !== undefined && AIError.isContextOverflow(assistantFailure, contextWindow))) &&
+			!AIError.isTextAmbiguousContextOverflow(errorId, assistantFailure, contextWindow);
+		if (overflowVeto) {
 			return false;
 		}
 
@@ -1364,45 +1405,55 @@ export class SessionAdvisors {
 		}
 		if (!retrySettings.modelFallback) return false;
 		const currentSelector = formatRetryFallbackSelector(currentModel, advisor.thinkingLevel);
-		const role =
-			advisor.retryFallback?.role ?? this.#host.resolveRetryFallbackRole(currentSelector, currentModel, "advisor");
-		if (!role || this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length === 0) {
+		// Same two-key walk the main loop uses: the chain that owns this advisor's
+		// active fallback, then the chain the current model owns. Without the
+		// second key an advisor that lands on the last entry of one chain never
+		// reaches that entry's own chain and re-hits the dead model instead.
+		const chainKeys = this.#host.retryFallbackChainKeys(currentSelector, currentModel, {
+			pinnedRole: advisor.retryFallback?.role,
+			roleHint: "advisor",
+		});
+		if (
+			!chainKeys.some(role => this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length > 0)
+		) {
 			return false;
 		}
-		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
-		for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-			if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
-			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-			if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
-			if (!apiKey) continue;
-			signal.throwIfAborted();
 
-			const originalThinkingLevel = advisor.thinkingLevel;
-			const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-			const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-			if (advisor.retryFallback) {
-				advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-			} else {
-				advisor.retryFallback = {
+		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
+		for (const role of chainKeys) {
+			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
+				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
+				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
+				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
+				if (!apiKey) continue;
+				signal.throwIfAborted();
+
+				const originalThinkingLevel = advisor.thinkingLevel;
+				const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
+				const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
+				if (advisor.retryFallback) {
+					advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
+				} else {
+					advisor.retryFallback = {
+						role,
+						originalSelector: currentSelector,
+						originalThinkingLevel,
+						lastAppliedThinkingLevel: nextThinkingLevel,
+					};
+				}
+				advisor.retryFallbackPendingSuccess = true;
+				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
+				await this.#host.emitSessionEvent({
+					type: "retry_fallback_applied",
+					from: currentSelector,
+					to: selector.raw,
 					role,
-					originalSelector: currentSelector,
-					originalThinkingLevel,
-					lastAppliedThinkingLevel: nextThinkingLevel,
-				};
+				});
+				return true;
 			}
-			advisor.retryAttempt = 0;
-			advisor.retryFallbackPendingSuccess = true;
-			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
-			this.#scheduleAdvisorFallbackProbe(advisor);
-			await this.#host.emitSessionEvent({
-				type: "retry_fallback_applied",
-				from: currentSelector,
-				to: selector.raw,
-				role,
-			});
-			return true;
+
 		}
 		return false;
 	}
@@ -1443,35 +1494,33 @@ export class SessionAdvisors {
 
 	async #maintainAdvisorContext(
 		advisor: ActiveAdvisor,
-		incomingTokens: number,
+		incoming: AgentMessage,
 		signal: AbortSignal,
 	): Promise<boolean> {
 		await this.#restoreReadyAdvisorFallback(advisor);
 		const agent = advisor.agent;
+		const incomingTokens = agent.tokenizer.countMessage(incoming);
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");
-		if (compactionSettings.strategy === "off") return false;
-		if (!compactionSettings.enabled) return false;
+		if (!compactionSettings.enabled || resolveCompactionMethodOrder(compactionSettings.methodOrder).length === 0) {
+			return false;
+		}
 
 		const advisorModel = agent.state.model;
 		const contextWindow = advisorModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 
 		const messages = agent.state.messages;
-		const estimateOptions = { excludeEncryptedReasoning: true } as const;
-		let storedConversationTokens = 0;
-		for (const message of messages) {
-			storedConversationTokens += estimateTokens(message, estimateOptions);
-		}
+		const storedConversationTokens = agent.tokenizer.countMessages(messages, { excludeEncryptedReasoning: true });
 		// Provider usage (including cache reads and generated output) is the
 		// trustworthy anchor for accumulated context. Add only the trailing incoming
 		// delta to that arm. Floor it by a full local estimate — fixed advisor system
 		// prompt, tool schemas, stored messages, and incoming delta — so provider
 		// under-reporting or payload transforms cannot suppress maintenance.
-		const providerContextTokens = this.#estimateAdvisorContextTokens(messages) + incomingTokens;
+		const providerContextTokens = this.#estimateAdvisorContextTokens(messages, agent.tokenizer) + incomingTokens;
 		const localContextTokens =
-			countTokens(agent.state.systemPrompt) +
-			estimateToolSchemaTokens(agent.state.tools) +
+			agent.tokenizer.countTokens(agent.state.systemPrompt) +
+			estimateToolSchemaTokens(agent.state.tools, agent.tokenizer) +
 			storedConversationTokens +
 			incomingTokens;
 		const contextTokens = compactionContextTokens(providerContextTokens, localContextTokens);
@@ -1531,7 +1580,7 @@ export class SessionAdvisors {
 			this.#host.sessionId(),
 			advisor.slug,
 		);
-		const preparation = prepareCompaction(pathEntries, compactionSettings, advisorModel);
+		const preparation = prepareCompaction(pathEntries, compactionSettings, advisorModel, agent.tokenizer);
 		if (!preparation) {
 			// Cannot prepare compaction, fallback to re-prime
 			return true;
@@ -1628,7 +1677,7 @@ export class SessionAdvisors {
 		// only assistants appended afterward can become the next usage anchor.
 		const advisorUsageAnchorStartIndex = preparation.recentMessages.length + 1;
 		const summaryMessage = {
-			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), shortSummary),
+			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), { shortSummary }),
 			firstKeptEntryId,
 			advisorUsageAnchorStartIndex,
 		} satisfies AdvisorCompactionSummaryMessage;
@@ -1642,6 +1691,19 @@ export class SessionAdvisors {
 	 */
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
+	}
+
+	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
+	prepareForTerminalYieldAdvisorDrain(): void {
+		this.#preserveAdvisorAdvice = true;
+		this.#preserveTerminalYieldAdvice = true;
+	}
+
+	/** Restore normal advisor routing when a kept-alive subagent starts new work. */
+	onPrimaryTurnStart(): void {
+		if (!this.#preserveTerminalYieldAdvice) return;
+		this.#preserveTerminalYieldAdvice = false;
+		this.#preserveAdvisorAdvice = false;
 	}
 
 	async #waitForPendingAdvisorCardEvents(timeoutMs: number): Promise<boolean> {
@@ -1804,6 +1866,14 @@ export class SessionAdvisors {
 		for (const advisorCost of this.#advisorCosts.values()) cost += advisorCost;
 		return cost;
 	}
+	/** Return whether any active or configured advisor is running on an OAuth/subscription model. */
+	isUsingSubscription(): boolean {
+		if (this.#advisors.length > 0) {
+			return this.#advisors.some(a => this.#host.modelRegistry.isUsingOAuth(a.model));
+		}
+		const sel = resolveAdvisorRoleSelection(this.#host.settings, this.#host.modelRegistry.getAvailable());
+		return sel ? this.#host.modelRegistry.isUsingOAuth(sel.model) : false;
+	}
 	/**
 	 * Return structured advisor stats for the status command and TUI panel.
 	 */
@@ -1880,7 +1950,7 @@ export class SessionAdvisors {
 	#computeAdvisorStat(advisor: ActiveAdvisor): PerAdvisorStat {
 		const model = advisor.agent.state.model;
 		const messages = advisor.agent.state.messages;
-		const contextTokens = this.#estimateAdvisorContextTokens(messages);
+		const contextTokens = this.#estimateAdvisorContextTokens(messages, advisor.agent.tokenizer);
 		let input = 0;
 		let output = 0;
 		let reasoning = 0;
@@ -1970,7 +2040,7 @@ export class SessionAdvisors {
 	 * retained pre-compaction messages is stale and must not immediately retrigger
 	 * maintenance on the newly compacted context.
 	 */
-	#estimateAdvisorContextTokens(messages: AgentMessage[]): number {
+	#estimateAdvisorContextTokens(messages: AgentMessage[], tokenizer: Tokenizer): number {
 		let usageAnchorStartIndex = 0;
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const message = messages[i];
@@ -1982,33 +2052,10 @@ export class SessionAdvisors {
 			usageAnchorStartIndex = advisorSummary.advisorUsageAnchorStartIndex ?? messages.length;
 			break;
 		}
-
-		let lastUsageIndex: number | undefined;
-		let lastUsage: AssistantMessage["usage"] | undefined;
-		for (let i = messages.length - 1; i >= usageAnchorStartIndex; i--) {
-			const message = messages[i];
-			if (message.role !== "assistant") continue;
-			const assistant = message as AssistantMessage;
-			if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error" && assistant.usage) {
-				lastUsage = assistant.usage;
-				lastUsageIndex = i;
-				break;
-			}
-		}
-
-		const estimateOptions = { excludeEncryptedReasoning: true } as const;
-		if (!lastUsage || lastUsageIndex === undefined) {
-			let estimated = 0;
-			for (const message of messages) {
-				estimated += estimateTokens(message, estimateOptions);
-			}
-			return estimated;
-		}
-		let trailingTokens = 0;
-		for (let i = lastUsageIndex + 1; i < messages.length; i++) {
-			trailingTokens += estimateTokens(messages[i], estimateOptions);
-		}
-		return calculateContextTokens(lastUsage) + trailingTokens;
+		return estimateTranscriptTokens(messages, tokenizer, {
+			anchorFromIndex: usageAnchorStartIndex,
+			excludeEncryptedReasoning: true,
+		});
 	}
 
 	/**

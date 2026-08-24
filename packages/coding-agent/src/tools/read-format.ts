@@ -30,8 +30,19 @@ export interface HashlineHeaderContext {
 	fullText?: string;
 }
 
-function readHashlineAnchor(displayPath: string): string {
-	return path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
+export function formatReadHashlineHeader(displayPath: string, tag: string): string {
+	// In-workspace reads keep their workspace-relative path (e.g.
+	// `src/settings.json`), not just the basename: collapsing to the bare name
+	// made a header ambiguous whenever another same-named file exists at cwd —
+	// the edit tool would resolve the bare name against cwd, hit the wrong
+	// file, and reject the valid edit via the snapshot-tag guard (the authored
+	// path exists, so Patcher's tag-path recovery never runs). The relative
+	// path stays directly resolvable against cwd and names the file uniquely.
+	// Out-of-workspace reads use an absolute displayPath; `shortenPath` keeps
+	// `~/.claude/...` (round-trips through resolveToCwd's ~ expansion) instead
+	// of leaking the full home path into the read output.
+	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
+	return formatHashlineHeader(anchor, tag);
 }
 
 export function recordFullHashlineContext(
@@ -53,7 +64,20 @@ export async function readHashlineHeaderContext(
 	absolutePath: string,
 	cwd: string,
 ): Promise<HashlineHeaderContext> {
-	const fullText = await Bun.file(absolutePath).text();
+	return hashlineHeaderContextForText(session, absolutePath, cwd, await Bun.file(absolutePath).text());
+}
+
+/**
+ * {@link readHashlineHeaderContext} for a caller that already holds the file's
+ * full text, so the file is not reopened just to hash it. Line endings are
+ * normalized here, exactly as the reading variant does.
+ */
+export function hashlineHeaderContextForText(
+	session: ToolSession,
+	absolutePath: string,
+	cwd: string,
+	fullText: string,
+): HashlineHeaderContext {
 	const context = recordFullHashlineContext(
 		session,
 		absolutePath,
@@ -378,6 +402,7 @@ export function buildInMemoryTextResult(
 	const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
 		buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
 			path: options.sourcePath,
+			text,
 		});
 
 	let outputText: string;
@@ -520,7 +545,7 @@ export function buildInMemoryMultiRangeResult(
 	if (options.raw === true) {
 		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 	} else if (visibleSpans.length > 0) {
-		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath });
+		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath, text });
 		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 		const firstLine = entries.find(entry => entry.kind === "line");
 		if (firstLine?.kind === "line") {

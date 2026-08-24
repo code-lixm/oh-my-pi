@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { getFolderStats } from "../api";
-import { formatCost, formatDurationMs, formatInteger, formatPercent } from "../data/formatters";
+import { formatDurationMs, formatEstimatedCost, formatInteger, formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildFolderRows, type FolderRowView, sumConversationTokens } from "../data/view-models";
 import { t } from "../locale/catalog";
@@ -70,7 +70,7 @@ export function ProjectsRoute({ active, range, refreshTrigger }: ProjectsRoutePr
 				numeric: true,
 				render: (item: FolderRowView) => (
 					<div className="stats-text-right">
-						<div className="font-mono">{formatCost(item.totalCost)}</div>
+						<div className="font-mono">{formatEstimatedCost(item.totalCost, item.unpricedRequests)}</div>
 						<div className="stats-progress-bar-track mt-1 ml-auto w-24 h-1">
 							<div
 								className="stats-progress-bar-fill"
@@ -140,7 +140,9 @@ export function ProjectsRoute({ active, range, refreshTrigger }: ProjectsRoutePr
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("projects.column.cost")}</div>
-					<div className="stats-mobile-card-value font-mono">{formatCost(item.totalCost)}</div>
+					<div className="stats-mobile-card-value font-mono">
+						{formatEstimatedCost(item.totalCost, item.unpricedRequests)}
+					</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("projects.mobile.cache")}</div>

@@ -13,7 +13,7 @@ import {
 	MODEL_COLORS,
 	styleDatasets,
 } from "../components/chart-shared";
-import { formatCost } from "../data/formatters";
+import { formatCost, formatEstimatedCost } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildCostSummary } from "../data/view-models";
 import { t } from "../locale/catalog";
@@ -57,12 +57,22 @@ function CostOverviewPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }
 	const summary = useMemo(() => buildCostSummary(costSeries), [costSeries]);
 
 	const cards = [
-		{ label: t("costs.card.totalCost"), value: formatCost(summary.totalCost) },
-		{ label: t("costs.card.avgPerDay"), value: formatCost(summary.avgDailyCost) },
+		{
+			label: t("costs.card.totalCost"),
+			value: formatEstimatedCost(summary.totalCost, summary.unpricedRequests),
+			sub:
+				summary.unpricedRequests > 0
+					? t("costs.unpricedSubscriptionExcluded", { n: summary.unpricedRequests })
+					: undefined,
+		},
+		{
+			label: t("costs.card.avgPerDay"),
+			value: formatEstimatedCost(summary.avgDailyCost, summary.unpricedRequests),
+		},
 		{
 			label: t("costs.card.topModel"),
 			value: summary.topModelName || "—",
-			sub: summary.topModelName ? formatCost(summary.topModelCost) : undefined,
+			sub: summary.topModelName ? `API-equivalent estimate: ${formatCost(summary.topModelCost)}` : undefined,
 		},
 	];
 
@@ -74,11 +84,7 @@ function CostOverviewPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }
 					<p className="text-2xl font-bold stats-text-primary truncate" title={card.value}>
 						{card.value}
 					</p>
-					{card.sub && (
-						<p className="text-xs stats-text-muted mt-1 font-medium">
-							{t("costs.card.totalSpentSuffix", { value: card.sub })}
-						</p>
-					)}
+					{card.sub && <p className="text-xs stats-text-muted mt-1 font-medium">{card.sub}</p>}
 				</Panel>
 			))}
 		</div>
@@ -125,6 +131,10 @@ function CostTrendPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }) {
 	const [byModel, setByModel] = useState(false);
 	const theme = useSystemTheme();
 	const chartTheme = CHART_THEMES[theme];
+	const unpricedRequests = useMemo(
+		() => costSeries.reduce((sum, point) => sum + point.unpricedRequests, 0),
+		[costSeries],
+	);
 
 	const chartData = useMemo(() => {
 		if (byModel) {
@@ -226,7 +236,11 @@ function CostTrendPanel({ costSeries }: { costSeries: CostTimeSeriesPoint[] }) {
 	return (
 		<Panel
 			title={t("costs.trend.title")}
-			subtitle={t("costs.trend.subtitle")}
+			subtitle={
+				unpricedRequests > 0
+					? t("costs.trend.subtitleUnpriced", { n: unpricedRequests })
+					: t("costs.trend.subtitle")
+			}
 			actions={<SegmentedControl options={toggleOptions} value={byModel} onChange={setByModel} />}
 		>
 			<div className="h-[300px]">

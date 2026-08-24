@@ -9,8 +9,7 @@
  * every completion — regardless of owner — into the first top-level session.
  */
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { AsyncJob } from "../async";
-import type { AsyncJobType } from "../async/rlm-job-policy";
+import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { CustomMessage } from "./messages";
 

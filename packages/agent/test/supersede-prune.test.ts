@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import type { SessionEntry, SessionMessageEntry } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	applyPrunePlan,
@@ -16,6 +16,8 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ProtectedToolContext } from "@oh-my-pi/pi-agent-core/compaction/tool-protection";
 import type { AssistantMessage, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+
+const tokenizer = new Tokenizer();
 
 let idCounter = 0;
 function nextId(): string {
@@ -159,7 +161,7 @@ describe("pruneSupersededToolResults — tail case", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneSupersededToolResults(entries, cfg({ now: T0 + 1_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
 		expect(result.tokensSaved).toBeGreaterThan(0);
@@ -177,7 +179,7 @@ describe("pruneSupersededToolResults — tail case", () => {
 		const big = textEntry(BIG_TEXT, T0 + 2_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2, big];
 
-		const result = pruneSupersededToolResults(entries, cfg({ suffixTokenLimit: 200, now: T0 + 2_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ suffixTokenLimit: 200, now: T0 + 2_000 }));
 
 		expect(result.prunedCount).toBe(0);
 		expect(result.tokensSaved).toBe(0);
@@ -197,6 +199,7 @@ describe("pruneSupersededToolResults — tail case", () => {
 		// Suffix limit 0 would block every candidate; only the idle gap fires.
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({ suffixTokenLimit: 0, idleFlushMs: 30 * 60_000, now: T0 + 4_000 + 30 * 60_000 }),
 		);
 
@@ -215,6 +218,7 @@ describe("pruneSupersededToolResults — tail case", () => {
 
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({ suffixTokenLimit: 0, idleFlushMs: 30 * 60_000, now: T0 + 2_000 + 29 * 60_000 }),
 		);
 
@@ -231,7 +235,7 @@ describe("pruneSupersededToolResults — selectors", () => {
 		let entries: SessionEntry[] = [callA, resultA, callB, resultB];
 
 		// Different selectors: no candidates.
-		let result = pruneSupersededToolResults(entries, cfg({ now: T0 + 1_000 }));
+		let result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 1_000 }));
 		expect(result.prunedCount).toBe(0);
 		expect(resultText(resultA)).toBe(FILE_CONTENT);
 		expect(resultText(resultB)).toBe(FILE_CONTENT);
@@ -239,7 +243,7 @@ describe("pruneSupersededToolResults — selectors", () => {
 		// Identical selector strings DO supersede.
 		const [callA2, resultA2] = readPair("src/foo.ts:50-200", FILE_CONTENT, T0 + 2_000);
 		entries = [...entries, callA2, resultA2];
-		result = pruneSupersededToolResults(entries, cfg({ now: T0 + 2_000 }));
+		result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 2_000 }));
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(resultA)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(resultB)).toBe(FILE_CONTENT);
@@ -248,7 +252,7 @@ describe("pruneSupersededToolResults — selectors", () => {
 		// A later selector-free read supersedes every selector-carrying read of the base path.
 		const [callFull, resultFull] = readPair("src/foo.ts", FILE_CONTENT, T0 + 3_000);
 		entries = [...entries, callFull, resultFull];
-		result = pruneSupersededToolResults(entries, cfg({ now: T0 + 3_000 }));
+		result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 3_000 }));
 		expect(result.prunedCount).toBe(2);
 		expect(resultText(resultB)).toBe(SUPERSEDED_NOTICE);
 		expect(resultText(resultA2)).toBe(SUPERSEDED_NOTICE);
@@ -260,7 +264,7 @@ describe("pruneSupersededToolResults — selectors", () => {
 		const [callRange, resultRange] = readPair("src/foo.ts:50-200", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [callFull, resultFull, callRange, resultRange];
 
-		const result = pruneSupersededToolResults(entries, cfg({ now: T0 + 1_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(0);
 		expect(resultText(resultFull)).toBe(FILE_CONTENT);
@@ -275,7 +279,7 @@ describe("pruneSupersededToolResults — protection & latest", () => {
 		const [call3, result3] = readPair("src/foo.ts", FILE_CONTENT, T0 + 2_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2, call3, result3];
 
-		const result = pruneSupersededToolResults(entries, cfg({ now: T0 + 2_000 + 60 * 60_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 2_000 + 60 * 60_000 }));
 
 		expect(result.prunedCount).toBe(2);
 		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
@@ -302,7 +306,11 @@ describe("pruneSupersededToolResults — protection & latest", () => {
 			fooResult2,
 		];
 
-		const result = pruneSupersededToolResults(entries, cfg({ protectedTools: [protectPlan], now: T0 + 3_000 }));
+		const result = pruneSupersededToolResults(
+			entries,
+			tokenizer,
+			cfg({ protectedTools: [protectPlan], now: T0 + 3_000 }),
+		);
 
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(planResult1)).toBe(FILE_CONTENT);
@@ -318,7 +326,7 @@ describe("pruneSupersededToolResults — protection & latest", () => {
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
 		// The only newer same-key read is itself pruned -> result1 has no live superseder.
-		const result = pruneSupersededToolResults(entries, cfg({ now: T0 + 2_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ now: T0 + 2_000 }));
 
 		expect(result.prunedCount).toBe(0);
 		expect(resultText(result1)).toBe(FILE_CONTENT);
@@ -331,7 +339,7 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneToolOutputs(entries, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 1_000_000, // everything inside the protect window
 			minimumSavings: 0,
 			protectedTools: [],
@@ -356,7 +364,7 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 
 		// Protect window covers everything: nothing pruned, superseded reads included.
 		const protectedFixture = buildEntries();
-		const protectedRun = pruneToolOutputs(protectedFixture.entries, {
+		const protectedRun = pruneToolOutputs(protectedFixture.entries, tokenizer, {
 			protectTokens: 1_000_000,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -368,7 +376,7 @@ describe("pruneToolOutputs — supersede priority fold", () => {
 		// Protect window empty: every result past it pruned with the legacy
 		// truncation placeholder — never the supersede placeholder.
 		const unprotectedFixture = buildEntries();
-		const unprotectedRun = pruneToolOutputs(unprotectedFixture.entries, {
+		const unprotectedRun = pruneToolOutputs(unprotectedFixture.entries, tokenizer, {
 			protectTokens: 0,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -591,6 +599,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		// Suffix limit 0 blocks the tail rule; only the idle gap fires.
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({ pruneUseless: true, suffixTokenLimit: 0, now: T0 + 1_000 + 31 * 60_000 }),
 		);
 
@@ -604,7 +613,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const [call1, result1] = uselessPair("search", NO_MATCH_TEXT, T0);
 		const entries: SessionEntry[] = [call1, result1];
 
-		const result = pruneSupersededToolResults(entries, cfg({ pruneUseless: true, now: T0 + 1_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(result1)).toBe(USELESS_NOTICE);
@@ -617,6 +626,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({ pruneUseless: true, suffixTokenLimit: 200, now: T0 + 2_000 }),
 		);
 
@@ -629,7 +639,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const [call1, result1] = uselessPair("search", "No matches found", T0);
 		const entries: SessionEntry[] = [call1, result1];
 
-		const result = pruneSupersededToolResults(entries, cfg({ pruneUseless: true, now: T0 + 31 * 60_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 31 * 60_000 }));
 
 		expect(result.prunedCount).toBe(0);
 		expect(resultText(result1)).toBe("No matches found");
@@ -641,6 +651,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({ pruneUseless: true, protectedTools: ["search"], now: T0 + 31 * 60_000 }),
 		);
 
@@ -652,7 +663,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const [call1, result1] = uselessPair("search", NO_MATCH_TEXT, T0);
 		const entries: SessionEntry[] = [call1, result1];
 
-		const result = pruneSupersededToolResults(entries, {
+		const result = pruneSupersededToolResults(entries, tokenizer, {
 			protectedTools: [],
 			pruneUseless: true,
 			now: T0 + 1_000,
@@ -668,7 +679,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneSupersededToolResults(entries, cfg({ pruneUseless: true, now: T0 + 1_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
@@ -679,7 +690,7 @@ describe("pruneSupersededToolResults — useless results", () => {
 		const [call1, result1] = uselessPair("search", NO_MATCH_TEXT, T0, { isError: true });
 		const entries: SessionEntry[] = [call1, result1];
 
-		const result = pruneSupersededToolResults(entries, cfg({ pruneUseless: true, now: T0 + 31 * 60_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ pruneUseless: true, now: T0 + 31 * 60_000 }));
 
 		expect(result.prunedCount).toBe(0);
 		expect(resultText(result1)).toBe(NO_MATCH_TEXT);
@@ -692,7 +703,7 @@ describe("pruneToolOutputs — useless results", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneToolOutputs(entries, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 1_000_000, // everything inside the protect window
 			minimumSavings: 0,
 			protectedTools: [],
@@ -708,7 +719,7 @@ describe("pruneToolOutputs — useless results", () => {
 		const [call1, result1] = uselessPair("search", NO_MATCH_TEXT, T0);
 		const entries: SessionEntry[] = [call1, result1];
 
-		const result = pruneToolOutputs(entries, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 1_000_000,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -729,7 +740,7 @@ describe("pruneToolOutputs — small-result floor", () => {
 		const entries: SessionEntry[] = [tinyCall, tinyResult, bigCall, bigResult];
 
 		// Protect window empty and zero savings threshold: only size keeps the tiny one.
-		const result = pruneToolOutputs(entries, { protectTokens: 0, minimumSavings: 0, protectedTools: [] });
+		const result = pruneToolOutputs(entries, tokenizer, { protectTokens: 0, minimumSavings: 0, protectedTools: [] });
 
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(tinyResult)).toBe("ok");
@@ -759,14 +770,14 @@ describe("cache-stable boundary — warm prefix protection", () => {
 
 		// Legacy (no cacheWarmSuffixTokens): superseded result1 bypasses the window -> pruned.
 		const legacy = build();
-		const legacyRun = pruneToolOutputs(legacy.entries, base);
+		const legacyRun = pruneToolOutputs(legacy.entries, tokenizer, base);
 		expect(legacyRun.prunedCount).toBe(1);
 		expect(resultText(legacy.result1)).toBe(SUPERSEDED_NOTICE);
 
 		// Guard armed: result1's all-message suffix (BIG_TEXT + call2 + result2) far
 		// exceeds the window, so it is part of the warm cached prefix and is kept.
 		const guarded = build();
-		const guardedRun = pruneToolOutputs(guarded.entries, { ...base, cacheWarmSuffixTokens: 200 });
+		const guardedRun = pruneToolOutputs(guarded.entries, tokenizer, { ...base, cacheWarmSuffixTokens: 200 });
 		expect(guardedRun.prunedCount).toBe(0);
 		expect(resultText(guarded.result1)).toBe(FILE_CONTENT);
 		expect(resultMessage(guarded.result1).prunedAt).toBeUndefined();
@@ -778,7 +789,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, big, call2, result2];
 
-		const result = pruneToolOutputs(entries, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 1_000_000,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -799,7 +810,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneToolOutputs(entries, {
+		const result = pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 1_000_000,
 			minimumSavings: 0,
 			protectedTools: [],
@@ -817,7 +828,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		const [call2, result2] = readPair("src/foo.ts", FILE_CONTENT, T0 + 1_000);
 		const entries: SessionEntry[] = [call1, result1, call2, result2];
 
-		const result = pruneSupersededToolResults(entries, cfg({ keepBoundaryId: call1.id, now: T0 + 1_000 }));
+		const result = pruneSupersededToolResults(entries, tokenizer, cfg({ keepBoundaryId: call1.id, now: T0 + 1_000 }));
 
 		expect(result.prunedCount).toBe(1);
 		expect(resultText(result1)).toBe(SUPERSEDED_NOTICE);
@@ -836,6 +847,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 		// Cold cache (idle > threshold) with suffixTokenLimit 0: only the idle path can fire.
 		const result = pruneSupersededToolResults(
 			entries,
+			tokenizer,
 			cfg({
 				keepBoundaryId: call2.id,
 				suffixTokenLimit: 0,
@@ -858,7 +870,7 @@ describe("cache-stable boundary — warm prefix protection", () => {
 
 		// protectTokens 0 -> the age path would prune both; the window is wide so the
 		// guard does not protect either; only keepBoundaryId shields result1.
-		pruneToolOutputs(entries, {
+		pruneToolOutputs(entries, tokenizer, {
 			protectTokens: 0,
 			minimumSavings: 0,
 			protectedTools: [],

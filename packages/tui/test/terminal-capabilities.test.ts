@@ -185,7 +185,7 @@ await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TER
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
 		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
-		expect(warp.textSizing).toBe(false);
+		expect(warp.supportsTextSizing).toBe(false);
 	});
 
 	it("uses Kitty images on macOS/Linux and disables them on Windows", () => {
@@ -202,7 +202,7 @@ await Bun.write(outputPath, JSON.stringify({ id: TERMINAL_ID, imageProtocol: TER
 		expect(linux.trueColor).toBe(true);
 		expect(linux.hyperlinks).toBe(false);
 		expect(linux.deccara).toBe(false);
-		expect(linux.textSizing).toBe(false);
+		expect(linux.supportsTextSizing).toBe(false);
 	});
 
 	it("treats WSL as the Windows host so Kitty APC garbage never reaches Warp for Windows", () => {
