@@ -1956,7 +1956,7 @@ export async function runRootCommand(
 				eventBus,
 				initialMessage,
 				initialImages,
-				parsedArgs.join,
+				join: parsedArgs.join,
 				preloadedExtensions: extensionsResult,
 				interactiveRuntimeFactory,
 			});

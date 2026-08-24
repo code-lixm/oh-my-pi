@@ -2343,7 +2343,6 @@ export class EventController {
 		if (event.aborted) {
 			this.ctx.showStatus(
 				isHandoffAction
-				isHandoffAction
 					? tSettingsUi("Auto-handoff cancelled")
 					: isRemoteAction
 						? tSettingsUi("Auto server compaction cancelled")

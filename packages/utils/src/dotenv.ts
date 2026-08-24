@@ -89,32 +89,71 @@ export function filterChildShellEnv(
 ): Record<string, string> {
 	const result = filterProcessEnv(env);
 	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
-	const nodeEnvName = `.env.${env.NODE_ENV || "development"}`;
-	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
-	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
-	const launchEnv = { ...projectEnv, ...modeEnv, ...localEnv };
-	const expandedLaunchEnv = {
-		...expandDotenvValues(projectEnv, result),
-		...expandDotenvValues(modeEnv, result),
-		...expandDotenvValues(localEnv, result),
-	};
-	for (const key in launchEnv) {
-		const launchValue = launchEnvValues?.get(key);
-		if (launchValue !== undefined) {
-			if (
-				result[key] !== launchValue &&
-				(result[key] === launchEnv[key] || result[key] === expandedLaunchEnv[key])
-			) {
-				result[key] = launchValue;
-			}
-			continue;
-		}
-		if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
-			delete result[key];
-		} else if (result[key] === launchEnv[key] || result[key] === expandedLaunchEnv[key]) {
-			delete result[key];
-		}
-	}
+    const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
+    const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
+    const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
+    const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
+    const modeLocalEnv = parseEnvFile(path.join(cwd, `${nodeEnvName}.local`));
+    const launchEnv = { ...projectEnv, ...modeEnv, ...localEnv, ...modeLocalEnv };
+    const expandedLaunchEnv = {
+        ...expandDotenvValues(projectEnv, result),
+        ...expandDotenvValues(modeEnv, result),
+        ...expandDotenvValues(localEnv, result),
+        ...expandDotenvValues(modeLocalEnv, result),
+    };
+    let fallbackLaunchEnv: Record<string, string> | undefined;
+    let expandedFallbackLaunchEnv: Record<string, string> | undefined;
+    if (!launchEnvValues && nodeEnvName !== ".env.development") {
+        const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
+        const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
+        const candidate = { ...projectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
+        const expandedCandidate = {
+            ...expandDotenvValues(projectEnv, result),
+            ...expandDotenvValues(fallbackModeEnv, result),
+            ...expandDotenvValues(localEnv, result),
+            ...expandDotenvValues(fallbackModeLocalEnv, result),
+        };
+        if (candidate.NODE_ENV === env.NODE_ENV || expandedCandidate.NODE_ENV === env.NODE_ENV) {
+            // Without a launch snapshot, NODE_ENV may itself have come from dotenv.
+            // Bun chose the default mode before loading it, so retain both candidates.
+            fallbackLaunchEnv = candidate;
+            expandedFallbackLaunchEnv = expandedCandidate;
+        }
+    }
+    const allLaunchEnv = fallbackLaunchEnv ? { ...launchEnv, ...fallbackLaunchEnv } : launchEnv;
+    for (const key in allLaunchEnv) {
+        const launchValue = launchEnvValues?.get(key);
+        if (launchValue !== undefined) {
+            // Launcher-owned name: it keeps the launcher's own value. Bun overwrites
+            // an empty launcher value with the dotenv one, so restore the launcher
+            // value whenever what survived is exactly what the dotenv file defines.
+            if (
+                result[key] !== launchValue &&
+                (result[key] === launchEnv[key] ||
+                    result[key] === expandedLaunchEnv[key] ||
+                    result[key] === fallbackLaunchEnv?.[key] ||
+                    result[key] === expandedFallbackLaunchEnv?.[key])
+            ) {
+                result[key] = launchValue;
+            }
+            continue;
+        }
+        if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
+            // Strong provenance: the launch environment is known and this name is
+            // absent from it, or OMP itself injected the value — either way it came
+            // from a project dotenv file, not the parent shell.
+            delete result[key];
+        } else if (
+            result[key] === launchEnv[key] ||
+            result[key] === expandedLaunchEnv[key] ||
+            result[key] === fallbackLaunchEnv?.[key] ||
+            result[key] === expandedFallbackLaunchEnv?.[key]
+        ) {
+            // No launch-env snapshot (dotenv autoloaded without procfs): best-effort
+            // value match against the Bun-parsed dotenv.
+            delete result[key];
+        }
+    }
 	return result;
 }
 

@@ -182,13 +182,11 @@ export class PluginListComponent extends OverlayPanel {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("dim", tSettingsUi("Install npm plugins:        omp plugin install <package>")), 0, 0));
 			this.addChild(
-			this.addChild(
 				new Text(
 					theme.fg("dim", tSettingsUi("Install marketplace plugins: omp plugin install <name>@<marketplace>")),
 					0,
 					0,
 				),
-			);
 			);
 			this.addChild(new Spacer(1));
 
