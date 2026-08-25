@@ -39,6 +39,8 @@ export const Flag = {
 	FastModeUnsupported: 0x2000_0000,
 	/** OAuth refresh failed definitively — the stored grant is dead, re-login required. */
 	OAuthExpiry: 0x4000_0000,
+	/** HTTP 413 byte/media rejection — token compaction cannot shrink bytes or media budgets (#9235). */
+	PayloadRejected: 0x8000_0000,
 } as const;
 
 export type Flag = (typeof Flag)[keyof typeof Flag];
@@ -56,6 +58,7 @@ const KIND_MASK =
 	Flag.AccountPolicy |
 	Flag.ContextOverflow |
 	Flag.AuthFailed |
+	Flag.PayloadRejected |
 	Flag.SilentAbort |
 	Flag.UserInterrupt |
 	Flag.Abort |
@@ -209,6 +212,7 @@ const ERROR_KIND_LABELS: readonly [Flag, string][] = [
 	[Flag.ContentBlocked, "content-blocked"],
 	[Flag.AccountPolicy, "account-policy"],
 	[Flag.ContextOverflow, "context-overflow"],
+	[Flag.PayloadRejected, "payload-rejected"],
 	[Flag.AuthFailed, "auth-failed"],
 	[Flag.SilentAbort, "silent-abort"],
 	[Flag.UserInterrupt, "user-interrupt"],
@@ -235,6 +239,7 @@ export function is(id: number | undefined, flag: Flag): boolean {
 
 export function retriable(id: number | undefined, opts?: { replayUnsafe?: boolean }): boolean {
 	if (is(id, Flag.ContentBlocked)) return false;
+	if (is(id, Flag.PayloadRejected)) return false;
 	if (opts?.replayUnsafe) return false;
 	if (is(id, Flag.MalformedFunctionCall)) return true;
 	return ((id ?? 0) & RETRIABLE_KINDS) !== 0;
