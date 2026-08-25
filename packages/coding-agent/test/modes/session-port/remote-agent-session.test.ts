@@ -598,6 +598,38 @@ describe("RemoteAgentSession interactive facade", () => {
 		}
 	});
 
+	test("swallows rejected fire-and-forget RPC without throwing or unhandled rejection", async () => {
+		const rejected: string[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, _respond, reject) => {
+				if (
+					command.type === "abort" ||
+					command.type === "abort_retry" ||
+					command.type === "abort_bash" ||
+					command.type === "set_session_name"
+				) {
+					rejected.push(command.type);
+					reject("transport closed");
+					return true;
+				}
+				return false;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			expect(() => {
+				facade.abortCompaction();
+				facade.abortRetry();
+				facade.abortBash();
+				facade.setSessionName("test");
+			}).not.toThrow();
+			await flushQueuedMicrotasks();
+			expect(rejected).toEqual(["abort", "abort_retry", "abort_bash", "set_session_name"]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("projects model-picker roles and forwards temporary and role model changes", async () => {
 		const primaryModel = {
 			provider: "anthropic",

@@ -625,11 +625,11 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	abortBranchSummary(): void {
-		void this.#client.abortBranchSummary();
+		this.#fireRpc("abort branch summary", this.#client.abortBranchSummary());
 	}
 
 	resumeAfterAskReanswer(): void {
-		void this.#client.resumeAfterAskReanswer();
+		this.#fireRpc("resume after ask reanswer", this.#client.resumeAfterAskReanswer());
 	}
 
 	async prompt(
@@ -722,7 +722,7 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	setThinkingLevel(level: ConfiguredThinkingLevel): void {
-		void this.#client.setThinkingLevel(level);
+		this.#fireRpc("set thinking level", this.#client.setThinkingLevel(level));
 	}
 
 	cycleThinkingLevel() {
@@ -730,25 +730,25 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
-		void this.#client.setSteeringMode(mode);
+		this.#fireRpc("set steering mode", this.#client.setSteeringMode(mode));
 	}
 
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
-		void this.#client.setFollowUpMode(mode);
+		this.#fireRpc("set follow-up mode", this.#client.setFollowUpMode(mode));
 	}
 
 	setInterruptMode(mode: "immediate" | "wait"): void {
-		void this.#client.setInterruptMode(mode);
+		this.#fireRpc("set interrupt mode", this.#client.setInterruptMode(mode));
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#projection = { ...this.#projection, todo: phases };
 		this.#state = this.#buildAgentState();
-		void this.#client.setTodos(phases);
+		this.#fireRpc("set todo phases", this.#client.setTodos(phases));
 	}
 
 	setAutoCompactionEnabled(enabled: boolean): void {
-		void this.#client.setAutoCompaction(enabled);
+		this.#fireRpc("set auto compaction", this.#client.setAutoCompaction(enabled));
 	}
 
 	async setFastMode(enabled: boolean): Promise<boolean> {
@@ -886,15 +886,15 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	abortCompaction(): void {
-		void this.#client.abort();
+		this.#fireRpc("abort compaction", this.#client.abort());
 	}
 
 	abortRetry(): void {
-		void this.#client.abortRetry();
+		this.#fireRpc("abort retry", this.#client.abortRetry());
 	}
 
 	abortBash(): void {
-		void this.#client.abortBash();
+		this.#fireRpc("abort bash", this.#client.abortBash());
 	}
 
 	executeBash(command: string) {
@@ -906,11 +906,11 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	setSessionName(name: string): void {
-		void this.#client.setSessionName(name);
+		this.#fireRpc("set session name", this.#client.setSessionName(name));
 	}
 
 	maybeStartTitleGeneration(firstMessage: string): void {
-		void this.#client.maybeStartTitleGeneration(firstMessage);
+		this.#fireRpc("start title generation", this.#client.maybeStartTitleGeneration(firstMessage));
 	}
 
 	setTitleSystemPrompt(): void {}
@@ -963,6 +963,12 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		} finally {
 			signal.removeEventListener("abort", onAbort);
 		}
+	}
+
+	#fireRpc(label: string, request: Promise<unknown>): void {
+		void request.catch(error => {
+			logger.warn(`Failed to ${label} remote session`, { error: String(error) });
+		});
 	}
 
 	async #refreshProjection(reloadSessionManager = false): Promise<void> {
