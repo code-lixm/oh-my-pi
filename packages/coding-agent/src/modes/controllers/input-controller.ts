@@ -504,6 +504,8 @@ export class InputController {
 			if (this.#escapePassThroughEvent) {
 				this.#escapePassThroughEvent = false;
 				this.#handleFirstEscapeSurface();
+				return;
+			}
 			// `/mcp test` advertises Esc until each owner's post-settlement grace expires.
 			// Cancel every overlapping test before any main-turn or side-channel action.
 			if (this.ctx.mcpTestEscapeHandlers.size > 0) {

@@ -10,6 +10,7 @@ import {
 import type { SettingPath, Settings } from "../config/settings";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { AgentSession } from "../session/agent-session";
 import type { ComputerTool } from "../tools/computer";
 import { computerExposureMode } from "../tools/computer/exposure";

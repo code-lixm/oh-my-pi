@@ -40,7 +40,7 @@ interface PollEscalationState {
 }
 
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
-export type AsyncJobType = "bash" | "task" | "eval";
+export type { AsyncJobType } from "./rlm-job-policy";
 
 export interface AsyncJob {
 	id: string;
