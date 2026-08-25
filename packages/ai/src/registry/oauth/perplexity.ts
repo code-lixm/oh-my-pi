@@ -201,7 +201,6 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
 
 	const verifyData = (await verifyResponse.json()) as {
 		token?: string;
-		challenge_token?: string;
 		status?: string;
 		error_code?: string;
 		text?: string;
@@ -216,16 +215,14 @@ async function httpEmailLogin(ctrl: OAuthController): Promise<OAuthCredentials> 
 		});
 	}
 
-	const token = verifyData.challenge_token || verifyData.token;
-	if (!token || verifyData.error_code || (verifyData.status && verifyData.status !== "success")) {
-		const reason = verifyData.text ?? verifyData.error_code ?? verifyData.status ?? "missing token";
-		throw new AIError.OAuthError(`Perplexity OTP verification response rejected: ${reason}`, {
+	if (!verifyData.token) {
+		throw new AIError.OAuthError("Perplexity OTP verification response missing token", {
 			kind: "validation",
 			provider: "perplexity",
 		});
 	}
 
-	return jwtToCredentials(token, trimmedEmail);
+	return jwtToCredentials(verifyData.token, trimmedEmail);
 }
 
 // ---------------------------------------------------------------------------

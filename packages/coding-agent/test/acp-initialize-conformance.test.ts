@@ -158,10 +158,7 @@ async function createAgent(): Promise<AcpAgent> {
 	} as unknown as AgentSideConnection;
 
 	const initialSession = new FakeAgentSession(cwd);
-	const factory = async (next: string) => ({
-		session: new FakeAgentSession(next) as unknown as AgentSession,
-		setToolUIContext: () => {},
-	});
+	const factory = async (next: string): Promise<AgentSession> => new FakeAgentSession(next) as unknown as AgentSession;
 	return new AcpAgent(connection, factory, initialSession as unknown as AgentSession);
 }
 

@@ -12,7 +12,7 @@ const IMAGE: ImageContent = {
 };
 const originalProtocol = TERMINAL.imageProtocol;
 
-describe("Tool image rendering", () => {
+describe("Kitty non-PNG conversion failures", () => {
 	beforeAll(async () => {
 		await initTheme();
 	});
@@ -47,37 +47,5 @@ describe("Tool image rendering", () => {
 
 		component.updateResult({ content: [IMAGE] }, false);
 		expect(requestRender).not.toHaveBeenCalled();
-	});
-
-	it("surfaces images returned through xdev write results", () => {
-		const component = new ToolExecutionComponent(
-			"write",
-			{ path: "xd://generate_image" },
-			{ showImages: true },
-			undefined,
-			{
-				requestRender: vi.fn(),
-				requestComponentRender: vi.fn(),
-				resetDisplay: vi.fn(),
-			},
-		);
-
-		component.updateResult(
-			{
-				content: [{ type: "text", text: "Generated 1 image" }],
-				details: {
-					xdev: {
-						tool: "generate_image",
-						mode: "execute",
-						inner: {
-							images: [{ data: IMAGE.data, mimeType: "image/png" }],
-						},
-					},
-				},
-			},
-			false,
-		);
-
-		expect(component.render(80).join("\n")).toContain("\x1b_G");
 	});
 });

@@ -24,7 +24,6 @@ describe("disabledExtensions runtime filtering", () => {
 	let originalAgentDirEnv: string | undefined;
 	let originalOmpProfileEnv: string | undefined;
 	let originalPiProfileEnv: string | undefined;
-	let originalUserProfile: string | undefined;
 
 	beforeEach(async () => {
 		resetSettingsForTest();
@@ -32,10 +31,8 @@ describe("disabledExtensions runtime filtering", () => {
 		originalOmpProfileEnv = process.env.OMP_PROFILE;
 		originalPiProfileEnv = process.env.PI_PROFILE;
 		originalHome = process.env.HOME;
-		originalUserProfile = process.env.USERPROFILE;
 		tempHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-disabled-ext-home-"));
 		process.env.HOME = tempHomeDir;
-		process.env.USERPROFILE = tempHomeDir;
 		vi.spyOn(os, "homedir").mockReturnValue(tempHomeDir);
 		setAgentDir(path.join(tempHomeDir, ".omp", "agent"));
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-disabled-ext-"));
@@ -59,7 +56,6 @@ describe("disabledExtensions runtime filtering", () => {
 		restoreEnvValue("OMP_PROFILE", originalOmpProfileEnv);
 		restoreEnvValue("PI_PROFILE", originalPiProfileEnv);
 		restoreEnvValue("PI_CODING_AGENT_DIR", originalAgentDirEnv);
-		restoreEnvValue("USERPROFILE", originalUserProfile);
 		__resetDirsFromEnvForTests();
 		await removeWithRetries(tempHomeDir);
 		await removeWithRetries(tempDir);

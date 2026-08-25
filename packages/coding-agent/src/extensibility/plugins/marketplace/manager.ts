@@ -11,7 +11,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { isEnoent, logger, pathIsWithin } from "@oh-my-pi/pi-utils";
-import { expandTilde } from "../../../tools/path-utils";
 import { normalizePluginRuntimeConfig } from "../runtime-config";
 import type { PluginRuntimeConfig } from "../types";
 
@@ -108,11 +107,12 @@ export class MarketplaceManager {
 		}
 
 		const sourceType = classifySource(source);
-		const normalizedSource = sourceType === "local" ? path.resolve(expandTilde(source)) : source;
+		const normalizedSource =
+			sourceType === "local"
+				? path.resolve(source.startsWith("~/") ? path.join(os.homedir(), source.slice(2)) : source)
+				: source;
 
-		const catalogPath = path.resolve(
-			expandTilde(path.join(this.#opts.marketplacesCacheDir, catalog.name, "marketplace.json")),
-		);
+		const catalogPath = path.join(this.#opts.marketplacesCacheDir, catalog.name, "marketplace.json");
 
 		// Persist the fetched catalog so subsequent reads don't require re-fetching.
 		await Bun.write(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
@@ -174,13 +174,11 @@ export class MarketplaceManager {
 			await promoteCloneToCache(clonePath, this.#opts.marketplacesCacheDir, catalog.name);
 		}
 
-		// Overwrite the cached catalog and migrate legacy home-relative registry entries.
-		const catalogPath = path.resolve(expandTilde(existing.catalogPath));
-		await Bun.write(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+		// Overwrite cached catalog
+		await Bun.write(existing.catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
 		const updatedEntry: MarketplaceRegistryEntry = {
 			...existing,
-			catalogPath,
 			updatedAt: new Date().toISOString(),
 		};
 
@@ -895,13 +893,14 @@ export class MarketplaceManager {
 	}
 
 	async #readCatalog(entry: MarketplaceRegistryEntry): Promise<MarketplaceCatalog> {
-		const catalogPath = path.resolve(expandTilde(entry.catalogPath));
 		try {
-			const content = await Bun.file(catalogPath).text();
-			return parseMarketplaceCatalog(content, catalogPath);
+			const content = await Bun.file(entry.catalogPath).text();
+			return parseMarketplaceCatalog(content, entry.catalogPath);
 		} catch (err) {
 			if (isEnoent(err)) {
-				throw new Error(`Marketplace catalog not found at ${catalogPath}. Try: /marketplace update ${entry.name}`);
+				throw new Error(
+					`Marketplace catalog not found at ${entry.catalogPath}. Try: /marketplace update ${entry.name}`,
+				);
 			}
 			throw err;
 		}
@@ -919,10 +918,14 @@ export class MarketplaceManager {
 	 */
 	#resolveMarketplaceRoot(entry: MarketplaceRegistryEntry): string {
 		if (entry.sourceType === "local") {
-			return path.resolve(expandTilde(entry.sourceUri));
+			// expandHome already happened in fetcher; resolve to ensure absolute.
+			const expanded = entry.sourceUri.startsWith("~/")
+				? path.join(os.homedir(), entry.sourceUri.slice(2))
+				: entry.sourceUri;
+			return path.resolve(expanded);
 		}
 		// For git/github/url sources, the catalog lives at <cloneDir>/marketplace.json
 		// under marketplacesCacheDir/<name>/; parent = <marketplacesCacheDir>/<name>/
-		return path.dirname(path.resolve(expandTilde(entry.catalogPath)));
+		return path.dirname(entry.catalogPath);
 	}
 }

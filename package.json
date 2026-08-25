@@ -78,7 +78,10 @@
       "typescript": "^7.0.2",
       "vite": "^8.1.4",
       "vite-plugin-solid": "^2.11.12",
-      "web-tree-sitter": "0.25.3"
+      "web-tree-sitter": "0.25.3",
+      "@bufbuild/protobuf": "^2.12.1",
+      "@bufbuild/protoc-gen-es": "^2.12.1",
+      "ghostty-web": "^0.4.0"
     }
   },
   "overrides": {
@@ -197,5 +200,10 @@
     "sherpa-onnx": "1.13.2",
     "sherpa-onnx-darwin-arm64": "1.13.3",
     "sherpa-onnx-node": "1.13.2"
+  },
+  "catalog": {
+    "@bufbuild/protobuf": "^2.12.1",
+    "@bufbuild/protoc-gen-es": "^2.3.0",
+    "ghostty-web": "^0.4.0"
   }
 }

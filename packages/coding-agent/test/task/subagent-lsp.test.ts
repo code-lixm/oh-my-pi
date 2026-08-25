@@ -86,7 +86,6 @@ function createYieldingSession(): AgentSession {
 		abort: async () => {},
 		dispose: async () => {},
 		setIrcWakeTurnObserver: () => {},
-		subscribeRunState: () => () => {},
 	} as unknown as AgentSession;
 }
 

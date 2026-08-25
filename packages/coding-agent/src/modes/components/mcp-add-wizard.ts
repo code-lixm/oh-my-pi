@@ -3,7 +3,16 @@
  *
  * Interactive multi-step wizard for adding MCP servers.
  */
-import { Container, Input, matchesKey, replaceTabs, Spacer, Text, truncateToWidth } from "@oh-my-pi/pi-tui";
+import {
+	Container,
+	Input,
+	matchesKey,
+	replaceTabs,
+	Spacer,
+	Text,
+	TruncatedText,
+	truncateToWidth,
+} from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { validateServerName } from "../../mcp/config-writer";
@@ -12,7 +21,7 @@ import type { MCPHttpServerConfig, MCPServerConfig, MCPSseServerConfig, MCPStdio
 import { shortenPath } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { OverlayPanel } from "./overlay-box";
+import { DynamicBorder } from "./dynamic-border";
 
 type TransportType = "stdio" | "http" | "sse";
 type AuthMethod = "none" | "oauth" | "manual";
@@ -96,7 +105,7 @@ function sanitize(text: string): string {
 	return truncateToWidth(replaceTabs(text), MAX_DISPLAY_WIDTH);
 }
 
-export class MCPAddWizard extends OverlayPanel {
+export class MCPAddWizard extends Container {
 	#currentStep: WizardStep = "name";
 	#state: WizardState = {
 		name: "",
@@ -160,7 +169,7 @@ export class MCPAddWizard extends OverlayPanel {
 		onRender?: () => void,
 		initialName?: string,
 	) {
-		super("Add MCP Server");
+		super();
 		this.#onCompleteCallback = onComplete;
 		this.#onCancelCallback = onCancel;
 		this.#onOAuthCallback = onOAuth ?? null;
@@ -171,7 +180,12 @@ export class MCPAddWizard extends OverlayPanel {
 			this.#currentStep = "transport";
 		}
 
+		// Add border
+		this.addChild(new DynamicBorder());
+		this.addChild(new Spacer(1));
 
+		// Add title
+		this.addChild(new TruncatedText(theme.bold(tSettingsUi("Add MCP Server"))));
 		this.addChild(new Spacer(1));
 
 		// Content container for step-specific content
@@ -179,6 +193,9 @@ export class MCPAddWizard extends OverlayPanel {
 		this.addChild(this.#contentContainer);
 
 		this.addChild(new Spacer(1));
+
+		// Add bottom border
+		this.addChild(new DynamicBorder());
 
 		// Render first step
 		this.#renderStep();

@@ -10,17 +10,18 @@
  * Adding a mode is a single entry here: the command surface (autocomplete +
  * ACP hint), the parser, and the engine override all read this table.
  */
-import type { CompactionMethod } from "./compaction-methods";
 
 /** Subcommand selecting a one-off compaction mode for manual `/compact`. */
 export type CompactMode = "soft" | "remote" | "snapcompact";
 
 /**
- * Per-invocation ordered methods merged over the configured
- * `compaction.methodOrder` for this run.
+ * Per-invocation overrides merged over the configured `compaction.*` settings.
+ * Narrowed to the two knobs the modes actually flip; the result stays
+ * assignable to the full `CompactionSettings`.
  */
 export interface CompactionOverride {
-	methodOrder?: CompactionMethod[];
+	strategy?: "context-full" | "snapcompact";
+	remoteEnabled?: boolean;
 }
 
 export interface CompactModeDef {
@@ -35,23 +36,30 @@ export interface CompactModeDef {
 	 * images without a directed summary).
 	 */
 	readonly rejectsFocus?: boolean;
+	/**
+	 * When true, the mode explicitly demands a remote path; the engine warns and
+	 * falls back to a local summary if neither a remote endpoint nor a
+	 * provider-native compaction path is available.
+	 */
+	readonly requiresRemote?: boolean;
 }
 
 export const COMPACT_MODES: readonly CompactModeDef[] = [
 	{
 		name: "soft",
-		description: "Summarize locally with the active model (skip server compaction)",
-		overrides: { methodOrder: ["soft"] },
+		description: "Summarize locally with the active model (skip remote endpoints)",
+		overrides: { strategy: "context-full", remoteEnabled: false },
 	},
 	{
 		name: "remote",
-		description: "Summarize via OpenAI-compatible server compaction, then fall back to a local summary",
-		overrides: { methodOrder: ["remote", "soft"] },
+		description: "Summarize via the remote endpoint / provider-native compaction",
+		overrides: { strategy: "context-full", remoteEnabled: true },
+		requiresRemote: true,
 	},
 	{
 		name: "snapcompact",
 		description: "Archive history onto dense bitmap images the model reads back (no LLM call)",
-		overrides: { methodOrder: ["snapcompact"] },
+		overrides: { strategy: "snapcompact" },
 		rejectsFocus: true,
 	},
 ];

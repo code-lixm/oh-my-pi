@@ -39,7 +39,6 @@ import { callWithCopilotModelRetry } from "../utils/retry";
 import {
 	adaptSchemaForStrict,
 	findStrictToolSchemaViolation,
-	flattenExclusiveRequiredRootUnion,
 	NO_STRICT,
 	normalizeSchemaForMoonshot,
 	sanitizeSchemaForOpenAIResponses,
@@ -99,7 +98,6 @@ import {
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
 	resolveOpenAIResponsesOutputClamp,
-	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 
@@ -1277,10 +1275,6 @@ export function buildParams(
 		}
 	}
 
-	if (shouldDropAutoToolChoiceForReasoning(model, model.compat, params.tool_choice, options)) {
-		delete params.tool_choice;
-	}
-
 	const reasoningPolicy = resolveOpenAICompatPolicy(model, {
 		endpoint: "responses",
 		reasoning: options?.reasoning,
@@ -1291,11 +1285,12 @@ export function buildParams(
 		filterReasoningHistory: options?.filterReasoningHistory,
 		omitReasoningEffort: options?.omitReasoningEffort,
 	});
-	const reasoningSummary = model.compat.supportsReasoningSummary
-		? options?.reasoningSummary
-		: options?.reasoning === undefined
-			? undefined
-			: null;
+	const reasoningSummary =
+		model.provider === "xai-oauth"
+			? options?.reasoning === undefined
+				? undefined
+				: null
+			: options?.reasoningSummary;
 	applyResponsesCompatPolicy(params, reasoningPolicy, {
 		reasoningSummary,
 		forceReasoningOff: options?.forceReasoningOff,
@@ -1393,7 +1388,6 @@ export function convertTools(
 		),
 ): OpenAITool[] {
 	const allowFreeform = supportsFreeformApplyPatch(model);
-	const rejectXaiRootObjectUnion = model.provider === "xai" || model.provider === "xai-oauth";
 	const out: OpenAITool[] = [];
 	for (const tool of tools) {
 		if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
@@ -1426,18 +1420,16 @@ export function convertTools(
 		// subschemas ("property schema … must be an object"), so the Moonshot
 		// pass re-coerces them last.
 		const sanitized = sanitizeSchemaForOpenAIResponses(baseParameters);
-		const providerParameters = rejectXaiRootObjectUnion ? flattenExclusiveRequiredRootUnion(sanitized) : sanitized;
 		const responseParameters =
 			model.compat.toolSchemaFlavor === "moonshot-mfjs"
-				? (normalizeSchemaForMoonshot(providerParameters) as Record<string, unknown>)
-				: providerParameters;
+				? (normalizeSchemaForMoonshot(sanitized) as Record<string, unknown>)
+				: sanitized;
 		const { schema: parameters, strict: effectiveStrict } = adaptSchemaForStrict(responseParameters, strict);
 		// Quarantine a tool whose emitted schema carries a provider-rejecting
 		// enum/const-vs-type contradiction: dropping just that tool keeps the rest
 		// of the request valid instead of letting one bad MCP schema 400 the whole
-		// turn (#2652). Other tools and built-ins are unaffected. Leftover
-		// object-root unions are an xAI-only 400; OpenAI/Azure/Codex keep them.
-		const violation = findStrictToolSchemaViolation(parameters, "#", { rejectXaiRootObjectUnion });
+		// turn (#2652). Other tools and built-ins are unaffected.
+		const violation = findStrictToolSchemaViolation(parameters);
 		if (violation) {
 			onQuarantine(tool.name, violation);
 			continue;

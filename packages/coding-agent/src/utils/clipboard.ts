@@ -318,17 +318,7 @@ export async function readImageFromClipboard(): Promise<ClipboardImage | null> {
 		return null;
 	}
 
-	try {
-		return (await nativeReadImageFromClipboard()) ?? null;
-	} catch (error) {
-		// Some selection owners make the native image read throw instead of
-		// reporting "no image" — e.g. an xclip-written text-only selection
-		// (arboard: "Unknown error ... incorrect type received from clipboard").
-		// Treat a failed image read as "no image" so the caller's smart-paste
-		// text fallback still delivers the clipboard content.
-		logger.warn("clipboard: failed to read clipboard image", { error: String(error) });
-		return null;
-	}
+	return (await nativeReadImageFromClipboard()) ?? null;
 }
 
 /**

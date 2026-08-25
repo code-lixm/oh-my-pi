@@ -63,7 +63,7 @@ test("models config validation resources are retained only for a custom config",
 		expect(
 			custom.retainedHeapNodes - missing.retainedHeapNodes,
 			"custom config validation should retain its schema bundle",
-		).toBeGreaterThan(5_000);
+		).toBeGreaterThan(15_000);
 	} finally {
 		await tempDir.remove().catch(() => {});
 	}

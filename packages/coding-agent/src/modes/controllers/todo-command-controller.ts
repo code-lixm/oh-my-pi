@@ -19,8 +19,6 @@ const USAGE = [
 	tSettingsUi("  /todo                              Show current todos"),
 	tSettingsUi("  /todo edit                         Open todos in $EDITOR"),
 	tSettingsUi("  /todo copy                         Copy todos as Markdown to clipboard"),
-	tSettingsUi("  /todo expand                       Show every phase and task in the HUD"),
-	tSettingsUi("  /todo collapse                     Restore the bounded HUD preview"),
 	tSettingsUi("  /todo export [<path>]              Write todos to file (default: TODO.md)"),
 	tSettingsUi("  /todo import [<path>]              Replace todos from file (default: TODO.md)"),
 	tSettingsUi("  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created"),
@@ -158,12 +156,6 @@ export class TodoCommandController {
 		const rest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
 
 		switch (verb) {
-			case "expand":
-				if (!this.ctx.todoExpanded) this.ctx.toggleTodoExpansion();
-				return;
-			case "collapse":
-				if (this.ctx.todoExpanded) this.ctx.toggleTodoExpansion();
-				return;
 			case "edit":
 				await this.#editInExternalEditor();
 				return;
@@ -439,9 +431,16 @@ export class TodoCommandController {
 		const initialMarkdown =
 			current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n";
 
+		const fileHandle = await this.#openTtyHandle();
 		this.ctx.ui.stop();
 		try {
-			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".todo.md" });
+			const stdio: [number | "inherit", number | "inherit", number | "inherit"] = fileHandle
+				? [fileHandle.fd, fileHandle.fd, fileHandle.fd]
+				: ["inherit", "inherit", "inherit"];
+			const result = await openInEditor(editorCmd, initialMarkdown, {
+				extension: ".todo.md",
+				stdio,
+			});
 			if (result === null) {
 				this.ctx.showWarning(tSettingsUi("Editor exited without saving; todos unchanged."));
 				return;
@@ -466,8 +465,22 @@ export class TodoCommandController {
 				}),
 			);
 		} finally {
+			if (fileHandle) {
+				await fileHandle.close().catch(() => {});
+			}
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
+		}
+	}
+
+	async #openTtyHandle(): Promise<fs.FileHandle | null> {
+		const stdinPath = (process.stdin as unknown as { path?: string }).path;
+		const candidate = typeof stdinPath === "string" ? stdinPath : undefined;
+		if (!candidate) return null;
+		try {
+			return await fs.open(candidate, "r+");
+		} catch {
+			return null;
 		}
 	}
 

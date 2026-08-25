@@ -305,7 +305,7 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 		cwd,
 		eventBus,
 		disableExtensionDiscovery ? undefined : disabledExtensionIds,
-		{ ambient: !disableExtensionDiscovery, includeAmbientHooks: false },
+		{ ambient: !disableExtensionDiscovery },
 	);
 	const extensionRunner =
 		extensionsResult.extensions.length > 0

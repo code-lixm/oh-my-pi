@@ -101,7 +101,7 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 			streamFn: mock.stream,
 		});
 		const settings = Settings.isolated({
-			"compaction.methodOrder": ["soft"],
+			"compaction.strategy": "context-full",
 			"compaction.thresholdTokens": 100_000,
 			"compaction.midTurnEnabled": true,
 			"compaction.autoContinue": false,

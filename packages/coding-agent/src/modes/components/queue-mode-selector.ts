@@ -1,13 +1,13 @@
-import { type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme } from "../../modes/theme/theme";
-import { OverlayPanel } from "./overlay-box";
+import { DynamicBorder } from "./dynamic-border";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
 /**
  * Component that renders a queue mode selector with borders
  */
-export class QueueModeSelectorComponent extends OverlayPanel {
+export class QueueModeSelectorComponent extends Container {
 	#selectList: SelectList;
 
 	constructor(
@@ -15,7 +15,7 @@ export class QueueModeSelectorComponent extends OverlayPanel {
 		onSelect: (mode: "all" | "one-at-a-time") => void,
 		onCancel: () => void,
 	) {
-		super("Queue Mode");
+		super();
 
 		const queueModes: SelectItem[] = [
 			{
@@ -29,6 +29,9 @@ export class QueueModeSelectorComponent extends OverlayPanel {
 				description: tSettingsUi("Process all queued messages at once"),
 			},
 		];
+
+		// Add top border
+		this.addChild(new DynamicBorder());
 
 		// Create selector
 		this.#selectList = new SelectList(queueModes, 2, getSelectListTheme());
@@ -48,6 +51,9 @@ export class QueueModeSelectorComponent extends OverlayPanel {
 		};
 
 		this.addChild(this.#selectList);
+
+		// Add bottom border
+		this.addChild(new DynamicBorder());
 	}
 
 	getSelectList(): SelectList {

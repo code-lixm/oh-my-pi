@@ -1,16 +1,11 @@
 import type { UsageAmount, UsageStatus } from "@oh-my-pi/pi-ai";
 import type { CollabSessionState } from "../../../collab/protocol";
-import type {
-	ContextLineMode,
-	StatusLinePreset,
-	StatusLineSegmentId,
-	StatusLineSeparatorStyle,
-} from "../../../config/settings-schema";
+import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { LoopLimitRuntime } from "../../loop-limit";
 
-export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
 /** Collab session indicator + (guest-only) host-state override for segments. */
 export interface CollabStatus {
@@ -55,10 +50,6 @@ export interface StatusLineSettings {
 	/** Replace the model-segment icon with the thinking-level glyph and drop the
 	 *  " · <level>" suffix, so the thinking level reads as a single compact icon. */
 	compactThinkingLevel?: boolean;
-	/** How the gap line between the left and right groups reacts to context
-	 *  usage. `embedded` moves configured context segments into the annotated
-	 *  gauge as percentage and window labels. Box composer only. */
-	contextLine?: ContextLineMode;
 }
 
 export type EffectiveStatusLineSettings = Required<
@@ -106,8 +97,6 @@ export interface SegmentContext {
 	focusedAgentDisplayName?: string | undefined;
 	/** Effective `statusLine.sessionAccent`; `false` disables hash-derived accent colors, while `true` or omission enables them. */
 	sessionAccent?: boolean;
-	/** Stand-in session title for previews; `session_name` renders it when the session is unnamed. */
-	previewTitle?: string;
 	activeRepo: ActiveRepoContext | null;
 	width: number;
 	options: StatusLineSegmentOptions;
@@ -151,10 +140,6 @@ export interface SegmentContext {
 	contextTokens: number;
 	contextWindow: number;
 	autoCompactEnabled: boolean;
-	/** Background speculative-compaction state (async compaction). */
-	compactionSpeculation: "idle" | "running" | "armed";
-	/** Blink phase for the running-speculation pulse; toggled by the component's timer. */
-	speculationBlinkOn: boolean;
 	subagentCount: number;
 	/**
 	 * Active processing time accumulated this session, in ms — the union of

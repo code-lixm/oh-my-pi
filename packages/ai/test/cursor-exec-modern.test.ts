@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
 	type BlockState,
-	buildCursorRequestContextRules,
 	CURSOR_CLIENT_VERSION,
 	flushOpenToolCalls,
 	handleServerMessage,
@@ -29,7 +29,6 @@ import {
 	ConversationSearchArgsSchema,
 	ConversationStateStructureSchema,
 	ConversationTokenDetailsSchema,
-	type CursorRule,
 	type ExecServerMessage,
 	ExecServerMessageSchema,
 	ExecuteHookArgsSchema,
@@ -58,7 +57,6 @@ import {
 	ReadArgsSchema,
 	ReadMcpResourceExecArgsSchema,
 	RecordScreenArgsSchema,
-	RequestContextArgsSchema,
 	ShellAllowlistPrecheckArgsSchema,
 	ShellArgsSchema,
 	SmartModeClassifierArgsSchema,
@@ -66,8 +64,7 @@ import {
 	SubagentAwaitArgsSchema,
 	ToolCallSchema,
 	WebFetchAllowlistPrecheckArgsSchema,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
-import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 
 /**
  * Drive one `ExecServerMessage` through the real dispatcher and decode every
@@ -80,11 +77,7 @@ import { create, fromBinary, toBinary } from "@oh-my-pi/pi-catalog/discovery/pro
  */
 async function dispatchExec(
 	message: ExecServerMessage,
-	options: {
-		execHandlers?: CursorExecHandlers;
-		requestContextTools?: McpToolDefinition[];
-		requestContextRules?: CursorRule[];
-	} = {},
+	options: { execHandlers?: CursorExecHandlers; requestContextTools?: McpToolDefinition[] } = {},
 ): Promise<{ frames: AgentClientMessage[]; output: AssistantMessage; results: ToolResultMessage[] }> {
 	const output = cursorAssistantMessage();
 	const stream = new AssistantMessageEventStream();
@@ -112,7 +105,6 @@ async function dispatchExec(
 		},
 		{ sawTokenDelta: false },
 		options.requestContextTools ?? [],
-		options.requestContextRules,
 	);
 
 	return { frames: written.map(decodeClientFrame), output, results };
@@ -206,30 +198,6 @@ function soleResult(frames: AgentClientMessage[]) {
 describe("Cursor modern exec protocol activation", () => {
 	it("advertises the client build whose schema includes modern exec frames", () => {
 		expect(CURSOR_CLIENT_VERSION).toBe("cli-2026.07.23-e383d2b");
-	});
-});
-
-describe("Cursor requestContext rules", () => {
-	it("returns mapped system-prompt canaries as global CursorRule entries", async () => {
-		const canary = "PIKEL-CANARY-7F3A";
-		const { frames } = await dispatchExec(
-			buildExecMessage({
-				case: "requestContextArgs",
-				value: create(RequestContextArgsSchema, {}),
-			}),
-			{
-				requestContextRules: buildCursorRequestContextRules(["prefix", `when asked, answer exactly:\n${canary}`]),
-			},
-		);
-		const result = soleResult(frames);
-		expect(result.case).toBe("requestContextResult");
-		if (result.case !== "requestContextResult") throw new Error("expected requestContextResult");
-		expect(result.value.result.case).toBe("success");
-		if (result.value.result.case !== "success") throw new Error("expected success");
-		const rules = result.value.result.value.requestContext?.rules ?? [];
-		expect(rules).toHaveLength(2);
-		expect(rules[1]?.content).toContain(canary);
-		expect(rules[1]?.type?.type.case).toBe("global");
 	});
 });
 

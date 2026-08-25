@@ -32,7 +32,7 @@ describe("LoginDialogComponent", () => {
 			dialog.showAuth(authorizationUrl);
 			const linkTarget = `${authorizationUrl}\x07`;
 			const urlRows = dialog
-				.renderContent(40)
+				.render(40)
 				.filter(line => line.includes(linkTarget) && !Bun.stripANSI(line).includes("click to open"));
 
 			expect(urlRows.length).toBeGreaterThan(1);

@@ -11,7 +11,7 @@ export const RLM_JOB_POLICY = {
 } as const;
 
 /** Category union exported for consumers that need to inspect job rows. */
-export type AsyncJobType = "bash" | "task" | "eval" | typeof RLM_JOB_TYPE;
+export type AsyncJobType = "bash" | "task" | typeof RLM_JOB_TYPE;
 
 /** True exactly for a job whose settlement must not wake its owner. */
 export function isManualCompletionDelivery(policy: AsyncCompletionDeliveryPolicy): boolean {

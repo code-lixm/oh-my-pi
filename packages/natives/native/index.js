@@ -1,5 +1,4 @@
 import { loadNative } from "./loader-state.js";
-import { adaptDesktopSession } from "./desktop-adapter.js";
 
 /**
  * Native addon entrypoint.
@@ -19,24 +18,28 @@ const nativeBindings = loadNative();
 // classes
 export const AudioCapture = nativeBindings.AudioCapture;
 export const AudioPlayback = nativeBindings.AudioPlayback;
-export const DesktopSession = adaptDesktopSession(nativeBindings.DesktopSession);
+export const DesktopSession = nativeBindings.DesktopSession;
 export const FileLock = nativeBindings.FileLock;
-export const HighlightStream = nativeBindings.HighlightStream;
 export const LiveWebRtcPeer = nativeBindings.LiveWebRtcPeer;
 export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
 export const MacOSPowerAssertion = nativeBindings.MacOSPowerAssertion;
+export const NativeEditorShadow = nativeBindings.NativeEditorShadow;
+export const NativeInput = nativeBindings.NativeInput;
 export const Process = nativeBindings.Process;
 export const PtySession = nativeBindings.PtySession;
 export const Shell = nativeBindings.Shell;
-export const TtyWriter = nativeBindings.TtyWriter;
+export const TerminalOutputBroker = nativeBindings.TerminalOutputBroker;
 
 // functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
-export const __piNativesV18_0_4 = nativeBindings.__piNativesV18_0_4;
+export const __piNativesV17_3_3 = nativeBindings.__piNativesV17_3_3;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const astMatch = nativeBindings.astMatch;
 export const blockRangeAt = nativeBindings.blockRangeAt;
+export const cfnptrScanFiles = nativeBindings.cfnptrScanFiles;
+export const cfnptrStripC = nativeBindings.cfnptrStripC;
+export const contractInfo = nativeBindings.contractInfo;
 export const copyToClipboard = nativeBindings.copyToClipboard;
 export const cosineSimilarityPairs = nativeBindings.cosineSimilarityPairs;
 export const countTokens = nativeBindings.countTokens;
@@ -48,11 +51,13 @@ export const diffWords = nativeBindings.diffWords;
 export const enclosingBlockBoundaries = nativeBindings.enclosingBlockBoundaries;
 export const encodeSixel = nativeBindings.encodeSixel;
 export const executeShell = nativeBindings.executeShell;
+export const extractFile = nativeBindings.extractFile;
 export const extractSegments = nativeBindings.extractSegments;
 export const fuzzyFind = nativeBindings.fuzzyFind;
 export const getSupportedLanguages = nativeBindings.getSupportedLanguages;
 export const getWorkProfile = nativeBindings.getWorkProfile;
 export const glob = nativeBindings.glob;
+export const grammarInfo = nativeBindings.grammarInfo;
 export const grep = nativeBindings.grep;
 export const hasMatch = nativeBindings.hasMatch;
 export const highlightCode = nativeBindings.highlightCode;
@@ -66,16 +71,10 @@ export const isoResolve = nativeBindings.isoResolve;
 export const isoStart = nativeBindings.isoStart;
 export const isoStop = nativeBindings.isoStop;
 export const listWorkspace = nativeBindings.listWorkspace;
-export const macOSAutocorrectWord = nativeBindings.macOSAutocorrectWord;
-export const macOSCheckSpelling = nativeBindings.macOSCheckSpelling;
-export const macOSCompleteWord = nativeBindings.macOSCompleteWord;
-export const macOSSpellCheckerAvailable = nativeBindings.macOSSpellCheckerAvailable;
-export const macOSSpellingGuesses = nativeBindings.macOSSpellingGuesses;
 export const matchesKey = nativeBindings.matchesKey;
 export const matchesKittySequence = nativeBindings.matchesKittySequence;
 export const matchesLegacySequence = nativeBindings.matchesLegacySequence;
 export const mmrRerankIndices = nativeBindings.mmrRerankIndices;
-export const nodeChainAt = nativeBindings.nodeChainAt;
 export const parseKey = nativeBindings.parseKey;
 export const parseKittySequence = nativeBindings.parseKittySequence;
 export const pdfToMarkdown = nativeBindings.pdfToMarkdown;
@@ -88,6 +87,7 @@ export const snapcompactSupportedChars = nativeBindings.snapcompactSupportedChar
 export const structuredPatchHunks = nativeBindings.structuredPatchHunks;
 export const summarizeCode = nativeBindings.summarizeCode;
 export const supportsLanguage = nativeBindings.supportsLanguage;
+export const terminalRowPlan = nativeBindings.terminalRowPlan;
 export const truncateToWidth = nativeBindings.truncateToWidth;
 export const vectorIndexTopK = nativeBindings.vectorIndexTopK;
 export const visibleWidth = nativeBindings.visibleWidth;
@@ -110,14 +110,6 @@ export const Ellipsis = {
 export const Encoding = {
 	O200kBase: "O200kBase",
 	Cl100kBase: "Cl100kBase",
-	ClaudeV3: "ClaudeV3",
-	ClaudeV47: "ClaudeV47",
-	ClaudeV5: "ClaudeV5",
-	ClaudeV5Sonnet: "ClaudeV5Sonnet",
-	Qwen3: "Qwen3",
-	DeepSeekV3: "DeepSeekV3",
-	KimiK2: "KimiK2",
-	Glm5: "Glm5",
 };
 export const FileType = {
 	File: 1,

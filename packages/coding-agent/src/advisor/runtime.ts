@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
@@ -47,12 +48,9 @@ export interface AdvisorRuntimeHost {
 	 * when the advisor must clear its own context before sending the current
 	 * incremental update. The cursor stays at the current primary position: this
 	 * recovery path must never replay the full primary transcript.
-	 *
-	 * Takes the pending update as a message rather than a token count: sizing it
-	 * needs the advisor model's tokenizer, which the host owns.
 	 * Optional: hosts that omit it get no proactive maintenance.
 	 */
-	maintainContext?(incoming: AgentMessage, signal: AbortSignal): Promise<boolean>;
+	maintainContext?(incomingTokens: number, signal: AbortSignal): Promise<boolean>;
 	/**
 	 * Called immediately before each `agent.prompt(batch)` cycle. Lets the host
 	 * clear per-update advisor state and apply the in-progress delivery policy.
@@ -983,13 +981,11 @@ export class AdvisorRuntime {
 		for (let round = 0; round < MAX_COALESCE_ROUNDS; round++) {
 			if (this.#sessionTransitionPaused) break;
 			if (this.host.maintainContext) {
+				const incomingTokens = estimateTokens({ role: "user", content: batchText, timestamp: Date.now() });
 				let shouldResetContext = false;
 				this.#maintenanceInFlight = true;
 				try {
-					shouldResetContext = await this.host.maintainContext(
-						{ role: "user", content: batchText, timestamp: Date.now() },
-						signal,
-					);
+					shouldResetContext = await this.host.maintainContext(incomingTokens, signal);
 				} catch (err) {
 					logger.debug("advisor context maintenance failed", { err: String(err) });
 				} finally {

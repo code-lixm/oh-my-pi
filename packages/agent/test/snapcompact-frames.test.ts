@@ -1,10 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { estimateTokens } from "../src/compaction/compaction";
 import { createCompactionSummaryMessage, defaultConvertToLlm } from "../src/compaction/messages";
-import { Tokenizer } from "../src/tokenizer";
-
-const tokenizer = new Tokenizer();
 
 describe("compaction summary message with snapcompact frames", () => {
 	const images: ImageContent[] = [
@@ -12,12 +10,17 @@ describe("compaction summary message with snapcompact frames", () => {
 		{ type: "image", data: "ZmFrZTI=", mimeType: "image/png" },
 	];
 
-	it("countMessage charges per attached frame", () => {
+	it("estimateTokens charges per attached frame", () => {
 		const bare = createCompactionSummaryMessage("summary text", 1000, new Date().toISOString());
-		const withFrames = createCompactionSummaryMessage("summary text", 1000, new Date().toISOString(), { images });
-		expect(tokenizer.countMessage(withFrames) - tokenizer.countMessage(bare)).toBe(
-			2 * snapcompact.FRAME_TOKEN_ESTIMATE,
+		const withFrames = createCompactionSummaryMessage(
+			"summary text",
+			1000,
+			new Date().toISOString(),
+			undefined,
+			undefined,
+			images,
 		);
+		expect(estimateTokens(withFrames) - estimateTokens(bare)).toBe(2 * snapcompact.FRAME_TOKEN_ESTIMATE);
 	});
 
 	it("defaultConvertToLlm forwards the raw markdown summary without any wrapper text", () => {
@@ -50,9 +53,14 @@ describe("compaction summary message with snapcompact frames", () => {
 	});
 
 	it("defaultConvertToLlm appends frames as image blocks after the summary text", () => {
-		const message = createCompactionSummaryMessage("the snapcompact archive", 1000, new Date().toISOString(), {
+		const message = createCompactionSummaryMessage(
+			"the snapcompact archive",
+			1000,
+			new Date().toISOString(),
+			undefined,
+			undefined,
 			images,
-		});
+		);
 		const [converted] = defaultConvertToLlm([message]);
 		expect(converted.role).toBe("user");
 		const content = converted.content as Array<{ type: string; text?: string; data?: string }>;

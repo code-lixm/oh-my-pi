@@ -1,7 +1,7 @@
 import {
 	formatCompact,
+	formatCost,
 	formatDurationMs,
-	formatEstimatedCost,
 	formatInteger,
 	formatPercent,
 	formatTokensPerSecond,
@@ -25,11 +25,7 @@ export function MetricCluster({ stats }: MetricClusterProps) {
 				<div className="stats-metric-card primary">
 					<div className="stats-metric-label">{t("overview.metric.totalCost")}</div>
 					<div className="stats-metric-value">
-						{formatEstimatedCost(
-							stats.totalCost,
-							stats.unpricedRequests,
-							stats.totalCost > 0 && stats.totalCost < 0.01 ? 4 : 2,
-						)}
+						{formatCost(stats.totalCost, stats.totalCost > 0 && stats.totalCost < 0.01 ? 4 : 2)}
 					</div>
 				</div>
 				<div className="stats-metric-card primary">

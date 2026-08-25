@@ -112,7 +112,7 @@ function makeFailingGuestContext(failure: Error): InteractiveModeContext {
 			resetActiveTime: () => {},
 		},
 		ui: { requestRender: () => {} },
-		chatContainer: { clear: () => {}, disposeChildren: () => {} },
+		chatContainer: { clear: () => {} },
 		resetObserverRegistry: () => {},
 		renderInitialMessages: () => {},
 		reloadTodos: () => Promise.resolve(),

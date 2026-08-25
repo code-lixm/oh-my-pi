@@ -25,7 +25,7 @@ describe("ssh:// is rejected before any connection in AST tools", () => {
 		for (const internalUrlAction of ["search", "rewrite"]) {
 			await expect(
 				resolveToolSearchScope({ rawPaths: ["ssh://h/x"], cwd: os.tmpdir(), internalUrlAction }),
-			).rejects.toThrow(/use `grep` on a specific remote file/);
+			).rejects.toThrow(/ssh:\/\//);
 		}
 		expect(spy).not.toHaveBeenCalled();
 	});

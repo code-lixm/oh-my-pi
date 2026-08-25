@@ -26,15 +26,17 @@ afterEach(() => {
 	clearCustomApis();
 });
 
-describe("auth-gateway non-streaming thinking-loop retries", () => {
-	it("returns an error after three guarded looping attempts", async () => {
+describe("auth-gateway non-streaming thinking-loop cook", () => {
+	it("returns 200 with cooked output instead of a 502 when the model loops", async () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-thinking-loop-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		storage.setRuntimeApiKey("openrouter", "test-key");
 		const mock = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" });
+		// Three guarded attempts stall on the thinking loop; the fourth (cook) pass
+		// runs with the guard disabled and returns the visible answer.
 		for (let i = 0; i < 4; i++) {
-			mock.push({ content: [{ type: "thinking", thinking: loopThinking() }, "Unreachable cooked answer."] });
+			mock.push({ content: [{ type: "thinking", thinking: loopThinking() }, "Final answer after cooking."] });
 		}
 		const waitSpy = spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const handle = startAuthGateway({
@@ -54,12 +56,18 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 					stream: false,
 				}),
 			});
-			const body = (await res.json()) as { error?: unknown };
+			const body = (await res.json()) as {
+				error?: unknown;
+				choices?: Array<{ message?: { content?: string | null } }>;
+			};
 
-			expect(res.status).toBe(502);
-			expect(body.error).toBeDefined();
-			expect(mock.calls).toHaveLength(3);
-			expect(mock.calls.every(call => call.options?.loopGuard?.enabled !== false)).toBe(true);
+			expect(res.status).toBe(200);
+			expect(body.error).toBeUndefined();
+			expect(body.choices?.[0]?.message?.content).toContain("Final answer after cooking.");
+			// Three guarded stalls + one unguarded cook pass.
+			expect(mock.calls).toHaveLength(4);
+			expect(mock.calls[0]?.options?.loopGuard?.enabled).toBeUndefined();
+			expect(mock.calls[3]?.options?.loopGuard?.enabled).toBe(false);
 		} finally {
 			waitSpy.mockRestore();
 			await handle.close();
@@ -93,7 +101,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 				}),
 			});
 
-			// A genuine error is never a loop stall, so loop retry handling must not mask it.
+			// A genuine error is never a loop stall, so the cook fallback must not mask it.
 			expect(res.status).toBe(502);
 			expect(mock.calls).toHaveLength(1);
 			expect(THINKING_LOOP_ERROR_MARKER.length).toBeGreaterThan(0);

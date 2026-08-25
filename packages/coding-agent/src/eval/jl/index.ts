@@ -10,7 +10,6 @@ import {
 	readInterpreterSetting as sharedReadInterpreterSetting,
 	toExecutorBackendResult,
 } from "../backend-helpers";
-import type { BackendProbeOptions } from "../probe";
 import { executeJulia } from "./executor";
 import { checkJuliaKernelAvailability } from "./kernel";
 
@@ -29,8 +28,8 @@ export default {
 	label: "Julia",
 	highlightLang: "julia",
 
-	async isAvailable(session: ToolSession, opts?: BackendProbeOptions): Promise<boolean> {
-		const availability = await checkJuliaKernelAvailability(session.cwd, readInterpreterSetting(session), opts);
+	async isAvailable(session: ToolSession): Promise<boolean> {
+		const availability = await checkJuliaKernelAvailability(session.cwd, readInterpreterSetting(session));
 		return availability.ok;
 	},
 

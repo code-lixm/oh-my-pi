@@ -3,8 +3,8 @@
  */
 
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import type { Tokenizer } from "../tokenizer";
 import type { AgentMessage, AgentToolCall } from "../types";
+import { estimateTokens } from "./compaction";
 import type { SessionEntry, SessionMessageEntry } from "./entries";
 import { invalidateMessageCache } from "./message-cache";
 import {
@@ -271,13 +271,13 @@ function estimatePrunedSavings(tokens: number, notice: string): number {
  * (cacheWrite premium) if that entry is mutated in place. Used to keep prune
  * mutations inside the cheap-to-recache tail.
  */
-function computeMessageSuffixTokens(entries: readonly SessionEntry[], tokenizer: Tokenizer): number[] {
+function computeMessageSuffixTokens(entries: readonly SessionEntry[]): number[] {
 	const suffix = new Array<number>(entries.length);
 	let accumulated = 0;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		suffix[i] = accumulated;
 		const entry = entries[i];
-		if (entry.type === "message") accumulated += tokenizer.countMessage(entry.message as AgentMessage);
+		if (entry.type === "message") accumulated += estimateTokens(entry.message as AgentMessage);
 	}
 	return suffix;
 }
@@ -321,7 +321,6 @@ function createCandidate(
 /** Collect stale results superseded by a later call in the same key group. */
 function collectSupersededResults(
 	entries: readonly SessionEntry[],
-	tokenizer: Tokenizer,
 	toolCallsById: ReadonlyMap<string, AgentToolCall>,
 	supersedeKey: SupersedeKeyFn,
 	protectedTools: readonly ProtectedToolMatcher[],
@@ -340,7 +339,7 @@ function collectSupersededResults(
 		const superseded = seenKeys.has(key) || (separator >= 0 && seenKeys.has(key.slice(0, separator)));
 		seenKeys.add(key);
 		if (!superseded) continue;
-		const candidate = createCandidate(entry, i, message, toolCall, tokenizer, "superseded", SUPERSEDED_NOTICE, true);
+		const candidate = createCandidate(entry, i, message, toolCall, "superseded", SUPERSEDED_NOTICE, true);
 		if (candidate) candidates.push(candidate);
 	}
 	return candidates.reverse();
@@ -425,7 +424,6 @@ function collectResolvedErrors(
 /** Collect non-error results explicitly marked contextually useless by their tool. */
 function collectUselessResults(
 	entries: readonly SessionEntry[],
-	tokenizer: Tokenizer,
 	toolCallsById: ReadonlyMap<string, AgentToolCall>,
 	protectedTools: readonly ProtectedToolMatcher[],
 	exclude: ReadonlySet<ToolResultMessage>,
@@ -438,7 +436,7 @@ function collectUselessResults(
 			continue;
 		const toolCall = toolCallsById.get(message.toolCallId);
 		if (!toolCall || isProtectedToolResult(message, toolCall, protectedTools)) continue;
-		const tokens = tokenizer.countMessage(message as AgentMessage);
+		const tokens = estimateTokens(message as AgentMessage);
 		if (estimatePrunedSavings(tokens, USELESS_NOTICE) <= 0) continue;
 		const candidate = createCandidate(entry, i, message, toolCall, "useless", USELESS_NOTICE, false);
 		if (candidate) candidates.push(candidate);
@@ -476,20 +474,16 @@ function finalizePlan(candidates: PruneCandidate[], metrics: PruneMetrics): Prun
 }
 
 /** Plan cheap per-turn pruning without mutating session history. */
-export function planSupersededToolResults(
-	entries: readonly SessionEntry[],
-	tokenizer: Tokenizer,
-	config: SupersedePruneConfig,
-): PrunePlan {
+export function planSupersededToolResults(entries: readonly SessionEntry[], config: SupersedePruneConfig): PrunePlan {
 	const metrics = createMetrics();
 	const toolCallsById = collectToolCallsById(entries);
 	countBaseCandidates(entries, toolCallsById, config.protectedTools, metrics);
 	const candidates = config.supersedeKey
-		? collectSupersededResults(entries, tokenizer, toolCallsById, config.supersedeKey, config.protectedTools)
+		? collectSupersededResults(entries, toolCallsById, config.supersedeKey, config.protectedTools)
 		: [];
 	const excluded = new Set(candidates.map(candidateMessage));
 	if (config.pruneDuplicates) {
-		const duplicates = collectDuplicateResults(entries, tokenizer, toolCallsById, config.protectedTools, excluded);
+		const duplicates = collectDuplicateResults(entries, toolCallsById, config.protectedTools, excluded);
 		candidates.push(...duplicates);
 		for (const candidate of duplicates) excluded.add(candidateMessage(candidate));
 	}
@@ -516,7 +510,7 @@ export function planSupersededToolResults(
 	const idle =
 		lastMessageTimestamp !== undefined && now - lastMessageTimestamp >= (config.idleFlushMs ?? DEFAULT_IDLE_FLUSH_MS);
 	const boundaryIndex = resolveBoundaryIndex(entries, config.keepBoundaryId);
-	const suffixTokens = computeMessageSuffixTokens(entries, tokenizer);
+	const suffixTokens = computeMessageSuffixTokens(entries);
 	const suffixTokenLimit = config.suffixTokenLimit ?? DEFAULT_SUFFIX_TOKEN_LIMIT;
 	const resolvedErrorProtectTokens = config.resolvedErrorProtectTokens ?? DEFAULT_PRUNE_CONFIG.protectTokens;
 	const selected: PruneCandidate[] = [];
@@ -579,7 +573,6 @@ export function planToolOutputPruning(
 	if (config.supersedeKey) {
 		for (const candidate of collectSupersededResults(
 			entries,
-			tokenizer,
 			toolCallsById,
 			config.supersedeKey,
 			config.protectedTools,
@@ -589,19 +582,19 @@ export function planToolOutputPruning(
 	}
 	let excluded = new Set(classified.keys());
 	if (config.pruneDuplicates) {
-		for (const candidate of collectDuplicateResults(entries, tokenizer, toolCallsById, config.protectedTools, excluded)) {
+		for (const candidate of collectDuplicateResults(entries, toolCallsById, config.protectedTools, excluded)) {
 			classified.set(candidateMessage(candidate), candidate);
 		}
 		excluded = new Set(classified.keys());
 	}
 	if (config.pruneUseless !== false) {
-		for (const candidate of collectUselessResults(entries, tokenizer, toolCallsById, config.protectedTools, excluded)) {
+		for (const candidate of collectUselessResults(entries, toolCallsById, config.protectedTools, excluded)) {
 			classified.set(candidateMessage(candidate), candidate);
 		}
 		excluded = new Set(classified.keys());
 	}
 	if (config.pruneResolvedErrors) {
-		for (const candidate of collectResolvedErrors(entries, tokenizer, toolCallsById, config.protectedTools, excluded)) {
+		for (const candidate of collectResolvedErrors(entries, toolCallsById, config.protectedTools, excluded)) {
 			classified.set(candidateMessage(candidate), candidate);
 		}
 	}
@@ -610,17 +603,13 @@ export function planToolOutputPruning(
 	const candidates: PruneCandidate[] = [];
 	const boundaryIndex = resolveBoundaryIndex(entries, config.keepBoundaryId);
 	const cacheWarmSuffixTokens = config.cacheWarmSuffixTokens;
-	// All-message suffix per index, only when the cache guard is armed.
-	const messageSuffix =
-		cacheWarmSuffixTokens === undefined ? undefined : computeMessageSuffixTokens(entries, tokenizer);
+	const messageSuffix = cacheWarmSuffixTokens === undefined ? undefined : computeMessageSuffixTokens(entries);
 	const resolvedErrorProtectTokens = config.resolvedErrorProtectTokens ?? config.protectTokens;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		const message = getToolResultMessage(entry);
 		if (!message) continue;
-
-		const tokens = tokenizer.countMessage(message as AgentMessage);
-		const isProtected = isProtectedToolResult(message, toolCallsById.get(message.toolCallId), config.protectedTools);
+		const tokens = estimateTokens(message as AgentMessage);
 		if (message.prunedAt !== undefined) {
 			accumulatedTokens += tokens;
 			continue;

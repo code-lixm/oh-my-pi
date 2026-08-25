@@ -3,10 +3,12 @@
  *
  * Provides a hierarchical settings interface:
  * - Plugin list (npm plugins + marketplace plugins)
- *   - Plugin details (enablement, manifest settings, and marketplace metadata)
+ *   - npm plugin detail (enable/disable, features, config)
+ *   - Marketplace plugin detail (enable/disable + read-only metadata)
+ *     - Feature toggles
+ *     - Config value editor
  */
 import {
-	type Component,
 	Container,
 	Input,
 	matchesKey,
@@ -20,20 +22,19 @@ import {
 import { logger } from "@oh-my-pi/pi-utils";
 import { clearPluginRootsAndCaches, resolveOrDefaultProjectRegistryPath } from "../../discovery/helpers";
 import { PluginManager } from "../../extensibility/plugins/manager";
+import type { InstalledPluginSummary } from "../../extensibility/plugins/marketplace";
 import {
 	getInstalledPluginsRegistryPath,
 	getMarketplacesCacheDir,
 	getMarketplacesRegistryPath,
 	getPluginsCacheDir,
-	type InstalledPluginSummary,
 	MarketplaceManager,
-	parsePluginId,
 } from "../../extensibility/plugins/marketplace";
 import type { InstalledPlugin, PluginSettingSchema } from "../../extensibility/plugins/types";
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { shortenPath } from "../../tools/render-utils";
-import { OverlayPanel } from "./overlay-box";
+import { DynamicBorder } from "./dynamic-border";
 
 /**
  * Forwards a keystroke to `input`, but cancels via `onCancel` when the user presses Escape.
@@ -82,72 +83,6 @@ function marketplaceEnabled(summary: InstalledPluginSummary): boolean {
 	return summary.entries[0]?.enabled !== false;
 }
 
-async function buildPluginConfigItems(
-	plugin: InstalledPlugin,
-	manager: PluginManager,
-	onConfigChange: (key: string, value: unknown) => void,
-): Promise<SettingItem[]> {
-	const schemaSettings = plugin.manifest.settings;
-	if (!schemaSettings) return [];
-
-	const settings = await manager.getPluginSettings(plugin.name);
-	const items: SettingItem[] = [];
-	for (const key in schemaSettings) {
-		const schema = schemaSettings[key];
-		const currentValue = settings[key] ?? schema.default;
-		const displayValue = schema.secret && currentValue ? "••••••••" : String(currentValue ?? "(not set)");
-
-		if (schema.type === "boolean") {
-			items.push({
-				id: `config:${key}`,
-				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
-				currentValue: currentValue ? "true" : "false",
-				values: ["true", "false"],
-			});
-		} else if (schema.type === "enum") {
-			items.push({
-				id: `config:${key}`,
-				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
-				currentValue: String(currentValue ?? schema.default ?? ""),
-				submenu: (cv, done) =>
-					new ConfigEnumSubmenu(
-						key,
-						schema.description || `Select value for ${key}`,
-						schema.values,
-						cv,
-						value => {
-							onConfigChange(key, value);
-							done(value);
-						},
-						() => done(),
-					),
-			});
-		} else {
-			items.push({
-				id: `config:${key}`,
-				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
-				currentValue: displayValue,
-				submenu: (cv, done) =>
-					new ConfigInputSubmenu(
-						key,
-						schema,
-						cv === "(not set)" ? "" : cv,
-						value => {
-							const parsed = schema.type === "number" ? Number(value) : value;
-							onConfigChange(key, parsed);
-							done(String(value));
-						},
-						() => done(),
-					),
-			});
-		}
-	}
-	return items;
-}
-
 /**
  * Stable SelectList value for a list entry. Combined with `findEntryByValue`
  * this keeps lookup correct even when the same plugin id exists in both user
@@ -167,28 +102,42 @@ function findEntryByValue(entries: ReadonlyArray<PluginListEntry>, value: string
  * enable/disable status, scope tag, and shadow indicator. Selecting an entry
  * fans out to the kind-specific detail callback.
  */
-export class PluginListComponent extends OverlayPanel {
+export class PluginListComponent extends Container {
 	readonly #selectList: SelectList;
 
 	constructor(
 		private readonly entries: ReadonlyArray<PluginListEntry>,
 		callbacks: PluginListCallbacks,
 	) {
-		super(tSettingsUi("Plugins"));
+		super();
+
+		// Title
+		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${tSettingsUi("Plugins")}`)), 0, 0));
 		this.addChild(new Spacer(1));
 
 		if (entries.length === 0) {
-			this.addChild(new Text(theme.fg("muted", tSettingsUi("No plugins installed")), 0, 0));
+			this.addChild(new Text(theme.fg("muted", `  ${tSettingsUi("No plugins installed")}`), 0, 0));
 			this.addChild(new Spacer(1));
-			this.addChild(new Text(theme.fg("dim", tSettingsUi("Install npm plugins:        omp plugin install <package>")), 0, 0));
 			this.addChild(
 				new Text(
-					theme.fg("dim", tSettingsUi("Install marketplace plugins: omp plugin install <name>@<marketplace>")),
+					theme.fg("dim", `  ${tSettingsUi("Install npm plugins:        omp plugin install <package>")}`),
+					0,
+					0,
+				),
+			);
+			this.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`  ${tSettingsUi("Install marketplace plugins: omp plugin install <name>@<marketplace>")}`,
+					),
 					0,
 					0,
 				),
 			);
 			this.addChild(new Spacer(1));
+			this.addChild(new DynamicBorder());
 
 			// Empty list still handles Escape so the user can leave the panel.
 			this.#selectList = new SelectList([], 1, getSelectListTheme());
@@ -217,7 +166,8 @@ export class PluginListComponent extends OverlayPanel {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", tSettingsUi("Enter to configure · Esc to go back")), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to configure · Esc to go back")}`), 0, 0));
+		this.addChild(new DynamicBorder());
 	}
 
 	#renderItem(entry: PluginListEntry): SelectItem {
@@ -284,7 +234,7 @@ export interface PluginDetailCallbacks {
  * - Feature toggles
  * - Config settings
  */
-export class PluginDetailComponent extends OverlayPanel {
+export class PluginDetailComponent extends Container {
 	#settingsList!: SettingsList;
 
 	constructor(
@@ -292,7 +242,7 @@ export class PluginDetailComponent extends OverlayPanel {
 		private readonly manager: PluginManager,
 		private readonly callbacks: PluginDetailCallbacks,
 	) {
-		super(plugin.name);
+		super();
 
 		void this.#rebuild();
 	}
@@ -303,9 +253,11 @@ export class PluginDetailComponent extends OverlayPanel {
 		const plugin = this.plugin;
 		const manifest = plugin.manifest;
 
-		this.title = plugin.name;
+		// Header
+		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${plugin.name}`)), 0, 0));
 		if (manifest.description) {
-			this.addChild(new Text(theme.fg("muted", manifest.description), 0, 0));
+			this.addChild(new Text(theme.fg("muted", `  ${manifest.description}`), 0, 0));
 		}
 		this.addChild(new Spacer(1));
 
@@ -342,7 +294,64 @@ export class PluginDetailComponent extends OverlayPanel {
 			}
 		}
 
-		items.push(...(await buildPluginConfigItems(plugin, this.manager, this.callbacks.onConfigChange)));
+		// Config settings
+		if (manifest.settings && Object.keys(manifest.settings).length > 0) {
+			const settings = await this.manager.getPluginSettings(plugin.name);
+
+			for (const [key, schema] of Object.entries(manifest.settings)) {
+				const currentValue = settings[key] ?? schema.default;
+				const displayValue = schema.secret && currentValue ? "••••••••" : String(currentValue ?? "(not set)");
+
+				if (schema.type === "boolean") {
+					items.push({
+						id: `config:${key}`,
+						label: `  ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
+						currentValue: currentValue ? "true" : "false",
+						values: ["true", "false"],
+					});
+				} else if (schema.type === "enum") {
+					items.push({
+						id: `config:${key}`,
+						label: `  ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
+						currentValue: String(currentValue ?? schema.default ?? ""),
+						submenu: (cv, done) =>
+							new ConfigEnumSubmenu(
+								key,
+								schema.description || tSettingsUi("Select value for {key}", { key }),
+								schema.values,
+								cv,
+								value => {
+									this.callbacks.onConfigChange(key, value);
+									done(value);
+								},
+								() => done(),
+							),
+					});
+				} else {
+					// string or number - show as submenu with input
+					items.push({
+						id: `config:${key}`,
+						label: `  ${key}`,
+						description: schema.description || tSettingsUi("Configure {key}", { key }),
+						currentValue: displayValue,
+						submenu: (cv, done) =>
+							new ConfigInputSubmenu(
+								key,
+								schema,
+								cv === "(not set)" ? "" : cv,
+								value => {
+									const parsed = schema.type === "number" ? Number(value) : value;
+									this.callbacks.onConfigChange(key, parsed);
+									done(String(value));
+								},
+								() => done(),
+							),
+					});
+				}
+			}
+		}
 
 		this.#settingsList = new SettingsList(
 			items,
@@ -376,7 +385,8 @@ export class PluginDetailComponent extends OverlayPanel {
 
 		this.addChild(this.#settingsList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", tSettingsUi("Enter to edit · Esc to go back")), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to edit · Esc to go back")}`), 0, 0));
+		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(data: string): void {
@@ -391,60 +401,34 @@ export class PluginDetailComponent extends OverlayPanel {
 
 export interface MarketplacePluginDetailCallbacks {
 	onEnabledChange: (enabled: boolean) => void;
-	onConfigChange: (pluginName: string, key: string, value: unknown) => void;
-	/** Schedules a TUI frame after asynchronous manifest settings load. */
-	requestRender?: () => void;
 	onBack: () => void;
 }
 
 /**
- * Detail view for a marketplace plugin, including settings declared by its
- * runtime package and metadata from the installed-plugins registry.
+ * Detail view for a marketplace plugin. Marketplace plugins do not declare
+ * features or settings, so the panel exposes a single enable/disable toggle
+ * plus the read-only metadata from the installed-plugins registry.
  */
-export class MarketplacePluginDetailComponent extends OverlayPanel {
-	#settingsList!: SettingsList;
+export class MarketplacePluginDetailComponent extends Container {
+	#settingsList: SettingsList;
 
 	constructor(
 		private plugin: InstalledPluginSummary,
-		private readonly manager: PluginManager,
 		private readonly callbacks: MarketplacePluginDetailCallbacks,
 	) {
-		super(plugin.id);
-		this.#render(undefined, []);
-		void this.#loadConfig();
-	}
+		super();
 
-	async #loadConfig(): Promise<void> {
-		const entry = this.plugin.entries[0];
-		if (!entry) return;
-
-		const fallbackName = parsePluginId(this.plugin.id)?.name ?? this.plugin.id;
-		try {
-			const runtimePlugin = await this.manager.getPlugin(fallbackName, { path: entry.installPath });
-			if (!runtimePlugin) return;
-			const configItems = await buildPluginConfigItems(runtimePlugin, this.manager, (key, value) =>
-				this.callbacks.onConfigChange(runtimePlugin.name, key, value),
-			);
-			this.#render(runtimePlugin, configItems);
-			this.callbacks.requestRender?.();
-		} catch (err) {
-			logger.error("Settings → Plugins: failed to load marketplace plugin settings", {
-				pluginId: this.plugin.id,
-				path: entry.installPath,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	}
-
-	#render(runtimePlugin: InstalledPlugin | undefined, configItems: SettingItem[]): void {
-		this.clear();
-
-		const plugin = this.plugin;
 		const entry = plugin.entries[0];
-		this.title = plugin.id;
+		const enabled = marketplaceEnabled(plugin);
+
+		// Header
+		this.addChild(new DynamicBorder());
+		this.addChild(new Text(theme.bold(theme.fg("accent", `  ${plugin.id}`)), 0, 0));
+
 		const subtitleParts = [`[${plugin.scope}]`];
-		if (plugin.shadowedBy) subtitleParts.push(`${theme.status.shadowed} ${tSettingsUi("shadowed by")} ${plugin.shadowedBy}`);
-		this.addChild(new Text(theme.fg("muted", subtitleParts.join(" ")), 0, 0));
+		if (plugin.shadowedBy)
+			subtitleParts.push(`${theme.status.shadowed} ${tSettingsUi("shadowed by")} ${plugin.shadowedBy}`);
+		this.addChild(new Text(theme.fg("muted", `  ${subtitleParts.join(" ")}`), 0, 0));
 		this.addChild(new Spacer(1));
 
 		const items: SettingItem[] = [
@@ -452,14 +436,14 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 				id: "__enabled__",
 				label: tSettingsUi("Enabled"),
 				description: tSettingsUi("Enable or disable this marketplace plugin"),
-				currentValue: marketplaceEnabled(plugin) ? "true" : "false",
+				currentValue: enabled ? "true" : "false",
 				values: ["true", "false"],
 			},
-			...configItems,
 		];
+
 		this.#settingsList = new SettingsList(
 			items,
-			Math.min(items.length, 10),
+			items.length,
 			getSettingsListTheme(),
 			(id, newValue) => {
 				if (id === "__enabled__") {
@@ -469,11 +453,6 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 						...this.plugin,
 						entries: this.plugin.entries.map(e => ({ ...e, enabled: next })),
 					};
-				} else if (id.startsWith("config:")) {
-					const key = id.slice(7);
-					if (runtimePlugin?.manifest.settings?.[key]?.type === "boolean") {
-						this.callbacks.onConfigChange(runtimePlugin.name, key, newValue === "true");
-					}
 				}
 			},
 			this.callbacks.onBack,
@@ -481,26 +460,44 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 
 		this.addChild(this.#settingsList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", `${tSettingsUi("version")}  ${entry?.version ?? tSettingsUi("(unknown)")}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `${tSettingsUi("scope")}  ${plugin.scope}`), 0, 0));
+
+		// Read-only metadata. SettingsList rejects items without `values`/`submenu`,
+		// so we render the metadata as plain text rows beneath the toggle.
+		this.addChild(
+			new Text(theme.fg("dim", `  ${tSettingsUi("version")}  ${entry?.version ?? tSettingsUi("(unknown)")}`), 0, 0),
+		);
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("scope")}  ${plugin.scope}`), 0, 0));
 		this.addChild(
 			new Text(
 				theme.fg(
 					"dim",
-					`${tSettingsUi("install path")}  ${entry?.installPath ? shortenPath(entry.installPath) : tSettingsUi("(unknown)")}`,
+					`  ${tSettingsUi("install path")}  ${entry?.installPath ? shortenPath(entry.installPath) : tSettingsUi("(unknown)")}`,
 				),
 				0,
 				0,
 			),
 		);
-		this.addChild(new Text(theme.fg("dim", `${tSettingsUi("installed at")}  ${entry?.installedAt ?? tSettingsUi("(unknown)")}`), 0, 0));
-		this.addChild(new Text(theme.fg("dim", `${tSettingsUi("last updated")}  ${entry?.lastUpdated ?? tSettingsUi("(unknown)")}`), 0, 0));
+		this.addChild(
+			new Text(
+				theme.fg("dim", `  ${tSettingsUi("installed at")}  ${entry?.installedAt ?? tSettingsUi("(unknown)")}`),
+				0,
+				0,
+			),
+		);
+		this.addChild(
+			new Text(
+				theme.fg("dim", `  ${tSettingsUi("last updated")}  ${entry?.lastUpdated ?? tSettingsUi("(unknown)")}`),
+				0,
+				0,
+			),
+		);
 		if (entry?.gitCommitSha) {
-			this.addChild(new Text(theme.fg("dim", `${tSettingsUi("git sha")}  ${entry.gitCommitSha}`), 0, 0));
+			this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("git sha")}  ${entry.gitCommitSha}`), 0, 0));
 		}
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", tSettingsUi("Enter to edit · Esc to go back")), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to toggle · Esc to go back")}`), 0, 0));
+		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(data: string): void {
@@ -515,7 +512,7 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 /**
  * Submenu for enum config values.
  */
-class ConfigEnumSubmenu extends OverlayPanel {
+class ConfigEnumSubmenu extends Container {
 	#selectList: SelectList;
 
 	constructor(
@@ -526,7 +523,9 @@ class ConfigEnumSubmenu extends OverlayPanel {
 		onSelect: (value: string) => void,
 		onCancel: () => void,
 	) {
-		super(key);
+		super();
+
+		this.addChild(new Text(theme.bold(theme.fg("accent", key)), 0, 0));
 		if (description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", description), 0, 0));
@@ -546,7 +545,7 @@ class ConfigEnumSubmenu extends OverlayPanel {
 
 		this.addChild(this.#selectList);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", tSettingsUi("Enter to select · Esc to cancel")), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to select · Esc to cancel")}`), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -557,7 +556,7 @@ class ConfigEnumSubmenu extends OverlayPanel {
 /**
  * Submenu for string/number config values with text input.
  */
-class ConfigInputSubmenu extends OverlayPanel {
+class ConfigInputSubmenu extends Container {
 	#input: Input;
 
 	constructor(
@@ -567,7 +566,9 @@ class ConfigInputSubmenu extends OverlayPanel {
 		private readonly onSubmit: (value: string) => void,
 		private readonly onCancel: () => void,
 	) {
-		super(key);
+		super();
+
+		this.addChild(new Text(theme.bold(theme.fg("accent", key)), 0, 0));
 		if (schema.description) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("muted", schema.description), 0, 0));
@@ -602,7 +603,7 @@ class ConfigInputSubmenu extends OverlayPanel {
 
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", tSettingsUi("Enter to save · Esc to cancel")), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${tSettingsUi("Enter to save · Esc to cancel")}`), 0, 0));
 	}
 
 	handleInput(data: string): void {
@@ -617,8 +618,6 @@ class ConfigInputSubmenu extends OverlayPanel {
 export interface PluginSettingsCallbacks {
 	onClose: () => void;
 	onPluginChanged: () => void | Promise<void>;
-	/** Schedules a TUI frame after asynchronous plugin data loads. */
-	requestRender?: () => void;
 }
 
 /** Component with handleInput method */
@@ -633,7 +632,7 @@ interface InputHandler {
 export class PluginSettingsComponent extends Container {
 	#cwd: string;
 	#manager: PluginManager;
-	#viewComponent: (Component & InputHandler) | null = null;
+	#viewComponent: (Container & InputHandler) | null = null;
 	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
 	#currentView: "list" | "npm-detail" | "marketplace-detail" = "list";
 	// biome-ignore lint/correctness/noUnusedPrivateClassMembers: state tracking for view management
@@ -702,12 +701,6 @@ export class PluginSettingsComponent extends Container {
 		});
 
 		this.addChild(this.#viewComponent);
-
-		// The list mounts after the first frame (npm + marketplace listing is
-		// async and this method runs fire-and-forget), so ask for a repaint —
-		// otherwise the tab stays blank until an unrelated event forces a
-		// render, e.g. reopening /settings (issue #9526).
-		this.callbacks.requestRender?.();
 	}
 
 	#showPluginDetail(plugin: InstalledPlugin): void {
@@ -747,7 +740,7 @@ export class PluginSettingsComponent extends Container {
 		this.#currentMarketplacePlugin = plugin;
 		this.clear();
 
-		this.#viewComponent = new MarketplacePluginDetailComponent(plugin, this.#manager, {
+		this.#viewComponent = new MarketplacePluginDetailComponent(plugin, {
 			onEnabledChange: async enabled => {
 				try {
 					const mgr = await this.#buildMarketplaceManager();
@@ -762,12 +755,7 @@ export class PluginSettingsComponent extends Container {
 					});
 				}
 			},
-			onConfigChange: async (pluginName, key, value) => {
-				await this.#manager.setPluginSetting(pluginName, key, value);
-				await this.callbacks.onPluginChanged();
-			},
 			onBack: () => this.#showPluginList(),
-			requestRender: this.callbacks.requestRender,
 		});
 
 		this.addChild(this.#viewComponent);

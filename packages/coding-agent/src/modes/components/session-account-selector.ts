@@ -1,13 +1,13 @@
-import { type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
-import { getSelectListTheme } from "../../modes/theme/theme";
+import { Container, type SelectItem, SelectList, type SgrMouseEvent, Spacer, TruncatedText } from "@oh-my-pi/pi-tui";
+import { getSelectListTheme, theme } from "../../modes/theme/theme";
 import type { SessionPinAccount } from "../../slash-commands/helpers/session-pin";
-import { OverlayPanel } from "./overlay-box";
-import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
+import { DynamicBorder } from "./dynamic-border";
 
 const ACCOUNT_SELECTOR_MAX_VISIBLE = 10;
+const ACCOUNT_LIST_ROW_OFFSET = 4;
 
 /** Account picker opened by `/session pin` for the current model provider. */
-export class SessionAccountSelectorComponent extends OverlayPanel {
+export class SessionAccountSelectorComponent extends Container {
 	#selectList: SelectList;
 
 	constructor(
@@ -16,7 +16,7 @@ export class SessionAccountSelectorComponent extends OverlayPanel {
 		onSelect: (account: SessionPinAccount) => void,
 		onCancel: () => void,
 	) {
-		super(`Select a ${providerName} account for this session`);
+		super();
 		const accountsByValue = new Map<string, SessionPinAccount>();
 		const items: SelectItem[] = accounts.map(account => {
 			const value = String(account.credentialId);
@@ -27,6 +27,11 @@ export class SessionAccountSelectorComponent extends OverlayPanel {
 				description: account.active ? "active for this session" : undefined,
 			};
 		});
+
+		this.addChild(new DynamicBorder());
+		this.addChild(new Spacer(1));
+		this.addChild(new TruncatedText(theme.bold(`Select a ${providerName} account for this session:`)));
+		this.addChild(new Spacer(1));
 
 		this.#selectList = new SelectList(
 			items,
@@ -41,6 +46,8 @@ export class SessionAccountSelectorComponent extends OverlayPanel {
 		};
 		this.#selectList.onCancel = onCancel;
 		this.addChild(this.#selectList);
+		this.addChild(new Spacer(1));
+		this.addChild(new DynamicBorder());
 	}
 
 	/** Forward keyboard navigation and cancellation when the wrapper owns focus. */
@@ -50,6 +57,6 @@ export class SessionAccountSelectorComponent extends OverlayPanel {
 
 	/** Route mouse selection through the title rows into the account list. */
 	override routeMouse(event: SgrMouseEvent, line: number, col: number): void {
-		routeSelectListMouseWithTopBorder(this.#selectList, event, line, col);
+		this.#selectList.routeMouse(event, line - ACCOUNT_LIST_ROW_OFFSET, col);
 	}
 }

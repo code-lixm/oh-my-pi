@@ -40,7 +40,6 @@ export {
 import { selectPrompt } from "../prompts/prompt-locale";
 import type { OutputMeta } from "../tools/output-meta";
 import { formatOutputNotice } from "../tools/output-meta";
-import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
@@ -166,11 +165,6 @@ function thinkingFromContent(content: unknown): string {
 }
 
 function titleConversationTurnFromMessage(message: AgentMessage): TitleConversationTurn | undefined {
-	if (message.role === "custom") {
-		const text = titleTextFromSkillPrompt(message);
-		if (!text) return undefined;
-		return { role: "user", text };
-	}
 	if (message.role !== "user" && message.role !== "assistant") return undefined;
 	const text = textFromContent(message.content);
 	const thinking = message.role === "assistant" ? thinkingFromContent(message.content) : undefined;
@@ -335,9 +329,6 @@ export type NormalizedCustomMessagePayload<T = unknown> = Pick<
 
 /** Custom message type for hidden interrupted-thinking continuity context. */
 export const INTERRUPTED_THINKING_MESSAGE_TYPE = "interrupted-thinking";
-
-/** Custom message type for the transient checkpoint-active reminder. */
-export const CHECKPOINT_ACTIVE_REMINDER_TYPE = "checkpoint-active-reminder";
 
 /** Metadata persisted with a hidden interrupted-thinking continuity message. */
 export interface InterruptedThinkingDetails {
@@ -1096,8 +1087,7 @@ function customMessageContentToLlmContent(content: CustomMessage["content"]): (T
 	return typeof content === "string" ? [{ type: "text", text: content }] : content;
 }
 
-/** True for a `/skill:<name>` prompt the user invoked directly (attribution `user`), as opposed to an agent/autoload injection. */
-export function isUserInvokedSkillPrompt(message: CustomMessage): boolean {
+function isUserInvokedSkillPrompt(message: CustomMessage): boolean {
 	return message.customType === SKILL_PROMPT_MESSAGE_TYPE && message.attribution === "user";
 }
 

@@ -17,7 +17,6 @@ interface StatsDashboardServer {
 
 export interface StatsDashboardArgs {
 	port: number;
-	host: string;
 }
 
 export interface StatsDashboardLaunchResult {
@@ -27,7 +26,7 @@ export interface StatsDashboardLaunchResult {
 
 let activeStatsServer: StatsDashboardServer | undefined;
 
-const STATS_DASHBOARD_USAGE = "Usage: /stats [--port <port>] [--host <host>]";
+const STATS_DASHBOARD_USAGE = "Usage: /stats [--port <port>]";
 
 function parsePort(value: string | undefined): number | string {
 	if (!value) return `Missing port. ${STATS_DASHBOARD_USAGE}`;
@@ -40,7 +39,6 @@ function parsePort(value: string | undefined): number | string {
 export function parseStatsDashboardArgs(args: string): StatsDashboardArgs | { error: string } {
 	const tokens = args.split(/\s+/).filter(Boolean);
 	let port = DEFAULT_STATS_DASHBOARD_PORT;
-	let host = "127.0.0.1";
 
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
@@ -56,43 +54,31 @@ export function parseStatsDashboardArgs(args: string): StatsDashboardArgs | { er
 			port = parsed;
 			continue;
 		}
-		if (token === "--host") {
-			const value = tokens[++i];
-			if (!value) return { error: `Missing host. ${STATS_DASHBOARD_USAGE}` };
-			host = value;
-			continue;
-		}
-		if (token.startsWith("--host=")) {
-			const value = token.slice("--host=".length);
-			if (!value) return { error: `Missing host. ${STATS_DASHBOARD_USAGE}` };
-			host = value;
-			continue;
-		}
 		return { error: `Unknown option: ${token}. ${STATS_DASHBOARD_USAGE}` };
 	}
 
-	return { port, host };
+	return { port };
 }
 
 export async function launchStatsDashboard(args: StatsDashboardArgs): Promise<StatsDashboardLaunchResult> {
 	const runFullSync = reconcileStatsInSubprocess;
 	const { processed, files } = await stats.syncDashboardSessions({ runFullSync });
 	const total = await stats.getTotalMessageCount();
-	let requestedAddressIgnored = false;
+	let requestedPortIgnored = false;
 
 	if (!activeStatsServer) {
-		activeStatsServer = await stats.startServer(args.port, args.host, {
+		activeStatsServer = await stats.startServer(args.port, {
 			sync: () => stats.syncDashboardSessions({ forceFull: true, runFullSync }),
 		});
-	} else if (args.port !== activeStatsServer.port || args.host !== activeStatsServer.hostname) {
-		requestedAddressIgnored = true;
+	} else if (args.port !== activeStatsServer.port) {
+		requestedPortIgnored = true;
 	}
 
-	const url = stats.formatStatsDashboardUrl(activeStatsServer.hostname, activeStatsServer.port);
+	const url = `http://${activeStatsServer.hostname}:${activeStatsServer.port}`;
 	openUtils.openPath(url);
 
-	const serverLine = requestedAddressIgnored
-		? `Dashboard already running at: ${url} (requested ${args.host}:${args.port} ignored)`
+	const serverLine = requestedPortIgnored
+		? `Dashboard already running at: ${url} (requested port ${args.port} ignored)`
 		: `Dashboard available at: ${url}`;
 
 	return {

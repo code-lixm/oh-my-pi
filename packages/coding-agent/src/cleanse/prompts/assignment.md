@@ -8,7 +8,7 @@
 
 # Assignment
 
-Repair worker {{worker}}. Further diagnostics for your files may arrive as chat messages while you work; fix those too before yielding.
+Repair wave {{wave}}, worker {{worker}}.
 
 ## Write scope
 

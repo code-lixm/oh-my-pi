@@ -1,7 +1,7 @@
 import { Clock, Coins, Gauge, Hash, Star, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { getRequestDetails } from "../api";
-import { formatDurationMs, formatInteger, formatMessageCost } from "../data/formatters";
+import { formatCost, formatDurationMs, formatInteger } from "../data/formatters";
 import { t } from "../locale/catalog";
 import type { RequestDetails } from "../types";
 import { useLocale } from "../useLocale";
@@ -143,9 +143,9 @@ export function RequestDrawer({ id, onClose }: RequestDrawerProps) {
 								<div className="stats-drawer-metric-card">
 									<div className="stats-drawer-metric-label">
 										<Coins size={14} className="stats-drawer-metric-icon" />
-										API-equivalent estimate
+										Cost
 									</div>
-									<div className="stats-drawer-metric-value">{formatMessageCost(details, 4)}</div>
+									<div className="stats-drawer-metric-value">{formatCost(details.usage.cost.total, 4)}</div>
 								</div>
 
 								<div className="stats-drawer-metric-card">

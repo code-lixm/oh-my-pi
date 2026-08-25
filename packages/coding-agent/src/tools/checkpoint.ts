@@ -88,8 +88,9 @@ export class CheckpointTool implements AgentTool<typeof checkpointSchema, Checkp
 		return toolResult<CheckpointToolDetails>({ goal: params.goal, startedAt })
 			.text(
 				[
-					tSettingsUi("Checkpoint: {goal}", { goal: params.goal }),
-					tSettingsUi("Finish exploration and formulate findings."),
+					tSettingsUi("Checkpoint created."),
+					tSettingsUi("Goal: {goal}", { goal: params.goal }),
+					tSettingsUi("Run your investigation, then call rewind with a concise report."),
 				].join("\n"),
 			)
 			.done();

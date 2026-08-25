@@ -5,18 +5,15 @@
  * here keeps the two byte-for-byte identical.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../../i18n/settings-locale";
-import type { AsyncJobType } from "../../async";
-import type { DaemonSnapshot } from "../../launch/protocol";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
-import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
@@ -35,10 +32,10 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 	const details = (
 		message as CustomMessage<{
 			jobId?: string;
-			type?: AsyncJobType;
+			type?: "bash" | "task";
 			label?: string;
 			durationMs?: number;
-			jobs?: Array<{ jobId?: string; type?: AsyncJobType; label?: string; durationMs?: number }>;
+			jobs?: Array<{ jobId?: string; type?: "bash" | "task"; label?: string; durationMs?: number }>;
 		}>
 	).details;
 	const jobs =
@@ -68,68 +65,6 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 		block.addChild(new Text(line, 1, 0));
 	}
 	return new ToolActivityContainer(block);
-}
-
-/**
- * Render a `launch-completion` custom message (terminal supervised-process
- * exits from the launch broker) as a transcript block of one compact
- * "Supervised process ..." row per daemon, matching background-job rows.
- */
-export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolActivityContainer {
-	const details = (message as CustomMessage<{ daemons?: DaemonSnapshot[] }>).details;
-	const block = new TranscriptBlock();
-	const daemons = details?.daemons ?? [];
-	if (daemons.length === 0 && typeof message.content === "string") {
-		block.addChild(new Text(theme.fg("dim", `${theme.status.done} ${message.content}`), 1, 0));
-	}
-	for (const daemon of daemons) {
-		const failed = daemon.state === "failed" || (daemon.exitCode !== undefined && daemon.exitCode !== 0);
-		const duration =
-			daemon.exitedAt !== undefined && daemon.startedAt !== undefined
-				? formatDuration(daemon.exitedAt - daemon.startedAt)
-				: undefined;
-		const line = [
-			failed
-				? theme.fg("error", `${theme.status.error} Supervised process failed`)
-				: theme.fg("success", `${theme.status.done} Supervised process completed`),
-			theme.fg("accent", daemon.name),
-			daemon.exitCode !== undefined ? theme.fg("dim", `(exit ${daemon.exitCode})`) : undefined,
-			duration ? theme.fg("dim", `(${duration})`) : undefined,
-		]
-			.filter(Boolean)
-			.join(" ");
-		block.addChild(new Text(line, 1, 0));
-	}
-	return new ToolActivityContainer(block);
-}
-
-/**
- * Render a live IRC traffic custom message (`irc:incoming` / `irc:autoreply` /
- * `irc:relay`) as a transcript card. `getExpanded` supplies the live
- * expanded-state getter for the cached card.
- */
-export function buildIrcMessageCard(message: CustomOrHookMessage, getExpanded: () => boolean): Component {
-	const details = (
-		message as CustomMessage<{ from?: string; to?: string; message?: string; body?: string; replyTo?: string }>
-	).details;
-	const kind =
-		message.customType === "irc:incoming"
-			? ("incoming" as const)
-			: message.customType === "irc:autoreply"
-				? ("autoreply" as const)
-				: ("relay" as const);
-	return createIrcMessageCard(
-		{
-			kind,
-			from: details?.from,
-			to: details?.to,
-			body: kind === "incoming" ? details?.message : details?.body,
-			replyTo: details?.replyTo,
-			timestamp: message.timestamp,
-		},
-		getExpanded,
-		theme,
-	);
 }
 
 /**

@@ -54,24 +54,6 @@ export interface CleanseAssignment {
 	weight: number;
 }
 
-/** Outcome of an interactive cleanse target picker (CLI one-shot TUI or in-session overlay). */
-export type CleanseTargetChoice =
-	| { kind: "all" }
-	| { kind: "checker"; id: string }
-	| { kind: "request"; request: string }
-	| { kind: "cancel" };
-
-/** Terminal status of one cleanse run. */
-export type CleanseRunStatus = "clean" | "unresolved" | "unsupported" | "cancelled";
-
-/** Observable completion state returned to the CLI and overlay adapters. */
-export interface CleanseCommandResult {
-	exitCode: number;
-	status: CleanseRunStatus;
-	report: CleanseDiagnosticReport;
-	sessionFile?: string;
-}
-
 /** Settled result from one cleanse subagent. */
 export interface CleanseAgentOutcome {
 	name: string;
@@ -81,11 +63,10 @@ export interface CleanseAgentOutcome {
 	resolvedModel?: string;
 }
 
-/** Final state after streamed repair dispatch and the verification pass. */
+/** Final state after one bounded repair wave and verification pass. */
 export interface CleanseLoopResult {
 	status: "clean" | "stalled" | "cancelled";
-	/** Total repair subagents dispatched during the run. */
-	workers: number;
+	waves: number;
 	report: CleanseDiagnosticReport;
 	outcomes: CleanseAgentOutcome[];
 }

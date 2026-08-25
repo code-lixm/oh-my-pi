@@ -17,7 +17,6 @@ export interface BuildLeafManifestInput extends LeafTarget {
 export interface LeafManifest {
 	name: string;
 	version: string;
-	author: string;
 	os: string[];
 	cpu: string[];
 	main: string;
@@ -57,7 +56,6 @@ export const LEAF_TARGETS: readonly LeafTarget[] = [
 ];
 
 const packageDirDefault = path.join(import.meta.dir, "..");
-const NATIVE_LEAF_LEGAL_FILES = ["LICENSE", "THIRD-PARTY-NOTICES.txt"] as const;
 
 function expectedAddonFilenames(tag: string): string[] {
 	return tag.endsWith("-x64")
@@ -91,11 +89,10 @@ export function buildLeafManifest({ tag, os, cpu, files, version }: BuildLeafMan
 	return {
 		name: `@oh-my-pi/pi-natives-${tag}`,
 		version,
-		author: "Stencil Labs, Inc.",
 		os: [os],
 		cpu: [cpu],
 		main: `./${main}`,
-		files: ["*.node", "README.md", ...NATIVE_LEAF_LEGAL_FILES],
+		files: ["*.node", "README.md"],
 		license: "MIT",
 		repository: {
 			type: "git",
@@ -122,13 +119,6 @@ function selectTargets(tags: readonly string[] | undefined): readonly LeafTarget
 		throw new Error(`Unknown native package tag(s): ${unknown.join(", ")}`);
 	}
 	return targets;
-}
-
-async function resolveLegalPayload(packageDir: string, file: string): Promise<string | undefined> {
-	const local = path.join(packageDir, file);
-	if (await Bun.file(local).exists()) return local;
-	const repository = path.resolve(packageDir, "../..", file);
-	return (await Bun.file(repository).exists()) ? repository : undefined;
 }
 
 export async function generateNpmPackages({
@@ -163,11 +153,6 @@ export async function generateNpmPackages({
 		await fs.mkdir(leafDir, { recursive: true });
 		for (const file of files) {
 			await fs.copyFile(path.join(nativeDir, file), path.join(leafDir, file));
-		}
-		for (const file of NATIVE_LEAF_LEGAL_FILES) {
-			const source = await resolveLegalPayload(packageDir, file);
-			if (!source) throw new Error(`Missing legal payload ${file} for generated native leaf ${target.tag}`);
-			await fs.copyFile(source, path.join(leafDir, file));
 		}
 		await Bun.write(path.join(leafDir, "package.json"), `${JSON.stringify(manifest, null, "\t")}\n`);
 		await Bun.write(path.join(leafDir, "README.md"), buildReadme(target.tag, manifest));

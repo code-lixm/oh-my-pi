@@ -33,10 +33,12 @@ function evalAgentResult(events: EvalStatusEvent[], text = "") {
 
 function expectLive(component: ToolExecutionComponent): void {
 	expect(component.isTranscriptBlockFinalized()).toBe(false);
+	expect(component.getNativeScrollbackLiveRegionStart()).toBe(0);
 }
 
 function expectFinal(component: ToolExecutionComponent): void {
 	expect(component.isTranscriptBlockFinalized()).toBe(true);
+	expect(component.getNativeScrollbackLiveRegionStart()).toBeUndefined();
 }
 
 describe("eval tool transcript finalization", () => {

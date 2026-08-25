@@ -117,12 +117,12 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 	});
 
 	function makeComponent(args: unknown) {
-		const requestRender = vi.fn();
-		const ui = { requestRender, requestComponentRender() {} } as unknown as TUI;
+		const resetDisplay = vi.fn();
+		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay } as unknown as TUI;
 		const component = new ToolExecutionComponent("fake_device", args, {}, makeFakeTool(), ui);
 		components.push(component);
-		requestRender.mockClear();
-		return { component, requestRender };
+		resetDisplay.mockClear();
+		return { component, resetDisplay };
 	}
 
 	function makeEditComponent() {
@@ -239,54 +239,54 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 	});
 
 	it("forces a viewport repaint when a painted streamed placeholder receives its first result", () => {
-		const { component, requestRender } = makeComponent({ __partialJson: '{"host"' });
+		const { component, resetDisplay } = makeComponent({ __partialJson: '{"host"' });
 		// A paint has to land for the placeholder to actually reach the terminal.
 		component.render(80);
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not repaint when the streamed placeholder never reaches the terminal", () => {
-		const { component, requestRender } = makeComponent({ __partialJson: '{"host"' });
+		const { component, resetDisplay } = makeComponent({ __partialJson: '{"host"' });
 		// The placeholder shape was built in memory but never painted — a
-		// requestRender here would wipe scrollback for a shape the user never saw.
+		// resetDisplay here would wipe scrollback for a shape the user never saw.
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
 	it("does not repaint complete args on the first result", () => {
-		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
+		const { component, resetDisplay } = makeComponent({ host: "router", command: "uptime" });
 		component.render(80);
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
 	it("forces a viewport repaint when a painted provisional partial result settles", () => {
-		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
+		const { component, resetDisplay } = makeComponent({ host: "router", command: "uptime" });
 		component.updateResult(toolResult("partial output"), true);
 		component.render(80);
-		requestRender.mockClear();
+		resetDisplay.mockClear();
 
 		component.updateResult(toolResult("final output"), false);
 
-		expect(requestRender).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not repaint when the provisional partial result never reaches the terminal", () => {
-		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
+		const { component, resetDisplay } = makeComponent({ host: "router", command: "uptime" });
 		component.updateResult(toolResult("partial output"), true);
 		// No render() between the partial and the final update — the provisional
 		// frame never reached the terminal, so no reset should fire.
 
 		component.updateResult(toolResult("final output"), false);
 
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
 	it("removes streamed placeholder rows from the terminal buffer when the first result arrives", async () => {

@@ -1,6 +1,6 @@
 import { diffWords } from "@oh-my-pi/pi-natives";
 import { DEFAULT_TAB_WIDTH, sanitizeText } from "@oh-my-pi/pi-utils";
-import { theme as activeTheme, getLanguageFromPath, highlightCode, type Theme } from "../../modes/theme/theme";
+import { getLanguageFromPath, highlightCode, theme } from "../../modes/theme/theme";
 import { type CodeFrameMarker, formatCodeFrameLine, replaceTabs } from "../../tools/render-utils";
 
 /** SGR dim on / normal intensity — additive, preserves fg/bg colors. */
@@ -52,11 +52,7 @@ function parseDiffLine(line: string): { prefix: CodeFrameMarker; lineNum: string
  * Uses diffWords which groups whitespace with adjacent words for cleaner highlighting.
  * Strips leading whitespace from inverse to avoid highlighting indentation.
  */
-function renderIntraLineDiff(
-	oldContent: string,
-	newContent: string,
-	renderTheme: Theme,
-): { removedLine: string; addedLine: string } {
+function renderIntraLineDiff(oldContent: string, newContent: string): { removedLine: string; addedLine: string } {
 	const wordDiff = diffWords(oldContent, newContent);
 
 	let removedLine = "";
@@ -75,7 +71,7 @@ function renderIntraLineDiff(
 				isFirstRemoved = false;
 			}
 			if (value) {
-				removedLine += renderTheme.inverse(value);
+				removedLine += theme.inverse(value);
 			}
 		} else if (part.added) {
 			let value = part.value;
@@ -87,7 +83,7 @@ function renderIntraLineDiff(
 				isFirstAdded = false;
 			}
 			if (value) {
-				addedLine += renderTheme.inverse(value);
+				addedLine += theme.inverse(value);
 			}
 		} else {
 			removedLine += part.value;
@@ -101,8 +97,6 @@ function renderIntraLineDiff(
 export interface RenderDiffOptions {
 	/** File path used to resolve indentation (.editorconfig + defaults) */
 	filePath?: string;
-	/** Theme used for diff colors and syntax highlighting; defaults to the active TUI theme. */
-	theme?: Theme;
 }
 
 /**
@@ -112,7 +106,6 @@ export interface RenderDiffOptions {
  * - Added lines: green, with inverse on changed tokens
  */
 export function renderDiff(diffText: string, options: RenderDiffOptions = {}): string {
-	const renderTheme = options.theme ?? activeTheme;
 	const lines = sanitizeText(diffText).split("\n");
 	const result: string[] = [];
 	const parsedLines = lines.map(parseDiffLine);
@@ -130,7 +123,7 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 	// Batch-highlight context (unedited) lines so consecutive lines tokenize
 	// with full multi-line context. Highlighting is a no-op when no language
 	// can be detected from the file path.
-	const contextHighlights = highlightContextLines(parsedLines, options.filePath, renderTheme);
+	const contextHighlights = highlightContextLines(parsedLines, options.filePath);
 	// Track the line number rendered on the previous emitted line so we can
 	// blank out duplicate gutters. Two cases trigger this:
 	//  1. Single-line replacement (`-N` followed by `+N`) — the `+N` repeats `N`.
@@ -160,7 +153,7 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 			// unicode ellipsis.
 			const trimmed = line.trim();
 			const isGapRow = trimmed.length === 0 || trimmed === "..." || trimmed === "…";
-			result.push(renderTheme.fg("toolDiffContext", isGapRow ? "…" : replaceTabs(line)));
+			result.push(theme.fg("toolDiffContext", isGapRow ? "…" : replaceTabs(line)));
 			i++;
 			continue;
 		}
@@ -189,32 +182,27 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 				const { removedLine, addedLine } = renderIntraLineDiff(
 					replaceTabs(removed.content),
 					replaceTabs(added.content),
-					renderTheme,
 				);
 
-				result.push(
-					renderTheme.fg("toolDiffRemoved", formatLine("-", removed.lineNum, visualizeIndent(removedLine))),
-				);
-				result.push(renderTheme.fg("toolDiffAdded", formatLine("+", added.lineNum, visualizeIndent(addedLine))));
+				result.push(theme.fg("toolDiffRemoved", formatLine("-", removed.lineNum, visualizeIndent(removedLine))));
+				result.push(theme.fg("toolDiffAdded", formatLine("+", added.lineNum, visualizeIndent(addedLine))));
 			} else {
 				for (const removed of removedLines) {
 					result.push(
-						renderTheme.fg("toolDiffRemoved", formatLine("-", removed.lineNum, visualizeIndent(removed.content))),
+						theme.fg("toolDiffRemoved", formatLine("-", removed.lineNum, visualizeIndent(removed.content))),
 					);
 				}
 				for (const added of addedLines) {
-					result.push(
-						renderTheme.fg("toolDiffAdded", formatLine("+", added.lineNum, visualizeIndent(added.content))),
-					);
+					result.push(theme.fg("toolDiffAdded", formatLine("+", added.lineNum, visualizeIndent(added.content))));
 				}
 			}
 		} else if (parsed.prefix === "+") {
-			result.push(renderTheme.fg("toolDiffAdded", formatLine("+", parsed.lineNum, visualizeIndent(parsed.content))));
+			result.push(theme.fg("toolDiffAdded", formatLine("+", parsed.lineNum, visualizeIndent(parsed.content))));
 			i++;
 		} else {
 			const highlighted = contextHighlights.get(i);
 			const content = highlighted !== undefined ? replaceTabs(highlighted) : visualizeIndent(parsed.content);
-			result.push(renderTheme.fg("toolDiffContext", formatLine(" ", parsed.lineNum, content)));
+			result.push(theme.fg("toolDiffContext", formatLine(" ", parsed.lineNum, content)));
 			i++;
 		}
 	}
@@ -231,7 +219,6 @@ export function renderDiff(diffText: string, options: RenderDiffOptions = {}): s
 function highlightContextLines(
 	parsedLines: Array<{ prefix: CodeFrameMarker; lineNum: string; content: string } | null>,
 	filePath: string | undefined,
-	renderTheme: Theme,
 ): Map<number, string> {
 	const map = new Map<number, string>();
 	const lang = filePath ? getLanguageFromPath(filePath) : undefined;
@@ -241,7 +228,7 @@ function highlightContextLines(
 	let runContents: string[] = [];
 	const flush = () => {
 		if (runContents.length === 0) return;
-		const highlighted = highlightCode(runContents.join("\n"), lang, renderTheme);
+		const highlighted = highlightCode(runContents.join("\n"), lang);
 		for (let k = 0; k < runIndices.length; k++) {
 			map.set(runIndices[k], highlighted[k] ?? runContents[k]);
 		}

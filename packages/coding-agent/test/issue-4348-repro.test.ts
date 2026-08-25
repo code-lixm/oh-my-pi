@@ -91,7 +91,7 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 				ref: "blob:sha256:hash",
 			})),
 		},
-		addMessageToChat: (message: AgentMessage, options?: { imageLinks?: readonly (string | undefined)[] }) =>
+		addMessageToChat: (message: AgentMessage, options?: { populateHistory?: boolean }) =>
 			helpers.addMessageToChat(message, options),
 		renderSessionContext: (context: SessionContext, options?: RenderSessionContextOptions) =>
 			helpers.renderSessionContext(context, options),

@@ -32,7 +32,6 @@ function makeFakeSession(): FakeSession {
 	const delivered: IrcMessage[] = [];
 	const relayed: CustomMessage[] = [];
 	const session = {
-		isStreaming: true,
 		deliverIrcMessage: async (msg: IrcMessage) => {
 			if (nextError) {
 				const err = nextError;

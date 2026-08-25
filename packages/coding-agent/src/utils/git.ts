@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, hasFsCode, isEacces, isEisdir, isEnoent, isEnotdir, Snowflake } from "@oh-my-pi/pi-utils";
+import { hasFsCode, isEisdir, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils/fs-error";
+import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
+import { $which } from "@oh-my-pi/pi-utils/which";
 import type { Subprocess } from "bun";
 import {
 	parseDiffHunks as parseCommitDiffHunks,
@@ -21,8 +23,6 @@ export interface GitCommandResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
-	/** True when stdout or stderr hit {@link GIT_COMMAND_OUTPUT_LIMIT_BYTES} and the captured text is incomplete. */
-	truncated: boolean;
 }
 
 export interface GitRepository {
@@ -78,7 +78,6 @@ export interface DiffOptions {
 	readonly numstat?: boolean;
 	readonly signal?: AbortSignal;
 	readonly stat?: boolean;
-	readonly requireComplete?: boolean;
 }
 
 export interface StatusOptions {
@@ -98,15 +97,10 @@ export interface CommitAuthor {
 export interface CommitDetails {
 	readonly author: CommitAuthor;
 	readonly message: string;
-	/** Comma-free parent SHAs; empty for a root commit. */
-	readonly parents: readonly string[];
-	/** Full commit SHA. */
-	readonly sha: string;
 }
 
 export interface CommitOptions {
 	readonly allowEmpty?: boolean;
-	readonly amend?: boolean;
 	readonly author?: CommitAuthor;
 	readonly files?: readonly string[];
 	readonly signal?: AbortSignal;
@@ -186,29 +180,6 @@ export class GitCommandError extends Error {
 	constructor(args: readonly string[], result: GitCommandResult) {
 		super(formatCommandFailure(args, result));
 		this.name = "GitCommandError";
-		this.args = [...args];
-		this.result = result;
-	}
-}
-
-/**
- * A git subprocess produced more output than {@link GIT_COMMAND_OUTPUT_LIMIT_BYTES}
- * and its captured stdout was truncated. Thrown only for callers that opt into
- * completeness via `diff({ requireComplete: true })`, where operating on a partial
- * diff would silently corrupt downstream parsing — e.g. the split-commit builder,
- * which would otherwise throw a misleading "No diff found" for files sorting after
- * a large binary blob whose base85 payload pushed the diff past the cap.
- */
-export class GitOutputTruncatedError extends Error {
-	readonly args: readonly string[];
-	readonly result: GitCommandResult;
-
-	constructor(args: readonly string[], result: GitCommandResult) {
-		const limitMiB = Math.round(GIT_COMMAND_OUTPUT_LIMIT_BYTES / (1024 * 1024));
-		super(
-			`git ${args.join(" ")} produced more than ${limitMiB} MiB of output; the captured result is truncated and incomplete.`,
-		);
-		this.name = "GitOutputTruncatedError";
 		this.args = [...args];
 		this.result = result;
 	}
@@ -353,10 +324,7 @@ async function waitForExitWithTimeout(
 	}
 }
 
-async function readCappedText(
-	stream: ReadableStream<Uint8Array>,
-	maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+async function readCappedText(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<string> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
 	const chunks: string[] = [];
@@ -379,7 +347,7 @@ async function readCappedText(
 		}
 		chunks.push(decoder.decode());
 		if (truncated) chunks.push(GIT_OUTPUT_TRUNCATED_MARKER);
-		return { text: chunks.join(""), truncated };
+		return chunks.join("");
 	} finally {
 		reader.releaseLock();
 	}
@@ -416,15 +384,10 @@ async function collectSubprocessResult(
 		void stdoutPromise.catch(() => undefined);
 		void stderrPromise.catch(() => undefined);
 		await Promise.all([cancelOutput(stdoutStream), cancelOutput(stderrStream)]);
-		return { exitCode: GIT_COMMAND_TIMEOUT_EXIT_CODE, stdout: "", stderr: exit.stderr, truncated: false };
+		return { exitCode: GIT_COMMAND_TIMEOUT_EXIT_CODE, stdout: "", stderr: exit.stderr };
 	}
 	const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-	return {
-		exitCode: exit.exitCode ?? 0,
-		stdout: stdout.text,
-		stderr: stderr.text,
-		truncated: stdout.truncated || stderr.truncated,
-	};
+	return { exitCode: exit.exitCode ?? 0, stdout, stderr };
 }
 
 interface CommandOptions {
@@ -545,7 +508,7 @@ async function git(cwd: string, args: readonly string[], options: CommandOptions
 			// A deleted/nonexistent cwd also surfaces as a spawn ENOENT; only blame
 			// the binary when the working directory actually exists.
 			const stderr = fs.existsSync(cwd) ? "git is not installed." : `working directory does not exist: ${cwd}`;
-			return { exitCode: GIT_SPAWN_ENOENT_EXIT_CODE, stdout: "", stderr, truncated: false };
+			return { exitCode: GIT_SPAWN_ENOENT_EXIT_CODE, stdout: "", stderr };
 		}
 		throw err;
 	}
@@ -711,10 +674,6 @@ async function writeTempPatch(content: string): Promise<string> {
 
 type EntryType = "directory" | "file";
 
-function isPermissionError(err: unknown): boolean {
-	return isEacces(err) || hasFsCode(err, "EPERM");
-}
-
 function shouldRetry(err: unknown, n: number) {
 	if (isEnoent(err) || isEisdir(err) || isEnotdir(err) || hasFsCode(err, "ENFILE") || hasFsCode(err, "EMFILE"))
 		return false;
@@ -727,8 +686,8 @@ function shouldRetry(err: unknown, n: number) {
  * Bounded retry for synchronous I/O against `EINTR`. POSIX permits short syscalls
  * to be interrupted by signals; when that happens libc traditionally retries.
  * Node's sync wrappers surface the raw `EINTR` so we replicate the retry locally.
- * Path absence, path-type mismatches, descriptor exhaustion, and exhausted
- * `EINTR` retries return `null`. Other errors are rethrown.
+ * Any other error (and persistent EINTR after `EINTR_MAX_RETRIES`) is rethrown
+ * for the caller's normal "optional metadata" classifier to handle.
  */
 const EINTR_MAX_RETRIES = 3;
 function retryOnEintrSync<T>(op: () => T): T | null {
@@ -882,13 +841,8 @@ function resolveRepositorySync(startDir: string): GitRepository | null {
 		const gitEntryPath = path.join(current, ".git");
 		const entryType = getEntryTypeSync(gitEntryPath);
 		if (entryType) {
-			try {
-				const repository = resolveRepoFromEntrySync(current, gitEntryPath, entryType);
-				if (repository) return repository;
-			} catch (err) {
-				if (entryType === "file" && isPermissionError(err)) return null;
-				throw err;
-			}
+			const repository = resolveRepoFromEntrySync(current, gitEntryPath, entryType);
+			if (repository) return repository;
 		}
 		const parent = path.dirname(current);
 		if (parent === current) return null;
@@ -902,13 +856,8 @@ async function resolveRepository(startDir: string): Promise<GitRepository | null
 		const gitEntryPath = path.join(current, ".git");
 		const entryType = await getEntryType(gitEntryPath);
 		if (entryType) {
-			try {
-				const repository = await resolveRepoFromEntry(current, gitEntryPath, entryType);
-				if (repository) return repository;
-			} catch (err) {
-				if (entryType === "file" && isPermissionError(err)) return null;
-				throw err;
-			}
+			const repository = await resolveRepoFromEntry(current, gitEntryPath, entryType);
+			if (repository) return repository;
 		}
 		const parent = path.dirname(current);
 		if (parent === current) return null;
@@ -1303,11 +1252,7 @@ export const diff = Object.assign(
 		if (options.allowFailure) {
 			return (await git(cwd, args, { env: options.env, readOnly: true, signal: options.signal })).stdout;
 		}
-		const result = await runChecked(cwd, args, { env: options.env, readOnly: true, signal: options.signal });
-		if (options.requireComplete && result.truncated) {
-			throw new GitOutputTruncatedError(args, result);
-		}
-		return result.stdout;
+		return runText(cwd, args, { env: options.env, readOnly: true, signal: options.signal });
 	},
 	{
 		/** List changed file paths. */
@@ -1457,7 +1402,6 @@ export async function commit(cwd: string, message: string, options: CommitOption
 		if (options.author.date) args.push(`--date=${options.author.date}`);
 	}
 	if (options.allowEmpty) args.push("--allow-empty");
-	if (options.amend) args.push("--amend");
 	if (options.files?.length) args.push("--", ...options.files);
 	return runChecked(cwd, args, { signal: options.signal, stdin: message });
 }
@@ -1768,16 +1712,14 @@ export const show = Object.assign(
 
 /** Read commit message and author metadata for replay/rewrite flows. */
 export async function commitDetails(cwd: string, revision: string, signal?: AbortSignal): Promise<CommitDetails> {
-	const raw = await runText(cwd, ["show", "-s", "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%B", revision], {
+	const raw = await runText(cwd, ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", revision], {
 		readOnly: true,
 		signal,
 	});
-	const [sha = "", parentsRaw = "", name = "", email = "", date = "", ...messageParts] = raw.split("\0");
+	const [name = "", email = "", date = "", ...messageParts] = raw.split("\0");
 	return {
 		author: { date, email, name },
 		message: messageParts.join("\0").replace(/\n$/, ""),
-		parents: parentsRaw.split(" ").filter(Boolean),
-		sha,
 	};
 }
 
@@ -2252,17 +2194,12 @@ export const patch = {
 		}
 	},
 
-	/**
-	 * Join patch parts into a single patch string.
-	 *
-	 * Each part is terminated with a single `\n` if it lacks one, then parts are
-	 * concatenated verbatim — matching git's native multi-file diff layout. Parts
-	 * are NOT separated by an extra blank line and trailing newlines are NOT
-	 * stripped: a `GIT binary patch` block ends in a blank line that
-	 * `git apply --binary` requires, and stripping it corrupts the patch (#8899).
-	 */
+	/** Join patch parts into a single patch string. */
 	join(parts: string[]): string {
-		return parts.map(part => (part.endsWith("\n") ? part : `${part}\n`)).join("");
+		return `${parts
+			.map(part => (part.endsWith("\n") ? part : `${part}\n`))
+			.join("\n")
+			.replace(/\n+$/, "")}\n`;
 	},
 };
 

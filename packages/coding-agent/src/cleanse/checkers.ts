@@ -19,7 +19,6 @@ const IGNORED_DIRECTORIES: Record<string, true> = {
 	vendor: true,
 };
 const MAX_FAILURE_OUTPUT = 12_000;
-const DEFAULT_FLUSH_MS = 5_000;
 const SHELLCHECK_BATCH_SIZE = 200;
 
 interface CheckerPlan {
@@ -66,40 +65,17 @@ export interface CleanseCheckerDescriptor {
 	id: string;
 	label: string;
 	language: string;
-	/** Project-relative working directory the checker command runs in. */
-	cwd: string;
 	command: string;
-}
-
-/** Lifecycle notifications for one {@link CleanseDiagnosticSuite.run} pass, used by the CLI status board. */
-export interface CleanseCheckerRunEvents {
-	onCheckerStart?(checker: CleanseCheckerDescriptor): void;
-	/**
-	 * New diagnostics parsed from streaming or final checker output. Each
-	 * diagnostic is delivered exactly once per run; partial-output batches for
-	 * long-running checkers arrive before {@link onCheckerEnd}.
-	 */
-	onDiagnostics?(checker: CleanseCheckerDescriptor, diagnostics: readonly CleanseDiagnostic[]): void;
-	onCheckerEnd?(check: CleanseCheckResult, durationMs: number): void;
-}
-/** Inputs for one {@link CleanseDiagnosticSuite.run} pass. */
-export interface CleanseSuiteRunOptions {
-	signal?: AbortSignal;
-	events?: CleanseCheckerRunEvents;
-	/** Interval between partial-output parses for streaming checkers; default 5s. */
-	flushMs?: number;
 }
 
 /** Re-runnable checker set discovered from one project snapshot. */
 export interface CleanseDiagnosticSuite {
 	/** Every discovered checker; unaffected by {@link CleanseDiagnosticSuite.select}. */
 	readonly checkers: readonly CleanseCheckerDescriptor[];
-	/** Checkers the next {@link CleanseDiagnosticSuite.run} will execute; narrowed by {@link CleanseDiagnosticSuite.select}. */
-	readonly selected: readonly CleanseCheckerDescriptor[];
 	readonly skipped: readonly SkippedCleanseCheck[];
 	/** Narrow subsequent {@link CleanseDiagnosticSuite.run} calls to the named checker ids. */
 	select(ids: readonly string[]): void;
-	run(options?: CleanseSuiteRunOptions): Promise<CleanseDiagnosticReport>;
+	run(signal?: AbortSignal): Promise<CleanseDiagnosticReport>;
 }
 
 /** Discover configured language checkers without installing missing tools. */
@@ -145,58 +121,20 @@ function createSuite(
 	allowedFiles: ReadonlySet<string>,
 ): CleanseDiagnosticSuite {
 	let active = [...plans];
-	const toDescriptor = (plan: CheckerPlan): CleanseCheckerDescriptor => ({
-		id: plan.id,
-		label: plan.label,
-		language: plan.language,
-		cwd: path.relative(projectCwd, plan.cwd) || ".",
-		command: plan.command,
-	});
 	return {
-		checkers: plans.map(toDescriptor),
-		get selected(): readonly CleanseCheckerDescriptor[] {
-			return active.map(toDescriptor);
-		},
+		checkers: plans.map(plan => ({ id: plan.id, label: plan.label, language: plan.language, command: plan.command })),
 		skipped,
 		select(ids: readonly string[]): void {
 			const wanted = new Set(ids);
 			active = plans.filter(plan => wanted.has(plan.id));
 		},
-		async run(options?: CleanseSuiteRunOptions): Promise<CleanseDiagnosticReport> {
-			const { signal, events, flushMs = DEFAULT_FLUSH_MS } = options ?? {};
-			const execute = async (
-				plan: CheckerPlan,
-				onDiagnostics?: (diagnostics: readonly CleanseDiagnostic[]) => void,
-			): Promise<CleanseCheckResult> => {
-				events?.onCheckerStart?.(toDescriptor(plan));
-				const startedAt = Date.now();
-				const check = await runChecker(plan, projectCwd, allowedFiles, { signal, flushMs, onDiagnostics });
-				events?.onCheckerEnd?.(check, Date.now() - startedAt);
-				return check;
-			};
-			// Mutating checkers rewrite files, so their diagnostics are held until
-			// every mutator has finished; otherwise a repair worker could edit a
-			// file a formatter is still rewriting.
-			const mutating = active.filter(plan => plan.mutates);
+		async run(signal?: AbortSignal): Promise<CleanseDiagnosticReport> {
 			const mutatingChecks: CleanseCheckResult[] = [];
-			for (const plan of mutating) mutatingChecks.push(await execute(plan));
-			if (events?.onDiagnostics) {
-				for (let index = 0; index < mutating.length; index += 1) {
-					const check = mutatingChecks[index];
-					if (check.diagnostics.length > 0) events.onDiagnostics(toDescriptor(mutating[index]), check.diagnostics);
-				}
+			for (const plan of active) {
+				if (plan.mutates) mutatingChecks.push(await runChecker(plan, projectCwd, allowedFiles, signal));
 			}
 			const parallelChecks = await Promise.all(
-				active
-					.filter(plan => !plan.mutates)
-					.map(plan =>
-						execute(
-							plan,
-							events?.onDiagnostics
-								? diagnostics => events.onDiagnostics?.(toDescriptor(plan), diagnostics)
-								: undefined,
-						),
-					),
+				active.filter(plan => !plan.mutates).map(plan => runChecker(plan, projectCwd, allowedFiles, signal)),
 			);
 			const checks = [...mutatingChecks, ...parallelChecks];
 			return {
@@ -1198,120 +1136,56 @@ function discoverGitHubActions(state: DiscoveryState): void {
 	}
 }
 
-interface RunCheckerOptions {
-	signal?: AbortSignal;
-	/** New diagnostics parsed from partial or final output; each delivered exactly once. */
-	onDiagnostics?: (diagnostics: readonly CleanseDiagnostic[]) => void;
-	/** Interval between partial-output parses; only used with `onDiagnostics`. */
-	flushMs?: number;
-}
-
 async function runChecker(
 	plan: CheckerPlan,
 	projectCwd: string,
 	allowedFiles: ReadonlySet<string>,
-	options: RunCheckerOptions = {},
+	signal?: AbortSignal,
 ): Promise<CleanseCheckResult> {
-	const { signal, onDiagnostics, flushMs = DEFAULT_FLUSH_MS } = options;
-	const emitted = new Set<string>();
-	const emit = (diagnostics: readonly CleanseDiagnostic[]): void => {
-		if (!onDiagnostics) return;
-		const fresh = diagnostics.filter(diagnostic => {
-			const key = diagnosticKey(diagnostic);
-			if (emitted.has(key)) return false;
-			emitted.add(key);
-			return true;
+	try {
+		const result = await ptree.exec([plan.executable, ...plan.args], {
+			cwd: plan.cwd,
+			signal,
+			stderr: "full",
+			allowNonZero: true,
+			allowAbort: false,
 		});
-		if (fresh.length > 0) onDiagnostics(fresh);
-	};
-	const parse = (stdout: string, stderr: string): CleanseDiagnostic[] =>
-		parseCleanseDiagnostics(plan.parser, {
+		const parsedDiagnostics = parseCleanseDiagnostics(plan.parser, {
 			checker: plan.label,
 			projectCwd,
 			checkerCwd: plan.cwd,
-			stdout,
-			stderr,
+			stdout: result.stdout,
+			stderr: result.stderr,
 		});
-	const inProject = (diagnostics: CleanseDiagnostic[]): CleanseDiagnostic[] =>
-		diagnostics.filter(diagnostic => diagnostic.file === undefined || allowedFiles.has(diagnostic.file));
-	const result = (exitCode: number | null, diagnostics: CleanseDiagnostic[]): CleanseCheckResult => ({
-		id: plan.id,
-		label: plan.label,
-		language: plan.language,
-		cwd: path.relative(projectCwd, plan.cwd) || ".",
-		command: plan.command,
-		exitCode,
-		diagnostics,
-	});
-	try {
-		using child = ptree.spawn([plan.executable, ...plan.args], { cwd: plan.cwd, signal, stderr: "full" });
-		const stdout: OutputAccumulator = { text: "" };
-		const stderr: OutputAccumulator = { text: "" };
-		const pumps = Promise.all([pumpStream(child.stdout, stdout), pumpStream(child.stderr, stderr)]);
-		let running = true;
-		// Mutating checkers rewrite files while running; only stream partials
-		// from read-only checkers so repair work never races an in-flight edit.
-		const poller =
-			onDiagnostics && !plan.mutates
-				? (async () => {
-						while (running) {
-							await Bun.sleep(flushMs);
-							if (!running) break;
-							// Cut at the last newline: truncated trailing lines and
-							// unterminated JSON documents parse as garbage or nothing.
-							emit(inProject(parse(completeLines(stdout.text), completeLines(stderr.text))));
-						}
-					})()
-				: undefined;
-		let exitCode: number | null;
-		try {
-			exitCode = await child.exited;
-		} finally {
-			running = false;
+		const diagnostics = parsedDiagnostics.filter(
+			diagnostic => diagnostic.file === undefined || allowedFiles.has(diagnostic.file),
+		);
+		if (!result.ok && parsedDiagnostics.length === 0) {
+			diagnostics.push(checkerFailureDiagnostic(plan, result.exitCode, result.stdout, result.stderr));
 		}
-		await pumps;
-		await poller;
-		const parsedDiagnostics = parse(stdout.text, stderr.text);
-		const diagnostics = inProject(parsedDiagnostics);
-		if (exitCode !== 0 && parsedDiagnostics.length === 0) {
-			diagnostics.push(checkerFailureDiagnostic(plan, exitCode, stdout.text, stderr.text));
-		}
-		emit(diagnostics);
-		return result(exitCode, diagnostics);
+		return {
+			id: plan.id,
+			label: plan.label,
+			language: plan.language,
+			cwd: path.relative(projectCwd, plan.cwd) || ".",
+			command: plan.command,
+			exitCode: result.exitCode,
+			diagnostics,
+		};
 	} catch (error) {
 		if (signal?.aborted) throw error;
-		const failure = checkerFailureDiagnostic(plan, null, "", error instanceof Error ? error.message : String(error));
-		emit([failure]);
-		return result(null, [failure]);
+		return {
+			id: plan.id,
+			label: plan.label,
+			language: plan.language,
+			cwd: path.relative(projectCwd, plan.cwd) || ".",
+			command: plan.command,
+			exitCode: null,
+			diagnostics: [
+				checkerFailureDiagnostic(plan, null, "", error instanceof Error ? error.message : String(error)),
+			],
+		};
 	}
-}
-
-interface OutputAccumulator {
-	text: string;
-}
-
-async function pumpStream(stream: ReadableStream<Uint8Array> | undefined, into: OutputAccumulator): Promise<void> {
-	if (!stream) return;
-	const decoder = new TextDecoder();
-	for await (const chunk of stream) into.text += decoder.decode(chunk, { stream: true });
-	into.text += decoder.decode();
-}
-
-/** Truncate to the last complete line so partial parses never see a torn record. */
-function completeLines(text: string): string {
-	const cut = text.lastIndexOf("\n");
-	return cut < 0 ? "" : text.slice(0, cut + 1);
-}
-
-/** Identity key matching {@link deduplicateProjectDiagnostics}; used for exactly-once streaming emission. */
-export function diagnosticKey(diagnostic: CleanseDiagnostic): string {
-	return [
-		diagnostic.file ?? "",
-		diagnostic.line ?? "",
-		diagnostic.column ?? "",
-		diagnostic.code ?? "",
-		diagnostic.message,
-	].join("\u0000");
 }
 
 function checkerFailureDiagnostic(
@@ -1333,7 +1207,13 @@ function deduplicateProjectDiagnostics(diagnostics: CleanseDiagnostic[]): Cleans
 	const seen = new Set<string>();
 	const unique: CleanseDiagnostic[] = [];
 	for (const diagnostic of diagnostics) {
-		const key = diagnosticKey(diagnostic);
+		const key = [
+			diagnostic.file ?? "",
+			diagnostic.line ?? "",
+			diagnostic.column ?? "",
+			diagnostic.code ?? "",
+			diagnostic.message,
+		].join("\u0000");
 		if (seen.has(key)) continue;
 		seen.add(key);
 		unique.push(diagnostic);

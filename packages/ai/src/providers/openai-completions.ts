@@ -3,7 +3,7 @@ import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
-import { $env, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { $env, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
@@ -44,8 +44,6 @@ import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import {
 	adaptSchemaForStrict,
-	findStrictToolSchemaViolation,
-	flattenExclusiveRequiredRootUnion,
 	NO_STRICT,
 	normalizeSchemaForMoonshot,
 	sanitizeSchemaForGrammar,
@@ -106,12 +104,11 @@ import {
 	resolveOpenAICompletionsOutputClamp,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
-	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
 import {
-	isOpenAICompletionsVisionSupported,
+	isDashscopeCompatibleModeTextOnlyQwen,
 	joinTextWithImagePlaceholder,
 	NON_VISION_IMAGE_PLACEHOLDER,
 } from "./vision-guard";
@@ -603,31 +600,26 @@ const streamOpenAICompletionsOnce = (
 		);
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
-		// Track the OpenAI `[DONE]` sentinel independently of `onSseEvent`: it is
-		// the streaming protocol's terminal signal, so a stream that ends with it
-		// completed by server agreement even when no `finish_reason` chunk arrived.
-		let sawDoneSentinel = false;
-		const rawSseObserver = (event: RawSseEvent) => {
-			if (event.data === "[DONE]") sawDoneSentinel = true;
-			if (onSseEvent) {
-				if (!event.event && event.data && event.data !== "[DONE]") {
-					try {
-						const parsed = JSON.parse(event.data);
-						const resolvedEvent =
-							typeof parsed.type === "string"
-								? parsed.type
-								: typeof parsed.object === "string"
-									? parsed.object
-									: null;
-						if (resolvedEvent) {
-							event.event = resolvedEvent;
-							event.raw = [`event: ${resolvedEvent}`, ...event.raw];
-						}
-					} catch {}
+		const rawSseObserver = onSseEvent
+			? (event: RawSseEvent) => {
+					if (!event.event && event.data && event.data !== "[DONE]") {
+						try {
+							const parsed = JSON.parse(event.data);
+							const resolvedEvent =
+								typeof parsed.type === "string"
+									? parsed.type
+									: typeof parsed.object === "string"
+										? parsed.object
+										: null;
+							if (resolvedEvent) {
+								event.event = resolvedEvent;
+								event.raw = [`event: ${resolvedEvent}`, ...event.raw];
+							}
+						} catch {}
+					}
+					onSseEvent(event, model);
 				}
-				onSseEvent(event, model);
-			}
-		};
+			: undefined;
 		// Assigned once the block helpers exist (they are scoped to the `try`);
 		// the catch handler uses it to close open blocks before emitting the
 		// terminal error so both exit paths obey the same block lifecycle.
@@ -669,7 +661,12 @@ const streamOpenAICompletionsOnce = (
 				: `${trimmedBaseUrl}/chat/completions`;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				let { params, strictToolsApplied } = buildParams(model, context, options, effectiveToolStrictModeOverride);
+				const { params, strictToolsApplied } = buildParams(
+					model,
+					context,
+					options,
+					effectiveToolStrictModeOverride,
+				);
 				appliedStrictTools = strictToolsApplied;
 				const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
 					"chat-completions",
@@ -683,9 +680,8 @@ const streamOpenAICompletionsOnce = (
 					applyOpenAIReasoningEffortFallback(params, requestReasoningEffortFallback);
 				}
 				activeReasoningEffortFallbackKey = reasoningEffortFallbackKey;
-				const replacedParams = await options?.onPayload?.(params, model);
-				if (replacedParams !== undefined) params = replacedParams as typeof params;
 				activeRequestParams = params;
+				options?.onPayload?.(params, model);
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1303,24 +1299,6 @@ const streamOpenAICompletionsOnce = (
 				flushDeepseekStripBuffer(true);
 			}
 
-			// Detect premature stream closure before the normal block-finalization
-			// sweep. Throwing after that sweep would make the error handler emit a
-			// second text_end/thinking_end for the same partial block.
-			//
-			// Only a genuine truncation — transport EOF with neither a
-			// `finish_reason` chunk nor the `[DONE]` sentinel — is incomplete. A
-			// stream terminated by `[DONE]` completed by server agreement; some
-			// OpenAI-compatible hosts omit or `null` the `finish_reason` and rely on
-			// `[DONE]` alone, so finalize those as the default `stop`
-			// (mapStopReason(null)) instead of surfacing a false incomplete-stream
-			// error and retrying every turn.
-			if (streamFinishedAt === undefined && !sawDoneSentinel && output.content.length > 0) {
-				throw new AIError.ProviderResponseError(
-					"OpenAI completions stream closed before a finish_reason was received",
-					{ provider: model.provider, kind: "incomplete-stream" },
-				);
-			}
-
 			if (currentBlock?.type === "toolCall") {
 				finishPendingToolCallBlocks();
 			} else {
@@ -1597,26 +1575,24 @@ function buildParams(
 		if (options?.minP !== undefined) {
 			params.min_p = options.minP;
 		}
-		if (initialCompat.supportsPenaltyAndStopParams) {
-			if (options?.presencePenalty !== undefined) {
-				params.presence_penalty = options.presencePenalty;
-			}
-			if (options?.repetitionPenalty !== undefined) {
-				params.repetition_penalty = options.repetitionPenalty;
-			}
-			if (options?.frequencyPenalty !== undefined) {
-				params.frequency_penalty = options.frequencyPenalty;
-			}
+		if (options?.presencePenalty !== undefined) {
+			params.presence_penalty = options.presencePenalty;
+		}
+		if (options?.repetitionPenalty !== undefined) {
+			params.repetition_penalty = options.repetitionPenalty;
+		}
+		if (options?.frequencyPenalty !== undefined) {
+			params.frequency_penalty = options.frequencyPenalty;
 		}
 	}
-	if (options?.stopSequences?.length && initialCompat.supportsPenaltyAndStopParams) {
+	if (options?.stopSequences?.length) {
 		const seqs = options.stopSequences;
 		params.stop = seqs.length === 1 ? seqs[0] : seqs.slice(0, 4);
 	}
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
 
 	if (context.tools?.length) {
-		const builtTools = convertTools(context.tools, initialCompat, toolStrictModeOverride, model.provider);
+		const builtTools = convertTools(context.tools, initialCompat, toolStrictModeOverride);
 		params.tools = builtTools.tools;
 		toolStrictMode = builtTools.toolStrictMode;
 		strictToolsApplied = builtTools.strictToolsApplied;
@@ -1677,10 +1653,7 @@ function buildParams(
 		params.tool_choice = "auto";
 	}
 
-	if (
-		(!Array.isArray(params.tools) || params.tools.length === 0) &&
-		(params.tool_choice === "none" || isForcedToolChoice(params.tool_choice))
-	) {
+	if (params.tool_choice === "none" && (!Array.isArray(params.tools) || params.tools.length === 0)) {
 		// `tool_choice: "none"` with no tools to gate is redundant and also
 		// trips LiteLLM → Bedrock: the proxy serializes the directive into a
 		// `toolConfig` block, and Bedrock requires `toolConfig.tools` to be
@@ -1689,8 +1662,6 @@ function buildParams(
 		// Side-channel turns hit this: `/btw` and IRC background replies route
 		// through `AgentSession.runEphemeralTurn`, which sets `context.tools = []`
 		// and `toolChoice: "none"` (see packages/coding-agent/src/session/agent-session.ts).
-		// The same empty-tools case applies after leftover-union quarantine: a
-		// leftover `"required"` / named force would 400 just like the bad schema.
 		delete params.tool_choice;
 	}
 
@@ -1703,10 +1674,6 @@ function buildParams(
 		// that function in `tools`. Active-tool filtering normally enforces this
 		// before provider dispatch; this guard keeps raw provider callers from
 		// emitting a self-inconsistent OpenAI-compatible payload.
-		delete params.tool_choice;
-	}
-
-	if (shouldDropAutoToolChoiceForReasoning(model, initialCompat, params.tool_choice, options)) {
 		delete params.tool_choice;
 	}
 
@@ -1841,19 +1808,16 @@ export function convertMessages(
 			? 40
 			: undefined;
 	const duplicateToolCallIdSuffixPrefix = compat.requiresMistralToolIds ? "dup" : undefined;
-	const normalizeToolCallId = (id: string, source?: AssistantMessage): string => {
+	const normalizeToolCallId = (id: string): string => {
 		if (compat.requiresMistralToolIds) return normalizeMistralToolId(id, true);
 
-		const isSameModelSource =
-			source !== undefined &&
-			source.provider === model.provider &&
-			source.api === model.api &&
-			source.model === model.id;
-		// Cross-model replay converts OpenAI Responses composite IDs from
-		// `{call_id}|{item_id}` to the Chat Completions `call_id`. Same-model
-		// Chat Completions IDs are provider-issued opaque correlation tokens.
-		if (!isSameModelSource && id.includes("|")) {
+		// Handle pipe-separated IDs from OpenAI Responses API
+		// Format: {call_id}|{id} where {id} can be 400+ chars with special chars (+, /, =)
+		// These come from providers like github-copilot, openai-codex, opencode
+		// Extract just the call_id part and normalize it
+		if (id.includes("|")) {
 			const [callId] = id.split("|");
+			// Sanitize to allowed chars and truncate to 40 chars (OpenAI limit)
 			return callId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
 		}
 
@@ -1863,7 +1827,7 @@ export function convertMessages(
 	const transformedMessages = transformMessages(
 		context.messages,
 		model,
-		(id, _target, source) => normalizeToolCallId(id, source),
+		id => normalizeToolCallId(id),
 		maxNormalizedToolCallIdLength,
 		duplicateToolCallIdSuffixPrefix,
 		compat,
@@ -1895,8 +1859,8 @@ export function convertMessages(
 		return nextId;
 	};
 
-	const ensureToolCallId = (rawId: string, seed: string, source?: AssistantMessage): string => {
-		const normalized = normalizeToolCallId(rawId, source);
+	const ensureToolCallId = (rawId: string, seed: string): string => {
+		const normalized = normalizeToolCallId(rawId);
 		if (normalized.trim().length > 0) return normalized;
 		return generateFallbackToolCallId(seed);
 	};
@@ -1948,7 +1912,7 @@ export function convertMessages(
 					content: text,
 				});
 			} else {
-				const supportsImages = isOpenAICompletionsVisionSupported(model);
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const content: ChatCompletionContentPart[] = [];
 				let omittedImages = false;
 				for (const item of msg.content) {
@@ -1963,7 +1927,7 @@ export function convertMessages(
 						content.push({
 							type: "image_url",
 							image_url: {
-								url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
+								url: `data:${item.mimeType};base64,${item.data}`,
 								// Chat Completions has no "original"; omit it (provider default).
 								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
@@ -2178,7 +2142,7 @@ export function convertMessages(
 			}
 			if (toolCalls.length > 0) {
 				assistantMsg.tool_calls = toolCalls.map((tc, toolCallIndex) => {
-					const toolCallId = ensureToolCallId(tc.id, `${i}:${toolCallIndex}:${tc.name}`, msg);
+					const toolCallId = ensureToolCallId(tc.id, `${i}:${toolCallIndex}:${tc.name}`);
 					rememberToolCallId(tc.id, toolCallId);
 					return {
 						id: normalizeMistralToolId(toolCallId, compat.requiresMistralToolIds),
@@ -2238,7 +2202,7 @@ export function convertMessages(
 					.filter(c => c.type === "text")
 					.map(c => (c as TextContent).text)
 					.join("\n");
-				const supportsImages = isOpenAICompletionsVisionSupported(model);
+				const supportsImages = model.input.includes("image") && !isDashscopeCompatibleModeTextOnlyQwen(model);
 				const hasImages = toolMsg.content.some(c => c.type === "image");
 				const omittedImages = hasImages && !supportsImages;
 
@@ -2270,7 +2234,7 @@ export function convertMessages(
 							imageBlocks.push({
 								type: "image_url",
 								image_url: {
-									url: block.url ?? `data:${block.mimeType};base64,${block.data}`,
+									url: `data:${block.mimeType};base64,${block.data}`,
 								},
 							});
 						}
@@ -2321,14 +2285,10 @@ function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompat,
 	toolStrictModeOverride?: ToolStrictModeOverride,
-	provider?: string,
 ): BuiltOpenAICompletionTools {
-	const rejectXaiRootObjectUnion = provider === "xai" || provider === "xai-oauth";
 	const adaptedTools = tools.map(tool => {
 		const strict = !NO_STRICT && compat.supportsStrictMode !== false && tool.strict !== false;
-		const baseParameters = rejectXaiRootObjectUnion
-			? flattenExclusiveRequiredRootUnion(toolWireSchema(tool))
-			: toolWireSchema(tool);
+		const baseParameters = toolWireSchema(tool);
 		const adapted = adaptSchemaForStrict(baseParameters, strict);
 		return {
 			tool,
@@ -2348,55 +2308,47 @@ function convertTools(
 					: "none"
 				: "mixed";
 
-	const wireTools: ChatCompletionTool[] = [];
-	let anyStrictEmitted = false;
-	for (const { tool, baseParameters, parameters, strict } of adaptedTools) {
-		const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
-		// `strict: false` is semantically distinct from omitted `strict` on some
-		// backends: with it absent, optional properties may be over-filled with
-		// placeholder values (#4336). Preserve the author's explicit `false`,
-		// but only in "mixed" mode against a provider that understands the
-		// field — the `all_strict → none` collapse and `supportsStrictMode:
-		// false` paths deliberately keep the wire flag uniformly absent.
-		const includeExplicitFalse =
-			!includeStrict && tool.strict === false && toolStrictMode === "mixed" && compat.supportsStrictMode !== false;
-		const wireParameters = includeStrict ? parameters : baseParameters;
-		// Moonshot/Kimi native hosts validate against the stricter MFJS subset
-		// (const→enum, typed enums, no validators) and 400 otherwise.
-		// Grammar-constrained local backends (llama.cpp, LM Studio, vLLM)
-		// build a GBNF grammar from the schema and 400 with
-		// `Unrecognized schema: true` on the bare boolean subschema
-		// `toolWireSchema` emits for open fields (issue #5914).
-		const emittedParameters =
-			compat.toolSchemaFlavor === "moonshot-mfjs"
-				? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
-				: compat.toolSchemaFlavor === "grammar"
-					? sanitizeSchemaForGrammar(wireParameters)
-					: wireParameters;
-		const violation = findStrictToolSchemaViolation(emittedParameters, "#", { rejectXaiRootObjectUnion });
-		if (violation) {
-			logger.warn(
-				`Tool "${tool.name}" omitted from the openai-completions request: its parameter schema is invalid for this provider at ${violation} (an enum/const value cannot match its declared type, or leftover xAI object-root union). Other tools are unaffected.`,
-			);
-			continue;
-		}
-		if (includeStrict) anyStrictEmitted = true;
-		wireTools.push({
-			type: "function",
-			function: {
-				name: tool.name,
-				description: tool.description || "",
-				parameters: emittedParameters,
-				// Only include strict if provider supports it. Some reject unknown fields.
-				...(includeStrict ? { strict: true } : includeExplicitFalse ? { strict: false } : {}),
-			},
-		});
-	}
-
 	return {
-		tools: wireTools,
+		tools: adaptedTools.map(({ tool, baseParameters, parameters, strict }) => {
+			const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
+			// `strict: false` is semantically distinct from omitted `strict` on some
+			// backends: with it absent, optional properties may be over-filled with
+			// placeholder values (#4336). Preserve the author's explicit `false`,
+			// but only in "mixed" mode against a provider that understands the
+			// field — the `all_strict → none` collapse and `supportsStrictMode:
+			// false` paths deliberately keep the wire flag uniformly absent.
+			const includeExplicitFalse =
+				!includeStrict &&
+				tool.strict === false &&
+				toolStrictMode === "mixed" &&
+				compat.supportsStrictMode !== false;
+			const wireParameters = includeStrict ? parameters : baseParameters;
+			return {
+				type: "function",
+				function: {
+					name: tool.name,
+					description: tool.description || "",
+					// Moonshot/Kimi native hosts validate against the stricter MFJS subset
+					// (const→enum, typed enums, no validators) and 400 otherwise.
+					// Grammar-constrained local backends (llama.cpp, LM Studio, vLLM)
+					// build a GBNF grammar from the schema and 400 with
+					// `Unrecognized schema: true` on the bare boolean subschema
+					// `toolWireSchema` emits for open fields (issue #5914).
+					parameters:
+						compat.toolSchemaFlavor === "moonshot-mfjs"
+							? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
+							: compat.toolSchemaFlavor === "grammar"
+								? sanitizeSchemaForGrammar(wireParameters)
+								: wireParameters,
+					// Only include strict if provider supports it. Some reject unknown fields.
+					...(includeStrict ? { strict: true } : includeExplicitFalse ? { strict: false } : {}),
+				},
+			};
+		}),
 		toolStrictMode,
-		strictToolsApplied: wireTools.length > 0 && anyStrictEmitted,
+		strictToolsApplied:
+			tools.length > 0 &&
+			(toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && adaptedTools.some(tool => tool.strict))),
 	};
 }
 
@@ -2428,16 +2380,6 @@ function mapStopReason(reason: ChatCompletionChunk.Choice["finish_reason"] | str
 			// the message to match the session retry classifier's transient-transport
 			// pattern (`provider.?returned.?error`) and get the turn auto-retried.
 			return { stopReason: "error", errorMessage: "Provider returned error finish_reason" };
-		case "insufficient_system_resource":
-			// DeepSeek kills the generation mid-stream when its inference system runs
-			// out of resources (docs: "the request is interrupted due to insufficient
-			// resource of the inference system"). Server-side capacity failure — like
-			// the bare `error` case, word the message to match the transient-transport
-			// retry pattern so the turn is auto-retried instead of pinned as an error.
-			return {
-				stopReason: "error",
-				errorMessage: "Provider returned error finish_reason: insufficient_system_resource",
-			};
 		default:
 			return {
 				stopReason: "error",

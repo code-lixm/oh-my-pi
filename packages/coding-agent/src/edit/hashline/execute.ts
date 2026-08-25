@@ -28,7 +28,6 @@ import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredH
 import type { ToolSession } from "../../tools";
 import { outputMeta } from "../../tools/output-meta";
 import { ToolError } from "../../tools/tool-errors";
-import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString } from "../diff";
 import { getEditClipboard } from "../edit-clipboard";
 import { getFileSnapshotStore } from "../file-snapshot-store";
@@ -46,8 +45,6 @@ export interface ExecuteHashlineSingleOptions {
 	batchRequest?: LspBatchRequest;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
-	/** Observes a committed content transition before result snapshots are pruned. */
-	onApplied?: AppliedEditObserver;
 }
 
 function noChangeDiagnostic(path: string): string {
@@ -104,19 +101,6 @@ function narrowBatchRequest(outer: LspBatchRequest | undefined, isLast: boolean)
 interface RenderedSection {
 	toolResult: AgentToolResult<EditToolDetails, typeof hashlineEditParamsSchema>;
 	perFileResult: EditToolPerFileResult;
-}
-
-async function observeAppliedSection(
-	observer: AppliedEditObserver | undefined,
-	prepared: PreparedSection,
-	result: PatchSectionResult,
-): Promise<void> {
-	if (!observer || !prepared.exists || result.op === "delete" || result.op === "noop") return;
-	await observer({
-		path: result.moveDest ?? result.path,
-		prev: prepared.rawContent,
-		next: result.written,
-	});
 }
 
 const BLOCK_OP_LABELS: Record<BlockResolution["op"], string> = {
@@ -258,7 +242,6 @@ export async function executeHashlineSingle(
 		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, true));
 		const prepared = await patcher.prepare(patch.sections[0], clipboard);
 		const sectionResult = await patcher.commit(prepared);
-		await observeAppliedSection(options.onApplied, prepared, sectionResult);
 		commitClipboard(clipboard, sessionClipboard);
 		if (sectionResult.op === "noop") {
 			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);
@@ -301,7 +284,6 @@ export async function executeHashlineSingle(
 		const isLast = i === prepared.length - 1;
 		fs.setBatchRequest(narrowBatchRequest(options.batchRequest, isLast));
 		const sectionResult = await patcher.commit(prepared[i]);
-		await observeAppliedSection(options.onApplied, prepared[i], sectionResult);
 		commitClipboard(sectionStates[i], sessionClipboard);
 		if (sectionResult.op === "noop") {
 			const { count, escalate } = recordNoopEdit(options.session, sectionResult.canonicalPath, inputHash);

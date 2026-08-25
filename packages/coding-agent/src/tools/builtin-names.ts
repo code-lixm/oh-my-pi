@@ -42,14 +42,9 @@ export const HIDDEN_TOOL_NAMES = ["yield", "goal", "refine", "think"] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 
-const CANONICAL_TOOL_NAMES: Record<string, true> = Object.fromEntries(
-	[...BUILTIN_TOOL_NAMES, ...HIDDEN_TOOL_NAMES].map(name => [name, true]),
-);
-
-/** Canonicalize built-in IDs while preserving plugin names. */
+/** Normalize built-in tool IDs for case-insensitive configuration surfaces. */
 export function normalizeToolName(name: string): string {
-	const lower = name.toLowerCase();
-	return Object.hasOwn(CANONICAL_TOOL_NAMES, lower) ? lower : name;
+	return name.toLowerCase();
 }
 
 /**

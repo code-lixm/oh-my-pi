@@ -5,8 +5,8 @@ import { CHART_THEMES, MODEL_COLORS } from "../components/chart-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
 import {
 	formatCompact,
+	formatCost,
 	formatDurationMs,
-	formatEstimatedCost,
 	formatInteger,
 	formatPercent,
 	formatRelativeTime,
@@ -59,7 +59,6 @@ function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 		let tokens = 0;
 		let output = 0;
 		let cost = 0;
-		let unpricedRequests = 0;
 		let resultChars = 0;
 		let argsChars = 0;
 		for (const t of byTool) {
@@ -68,11 +67,10 @@ function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 			tokens += t.totalTokensShare;
 			output += t.outputTokensShare;
 			cost += t.costShare;
-			unpricedRequests += t.unpricedRequestsShare;
 			resultChars += t.resultChars;
 			argsChars += t.argsChars;
 		}
-		return { calls, errors, tokens, output, cost, unpricedRequests, resultChars, argsChars, tools: byTool.length };
+		return { calls, errors, tokens, output, cost, resultChars, argsChars, tools: byTool.length };
 	}, [byTool]);
 
 	return (
@@ -95,9 +93,7 @@ function ToolsSummaryPanel({ byTool }: { byTool: ToolUsageStats[] }) {
 					</div>
 					<div className="stats-metric-card primary">
 						<div className="stats-metric-label">{t("tools.summary.attributedCost")}</div>
-						<div className="stats-metric-value">
-							{formatEstimatedCost(totals.cost, totals.unpricedRequests)}
-						</div>
+						<div className="stats-metric-value">{formatCost(totals.cost)}</div>
 					</div>
 				</div>
 
@@ -306,9 +302,7 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 				key: "cost",
 				header: t("tools.table.column.attributedCost"),
 				numeric: true,
-				render: (item: ToolRowView) => (
-					<span className="font-mono">{formatEstimatedCost(item.costShare, item.unpricedRequestsShare)}</span>
-				),
+				render: (item: ToolRowView) => <span className="font-mono">{formatCost(item.costShare)}</span>,
 			},
 			{
 				key: "resultChars",
@@ -351,9 +345,7 @@ function ToolsTable({ byTool }: { byTool: ToolUsageStats[] }) {
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("tools.table.column.attributedCost")}</div>
-					<div className="stats-mobile-card-value font-mono">
-						{formatEstimatedCost(item.costShare, item.unpricedRequestsShare)}
-					</div>
+					<div className="stats-mobile-card-value font-mono">{formatCost(item.costShare)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("tools.table.column.avgDuration")}</div>
@@ -442,7 +434,7 @@ function ToolModelPanel({ byToolModel }: { byToolModel: ToolModelStats[] }) {
 				header: t("tools.table.column.attributedCost"),
 				numeric: true,
 				render: (item: ToolModelStats & { errorRate: number }) => (
-					<span className="font-mono">{formatEstimatedCost(item.costShare, item.unpricedRequestsShare)}</span>
+					<span className="font-mono">{formatCost(item.costShare)}</span>
 				),
 			},
 		],

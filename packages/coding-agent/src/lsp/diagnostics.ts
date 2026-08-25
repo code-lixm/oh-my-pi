@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import path from "node:path";
-import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
 import { formatPathRelativeToCwd } from "../tools/path-utils";
 import { throwIfAborted } from "../tools/tool-errors";
 import { getOrCreateClient, sendRequest, supportsDocumentDiagnostics, waitForProjectLoaded } from "./client";
@@ -48,19 +48,6 @@ export const INLINE_DIAGNOSTICS_WAIT_TIMEOUT_MS = 500;
  * delivers late instead of giving up before it ever publishes.
  */
 export const DEFERRED_DIAGNOSTICS_WAIT_TIMEOUT_MS = 12_000;
-/**
- * Extra wall-clock headroom granted to each per-server diagnostics pipeline on
- * top of its diagnostics wait budget. The pipeline includes client creation
- * (spawn + initialize), project load, and custom linter runs — steps that have
- * no own deadline when the caller passes a user-abort-only signal (the edit
- * tool does exactly that: `sendRequest` skips its default timeout whenever a
- * signal is present). A wedged server or hung linter subprocess then blocks
- * the edit forever, and because the edit tool is `exclusive`, every later edit
- * queues behind it (issue #4910). This grace period turns that infinite hang
- * into a bounded skip: the slow server is dropped from this round's results
- * and the edit returns.
- */
-export const DIAGNOSTICS_PIPELINE_GRACE_MS = 10_000;
 export const MAX_GLOB_DIAGNOSTIC_TARGETS = 20;
 export const WORKSPACE_SYMBOL_LIMIT = 200;
 export const PROJECT_INDEXED_ACTIONS: ReadonlySet<string> = new Set([
@@ -309,12 +296,6 @@ interface GetDiagnosticsForFileOptions {
 	expectedDocumentVersions?: ServerVersionMap;
 	/** Per-server wait budget (ms). Defaults to {@link SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS}. */
 	timeoutMs?: number;
-	/**
-	 * Hard wall-clock bound (ms) for each server's whole pipeline (client init,
-	 * project load, linting, diagnostics wait). Defaults to the wait budget plus
-	 * {@link DIAGNOSTICS_PIPELINE_GRACE_MS}. Exposed as a test seam.
-	 */
-	pipelineBudgetMs?: number;
 }
 
 /**
@@ -377,53 +358,40 @@ export async function getDiagnosticsForFile(
 	if (servers.length === 0) {
 		return undefined;
 	}
-	const waitBudgetMs = timeoutMs ?? SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
-	const pipelineBudgetMs = options.pipelineBudgetMs ?? waitBudgetMs + DIAGNOSTICS_PIPELINE_GRACE_MS;
 
 	const uri = fileToUri(absolutePath);
 	const relPath = formatPathRelativeToCwd(absolutePath, cwd);
 	const allDiagnostics: Diagnostic[] = [];
 	const serverNames: string[] = [];
 
-	// Wait for diagnostics from all servers in parallel. Each server's whole
-	// pipeline is wrapped in a hard wall-clock bound: the caller's signal is
-	// typically user-abort-only (never fires on its own), and both `sendRequest`
-	// during client init (no default timeout when a signal is present) and
-	// custom `LinterClient.lint` (no signal at all) can otherwise block forever
-	// on a wedged server (issue #4910). A server that overruns its budget is
-	// rejected by `untilAborted`, lands as a rejected `allSettled` entry, and is
-	// simply skipped for this round — the edit still returns.
+	// Wait for diagnostics from all servers in parallel
 	const results = await Promise.allSettled(
-		servers.map(([serverName, serverConfig]) => {
-			const budgetSignal = AbortSignal.timeout(pipelineBudgetMs);
-			const boundSignal = signal ? AbortSignal.any([signal, budgetSignal]) : budgetSignal;
-			return untilAborted(boundSignal, async () => {
-				throwIfAborted(boundSignal);
-				// Use custom linter client if configured
-				if (serverConfig.createClient) {
-					const linterClient = getLinterClient(serverName, serverConfig, cwd);
-					const diagnostics = await linterClient.lint(absolutePath, boundSignal);
-					return { serverName, serverConfig, diagnostics };
-				}
-
-				// Default: use LSP
-				const client = await getOrCreateClient(serverConfig, cwd, undefined, boundSignal);
-				throwIfAborted(boundSignal);
-				if (isProjectAwareLspServer(serverConfig)) {
-					await waitForProjectLoaded(client, boundSignal);
-					throwIfAborted(boundSignal);
-				}
-				// Content already synced + didSave sent, wait for fresh diagnostics
-				const minVersion = minVersions?.get(serverName);
-				const expectedDocumentVersion = expectedDocumentVersions?.get(serverName);
-				const diagnostics = await waitForDiagnostics(client, uri, {
-					timeoutMs: waitBudgetMs,
-					signal: boundSignal,
-					minVersion,
-					expectedDocumentVersion,
-				});
+		servers.map(async ([serverName, serverConfig]) => {
+			throwIfAborted(signal);
+			// Use custom linter client if configured
+			if (serverConfig.createClient) {
+				const linterClient = getLinterClient(serverName, serverConfig, cwd);
+				const diagnostics = await linterClient.lint(absolutePath);
 				return { serverName, serverConfig, diagnostics };
+			}
+
+			// Default: use LSP
+			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
+			throwIfAborted(signal);
+			if (isProjectAwareLspServer(serverConfig)) {
+				await waitForProjectLoaded(client, signal);
+				throwIfAborted(signal);
+			}
+			// Content already synced + didSave sent, wait for fresh diagnostics
+			const minVersion = minVersions?.get(serverName);
+			const expectedDocumentVersion = expectedDocumentVersions?.get(serverName);
+			const diagnostics = await waitForDiagnostics(client, uri, {
+				timeoutMs: timeoutMs ?? SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
+				signal,
+				minVersion,
+				expectedDocumentVersion,
 			});
+			return { serverName, serverConfig, diagnostics };
 		}),
 	);
 
@@ -482,19 +450,7 @@ export async function getDiagnosticsForFile(
 export enum FileFormatResult {
 	UNCHANGED = "unchanged",
 	FORMATTED = "formatted",
-	FAILED = "failed",
-	UNSUPPORTED = "unsupported",
 }
-
-/**
- * Result from formatContent, distinguishing successful formatting
- * (formatted or unchanged) from a failure or unsupported file type.
- */
-export type FormatContentResult = {
-	content: string;
-	failed: boolean;
-	unsupported: boolean;
-};
 
 /**
  * Format content using LSP or custom linter client.
@@ -511,14 +467,12 @@ export async function formatContent(
 	cwd: string,
 	servers: Array<[string, ServerConfig]>,
 	signal?: AbortSignal,
-): Promise<FormatContentResult> {
+): Promise<string> {
 	if (servers.length === 0) {
-		// No formatters configured at all
-		return { content, failed: false, unsupported: true };
+		return content;
 	}
 
 	const uri = fileToUri(absolutePath);
-	let hadFailure = false;
 
 	for (const [serverName, serverConfig] of servers) {
 		try {
@@ -526,18 +480,15 @@ export async function formatContent(
 			// Use custom linter client if configured
 			if (serverConfig.createClient) {
 				const linterClient = getLinterClient(serverName, serverConfig, cwd);
-				const formattedContent = await linterClient.format(absolutePath, content);
-				return { content: formattedContent, failed: false, unsupported: false };
+				return await linterClient.format(absolutePath, content);
 			}
 
-			// Default: use LSP. Initialization failures are formatter failures;
-			// a successfully initialized server without formatting support is unsupported.
+			// Default: use LSP
 			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
 			throwIfAborted(signal);
 
 			const caps = client.serverCapabilities;
 			if (!caps?.documentFormattingProvider) {
-				// Server exists but doesn't support formatting; not a failure
 				continue;
 			}
 
@@ -553,23 +504,13 @@ export async function formatContent(
 			)) as TextEdit[] | null;
 
 			if (!edits || edits.length === 0) {
-				return { content, failed: false, unsupported: false };
+				return content;
 			}
 
 			// Apply edits in-memory and return
-			return { content: applyTextEditsToString(content, edits), failed: false, unsupported: false };
-		} catch {
-			// A formatter was available but the request failed;
-			// record the failure and try the next server
-			hadFailure = true;
-		}
+			return applyTextEditsToString(content, edits);
+		} catch {}
 	}
 
-	// A failure from any applicable server takes precedence over unsupported
-	// servers when no later formatter succeeds.
-	return {
-		content,
-		failed: hadFailure,
-		unsupported: !hadFailure,
-	};
+	return content;
 }

@@ -87,7 +87,7 @@ describe("AgentSession plan-mode compaction hook contract (issue #4359)", () => 
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), `models-${cleanups.length}.yml`));
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
-			"compaction.methodOrder": ["soft"],
+			"compaction.strategy": "context-full",
 			// Aggressive keep-recent budget so the small seeded conversation still
 			// yields a non-empty messagesToSummarize window (prepareCompaction
 			// otherwise short-circuits with "Nothing to compact").

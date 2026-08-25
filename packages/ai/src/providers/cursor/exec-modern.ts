@@ -10,6 +10,7 @@
  * the server reads as "the tool ran and produced nothing".
  */
 
+import { create } from "@bufbuild/protobuf";
 import {
 	AfterAgentResponseRequestResponseSchema,
 	AfterAgentThoughtRequestResponseSchema,
@@ -63,8 +64,7 @@ import {
 	StopRequestResponseSchema,
 	SubagentStartRequestResponseSchema,
 	SubagentStopRequestResponseSchema,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
-import { create } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 import type { ToolResultMessage } from "../../types";
 
 /**
@@ -74,8 +74,6 @@ import type { ToolResultMessage } from "../../types";
  * and their translation are consumed together.
  */
 export {
-	cursorEditOwnedReadPath,
-	cursorRawReadPath,
 	omitUndefinedArgs,
 	piEscapeRegexLiteral,
 	piGrepSkip,

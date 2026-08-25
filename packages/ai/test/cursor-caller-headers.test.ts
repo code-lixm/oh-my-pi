@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as http2 from "node:http2";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { streamCursor } from "@oh-my-pi/pi-ai/providers/cursor";
 import type { Context, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -8,8 +9,7 @@ import {
 	InteractionUpdateSchema,
 	TextDeltaUpdateSchema,
 	TurnEndedUpdateSchema,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
-import { create, toBinary } from "@oh-my-pi/pi-catalog/discovery/protobuf";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
 
 // Cursor forwards caller headers (including `before_provider_headers` extension
 // edits), and it speaks HTTP/2. These assert the TRANSPORT contract against a

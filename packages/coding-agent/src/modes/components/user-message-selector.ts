@@ -1,5 +1,6 @@
 import {
 	type Component,
+	Container,
 	extractPrintableText,
 	fuzzyFilter,
 	matchesKey,
@@ -11,7 +12,7 @@ import {
 import { tSettingsUi } from "../../i18n/settings-locale";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
-import { OverlayPanel } from "./overlay-box";
+import { DynamicBorder } from "./dynamic-border";
 
 interface UserMessageItem {
 	id: string; // Entry ID in the session
@@ -192,15 +193,20 @@ class UserMessageList implements Component {
 /**
  * Component that renders a user message selector for branching
  */
-export class UserMessageSelectorComponent extends OverlayPanel {
+export class UserMessageSelectorComponent extends Container {
 	#messageList: UserMessageList;
 
 	constructor(messages: UserMessageItem[], onSelect: (entryId: string) => void, onCancel: () => void) {
-		super("Branch from Message");
+		super();
 
+		// Add header
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(theme.bold(tSettingsUi("Branch from Message")), 1, 0));
 		this.addChild(
-			new Text(theme.fg("muted", tSettingsUi("Select a message to create a new branch from that point")), 0, 0),
+			new Text(theme.fg("muted", tSettingsUi("Select a message to create a new branch from that point")), 1, 0),
 		);
+		this.addChild(new Spacer(1));
+		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 
 		// Create message list
@@ -210,7 +216,9 @@ export class UserMessageSelectorComponent extends OverlayPanel {
 
 		this.addChild(this.#messageList);
 
+		// Add bottom border
 		this.addChild(new Spacer(1));
+		this.addChild(new DynamicBorder());
 
 		// Auto-cancel if no messages
 		if (messages.length === 0) {

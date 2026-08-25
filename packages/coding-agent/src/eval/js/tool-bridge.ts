@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
+import { isExternalXdevToolLocked } from "../../tools/xdev";
 import { EVAL_AGENT_BRIDGE_NAME, runEvalAgent } from "../agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
 import { EVAL_COMPLETION_BRIDGE_NAME, runEvalCompletion } from "../completion-bridge";
@@ -38,7 +39,10 @@ function toolResultHasError(result: AgentToolResult): boolean {
 }
 
 function getTool(session: ToolSession, name: string): AgentTool {
-	const tool = session.getToolForEvalBridge ? session.getToolForEvalBridge(name) : session.getToolByName?.(name);
+	if (session.xdev && isExternalXdevToolLocked(session.xdev, name)) {
+		throw new ToolError(`External tool "${name}" is discoverable but not active. Enable it with tool_search first.`);
+	}
+	const tool = session.getToolByName?.(name);
 	if (!tool) {
 		throw new ToolError(`Unknown tool from js runtime: ${name}`);
 	}
@@ -128,13 +132,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	const normalizedArgs = normalizeArgs(args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
 	try {
-		const result = await tool.execute(
-			toolCallId,
-			normalizedArgs,
-			options.signal,
-			undefined,
-			options.session.getToolContext?.(),
-		);
+		const result = await tool.execute(toolCallId, normalizedArgs, options.signal);
 		const textBlocks = result.content.filter(
 			(content): content is { type: "text"; text: string } =>
 				content.type === "text" && typeof content.text === "string",

@@ -51,11 +51,6 @@ export class IrcBridge {
 		return records;
 	}
 
-	/** Queues records whose idle wake must wait for a session transition to finish. */
-	deferWake(records: CustomMessage[]): void {
-		this.#asides.push(...records);
-	}
-
 	/** Surfaces and consumes queued incoming records before automatic injection. */
 	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
 		const messages: IrcMessage[] = [];

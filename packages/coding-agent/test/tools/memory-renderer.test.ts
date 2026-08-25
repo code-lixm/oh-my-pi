@@ -10,8 +10,6 @@ import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/setting
 
 const themePromise = getThemeByName("dark");
 
-const themePromise = getThemeByName("dark");
-
 async function theme() {
 	const t = await themePromise;
 	expect(t).toBeDefined();

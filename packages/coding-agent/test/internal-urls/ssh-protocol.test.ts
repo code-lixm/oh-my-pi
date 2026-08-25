@@ -104,9 +104,7 @@ describe("SshProtocolHandler", () => {
 			bytes: new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01]),
 			truncated: false,
 		});
-		await expect(handler.resolve(parseInternalUrl("ssh://icaro/bin/true"))).rejects.toThrow(
-			/binary or non-UTF-8.*use `bash` with a remote SSH command or an `sshfs` mount/,
-		);
+		await expect(handler.resolve(parseInternalUrl("ssh://icaro/bin/true"))).rejects.toThrow(/binary or non-UTF-8/);
 	});
 
 	it("rejects a file whose first invalid byte falls past the old 8 KiB sniff window", async () => {
@@ -183,9 +181,7 @@ describe("SshProtocolHandler", () => {
 		const readSpy = vi
 			.spyOn(fileTransfer, "readRemoteFile")
 			.mockResolvedValue({ bytes: new Uint8Array(), truncated: false });
-		await expect(handler.resolve(parseInternalUrl("ssh://icaro/dev/zero"))).rejects.toThrow(
-			/not a regular file.*use `bash` with a remote SSH command/,
-		);
+		await expect(handler.resolve(parseInternalUrl("ssh://icaro/dev/zero"))).rejects.toThrow(/not a regular file/);
 		expect(readSpy).not.toHaveBeenCalled();
 	});
 

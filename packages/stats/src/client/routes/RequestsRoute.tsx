@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { getRecentRequests } from "../api";
-import { formatDurationMs, formatInteger, formatMessageCost, formatRelativeTime } from "../data/formatters";
+import { formatCost, formatDurationMs, formatInteger, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { t } from "../locale/catalog";
 import type { MessageStats, TimeRange } from "../types";
@@ -53,7 +53,7 @@ export function RequestsRoute({ active, refreshTrigger, onRequestClick }: Reques
 				key: "cost",
 				header: t("table.column.cost"),
 				numeric: true,
-				render: (item: MessageStats) => formatMessageCost(item, 4),
+				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
 			},
 			{
 				key: "duration",
@@ -93,7 +93,7 @@ export function RequestsRoute({ active, refreshTrigger, onRequestClick }: Reques
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("requests.mobile.cost")}</div>
-					<div className="stats-mobile-card-value">{formatMessageCost(item, 4)}</div>
+					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("requests.mobile.tokens")}</div>

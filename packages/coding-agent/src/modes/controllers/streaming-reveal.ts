@@ -222,7 +222,6 @@ export class StreamingRevealController {
 	#component: StreamingRevealComponent | undefined;
 	#timer: NodeJS.Timeout | undefined;
 	#revealed = 0;
-	#targetDirty = false;
 	#hideThinkingBlock = false;
 	#proseOnlyThinking = false;
 	#smoothStreaming = true;
@@ -283,9 +282,6 @@ export class StreamingRevealController {
 		if (!this.#component) return;
 		if (!this.#smoothStreaming) {
 			const total = this.#visibleUnits(message);
-			this.#revealed = total;
-			this.#targetDirty = false;
-			this.#stopTimer();
 			this.#component.updateContent(this.#build(message, total), { transient: true });
 			return;
 		}
@@ -305,19 +301,8 @@ export class StreamingRevealController {
 		if (this.#revealed > total) {
 			this.#revealed = total;
 		}
-		if (this.#revealed < total) {
-			// Behind: the running reveal tick renders the newest target at the
-			// cadence; skip the redundant per-delta render (the reveal cadence
-			// bounds markdown work even when the provider deltas arrive faster).
-			this.#targetDirty = false;
-			this.#syncTimer(total);
-			return;
-		}
-		// Caught up: defer the render to the next reveal tick so a burst of
-		// post-catch-up deltas coalesces into one render instead of one per
-		// token. The tick always renders the latest target — nothing is lost.
-		if (!this.#timer) this.#startTimer();
-		this.#targetDirty = true;
+		this.#renderCurrent();
+		this.#syncTimer(total);
 	}
 
 	stop(): void {
@@ -325,7 +310,6 @@ export class StreamingRevealController {
 		this.#target = undefined;
 		this.#component = undefined;
 		this.#revealed = 0;
-		this.#targetDirty = false;
 		this.#unitCounter.reset();
 	}
 
@@ -402,12 +386,6 @@ export class StreamingRevealController {
 		}
 		const total = this.#visibleUnits(target);
 		if (this.#revealed >= total) {
-			if (this.#targetDirty) {
-				this.#targetDirty = false;
-				this.#revealed = total;
-				this.#renderCurrent();
-				this.#requestRender(component);
-			}
 			this.#stopTimer();
 			return;
 		}

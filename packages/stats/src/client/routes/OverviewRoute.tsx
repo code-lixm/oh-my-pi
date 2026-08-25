@@ -4,7 +4,7 @@ import { Line } from "react-chartjs-2";
 import { getOverviewStats, getRecentRequests } from "../api";
 import { AgentTokenShare } from "../components/AgentTokenShare";
 import { CHART_THEMES } from "../components/chart-shared";
-import { formatDurationMs, formatInteger, formatMessageCost, formatRelativeTime } from "../data/formatters";
+import { formatCost, formatDurationMs, formatInteger, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { t } from "../locale/catalog";
 import type { MessageStats, TimeRange } from "../types";
@@ -162,7 +162,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 				key: "cost",
 				header: t("table.column.cost"),
 				numeric: true,
-				render: (item: MessageStats) => formatMessageCost(item, 4),
+				render: (item: MessageStats) => formatCost(item.usage.cost.total, 4),
 			},
 			{
 				key: "duration",
@@ -202,7 +202,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("table.column.cost")}</div>
-					<div className="stats-mobile-card-value">{formatMessageCost(item, 4)}</div>
+					<div className="stats-mobile-card-value">{formatCost(item.usage.cost.total, 4)}</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">{t("table.column.tokens")}</div>
@@ -298,7 +298,7 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 													<div>{req.provider}</div>
 													<div>
 														{req.duration ? formatDurationMs(req.duration) : ""}{" "}
-														{req.usage.totalTokens > 0 ? `· ${formatMessageCost(req, 4)}` : ""}
+														{req.usage?.cost?.total ? `· ${formatCost(req.usage.cost.total, 4)}` : ""}
 													</div>
 												</div>
 												{isError && (

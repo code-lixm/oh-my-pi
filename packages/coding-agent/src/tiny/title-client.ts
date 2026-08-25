@@ -4,7 +4,6 @@ import {
 	createUnavailableWorker,
 	createWorkerHandle,
 	createWorkerSubprocess,
-	inferenceWorkerEnv,
 	logWorkerMessage,
 	type RefCountedWorkerHandle,
 	resolveWorkerSpawnCmd,
@@ -12,6 +11,7 @@ import {
 	type SpawnedSubprocess,
 	smokeTestWorker,
 	spawnWorkerOrUnavailable,
+	workerEnvFromParent,
 } from "../subprocess/worker-client";
 import { safeSend } from "../utils/ipc";
 import { tinyModelDeviceSettingToEnv } from "./device";
@@ -48,12 +48,6 @@ export interface TinyTitleDownloadOptions {
  * callers that customize automatic session-title generation.
  */
 export interface TinyTitleGenerateOptions {
-	signal?: AbortSignal;
-	systemPrompt?: string;
-}
-
-export interface TinyModelCompletionOptions {
-	maxTokens?: number;
 	signal?: AbortSignal;
 	systemPrompt?: string;
 }
@@ -116,7 +110,7 @@ export function tinyWorkerEnvOverlay(
  * subprocess).
  */
 export function tinyWorkerEnv(): Record<string, string> {
-	return inferenceWorkerEnv(
+	return workerEnvFromParent(
 		tinyWorkerEnvOverlay(
 			$env,
 			readTinyModelSetting("providers.tinyModelDevice"),
@@ -266,7 +260,11 @@ export class TinyTitleClient {
 		}
 	}
 
-	async complete(modelKey: string, prompt: string, options: TinyModelCompletionOptions = {}): Promise<string | null> {
+	async complete(
+		modelKey: string,
+		prompt: string,
+		options: { maxTokens?: number; signal?: AbortSignal } = {},
+	): Promise<string | null> {
 		if (!isTinyMemoryLocalModelKey(modelKey)) return null;
 		if (options.signal?.aborted || this.#failedModels.has(modelKey)) return null;
 
@@ -283,14 +281,7 @@ export class TinyTitleClient {
 			};
 			options.signal?.addEventListener("abort", abort, { once: true });
 			try {
-				worker.send({
-					type: "complete",
-					id,
-					modelKey,
-					prompt,
-					maxTokens: options.maxTokens,
-					systemPrompt: options.systemPrompt,
-				});
+				worker.send({ type: "complete", id, modelKey, prompt, maxTokens: options.maxTokens });
 				return await promise;
 			} finally {
 				options.signal?.removeEventListener("abort", abort);

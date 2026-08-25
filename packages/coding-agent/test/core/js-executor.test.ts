@@ -368,16 +368,12 @@ describe("executeJs", () => {
 			expect.stringMatching(/^js-read-/),
 			{ path: "artifact://15:raw:1-1400", [INTENT_FIELD]: "js prelude" },
 			expect.any(AbortSignal),
-			undefined,
-			undefined,
 		);
 		expect(execute).toHaveBeenNthCalledWith(
 			2,
 			expect.stringMatching(/^js-read-/),
 			{ path: "artifact://15:raw:1-2", [INTENT_FIELD]: "js prelude" },
 			expect.any(AbortSignal),
-			undefined,
-			undefined,
 		);
 	});
 

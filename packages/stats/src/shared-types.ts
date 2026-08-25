@@ -34,8 +34,6 @@ export interface AggregatedStats {
 	cacheSavings: number;
 	/** Total cost */
 	totalCost: number;
-	/** Requests with token usage but no public-equivalent subscription price. */
-	unpricedRequests: number;
 	/** Total premium requests */
 	totalPremiumRequests: number;
 	/** Average duration in ms */
@@ -124,8 +122,6 @@ export interface CostTimeSeriesPoint {
 	provider: string;
 	/** Total cost for this bucket */
 	cost: number;
-	/** Requests excluded because no public-equivalent subscription price exists. */
-	unpricedRequests: number;
 	/** Cost breakdown */
 	costInput: number;
 	costOutput: number;
@@ -308,8 +304,6 @@ export interface ToolUsageStats {
 	outputTokensShare: number;
 	/** Cost (USD) of invoking turns, attributed per call share. */
 	costShare: number;
-	/** Share of unpriced subscription requests attributed to this tool. */
-	unpricedRequestsShare: number;
 	/** Unix ms of the most recent call in range. */
 	lastUsed: number;
 }
@@ -351,8 +345,6 @@ export interface ProviderAggregate {
 	/** Uncached input + cache reads + cache writes + output. */
 	totalTokens: number;
 	totalCost: number;
-	/** Requests excluded because no public-equivalent subscription price exists. */
-	unpricedRequests: number;
 	totalPremiumRequests: number;
 	avgTokensPerSecond: number | null;
 }
@@ -376,8 +368,6 @@ export interface ProviderTimeSeriesPoint {
 	provider: string;
 	totalTokens: number;
 	cost: number;
-	/** Requests excluded because no public-equivalent subscription price exists. */
-	unpricedRequests: number;
 	requests: number;
 }
 
@@ -398,9 +388,8 @@ export interface UsageWindowSeries {
 	accountKey: string;
 	/** Email/account id when known, else the stable account key. */
 	accountLabel: string;
-	/** Groups the same limit window across accounts (the provider limit id). */
+	/** Groups the same limit window across accounts (window label or limit id). */
 	windowKey: string;
-	/** Human label of the limit (distinguishes same-duration windows). */
 	windowLabel: string;
 	points: UsageWindowPoint[];
 }
@@ -412,9 +401,7 @@ export interface UsageWindowSeries {
  */
 export interface ProviderWindowInsight {
 	provider: string;
-	/** Groups the same limit window across accounts (the provider limit id). */
 	windowKey: string;
-	/** Human label of the limit (distinguishes same-duration windows). */
 	windowLabel: string;
 	/** Accounts with at least one snapshot for this window in range. */
 	accounts: number;

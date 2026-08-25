@@ -28,7 +28,6 @@ import {
 	shortenPath,
 	truncateDiffByHunk,
 } from "../tools/render-utils";
-import type { ToolActivityContext, ToolActivitySummary } from "../tools/renderers";
 import {
 	fileHyperlink,
 	framedBlock,
@@ -43,7 +42,6 @@ import type { EditMode } from "../utils/edit-mode";
 import type { DiffError, DiffResult } from "./diff";
 import { type ApplyPatchEntry, expandApplyPatchToEntries, expandApplyPatchToPreviewEntries } from "./modes/apply-patch";
 import type { Operation } from "./modes/patch";
-import { type SloppySection, splitSloppySections } from "./sloppy";
 import type { PerFileDiffPreview } from "./streaming";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -173,6 +171,10 @@ export interface EditRenderContext {
 }
 
 const EDIT_STREAMING_PREVIEW_LINES = 12;
+
+function plainDiffRender(diffText: string): string {
+	return diffText;
+}
 
 /**
  * Lazily grown per-file preview cache slots: the file count of a streaming
@@ -417,42 +419,6 @@ function renderPlainTextPreview(text: string, uiTheme: Theme, _filePath?: string
 	}
 	return preview.trimEnd();
 }
-
-interface StreamingDiffTail {
-	content: string;
-	hidden: boolean;
-}
-
-/**
- * Select the trailing physical lines that fit the live preview budget.
- *
- * Walk backward from the end instead of splitting the complete diff. This keeps
- * allocation and scanning proportional to the visible suffix. One physical line
- * may exceed the budget, but it is still kept so the newest change is visible.
- */
-function sliceStreamingDiffTail(diff: string, innerWidth: number, budget: number): StreamingDiffTail {
-	let end = diff.length;
-	while (end > 0 && diff.charCodeAt(end - 1) === 10) end--;
-	if (end === 0) return { content: "", hidden: false };
-
-	const rowLimit = Math.max(1, budget);
-	let start = end;
-	let cursor = end;
-	let visualRows = 0;
-	while (cursor >= 0) {
-		const newline = cursor > 0 ? diff.lastIndexOf("\n", cursor - 1) : -1;
-		const lineStart = newline + 1;
-		const lineRows = Math.max(1, wrapTextWithAnsi(replaceTabs(diff.slice(lineStart, cursor)), innerWidth).length);
-		if (visualRows > 0 && visualRows + lineRows > rowLimit) break;
-		visualRows += lineRows;
-		start = lineStart;
-		if (newline < 0) break;
-		cursor = newline;
-	}
-
-	return { content: diff.slice(start, end), hidden: start > 0 };
-}
-
 function formatStreamingDiff(
 	diff: string,
 	rawPath: string,
@@ -483,14 +449,26 @@ function formatStreamingDiff(
 		// its Myers alignment is not monotonic in payload length, so a hunk-aware
 		// window stutters as rows move between hunks. Expanded widens the window
 		// to the viewport; the full diff appears once the result finalizes.
-		const tail = sliceStreamingDiffTail(diff, innerWidth, budget);
-		let rendered = "\n\n";
-		if (tail.hidden) {
-			// Exact hidden line/hunk counts require scanning the discarded prefix,
-			// which would make every streaming update scale with the complete diff.
-			rendered += `${uiTheme.fg("dim", "… (content above)")}\n`;
+		const allLines = diff.replace(/\n+$/u, "").split("\n");
+		let visualUsed = 0;
+		let cut = allLines.length;
+		for (let i = allLines.length - 1; i >= 0; i--) {
+			const lineRows = Math.max(1, wrapTextWithAnsi(replaceTabs(allLines[i]!), innerWidth).length);
+			if (visualUsed + lineRows > budget && visualUsed > 0) break;
+			visualUsed += lineRows;
+			cut = i;
 		}
-		rendered += renderDiffColored(tail.content, { filePath: rawPath, theme: uiTheme });
+		const hiddenLines = cut;
+		const visible = hiddenLines > 0 ? allLines.slice(hiddenLines) : allLines;
+		let rendered = "\n\n";
+		if (hiddenLines > 0) {
+			const hiddenHunks = getDiffStats(allLines.slice(0, hiddenLines).join("\n")).hunks;
+			const remainder: string[] = [];
+			if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more hunks`);
+			remainder.push(`${hiddenLines} more lines`);
+			rendered += `${uiTheme.fg("dim", `… (${remainder.join(", ")} above)`)}\n`;
+		}
+		rendered += renderDiffColored(visible.join("\n"), { filePath: rawPath });
 		return rendered;
 	});
 	// The animated glyph rides this trailing line — inside the transcript's
@@ -643,23 +621,6 @@ function getHashlineInputRenderSummary(
 	return { entries: getHashlineInputSections(input) };
 }
 
-/**
- * Per-file section descriptors for a (possibly mid-stream) sloppy payload.
- * Paths live inside the payload's `[path]` headers, so the call header would
- * otherwise render a bare `…` for the whole stream.
- */
-function getSloppyInputRenderSummary(
-	args: EditRenderArgs,
-	editMode: EditMode | undefined,
-): { entries: SloppySection[] } | undefined {
-	const input = args.input ?? args._input;
-	if (editMode !== "sloppy" || typeof input !== "string") {
-		return undefined;
-	}
-	const entries = splitSloppySections(input);
-	return entries.length > 0 ? { entries } : undefined;
-}
-
 function getApplyPatchRenderSummary(
 	args: EditRenderArgs,
 	isPartial: boolean,
@@ -683,66 +644,6 @@ function getApplyPatchRenderSummary(
 		return { entries: [], error };
 	}
 }
-/** Header facts (path, op, rename, file count) resolved from streamed edit args; shared by the framed call header and the compact activity summary. */
-interface EditCallFacts {
-	rawPath: string;
-	rename?: string;
-	op?: Operation;
-	/** Distinct files touched by the call (0 when unknown). */
-	fileCount: number;
-	/** Apply-patch envelope parse error, when the payload failed to parse. */
-	applyPatchError?: string;
-	/** A hashline PUT/CUT line edit precedes the file op — keeps a move framed. */
-	hasHashlineLineEdits: boolean;
-}
-
-function resolveEditCallFacts(
-	editArgs: EditRenderArgs,
-	isPartial: boolean,
-	editMode: EditMode | undefined,
-): EditCallFacts {
-	const hashlineInputSummary = getHashlineInputRenderSummary(editArgs, editMode);
-	const sloppyInputSummary = getSloppyInputRenderSummary(editArgs, editMode);
-	const applyPatchSummary = getApplyPatchRenderSummary(editArgs, isPartial, editMode);
-	const firstApplyPatchEntry = applyPatchSummary?.entries[0];
-	const firstHashlineInputEntry = hashlineInputSummary?.entries[0];
-	// Extract path from first edit entry when top-level path is absent (new schema)
-	const firstEdit = Array.isArray(editArgs.edits) && editArgs.edits.length > 0 ? editArgs.edits[0] : undefined;
-	const rawPath =
-		typeof editArgs.file_path === "string"
-			? editArgs.file_path
-			: typeof editArgs.path === "string"
-				? editArgs.path
-				: (filePathFromEditEntry(firstEdit?.path) ??
-					getPartialJsonEditPath(editArgs) ??
-					firstHashlineInputEntry?.path ??
-					sloppyInputSummary?.entries[0]?.path ??
-					firstApplyPatchEntry?.path ??
-					"");
-	const rename =
-		(typeof editArgs.rename === "string" ? editArgs.rename : undefined) ??
-		filePathFromEditEntry(firstEdit?.rename) ??
-		filePathFromEditEntry(firstEdit?.move) ??
-		firstApplyPatchEntry?.rename ??
-		firstHashlineInputEntry?.rename;
-	const op = editArgs.op || firstEdit?.op || firstApplyPatchEntry?.op || firstHashlineInputEntry?.op;
-	let fileCount =
-		hashlineInputSummary?.entries.length ??
-		sloppyInputSummary?.entries.length ??
-		applyPatchSummary?.entries.length ??
-		0;
-	if (Array.isArray(editArgs.edits)) {
-		fileCount = countEditFiles(editArgs.edits);
-	}
-	return {
-		rawPath,
-		rename,
-		op,
-		fileCount,
-		applyPatchError: applyPatchSummary?.error,
-		hasHashlineLineEdits: Boolean(firstHashlineInputEntry?.hasLineEdits),
-	};
-}
 
 function formatDiffStatsSuffix(diff: string, uiTheme: Theme): string {
 	const { added, removed } = getDiffStats(diff);
@@ -757,31 +658,21 @@ function renderDiffSection(
 	diff: string,
 	rawPath: string,
 	expanded: boolean,
-	innerWidth: number,
 	uiTheme: Theme,
 	renderDiffFn: (t: string, o?: { filePath?: string }) => string,
 	maxCollapsedLines: number,
-	renderCache?: RenderedStringCache,
-	sectionCache?: RenderedStringCache,
+	cache?: RenderedStringCache,
 ): string {
-	return cachedRenderedString(sectionCache, uiTheme, expanded, `${rawPath}:${innerWidth}:${maxCollapsedLines}`, diff, () => {
+	return cachedRenderedString(cache, uiTheme, expanded, rawPath, diff, () => {
 		const {
 			text: truncatedDiff,
 			hiddenHunks,
-			hiddenLines: logicallyHiddenLines,
+			hiddenLines,
 		} = expanded
 			? { text: diff, hiddenHunks: 0, hiddenLines: 0 }
 			: truncateDiffByHunk(diff, PREVIEW_LIMITS.DIFF_COLLAPSED_HUNKS, Math.max(1, maxCollapsedLines - 1));
 
-		const renderedDiff = cachedRenderedString(renderCache, uiTheme, expanded, rawPath, truncatedDiff, () =>
-			renderDiffFn(truncatedDiff, { filePath: rawPath }),
-		);
-		const { text: visibleDiff, hiddenLines: visuallyHiddenLines } = expanded
-			? { text: renderedDiff, hiddenLines: 0 }
-			: sliceCollapsedDiffRows(renderedDiff, innerWidth, maxCollapsedLines);
-		const hiddenLines = logicallyHiddenLines + visuallyHiddenLines;
-
-		let text = `\n${visibleDiff}`;
+		let text = `\n${renderDiffFn(truncatedDiff, { filePath: rawPath })}`;
 		if (!expanded && (hiddenHunks > 0 || hiddenLines > 0)) {
 			const remainder: string[] = [];
 			if (hiddenHunks > 0) remainder.push(`${hiddenHunks} more hunks`);
@@ -802,9 +693,9 @@ function wrapEditRendererLine(line: string, width: number): string[] {
 	// Gutter shapes produced by formatCodeFrameLine: "-315│", " 313│", "+322│",
 	// plus the deduplicated forms "   +│" and "    │" whose repeated line number
 	// renderDiff blanked (single-line replacement pairs and insert-then-context
-	// runs) — all │-separated. ASCII "|" gutters may arrive from injected
-	// renderers that preserve raw canonical rows; those always carry a marker
-	// column ("+"/"-"/space) and a line number. So
+	// runs) — all │-separated. ASCII "|" gutters exist only in raw canonical
+	// diff rows passed through by the plain fallback ("-42|old", " 42|ctx"),
+	// which always carry a marker column ("+"/"-"/space) and a line number. So
 	// the number is optional for "│", while "|" requires the full canonical
 	// shape; anything else (a body line merely starting with "|", error text
 	// like "123|…") is not a diff row and wraps generically.
@@ -831,33 +722,6 @@ function wrapEditRendererLine(line: string, width: number): string[] {
 	);
 }
 
-function sliceCollapsedDiffRows(
-	renderedDiff: string,
-	innerWidth: number,
-	maxRows: number,
-): { text: string; hiddenLines: number } {
-	const lines = renderedDiff.split("\n");
-	const visibleRows: string[] = [];
-	let completeLines = 0;
-
-	for (const line of lines) {
-		const wrapped = wrapEditRendererLine(line, innerWidth);
-		const remainingRows = maxRows - visibleRows.length;
-		if (wrapped.length <= remainingRows) {
-			visibleRows.push(...wrapped);
-			completeLines++;
-			continue;
-		}
-		if (remainingRows > 0) visibleRows.push(...wrapped.slice(0, remainingRows));
-		break;
-	}
-
-	return {
-		text: visibleRows.join("\n"),
-		hiddenLines: lines.length - completeLines,
-	};
-}
-
 export const editToolRenderer = {
 	transcriptSurface: "bare" as const,
 	mergeCallAndResult: true,
@@ -868,18 +732,6 @@ export const editToolRenderer = {
 	// tool-execution-ssh/write/edit streaming repaint regressions in mux panes).
 	forceFirstResultViewportRepaint: true,
 	forceResultViewportRepaintOnSettle: true,
-	/** Compact one-line activity: operation + target path instead of the payload's first line. */
-	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
-		const editArgs = (args ?? {}) as EditRenderArgs;
-		const editMode = (context.renderContext as EditRenderContext | undefined)?.editMode;
-		const facts = resolveEditCallFacts(editArgs, context.isPartial, editMode);
-		const label = getOperationTitle(facts.op);
-		if (!facts.rawPath) return { label };
-		let detail = formatEditTitlePath(facts.rawPath);
-		if (facts.rename) detail += ` → ${formatEditTitlePath(facts.rename)}`;
-		if (facts.fileCount > 1) detail += ` (+${facts.fileCount - 1} more)`;
-		return { label, detail };
-	},
 
 	renderCall(
 		args: EditRenderArgs,
@@ -888,16 +740,38 @@ export const editToolRenderer = {
 	): Component {
 		const renderContext = options.renderContext;
 		const editArgs = args as EditRenderArgs;
-		const { rawPath, rename, op, fileCount, applyPatchError, hasHashlineLineEdits } = resolveEditCallFacts(
-			editArgs,
-			options.isPartial,
-			renderContext?.editMode,
-		);
+		const hashlineInputSummary = getHashlineInputRenderSummary(editArgs, renderContext?.editMode);
+		const applyPatchSummary = getApplyPatchRenderSummary(editArgs, options.isPartial, renderContext?.editMode);
+		const firstApplyPatchEntry = applyPatchSummary?.entries[0];
+		const firstHashlineInputEntry = hashlineInputSummary?.entries[0];
+		// Extract path from first edit entry when top-level path is absent (new schema)
+		const firstEdit = Array.isArray(editArgs.edits) && editArgs.edits.length > 0 ? editArgs.edits[0] : undefined;
+		const rawPath =
+			typeof editArgs.file_path === "string"
+				? editArgs.file_path
+				: typeof editArgs.path === "string"
+					? editArgs.path
+					: (filePathFromEditEntry(firstEdit?.path) ??
+						getPartialJsonEditPath(editArgs) ??
+						firstHashlineInputEntry?.path ??
+						firstApplyPatchEntry?.path ??
+						"");
+		const rename =
+			(typeof editArgs.rename === "string" ? editArgs.rename : undefined) ??
+			filePathFromEditEntry(firstEdit?.rename) ??
+			filePathFromEditEntry(firstEdit?.move) ??
+			firstApplyPatchEntry?.rename ??
+			firstHashlineInputEntry?.rename;
+		const op = editArgs.op || firstEdit?.op || firstApplyPatchEntry?.op || firstHashlineInputEntry?.op;
+		let fileCount = hashlineInputSummary?.entries.length ?? applyPatchSummary?.entries.length ?? 0;
+		if (Array.isArray(editArgs.edits)) {
+			fileCount = countEditFiles(editArgs.edits);
+		}
 		// Delete / payload-less move calls render as an inline pending row (no
 		// empty framed container), mirroring the completed result but with the
 		// shared hourglass instead of the eraser/move glyph.
-		const hasPayload = hasEditCallPayload(editArgs, renderContext) || hasHashlineLineEdits;
-		if (fileCount <= 1 && !applyPatchError && (op === "delete" || (rename !== undefined && !hasPayload))) {
+		const hasPayload = hasEditCallPayload(editArgs, renderContext) || Boolean(firstHashlineInputEntry?.hasLineEdits);
+		if (fileCount <= 1 && !applyPatchSummary?.error && (op === "delete" || (rename !== undefined && !hasPayload))) {
 			return renderInlineEditRow(uiTheme, { op, rename, rawPath, pending: true });
 		}
 		const callPreviewCaches: RenderedStringCache[] = [];
@@ -923,16 +797,16 @@ export const editToolRenderer = {
 				options?.spinnerFrame,
 				callPreviewCaches,
 			);
-			if (applyPatchError) {
-				body += `\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchError), Math.max(1, width - 2)))}`;
+			if (applyPatchSummary?.error) {
+				body += `\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchSummary.error), Math.max(1, width - 2)))}`;
 			}
 			const bodyLines = body ? body.split("\n") : [];
 			while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 			return {
 				header,
 				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],
-				state: applyPatchError ? "error" : "pending",
-				borderColor: applyPatchError ? "error" : "borderMuted",
+				state: applyPatchSummary?.error ? "error" : "pending",
+				borderColor: applyPatchSummary?.error ? "error" : "borderMuted",
 				width,
 				contentPaddingLeft: 0,
 			};
@@ -1004,13 +878,8 @@ function renderSingleFileResult(
 		return renderInlineEditRow(uiTheme, { op, rename, rawPath, linkPath, pending: false });
 	}
 
-	const renderFallbackDiff = (diffText: string, diffOptions?: { filePath?: string }): string =>
-		renderDiffColored(diffText, { filePath: diffOptions?.filePath, theme: uiTheme });
-
 	let diffSectionRenderDiffFn: ((t: string, o?: { filePath?: string }) => string) | undefined;
 	const diffSectionCache = createRenderedStringCache();
-	const renderedDiffCache = createRenderedStringCache();
-	const statsSuffixCache = createRenderedStringCache();
 
 	return framedBlock(uiTheme, width => {
 		const { expanded, renderContext } = options;
@@ -1020,12 +889,11 @@ function renderSingleFileResult(
 		// for an empty-diff delete/move/no-op result mislabels the card. Fall
 		// back to the preview only when no details exist yet.
 		const editDiffPreview = details ? undefined : renderContext?.editDiffPreview;
-		const renderDiffFn = renderContext?.renderDiff ?? renderFallbackDiff;
+		const renderDiffFn = renderContext?.renderDiff ?? plainDiffRender;
 
 		if (diffSectionRenderDiffFn !== renderDiffFn) {
 			diffSectionRenderDiffFn = renderDiffFn;
 			invalidateRenderedStringCache(diffSectionCache);
-			invalidateRenderedStringCache(renderedDiffCache);
 		}
 		const firstChangedLine =
 			(editDiffPreview && "firstChangedLine" in editDiffPreview ? editDiffPreview.firstChangedLine : undefined) ||
@@ -1035,11 +903,7 @@ function renderSingleFileResult(
 		// Change stats ride inline on the header bar next to the path.
 		const previewDiff = editDiffPreview && !("error" in editDiffPreview) ? editDiffPreview.diff : undefined;
 		const headerDiff = isError ? undefined : details?.diff || previewDiff;
-		const statsSuffix = headerDiff
-			? cachedRenderedString(statsSuffixCache, uiTheme, false, "", headerDiff, () =>
-					formatDiffStatsSuffix(headerDiff, uiTheme),
-				)
-			: "";
+		const statsSuffix = headerDiff ? formatDiffStatsSuffix(headerDiff, uiTheme) : "";
 		const header = renderEditHeader(width, uiTheme, {
 			icon: isError ? "error" : "success",
 			iconOverride: !isError && !options.isPartial ? uiTheme.styledSymbol("tool.edit", "accent") : undefined,
@@ -1050,7 +914,6 @@ function renderSingleFileResult(
 			linkPath,
 			statsSuffix,
 		});
-		const innerWidth = outputBlockContentWidth(width, 0);
 
 		let body = "";
 		if (isError) {
@@ -1060,11 +923,9 @@ function renderSingleFileResult(
 				details.diff,
 				rawPath,
 				expanded,
-				innerWidth,
 				uiTheme,
 				renderDiffFn,
 				options.renderContext?.detailMaxLines ?? PREVIEW_LIMITS.DIFF_COLLAPSED_LINES,
-				renderedDiffCache,
 				diffSectionCache,
 			);
 		} else if (details) {
@@ -1083,11 +944,9 @@ function renderSingleFileResult(
 					editDiffPreview.diff,
 					rawPath,
 					expanded,
-					innerWidth,
 					uiTheme,
 					renderDiffFn,
 					options.renderContext?.detailMaxLines ?? PREVIEW_LIMITS.DIFF_COLLAPSED_LINES,
-					renderedDiffCache,
 					diffSectionCache,
 				);
 		}
@@ -1100,6 +959,7 @@ function renderSingleFileResult(
 		// Diff lines self-wrap with a continuation gutter; pre-wrap to the frame's
 		// inner width so renderOutputBlock's generic wrap is a no-op. Edit frames
 		// use a flush left border because code-frame gutters already provide padding.
+		const innerWidth = outputBlockContentWidth(width, 0);
 		const bodyLines = body.length > 0 ? body.split("\n").flatMap(line => wrapEditRendererLine(line, innerWidth)) : [];
 		while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 

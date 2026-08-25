@@ -16,7 +16,7 @@ import type {
 	TextContent,
 	TSchema,
 } from "@oh-my-pi/pi-ai";
-import { isBuiltinComposerStyle, type KeyId } from "@oh-my-pi/pi-tui";
+import type { KeyId } from "@oh-my-pi/pi-tui";
 import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import {
 	type ExtensionModule,
@@ -32,7 +32,6 @@ import { execCommand } from "../../exec/exec";
 // Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
 import * as PiCodingAgent from "../../index";
 import type { CustomMessagePayload } from "../../session/messages";
-import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import { EventBus } from "../../utils/event-bus";
 import * as TypeBox from "../legacy-typebox";
 import { installLegacyPiSpecifierShim, loadLegacyPiModule } from "../plugins/legacy-pi-compat";
@@ -41,7 +40,6 @@ import { getAllPluginExtensionPaths } from "../plugins/loader";
 import { resolvePath, withHostGuard } from "../utils";
 import type {
 	AssistantThinkingRenderer,
-	ComposerShapeDefinition,
 	Extension,
 	ExtensionAPI,
 	ExtensionContext,
@@ -192,14 +190,6 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		for (const listener of this.extension.toolRegistrationListeners ?? []) listener(tool.name);
 	}
 
-	registerFileWriteFallback(handler: FileWriteFallbackHandler): void {
-		this.extension.fileWriteFallbackHandlers.push(handler);
-	}
-
-	registerFileDeleteFallback(handler: FileDeleteFallbackHandler): void {
-		this.extension.fileDeleteFallbackHandlers.push(handler);
-	}
-
 	registerCommand(
 		name: string,
 		options: {
@@ -241,20 +231,6 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void {
 		this.extension.assistantThinkingRenderers.push(renderer);
-	}
-
-	registerComposerShape(definition: ComposerShapeDefinition): void {
-		const id = definition.style.id;
-		if (id.length === 0 || id !== id.trim()) {
-			throw new TypeError("Composer shape id must be a non-empty trimmed string");
-		}
-		if (definition.label.trim().length === 0) {
-			throw new TypeError(`Composer shape "${id}" must have a label`);
-		}
-		if (isBuiltinComposerStyle(id)) {
-			throw new Error(`Cannot replace built-in composer shape "${id}"`);
-		}
-		this.extension.composerShapes.set(id, definition);
 	}
 
 	getFlag(name: string): boolean | string | undefined {
@@ -355,10 +331,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		tools: new Map(),
 		toolRegistrationListeners: new Set(),
 		assistantThinkingRenderers: [],
-		fileWriteFallbackHandlers: [],
-		fileDeleteFallbackHandlers: [],
 		messageRenderers: new Map(),
-		composerShapes: new Map(),
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
@@ -653,8 +626,6 @@ async function discoverHooksInPackageRoot(root: string): Promise<string[]> {
 export interface DiscoverExtensionPathOptions {
 	/** Include ambient native extensions, hooks, and installed plugins. */
 	ambient?: boolean;
-	/** Include ambient hook factories. Disable for read-only catalog commands. */
-	includeAmbientHooks?: boolean;
 }
 
 export async function discoverExtensionPaths(
@@ -707,13 +678,11 @@ export async function discoverExtensionPaths(
 	// scans only this invocation's configured package roots; it must not consult
 	// settings, installed packages, or process-global CLI injection state.
 	if (ambient) {
-		if (options.includeAmbientHooks !== false) {
-			const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
-			for (const hookPath of hooks.items
-				.map(hook => hook.path)
-				.filter(hookPath => isExtensionModuleFile(path.basename(hookPath)))) {
-				addPath(hookPath);
-			}
+		const hooks = await loadCapability<Hook>(hookCapability.id, loadOptions);
+		for (const hookPath of hooks.items
+			.map(hook => hook.path)
+			.filter(hookPath => isExtensionModuleFile(path.basename(hookPath)))) {
+			addPath(hookPath);
 		}
 	} else {
 		for (const configuredPath of configuredPaths) {

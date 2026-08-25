@@ -61,7 +61,6 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
 		description: command.description,
-		icon: command.icon,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
 		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,

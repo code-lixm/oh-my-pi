@@ -173,11 +173,8 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 		const modelRegistry = sharedModelRegistry;
 		const settings = Settings.isolated({
 			"compaction.enabled": true,
-			// These suites assert the blocking threshold pass itself; keep the
-			// speculation grace band from deferring it.
-			"compaction.asyncEnabled": false,
 			"compaction.autoContinue": true,
-			"compaction.methodOrder": ["soft"],
+			"compaction.strategy": "context-full",
 			"task.eager": "always",
 			"todo.enabled": false,
 			"todo.eager": "default",

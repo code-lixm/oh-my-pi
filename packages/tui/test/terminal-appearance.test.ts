@@ -854,12 +854,9 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		process.stdin.emit("data", "\x1b[?1;2c");
 		expect(received).toEqual([]);
 
-		// An eighth stray DA1 has no owner, yet is still swallowed: `CSI ? … c` is
-		// exclusively a terminal->host report, never a keystroke, so a reply that
-		// lands after the sentinel FIFO drains (slow SSH/PTY links) must not leak
-		// into the composer as literal text (#8542).
+		// An eighth stray DA1 has no owner and must reach the input handler — it is
 		process.stdin.emit("data", "\x1b[?1;2c");
-		expect(received).toEqual([]);
+		expect(received).toEqual(["\x1b[?1;2c"]);
 
 		terminal.stop();
 	});
@@ -1295,9 +1292,9 @@ describe("OSC 66 text-sizing capability", () => {
 	it("advertises text sizing only for Kitty", () => {
 		// OSC 66 is a Kitty-only protocol; any other terminal must report the
 		// capability as false so the renderer never emits raw escape bytes there.
-		expect(getTerminalInfo("kitty").supportsTextSizing).toBe(true);
+		expect(getTerminalInfo("kitty").textSizing).toBe(true);
 		for (const id of ["ghostty", "wezterm", "iterm2", "vscode", "alacritty", "base", "trueColor"] as const) {
-			expect(getTerminalInfo(id).supportsTextSizing).toBe(false);
+			expect(getTerminalInfo(id).textSizing).toBe(false);
 		}
 	});
 });

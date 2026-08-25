@@ -87,9 +87,7 @@ function buildGeneratedBlock(dts: string): string {
 	if (classes.length > 0) {
 		lines.push("// classes");
 		for (const name of classes) {
-			const binding =
-				name === "DesktopSession" ? `adaptDesktopSession(nativeBindings.${name})` : `nativeBindings.${name}`;
-			lines.push(`export const ${name} = ${binding};`);
+			lines.push(`export const ${name} = nativeBindings.${name};`);
 		}
 	}
 	if (functions.length > 0) {

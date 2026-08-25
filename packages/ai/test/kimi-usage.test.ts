@@ -3,11 +3,10 @@ import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import type { UsageFetchContext, UsageFetchParams } from "@oh-my-pi/pi-ai/usage";
 import { kimiUsageProvider } from "@oh-my-pi/pi-ai/usage/kimi";
 
-function makeCredential(accountId?: string): UsageFetchParams["credential"] {
+function makeCredential(): UsageFetchParams["credential"] {
 	return {
 		type: "oauth",
 		accessToken: "kimi-test-token",
-		accountId,
 	};
 }
 
@@ -102,14 +101,5 @@ describe("kimi usage provider", () => {
 		expect(report!.limits).toHaveLength(2);
 		expect(report!.limits[0]!.window?.id).toBe("7d");
 		expect(report!.limits[1]!.window?.id).toBe("90m");
-	});
-
-	it("attaches the credential account id used by stable usage labels", async () => {
-		const report = await kimiUsageProvider.fetchUsage!(
-			{ provider: "kimi-code", credential: makeCredential("kimi-user-42"), signal: undefined },
-			makeCtx({ usage: { limit: "100", used: "28", remaining: "72" } }),
-		);
-
-		expect(report?.metadata?.accountId).toBe("kimi-user-42");
 	});
 });

@@ -582,9 +582,9 @@ export function encodeStream(
 		async start(controller) {
 			// contentIndex (from pi-ai events) -> tool_calls index on the wire.
 			const toolIndexByContentIndex = new Map<number, number>();
-			// wire index -> metadata emitted so far, to detect values that need a
-			// concatenation-safe corrective chunk before the finish.
-			const sentToolMeta = new Map<number, { id: string; name: string; hasArgumentBytes: boolean }>();
+			// wire index -> id/name emitted on the start chunk, to detect late-arriving
+			// upstream id/name that needs a corrective chunk before the finish.
+			const sentToolMeta = new Map<number, { id: string; name: string }>();
 			let nextToolIndex = 0;
 			let hasToolCalls = false;
 			let finishReason: string = "stop";
@@ -620,7 +620,7 @@ export function encodeStream(
 							toolIndexByContentIndex.set(event.contentIndex, idx);
 							const partial = event.partial.content[event.contentIndex];
 							const call = partial && partial.type === "toolCall" ? partial : undefined;
-							sentToolMeta.set(idx, { id: call?.id ?? "", name: call?.name ?? "", hasArgumentBytes: false });
+							sentToolMeta.set(idx, { id: call?.id ?? "", name: call?.name ?? "" });
 							writeSse(
 								controller,
 								baseChunk(
@@ -643,8 +643,6 @@ export function encodeStream(
 						case "toolcall_delta": {
 							const idx = toolIndexByContentIndex.get(event.contentIndex);
 							if (idx === undefined) break;
-							const sent = sentToolMeta.get(idx);
-							if (sent && event.delta.length > 0) sent.hasArgumentBytes = true;
 							writeSse(
 								controller,
 								baseChunk({ tool_calls: [{ index: idx, function: { arguments: event.delta } }] }, null),
@@ -657,17 +655,14 @@ export function encodeStream(
 							if (idx === undefined) break;
 							const sent = sentToolMeta.get(idx);
 							if (sent === undefined) break;
-							// Upstream providers can settle id, name, or arguments after the
-							// start chunk. Emit corrections only for fields whose streamed
-							// value was empty: accumulating clients concatenate each field,
-							// so "" + value is the only safe correction.
+							// Upstream completions providers can receive the real id/name in a
+							// later chunk than toolcall_start. Emit a corrective chunk only when
+							// the streamed value was empty: accumulating clients concatenate
+							// string fields, so "" + value is the only safe correction.
 							const correctId = sent.id === "" && event.toolCall.id !== "" ? event.toolCall.id : undefined;
 							const correctName =
 								sent.name === "" && event.toolCall.name !== "" ? event.toolCall.name : undefined;
-							const correctArguments = sent.hasArgumentBytes
-								? undefined
-								: stringifyArgs(event.toolCall.arguments);
-							if (correctId !== undefined || correctName !== undefined || correctArguments !== undefined) {
+							if (correctId !== undefined || correctName !== undefined) {
 								writeSse(
 									controller,
 									baseChunk(
@@ -676,16 +671,7 @@ export function encodeStream(
 												{
 													index: idx,
 													...(correctId !== undefined ? { id: correctId } : {}),
-													...(correctName !== undefined || correctArguments !== undefined
-														? {
-																function: {
-																	...(correctName !== undefined ? { name: correctName } : {}),
-																	...(correctArguments !== undefined
-																		? { arguments: correctArguments }
-																		: {}),
-																},
-															}
-														: {}),
+													...(correctName !== undefined ? { function: { name: correctName } } : {}),
 												},
 											],
 										},

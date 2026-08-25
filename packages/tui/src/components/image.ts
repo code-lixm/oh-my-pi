@@ -365,8 +365,11 @@ export class ImageBudget {
 	 * Restart every placement epoch after a destructive history clear (`CSI 3 J`
 	 * full paint). The clear destroys all placement cells — scrollback rows are
 	 * gone and the replay rewrites the viewport — so no archive remains to
-	 * protect. Reverting to epoch 1 lets the replay recreate every visible
-	 * placement after the terminal-wide cleanup.
+	 * protect. Reverting to epoch 1 lets the replay's placements replace the
+	 * terminal's stale registry entries; the returned list names every image
+	 * and the highest epoch it reached so the caller can delete all of its
+	 * registry entries explicitly (`d=i` keeps the transmitted data) — an image
+	 * absent from the replay never re-places, so even its epoch-1 entry must go.
 	 */
 	resetPlacementEpochs(): ReadonlyArray<{ imageId: number; lastEpoch: number }> {
 		let stale: Array<{ imageId: number; lastEpoch: number }> | undefined;
@@ -589,8 +592,7 @@ export class Image implements Component, MouseRoutable {
 			this.#cachedImageProtocol === imageProtocol &&
 			this.#cachedCellWidthPx === cellDimensions.widthPx &&
 			this.#cachedCellHeightPx === cellDimensions.heightPx &&
-			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
-			(this.#imageId == null || this.#budget?.shouldTransmit(this.#imageId) !== true)
+			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders
 		) {
 			return this.#cachedLines;
 		}

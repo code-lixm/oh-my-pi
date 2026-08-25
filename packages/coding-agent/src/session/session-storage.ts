@@ -128,27 +128,14 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 	}
 
 	#writeNow(line: string): void {
-		const originalSize = fs.fstatSync(this.#fd).size;
 		const buf = Buffer.from(line, "utf-8");
 		let offset = 0;
-		try {
-			while (offset < buf.length) {
-				const written = fs.writeSync(this.#fd, buf, offset, buf.length - offset);
-				if (written === 0) {
-					throw new Error("Short write");
-				}
-				offset += written;
+		while (offset < buf.length) {
+			const written = fs.writeSync(this.#fd, buf, offset, buf.length - offset);
+			if (written === 0) {
+				throw new Error("Short write");
 			}
-		} catch (writeError) {
-			try {
-				fs.ftruncateSync(this.#fd, originalSize);
-			} catch (rollbackError) {
-				throw new AggregateError(
-					[toError(writeError), toError(rollbackError)],
-					"Session append failed and its partial bytes could not be rolled back",
-				);
-			}
-			throw writeError;
+			offset += written;
 		}
 	}
 

@@ -6,7 +6,6 @@ import { scheduler } from "node:timers/promises";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { readSseJson } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
-import { ThinkingFenceStripper } from "../dialect/thinking-fence-strip";
 import * as AIError from "../error";
 import type {
 	Api,
@@ -52,15 +51,6 @@ export type {
 export { normalizeSchemaForGoogle };
 
 type GoogleApiType = "google-generative-ai" | "google-gemini-cli" | "google-vertex";
-
-function convertGoogleImagePart(image: ImageContent): Part {
-	if (image.providerFile?.provider === "google" && image.providerFile.uri) {
-		return { fileData: { fileUri: image.providerFile.uri, mimeType: image.mimeType } };
-	}
-	return image.url
-		? { fileData: { fileUri: image.url, mimeType: image.mimeType } }
-		: { inlineData: { mimeType: image.mimeType, data: image.data } };
-}
 
 /**
  * Thinking level for Gemini 3 models. Mirrors Google's `ThinkingLevel` enum values.
@@ -220,7 +210,12 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						if (text.trim().length === 0) continue;
 						parts.push({ text });
 					} else if (supportsImages) {
-						parts.push(convertGoogleImagePart(item));
+						parts.push({
+							inlineData: {
+								mimeType: item.mimeType,
+								data: item.data,
+							},
+						});
 					} else {
 						omittedImages = true;
 					}
@@ -319,7 +314,12 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 						? "(see attached image)"
 						: "";
 
-			const imageParts = imageContent.map(convertGoogleImagePart);
+			const imageParts: Part[] = imageContent.map(imageBlock => ({
+				inlineData: {
+					mimeType: imageBlock.mimeType,
+					data: imageBlock.data,
+				},
+			}));
 
 			const includeId = supportsFunctionPartId(model);
 			const emittedName = emittedToolCallNames.get(msg.toolCallId);
@@ -617,23 +617,11 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
 	let currentBlock: TextContent | ThinkingContent | null = null;
-	// Heals a leaked reasoning-fence opener (```thinking / ``````thinking) that some
-	// Gemini thought summaries emit as a between-summary delimiter (#8719). One
-	// stripper per thinking block; created lazily on first thinking delta.
-	let thinkingStripper: ThinkingFenceStripper | null = null;
 	let firstTokenSeen = false;
 	let sawFinishReason = false;
 
 	const flushCurrent = () => {
 		if (!currentBlock) return;
-		if (currentBlock.type === "thinking" && thinkingStripper) {
-			const tail = thinkingStripper.flush();
-			if (tail) {
-				currentBlock.thinking += tail;
-				stream.push({ type: "thinking_delta", contentIndex: blockIndex(), delta: tail, partial: output });
-			}
-		}
-		thinkingStripper = null;
 		pushBlockEndEvent(currentBlock, blockIndex(), output, stream);
 	};
 
@@ -670,21 +658,17 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 						currentBlock = startTextOrThinkingBlock(isThinking, output, stream);
 					}
 					if (currentBlock.type === "thinking") {
-						thinkingStripper ??= new ThinkingFenceStripper();
-						const cleaned = thinkingStripper.push(part.text);
-						currentBlock.thinking += cleaned;
+						currentBlock.thinking += part.text;
 						currentBlock.thinkingSignature = retainThoughtSignature(
 							currentBlock.thinkingSignature,
 							part.thoughtSignature,
 						);
-						if (cleaned) {
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: blockIndex(),
-								delta: cleaned,
-								partial: output,
-							});
-						}
+						stream.push({
+							type: "thinking_delta",
+							contentIndex: blockIndex(),
+							delta: part.text,
+							partial: output,
+						});
 					} else {
 						currentBlock.text += part.text;
 						if (retainTextSignature) {

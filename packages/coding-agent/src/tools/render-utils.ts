@@ -624,111 +624,79 @@ export function truncateDiffByHunk(
 		let keptHunks = 0;
 
 		for (const seg of segments) {
-			if (kept.length >= maxLines) break;
 			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
 				keptHunks++;
+				if (keptHunks > maxHunks) break;
 			}
-			const take = Math.min(seg.lines.length, maxLines - kept.length);
-			for (let i = 0; i < take; i++) {
-				kept.push(seg.lines[i]!);
-			}
+			kept.push(...seg.lines);
+			if (kept.length >= maxLines) break;
 		}
 
+		const keptStats = getDiffStats(kept.join("\n"));
 		return {
 			text: kept.join("\n"),
-			hiddenHunks: Math.max(0, totalStats.hunks - keptHunks),
+			hiddenHunks: Math.max(0, totalStats.hunks - keptStats.hunks),
 			hiddenLines: Math.max(0, lines.length - kept.length),
 		};
 	}
 
 	const contextBudget = maxLines - changeLineCount;
-	const contextSegments = segments.filter(s => !s.isChange);
+	const contextSegments = segments.filter(s => !s.isChange && !s.isEllipsis);
 	const totalContextLines = contextSegments.reduce((sum, s) => sum + s.lines.length, 0);
 
 	const kept: string[] = [];
 	let keptHunks = 0;
-	let keptSourceLines = 0;
 
 	if (totalContextLines <= contextBudget) {
 		for (const seg of segments) {
 			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
 				keptHunks++;
+				if (keptHunks > maxHunks) break;
 			}
 			kept.push(...seg.lines);
-			keptSourceLines += seg.lines.length;
 		}
 	} else {
-		const contextRatio = totalContextLines > 0 ? contextBudget / totalContextLines : 0;
-		let remainingContextBudget = contextBudget;
+		const contextRatio = contextSegments.length > 0 ? contextBudget / totalContextLines : 0;
 
 		for (let i = 0; i < segments.length; i++) {
 			const seg = segments[i];
 
 			if (seg.isChange) {
-				if (keptHunks >= maxHunks) break;
 				keptHunks++;
+				if (keptHunks > maxHunks) break;
 				kept.push(...seg.lines);
-				keptSourceLines += seg.lines.length;
-				continue;
-			}
-			if (remainingContextBudget <= 0) continue;
-
-			const allowedLines = Math.min(
-				remainingContextBudget,
-				Math.max(1, Math.floor(seg.lines.length * contextRatio)),
-			);
-			const outputStart = kept.length;
-			let sourceLinesAdded = 0;
-
-			if (seg.isEllipsis || seg.lines.length <= allowedLines) {
-				for (let j = 0; j < allowedLines; j++) {
-					kept.push(seg.lines[j]!);
-				}
-				sourceLinesAdded = allowedLines;
+			} else if (seg.isEllipsis) {
+				kept.push(...seg.lines);
 			} else {
+				const allowedLines = Math.max(1, Math.floor(seg.lines.length * contextRatio));
 				const isBeforeChange = segments[i + 1]?.isChange;
 				const isAfterChange = segments[i - 1]?.isChange;
 
 				if (isBeforeChange && isAfterChange) {
-					if (allowedLines >= 3) {
-						const sourceBudget = allowedLines - 1;
-						const firstCount = Math.ceil(sourceBudget / 2);
-						const lastCount = sourceBudget - firstCount;
-						kept.push(...seg.lines.slice(0, firstCount));
+					const half = Math.ceil(allowedLines / 2);
+					if (seg.lines.length > allowedLines) {
+						kept.push(...seg.lines.slice(0, half));
 						kept.push("");
-						if (lastCount > 0) kept.push(...seg.lines.slice(-lastCount));
-						sourceLinesAdded = sourceBudget;
+						kept.push(...seg.lines.slice(-half));
 					} else {
-						const firstCount = Math.ceil(allowedLines / 2);
-						const lastCount = allowedLines - firstCount;
-						kept.push(...seg.lines.slice(0, firstCount));
-						if (lastCount > 0) kept.push(...seg.lines.slice(-lastCount));
-						sourceLinesAdded = allowedLines;
+						kept.push(...seg.lines);
 					}
 				} else if (isBeforeChange) {
 					kept.push(...seg.lines.slice(-allowedLines));
-					sourceLinesAdded = allowedLines;
 				} else if (isAfterChange) {
 					kept.push(...seg.lines.slice(0, allowedLines));
-					sourceLinesAdded = allowedLines;
 				} else {
-					const take = Math.min(allowedLines, 2);
-					kept.push(...seg.lines.slice(0, take));
-					sourceLinesAdded = take;
+					kept.push(...seg.lines.slice(0, Math.min(allowedLines, 2)));
 				}
 			}
-
-			keptSourceLines += sourceLinesAdded;
-			remainingContextBudget -= kept.length - outputStart;
 		}
 	}
 
+	const keptStats = getDiffStats(kept.join("\n"));
 	return {
 		text: kept.join("\n"),
-		hiddenHunks: Math.max(0, totalStats.hunks - keptHunks),
-		hiddenLines: Math.max(0, lines.length - keptSourceLines),
+		hiddenHunks: Math.max(0, totalStats.hunks - keptStats.hunks),
+		hiddenLines: Math.max(0, lines.length - kept.length),
 	};
 }
 

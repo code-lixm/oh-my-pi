@@ -32,8 +32,6 @@ interface PromptActionAutocompleteItem extends AutocompleteItem {
 interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
-	/** Usage count per command name for frequency-ranked slash completions. */
-	commandUsage?: (name: string) => number;
 	keybindings: KeybindingsManager;
 	copyCurrentLine: () => void;
 	copyPrompt: () => void;
@@ -133,14 +131,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#actions: PromptActionDefinition[];
 	#basePath: string;
 
-	constructor(
-		commands: SlashCommand[],
-		basePath: string,
-		actions: PromptActionDefinition[],
-		commandUsage?: (name: string) => number,
-	) {
+	constructor(commands: SlashCommand[], basePath: string, actions: PromptActionDefinition[]) {
 		this.#commands = commands;
-		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { commandUsage });
+		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
 		this.#basePath = basePath;
 		this.#actions = actions;
 	}
@@ -149,9 +142,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		lines: string[],
 		cursorLine: number,
 		cursorCol: number,
-		signal?: AbortSignal,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
-		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 		const leadingSlashStart = findLeadingSlashCommandStart(textBeforeCursor);
@@ -165,14 +156,14 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			const commandName = commandText.slice(1, spaceIndex);
 			const command = this.#commands.find(cmd => cmd.name === commandName || cmd.aliases?.includes(commandName));
 			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
-				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
+				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol);
 				if (argumentSuggestions) return argumentSuggestions;
 				// No slash-argument completion for this input: preserve numeric
 				// GitHub references and internal URLs while keeping prompt-action
 				// tokens such as `#copy` literal.
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
-				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
 			}
 		}
 
@@ -202,7 +193,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
@@ -210,7 +201,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			if (emojiSuggestions) return emojiSuggestions;
 		}
 
-		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
+		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol);
 	}
 
 	applyCompletion(
@@ -327,5 +318,5 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.commandUsage);
+	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions);
 }

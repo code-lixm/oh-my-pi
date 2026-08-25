@@ -10,7 +10,6 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
 import { extractUriScheme } from "../internal-urls/parse";
 import { InternalUrlRouter } from "../internal-urls/router";
-import { closeDaemonClients } from "../launch/client";
 import { discoverAndLoadMCPTools } from "../mcp/loader";
 import { MCPManager } from "../mcp/manager";
 import { discoverAuthStorage } from "../session/auth-broker-config";
@@ -93,7 +92,6 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 			if (MCPManager.instance() === mcpManager) MCPManager.setInstance(undefined);
 		}
 		authStorage?.close();
-		await closeDaemonClients();
 	}
 
 	if (failed) process.exit(1);

@@ -70,7 +70,7 @@ describe("handoff summary divider", () => {
 
 		expect(component).toBeInstanceOf(HandoffSummaryMessageComponent);
 		const collapsed = Bun.stripANSI(component!.render(80).join("\n"));
-		expect(collapsed).toContain("handed-off");
+		expect(collapsed).toContain("handoff");
 		expect(collapsed).toContain("ctrl+o");
 		expect(collapsed).not.toContain("[handoff]");
 		expect(collapsed).not.toContain("Continue the resize fix");

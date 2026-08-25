@@ -50,13 +50,12 @@ import type { SyncWorkerRequest, SyncWorkerResponse } from "./sync-worker";
 import type {
 	BehaviorDashboardStats,
 	DashboardStats,
-	FolderStats,
 	MessageStats,
 	ProviderDashboardStats,
 	RequestDetails,
 	ToolDashboardStats,
 } from "./types";
-import { computeUsageWindowStats, fetchUsageData } from "./usage-windows";
+import { computeUsageWindowStats, fetchUsageSnapshots } from "./usage-windows";
 
 const STATS_SYNC_LOCK_RETRY_MS = 25;
 const STATS_SYNC_LOCK_WAIT_MS = 60 * 60 * 1000;
@@ -533,13 +532,6 @@ export async function getCostDashboardStats(range?: string | null): Promise<Pick
 		costSeries: getCostTimeSeries(costSeriesDays, cutoff),
 	};
 }
-
-export async function getFolderStats(range?: string | null): Promise<FolderStats[]> {
-	await initDb();
-	const { cutoff } = getTimeRangeConfig(range);
-	return getStatsByFolder(cutoff ?? undefined);
-}
-
 export async function getRecentRequests(limit?: number): Promise<MessageStats[]> {
 	await initDb();
 	return dbGetRecentRequests(limit);
@@ -606,18 +598,14 @@ export async function getToolDashboardStats(range?: string | null): Promise<Tool
  * Get the providers dashboard payload: per-provider totals, peak-burn-hours
  * histogram, provider token time series, and subscription-window analytics
  * (utilization series + insights) derived from recorded usage-limit snapshots.
- *
- * Window token estimates use broker-held fleet token burn when a broker is
- * configured — the window fractions cover every install sharing the broker's
- * credentials, so dividing them into local-only tokens would undercount.
  */
 export async function getProviderDashboardStats(range?: string | null): Promise<ProviderDashboardStats> {
 	await initDb();
 	const { modelSeriesDays, modelSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
 	const providers = getStatsByProvider(cutoff ?? undefined);
-	const usage = await fetchUsageData(cutoff ?? 0);
-	const tokensByProvider = usage.fleetTokensByProvider ?? new Map(providers.map(p => [p.provider, p.totalTokens]));
-	const { usageSeries, windowInsights } = computeUsageWindowStats(usage.rows, tokensByProvider);
+	const tokensByProvider = new Map(providers.map(p => [p.provider, p.totalTokens]));
+	const snapshots = await fetchUsageSnapshots(cutoff ?? 0);
+	const { usageSeries, windowInsights } = computeUsageWindowStats(snapshots, tokensByProvider);
 	return {
 		providers,
 		hourly: getProviderHourlyBurn(cutoff ?? undefined),

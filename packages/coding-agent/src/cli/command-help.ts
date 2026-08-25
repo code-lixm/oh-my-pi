@@ -15,8 +15,7 @@ export const authGatewayHelp = {
 } satisfies CommandMetadata;
 
 export const benchHelp = {
-	description:
-		"Benchmark models: TTFT/prefill vs decode throughput with p50/p95, across chat, prefill, generation, and prompt-cache workloads",
+	description: "Benchmark models with the same prompt: time-to-first-token and generation throughput (tokens/s)",
 } satisfies CommandMetadata;
 
 export const browserRelayHelp = {
@@ -55,9 +54,6 @@ export const galleryHelp = {
 } satisfies CommandMetadata;
 
 export const gcHelp = { description: "Run storage garbage collection" } satisfies CommandMetadata;
-export const gitHelp = {
-	description: "Interactive fullscreen git UI: split diff viewer, staging sidebar, and commit composer",
-} satisfies CommandMetadata;
 
 export const daemonHelp = {
 	description: "Manage the background session daemon (start, status, stop, create, list, prompt, cancel)",
@@ -67,10 +63,6 @@ export const grepHelp = { description: "Search indexed file contents with FFF" }
 
 export const grievancesHelp = {
 	description: "View, clean, or push reported tool issues (auto-QA grievances)",
-} satisfies CommandMetadata;
-
-export const imagesHelp = {
-	description: "Inspect, diagnose, probe, and purge image publication backends",
 } satisfies CommandMetadata;
 
 export const installHelp = {
@@ -83,15 +75,8 @@ export const modelsHelp = { description: "List, search, and refresh available mo
 
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
 
-export const psHelp = {
-	description: "List and control daemon-supervised background processes (logs, stop, kill, restart)",
-} satisfies CommandMetadata;
-
 export const readHelp = {
 	description: "Show what the read tool will return for a path, URL, or internal URI",
-} satisfies CommandMetadata;
-export const renderHelp = {
-	description: "Draw a session's entire thread through the production transcript pipeline (with repaint timing)",
 } satisfies CommandMetadata;
 
 export const redoHelp = { description: "Redo the most recently undone workspace restore" } satisfies CommandMetadata;

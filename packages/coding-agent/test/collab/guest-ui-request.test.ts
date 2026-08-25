@@ -224,7 +224,7 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 			markActivityEnd: () => {},
 		},
 		ui: { requestRender: () => {} },
-		chatContainer: { clear: () => {}, disposeChildren: () => {} },
+		chatContainer: { clear: () => {} },
 		resetObserverRegistry: () => {},
 		renderInitialMessages: () => {},
 		reloadTodos: () => Promise.resolve(),

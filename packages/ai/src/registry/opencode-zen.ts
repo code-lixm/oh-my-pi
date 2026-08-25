@@ -7,6 +7,6 @@ export const opencodeZenProvider = {
 	login: async (cb: OAuthLoginCallbacks) => {
 		// Lazy import: keep heavy OAuth flow modules out of the eager registry graph.
 		const { loginOpenCode } = await import("./oauth/opencode");
-		return loginOpenCode(cb, "OpenCode Zen");
+		return loginOpenCode(cb);
 	},
 } as const satisfies ProviderDefinition;

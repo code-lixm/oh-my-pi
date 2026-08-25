@@ -104,8 +104,6 @@ interface PersistedAgentMetadata {
 	createdAt?: number;
 	lastActivity?: number;
 	history?: AgentHistorySummary;
-	/** True when the file is only a SessionManager header (no session_init, no messages). */
-	incomplete?: boolean;
 }
 
 interface PersistedTranscript {
@@ -325,8 +323,6 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 	let createdAt: number | undefined;
 	let activity: string | undefined;
 	let history: AgentHistorySummary = {};
-	let hasSessionInit = false;
-	let hasConversation = false;
 	try {
 		await visitEntriesFromFileStream(
 			sessionFile,
@@ -347,12 +343,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 					}
 					return;
 				}
-				if (record.type === "message" || record.type === "custom_message") {
-					hasConversation = true;
-					return;
-				}
 				if (record.type !== "session_init") return;
-				hasSessionInit = true;
 				createdAt ??= timestampOf(record.timestamp);
 				if (typeof record.task === "string") activity = summarizePersistedTask(record.task);
 				const inferred = typeof record.systemPrompt === "string" ? inferBundledAgent(record.systemPrompt) : {};
@@ -378,7 +369,6 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 		activity,
 		createdAt: createdAt ?? file?.birthtimeMs,
 		lastActivity: file?.mtimeMs,
-		incomplete: !hasSessionInit && !hasConversation,
 		history: {
 			...history,
 			...(hasOutput ? { outputPath } : {}),
@@ -542,48 +532,36 @@ async function registerPersistedSubagentsFromDir(
 		if (!ref) {
 			const metadata = await readPersistedAgentMetadata(sessionFile);
 			if (!shouldContinue()) return;
-			// Metadata reads yield. A spawn may claim the id while this scan is
-			// inspecting the file; never replace that live generation with a
-			// transcript-derived parked ref.
-			const unclaimed = !registry.get(id);
-			// SessionManager.open writes title+session before createAgentSession
-			// claims the id. Parking that stub makes the spawn's expectedAgentRef:null
-			// CAS fail with "already owned by another session generation".
-			if (unclaimed && metadata.incomplete && !tombstoned) continue;
-			if (unclaimed) {
-				ref = registry.register({
-					id,
-					displayName: snapshot.displayName ?? parentObservation?.displayName ?? id,
-					kind: "sub",
-					parentId: parentId ?? MAIN_AGENT_ID,
-					session: null,
-					sessionFile,
-					activity: metadata.activity,
-					createdAt: metadata.createdAt,
-					lastActivity: metadata.lastActivity,
-					history: {
-						...metadata.history,
-						...(snapshot.resolvedModel ? { resolvedModel: snapshot.resolvedModel } : {}),
-						...(snapshot.resolvedModelIsFallback !== undefined
-							? { resolvedModelIsFallback: snapshot.resolvedModelIsFallback }
-							: {}),
-					},
-					status: tombstoned ? "aborted" : "parked",
-					terminalStatus: snapshot.terminalStatus,
-					...(snapshot.sessionTitle ? { sessionTitle: snapshot.sessionTitle } : {}),
-					...(snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
-					...(snapshot.activityState ? { activityState: snapshot.activityState } : {}),
-				});
-				transcripts.push({
-					id,
-					sessionFile,
-					createdAt: ref.createdAt,
-					lastActivity: ref.lastActivity,
-				});
-			}
-			ref ??= registry.get(id);
+			ref = registry.register({
+				id,
+				displayName: snapshot.displayName ?? parentObservation?.displayName ?? id,
+				kind: "sub",
+				parentId,
+				session: null,
+				sessionFile,
+				activity: metadata.activity,
+				createdAt: metadata.createdAt,
+				lastActivity: metadata.lastActivity,
+				history: {
+					...metadata.history,
+					...(snapshot.resolvedModel ? { resolvedModel: snapshot.resolvedModel } : {}),
+					...(snapshot.resolvedModelIsFallback !== undefined
+						? { resolvedModelIsFallback: snapshot.resolvedModelIsFallback }
+						: {}),
+				},
+				status: tombstoned ? "aborted" : "parked",
+				terminalStatus: snapshot.terminalStatus,
+				...(snapshot.sessionTitle ? { sessionTitle: snapshot.sessionTitle } : {}),
+				...(snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
+				...(snapshot.activityState ? { activityState: snapshot.activityState } : {}),
+			});
+			transcripts.push({
+				id,
+				sessionFile,
+				createdAt: ref.createdAt,
+				lastActivity: ref.lastActivity,
+			});
 		}
-		if (!ref) continue;
 		if (ref.sessionFile === sessionFile) applyPersistedSnapshot(registry, ref, snapshot, ref.session === null);
 		await registerPersistedSubagentsFromDir(
 			registry,
