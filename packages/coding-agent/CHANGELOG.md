@@ -7,6 +7,10 @@
 - Replaced the MuPDF-WASM PDF document backend with `pdf-inspector` through `@oh-my-pi/pi-natives`, preserving cached text conversion and PDF line selectors while reporting pages that need OCR.
 - Removed `read <pdf>:` image listings and `read <pdf>:<image>.png` extraction because `pdf-inspector` does not rasterize pages; these reads now direct users to the Puppeteer browser tool for rendering or to read the PDF path for extracted text.
 
+### Fixed
+
+- Prevented idle automatic compaction (`run_idle_compaction`) RPC timeouts from surfacing as fatal unhandled rejections that could close the TUI. The remote session facade and controller call site now log compaction failures, and the RPC uses a 5-minute timeout for large context maintenance.
+
 ## [17.3.3] - 2026-08-14
 
 ### Fixed
