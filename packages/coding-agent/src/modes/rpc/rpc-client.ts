@@ -999,7 +999,9 @@ export class RpcClient {
 
 	/** Run automatic compaction triggered by an idle session. */
 	async runIdleCompaction(): Promise<void> {
-		await this.#send({ type: "run_idle_compaction" });
+		// Compaction of a large context can easily exceed the default 30s RPC
+		// timeout; use a generous budget and let the caller handle rejection.
+		await this.#send({ type: "run_idle_compaction" }, 300_000);
 	}
 
 	/**

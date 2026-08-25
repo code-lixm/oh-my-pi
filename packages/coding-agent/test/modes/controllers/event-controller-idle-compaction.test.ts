@@ -135,6 +135,29 @@ describe("EventController idle compaction teardown", () => {
 		expect(runIdleCompaction).not.toHaveBeenCalled();
 	});
 
+	it("does not surface a rejected idle compaction as an unhandled rejection", async () => {
+		const runIdleCompaction = vi.fn(() => Promise.reject(new Error("compaction transport closed")));
+		const context = createContext({ runIdleCompaction });
+
+		const unhandled: unknown[] = [];
+		const listener = (error: unknown) => {
+			unhandled.push(error);
+		};
+		process.on("unhandledRejection", listener);
+		try {
+			const controller = new EventController(context);
+			await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
+			vi.advanceTimersByTime(60_000);
+			await flushMicrotasks();
+
+			expect(runIdleCompaction).toHaveBeenCalledTimes(1);
+			expect(unhandled).toEqual([]);
+			controller.dispose();
+		} finally {
+			process.off("unhandledRejection", listener);
+		}
+	});
+
 	it("emits an LLM-generated recap after the default four-minute delay", async () => {
 		resetSettingsForTest();
 		await Settings.init({

@@ -1098,6 +1098,24 @@ describe("RemoteAgentSession interactive facade", () => {
 		}
 	});
 
+	test("does not surface idle compaction RPC failures to the caller", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, _respond, reject) => {
+				if (command.type !== "run_idle_compaction") return false;
+				received.push(command);
+				reject("compaction transport closed");
+				return true;
+			},
+		});
+		try {
+			await expect(session.asAgentSession().runIdleCompaction()).resolves.toBeUndefined();
+			expect(received).toEqual([expect.objectContaining({ type: "run_idle_compaction" })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("forwards session transitions through the RPC port", async () => {
 		const received: RpcCommandEnvelope[] = [];
 		const { session } = await createRemoteSession({

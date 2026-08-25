@@ -880,7 +880,9 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	}
 
 	runIdleCompaction(): Promise<void> {
-		return this.#client.runIdleCompaction();
+		return this.#client.runIdleCompaction().catch(error => {
+			logger.warn("Failed to run remote idle compaction", { error: String(error) });
+		});
 	}
 
 	abortCompaction(): void {

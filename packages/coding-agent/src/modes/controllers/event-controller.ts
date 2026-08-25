@@ -2602,7 +2602,9 @@ export class EventController {
 			if (this.ctx.viewSession.isCompacting) return;
 			if (this.ctx.editor.getText().trim()) return;
 			if (this.#currentContextTokens() < threshold) return;
-			void this.ctx.viewSession.runIdleCompaction();
+			void this.ctx.viewSession.runIdleCompaction().catch(error => {
+				logger.warn("Idle compaction failed", { error: String(error) });
+			});
 		}, timeoutMs);
 		this.#idleCompactionTimer.unref?.();
 	}
