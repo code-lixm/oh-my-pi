@@ -378,14 +378,13 @@ export function buildSessionContext(
 						active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY,
 						entry.tokensBefore,
 						entry.timestamp,
-						active ? entry.shortSummary : SUPERSEDED_COMPACTION_SHORT_SUMMARY,
-						undefined,
-						undefined,
-						snapcompactHistoryBlocksForContext(snapcompactArchive, options),
-						entry.warning,
+						{
+							shortSummary: active ? entry.shortSummary : SUPERSEDED_COMPACTION_SHORT_SUMMARY,
+							blocks: snapcompactHistoryBlocksForContext(snapcompactArchive, options),
+							warning: entry.warning,
+						},
 					),
 				);
-			} else {
 				appendMessage(entry);
 			}
 		}
@@ -416,17 +415,18 @@ export function buildSessionContext(
 		// Re-attach any archived snapcompact frames so the model can keep
 		// reading the archived history after every context rebuild.
 		const snapcompactArchive = snapcompact.getPreservedArchive(compaction.preserveData);
-		const compactionSummaryMsg = createCompactionSummaryMessage(
-			compaction.summary,
-			compaction.tokensBefore,
-			compaction.timestamp,
-			compaction.shortSummary,
+	const compactionSummaryMsg = createCompactionSummaryMessage(
+		compaction.summary,
+		compaction.tokensBefore,
+		compaction.timestamp,
+		{
+			shortSummary: compaction.shortSummary,
 			providerPayload,
-			undefined,
-			snapcompactHistoryBlocksForContext(snapcompactArchive, options),
-			compaction.warning,
-			getCompactionRetainedFacts(compaction.details),
-		);
+			blocks: snapcompactHistoryBlocksForContext(snapcompactArchive, options),
+			warning: compaction.warning,
+			retainedFacts: getCompactionRetainedFacts(compaction.details),
+		},
+	);
 		// Agent context (non-transcript): summary first so the LLM sees the
 		// compacted context before recent messages.
 		if (!options?.transcript) {
@@ -453,8 +453,14 @@ export function buildSessionContext(
 					appendMessage(entry);
 				}
 			}
+		} else if (compaction.providerReplayThroughEntryId) {
+			const replayThroughIdx = path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId);
+			if (replayThroughIdx >= 0 && replayThroughIdx < compactionIdx) {
+				for (let i = replayThroughIdx + 1; i < compactionIdx; i++) {
+					appendMessage(path[i]);
+				}
+			}
 		}
-
 		// Display transcript: emit the summary at the chronological compaction
 		// point (after kept messages, before post-compaction) so it stays in
 		// the live region where Ctrl+O can expand it. Reset tracking fires

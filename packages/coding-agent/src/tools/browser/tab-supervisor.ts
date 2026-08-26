@@ -100,6 +100,7 @@ export interface AcquireTabOptions {
 	target?: string;
 	signal?: AbortSignal;
 	timeoutMs: number;
+	deadlineStartMs?: number;
 	dialogs?: DialogPolicy;
 	cmuxSurface?: string;
 	/**

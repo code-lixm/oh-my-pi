@@ -1,5 +1,6 @@
 import {
 	type Component,
+	type HistoryBatch,
 	Container,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
@@ -8,6 +9,27 @@ import {
 	type ViewportTailProvider,
 } from "@oh-my-pi/pi-tui";
 import { isToolActivityComponent } from "./tool-activity";
+
+/** Shared animation time supplied by the constrained transcript root. */
+export interface AnimationFrame {
+	readonly tick: number;
+	readonly now: number;
+}
+
+/** Lets an active block adapt its presentation to its allocated viewport rows. */
+export interface TranscriptPresentationTarget {
+	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+}
+
+type BlockState = "active" | "settled" | "committed";
+
+interface TranscriptEntry {
+	component: Component;
+	state: BlockState;
+}
+
+const MAX_LIVE_BLOCKS = 256;
+const EMPTY_ROWS: readonly string[] = [];
 
 /**
  * A transcript block that is still mutating (a foreground tool awaiting its
@@ -103,6 +125,11 @@ function stripPlainBlankEdges(lines: readonly string[]): readonly string[] {
 	return start === 0 && end === lines.length ? lines : lines.slice(start, end);
 }
 
+/** Strip leading and trailing plain blank rows for viewport allocation. */
+export function trimBlankEdges(lines: readonly string[]): readonly string[] {
+	return stripPlainBlankEdges(lines);
+}
+
 /**
  * One block's recorded contribution to the assembled transcript: the raw array
  * reference its render() returned, the stripped contribution derived from it,
@@ -172,6 +199,11 @@ export class TranscriptContainer
 		ViewportTailProvider
 {
 	#toolActivityVisible = true;
+	#entries: TranscriptEntry[] = [];
+	#frontier = 0;
+	#nextBatchId = 1;
+	#offered: { batch: HistoryBatch; end: number } | undefined;
+	#lastAnimationFrame: AnimationFrame = { tick: 0, now: 0 };
 	// Bumped to retire every block segment at once (theme change / clear); a
 	// segment is only reused when its stored generation matches.
 	#generation = 0;
@@ -230,6 +262,154 @@ export class TranscriptContainer
 		this.#generation++;
 		super.clear();
 		this.#committedRows = 0;
+		this.#entries = [];
+		this.#frontier = 0;
+		this.#offered = undefined;
+	}
+
+	/** Whether a transient block may be discarded without leaving accepted history. */
+	canRemoveBlock(component: Component): boolean {
+		this.#syncRetirementEntries();
+		const index = this.#entries.findIndex(entry => entry.component === component);
+		if (index < 0 || this.#entries[index]!.state === "committed") return false;
+		return this.#offered === undefined || index >= this.#offered.end;
+	}
+
+	/** Lifecycle state per block in transcript order. */
+	blockStates(): readonly BlockState[] {
+		this.#syncRetirementEntries();
+		return this.#entries.map(entry => entry.state);
+	}
+
+	/** Whether visible active capacity and live-block memory permit another admission. */
+	canAdmit(rows: number): boolean {
+		this.#syncRetirementEntries();
+		const active = this.#entries.filter(entry => entry.state === "active").length;
+		return Math.max(0, Math.trunc(rows)) > active && this.#liveRetirementCount() < MAX_LIVE_BLOCKS;
+	}
+
+	/** Rebuild retirement state before replaying the complete transcript history. */
+	resetRetirement(): void {
+		this.#syncRetirementEntries();
+		this.#frontier = 0;
+		this.#offered = undefined;
+		for (const entry of this.#entries) {
+			if (entry.state === "committed") entry.state = isBlockFinalized(entry.component) ? "settled" : "active";
+		}
+	}
+
+	/** Total rows the live (non-committed, non-offered) tail occupies at `width`. */
+	liveRowCount(width: number): number {
+		this.#syncRetirementEntries();
+		this.#settleFinalizedEntries();
+		let total = 0;
+		for (const rendered of this.#liveRetirementBlocks(width)) {
+			if (rendered.length > 0) total += rendered.length + (total > 0 ? 1 : 0);
+		}
+		return total;
+	}
+
+	/** Render the live tail, constrained to the supplied transcript height. */
+	renderViewport(width: number, rows: number, frame: AnimationFrame): readonly string[] {
+		this.#lastAnimationFrame = frame;
+		this.#syncRetirementEntries();
+		this.#settleFinalizedEntries();
+		const live = this.#liveRetirementEntries();
+		const capacity = Math.max(0, Math.trunc(rows));
+		if (live.length === 0 || capacity === 0) return EMPTY_ROWS;
+
+		const shown: TranscriptEntry[] = [];
+		const blocks: (readonly string[])[] = [];
+		let total = 0;
+		for (const entry of live) {
+			this.#setTranscriptAllocation(entry.component, Number.MAX_SAFE_INTEGER, frame);
+			const rendered = trimBlankEdges(entry.component.render(width));
+			if (rendered.length === 0) continue;
+			total += rendered.length + (shown.length > 0 ? 1 : 0);
+			shown.push(entry);
+			blocks.push(rendered);
+		}
+		if (shown.length === 0) return EMPTY_ROWS;
+		if (shown.length > capacity) return this.#renderEmergencyViewport(shown, width, capacity, frame);
+		if (total <= capacity) {
+			const output: string[] = [];
+			for (const rendered of blocks) {
+				if (output.length > 0) output.push("");
+				output.push(...rendered);
+			}
+			return output;
+		}
+
+		const allocation: number[] = new Array(shown.length).fill(1);
+		let surplus = capacity - shown.length;
+		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
+			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
+			allocation[index] += extra;
+			surplus -= extra;
+		}
+		const output: string[] = [];
+		for (let index = 0; index < shown.length; index++) {
+			const allocated = allocation[index]!;
+			this.#setTranscriptAllocation(shown[index]!.component, allocated, frame);
+			const rendered = trimBlankEdges(shown[index]!.component.render(width));
+			output.push(...(rendered.length <= allocated ? rendered : rendered.slice(-allocated)));
+		}
+		return output.length > capacity ? output.slice(-capacity) : output;
+	}
+
+	/** Offer the settled prefix that must retire for the live tail to fit. */
+	peekFinalizedBatch(width: number, capacity: number): HistoryBatch | undefined {
+		this.#syncRetirementEntries();
+		this.#settleFinalizedEntries();
+		if (this.#offered !== undefined) return this.#offered.batch;
+		const room = Math.max(0, Math.trunc(capacity));
+		const live = this.#liveRetirementEntries();
+		if (live.length === 0) return undefined;
+		const heights: number[] = new Array(live.length);
+		let total = 0;
+		let visible = 0;
+		for (let index = 0; index < live.length; index++) {
+			this.#setTranscriptAllocation(live[index]!.component, Number.MAX_SAFE_INTEGER, this.#lastAnimationFrame);
+			const rendered = trimBlankEdges(live[index]!.component.render(width));
+			heights[index] = rendered.length;
+			if (rendered.length > 0) total += rendered.length + (visible++ > 0 ? 1 : 0);
+		}
+		if (total <= room && this.#liveRetirementCount() < MAX_LIVE_BLOCKS) return undefined;
+		let end = this.#frontier;
+		let freed = 0;
+		let index = 0;
+		while (end < this.#entries.length && this.#entries[end]!.state === "settled") {
+			if (total - freed <= room && this.#liveRetirementCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
+			freed += heights[index]! > 0 ? heights[index]! + 1 : 0;
+			end++;
+			index++;
+		}
+		if (end === this.#frontier) return undefined;
+		const batchRows: string[] = [];
+		for (let retire = this.#frontier; retire < end; retire++) {
+			this.#setTranscriptAllocation(
+				this.#entries[retire]!.component,
+				Number.MAX_SAFE_INTEGER,
+				this.#lastAnimationFrame,
+			);
+			const block = trimBlankEdges(this.#entries[retire]!.component.render(width));
+			if (block.length === 0) continue;
+			if (batchRows.length > 0) batchRows.push("");
+			batchRows.push(...block);
+		}
+		if (batchRows.length > 0) batchRows.push("");
+		const batch: HistoryBatch = { id: this.#nextBatchId++, rows: batchRows };
+		this.#offered = { batch, end };
+		return batch;
+	}
+
+	/** Retire exactly the history batch most recently offered by this container. */
+	acknowledgeFinalizedBatch(id: number): void {
+		const offered = this.#offered;
+		if (offered === undefined || offered.batch.id !== id) return;
+		for (let index = this.#frontier; index < offered.end; index++) this.#entries[index]!.state = "committed";
+		this.#frontier = offered.end;
+		this.#offered = undefined;
 	}
 
 	override setNativeScrollbackCommittedRows(rows: number): void {
@@ -408,6 +588,66 @@ export class TranscriptContainer
 			if (!isBlockFinalized(children[i]!)) return false;
 		}
 		return index === children.length - 1;
+	}
+
+	#renderEmergencyViewport(
+		shown: readonly TranscriptEntry[],
+		width: number,
+		rows: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		const output: string[] = [];
+		const hiddenCount = Math.max(0, shown.length - rows);
+		let hiddenActive = 0;
+		for (let index = 0; index < hiddenCount; index++) {
+			if (shown[index]!.state === "active") hiddenActive++;
+		}
+		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
+		const visibleRows = rows - output.length;
+		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+		for (const entry of visible) {
+			this.#setTranscriptAllocation(entry.component, 1, frame);
+			output.push(trimBlankEdges(entry.component.render(width))[0] ?? "");
+		}
+		return output.slice(0, rows);
+	}
+
+	#setTranscriptAllocation(component: Component, rows: number, frame: AnimationFrame): void {
+		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
+	}
+
+	#settleFinalizedEntries(): void {
+		for (const entry of this.#entries) {
+			if (entry.state === "active" && isBlockFinalized(entry.component)) entry.state = "settled";
+		}
+	}
+
+	#liveRetirementEntries(): TranscriptEntry[] {
+		return this.#entries.slice(this.#offered?.end ?? this.#frontier);
+	}
+
+	*#liveRetirementBlocks(width: number): Generator<readonly string[]> {
+		for (const entry of this.#liveRetirementEntries()) {
+			this.#setTranscriptAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastAnimationFrame);
+			yield trimBlankEdges(entry.component.render(width));
+		}
+	}
+
+	#liveRetirementCount(): number {
+		return this.#entries.length - this.#frontier;
+	}
+
+	#syncRetirementEntries(): void {
+		if (
+			this.#entries.length === this.children.length &&
+			this.#entries.every((entry, index) => entry.component === this.children[index])
+		) {
+			return;
+		}
+		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
+		this.#entries = this.children.map(component => existing.get(component) ?? { component, state: "active" });
+		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
+		if (this.#frontier < 0) this.#frontier = this.#entries.length;
 	}
 
 	/**

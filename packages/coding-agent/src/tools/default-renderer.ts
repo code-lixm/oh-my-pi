@@ -22,6 +22,11 @@ import {
 	truncateToWidth,
 } from "./render-utils";
 
+type DefaultRenderOptions = RenderResultOptions & {
+	argsComplete?: boolean;
+	executionStarted?: boolean;
+};
+
 /** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
 export interface DefaultToolRenderInput {
 	/** Human-readable tool label. */
@@ -37,7 +42,7 @@ export interface DefaultToolRenderInput {
 		skipped?: boolean;
 	};
 	/** Current expansion and lifecycle state. */
-	options: RenderResultOptions;
+	options: DefaultRenderOptions;
 }
 
 /** Format one generic tool call/result card at the available content width. */
@@ -48,6 +53,7 @@ export function formatDefaultToolExecution(
 ): string {
 	const lines: string[] = [];
 	const { options, result } = input;
+	const queued = options.isPartial && options.argsComplete === true && options.executionStarted !== true;
 	const finalize = (): string =>
 		options.expanded
 			? lines.join("\n")
@@ -68,6 +74,7 @@ export function formatDefaultToolExecution(
 				spinnerFrame: options.spinnerFrame,
 				title: input.label,
 				...(result?.skipped ? { titleColor: "muted" as const } : {}),
+				...(queued ? { meta: [tSettingsUi("queued")] } : {}),
 			},
 			uiTheme,
 		),

@@ -220,6 +220,12 @@ export class ModelHubComponent implements Component {
 	#scheduledProviderRefreshes = new Map<string, Timer>();
 	#refreshSpinnerFrame = 0;
 	#refreshSpinnerInterval?: Timer;
+	// Optional discoverable locals (ollama, llama.cpp, lm-studio) hidden from
+	// the sidebar because discovery found nothing at their endpoint (#2761).
+	// Rebuilt on every sidebar build; consumed by the once-per-open re-probe.
+	#hiddenOptionalProviders = new Set<string>();
+	/** Providers already re-probed by {@link ModelHubComponent.#reprobeHiddenOptionalProviders} this hub open. */
+	#reprobedHiddenProviders = new Set<string>();
 
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
@@ -271,6 +277,7 @@ export class ModelHubComponent implements Component {
 			this.#registry
 				.refresh("offline")
 				.then(() => this.#syncFromRegistryState())
+				.then(() => this.#reprobeHiddenOptionalProviders())
 				.catch(error => {
 					this.#configError = error instanceof Error ? error.message : String(error);
 				})
@@ -349,6 +356,7 @@ export class ModelHubComponent implements Component {
 	}
 
 	#buildSidebar(allModels: ReadonlyArray<Model>, availableModels: ReadonlyArray<Model>): void {
+		this.#hiddenOptionalProviders.clear();
 		const scoped = this.#scopedModels.length > 0;
 		let disabledProviders: ReadonlySet<string>;
 		try {
@@ -381,6 +389,15 @@ export class ModelHubComponent implements Component {
 				// locked; keyless/custom endpoints (ollama, vllm, …) surface as
 				// selectable so discovery can populate them.
 				if (authStorage.hasAuth(provider) || !locked.has(provider)) {
+					// Implicit optional local endpoints stay hidden until discovery
+					// reaches a server. Explicit/authenticated providers remain visible.
+					if (!authStorage.hasAuth(provider)) {
+						const discovery = this.#registry.getProviderDiscoveryState(provider);
+						if (discovery?.optional && (discovery.status === "idle" || discovery.status === "unavailable")) {
+							this.#hiddenOptionalProviders.add(provider);
+							continue;
+						}
+					}
 					locked.delete(provider);
 					unlocked.add(provider);
 				}
@@ -697,6 +714,16 @@ export class ModelHubComponent implements Component {
 		} finally {
 			this.#setProviderRefreshing(providerId, false);
 			this.#tui.requestRender();
+		}
+	}
+
+	/** Re-probe hidden optional local providers once per hub open. */
+	#reprobeHiddenOptionalProviders(): void {
+		if (this.#scopedModels.length > 0) return;
+		for (const provider of this.#hiddenOptionalProviders) {
+			if (this.#reprobedHiddenProviders.has(provider)) continue;
+			this.#reprobedHiddenProviders.add(provider);
+			void this.#refreshProviderInBackground(provider);
 		}
 	}
 

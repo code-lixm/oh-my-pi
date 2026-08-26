@@ -23,6 +23,7 @@ import {
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import type { CompactionMethod } from "./compaction-methods";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -74,6 +75,7 @@ import {
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { prepareEntryForPersistence } from "./session-persistence";
+import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
@@ -86,9 +88,11 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
+import { recordSessionTitle } from "./title-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
+const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 const PENDING_USER_MESSAGES_FILE = "pending-user-messages.json";
 const PENDING_USER_MESSAGES_VERSION = 1;
 
@@ -2005,8 +2009,12 @@ export class SessionManager {
 		return this.#sessionFile;
 	}
 
-	isSessionPersisted(): boolean {
+	isSessionOnDisk(): boolean {
 		return this.#sessionFile !== undefined && this.#storage.existsSync(this.#sessionFile);
+	}
+
+	isSessionPersisted(): boolean {
+		return this.isSessionOnDisk();
 	}
 
 	getArtifactsDir(): string | null {
@@ -2178,6 +2186,11 @@ export class SessionManager {
 		this.#index.insert(entry);
 		this.#notifyEntryAppended(entry);
 		await this.#persistTitleChangeEntry(entry, { title, source, updatedAt: timestamp });
+		// Keep the recent-sessions title index current so welcome-screen lookups
+		// never have to content-scan this session's file.
+		if (this.#persist && this.#storage instanceof FileSessionStorage) {
+			recordSessionTitle(this.#sessionId, title);
+		}
 
 		this.#notifySessionNameListeners();
 		return true;
@@ -2318,6 +2331,11 @@ export class SessionManager {
 		details?: T,
 		fromExtension?: boolean,
 		preserveData?: Record<string, unknown>,
+		metadata: {
+			method?: CompactionMethod;
+			providerReplayThroughEntryId?: string;
+			tokensAfter?: number;
+		} = {},
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -2326,6 +2344,9 @@ export class SessionManager {
 			shortSummary,
 			firstKeptEntryId,
 			tokensBefore,
+			tokensAfter: metadata.tokensAfter,
+			method: metadata.method,
+			providerReplayThroughEntryId: metadata.providerReplayThroughEntryId,
 			details,
 			fromExtension,
 			preserveData,
@@ -2592,6 +2613,28 @@ export class SessionManager {
 	/** Reset the leaf to null so the next append creates a new root entry. */
 	resetLeaf(): void {
 		this.#setLeaf(null);
+	}
+
+	/** Durably move the active branch past a discarded entry. */
+	async discardEntryDurably(entryId: string): Promise<void> {
+		const entry = this.#index.get(entryId);
+		if (!entry) return;
+		const children = this.#index.childrenOf(entryId);
+		const canReparentChildren = children.every(child => child.type === "service_tier_change");
+		let leafId = entry.parentId;
+		if (canReparentChildren) {
+			for (const child of children) {
+				child.parentId = leafId;
+				leafId = child.id;
+			}
+			this.#entries = this.#entries.filter(candidate => candidate.id !== entryId);
+			this.#index.rebuild(this.#entries);
+		}
+		this.branchWithSummary(leafId, "", {
+			kind: DISCARDED_ENTRY_BRANCH_MARKER,
+			discardedEntryId: entryId,
+		});
+		await this.rewriteEntries();
 	}
 
 	/** Like branch(), but also records a branch_summary of the abandoned path. */
@@ -2999,12 +3042,14 @@ export class SessionManager {
 		const managedRoot = sessionDir ? resolveManagedSessionRoot(sessionDir, cwd) : undefined;
 		const sessionDirs =
 			sessionDir && !managedRoot ? [sessionDir] : computeCompatibleSessionDirs(cwd, storage, managedRoot);
-		return listSessionsFromDirs(sessionDirs, storage);
+		const sessions = await listSessionsFromDirs(sessionDirs, storage);
+		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
 	}
 
-	/** List all sessions across all project directories. */
-	static listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-		return listAllSessions(storage);
+	/** List all sessions across all project directories, pinned sessions first. */
+	static async listAll(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+		const sessions = await listAllSessions(storage);
+		return sortPinnedFirst(sessions, await loadPinnedSessionIds());
 	}
 }
 

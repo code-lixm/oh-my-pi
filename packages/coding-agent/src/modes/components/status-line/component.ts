@@ -7,8 +7,8 @@ import {
 	type UsageLimit,
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { type Component, type ComposerStyle, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { adjustHsv, formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
@@ -20,6 +20,7 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/sessio
 import { calculateTokensPerSecond } from "../../../utils/token-rate";
 import { sanitizeStatusText } from "../../shared";
 import { theme } from "../../theme/theme";
+import { type CompactionBoundaries, computeCompactionBoundaries } from "../../utils/context-usage";
 import {
 	type CodexResetFireworksEvent,
 	type CodexResetUsageSnapshot,
@@ -278,8 +279,36 @@ const STATUS_USAGE_CACHE_TTL_MS = 2 * 60_000;
 const STATUS_USAGE_START_DELAY_MS = 0;
 const STATUS_USAGE_REFRESH_TIMEOUT_MS = 2_000;
 
+function isContextSegment(segment: StatusLineSegmentId): boolean {
+	return segment === "context_pct" || segment === "context_total";
+}
+
 function hasContextSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("context_pct") || segments.includes("context_total");
+}
+
+function hasNonContextSegment(segments: readonly StatusLineSegmentId[]): boolean {
+	for (const segment of segments) {
+		if (!isContextSegment(segment)) return true;
+	}
+	return false;
+}
+
+function removeContextSegments(parts: string[], segments: StatusLineSegmentId[]): void {
+	let writeIndex = 0;
+	for (let readIndex = 0; readIndex < segments.length; readIndex++) {
+		const segment = segments[readIndex];
+		if (isContextSegment(segment)) continue;
+		parts[writeIndex] = parts[readIndex];
+		segments[writeIndex] = segment;
+		writeIndex++;
+	}
+	parts.length = writeIndex;
+	segments.length = writeIndex;
+}
+
+function formatEmbeddedContextPercent(percent: number): string {
+	return `${percent > 0 && percent < 1 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
 function hasGitSegment(segments: readonly StatusLineSegmentId[]): boolean {
 	return segments.includes("git");
@@ -335,6 +364,9 @@ export class StatusLineComponent implements Component {
 	#disposed = false;
 	#autoCompactEnabled: boolean = true;
 	#hookStatuses: Map<string, string> = new Map();
+	#standalone: false | "left-only" | "full" = false;
+	#standaloneGap = false;
+	#autocompleteActiveProbe: (() => boolean) | undefined;
 	#subagentCount: number = 0;
 	/**
 	 * Active-processing accounting for the `time_spent` segment, keyed per
@@ -438,6 +470,7 @@ export class StatusLineComponent implements Component {
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			contextLine: settings.get("statusLine.contextLine"),
 		};
 	}
 	#gitEnabled(): boolean {
@@ -1832,6 +1865,7 @@ export class StatusLineComponent implements Component {
 			contextTokens,
 			contextWindow,
 			autoCompactEnabled: this.#autoCompactEnabled,
+			compactionSpeculation: this.session.compactionSpeculation,
 			subagentCount: this.#subagentCount,
 			activeMs: this.getActiveMs(),
 			git: {
@@ -1901,7 +1935,12 @@ export class StatusLineComponent implements Component {
 		return theme.fg("statusLineSubagents", `${theme.icon.agents} ${this.#subagentCount} ${noun}`);
 	}
 
-	#buildStatusLine(width: number, ruleColor?: (text: string) => string): string {
+	#buildStatusLine(
+		width: number,
+		ruleColor?: (text: string) => string,
+		groups: "full" | "left" | "right" = "full",
+		plain = false,
+	): string {
 		const effectiveSettings = this.#resolveSettings();
 		const includePath =
 			hasPathSegment(effectiveSettings.leftSegments) || hasPathSegment(effectiveSettings.rightSegments);
@@ -1953,12 +1992,28 @@ export class StatusLineComponent implements Component {
 		}
 
 		const rightParts: string[] = [];
+		const rightSegIds: StatusLineSegmentId[] = [];
 		for (const segId of effectiveSettings.rightSegments) {
 			if (subagentBadge && segId === "subagents") continue;
 			const rendered = renderSegment(segId, ctx);
 			if (rendered.visible && rendered.content) {
 				rightParts.push(rendered.content);
+				rightSegIds.push(segId);
 			}
+		}
+
+		const embedContext =
+			groups === "full" &&
+			!plain &&
+			effectiveSettings.contextLine === "embedded" &&
+			ctx.contextPercent !== null &&
+			ctx.contextPercent !== undefined &&
+			ctx.contextWindow > 0 &&
+			(hasContextSegment(leftSegIds) || hasContextSegment(rightSegIds)) &&
+			(hasNonContextSegment(leftSegIds) || hasNonContextSegment(rightSegIds));
+		if (embedContext) {
+			removeContextSegments(leftParts, leftSegIds);
+			removeContextSegments(rightParts, rightSegIds);
 		}
 
 		const runningBackgroundJobs = this.session.getVisibleAsyncJobCount();
@@ -2069,59 +2124,207 @@ export class StatusLineComponent implements Component {
 			return content;
 		};
 
-		const leftGroup = renderGroup(left, "left");
-		const rightGroup = renderGroup(right, "right");
+		const leftGroup = groups === "right" ? "" : renderGroup(left, "left");
+		const rightGroup = groups === "left" ? "" : renderGroup(right, "right");
 		if (!leftGroup && !rightGroup) return "";
 
-		if (topFillWidth === 0 || left.length === 0 || right.length === 0) {
+		if (topFillWidth === 0 || groups !== "full" || (plain && (left.length === 0 || right.length === 0))) {
 			return leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup;
 		}
 
 		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth);
-		let gapFill: string;
-		if (ruleColor) {
-			gapFill = ruleColor(theme.boxRound.horizontal.repeat(gapWidth));
-		} else {
-			const sessionName =
-				effectiveSettings.sessionAccent !== false ? this.session.sessionManager?.getSessionName() : undefined;
-			const accentHex = sessionName
-				? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
-				: undefined;
-			const gapColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("border");
-			gapFill = `${gapColor}${theme.boxRound.horizontal.repeat(gapWidth)}\x1b[39m`;
-		}
+		const gapFill = plain
+			? " ".repeat(gapWidth)
+			: this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext, ruleColor);
 		return leftGroup + gapFill + rightGroup;
+	}
+
+	/** Context-reactive gauge bridging the left and right groups in box layouts. */
+	#buildContextGaugeFill(
+		gapWidth: number,
+		ctx: SegmentContext,
+		effectiveSettings: EffectiveStatusLineSettings,
+		embedContext: boolean,
+		ruleColor?: (text: string) => string,
+	): string {
+		const sessionName =
+			effectiveSettings.sessionAccent !== false ? this.session.sessionManager?.getSessionName() : undefined;
+		const accentHex = sessionName
+			? getSessionAccentHex(sessionName, theme.getMajorThemeColorHexes(), theme.accentSurfaceLuminance)
+			: undefined;
+		const usedColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("borderAccent");
+		const horizontal = theme.boxRound.horizontal;
+		if (ruleColor) return ruleColor(horizontal.repeat(gapWidth));
+		const mode = effectiveSettings.contextLine ?? "embedded";
+		const pct = ctx.contextPercent;
+		if (mode === "off" || pct === null || pct === undefined) {
+			return `\x1b[49m${usedColor}${horizontal.repeat(gapWidth)}\x1b[39m`;
+		}
+
+		const clampedPct = Math.min(100, Math.max(0, pct));
+		let percentLabel = "";
+		let windowLabel = "";
+		let percentStart = -1;
+		let windowStart = -1;
+		let scaleWidth = gapWidth;
+		const percentOverflow = pct > 100;
+		if (embedContext) {
+			const candidatePercent = formatEmbeddedContextPercent(percentOverflow ? pct : clampedPct);
+			const candidateWindow = formatNumber(ctx.contextWindow);
+			if (gapWidth >= candidatePercent.length + candidateWindow.length + 4) {
+				percentLabel = candidatePercent;
+				windowLabel = candidateWindow;
+				if (percentOverflow) {
+					percentStart = gapWidth - percentLabel.length;
+					windowStart = percentStart - 1 - windowLabel.length;
+				} else {
+					windowStart = gapWidth - windowLabel.length - 1;
+				}
+				scaleWidth = windowStart;
+			}
+		}
+
+		const usedCount = Math.min(scaleWidth, Math.max(1, Math.round((clampedPct / 100) * scaleWidth)));
+		const unusedColor = theme.getFgAnsi("border");
+
+		let speculationIdx = -1;
+		let thresholdIdx = -1;
+		if ((mode === "annotated" || mode === "embedded") && ctx.autoCompactEnabled && gapWidth >= 8) {
+			const boundaries = this.#compactionBoundaries(ctx.contextWindow);
+			if (boundaries) {
+				const cellFor = (percent: number) =>
+					Math.min(scaleWidth - 1, Math.max(0, Math.round((percent / 100) * scaleWidth)));
+				thresholdIdx = cellFor(boundaries.thresholdPercent);
+				if (boundaries.speculationPercent !== null) speculationIdx = cellFor(boundaries.speculationPercent);
+				if (speculationIdx === thresholdIdx) speculationIdx = -1;
+			}
+		}
+
+		if (percentLabel && percentStart < 0) {
+			const maxStart = scaleWidth - percentLabel.length - 1;
+			const preferredStart = Math.min(maxStart, Math.max(1, usedCount));
+			const overlapsBoundary = (start: number): boolean => {
+				const end = start + percentLabel.length;
+				return (speculationIdx >= start && speculationIdx < end) || (thresholdIdx >= start && thresholdIdx < end);
+			};
+			for (let distance = 0; distance <= maxStart; distance++) {
+				const left = preferredStart - distance;
+				if (left >= 1 && !overlapsBoundary(left)) {
+					percentStart = left;
+					break;
+				}
+				if (distance === 0) continue;
+				const right = preferredStart + distance;
+				if (right <= maxStart && !overlapsBoundary(right)) {
+					percentStart = right;
+					break;
+				}
+			}
+		}
+
+		const speculationGlyph = theme.symbol("context.speculation");
+		const thresholdGlyph = theme.symbol("context.compaction");
+		const speculationColor = theme.getFgAnsi("muted");
+		const overflowColor = theme.getFgAnsi("error");
+		const rawAccentHex = accentHex ?? theme.getColorHex("borderAccent");
+		const dimmedAccentHex = adjustHsv(rawAccentHex, { s: 0.7, v: 0.75 });
+		const thresholdColor = getSessionAccentAnsi(dimmedAccentHex) ?? usedColor;
+
+		let out = "\x1b[49m";
+		let activeColor = "";
+		for (let i = 0; i < gapWidth; i++) {
+			let color = i < usedCount ? usedColor : unusedColor;
+			let glyph = horizontal;
+			if (percentStart >= 0 && i >= percentStart && i < percentStart + percentLabel.length) {
+				color = percentOverflow ? overflowColor : usedColor;
+				glyph = percentLabel.charAt(i - percentStart);
+			} else if (i === thresholdIdx) {
+				color = thresholdColor;
+				glyph = thresholdGlyph;
+			} else if (i === speculationIdx) {
+				color = ctx.compactionSpeculation === "running" ? thresholdColor : speculationColor;
+				glyph =
+					ctx.compactionSpeculation === "running"
+						? (theme.spinnerFrames[Math.floor(Date.now() / 80) % theme.spinnerFrames.length] ?? speculationGlyph)
+						: speculationGlyph;
+			} else if (windowStart >= 0 && i >= windowStart && i < windowStart + windowLabel.length) {
+				color = thresholdColor;
+				glyph = windowLabel.charAt(i - windowStart);
+			}
+			if (color !== activeColor) {
+				out += color;
+				activeColor = color;
+			}
+			out += glyph;
+		}
+		return `${out}\x1b[39m`;
+	}
+
+	#compactionBoundaries(contextWindow: number): CompactionBoundaries | null {
+		const source = typeof this.session.settings?.getGroup === "function" ? this.session.settings : settings;
+		const model = this.session.state?.model ?? this.session.model;
+		try {
+			return computeCompactionBoundaries(source, contextWindow, model);
+		} catch {
+			return null;
+		}
 	}
 
 	getTopBorder(
 		width: number,
-		ruleColor?: (text: string) => string,
+		ruleColorOrPreview?: ((text: string) => string) | string,
 	): { content: string; width: number; revision: number } {
+		const ruleColor = typeof ruleColorOrPreview === "function" ? ruleColorOrPreview : undefined;
 		let content = this.#buildStatusLine(width, ruleColor);
 		if (this.#focusedAgentId && content) {
-			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
-			// `\x1b[0m` resets that would cancel faint mid-bar, so re-open it after each.
 			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
 		}
-		return {
-			content,
-			width: visibleWidth(content),
-			revision: this.#widthEpochRevision,
-		};
+		return { content, width: visibleWidth(content), revision: this.#widthEpochRevision };
+	}
+
+	setComposerStyle(style: Pick<ComposerStyle, "bottomBar" | "bottomBarGap">): void {
+		this.#standalone = style.bottomBar === "none" ? false : style.bottomBar === "left" ? "left-only" : "full";
+		this.#standaloneGap = style.bottomBarGap;
+	}
+
+	setAutocompleteActiveProbe(probe: (() => boolean) | undefined): void {
+		this.#autocompleteActiveProbe = probe;
+	}
+
+	getStandaloneTopBorder(width: number, _previewTitle?: string): { content: string; width: number; revision: number } {
+		let content = this.#buildStatusLine(width, undefined, "right");
+		if (this.#focusedAgentId && content) {
+			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
+		}
+		return { content, width: visibleWidth(content), revision: this.#widthEpochRevision };
+	}
+
+	renderBottomBar(width: number, groups: "left" | "full", _previewTitle?: string): string {
+		let content = this.#buildStatusLine(width, undefined, groups, true);
+		if (this.#focusedAgentId && content) {
+			content = `\x1b[2m${content.replaceAll("\x1b[0m", "\x1b[0m\x1b[2m")}\x1b[22m`;
+		}
+		return content;
 	}
 
 	render(width: number): readonly string[] {
-		// Only render hook statuses - main status is in editor's top border
-		const showHooks = this.#settings.showHookStatus ?? true;
-		if (!showHooks || this.#hookStatuses.size === 0) {
-			return [];
+		const lines: string[] = [];
+		if (this.#standalone && !this.#autocompleteActiveProbe?.()) {
+			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
+			if (content) {
+				if (this.#standaloneGap) lines.push("");
+				lines.push(content);
+			}
 		}
-
-		const sortedStatuses = Array.from(this.#hookStatuses.entries())
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
-		const hookLine = sortedStatuses.join("  ");
-		if (visibleWidth(hookLine) <= width) return [hookLine];
-		return sortedStatuses.map(text => truncateToWidth(text, width));
+		const showHooks = this.#settings.showHookStatus ?? true;
+		if (showHooks && this.#hookStatuses.size > 0) {
+			const sortedStatuses = Array.from(this.#hookStatuses.entries())
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => sanitizeStatusText(text));
+			const hookLine = sortedStatuses.join("  ");
+			if (visibleWidth(hookLine) <= width) lines.push(hookLine);
+			else lines.push(...sortedStatuses.map(text => truncateToWidth(text, width)));
+		}
+		return lines;
 	}
 }

@@ -44,6 +44,7 @@ import type {
 	AutocompleteItem,
 	AutocompleteProvider,
 	Component,
+	ComposerStyle,
 	EditorTheme,
 	KeyId,
 	OverlayHandle,
@@ -79,6 +80,7 @@ import type {
 	WriteToolInput,
 } from "../../tools";
 import type { ApprovalMode } from "../../tools/approval";
+import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import type { EventBus } from "../../utils/event-bus";
 import type {
 	AgentEndEvent,
@@ -381,6 +383,16 @@ export interface ExtensionUIContext {
 	setToolsExpanded(expanded: boolean): void;
 }
 
+/** Visual composer style and selector copy registered by an extension. */
+export interface ComposerShapeDefinition {
+	/** User-facing name shown in composer-shape selectors. */
+	label: string;
+	/** Optional detail shown under the selector label. */
+	description?: string;
+	/** Renderer contract; its id becomes the persisted `composer.shape` value. */
+	style: ComposerStyle;
+}
+
 // ============================================================================
 // Extension Context
 // ============================================================================
@@ -525,6 +537,9 @@ export interface ExtensionContext {
 		params: Record<string, unknown>,
 		options?: { signal?: AbortSignal; onUpdate?: AgentToolUpdateCallback<TDetails> },
 	): Promise<AgentToolResult<TDetails>>;
+
+	/** OMP loads project-local inputs directly, so this compatibility surface always reports trusted. */
+	isProjectTrusted(): boolean;
 }
 
 /**
@@ -1318,6 +1333,22 @@ export interface ExtensionAPI {
 	/** Register a tool that the LLM can call. */
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void;
 
+	/**
+	 * Register a broker for an ordinary-file byte write denied with `EPERM`,
+	 * `EACCES`, or `EROFS`. The first handler that resolves `true` owns the
+	 * durable write; native snapshot and hashline bookkeeping then continue.
+	 * Register during extension loading.
+	 */
+	registerFileWriteFallback(handler: FileWriteFallbackHandler): void;
+
+	/**
+	 * Register a broker for a file unlink denied with `EPERM`, `EACCES`, or
+	 * `EROFS`. Kept separate from write registration so a writer never receives
+	 * an empty-content delete request. Register during extension loading; handlers
+	 * must use a plain unlink and honor `req.confirmedFile`.
+	 */
+	registerFileDeleteFallback(handler: FileDeleteFallbackHandler): void;
+
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
 	// =========================================================================
@@ -1366,6 +1397,9 @@ export interface ExtensionAPI {
 
 	/** Register a renderer for assistant thinking blocks. Rendered after the original thinking text. */
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void;
+
+	/** Register an extension-defined composer shape; built-in ids cannot be replaced. */
+	registerComposerShape(definition: ComposerShapeDefinition): void;
 
 	// =========================================================================
 	// Actions
@@ -1705,7 +1739,10 @@ export interface Extension {
 	tools: Map<string, RegisteredTool<any, any>>;
 	toolRegistrationListeners?: Set<ToolRegistrationListener>;
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
+	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
+	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
 	messageRenderers: Map<string, MessageRenderer>;
+	composerShapes: Map<string, ComposerShapeDefinition>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;

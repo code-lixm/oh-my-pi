@@ -127,9 +127,20 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.galleryHelp,
 	},
 	{
+		name: "git",
+		load: () => loadCommand(() => import("./commands/git")),
+		help: commandHelp.gitHelp,
+	},
+	{
 		name: "grievances",
 		load: () => loadCommand(() => import("./commands/grievances")),
 		help: commandHelp.grievancesHelp,
+	},
+	{
+		name: "images",
+		load: () => loadCommand(() => import("./commands/images")),
+		aliases: ["img"],
+		help: commandHelp.imagesHelp,
 	},
 	{
 		name: "install",
@@ -150,6 +161,11 @@ export const commands: CommandEntry[] = [
 		name: "plugin",
 		load: () => loadCommand(() => import("./commands/plugin")),
 		help: commandHelp.pluginHelp,
+	},
+	{
+		name: "ps",
+		load: () => loadCommand(() => import("./commands/ps")),
+		help: commandHelp.psHelp,
 	},
 	{
 		name: "say",
@@ -175,6 +191,11 @@ export const commands: CommandEntry[] = [
 		name: "read",
 		load: () => loadCommand(() => import("./commands/read")),
 		help: commandHelp.readHelp,
+	},
+	{
+		name: "render",
+		load: () => loadCommand(() => import("./commands/render")),
+		help: commandHelp.renderHelp,
 	},
 	{
 		name: "redo",

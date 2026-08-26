@@ -33,6 +33,7 @@ import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
 import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
+import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
 import { truncateHeadBytes } from "../session/streaming-output";
 import { resolveToolTier, type ToolTier } from "./approval";
@@ -578,6 +579,12 @@ function resolveDeviceRenderer(
 	return rendererLookup?.(name);
 }
 
+function deviceDisplayLabel(name: string, mounted: Tool | undefined): string {
+	if (mounted?.label && mounted.label !== name) return mounted.label;
+	const parsed = parseMCPToolName(name);
+	return parsed ? `${parsed.serverName}/${parsed.toolName}` : (mounted?.label ?? name);
+}
+
 /**
  * Streaming-safe call preview for an `xd://` write: forwards the decoded inner
  * args to the mounted tool's renderer (session instance first, then the static
@@ -596,7 +603,7 @@ export function renderXdevCall(
 	if (renderer?.renderCall) {
 		return renderer.renderCall(args, options, theme);
 	}
-	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
+	return renderDefaultToolExecution({ label: deviceDisplayLabel(name, mounted), args, options }, theme);
 }
 
 /** Forward an `xd://` dispatch result to the mounted tool's renderer. */
@@ -636,7 +643,7 @@ export function renderXdevResult(
 	}
 	return renderDefaultToolExecution(
 		{
-			label: mounted?.label ?? dispatch.tool,
+			label: deviceDisplayLabel(dispatch.tool, mounted),
 			args: dispatch.args ?? {},
 			result: { output: text, isError: result.isError },
 			options,

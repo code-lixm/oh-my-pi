@@ -375,6 +375,10 @@ export class HubActivityGroupComponent extends Container implements ToolExecutio
 		this.#invalidate();
 	}
 
+	setExecutionStarted(_toolCallId?: string): void {
+		this.#invalidate();
+	}
+
 	setExpanded(expanded: boolean): void {
 		this.#expanded = expanded;
 		this.#invalidate();

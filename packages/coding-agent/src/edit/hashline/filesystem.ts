@@ -25,6 +25,7 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
+import { deleteFileWithFallback, writeFileWithFallback } from "../../tools/file-write-fallback";
 import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { isInternalUrlPath } from "../../tools/path-utils";
@@ -155,7 +156,7 @@ export class HashlineFilesystem extends Filesystem {
 		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
 			await prepareFileMutation(this.session, absolutePath, "delete");
-			await fs.rm(absolutePath);
+			await deleteFileWithFallback(absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
@@ -177,8 +178,8 @@ export class HashlineFilesystem extends Filesystem {
 		const toAbsolute = this.resolveAbsolute(toRelative);
 		await prepareFileMutation(this.session, toAbsolute, "rename", { previousPath: fromAbsolute });
 		if (content !== undefined) {
-			await Bun.write(toAbsolute, content);
-			await fs.rm(fromAbsolute);
+			await writeFileWithFallback(toAbsolute, content);
+			await deleteFileWithFallback(fromAbsolute);
 		} else {
 			await fs.rename(fromAbsolute, toAbsolute);
 		}

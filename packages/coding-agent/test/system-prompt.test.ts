@@ -307,3 +307,23 @@ describe("system prompt locale", () => {
 		expect(chinese).toContain("将 advisory 与用户纠正、当前证据和已完成操作核对");
 	});
 });
+
+describe("system prompt provider tool inventory", () => {
+	it("keeps bridge-only tools out of provider inventory while retaining prompt gates", async () => {
+		const prompt = (
+			await buildSystemPrompt({
+				...PROMPT_LOCALE_SMOKE_OPTIONS,
+				toolNames: ["eval", "read", "task"],
+				directToolNames: ["eval"],
+				nativeTools: true,
+				inlineToolDescriptors: false,
+			})
+		).systemPrompt.join("\n");
+
+		const inventory = prompt.match(/# Tool Inventory\n(?:- .*\n?)*/)?.[0] ?? "";
+		expect(inventory.trim()).toBe("# Tool Inventory\n- `eval`");
+		expect(prompt).toContain(
+			"User says `parallel` or `parallelize` → MUST use `task` subagents; parallel tool calls alone do not satisfy.",
+		);
+	});
+});

@@ -587,6 +587,9 @@ export class Settings {
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
 		}
+		if (CODE_MODE_SIGNAL_PATHS.includes(path)) {
+			codeModeSignal.fire();
+		}
 	}
 
 	/** Set once this instance is discarded; background saves become no-ops. */
@@ -671,12 +674,21 @@ export class Settings {
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
+		const prevCodeModeValues = CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
 		this.#cwd = normalized;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
+		if (
+			!Bun.deepEquals(
+				CODE_MODE_SIGNAL_PATHS.map(path => this.get(path)),
+				prevCodeModeValues,
+			)
+		) {
+			codeModeSignal.fire();
+		}
 		this.#fireAllHooks();
 	}
 
@@ -2339,6 +2351,24 @@ const modelRolesSignal = new SettingSignal("modelRoles");
 
 /** Subscribe to model role changes. Returns an unsubscribe function. */
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
+
+/** Fires when Code Mode activation or its direct keep-set changes at runtime. */
+const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
+
+/**
+ * Settings whose effective value changes the Code Mode tool partition. `edit.mode`
+ * belongs here because it renames `EditTool` on the wire (`apply_patch` vs `edit`),
+ * which the namespace metadata is keyed by.
+ */
+const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
+	"providers.openai-codex.codeMode",
+	"providers.openai-codex.codeModeDirectTools",
+	"eval.js",
+	"edit.mode",
+];
+
+/** Subscribe to Code Mode setting changes. Returns an unsubscribe function. */
+export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
 
 /** Fires when `statusLine.sessionAccent` changes at runtime. */
 const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccent");

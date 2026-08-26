@@ -23,6 +23,8 @@ export interface GitCommandResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	/** True when captured stdout or stderr exceeded the configured output limit. */
+	truncated: boolean;
 }
 
 export interface GitRepository {
@@ -78,6 +80,7 @@ export interface DiffOptions {
 	readonly numstat?: boolean;
 	readonly signal?: AbortSignal;
 	readonly stat?: boolean;
+	readonly requireComplete?: boolean;
 }
 
 export interface StatusOptions {
@@ -97,10 +100,15 @@ export interface CommitAuthor {
 export interface CommitDetails {
 	readonly author: CommitAuthor;
 	readonly message: string;
+	/** Comma-free parent SHAs; empty for a root commit. */
+	readonly parents: readonly string[];
+	/** Full commit SHA. */
+	readonly sha: string;
 }
 
 export interface CommitOptions {
 	readonly allowEmpty?: boolean;
+	readonly amend?: boolean;
 	readonly author?: CommitAuthor;
 	readonly files?: readonly string[];
 	readonly signal?: AbortSignal;
@@ -180,6 +188,21 @@ export class GitCommandError extends Error {
 	constructor(args: readonly string[], result: GitCommandResult) {
 		super(formatCommandFailure(args, result));
 		this.name = "GitCommandError";
+		this.args = [...args];
+		this.result = result;
+	}
+}
+
+export class GitOutputTruncatedError extends Error {
+	readonly args: readonly string[];
+	readonly result: GitCommandResult;
+
+	constructor(args: readonly string[], result: GitCommandResult) {
+		const limitMiB = Math.round(GIT_COMMAND_OUTPUT_LIMIT_BYTES / (1024 * 1024));
+		super(
+			`git ${args.join(" ")} produced more than ${limitMiB} MiB of output; the captured result is truncated and incomplete.`,
+		);
+		this.name = "GitOutputTruncatedError";
 		this.args = [...args];
 		this.result = result;
 	}
@@ -324,7 +347,10 @@ async function waitForExitWithTimeout(
 	}
 }
 
-async function readCappedText(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<string> {
+async function readCappedText(
+	stream: ReadableStream<Uint8Array>,
+	maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
 	const chunks: string[] = [];
@@ -347,7 +373,7 @@ async function readCappedText(stream: ReadableStream<Uint8Array>, maxBytes: numb
 		}
 		chunks.push(decoder.decode());
 		if (truncated) chunks.push(GIT_OUTPUT_TRUNCATED_MARKER);
-		return chunks.join("");
+		return { text: chunks.join(""), truncated };
 	} finally {
 		reader.releaseLock();
 	}
@@ -384,10 +410,15 @@ async function collectSubprocessResult(
 		void stdoutPromise.catch(() => undefined);
 		void stderrPromise.catch(() => undefined);
 		await Promise.all([cancelOutput(stdoutStream), cancelOutput(stderrStream)]);
-		return { exitCode: GIT_COMMAND_TIMEOUT_EXIT_CODE, stdout: "", stderr: exit.stderr };
+		return { exitCode: GIT_COMMAND_TIMEOUT_EXIT_CODE, stdout: "", stderr: exit.stderr, truncated: false };
 	}
 	const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-	return { exitCode: exit.exitCode ?? 0, stdout, stderr };
+	return {
+		exitCode: exit.exitCode ?? 0,
+		stdout: stdout.text,
+		stderr: stderr.text,
+		truncated: stdout.truncated || stderr.truncated,
+	};
 }
 
 interface CommandOptions {
@@ -508,7 +539,7 @@ async function git(cwd: string, args: readonly string[], options: CommandOptions
 			// A deleted/nonexistent cwd also surfaces as a spawn ENOENT; only blame
 			// the binary when the working directory actually exists.
 			const stderr = fs.existsSync(cwd) ? "git is not installed." : `working directory does not exist: ${cwd}`;
-			return { exitCode: GIT_SPAWN_ENOENT_EXIT_CODE, stdout: "", stderr };
+			return { exitCode: GIT_SPAWN_ENOENT_EXIT_CODE, stdout: "", stderr, truncated: false };
 		}
 		throw err;
 	}
@@ -1252,7 +1283,9 @@ export const diff = Object.assign(
 		if (options.allowFailure) {
 			return (await git(cwd, args, { env: options.env, readOnly: true, signal: options.signal })).stdout;
 		}
-		return runText(cwd, args, { env: options.env, readOnly: true, signal: options.signal });
+		const result = await runChecked(cwd, args, { env: options.env, readOnly: true, signal: options.signal });
+		if (options.requireComplete && result.truncated) throw new GitOutputTruncatedError(args, result);
+		return result.stdout;
 	},
 	{
 		/** List changed file paths. */
@@ -1402,6 +1435,7 @@ export async function commit(cwd: string, message: string, options: CommitOption
 		if (options.author.date) args.push(`--date=${options.author.date}`);
 	}
 	if (options.allowEmpty) args.push("--allow-empty");
+	if (options.amend) args.push("--amend");
 	if (options.files?.length) args.push("--", ...options.files);
 	return runChecked(cwd, args, { signal: options.signal, stdin: message });
 }
@@ -1712,14 +1746,16 @@ export const show = Object.assign(
 
 /** Read commit message and author metadata for replay/rewrite flows. */
 export async function commitDetails(cwd: string, revision: string, signal?: AbortSignal): Promise<CommitDetails> {
-	const raw = await runText(cwd, ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", revision], {
+	const raw = await runText(cwd, ["show", "-s", "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%B", revision], {
 		readOnly: true,
 		signal,
 	});
-	const [name = "", email = "", date = "", ...messageParts] = raw.split("\0");
+	const [sha = "", parentsRaw = "", name = "", email = "", date = "", ...messageParts] = raw.split("\0");
 	return {
 		author: { date, email, name },
 		message: messageParts.join("\0").replace(/\n$/, ""),
+		parents: parentsRaw.split(" ").filter(Boolean),
+		sha,
 	};
 }
 

@@ -9,6 +9,11 @@ import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** POSIX absolute, Windows drive, or UNC (`\\server\share` / `//server/share`). */
+export function isFilesystemSourcePath(value: string): boolean {
+	return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
+}
 // A single line-range chunk: `N`, `N-M`, `N+K`, or open-ended `N-`. `..` is
 // accepted everywhere `-` is, as a forgiving alias for Rust/Python-style ranges
 // (e.g. `2724..2727` == `2724-2727`, `2724..` == `2724-`); it is normalized to
@@ -471,6 +476,18 @@ export function isInternalUrlPath(filePath: string): boolean {
 	}
 	return false;
 }
+/**
+ * Approval tier for a path that will be written through the file/internal-URL
+ * routing layer. Internal resources are read-tier only when their handler is
+ * read-only; writable handlers such as vault:// must retain write approval.
+ */
+export function resolveFileWriteApprovalTier(filePath: string): "read" | "write" {
+	const normalized = normalizeLocalScheme(expandPath(normalizeLocalScheme(filePath)));
+	if (!TOP_LEVEL_INTERNAL_URL_PREFIXES.some(prefix => normalized.startsWith(prefix))) return "write";
+	const scheme = INTERNAL_URL_SCHEME_RE.exec(normalized)?.[1]?.toLowerCase();
+	const handler = scheme ? InternalUrlRouter.instance().getHandler(scheme) : undefined;
+	return handler?.write ? "write" : "read";
+}
 
 /**
  * True when a tool path argument references the `ssh://` scheme anywhere.
@@ -615,6 +632,84 @@ function isSymlink(target: string): boolean {
 		return fs.lstatSync(target).isSymbolicLink();
 	} catch {
 		return false;
+	}
+}
+/**
+ * Resolve the path a syscall on `filePath` would really act on, or `null` when
+ * that cannot be established.
+ *
+ * A lexical path is not a destination. The kernel follows every component above
+ * the last, so `ws/link/file` under a `ws/link -> /elsewhere` link lands outside
+ * `ws` while still looking relative and `..`-free. Handing such a path to a
+ * privileged helper defeats the defence a helper author reaches for first — a
+ * prefix allowlist passes, because the link sits inside the allowed root while
+ * its target does not. Callers that hand a path to something more privileged
+ * than the syscall that just failed resolve it here first.
+ *
+ * Rejecting symlinked components outright is not an option: `/var` and `/tmp`
+ * are links on macOS, so every path under `os.tmpdir()` traverses one. They are
+ * resolved instead, and only a path whose real destination cannot be established
+ * is refused, because "where would this land" then has no answer to hand over.
+ * {@link confineToWorkspace} refuses an unresolvable link for the same reason.
+ *
+ * @param followFinal `true` for a syscall that follows a link at the final
+ *   component (`open`, so every write), `false` for one that acts on the link
+ *   itself (`unlink`) and therefore needs it left alone.
+ */
+export async function resolveSyscallTarget(filePath: string, followFinal: boolean): Promise<string | null> {
+	const target = path.resolve(filePath);
+	if (followFinal) {
+		const real = await tryRealpathAsync(target);
+		if (real !== null) return real;
+		// `realpath` also fails on a DANGLING link, which a write follows to a place
+		// this cannot name, and on a path whose ancestor may not be searched. Neither
+		// is proof the final component is a plain name, and only proof continues.
+		if (!(await isProvenNotSymlink(target))) return null;
+	}
+	// Walk up to the deepest ancestor that does resolve, then re-apply the
+	// components below it. A resolved ancestor vouches for the ones above it, so
+	// re-applying them lexically matches what the kernel would have done.
+	const tail: string[] = [path.basename(target)];
+	let ancestor = path.dirname(target);
+	for (;;) {
+		const real = await tryRealpathAsync(ancestor);
+		if (real !== null) return path.join(real, ...tail.reverse());
+		// This component is about to be re-applied lexically without a resolved
+		// ancestor vouching for it, which is exactly the escape being closed — so it
+		// has to prove itself. `realpath` fails here for a component that does not
+		// exist yet AND for one inside a directory the caller may not search (the
+		// usual shape when a sandbox hides a denied path), and the second still
+		// permits `lstat`.
+		if (!(await isProvenNotSymlink(ancestor))) return null;
+		const parent = path.dirname(ancestor);
+		// Ran past the filesystem root: `realpath("/")` cannot fail, so only a
+		// filesystem disappearing mid-walk gets here.
+		if (parent === ancestor) return null;
+		tail.push(path.basename(ancestor));
+		ancestor = parent;
+	}
+}
+
+async function tryRealpathAsync(target: string): Promise<string | null> {
+	try {
+		// `fs.promises.realpath` has no `.native` variant under Bun, unlike its sync
+		// counterpart; the JS implementation resolves links identically.
+		return await fs.promises.realpath(target);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Whether `target` is known NOT to redirect. A path that does not exist cannot
+ * redirect anything, and nothing below it exists either; any other `lstat`
+ * failure leaves the question unanswered, which is not proof.
+ */
+async function isProvenNotSymlink(target: string): Promise<boolean> {
+	try {
+		return !(await fs.promises.lstat(target)).isSymbolicLink();
+	} catch (error) {
+		return isEnoent(error);
 	}
 }
 

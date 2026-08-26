@@ -154,6 +154,7 @@ export interface LspServerInfo {
 export class WelcomeComponent implements Component {
 	#animStart: number | null = null;
 	#animTimer: Timer | null = null;
+	#requestRender: (() => void) | null = null;
 	#selectedTip: string | undefined;
 	// Render cache: the welcome box is the first transcript-area component, so
 	// returning a stable array reference keeps the whole frame prefix stable.
@@ -162,7 +163,7 @@ export class WelcomeComponent implements Component {
 	#cachedLines: string[] | undefined;
 
 	constructor(
-		private readonly version: string,
+		private version: string,
 		private modelName: string,
 		private providerName: string,
 		private recentSessions: RecentSession[] = [],
@@ -184,6 +185,11 @@ export class WelcomeComponent implements Component {
 		this.#cachedLines = undefined;
 	}
 
+	/** The intro keeps the welcome block mutable; settling lets it retire to history. */
+	isTranscriptBlockFinalized(): boolean {
+		return this.#animTimer == null;
+	}
+
 	/**
 	 * Play a one-shot intro that sweeps the gradient through every phase
 	 * before settling on the resting frame. Safe to call multiple times —
@@ -191,14 +197,13 @@ export class WelcomeComponent implements Component {
 	 */
 	playIntro(requestRender: () => void): void {
 		this.#stopAnimation();
+		this.#requestRender = requestRender;
 		this.#animStart = performance.now();
-		requestRender();
+		this.#requestRender();
 		this.#animTimer = setInterval(() => {
 			const elapsed = performance.now() - (this.#animStart ?? 0);
-			if (elapsed >= INTRO_MS) {
-				this.#stopAnimation();
-			}
-			requestRender();
+			if (elapsed >= INTRO_MS) this.#stopAnimation();
+			this.#requestRender?.();
 		}, INTRO_TICK_MS);
 	}
 
@@ -208,7 +213,25 @@ export class WelcomeComponent implements Component {
 			this.#animTimer = null;
 		}
 		this.#animStart = null;
-		// The settled (resting) frame differs from the last intro frame.
+		this.#requestRender = null;
+		this.invalidate();
+	}
+
+	/** Redirect a running intro's render callback after host transfer. */
+	retargetIntro(requestRender: () => void): boolean {
+		if (this.#animTimer == null) return false;
+		this.#requestRender = requestRender;
+		return true;
+	}
+
+	/** Stop the intro immediately and settle on the resting frame. */
+	stopIntro(): void {
+		this.#stopAnimation();
+	}
+
+	/** Update the version embedded in the welcome border title. */
+	setVersion(version: string): void {
+		this.version = version;
 		this.invalidate();
 	}
 
@@ -255,13 +278,13 @@ export class WelcomeComponent implements Component {
 		const preferredLeftCol = 26;
 		const minLeftCol = 12; // logo width
 		const minRightCol = 20;
-		const leftMinContentWidth = Math.max(
-			minLeftCol,
-			visibleWidth("Welcome back!"),
-			visibleWidth(this.modelName),
-			visibleWidth(this.providerName),
+		// Dynamic model/provider labels are truncated inside the fixed column.
+		// Letting them influence the breakpoint shifts the editor when authoritative data arrives.
+		const leftMinContentWidth = Math.max(minLeftCol, visibleWidth(tSettingsUi("Welcome back!")));
+		const desiredLeftCol = Math.max(
+			Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35))),
+			leftMinContentWidth,
 		);
-		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35)));
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
 				? Math.min(desiredLeftCol, dualContentWidth - minRightCol)

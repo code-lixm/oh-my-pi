@@ -17,6 +17,7 @@
 import { countTokens } from "@oh-my-pi/pi-agent-core";
 import type { Context, ImageContent, Model, TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import type { SnapcompactFrameSink } from "../blob-broker/service";
 import { selectPrompt } from "../prompts/prompt-locale";
 import contextFramesNote from "../prompts/system/snapcompact-context-frames-note.md" with { type: "text" };
 import contextFramesNoteZh from "../prompts/system/snapcompact-context-frames-note.zh-CN.md" with { type: "text" };
@@ -418,6 +419,7 @@ export class SnapcompactInlineTransformer {
 	constructor(
 		private readonly options: SnapcompactInlineOptions,
 		private readonly onToolResultSavings?: SnapcompactSavingsSink,
+		private readonly frameSink?: SnapcompactFrameSink,
 	) {}
 
 	async transform(context: Context, model: Model): Promise<Context> {
@@ -515,10 +517,12 @@ export class SnapcompactInlineTransformer {
 			if (!cached || cached.hash !== hash) {
 				cached = {
 					hash,
-					frames: await snapcompact.renderMany(systemPromptTarget.text, {
-						shape,
-						maxFrames: MAX_SYSTEM_PROMPT_FRAMES,
-					}),
+					frames:
+						(await this.frameSink?.framesFor(systemPromptTarget.text, shape, MAX_SYSTEM_PROMPT_FRAMES)) ??
+						(await snapcompact.renderMany(systemPromptTarget.text, {
+							shape,
+							maxFrames: MAX_SYSTEM_PROMPT_FRAMES,
+						})),
 				};
 				this.#systemCache = cached;
 			}
@@ -547,7 +551,7 @@ export class SnapcompactInlineTransformer {
 		const hash = Bun.hash(text);
 		const cached = cache.get(key);
 		if (cached && cached.hash === hash) return cached.frames;
-		const frames = await snapcompact.renderMany(text, { shape });
+		const frames = (await this.frameSink?.framesFor(text, shape)) ?? (await snapcompact.renderMany(text, { shape }));
 		cache.set(key, { hash, frames });
 		return frames;
 	}

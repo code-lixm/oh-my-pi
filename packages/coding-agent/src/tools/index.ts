@@ -144,6 +144,8 @@ export type ImageAttachmentEntry = {
 	label: string;
 	uri: string;
 	image: ImageContent;
+	/** Existing content-addressed file path containing the original image bytes. */
+	sourcePath: string;
 };
 
 /**
@@ -287,6 +289,12 @@ export interface ToolSession {
 	getAgentId?: () => string | null;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
+	/** Look up an enabled tool through the eval bridge's permission gate. */
+	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
+	/** Canonical tool names authorized through the eval bridge. */
+	getEvalBridgeToolNames?: () => readonly string[];
+	/** Tools left directly model-visible by Code Mode; undefined when inactive. */
+	getCodeModeDirectToolNames?: () => readonly string[] | undefined;
 	/** Return whether a built-in tool is active in this turn's tool set. */
 	isToolActive?: (name: string) => boolean;
 	/** Update the active built-in tool predicate when a session changes tools mid-run. */

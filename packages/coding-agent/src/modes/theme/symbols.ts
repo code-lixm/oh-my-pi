@@ -32,6 +32,9 @@ export type SymbolKey =
 	| "tree.vertical"
 	| "tree.horizontal"
 	| "tree.hook"
+	// Context gauge boundaries
+	| "context.speculation"
+	| "context.compaction"
 	// Box Drawing - Rounded
 	| "boxRound.topLeft"
 	| "boxRound.topRight"
@@ -80,6 +83,7 @@ export type SymbolKey =
 	| "icon.git"
 	| "icon.branch"
 	| "icon.pr"
+	| "icon.pin"
 	| "icon.tokens"
 	| "icon.context"
 	| "icon.cost"
@@ -177,6 +181,9 @@ export type SymbolKey =
 	| "lang.pdf"
 	| "lang.archive"
 	| "lang.binary"
+	// Composer attachment chips (image paste / large text paste)
+	| "chip.image"
+	| "chip.paste"
 	// Settings tab icons
 	| "tab.appearance"
 	| "tab.model"
@@ -243,6 +250,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tree.vertical": "│",
 	"tree.horizontal": "─",
 	"tree.hook": "└",
+	// Context gauge boundaries
+	"context.speculation": "╎",
+	"context.compaction": "┃",
 	// Box (rounded)
 	"boxRound.topLeft": "╭",
 	"boxRound.topRight": "╮",
@@ -291,6 +301,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.git": "⎇",
 	"icon.branch": "⑂",
 	"icon.pr": "⤴",
+	"icon.pin": "📌",
 	"icon.tokens": "🪙",
 	"icon.context": "◫",
 	"icon.cost": "💲",
@@ -388,6 +399,9 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"lang.pdf": "📕",
 	"lang.archive": "🗜",
 	"lang.binary": "⚙",
+	// Composer attachment chips
+	"chip.image": "🖼",
+	"chip.paste": "📄",
 	// Settings tabs
 	"tab.appearance": "🎨",
 	"tab.model": "🤖",
@@ -474,6 +488,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tree.horizontal": "─",
 	// pick: └ | alt: ╰ ⎿ ↳
 	"tree.hook": "└",
+	// Context gauge boundaries
+	"context.speculation": "\u{f055d}",
+	"context.compaction": "\u{f0068}",
 	// Box Drawing - Rounded (same as unicode)
 	// pick: ╭ | alt: ┌ ┏ ╔
 	"boxRound.topLeft": "╭",
@@ -564,6 +581,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.branch": "\uf126",
 	// pick:  (nf-cod-git_pull_request) | alt:  (nf-oct-git_pull_request)
 	"icon.pr": "\uea64",
+	// pick:  (nf-fa-thumbtack) | alt: 📌
+	"icon.pin": "\uf08d",
 	// pick:  | alt: ⊛ ◍ 
 	"icon.tokens": "\ue26b",
 	// pick:  | alt: ◫ ▦
@@ -700,6 +719,9 @@ const NERD_SYMBOLS: SymbolMap = {
 	"lang.pdf": "\u{F0226}",
 	"lang.archive": "\u{F187}",
 	"lang.binary": "\u{F019A}",
+	// Composer attachment chips
+	"chip.image": "\uf03e",
+	"chip.paste": "\uf15c",
 	// Settings tab icons
 	"tab.appearance": "󰃣",
 	"tab.model": "󰚩",
@@ -765,6 +787,9 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tree.vertical": "|",
 	"tree.horizontal": "-",
 	"tree.hook": "`-",
+	// Context gauge boundaries
+	"context.speculation": ":",
+	"context.compaction": "|",
 	// Box Drawing - Rounded (ASCII fallback)
 	"boxRound.topLeft": "+",
 	"boxRound.topRight": "+",
@@ -813,6 +838,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.git": "git:",
 	"icon.branch": "@",
 	"icon.pr": "PR",
+	"icon.pin": "*",
 	"icon.tokens": "tok:",
 	"icon.context": "ctx:",
 	"icon.cost": "$",
@@ -907,6 +933,9 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"lang.pdf": "pdf",
 	"lang.archive": "zip",
 	"lang.binary": "bin",
+	// Composer attachment chips
+	"chip.image": "img",
+	"chip.paste": "txt",
 	// Settings tab icons
 	"tab.appearance": "[A]",
 	"tab.model": "[M]",

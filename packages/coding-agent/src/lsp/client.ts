@@ -62,13 +62,18 @@ export function setIdleTimeout(ms: number | null | undefined): void {
 	}
 }
 
+export function isIdleClient(client: LspClient, now: number, timeoutMs: number): boolean {
+	if (client.pendingRequests.size > 0) return false;
+	return now - client.lastActivity > timeoutMs;
+}
+
 function startIdleChecker(): void {
 	if (idleCheckInterval) return;
 	idleCheckInterval = setInterval(() => {
 		if (!idleTimeoutMs) return;
 		const now = Date.now();
 		for (const [key, client] of Array.from(clients.entries())) {
-			if (now - client.lastActivity > idleTimeoutMs) {
+			if (isIdleClient(client, now, idleTimeoutMs)) {
 				void shutdownClient(key);
 			}
 		}
@@ -746,7 +751,7 @@ function commandBasename(command: string): string {
 	return separator === -1 ? command : command.slice(separator + 1);
 }
 
-function isRustAnalyzerClient(client: LspClient): boolean {
+export function isRustAnalyzerClient(client: LspClient): boolean {
 	return (
 		commandBasename(client.config.command) === "rust-analyzer" ||
 		(client.config.resolvedCommand ? commandBasename(client.config.resolvedCommand) === "rust-analyzer" : false)
@@ -1459,11 +1464,13 @@ export async function sendRequest(
 	// Register pending request with timeout wrapper
 	client.pendingRequests.set(id, {
 		resolve: result => {
+			client.lastActivity = Date.now();
 			if (timeout) clearTimeout(timeout);
 			cleanup();
 			resolve(result);
 		},
 		reject: err => {
+			client.lastActivity = Date.now();
 			if (timeout) clearTimeout(timeout);
 			cleanup();
 			reject(err);

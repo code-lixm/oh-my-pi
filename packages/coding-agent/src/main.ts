@@ -7,8 +7,8 @@
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import { createInterface } from "node:readline/promises";
-import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { EventLoopKeepalive, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import {
 	$env,
 	directoryExists,
@@ -60,12 +60,19 @@ import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { tSettingsUi } from "./i18n/settings-locale";
 import { registerDaemonProjectPresence } from "./launch/presence";
+import { discoverStartupLspServers } from "./lsp";
 import type { MCPManager } from "./mcp";
 import { InteractiveMode } from "./modes/interactive-mode";
 import { asInteractiveSession, createIsolatedInteractiveSession } from "./modes/isolated-interactive-session";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
+import {
+	applyStartupComposerPreferences,
+	type ComposerLease,
+	setStartupComposerLspServers,
+	takeStartupComposerLease,
+} from "./modes/startup-composer";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { InteractiveRuntimeFactory, SubmittedUserInput } from "./modes/types";
 import { createWarpEventBridgeExtension } from "./modes/warp-events";
@@ -480,6 +487,7 @@ async function runInteractiveMode(
 	initialImages?: ImageContent[],
 	joinLink?: string,
 	runtimeFactory?: InteractiveRuntimeFactory,
+	startupLease?: ComposerLease,
 ): Promise<void> {
 	const mode = new InteractiveMode(
 		session,
@@ -490,7 +498,9 @@ async function runInteractiveMode(
 		mcpManager,
 		eventBus,
 		runtimeFactory,
+		startupLease?.composer,
 	);
+	startupLease?.adopt();
 
 	// Cold-launch gate: the full setup wizard (every scene + the overlay and
 	// their TUI/OAuth/search/theme deps) is heavy, yet the common case only needs
@@ -514,6 +524,7 @@ async function runInteractiveMode(
 
 	await mode.init({
 		suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
+		recentSessions: startupLease?.recentSessions,
 		clearInitialTerminalHistory: true,
 		waitForInitialAppearance: resuming,
 	});
@@ -720,25 +731,84 @@ async function switchToResumedProject(
 
 /**
  * Resolve the effective model allow-list from an explicit `--models` scope or,
- * failing that, the active project's `enabledModels`. Re-run after a resume
- * switches projects so the destination project's settings-derived scope wins
- * over the launch directory's.
+ * failing that, the active project's `enabledModels`. A totally collapsed scope
+ * gets one cache-aware discovery pass before session construction: otherwise an
+ * all-discovery `--models` launch can select an unrelated static model before the
+ * later background rebuild activates the requested scope. The pass only helps
+ * providers already known to be discoverable (models.yml `discovery:`, runtime
+ * managers); a scope naming only extension-supplied models stays empty here
+ * because those providers register during `createAgentSession` — that case is
+ * covered by deferring to the SDK's `modelPattern` resolution in
+ * {@link buildSessionOptions}. Re-run after a resume switches projects so the
+ * destination project's settings-derived scope wins over the launch directory's.
  */
-async function resolveScopedModels(
+export async function resolveScopedModels(
 	parsed: Args,
-	modelRegistry: ModelRegistry,
+	modelRegistry: Pick<ModelRegistry, "getAvailable" | "getDiscoverableProviders" | "refresh">,
 	activeSettings: Settings,
 ): Promise<ScopedModel[]> {
 	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
 	if (!modelPatterns || modelPatterns.length === 0) {
 		return [];
 	}
-	return await resolveModelScope(
-		modelPatterns,
+	const preferences = getModelMatchPreferences(activeSettings);
+	const scopedModels = await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings);
+	if (scopedModels.length > 0 || modelRegistry.getDiscoverableProviders().length === 0) {
+		return scopedModels;
+	}
+	await modelRegistry.refresh("online-if-uncached");
+	return await resolveModelScope(modelPatterns, modelRegistry, preferences, activeSettings);
+}
+
+/** Map resolver scope entries to the concrete session cycle shape. */
+export function toSessionScopedModels(
+	scopedModels: readonly ScopedModel[],
+	activeSettings: Settings,
+): Array<{ model: Model; thinkingLevel?: ThinkingLevel }> {
+	if (scopedModels.length === 0) return [];
+	const defaultThinkingLevel = concreteThinkingLevel(
+		parseConfiguredThinkingLevel(activeSettings.get("defaultThinkingLevel")),
+	);
+	return scopedModels.map(scopedModel => ({
+		model: scopedModel.model,
+		thinkingLevel: scopedModel.explicitThinkingLevel
+			? (scopedModel.thinkingLevel ?? defaultThinkingLevel)
+			: defaultThinkingLevel,
+	}));
+}
+
+function sameScopedModelSet(a: ReadonlyArray<{ model: Model }>, b: ReadonlyArray<{ model: Model }>): boolean {
+	if (a.length !== b.length) return false;
+	const keys = new Set(a.map(entry => `${entry.model.provider}/${entry.model.id}`));
+	return b.every(entry => keys.has(`${entry.model.provider}/${entry.model.id}`));
+}
+
+export interface ScopedModelSink {
+	readonly isDisposed: boolean;
+	readonly scopedModels: ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void;
+}
+
+/** Re-resolve an active model scope after background provider discovery settles. */
+export async function rebuildScopedModelsAfterDiscovery(
+	session: ScopedModelSink,
+	parsed: Args,
+	modelRegistry: Pick<ModelRegistry, "getAvailable" | "awaitBackgroundRefresh">,
+	activeSettings: Settings,
+): Promise<void> {
+	const patterns = parsed.models ?? activeSettings.get("enabledModels");
+	if (!patterns || patterns.length === 0) return;
+	await modelRegistry.awaitBackgroundRefresh();
+	if (session.isDisposed) return;
+	const rebuilt = await resolveModelScope(
+		patterns,
 		modelRegistry,
 		getModelMatchPreferences(activeSettings),
 		activeSettings,
 	);
+	const mapped = toSessionScopedModels(rebuilt, activeSettings);
+	if (mapped.length === 0 || sameScopedModelSet(session.scopedModels, mapped)) return;
+	session.setScopedModels(mapped);
 }
 
 async function getChangelogForDisplay(
@@ -1085,8 +1155,13 @@ export async function buildSessionOptions(
 		// escape it — keep pinning the first scoped model there.
 		deferredDefaultRole = !options.model && Boolean(remembered) && !((parsed.models?.length ?? 0) > 0);
 		if (!options.model && !deferredDefaultRole) options.model = scopedModels[0].model;
+	} else if ((parsed.models?.length ?? 0) > 0 && !restoringSession) {
+		// A CLI `--models` scope that resolved to zero models at startup: its
+		// selectors may name extension/discovery-backed providers unavailable until
+		// createAgentSession. Defer the initial choice to the SDK's post-extension
+		// modelPattern resolution instead of selecting an unrelated fallback.
+		options.modelPattern = parsed.models;
 	}
-
 	if (parsed.noPrewalk && (parsed.prewalk || parsed.prewalkInto !== undefined)) {
 		throw new Error(tSettingsUi("--no-prewalk cannot be combined with --prewalk or --prewalk-into"));
 	}
@@ -1173,19 +1248,9 @@ export async function buildSessionOptions(
 		options.thinkingLevel = scopedModels[0].thinkingLevel;
 	}
 
-	// Scoped models for Tab/Shift+Tab cycling - fill in default thinking levels when not explicit
+	// Scoped models for Tab/Shift+Tab cycling — fill in default thinking levels when not explicit.
 	if (scopedModels.length > 0) {
-		// `auto` is a session-level concept only; per-scoped-model cycle thinking
-		// overrides stay concrete, so coerce the auto default to "unset" here.
-		const defaultThinkingLevel = concreteThinkingLevel(
-			parseConfiguredThinkingLevel(activeSettings.get("defaultThinkingLevel")),
-		);
-		options.scopedModels = scopedModels.map(scopedModel => ({
-			model: scopedModel.model,
-			thinkingLevel: scopedModel.explicitThinkingLevel
-				? (scopedModel.thinkingLevel ?? defaultThinkingLevel)
-				: defaultThinkingLevel,
-		}));
+		options.scopedModels = toSessionScopedModels(scopedModels, activeSettings);
 	}
 
 	// API key from CLI - set in authStorage
@@ -1435,6 +1500,27 @@ export async function runRootCommand(
 		settingsInstance.get("theme.light"),
 		settingsInstance.get("theme.terminalPalette"),
 	);
+
+	applyStartupComposerPreferences({
+		quiet: settingsInstance.get("startup.quiet"),
+		composerShape: settingsInstance.get("composer.shape") ?? "box",
+		showHardwareCursor: settingsInstance.get("showHardwareCursor"),
+		maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
+		resizeScrollback: "append",
+		scrollbackRebuild: settingsInstance.get("tui.scrollbackRebuild"),
+		imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
+		autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
+		spellingTypoDetection: settingsInstance.get("spelling.typoDetection"),
+		spellingAutocomplete: settingsInstance.get("spelling.autocomplete"),
+		spellingAutocorrect: settingsInstance.get("spelling.autocorrect"),
+		theme: {
+			symbolPreset: settingsInstance.get("symbolPreset"),
+			colorBlindMode: settingsInstance.get("colorBlindMode"),
+			darkTheme: settingsInstance.get("theme.dark"),
+			lightTheme: settingsInstance.get("theme.light"),
+		},
+	});
+	setStartupComposerLspServers(discoverStartupLspServers(getProjectDir(), "connecting"));
 
 	let scopedModels = await logger.time(
 		"resolveModelScope",
@@ -1807,6 +1893,13 @@ export async function runRootCommand(
 			mcpManager = createdSession.mcpManager;
 		}
 
+		const configuredScope = parsedArgs.models ?? settingsInstance.get("enabledModels");
+		if (isInteractive && configuredScope.length > 0 && !processIsolationEnabled) {
+			void rebuildScopedModelsAfterDiscovery(session, parsedArgs, modelRegistry, settingsInstance).catch(error =>
+				logger.warn("Scoped model rebuild after discovery failed", { error: String(error) }),
+			);
+		}
+
 		const interactiveRuntimeFactory: InteractiveRuntimeFactory | undefined = !isInteractive
 			? undefined
 			: processIsolationEnabled
@@ -1958,27 +2051,33 @@ export async function runRootCommand(
 				}
 			}
 
-			stopStartupWatchdog();
-			logger.endTiming();
-			await runInteractiveMode(
-				session,
-				VERSION,
-				startupChangelog,
-				notifs,
-				versionCheckPromise,
-				initialArgs.messages,
-				setToolUIContext,
-				lspServers,
-				mcpManager,
-				Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
-				deps.forceSetupWizard === true,
-				showStartupSplash,
-				eventBus,
-				initialMessage,
-				initialImages,
-				parsedArgs.join,
-				interactiveRuntimeFactory,
-			);
+			const startupLease = takeStartupComposerLease();
+			try {
+				stopStartupWatchdog();
+				logger.endTiming();
+				await runInteractiveMode(
+					session,
+					VERSION,
+					startupChangelog,
+					notifs,
+					versionCheckPromise,
+					initialArgs.messages,
+					setToolUIContext,
+					lspServers,
+					mcpManager,
+					Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
+					deps.forceSetupWizard === true,
+					showStartupSplash,
+					eventBus,
+					initialMessage,
+					initialImages,
+					parsedArgs.join,
+					interactiveRuntimeFactory,
+					startupLease,
+				);
+			} finally {
+				startupLease?.dispose();
+			}
 		} else {
 			// Branch-only single-shot runner: keep print-mode code out of normal interactive startup.
 			stopStartupWatchdog();

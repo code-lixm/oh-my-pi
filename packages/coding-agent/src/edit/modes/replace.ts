@@ -27,6 +27,7 @@ import {
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
+import type { AppliedEditObserver } from "../blackbox";
 
 export interface FuzzyMatch {
 	actualText: string;
@@ -1091,6 +1092,8 @@ export interface ExecuteReplaceOptions {
 	fuzzyThreshold: number;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
+	/** Observes a committed source transition before result snapshots are pruned. */
+	onApplied?: AppliedEditObserver;
 }
 
 export async function executeReplace(
@@ -1106,6 +1109,7 @@ export async function executeReplace(
 		fuzzyThreshold,
 		writethrough,
 		beginDeferredDiagnosticsForPath,
+		onApplied,
 	} = options;
 	const { old_string, new_string, replace_all } = params;
 
@@ -1169,6 +1173,7 @@ export async function executeReplace(
 		invalidateFsScanAfterWrite(absolutePath);
 		notifyFileMutation(session, absolutePath, existedBefore ? "update" : "create");
 	}
+	await onApplied?.({ path: absolutePath, prev: rawContent, next: finalContent });
 
 	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });
 	const resultText =

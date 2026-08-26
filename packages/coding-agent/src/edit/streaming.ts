@@ -30,6 +30,7 @@ import { computeEditDiff, type DiffError, type DiffResult } from "./diff";
 import { computeHashlineDiff, computeHashlineSectionDiff } from "./hashline/diff";
 import { type ApplyPatchEntry, expandApplyPatchToEntries, expandApplyPatchToPreviewEntries } from "./modes/apply-patch";
 import { computePatchDiff, type PatchEditEntry } from "./modes/patch";
+import { computeSloppySectionDiff, splitSloppySections } from "./sloppy";
 
 export interface PerFileDiffPreview {
 	path: string;
@@ -689,11 +690,54 @@ const applyPatchStrategy: EditStreamingStrategy<ApplyPatchArgs> = {
 		return entries.length > 0 ? entries : undefined;
 	},
 };
+interface SloppyArgs {
+	input?: string;
+}
+
+const sloppyStrategy: EditStreamingStrategy<SloppyArgs> = {
+	extractCompleteEdits(args) {
+		return args;
+	},
+	async computeDiffPreview(args, ctx) {
+		if (typeof args.input !== "string" || args.input.length === 0) return null;
+		const input = trimTrailingPartialLine(args.input, ctx.isStreaming);
+		const sections = splitSloppySections(input);
+		if (sections.length === 0) return null;
+		const previews: PerFileDiffPreview[] = [];
+		const lastIndex = sections.length - 1;
+		for (let index = 0; index < sections.length; index++) {
+			ctx.signal.throwIfAborted();
+			const result = await computeSloppySectionDiff(sections[index]!, ctx.cwd);
+			ctx.signal.throwIfAborted();
+			if (ctx.isStreaming && index === lastIndex && "error" in result) continue;
+			previews.push(toPerFilePreview(sections[index]!.path, result));
+		}
+		return previews.length > 0 ? previews : null;
+	},
+	renderStreamingFallback() {
+		return "";
+	},
+	matcherDigest(args) {
+		return typeof args?.input === "string" ? args.input : undefined;
+	},
+	matcherPaths(args) {
+		if (typeof args?.input !== "string") return undefined;
+		const sections = splitSloppySections(args.input);
+		return sections.length > 0 ? sections.map(section => section.path) : undefined;
+	},
+	matcherEntries(args) {
+		if (typeof args?.input !== "string") return undefined;
+		const sections = splitSloppySections(args.input);
+		return sections.length > 0 ? sections.map(section => ({ path: section.path, digest: section.body })) : undefined;
+	},
+};
+
 export const EDIT_MODE_STRATEGIES: Record<EditMode, EditStreamingStrategy<unknown>> = {
 	replace: replaceStrategy as EditStreamingStrategy<unknown>,
 	patch: patchStrategy as EditStreamingStrategy<unknown>,
 	hashline: hashlineStrategy as EditStreamingStrategy<unknown>,
 	apply_patch: applyPatchStrategy as EditStreamingStrategy<unknown>,
+	sloppy: sloppyStrategy as EditStreamingStrategy<unknown>,
 };
 
 export { resolveEditMode };

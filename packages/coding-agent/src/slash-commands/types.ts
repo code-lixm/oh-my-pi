@@ -70,6 +70,8 @@ export interface SlashCommandRuntime {
 	 * consistent view after plugin or project-scope changes.
 	 */
 	reloadPlugins: () => Promise<void>;
+	/** Start a provider-backed command without holding the host prompt response. */
+	runCommandInBackground?: (task: () => Promise<void>) => void;
 	notifyTitleChanged?: () => Promise<void> | void;
 	notifyConfigChanged?: () => Promise<void> | void;
 }

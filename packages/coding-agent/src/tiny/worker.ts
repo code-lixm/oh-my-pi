@@ -21,6 +21,7 @@ import {
 	sendProgress,
 	type TransformersRuntimeMetadata,
 } from "../subprocess/worker-runtime";
+import { buildCompletionPrompt } from "./completion-prompt";
 import { resolveTinyModelDevicePreference, type TinyModelDevice, tinyModelDeviceLoadOrder } from "./device";
 import { resolveTinyModelDtypeOverride, type TinyModelDtype } from "./dtype";
 import { formatTitleUserMessage } from "./message-preproc";
@@ -267,16 +268,6 @@ async function generateTitle(
 	return extractTinyTitle(output[0]?.generated_text ?? "", message);
 }
 
-function buildCompletionPrompt(generator: TextGenerationPipeline, promptText: string): string {
-	const chat = [{ role: "user", content: promptText }];
-	const chatTemplateOptions = {
-		add_generation_prompt: true,
-		tokenize: false,
-		enable_thinking: false,
-	};
-	return `${generator.tokenizer.apply_chat_template(chat, chatTemplateOptions)}`;
-}
-
 /**
  * Generic single-turn completion used by Mnemopi memory tasks (fact extraction
  * and consolidation). The caller (Mnemopi) supplies the full task prompt; we
@@ -289,9 +280,10 @@ async function generateCompletion(
 	modelKey: TinyLocalModelKey,
 	promptText: string,
 	maxTokens: number | undefined,
+	systemPrompt: string | undefined,
 ): Promise<string | null> {
 	const generator = await loadPipeline(modelKey, transport, requestId);
-	const text = buildCompletionPrompt(generator, promptText);
+	const text = buildCompletionPrompt(generator.tokenizer, promptText, systemPrompt);
 	const requested = maxTokens ?? MEMORY_COMPLETION_DEFAULT_MAX_NEW_TOKENS;
 	const maxNewTokens = Math.min(Math.max(1, requested), COMPLETION_MAX_NEW_TOKENS);
 	const output = (await generator(text, {
@@ -334,6 +326,7 @@ async function handleQueuedRequest(
 				request.modelKey,
 				request.prompt,
 				request.maxTokens,
+				request.systemPrompt,
 			);
 			transport.send({ type: "completion", id: request.id, text });
 			return;

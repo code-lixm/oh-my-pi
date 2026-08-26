@@ -31,7 +31,9 @@ import type { WorkspaceCheckpointAccessResult } from "../session/workspace-check
 import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
+import type { Composer } from "./composer";
 import type { BashExecutionComponent } from "./components/bash-execution";
+import type { RecentSession } from "./components/welcome";
 import type { CustomEditor } from "./components/custom-editor";
 import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -93,6 +95,7 @@ export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
 	clearInitialTerminalHistory?: boolean;
 	waitForInitialAppearance?: boolean;
+	recentSessions?: Promise<RecentSession[] | undefined>;
 }
 
 /** Independent top-level session resources that can be foregrounded by the shared interactive TUI. */
@@ -127,11 +130,13 @@ export interface SubagentFeedback {
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
+	composer: Composer;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
+	cleanseContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
 	errorBannerContainer: Container;
@@ -139,6 +144,7 @@ export interface InteractiveModeContext {
 	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
+	attachmentChipsContainer: Container;
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
@@ -378,6 +384,7 @@ export interface InteractiveModeContext {
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
+	syncComposerShape(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
@@ -437,6 +444,8 @@ export interface InteractiveModeContext {
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showCheckpointSelector(options?: { checkpointId?: string }): Promise<void>;
+	/** Open the fullscreen git UI, optionally pinned to a revision (`/git <rev>`). */
+	showGitUi(revision?: string): void;
 	showExtensionsDashboard(): void;
 	showAgentsDashboard(): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;

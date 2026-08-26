@@ -43,6 +43,8 @@ import { AsyncJobManager, RLM_JOB_POLICY, RLM_JOB_TYPE } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import type { AutonomousConfig } from "./autonomous/types";
 import { createAutoresearchExtension } from "./autoresearch";
+import { createImageUrlServiceFromSettings } from "./blob-broker/service";
+import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
@@ -1841,6 +1843,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
+			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
+			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
+			getCodeModeDirectToolNames: () => session?.getCodeModeDirectToolNames(),
 			agentRegistry,
 			// The global lifecycle releases through AgentRegistry.global(); wiring it
 			// onto a caller-supplied registry would report a cancel while releasing an
@@ -2276,9 +2281,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						settings,
 						preferences: matchPreferences,
 					});
-					return Boolean(
-						resolved.model || (resolved.configuredPatterns && resolved.configuredPatterns.length > 0),
-					);
+					// Only a concretely resolved model counts as a runtime match. A role
+					// alias that expanded to `configuredPatterns` but resolved no model
+					// (its discoverable provider hasn't been fetched yet) must NOT
+					// short-circuit the fallback refresh below — otherwise `@role`
+					// selectors pointing at discovery-backed models never trigger the
+					// fetch and fail with `Model "@role" not found`.
+					return Boolean(resolved.model);
 				}),
 			);
 			if (!runtimeResolved && modelRegistry.getDiscoverableProviders().length > 0) {
@@ -2897,6 +2906,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return writeRegistration;
 		};
 
+		let goalRegistration: Promise<boolean> | undefined;
+		const ensureGoalRegistered = (): Promise<boolean> => {
+			if (toolRegistry.has("goal")) return Promise.resolve(true);
+			if (restrictToolNames || !settings.get("goal.enabled")) return Promise.resolve(false);
+			goalRegistration ??= (async () => {
+				const goalTool = await logger.time("createTools:goal:session", HIDDEN_TOOLS.goal, toolSession);
+				if (!goalTool || toolRegistry.has("goal")) return toolRegistry.has("goal");
+				const nativeGoal = wrapToolWithMetaNotice(goalTool);
+				toolRegistry.set(goalTool.name, new ExtensionToolWrapper(nativeGoal, extensionRunner) as Tool);
+				builtInRegistryToolNames.add(goalTool.name);
+				nativeToolsByName.set(goalTool.name, nativeGoal);
+				return true;
+			})().finally(() => {
+				goalRegistration = undefined;
+			});
+			return goalRegistration;
+		};
+
 		// Existing staged/device paths need write registered before active-set assembly.
 		// Deferred MCP also registers it now, but refresh activates it only after a server connects.
 		// xd:// mounts never register write: xdev state only exists when the session
@@ -2972,6 +2999,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
+			rebuildOptions?: { directToolNames?: readonly string[] },
 		): Promise<BuildSystemPromptResult> => {
 			const promptModel = agent?.state.model ?? model;
 			toolContextStore.setToolNames(toolNames);
@@ -3078,6 +3106,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				contextFiles,
 				tools: promptTools,
 				toolNames,
+				directToolNames: rebuildOptions?.directToolNames,
 				rules: rulebookRules,
 				alwaysApplyRules,
 				resolvedAppendSystemPrompt: appendPrompt,
@@ -3303,6 +3332,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// redacted from text before snapcompact rasterizes it into PNG frames. Clamp
 		// to the provider budget before normalizing decoder-incompatible images so
 		// dropped historical images never pay a transcode cost.
+		const blobBroker = createImageUrlServiceFromSettings(settings, sessionManager.getCwd(), model =>
+			modelRegistry.getApiKey(model, providerSessionId),
+		);
+		blobBroker?.prewarm();
 		const snapcompactSystemPromptMode = settings.get("snapcompact.systemPrompt");
 		const snapcompactInline =
 			snapcompactSystemPromptMode !== "none" || settings.get("snapcompact.toolResults")
@@ -3315,6 +3348,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						// Journal the tokens each imaged tool result keeps off the wire
 						// (frames never reach session.jsonl, so this is their only trace).
 						createSnapcompactSavingsRecorder(() => sessionManager.getSessionFile() ?? null),
+						blobBroker?.frameSink,
 					)
 				: undefined;
 		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
@@ -3326,7 +3360,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				transformed = withoutCodexNativePrompt(transformed);
 			}
 			transformed = clampProviderContextImages(transformed, transformModel);
-			const normalized = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			let normalized = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			if (blobBroker) normalized = await blobBroker.decorateContext(normalized, transformModel);
 			return withDateCwdReminder(
 				normalized,
 				formatLocalCalendarDate(),
@@ -3381,10 +3416,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			createSettingsAwareStreamFn(settings),
 		);
+		const blobAwareStreamFn = wrapStreamFnWithBlobUrlFallback(providerLimitedStreamFn, blobBroker);
 		const settingsAwareStreamFn =
 			agentKind === "sub"
-				? wrapStreamFnWithTaskConcurrency(taskRequestConcurrency, providerLimitedStreamFn)
-				: providerLimitedStreamFn;
+				? wrapStreamFnWithTaskConcurrency(taskRequestConcurrency, blobAwareStreamFn)
+				: blobAwareStreamFn;
+		const codeModeState: { namespacesInfo?: unknown } = {};
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
 			const maxTimeout = settings.get("tools.maxTimeout");
@@ -3456,6 +3493,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					...streamOptions,
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
+					...(codeModeState.namespacesInfo === undefined
+						? {}
+						: { toolNamespacesInfo: codeModeState.namespacesInfo }),
 				});
 			},
 			cursorExecHandlers,
@@ -3792,6 +3832,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			promptTemplates,
 			slashCommands,
 			extensionRunner,
+			codeModeState,
 			customCommands: customCommandsResult.commands,
 			skills,
 			skillWarnings,
@@ -3837,6 +3878,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
 			setActiveToolNames: setSessionActiveToolNames,
 			ensureWriteRegistered,
+			ensureGoalRegistered,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
 			titleSystemPrompt: options.titleSystemPrompt,
@@ -4210,7 +4252,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						let transformed = attachCodexNativePrompt(context, transformModel);
 						if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
 						transformed = clampProviderContextImages(transformed, transformModel);
-						const normalized = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						let normalized = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						if (blobBroker) normalized = await blobBroker.decorateContext(normalized, transformModel);
 						return withDateCwdReminder(
 							normalized,
 							formatLocalCalendarDate(),
@@ -4349,6 +4392,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		await session.restorePendingUserQueue();
 		startDeferredMCPDiscovery?.(session);
+
+		try {
+			await session.initializeCodeMode();
+		} catch (error) {
+			logger.warn("Code Mode initialization at session startup failed", { error: String(error) });
+		}
 
 		return {
 			session,

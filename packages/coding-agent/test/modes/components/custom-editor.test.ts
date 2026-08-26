@@ -72,7 +72,8 @@ async function decorateInFreshProcess(text: string, imageLinks?: readonly string
 import { CustomEditor } from ${JSON.stringify(customEditorUrl)};
 const editor = new CustomEditor({});
 editor.imageLinks = ${JSON.stringify(imageLinks)};
-process.stdout.write(editor.decorateText(${JSON.stringify(text)}));
+const text = ${JSON.stringify(text)};
+process.stdout.write(editor.decorateText(text, { line: 0, startCol: 0, endCol: text.length }));
 `;
 	const tempDir = TempDir.createSync("@pi-custom-editor-decoration-child-");
 	try {
@@ -228,6 +229,25 @@ describe("CustomEditor image placeholder submission", () => {
 			streamingBehavior: "steer",
 		});
 	});
+
+	it("does not submit a deleted image chip", async () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
+		const imageLink = "file:///tmp/clipboard.png";
+		editor.setDraft("[Image #1, 640x480]", [image]);
+		editor.pendingImageLinks = [imageLink];
+		editor.imageLinks = [imageLink];
+		editor.handleInput("\x7f");
+		expect(editor.getText()).toBe("");
+
+		const { startPendingSubmission } = setupImageSubmission(editor);
+		await editor.onSubmit?.(editor.getExpandedText());
+
+		expect(startPendingSubmission).not.toHaveBeenCalled();
+		expect(editor.pendingImages).toEqual([]);
+		expect(editor.pendingImageLinks).toEqual([]);
+		expect(editor.imageLinks).toBeUndefined();
+	});
 });
 
 describe("CustomEditor normal-screen TUI input routing", () => {
@@ -335,7 +355,9 @@ describe("CustomEditor queue shorthand decoration", () => {
 			const editor = new CustomEditor(getEditorTheme());
 			editor.setText(`${prefix}\nqueue this`);
 
-			expect(editor.decorateText(prefix)).toBe(theme.fg("dim", `Queueing ${theme.nav.selected}`));
+			expect(editor.decorateText(prefix, { line: 0, startCol: 0, endCol: prefix.length })).toBe(
+				theme.fg("dim", `Queueing ${theme.nav.selected}`),
+			);
 			editor.focused = true;
 			const rendered = editor.render(40).map(line => Bun.stripANSI(line.replace(CURSOR_MARKER, "")));
 			expect(rendered.some(line => line.includes(`Queueing ${theme.nav.selected}`))).toBe(true);
@@ -351,17 +373,30 @@ describe("CustomEditor queue shorthand decoration", () => {
 		]) {
 			const editor = new CustomEditor(getEditorTheme());
 			editor.setText(input);
-			expect(editor.decorateText(`${marker} first`).startsWith(theme.fg("accent", marker))).toBe(true);
+			const listItem = `${marker} first`;
+			expect(
+				editor
+					.decorateText(listItem, { line: 1, startCol: 0, endCol: listItem.length })
+					.startsWith(theme.fg("accent", marker)),
+			).toBe(true);
 		}
 
 		const unfinished = new CustomEditor(getEditorTheme());
 		unfinished.setText("=>\n1. first\n2. second\n3. third\n4.");
-		expect(unfinished.decorateText("1. first").startsWith(theme.fg("accent", "1."))).toBe(true);
-		expect(unfinished.decorateText("4.").startsWith(theme.fg("accent", "4."))).toBe(true);
+		expect(
+			unfinished
+				.decorateText("1. first", { line: 1, startCol: 0, endCol: "1. first".length })
+				.startsWith(theme.fg("accent", "1.")),
+		).toBe(true);
+		expect(
+			unfinished
+				.decorateText("4.", { line: 4, startCol: 0, endCol: "4.".length })
+				.startsWith(theme.fg("accent", "4.")),
+		).toBe(true);
 
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setText("=>\n1. first\n3. third");
-		expect(editor.decorateText("1. first")).toBe("1. first");
+		expect(editor.decorateText("1. first", { line: 1, startCol: 0, endCol: "1. first".length })).toBe("1. first");
 	});
 });
 

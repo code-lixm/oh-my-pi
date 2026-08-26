@@ -690,6 +690,8 @@ export class TurnRecovery {
 			allowModelFallback?: boolean;
 			fireworksFastFallback?: boolean;
 			preserveFailedTurn?: boolean;
+			/** Immediately try a configured different-model chain instead of retrying a hard endpoint failure in place. */
+			hardErrorFallback?: boolean;
 			/** Loop the fallback chain from its top instead of stopping when the retry budget is exhausted. */
 			endlessChainRetry?: boolean;
 		},
@@ -1909,6 +1911,7 @@ export class TurnRecovery {
 		if (this.isClassifierRefusal(message)) return false;
 		const id = this.#classifyRetryMessage(message);
 		if (AIError.isContextOverflow(message, model.contextWindow ?? 0)) return false;
+		if (AIError.isPayloadRejection(message)) return false;
 		if (AIError.is(id, AIError.Flag.UsageLimit)) return false;
 		if (AIError.is(id, AIError.Flag.AuthFailed)) return false;
 		return this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id)) !== undefined;
@@ -1934,7 +1937,9 @@ export class TurnRecovery {
 		if (this.isClassifierRefusal(message)) return false;
 		const id = this.#classifyRetryMessage(message);
 		if (AIError.is(id, AIError.Flag.Abort) || AIError.is(id, AIError.Flag.UserInterrupt)) return false;
-		if (AIError.isContextOverflow(message, model.contextWindow ?? 0)) return false;
+		const contextWindow = model.contextWindow ?? 0;
+		const textAmbiguousOverflow = AIError.isTextAmbiguousContextOverflow(id, message, contextWindow);
+		if (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) return false;
 		if (this.#hasReplayUnsafeOutput(message)) return false;
 		const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
 		const role = this.#activeRetryFallback?.role ?? this.resolveRetryFallbackRole(currentSelector);
@@ -2042,6 +2047,7 @@ export class TurnRecovery {
 		options?: {
 			allowModelFallback?: boolean;
 			fireworksFastFallback?: boolean;
+			hardErrorFallback?: boolean;
 			preserveFailedTurn?: boolean;
 			/** Loop the fallback chain from its top instead of stopping when the retry budget is exhausted. */
 			endlessChainRetry?: boolean;
@@ -2089,7 +2095,7 @@ export class TurnRecovery {
 		const maxRetries = this.#isOpenRouterThinkingStreamClose(message)
 			? Math.min(retrySettings.maxRetries, 1)
 			: retrySettings.maxRetries;
-		const retryBudgetExhausted = this.#retryAttempt > maxRetries;
+		const retryBudgetExhausted = options?.hardErrorFallback === true || this.#retryAttempt > maxRetries;
 
 		const errorMessage = message.errorMessage || "Unknown error";
 		const id = this.#classifyRetryMessage(message);

@@ -128,6 +128,8 @@ const LANG_BRAND_COLORS: Partial<Record<SymbolKey, string>> = {
 	"lang.julia": "#9558b2",
 };
 
+const BACKGROUND_RESET_PATTERN = /\x1b\[(?:0|49)m/g;
+
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
@@ -291,6 +293,13 @@ export class Theme {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
 		return `${ansi}${text}\x1b[49m`; // Reset only background color
+	}
+
+	/** Apply a background fill that resumes after nested full/background resets. */
+	bgFill(color: ThemeBg, text: string): string {
+		const ansi = this.#bgColors[color];
+		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
+		return `${ansi}${text.replace(BACKGROUND_RESET_PATTERN, `$&${ansi}`)}\x1b[49m`;
 	}
 
 	bold(text: string): string {
@@ -554,6 +563,7 @@ export class Theme {
 			git: this.#symbols["icon.git"],
 			branch: this.#symbols["icon.branch"],
 			pr: this.#symbols["icon.pr"],
+			pin: this.#symbols["icon.pin"],
 			tokens: this.#symbols["icon.tokens"],
 			context: this.#symbols["icon.context"],
 			cost: this.#symbols["icon.cost"],

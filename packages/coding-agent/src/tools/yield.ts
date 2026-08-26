@@ -12,7 +12,9 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
+import { prompt } from "@oh-my-pi/pi-utils";
 import { tSettingsUi } from "../i18n/settings-locale";
+import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { ToolSession } from ".";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
@@ -216,10 +218,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly label = tSettingsUi("Submit Result");
 	// A terminal submit must commit before later calls in the same message can start.
 	readonly concurrency = "exclusive" as const;
-	readonly description =
-		"Submit subagent output. Omit `type` for the usual final structured result.\n\n" +
-		'Pass `type: ["section"]` to submit an incremental, non-terminal section that accumulates. Pass `type: "result"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.\n' +
-		'Use `result: { data: <your output> }` for success, or `result: { error: "message" }` for failure. Keep the `result` wrapper.';
+	description: string;
 	readonly parameters: TSchema;
 	strict = true;
 	readonly intent = "omit" as const;
@@ -307,6 +306,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#rejectUnknownSections = rejectUnknownSections;
 		this.#knownSectionLabels = knownSectionLabels;
 		this.#isKnownSection = isKnownSection;
+		this.description = prompt.render(yieldDescription, { hasOutputSchema: validate !== undefined });
 		this.parameters = parameters;
 	}
 

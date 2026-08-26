@@ -14,6 +14,7 @@ import type { Settings } from "../../config/settings";
 import type { Theme } from "../../modes/theme/theme";
 import { type ApprovalMode, formatApprovalPrompt, resolveApproval, truncateForPrompt } from "../../tools/approval";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
+import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
@@ -343,7 +344,11 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		let executionError: Error | undefined;
 
 		try {
-			result = await this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context);
+			// Every SDK tool reaches this wrapper. Name the originating session for
+			// the process-wide fallback registry while native execution is in flight.
+			result = await withFileMutationSession(this.runner.sessionId, () =>
+				this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context),
+			);
 		} catch (err) {
 			executionError = err instanceof Error ? err : new Error(String(err));
 			result = {

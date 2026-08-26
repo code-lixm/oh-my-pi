@@ -57,16 +57,15 @@ export async function trySummarize(
 	absolutePath: string,
 	fileSize: number,
 	signal?: AbortSignal,
+	diskText?: string,
 ): Promise<SummaryResult | null> {
 	if (fileSize > MAX_SUMMARY_BYTES) return null;
 
 	try {
 		throwIfAborted(signal);
 		const bridgePromise = routeReadThroughBridge(session, absolutePath);
-		const code =
-			bridgePromise !== undefined
-				? await bridgePromise.catch(() => Bun.file(absolutePath).text())
-				: await Bun.file(absolutePath).text();
+		const readDisk = async () => diskText ?? (await Bun.file(absolutePath).text());
+		const code = bridgePromise !== undefined ? await bridgePromise.catch(readDisk) : await readDisk();
 		throwIfAborted(signal);
 		const lineCount = countTextLines(code);
 		if (lineCount > MAX_SUMMARY_LINES) return null;

@@ -1627,11 +1627,13 @@ export class SessionAdvisors {
 		// compaction. Record their exact array boundary on the in-memory summary so
 		// only assistants appended afterward can become the next usage anchor.
 		const advisorUsageAnchorStartIndex = preparation.recentMessages.length + 1;
-		const summaryMessage = {
-			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), shortSummary),
-			firstKeptEntryId,
-			advisorUsageAnchorStartIndex,
-		} satisfies AdvisorCompactionSummaryMessage;
+	const summaryMessage = {
+		...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), {
+			shortSummary,
+		}),
+		firstKeptEntryId,
+		advisorUsageAnchorStartIndex,
+	} satisfies AdvisorCompactionSummaryMessage;
 
 		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
 		return false;

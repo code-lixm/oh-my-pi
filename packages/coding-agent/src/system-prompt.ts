@@ -10,7 +10,16 @@ import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
 import { createCodexFallbackPromptFingerprint, createCodexNativePromptFingerprint } from "@oh-my-pi/pi-ai/types";
 import { renderCodexPromptInstructions } from "@oh-my-pi/pi-catalog/discovery/codex";
 import type { CodexPromptModelMessages, CodexPromptProfile } from "@oh-my-pi/pi-catalog/types";
-import { $env, getGpuCachePath, getProjectDir, hasFsCode, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	getAgentDir,
+	getGpuCachePath,
+	getProjectDir,
+	hasFsCode,
+	isEnoent,
+	logger,
+	prompt,
+} from "@oh-my-pi/pi-utils";
 import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
 import { findConfigFile } from "./config";
@@ -40,6 +49,8 @@ import friendlyPersonality from "./prompts/system/personalities/friendly.md" wit
 import friendlyPersonalityZh from "./prompts/system/personalities/friendly.zh-CN.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import pragmaticPersonalityZh from "./prompts/system/personalities/pragmatic.zh-CN.md" with { type: "text" };
+import personalityOverrideTemplate from "./prompts/system/personality-override.md" with { type: "text" };
+import personalityOverrideTemplateZh from "./prompts/system/personality-override.zh-CN.md" with { type: "text" };
 import progressCommentaryPrompt from "./prompts/system/progress-commentary.md" with { type: "text" };
 import progressCommentaryPromptZh from "./prompts/system/progress-commentary.zh-CN.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
@@ -75,6 +86,24 @@ const PERSONALITY_SPECS: Record<Exclude<Personality, "none">, { readonly value: 
 		},
 	},
 };
+
+/** Load a non-empty user-level personality override from the active agent dir. */
+async function loadPersonalityOverride(): Promise<string | null> {
+	const filePath = path.join(getAgentDir(), "PERSONALITY.md");
+	try {
+		const content = (await Bun.file(filePath).text()).trim();
+		if (content) return content;
+		logger.warn("PERSONALITY.md is empty; using the configured personality preset", { path: filePath });
+	} catch (error) {
+		if (!isEnoent(error)) {
+			logger.warn("Failed to read PERSONALITY.md; using the configured personality preset", {
+				path: filePath,
+				error: String(error),
+			});
+		}
+	}
+	return null;
+}
 
 export type CodexNativePromptMode = "off" | "shadow" | "on";
 
@@ -115,23 +144,39 @@ function normalizePromptBlock(content: string): string {
 function splitComparablePromptBlocks(content: string | null | undefined): string[] {
 	const normalized = firstNonEmpty(content);
 	if (!normalized) return [];
-
-	return normalizePromptBlock(normalized)
-		.split(/\n{2,}/)
-		.map(block => block.trim())
-		.filter(block => block.length > 0);
+	const rendered = normalizePromptBlock(normalized);
+	const blocks: string[] = [];
+	let current: string[] = [];
+	let inFence = false;
+	for (const line of rendered.split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			current.push(line);
+			continue;
+		}
+		if (!inFence && line.trim() === "" && current.length > 0 && current[current.length - 1].trim() !== "") {
+			const block = current.join("\n").trim();
+			if (block.length > 0) blocks.push(block);
+			current = [];
+			continue;
+		}
+		current.push(line);
+	}
+	const tail = current.join("\n").trim();
+	if (tail.length > 0) blocks.push(tail);
+	return blocks;
 }
 
-function promptSourceContainsRule(source: string | null | undefined, ruleContent: string): boolean {
-	const sourceBlocks = splitComparablePromptBlocks(source);
-	const ruleBlocks = splitComparablePromptBlocks(ruleContent);
+function promptBlocksContain(sourceBlocks: string[], ruleBlocks: string[]): boolean {
 	if (sourceBlocks.length === 0 || ruleBlocks.length === 0 || ruleBlocks.length > sourceBlocks.length) return false;
-
 	for (let start = 0; start <= sourceBlocks.length - ruleBlocks.length; start += 1) {
 		if (ruleBlocks.every((block, offset) => sourceBlocks[start + offset] === block)) return true;
 	}
-
 	return false;
+}
+
+function promptSourceContainsRule(source: string | null | undefined, ruleContent: string): boolean {
+	return promptBlocksContain(splitComparablePromptBlocks(source), splitComparablePromptBlocks(ruleContent));
 }
 
 function dedupeAlwaysApplyRules(
@@ -464,16 +509,22 @@ export interface LoadContextFilesOptions {
 	disabledExtensions?: string[];
 }
 
-function dedupeExactContextFiles(
+export function dedupeContainedContextFiles(
 	contextFiles: Array<{ path: string; content: string; depth?: number }>,
 ): Array<{ path: string; content: string; depth?: number }> {
-	const lastIndexByContent = new Map<string, number>();
-	for (const [index, file] of contextFiles.entries()) {
-		// Keep the closest matching context entry when content is byte-for-byte identical.
-		lastIndexByContent.set(file.content, index);
-	}
-
-	return contextFiles.filter((file, index) => lastIndexByContent.get(file.content) === index);
+	const sorted = [...contextFiles].sort((a, b) => {
+		const depthA = a.depth ?? Number.POSITIVE_INFINITY;
+		const depthB = b.depth ?? Number.POSITIVE_INFINITY;
+		return depthB - depthA;
+	});
+	const blocks = sorted.map(file => splitComparablePromptBlocks(file.content));
+	return sorted.filter(
+		(_file, index) =>
+			!blocks.some(
+				(candidateBlocks, candidateIndex) =>
+					candidateIndex > index && promptBlocksContain(candidateBlocks, blocks[index]),
+			),
+	);
 }
 
 /**
@@ -514,7 +565,7 @@ export async function loadProjectContextFiles(
 		return depthB - depthA;
 	});
 
-	return dedupeExactContextFiles(files);
+	return dedupeContainedContextFiles(files);
 }
 
 /**
@@ -617,6 +668,8 @@ export interface BuildSystemPromptOptions {
 	tools?: Map<string, SystemPromptToolMetadata>;
 	/** Tool names to include in prompt. */
 	toolNames?: string[];
+	/** Names actually exposed as provider-callable tools. Defaults to `toolNames`. */
+	directToolNames?: readonly string[];
 	/** Text to append to system prompt. */
 	appendSystemPrompt?: string;
 	/** Optional continual-harness state rendered as a supplemental prompt block. */
@@ -731,6 +784,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		nativeTools = true,
 		skillsSettings,
 		toolNames: providedToolNames,
+		directToolNames,
 		cwd,
 		additionalWorkspaceRoots = [],
 		contextFiles: providedContextFiles,
@@ -770,7 +824,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedCustomPrompt: undefined as string | undefined,
 		resolvedAppendPrompt: undefined as string | undefined,
 		systemPromptCustomization: null as string | null,
-		contextFiles: dedupeExactContextFiles(providedContextFiles ?? []),
+		contextFiles: dedupeContainedContextFiles(providedContextFiles ?? []),
 		skills: providedSkills ?? ([] as Skill[]),
 		workspaceTree: {
 			rootPath: resolvedCwd,
@@ -834,7 +888,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		const extra = await Promise.all(
 			additionalRoots.map(root => loadProjectContextFiles({ cwd: root }).catch(() => [])),
 		);
-		return dedupeExactContextFiles([...primary, ...extra.flat()]);
+		return dedupeContainedContextFiles([...primary, ...extra.flat()]);
 	})();
 	const additionalRootsForTree = additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd));
 	const workspaceTreePromise = (async () => {
@@ -872,6 +926,19 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			: logger.time("resolveActiveRepoContext", () => resolveActiveRepoContext(resolvedCwd));
 	const cpuModelPromise = logger.time("getCpuModel", getCpuModel);
 	const gpuPromise = logger.time("getCachedGpu", getCachedGpu);
+	const bundledPersonality = personality === "none" ? "" : PERSONALITY_SPECS[personality].value.trim();
+	const personalityPromise: Promise<string> =
+		personality === "none"
+			? Promise.resolve("")
+			: logger.time("loadPersonalityOverride", loadPersonalityOverride).then(override =>
+					override
+						? prompt
+								.render(selectPrompt(personalityOverrideTemplate, personalityOverrideTemplateZh), {
+									content: override,
+								})
+								.trim()
+						: bundledPersonality,
+				);
 
 	const [
 		resolvedCustomPrompt,
@@ -883,6 +950,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		activeRepoContext,
 		cpuModel,
 		gpu,
+		personalityBlock,
 	] = await Promise.all([
 		withDeadline(
 			"customPrompt",
@@ -900,13 +968,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		),
 		withDeadline("loadSystemPromptFiles", systemPromptCustomizationPromise, prepDefaults.systemPromptCustomization),
 		withDeadline("loadProjectContextFiles", contextFilesPromise, prepDefaults.contextFiles).then(
-			dedupeExactContextFiles,
+			dedupeContainedContextFiles,
 		),
 		withDeadline("loadSkills", skillsPromise, prepDefaults.skills),
 		withDeadline("buildWorkspaceTree", workspaceTreePromise, prepDefaults.workspaceTree),
 		withDeadline("resolveActiveRepoContext", activeRepoContextPromise, prepDefaults.activeRepoContext),
 		withDeadline("getCpuModel", cpuModelPromise, prepDefaults.cpuModel),
 		withDeadline("getCachedGpu", gpuPromise, prepDefaults.gpu),
+		personalityPromise,
 	]);
 	clearTimeout(deadlineTimer);
 	const agentsMdFiles = Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
@@ -959,8 +1028,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const xdevToolNames = new Set(xdevTools.map(mounted => mounted.name));
 	// A direct custom tool can share a name with a retained built-in device.
 	// Presence in both toolNames and tools proves it still has a top-level definition.
+	// Bridge-only Code Mode tools stay out of the callable inventory: the eval
+	// description documents their `tool.*` access path instead.
+	const directSet = directToolNames === undefined ? undefined : new Set(directToolNames);
+	const directInventoryNames = directSet === undefined ? toolNames : toolNames.filter(name => directSet.has(name));
 	const inventoryToolNames =
-		xdevToolNames.size === 0 ? toolNames : toolNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
+		xdevToolNames.size === 0
+			? directInventoryNames
+			: directInventoryNames.filter(name => tools?.has(name) || !xdevToolNames.has(name));
 	const toolInfo = inventoryToolNames.map(name => ({
 		name: toolPromptNames.get(name) ?? name,
 		internalName: name,
@@ -1023,7 +1098,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
-		personality: personality === "none" ? "" : PERSONALITY_SPECS[personality].value.trim(),
+		personality: personalityBlock,
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		eagerTasks,

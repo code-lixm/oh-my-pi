@@ -57,6 +57,7 @@ function shortenSessionFile(p: string): string {
 
 export interface StatsCommandArgs {
 	port: number;
+	host: string;
 	json: boolean;
 	summary: boolean;
 }
@@ -75,6 +76,7 @@ export function parseStatsArgs(args: string[]): StatsCommandArgs | undefined {
 	}
 
 	const result: StatsCommandArgs = {
+		host: "127.0.0.1",
 		port: 3847,
 		json: false,
 		summary: false,
@@ -90,6 +92,10 @@ export function parseStatsArgs(args: string[]): StatsCommandArgs | undefined {
 			result.port = parseInt(args[++i], 10);
 		} else if (arg.startsWith("--port=")) {
 			result.port = parseInt(arg.split("=")[1], 10);
+		} else if (arg === "--host" && i + 1 < args.length) {
+			result.host = args[++i];
+		} else if (arg.startsWith("--host=")) {
+			result.host = arg.slice("--host=".length);
 		}
 	}
 
@@ -112,9 +118,8 @@ function normalizePremiumRequests(n: number): number {
 
 export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	// Lazy import to avoid loading stats module when not needed
-	const { getDashboardStats, syncAllSessions, getTotalMessageCount, startServer, closeDb } = await import(
-		"@oh-my-pi/omp-stats"
-	);
+	const { getDashboardStats, syncAllSessions, getTotalMessageCount, startServer, formatStatsDashboardUrl, closeDb } =
+		await import("@oh-my-pi/omp-stats");
 
 	// Sync session files first
 	const progress = createSyncProgressReporter();
@@ -136,8 +141,8 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	}
 
 	// Start the dashboard server
-	const { hostname, port } = await startServer(cmd.port);
-	const url = `http://${hostname}:${port}`;
+	const { hostname, port } = await startServer(cmd.port, { hostname: cmd.host });
+	const url = formatStatsDashboardUrl(hostname, port);
 	console.log(chalk.green(`Dashboard available at: ${url}`));
 
 	// Open browser
@@ -210,6 +215,7 @@ ${chalk.bold("Usage:")}
 
 ${chalk.bold("Options:")}
   -p, --port <port>  Port for the dashboard server (default: 3847)
+  --host <host>       Host to bind (default: 127.0.0.1)
   -j, --json         Output stats as JSON and exit
   -s, --summary      Print summary to console and exit
   -h, --help         Show this help message
@@ -219,6 +225,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} stats --json       # Print stats as JSON
   ${APP_NAME} stats --summary    # Print summary to console
   ${APP_NAME} stats --port 8080  # Start on custom port
+  ${APP_NAME} stats --host 0.0.0.0 # Explicitly expose on all IPv4 interfaces
 
 ${chalk.bold("Metrics:")}
   - Total requests and error rate

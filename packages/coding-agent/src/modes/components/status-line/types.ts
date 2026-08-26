@@ -1,11 +1,16 @@
 import type { UsageAmount, UsageStatus } from "@oh-my-pi/pi-ai";
 import type { CollabSessionState } from "../../../collab/protocol";
-import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
+import type {
+	ContextLineMode,
+	StatusLinePreset,
+	StatusLineSegmentId,
+	StatusLineSeparatorStyle,
+} from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { LoopLimitRuntime } from "../../loop-limit";
 
-export type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
 /** Collab session indicator + (guest-only) host-state override for segments. */
 export interface CollabStatus {
@@ -50,6 +55,10 @@ export interface StatusLineSettings {
 	/** Replace the model-segment icon with the thinking-level glyph and drop the
 	 *  " · <level>" suffix, so the thinking level reads as a single compact icon. */
 	compactThinkingLevel?: boolean;
+	/** How the gap line between the left and right groups reacts to context
+	 * usage. `embedded` moves configured context segments into the annotated
+	 * gauge as percentage and window labels. Box composer only. */
+	contextLine?: ContextLineMode;
 }
 
 export type EffectiveStatusLineSettings = Required<
@@ -140,6 +149,7 @@ export interface SegmentContext {
 	contextTokens: number;
 	contextWindow: number;
 	autoCompactEnabled: boolean;
+	compactionSpeculation?: "idle" | "running" | "armed";
 	subagentCount: number;
 	/**
 	 * Active processing time accumulated this session, in ms — the union of

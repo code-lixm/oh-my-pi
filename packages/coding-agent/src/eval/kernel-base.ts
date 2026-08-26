@@ -104,6 +104,22 @@ export function getRemainingTimeMs(deadlineMs?: number): number | undefined {
 	return Math.max(0, deadlineMs - Date.now());
 }
 
+/** True when `pid` is safe to use as a process-group target for `kill(2)`. */
+export function isSignalableProcessGroup(pid: number | undefined): pid is number {
+	return typeof pid === "number" && Number.isInteger(pid) && pid > 1;
+}
+
+/** Signal the detached POSIX kernel group led by `pid`; Windows uses direct-PID shutdown. */
+export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): boolean {
+	if (process.platform === "win32" || !isSignalableProcessGroup(pid)) return false;
+	try {
+		process.kill(-pid, signal);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function createAbortError(name: "AbortError" | "TimeoutError", message: string): Error {
 	const err = new Error(message);
 	err.name = name;
@@ -327,18 +343,30 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			} catch {
 				/* ignore */
 			}
+			// The runner leads its own process group (setsid), so the direct-PID
+			// signal above never reaches anything it spawned. Sweep the group too.
+			killProcessGroup(proc.pid, "SIGTERM");
 			result = await this.#waitForExitWithTimeout(timeoutMs);
-		}
-		if (!result) {
-			try {
-				proc.kill("SIGKILL");
-			} catch {
-				/* ignore */
+			if (!result) {
+				try {
+					proc.kill("SIGKILL");
+				} catch {
+					/* ignore */
+				}
 			}
-			result = await this.#waitForExitWithTimeout(timeoutMs);
+			// The leader exiting after SIGTERM does not prove its descendants did.
+			// Always finish an attempted group shutdown with a SIGKILL sweep.
+			killProcessGroup(proc.pid, "SIGKILL");
+			if (!result) result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
 
 		const confirmed = !!result;
+		if (!confirmed) {
+			logger.warn(`${this.#options.languageName} kernel did not confirm exit after SIGKILL`, {
+				kernelId: this.id,
+				pid: proc.pid,
+			});
+		}
 		this.#shutdownConfirmed = confirmed;
 		this.#disposed = true;
 		return { confirmed };

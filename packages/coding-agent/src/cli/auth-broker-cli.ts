@@ -33,10 +33,14 @@ import {
 	SqliteAuthCredentialStore,
 } from "@oh-my-pi/pi-ai";
 import { AuthBrokerClient, DEFAULT_AUTH_BROKER_BIND, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
+import { refreshOAuthToken } from "@oh-my-pi/pi-ai/oauth";
+import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
 import { $which, APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { $ } from "bun";
+import { refreshManagedMcpOAuthCredential } from "../mcp/oauth-credentials";
+import { isManagedMCPOAuthCredentialId, mcpOAuthServerUrlFromCredentialId } from "../mcp/oauth-flow";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
@@ -162,6 +166,21 @@ async function ensureToken(): Promise<string> {
 	return token;
 }
 
+/** Refresh either a provider OAuth row or an OMP-managed MCP OAuth row. */
+export function refreshBrokerOAuthCredential(
+	provider: string,
+	credential: OAuthCredential,
+	signal?: AbortSignal,
+): Promise<OAuthCredentials> {
+	if (isManagedMCPOAuthCredentialId(provider)) {
+		return refreshManagedMcpOAuthCredential(credential, {
+			serverUrl: mcpOAuthServerUrlFromCredentialId(provider),
+			signal,
+		});
+	}
+	return refreshOAuthToken(provider as OAuthProvider, credential);
+}
+
 async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	// The broker is a long-running headless service: route structured logs to
 	// stdout so a process supervisor (pm2, journald, k8s) captures them, and
@@ -172,7 +191,10 @@ async function runServe(flags: AuthBrokerCommandArgs["flags"]): Promise<void> {
 	const token = await ensureToken();
 	const dbPath = getAgentDbPath();
 	const store = await SqliteAuthCredentialStore.open(dbPath);
-	const storage = new AuthStorage(store);
+	const storage = new AuthStorage(store, {
+		refreshOAuthCredential: (provider, _credentialId, credential, signal) =>
+			refreshBrokerOAuthCredential(provider, credential, signal),
+	});
 	await storage.reload();
 	const handle = startAuthBroker({
 		storage,

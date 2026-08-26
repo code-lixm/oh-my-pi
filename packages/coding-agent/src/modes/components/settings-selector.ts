@@ -54,6 +54,7 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../../config/settings";
 import type {
+	ContextLineMode,
 	SettingTab,
 	StatusLinePreset,
 	StatusLineSegmentId,
@@ -69,6 +70,8 @@ import { tSettingsUi } from "../../i18n/settings-locale";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
+import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
+import { getComposerShapeOptions } from "./composer-shape-registry";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
 import { handleInputOrEscape, PluginSettingsComponent } from "./plugin-settings";
 import {
@@ -557,11 +560,14 @@ export interface SettingsRuntimeContext {
 	imageBudget?: ImageBudget;
 	/** Schedules a re-render after async preview work completes. */
 	requestRender?: () => void;
+	/** Live status renderer for composer-shape previews. */
+	composerPreviewStatus?: ComposerPreviewStatusSource;
 }
 
 /** Status line settings subset for preview */
 export interface StatusLinePreviewSettings {
 	preset?: StatusLinePreset;
+	contextLine?: ContextLineMode;
 	customPreset?: string | null;
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
@@ -1119,7 +1125,7 @@ export class SettingsSelectorComponent implements Component {
 		let options = def.options;
 		let customPresets = readCustomStatusLinePresets(undefined);
 
-		// Special case: inject runtime options for thinking level, themes, and named custom status lines.
+		// Special case: inject runtime options for thinking level, themes, composer shapes, and named custom status lines.
 		if (def.path === "defaultThinkingLevel") {
 			const levels: ConfiguredThinkingLevel[] = [AUTO_THINKING, ...this.context.availableThinkingLevels];
 			options = levels.map(level => {
@@ -1138,6 +1144,8 @@ export class SettingsSelectorComponent implements Component {
 					description: preset.description,
 				})),
 			];
+		} else if (def.path === "composer.shape") {
+			options = getComposerShapeOptions();
 		}
 
 		// Preview handlers
@@ -1203,11 +1211,25 @@ export class SettingsSelectorComponent implements Component {
 				const separator = settings.get("statusLine.separator");
 				this.callbacks.onStatusLinePreview?.({ separator });
 			};
+		} else if (def.path === "statusLine.contextLine") {
+			onPreview = value => {
+				this.callbacks.onStatusLinePreview?.({ contextLine: value as ContextLineMode });
+			};
+			onPreviewCancel = () => {
+				this.callbacks.onStatusLinePreview?.({ contextLine: settings.get("statusLine.contextLine") });
+			};
 		} else if (def.path === "snapcompact.shape") {
 			const shapePreview = new SnapcompactShapePreview(currentValue, {
 				model: this.context.model,
 				imageBudget: this.context.imageBudget,
 				requestRender: this.context.requestRender,
+			});
+			onPreview = value => shapePreview.setValue(value);
+			footer = shapePreview;
+		} else if (def.path === "composer.shape") {
+			const shapePreview = new ComposerShapePreview(String(currentValue ?? "box"), {
+				requestRender: this.context.requestRender,
+				status: this.context.composerPreviewStatus,
 			});
 			onPreview = value => shapePreview.setValue(value);
 			footer = shapePreview;
@@ -1531,6 +1553,7 @@ export class SettingsSelectorComponent implements Component {
 			segmentOptions: settings.get("statusLine.segmentOptions"),
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
+			contextLine: settings.get("statusLine.contextLine"),
 		};
 		this.callbacks.onStatusLinePreview?.(statusLineSettings);
 	}

@@ -1,7 +1,13 @@
 import * as path from "node:path";
-import { formatNumberedLine, formatNumberedLines, splitAddressableFileLines } from "@oh-my-pi/hashline";
+import {
+	formatHashlineHeader,
+	formatNumberedLine,
+	formatNumberedLines,
+	splitAddressableFileLines,
+} from "@oh-my-pi/hashline";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { formatHashlineSourceHeader, recordHashlineSourceSnapshot, recordSeenLines } from "../edit/file-snapshot-store";
+import { canonicalSnapshotKey, getFileSnapshotStore, recordSeenLines } from "../edit/file-snapshot-store";
+import { normalizeToLF } from "../edit/normalize";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
 import {
@@ -30,22 +36,35 @@ export interface HashlineHeaderContext {
 	fullText?: string;
 }
 
-function readHashlineAnchor(displayPath: string): string {
-	return path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
+export function formatReadHashlineHeader(displayPath: string, tag: string): string {
+	// In-workspace reads keep their workspace-relative path (e.g.
+	// `src/settings.json`), not just the basename: collapsing to the bare name
+	// made a header ambiguous whenever another same-named file exists at cwd —
+	// the edit tool would resolve the bare name against cwd, hit the wrong
+	// file, and reject the valid edit via the snapshot-tag guard (the authored
+	// path exists, so Patcher's tag-path recovery never runs). The relative
+	// path stays directly resolvable against cwd and names the file uniquely.
+	// Out-of-workspace reads use an absolute displayPath; `shortenPath` keeps
+	// `~/.claude/...` (round-trips through resolveToCwd's ~ expansion) instead
+	// of leaking the full home path into the read output.
+	const anchor = path.isAbsolute(displayPath) ? shortenPath(displayPath) : displayPath;
+	return formatHashlineHeader(anchor, tag);
 }
 
-export function recordFullHashlineContext(
+function recordFullHashlineContext(
 	session: ToolSession,
 	absolutePath: string | undefined,
 	displayPath: string,
 	fullText: string,
 ): HashlineHeaderContext | undefined {
 	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
-	return recordHashlineSourceSnapshot(session, {
-		absolutePath,
-		anchor: readHashlineAnchor(displayPath),
-		fullText,
-	});
+	const normalized = normalizeToLF(fullText);
+	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
+	return {
+		header: formatReadHashlineHeader(displayPath, tag),
+		tag,
+		fullText: normalized,
+	};
 }
 
 export async function readHashlineHeaderContext(
@@ -53,7 +72,20 @@ export async function readHashlineHeaderContext(
 	absolutePath: string,
 	cwd: string,
 ): Promise<HashlineHeaderContext> {
-	const fullText = await Bun.file(absolutePath).text();
+	return hashlineHeaderContextForText(session, absolutePath, cwd, await Bun.file(absolutePath).text());
+}
+
+/**
+ * {@link readHashlineHeaderContext} for a caller that already holds the file's
+ * full text, so the file is not reopened just to hash it. Line endings are
+ * normalized here, exactly as the reading variant does.
+ */
+export function hashlineHeaderContextForText(
+	session: ToolSession,
+	absolutePath: string,
+	cwd: string,
+	fullText: string,
+): HashlineHeaderContext {
 	const context = recordFullHashlineContext(
 		session,
 		absolutePath,
@@ -65,7 +97,7 @@ export async function readHashlineHeaderContext(
 }
 
 export function hashlineHeaderContext(displayPath: string, tag: string): HashlineHeaderContext {
-	return { header: formatHashlineSourceHeader(readHashlineAnchor(displayPath), tag), tag };
+	return { header: formatReadHashlineHeader(displayPath, tag), tag };
 }
 
 export function prependHashlineHeader(text: string, context: HashlineHeaderContext | undefined): string {
@@ -180,12 +212,7 @@ function recordInMemorySeenLines(
 	seenLines: readonly number[] | undefined,
 ): void {
 	if (!absolutePath || !path.isAbsolute(absolutePath) || !seenLines || seenLines.length === 0) return;
-	recordHashlineSourceSnapshot(session, {
-		absolutePath,
-		anchor: readHashlineAnchor(formatPathRelativeToCwd(absolutePath, session.cwd)),
-		fullText,
-		seenLines,
-	});
+	getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalizeToLF(fullText), seenLines);
 }
 
 function lineNumbersFromEntries(entries: readonly LineEntry[]): number[] {

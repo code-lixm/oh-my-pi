@@ -12,6 +12,7 @@ import {
 	readInterpreterSetting as sharedReadInterpreterSetting,
 	toExecutorBackendResult,
 } from "../backend-helpers";
+import type { BackendProbeOptions } from "../probe";
 import { executePython, type PythonExecutorOptions } from "./executor";
 import { checkPythonKernelAvailability } from "./kernel";
 import { resolvePythonSkillInterpreter } from "./skill-preload";
@@ -42,11 +43,12 @@ export default {
 	label: "Python",
 	highlightLang: "python",
 
-	async isAvailable(session: ToolSession): Promise<boolean> {
+	async isAvailable(session: ToolSession, opts?: BackendProbeOptions): Promise<boolean> {
 		const pythonSkills = await readPythonSkillOptions(session);
 		const availability = await checkPythonKernelAvailability(
 			session.cwd,
 			resolvePythonSkillInterpreter(pythonSkills, readInterpreterSetting(session)),
+			opts,
 		);
 		return availability.ok;
 	},

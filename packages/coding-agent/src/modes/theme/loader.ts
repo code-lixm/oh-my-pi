@@ -72,6 +72,36 @@ export async function getAvailableThemesWithPaths(): Promise<ThemeInfo[]> {
 	return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function parseThemeJson(name: string, content: string): ThemeJson {
+	let json: unknown;
+	try {
+		json = JSON.parse(content);
+	} catch (error) {
+		throw new Error(`Failed to parse theme ${name}: ${error}`);
+	}
+	let parsed: ThemeJson;
+	try {
+		parsed = themeJsonSchema(json) as ThemeJson;
+		if (parsed instanceof type.errors) throw new Error(parsed.summary);
+	} catch (error) {
+		const errorMessage = error instanceof Error ? error.message : String(error);
+		const missingColorMatch = errorMessage.match(/missing keys: (.+)/i);
+		const missingColors: string[] = missingColorMatch
+			? missingColorMatch[1].split(",").map(value => value.trim())
+			: [];
+		let fullErrorMessage = `Invalid theme "${name}":\n`;
+		if (missingColors.length > 0) {
+			fullErrorMessage += "\nMissing required color tokens:\n";
+			fullErrorMessage += missingColors.map(color => `  - ${color}`).join("\n");
+			fullErrorMessage += '\n\nPlease add these colors to your theme\'s "colors" object.';
+			fullErrorMessage += "\nSee the built-in themes (dark.json, light.json) for reference values.";
+		}
+		fullErrorMessage += `\n\nValidation error:\n  - ${errorMessage}`;
+		throw new Error(fullErrorMessage);
+	}
+	return parsed;
+}
+
 export async function loadThemeJson(name: string): Promise<ThemeJson> {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
@@ -86,36 +116,20 @@ export async function loadThemeJson(name: string): Promise<ThemeJson> {
 		if (isEnoent(err)) throw new Error(`Theme not found: ${name}`);
 		throw err;
 	}
-	let json: unknown;
-	try {
-		json = JSON.parse(content);
-	} catch (error) {
-		throw new Error(`Failed to parse theme ${name}: ${error}`);
-	}
-	let parsed: ThemeJson;
-	try {
-		parsed = themeJsonSchema(json) as ThemeJson;
-		if (parsed instanceof type.errors) {
-			throw new Error(parsed.summary);
-		}
-	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		// Extract color key information if available
-		const missingColorMatch = errorMessage.match(/missing keys: (.+)/i);
-		const missingColors: string[] = missingColorMatch ? missingColorMatch[1].split(",").map(s => s.trim()) : [];
+	return parseThemeJson(name, content);
+}
 
-		let fullErrorMessage = `Invalid theme "${name}":\n`;
-		if (missingColors.length > 0) {
-			fullErrorMessage += `\nMissing required color tokens:\n`;
-			fullErrorMessage += missingColors.map(c => `  - ${c}`).join("\n");
-			fullErrorMessage += `\n\nPlease add these colors to your theme's "colors" object.`;
-			fullErrorMessage += `\nSee the built-in themes (dark.json, light.json) for reference values.`;
-		}
-		fullErrorMessage += `\n\nValidation error:\n  - ${errorMessage}`;
-
-		throw new Error(fullErrorMessage);
+/** Load a theme definition synchronously for the first terminal frame. */
+export function loadThemeJsonSync(name: string): ThemeJson {
+	const builtinThemes = getBuiltinThemes();
+	if (name in builtinThemes) return builtinThemes[name]!;
+	const themePath = path.join(getCustomThemesDir(), `${name}.json`);
+	try {
+		return parseThemeJson(name, fs.readFileSync(themePath, "utf8"));
+	} catch (error) {
+		if (isEnoent(error)) throw new Error(`Theme not found: ${name}`);
+		throw error;
 	}
-	return parsed;
 }
 
 export function resolveThemeExportColors(themeJson: ThemeJson): {
@@ -205,6 +219,10 @@ export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = 
 export async function loadTheme(name: string, options: CreateThemeOptions = {}): Promise<Theme> {
 	const themeJson = await loadThemeJson(name);
 	return createTheme(themeJson, options);
+}
+
+export function loadThemeSync(name: string, options: CreateThemeOptions = {}): Theme {
+	return createTheme(loadThemeJsonSync(name), options);
 }
 
 export async function getThemeByName(name: string): Promise<Theme | undefined> {

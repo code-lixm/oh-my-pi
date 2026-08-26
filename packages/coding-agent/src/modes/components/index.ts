@@ -6,6 +6,7 @@ export * from "./assistant-message";
 export * from "./bash-execution";
 export * from "./bordered-loader";
 export * from "./compaction-summary-message";
+export * from "./cleanse-panel";
 export * from "./countdown-timer";
 export * from "./custom-editor";
 export * from "./custom-message";

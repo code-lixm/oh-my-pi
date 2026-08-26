@@ -94,8 +94,8 @@ function makeCtx(): {
 		},
 		renderSessionContextIncrementally: renderSessionContextSpy,
 		showStatus: vi.fn(),
-ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
-resetTranscript: () => ctx.chatContainer.disposeChildren(),
+		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
+		resetTranscript: () => ctx.chatContainer.disposeChildren(),
 	} as unknown as InteractiveModeContext;
 
 	return { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy };
@@ -164,11 +164,11 @@ function makeRenderCtx(
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		updateEditorTopBorder: vi.fn(),
-ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
-resetTranscript: () => {
-	ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
-	ctx.chatContainer.disposeChildren();
-},
+		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
+		resetTranscript: () => {
+			ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+			ctx.chatContainer.disposeChildren();
+		},
 		present: (content: Component | readonly Component[]) => {
 			const components = Array.isArray(content) ? content : [content];
 			for (const component of components) ctx.chatContainer.addChild(component);

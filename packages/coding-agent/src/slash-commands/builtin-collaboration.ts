@@ -157,7 +157,9 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					}
 					const active = await runtime.ctx.session.setAdvisorEnabled(true);
 					runtime.ctx.showStatus(
-						active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
+						active
+							? "Advisor enabled."
+							: "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
 					);
 					refreshStatusLine(runtime.ctx);
 					runtime.ctx.editor.setText("");

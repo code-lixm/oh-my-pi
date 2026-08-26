@@ -1,9 +1,19 @@
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
 import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
+import {
+	type BlobDestinationId,
+	type BlobDestinationMetadata,
+	BUILTIN_BLOB_DESTINATIONS,
+} from "../blob-broker/destinations";
 import { DEFAULT_RELAY_URL } from "../collab/protocol";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { DEFAULT_LIVE_VOICE, LIVE_VOICE_OPTIONS, LIVE_VOICE_VALUES } from "../live/voices";
+import {
+	COMPACTION_METHOD_CHOICES,
+	type CompactionMethod,
+	DEFAULT_COMPACTION_METHOD_ORDER,
+} from "../session/compaction-methods";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import {
@@ -82,6 +92,67 @@ import {
 
 export type ModelRoleStorage = "global" | "project";
 
+const BUILTIN_BLOB_DESTINATION_METADATA: readonly BlobDestinationMetadata<BlobDestinationId>[] =
+	Object.values(BUILTIN_BLOB_DESTINATIONS);
+
+const BLOB_BACKEND_CHOICES = BUILTIN_BLOB_DESTINATION_METADATA.filter(
+	destination =>
+		destination.id === "provider-files" ||
+		(destination.directImage && destination.status !== "incompatible" && destination.status !== "defunct"),
+).map(destination => ({
+	value: destination.id,
+	label: destination.label,
+	description: destination.reason ?? destination.family,
+}));
+
+/** Composer shape id; extensions may register additional values at runtime. */
+export type ComposerShape = string;
+
+/** Built-in composer choices and their shared settings/setup copy. */
+export const BUILTIN_COMPOSER_SHAPES = [
+	{
+		value: "box",
+		label: tSettingsUi("Rounded Box (Default)"),
+		description: tSettingsUi("Status line embedded in top border, compact 2-line prompt"),
+	},
+	{
+		value: "claude",
+		label: tSettingsUi("Claude Code"),
+		description: tSettingsUi("Full-width horizontal rules above and below, status line at bottom"),
+	},
+	{
+		value: "pi",
+		label: tSettingsUi("Pi"),
+		description: tSettingsUi("Framed horizontal rules with status line at bottom"),
+	},
+	{
+		value: "borderless",
+		label: tSettingsUi("Borderless"),
+		description: tSettingsUi("Clean prompt glyph with status line at bottom, no box borders"),
+	},
+	{
+		value: "rule",
+		label: tSettingsUi("Top Rule Dock"),
+		description: tSettingsUi("Single top rule with status docked onto it and below"),
+	},
+	{
+		value: "field",
+		label: tSettingsUi("Compact Field"),
+		description: tSettingsUi("Filled one-row field with accent end caps"),
+	},
+	{
+		value: "rail",
+		label: tSettingsUi("Accent Rail"),
+		description: tSettingsUi("Filled one-row field anchored by a single accent rail"),
+	},
+] as const;
+
+/** Built-in composer ids used by tests and non-runtime consumers. */
+export const COMPOSER_SHAPE_VALUES = BUILTIN_COMPOSER_SHAPES.map(shape => shape.value);
+
+export type ContextLineMode = "off" | "percentage" | "annotated" | "embedded";
+export const CONTEXT_LINE_MODE_VALUES = ["off", "percentage", "annotated", "embedded"] as const;
+
 export type SettingTab =
 	| "appearance"
 	| "model"
@@ -134,7 +205,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
  * Ungrouped settings render first, before any section heading.
  */
 export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
-	appearance: ["Theme", "Status Line", "Display", "Images"],
+	appearance: ["Theme", "Composer", "Status Line", "Display", "Images"],
 	model: ["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk", "Vision"],
 	interaction: [
 		"Input",
@@ -609,6 +680,33 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"providers.openai-codex.codeMode": {
+		type: "enum",
+		values: ["off", "on", "auto"] as const,
+		default: "off",
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Codex Code Mode"),
+			description: tSettingsUi(
+				"Route Codex code_mode_only models (GPT-5.6) through the eval tool as a programmatic execution surface: the direct tool surface collapses to eval/ask/todo and every other session tool is invoked from eval cells. Mirrors codex-rs Code Mode. 'auto' follows the model catalog flag.",
+			),
+		},
+	},
+
+	"providers.openai-codex.codeModeDirectTools": {
+		type: "array",
+		default: EMPTY_STRING_ARRAY,
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Services"),
+			label: tSettingsUi("Codex Code Mode Direct Tools"),
+			description: tSettingsUi(
+				"Extra tool names to keep directly callable alongside eval/ask/todo when Codex Code Mode is active.",
+			),
+		},
+	},
+
 	disabledExtensions: { type: "array", default: EMPTY_STRING_ARRAY },
 
 	modelRoleStorage: {
@@ -727,6 +825,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Composer
+	"composer.shape": {
+		type: "string",
+		default: "box",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Composer"),
+			label: tSettingsUi("Composer Shape"),
+			description: tSettingsUi("Visual layout of the input editor and status line"),
+			options: "runtime",
+		},
+	},
+
 	// Status line
 	"statusLine.preset": {
 		type: "enum",
@@ -838,6 +949,42 @@ export const SETTINGS_SCHEMA = {
 					value: "ascii",
 					label: tSettingsUi("ASCII"),
 					description: tSettingsUi("Greater-than signs"),
+				},
+			],
+		},
+	},
+
+	"statusLine.contextLine": {
+		type: "enum",
+		values: CONTEXT_LINE_MODE_VALUES,
+		default: "embedded",
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Status Line"),
+			label: tSettingsUi("Context-Reactive Line"),
+			description: tSettingsUi(
+				"How the line between the left and right segments reflects context usage (box composer only)",
+			),
+			options: [
+				{
+					value: "off",
+					label: tSettingsUi("Off"),
+					description: tSettingsUi("Solid accent line, no context feedback"),
+				},
+				{
+					value: "percentage",
+					label: tSettingsUi("Percentage"),
+					description: tSettingsUi("Used portion in accent color, remainder dimmed"),
+				},
+				{
+					value: "annotated",
+					label: tSettingsUi("Annotated"),
+					description: tSettingsUi("Percentage plus ticks at the speculative and auto-compaction boundaries"),
+				},
+				{
+					value: "embedded",
+					label: tSettingsUi("Embedded"),
+					description: tSettingsUi("Annotated line with the context percentage and window embedded in the gauge"),
 				},
 			],
 		},
@@ -1217,6 +1364,115 @@ export const SETTINGS_SCHEMA = {
 			description: tSettingsUi(
 				"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
 			),
+		},
+	},
+
+	"images.urls.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Serve Images as URLs"),
+			description: tSettingsUi(
+				"Publish outgoing images through the configured backend chain and send URL-fetching providers short URLs instead of inline base64. Falls back to inline automatically when every backend or a provider fetch fails",
+			),
+		},
+	},
+
+	"images.urls.backends": {
+		type: "array",
+		default: ["provider-files", "tailscale", "cloudflared", "litterbox"] as BlobDestinationId[],
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL Backends"),
+			description: tSettingsUi("Ordered destinations tried when publishing images for provider access"),
+			options: BLOB_BACKEND_CHOICES,
+			ordered: true,
+		},
+	},
+
+	"images.urls.options": {
+		type: "record",
+		default: {} as Partial<Record<BlobDestinationId, Record<string, unknown>>>,
+	},
+
+	"images.urls.credentials": {
+		type: "record",
+		default: {} as Partial<Record<BlobDestinationId, Record<string, string>>>,
+		credential: true,
+	},
+
+	"images.urls.command": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image Upload Command"),
+			description: tSettingsUi(
+				"Argv template for the command backend; {file} is the image path, {mime}/{ext} optional. The last URL printed on stdout is used (e.g. pasta -b -f {file})",
+			),
+		},
+	},
+
+	"images.urls.publicBaseUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL Public Base"),
+			description: tSettingsUi(
+				"Externally reachable base URL fronting the blob server (required for ssh, optional for direct)",
+			),
+		},
+	},
+
+	"images.urls.ttlHours": {
+		type: "number",
+		default: 72,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL Lifetime (hours)"),
+			description: tSettingsUi(
+				"Serving window for locally hosted image URLs, measured from the last time a conversation sent them; resuming a conversation re-arms the window at the same link. 0 keeps links alive while the broker runs",
+			),
+		},
+	},
+
+	"images.urls.bindHost": {
+		type: "string",
+		default: "127.0.0.1",
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL Bind Host"),
+			description: tSettingsUi("Host the blob server binds to; loopback for tunnels, 0.0.0.0 for direct serving"),
+		},
+	},
+
+	"images.urls.sshTarget": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL SSH Target"),
+			description: tSettingsUi("user@host destination for the ssh reverse forward"),
+		},
+	},
+
+	"images.urls.sshRemotePort": {
+		type: "number",
+		default: 8787,
+		ui: {
+			tab: "model",
+			group: tSettingsUi("Vision"),
+			label: tSettingsUi("Image URL SSH Remote Port"),
+			description: tSettingsUi("Remote port used for the ssh reverse forward"),
 		},
 	},
 
@@ -2466,6 +2722,42 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"spelling.typoDetection": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Typo Detection (macOS)"),
+			description: tSettingsUi("Mark misspelled prompt words with the active macOS dictionaries"),
+			condition: "macOS",
+		},
+	},
+
+	"spelling.autocomplete": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Word Autocomplete (macOS)"),
+			description: tSettingsUi("Show macOS dictionary word completions as inline hints accepted with Tab"),
+			condition: "macOS",
+		},
+	},
+
+	"spelling.autocorrect": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Input"),
+			label: tSettingsUi("Autocorrect (macOS)"),
+			description: tSettingsUi("Apply confident macOS spelling corrections after completed words"),
+			condition: "macOS",
+		},
+	},
+
 	emojiAutocomplete: {
 		type: "boolean",
 		default: true,
@@ -2978,6 +3270,21 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.methodOrder": {
+		type: "array",
+		default: [...DEFAULT_COMPACTION_METHOD_ORDER],
+		ui: {
+			tab: "context",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Compaction Method Order"),
+			description: tSettingsUi(
+				"Preferred fallback order for automatic context maintenance; unavailable or failed methods advance to the next choice",
+			),
+			options: COMPACTION_METHOD_CHOICES,
+			ordered: true,
+		},
+	},
+
 	"compaction.strategy": {
 		type: "enum",
 		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
@@ -3183,6 +3490,19 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Compaction"),
 			label: tSettingsUi("Remote Compaction V2"),
 			description: tSettingsUi("Use Responses streaming compaction for compatible remote compaction models"),
+		},
+	},
+
+	"compaction.asyncEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "context",
+			group: tSettingsUi("Compaction"),
+			label: tSettingsUi("Async Compaction"),
+			description: tSettingsUi(
+				"Speculatively summarize in the background as context nears the compaction threshold, then splice the ready result in when the threshold is crossed",
+			),
 		},
 	},
 
@@ -4353,6 +4673,29 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"edit.blackbox.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "files",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Record Parse Regressions"),
+			description: tSettingsUi("Append full before/after source when an edit introduces an AST parse failure"),
+		},
+	},
+	"edit.autoRepair.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "files",
+			group: tSettingsUi("Editing"),
+			label: tSettingsUi("Auto-Repair Parse Regressions"),
+			description: tSettingsUi(
+				"When an edit breaks a file's AST parse, ask the smol model to fix the broken region (validated by re-parse; falls back to a warning)",
+			),
+		},
+	},
+
 	readLineNumbers: {
 		type: "boolean",
 		default: false,
@@ -4735,6 +5078,22 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Julia Eval Backend"),
 			description: tSettingsUi("Allow the eval tool to dispatch Julia cells to the persistent Julia kernel"),
 		},
+	},
+
+	"eval.autoBackground.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "shell",
+			group: tSettingsUi("Eval & Runtimes"),
+			label: tSettingsUi("Eval Auto-Background"),
+			description: tSettingsUi("Automatically background long-running eval cells and deliver the result later"),
+		},
+	},
+
+	"eval.autoBackground.thresholdMs": {
+		type: "number",
+		default: 60_000,
 	},
 
 	// Runtime knobs (consumed by eval backends and the /python slash command)
@@ -7544,6 +7903,7 @@ const CLI_ONLY_SETTING_PATHS = new Set<SettingPath>([
 	"autoResume",
 	"autocompleteMaxVisible",
 	"colorBlindMode",
+	"composer.shape",
 	"completion.notify",
 	"displayLanguage",
 	"doubleEscapeAction",
@@ -7557,6 +7917,9 @@ const CLI_ONLY_SETTING_PATHS = new Set<SettingPath>([
 	"recap.enabled",
 	"recap.idleSeconds",
 	"showHardwareCursor",
+	"spelling.typoDetection",
+	"spelling.autocomplete",
+	"spelling.autocorrect",
 	"symbolPreset",
 	"theme.terminalPalette",
 	"thinkingDisplay",
@@ -7664,12 +8027,14 @@ export type Personality = SettingValue<"personality">;
 
 export interface CompactionSettings {
 	enabled: boolean;
+	methodOrder: CompactionMethod[];
 	strategy: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent: number;
 	thresholdTokens: number;
 	reserveTokens: number | undefined;
 	keepRecentTokens: number;
 	midTurnEnabled: boolean;
+	asyncEnabled: boolean;
 	handoffSaveToDisk: boolean;
 	autoContinue: boolean;
 	remoteEnabled: boolean;

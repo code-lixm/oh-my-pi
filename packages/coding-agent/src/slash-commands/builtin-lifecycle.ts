@@ -1,15 +1,18 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { setProjectDir } from "@oh-my-pi/pi-utils";
+import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
+import { logger, setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { HarnessState } from "../refinement/types";
 import { normalizeHeartbeatDeliveryMode, parseHeartbeatInput } from "../scheduling/parser";
 import type { ScheduleJob } from "../scheduling/types";
-import type { FreshSessionResult } from "../session/agent-session";
+import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
+import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
+import { toggleSessionPin } from "../session/session-pins";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { resolveToCwd } from "../tools/path-utils";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
@@ -441,24 +444,29 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handle: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
 			if ("error" in parsed) return usage(parsed.error, runtime);
-			const before = runtime.session.getContextUsage?.();
-			const beforeTokens = before?.tokens;
-			try {
-				await runtime.session.compact(parsed.instructions, parsed.mode ? { mode: parsed.mode } : undefined);
-			} catch (err) {
-				// Compaction precondition failures (no model, already compacted, too
-				// small) and provider errors propagate as plain Errors; surface them
-				// via runtime.output so they don't fail the ACP prompt turn.
-				return usage(`Compaction failed: ${errorMessage(err)}`, runtime);
+			const runCompact = async (): Promise<void> => {
+				const before = runtime.session.getContextUsage?.();
+				const beforeTokens = before?.tokens;
+				try {
+					await runtime.session.compact(parsed.instructions, parsed.mode ? { mode: parsed.mode } : undefined);
+				} catch (err) {
+					if (err instanceof CompactionCancelledError) return;
+					await runtime.output(`Compaction failed: ${errorMessage(err)}`);
+					return;
+				}
+				const afterTokens = runtime.session.getContextUsage?.()?.tokens;
+				if (beforeTokens != null && afterTokens != null) {
+					const saved = beforeTokens - afterTokens;
+					await runtime.output(`Compaction complete. Tokens: ${beforeTokens} -> ${afterTokens} (saved ${saved}).`);
+				} else {
+					await runtime.output("Compaction complete.");
+				}
+			};
+			if (runtime.runCommandInBackground) {
+				runtime.runCommandInBackground(runCompact);
+				return commandConsumed();
 			}
-			const after = runtime.session.getContextUsage?.();
-			const afterTokens = after?.tokens;
-			if (beforeTokens != null && afterTokens != null) {
-				const saved = beforeTokens - afterTokens;
-				await runtime.output(`Compaction complete. Tokens: ${beforeTokens} -> ${afterTokens} (saved ${saved}).`);
-			} else {
-				await runtime.output("Compaction complete.");
-			}
+			await runCompact();
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
@@ -501,8 +509,44 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	{
 		name: "handoff",
 		description: "Hand off session context to a new session",
+		acpDescription: "Summarize the session into a handoff document and compact in place",
 		inlineHint: "[focus instructions]",
 		allowArgs: true,
+		handle: async (command, runtime) => {
+			if (runtime.session.isStreaming) {
+				return usage("Wait for the current response to finish or abort it before handing off.", runtime);
+			}
+			if (runtime.session.isGeneratingHandoff) {
+				return usage("Handoff generation is already in progress.", runtime);
+			}
+			const runHandoff = async (): Promise<void> => {
+				let result: HandoffResult | undefined;
+				try {
+					result = await runtime.session.handoff(command.args || undefined);
+				} catch (err) {
+					const message = errorMessage(err);
+					if (message === USER_INTERRUPT_LABEL) return;
+					if (message === "Handoff cancelled") {
+						await runtime.output("Handoff cancelled.");
+						return;
+					}
+					logger.error("Handoff failed", { error: message });
+					await runtime.output(`Handoff failed: ${message}`);
+					return;
+				}
+				if (!result) {
+					await runtime.output("Handoff cancelled.");
+					return;
+				}
+				await runtime.output("Context handed off and compacted in place.");
+			};
+			if (runtime.runCommandInBackground) {
+				runtime.runCommandInBackground(runHandoff);
+				return commandConsumed();
+			}
+			await runHandoff();
+			return commandConsumed();
+		},
 		handleTui: async (command, runtime) => {
 			const customInstructions = command.args || undefined;
 			runtime.ctx.editor.setText("");
@@ -537,6 +581,38 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return;
 			}
 			await runtime.ctx.handleResumeSession(match.session.path);
+		},
+	},
+	{
+		name: "pin",
+		description: "Pin or unpin a session at the top of the resume list",
+		inlineHint: "[session id]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const sessionArg = command.args.trim();
+			let sessionId: string | undefined;
+			if (sessionArg) {
+				const match = await resolveResumableSession(
+					sessionArg,
+					runtime.cwd,
+					runtime.sessionManager.getSessionDir(),
+					{ allowGlobalFallback: true },
+				);
+				if (!match) {
+					return usage(tSettingsUi('Session "{sessionArg}" not found.', { sessionArg }), runtime);
+				}
+				sessionId = match.session.id;
+			} else {
+				sessionId = runtime.sessionManager.getSessionId();
+				if (!sessionId) {
+					return usage(tSettingsUi("No active session to pin."), runtime);
+				}
+			}
+			const pinned = await toggleSessionPin(sessionId);
+			await runtime.output(
+				pinned ? tSettingsUi("Session pinned to the top of the resume list.") : tSettingsUi("Session unpinned."),
+			);
+			return commandConsumed();
 		},
 	},
 	{

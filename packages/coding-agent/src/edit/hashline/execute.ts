@@ -37,6 +37,7 @@ import { nativeBlockResolver } from "./block-resolver";
 import { HashlineFilesystem } from "./filesystem";
 import { hashPatchInput, NOOP_HARD_LIMIT, recordNoopEdit, resetNoopEdit } from "./noop-loop-guard";
 import { type HashlineParams, hashlineEditParamsSchema } from "./params";
+import type { AppliedEditObserver } from "../blackbox";
 
 export interface ExecuteHashlineSingleOptions {
 	session: ToolSession;
@@ -45,6 +46,8 @@ export interface ExecuteHashlineSingleOptions {
 	batchRequest?: LspBatchRequest;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
+	/** Observes committed source transitions before result snapshots are pruned. */
+	onApplied?: AppliedEditObserver;
 }
 
 function noChangeDiagnostic(path: string): string {
@@ -96,6 +99,18 @@ function assertUniqueCanonicalPaths(prepared: readonly PreparedSection[]): void 
 function narrowBatchRequest(outer: LspBatchRequest | undefined, isLast: boolean): LspBatchRequest | undefined {
 	if (!outer) return undefined;
 	return { id: outer.id, flush: isLast && outer.flush };
+}
+async function observeCommittedSection(
+	onApplied: AppliedEditObserver | undefined,
+	fs: HashlineFilesystem,
+	result: PatchSectionResult,
+): Promise<void> {
+	if (!onApplied || result.op === "noop") return;
+	await onApplied({
+		path: fs.resolveAbsolute(result.moveDest ?? result.path),
+		prev: result.before,
+		next: result.op === "delete" ? "" : result.after,
+	});
 }
 
 interface RenderedSection {
@@ -251,6 +266,7 @@ export async function executeHashlineSingle(
 			return renderSection(sectionResult, undefined, prepared.section.path).toolResult;
 		}
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
+		await observeCommittedSection(options.onApplied, fs, sectionResult);
 		return renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared.section.path).toolResult;
 	}
 
@@ -292,6 +308,7 @@ export async function executeHashlineSingle(
 				: new ToolError(noChangeDiagnostic(sectionResult.path));
 		}
 		resetNoopEdit(options.session, sectionResult.canonicalPath);
+		await observeCommittedSection(options.onApplied, fs, sectionResult);
 		rendered.push(renderSection(sectionResult, fs.consumeDiagnostics(sectionResult.path), prepared[i].section.path));
 	}
 	return {

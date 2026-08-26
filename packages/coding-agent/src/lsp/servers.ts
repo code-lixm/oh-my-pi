@@ -4,6 +4,7 @@ import {
 	getActiveClients,
 	getActiveOrPendingClient,
 	getOrCreateClient,
+	isRustAnalyzerClient,
 	type LspServerStatus,
 	notifySaved,
 	sendNotification,
@@ -254,25 +255,27 @@ export function isMethodNotFoundError(err: unknown): boolean {
 	);
 }
 
+export function reloadConfigurationParams(config: ServerConfig): { settings: Record<string, unknown> } {
+	return { settings: config.settings ?? {} };
+}
+
 export async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
 	throwIfAborted(signal);
-	// rust-analyzer exposes a real reload request. Every other server rejects it
-	// with method-not-found — that alone justifies the generic fallback. A caller
-	// cancel or tool timeout must propagate, never be mistaken for an unsupported
-	// method and swallowed into a bogus "Restarted" (issue #6369).
-	try {
-		await sendRequest(client, "rust-analyzer/reloadWorkspace", null, signal);
-		return `Reloaded ${serverName}`;
-	} catch (err) {
-		throwIfAborted(signal);
-		if (!isMethodNotFoundError(err)) throw err;
-		// Method not supported — fall through to the generic reload.
+	if (isRustAnalyzerClient(client) || serverName === "rust-analyzer") {
+		try {
+			await sendRequest(client, "rust-analyzer/reloadWorkspace", undefined, signal);
+			return `Reloaded ${serverName}`;
+		} catch (err) {
+			throwIfAborted(signal);
+			if (!isMethodNotFoundError(err)) throw err;
+		}
 	}
 	// workspace/didChangeConfiguration is a notification per spec; sending it
 	// as a request hangs until the tool deadline on servers that route it to
 	// the notification handler and never respond.
 	try {
-		await sendNotification(client, "workspace/didChangeConfiguration", { settings: {} }, signal);
+		const params = reloadConfigurationParams(client.config);
+		await sendNotification(client, "workspace/didChangeConfiguration", params, signal);
 		return `Reloaded ${serverName}`;
 	} catch {
 		throwIfAborted(signal);

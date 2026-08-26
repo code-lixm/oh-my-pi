@@ -840,6 +840,9 @@ export class UiHelpers {
 		if (this.ctx.viewSession.isStreaming) {
 			for (const [toolCallId, component] of this.ctx.pendingTools) {
 				component.setArgsComplete(toolCallId);
+				if (this.ctx.eventController?.hasToolExecutionStarted(toolCallId)) {
+					component.setExecutionStarted(toolCallId);
+				}
 			}
 		} else {
 			for (const component of this.ctx.pendingTools.values()) {
@@ -957,6 +960,70 @@ export class UiHelpers {
 			}
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
 		}
+	}
+
+	/**
+	 * Fast-path history rewind (esc-esc branch, /tree rewind to an ancestor):
+	 * drop the rendered components at/after `message` in place instead of the
+	 * destructive clear-scrollback replay. Rows already committed to native
+	 * scrollback are immutable, so the drop is expressible only while every
+	 * affected block is still wholly inside the visible window; returns false
+	 * when the caller must fall back to
+	 * `renderInitialMessages({ clearTerminalHistory: true })`.
+	 *
+	 * Callers must have already rewound the session so that `message` and
+	 * everything after it are no longer part of the view session's transcript.
+	 */
+	truncateTranscriptFromMessage(message: AgentMessage): boolean {
+		if (!this.ctx.initialChatRendered || this.ctx.focusedAgentId || this.ctx.viewSession.isStreaming) return false;
+		if (
+			this.ctx.pendingTools.size > 0 ||
+			this.ctx.pendingBashComponents.length > 0 ||
+			this.ctx.pendingPythonComponents.length > 0
+		) {
+			return false;
+		}
+		const chat = this.ctx.chatContainer;
+		const cut = this.ctx.transcriptMessageComponents.get(message);
+		if (!cut) return false;
+		const index = chat.children.indexOf(cut);
+		if (index < 0) return false;
+		for (let i = index; i < chat.children.length; i++) {
+			if (!chat.canRemoveBlock(chat.children[i]!)) return false;
+		}
+		const context = this.ctx.viewSession.buildTranscriptSessionContext({
+			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+		});
+		for (const remaining of context.messages) {
+			if (remaining === message) return false;
+		}
+		const dropped = chat.children.slice(index);
+		for (let i = dropped.length - 1; i >= 0; i--) {
+			const child = dropped[i]!;
+			chat.removeChild(child);
+			child.dispose?.();
+		}
+		const retained = new WeakMap<AgentMessage, Component>();
+		for (const remaining of context.messages) {
+			const component = this.ctx.transcriptMessageComponents.get(remaining);
+			if (component) retained.set(remaining, component);
+		}
+		this.ctx.transcriptMessageComponents = retained;
+		let baseline: Usage | undefined;
+		for (let i = context.messages.length - 1; i >= 0; i--) {
+			const candidate = context.messages[i]!;
+			if (candidate.role !== "assistant") continue;
+			const usage = candidate.usage;
+			if (usage.cacheRead + usage.cacheWrite + usage.input > 0) {
+				baseline = usage;
+				break;
+			}
+		}
+		this.ctx.lastAssistantUsage = baseline;
+		this.ctx.statusLine.invalidate();
+		this.ctx.updateEditorBorderColor();
+		this.ctx.ui.requestRender();
+		return true;
 	}
 
 	clearEditor(): void {

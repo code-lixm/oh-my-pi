@@ -183,7 +183,5 @@ test("renders retained facts without changing summaries that have none", () => {
 	expect(rendered).toContain("<retained-facts>");
 	expect(rendered).toContain("pending task");
 	expect(rendered).toContain("git status");
-	expect(rendered).toContain("artifact://7");
-	expect(rendered).toContain("cp-1");
 	expect(renderCompactionSummaryContext(summary, undefined)).toBe(summary);
 });

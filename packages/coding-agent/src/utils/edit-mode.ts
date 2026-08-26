@@ -1,6 +1,6 @@
 import { $env, $flag } from "@oh-my-pi/pi-utils";
 
-export type EditMode = "replace" | "patch" | "hashline" | "apply_patch";
+export type EditMode = "replace" | "patch" | "hashline" | "apply_patch" | "sloppy";
 
 export const DEFAULT_EDIT_MODE: EditMode = "hashline";
 
@@ -9,6 +9,7 @@ const EDIT_MODE_IDS = {
 	hashline: "hashline",
 	patch: "patch",
 	replace: "replace",
+	sloppy: "sloppy",
 } as const satisfies Record<string, EditMode>;
 
 export const EDIT_MODES = Object.keys(EDIT_MODE_IDS) as EditMode[];

@@ -31,6 +31,7 @@ import type { TinyTitleWorkerInbound, TinyTitleWorkerOutbound } from "@oh-my-pi/
 import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import type { Subprocess } from "bun";
 import { setPromptLocale } from "../src/prompts/prompt-locale";
+import { buildCompletionPrompt } from "../src/tiny/completion-prompt";
 
 function getModelOrThrow(id: string): Model<Api> {
 	const model = getBundledModel("anthropic", id);
@@ -272,6 +273,42 @@ function createFakeTinyWorker(): FakeTinyWorker {
 	};
 	return worker;
 }
+
+describe("tiny memory completion prompts", () => {
+	it("renders a trimmed extraction prompt as a system turn separate from preserved user input", () => {
+		const applyChatTemplate = vi.fn(() => "rendered prompt");
+		const tokenizer = { apply_chat_template: applyChatTemplate };
+		const userPrompt = "  actual user input  ";
+
+		expect(buildCompletionPrompt(tokenizer as never, userPrompt, " extraction instructions ")).toBe(
+			"rendered prompt",
+		);
+		expect(applyChatTemplate).toHaveBeenCalledWith(
+			[
+				{ role: "system", content: "extraction instructions" },
+				{ role: "user", content: userPrompt },
+			],
+			{
+				add_generation_prompt: true,
+				tokenize: false,
+				enable_thinking: false,
+			},
+		);
+	});
+
+	it("renders a user-only turn when no system prompt is supplied", () => {
+		const applyChatTemplate = vi.fn(() => "rendered prompt");
+		const tokenizer = { apply_chat_template: applyChatTemplate };
+		const userPrompt = "  actual user input  ";
+
+		expect(buildCompletionPrompt(tokenizer as never, userPrompt)).toBe("rendered prompt");
+		expect(applyChatTemplate).toHaveBeenCalledWith([{ role: "user", content: userPrompt }], {
+			add_generation_prompt: true,
+			tokenize: false,
+			enable_thinking: false,
+		});
+	});
+});
 
 describe("tiny title prewarm", () => {
 	it("spawns one idle worker that the first generate reuses (issue #6462)", async () => {

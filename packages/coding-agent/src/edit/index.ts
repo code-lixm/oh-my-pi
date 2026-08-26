@@ -1,9 +1,10 @@
+import * as nodePath from "node:path";
 import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { isEnoent, isEnotdir, prompt } from "@oh-my-pi/pi-utils";
+import { isEnoent, isEnotdir, logger, prompt } from "@oh-my-pi/pi-utils";
 import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
@@ -19,6 +20,13 @@ import { truncateForPrompt } from "../tools/approval";
 import { findUniqueWorkspaceSuffix, isInternalUrlPath } from "../tools/path-utils";
 import { resolvePlanPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
+import { attemptEditAutoRepair, type EditAutoRepairOutcome } from "./auto-repair";
+import {
+	createEditBlackboxRecorder,
+	introducedParseFailure,
+	type AppliedEditObserver,
+	type AppliedEditSnapshot,
+} from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
@@ -27,8 +35,19 @@ import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEdi
 import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, type LspBatchRequest } from "./renderer";
 import { pruneOversizedEditSnapshots } from "./snapshot-details";
 import { EDIT_MODE_STRATEGIES } from "./streaming";
+import {
+	executeSloppy,
+	sloppyEditSchema,
+	sloppyGrammar,
+	sloppyVariant,
+	splitSloppySections,
+	type SloppyParams,
+	type SloppySection,
+} from "./sloppy";
 
 export * from "@oh-my-pi/hashline";
+export * from "./auto-repair";
+export * from "./blackbox";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 export * from "./apply-patch";
 export * from "./diff";
@@ -40,17 +59,19 @@ export * from "./modes/replace";
 export * from "./normalize";
 export * from "./renderer";
 export * from "./snapshot-details";
+export * from "./sloppy";
 export * from "./streaming";
 
 type TInput =
 	| typeof replaceEditSchema
 	| typeof patchEditSchema
 	| typeof hashlineEditParamsSchema
-	| typeof applyPatchSchema;
+	| typeof applyPatchSchema
+	| typeof sloppyEditSchema;
 
 type HashlineParams = typeof hashlineEditParamsSchema.infer;
 
-type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams;
+type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
 
 type EditModeDefinition = {
 	description: (session: ToolSession) => string;
@@ -61,6 +82,7 @@ type EditModeDefinition = {
 		params: EditParams,
 		signal: AbortSignal | undefined,
 		batchRequest: LspBatchRequest | undefined,
+		onApplied: AppliedEditObserver | undefined,
 		onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 	) => Promise<AgentToolResult<EditToolDetails, TInput>>;
 };
@@ -457,6 +479,7 @@ export class EditTool implements AgentTool<TInput> {
 	get customFormat(): { syntax: "lark"; definition: string } | undefined {
 		if (this.mode === "apply_patch") return { syntax: "lark", definition: applyPatchGrammar };
 		if (this.mode === "hashline") return { syntax: "lark", definition: hashlineGrammar };
+		if (this.mode === "sloppy") return { syntax: "lark", definition: sloppyGrammar };
 		return undefined;
 	}
 
@@ -509,7 +532,112 @@ export class EditTool implements AgentTool<TInput> {
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<EditToolDetails, TInput>> {
 		const modeDefinition = this.#getModeDefinition();
-		return modeDefinition.execute(this, params, signal, getLspBatchRequest(context?.toolCall), onUpdate);
+		const appliedSnapshots = new Map<string, AppliedEditSnapshot>();
+		const onApplied = this.#createAppliedObserver(params, appliedSnapshots);
+		const result = await modeDefinition.execute(
+			this,
+			params,
+			signal,
+			getLspBatchRequest(context?.toolCall),
+			onApplied,
+			onUpdate,
+		);
+		const repairs = await this.#attemptAutoRepairs(appliedSnapshots, signal);
+		return this.#appendAutoRepairs(result, appliedSnapshots, repairs);
+	}
+
+	#createAppliedObserver(params: EditParams, appliedSnapshots: Map<string, AppliedEditSnapshot>): AppliedEditObserver {
+		const recorder = createEditBlackboxRecorder(this.session, this.mode, params);
+		return async snapshot => {
+			try {
+				if (!introducedParseFailure(snapshot)) {
+					appliedSnapshots.delete(snapshot.path);
+					return;
+				}
+				await recorder?.(snapshot);
+				appliedSnapshots.set(snapshot.path, snapshot);
+			} catch (error) {
+				logger.debug("Failed to observe applied edit", {
+					path: snapshot.path,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		};
+	}
+
+	async #attemptAutoRepairs(
+		appliedSnapshots: ReadonlyMap<string, AppliedEditSnapshot>,
+		signal: AbortSignal | undefined,
+	): Promise<{ snapshot: AppliedEditSnapshot; outcome: EditAutoRepairOutcome }[]> {
+		if (!this.session.settings.get("edit.autoRepair.enabled")) return [];
+		const repairs: { snapshot: AppliedEditSnapshot; outcome: EditAutoRepairOutcome }[] = [];
+		for (const snapshot of appliedSnapshots.values()) {
+			if (signal?.aborted) break;
+			try {
+				const outcome = await attemptEditAutoRepair({
+					session: this.session,
+					snapshot,
+					writethrough: this.#writethrough,
+					signal,
+				});
+				if (outcome) repairs.push({ snapshot, outcome });
+			} catch (error) {
+				logger.debug("Edit auto-repair failed", {
+					path: snapshot.path,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return repairs;
+	}
+
+	#matchesAppliedPath(candidatePath: string | undefined, observedPath: string): boolean {
+		if (!candidatePath) return false;
+		if (candidatePath === observedPath) return true;
+		if (isInternalUrlPath(candidatePath)) return false;
+		return resolvePlanPath(this.session, candidatePath) === observedPath;
+	}
+
+	#appendAutoRepairs(
+		result: AgentToolResult<EditToolDetails, TInput>,
+		snapshots: ReadonlyMap<string, AppliedEditSnapshot>,
+		repairs: readonly { snapshot: AppliedEditSnapshot; outcome: EditAutoRepairOutcome }[],
+	): AgentToolResult<EditToolDetails, TInput> {
+		if (snapshots.size === 0) return result;
+		const repairsByPath = new Map(repairs.map(repair => [repair.snapshot.path, repair] as const));
+		const repairText = Array.from(snapshots.values(), snapshot => {
+			const repair = repairsByPath.get(snapshot.path);
+			if (repair) {
+				return `Auto-repaired parse regression in ${snapshot.path} with ${repair.outcome.model} (${repair.outcome.attempts} ${repair.outcome.attempts === 1 ? "attempt" : "attempts"}).`;
+			}
+			const display = nodePath.relative(this.session.cwd, snapshot.path) || snapshot.path;
+			return `Warning: ${display} no longer parses after this edit. The change was applied; re-read the edited region and fix the syntax, or revert if unintended.`;
+		}).join("\n\n");
+		if (repairs.length === 0 || !result.details) {
+			return { ...result, content: [...result.content, { type: "text", text: repairText }] };
+		}
+
+		const repairDiffs = repairs.map(repair => repair.outcome.diff).filter(Boolean);
+		const perFileResults = result.details.perFileResults?.map(entry => {
+			const repair = repairsByPath.get(entry.path);
+			if (!repair) return entry;
+			const updated = { ...entry, diff: [entry.diff, repair.outcome.diff].filter(Boolean).join("\n") };
+			return entry.snapshotsPruned ? updated : { ...updated, newText: repair.outcome.newText };
+		});
+		const directRepair = perFileResults
+			? undefined
+			: repairs.find(item => this.#matchesAppliedPath(result.details?.path, item.snapshot.path));
+		const details: EditToolDetails = {
+			...result.details,
+			diff: [result.details.diff, ...repairDiffs].filter(Boolean).join("\n"),
+			...(perFileResults ? { perFileResults } : {}),
+			...(directRepair && !result.details.snapshotsPruned ? { newText: directRepair.outcome.newText } : {}),
+		};
+		return {
+			...result,
+			content: [...result.content, { type: "text", text: repairText }],
+			details: pruneOversizedEditSnapshots(details),
+		};
 	}
 
 	#getModeDefinition(): EditModeDefinition {
@@ -555,6 +683,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { edits, path } = params as PatchParams;
@@ -577,6 +706,7 @@ export class EditTool implements AgentTool<TInput> {
 								allowCreateOverwrite: true,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+								onApplied,
 							}),
 					);
 					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
@@ -598,6 +728,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const entries = expandApplyPatchToEntries(params as ApplyPatchParams);
@@ -628,6 +759,7 @@ export class EditTool implements AgentTool<TInput> {
 									fuzzyThreshold: tool.#fuzzyThreshold,
 									writethrough: tool.#writethrough,
 									beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+									onApplied,
 								});
 							},
 						};
@@ -643,6 +775,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { input } = params as HashlineParams;
@@ -653,6 +786,39 @@ export class EditTool implements AgentTool<TInput> {
 						batchRequest,
 						writethrough: tool.#writethrough,
 						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+						onApplied,
+					});
+				},
+			},
+			sloppy: {
+				description: () => prompt.render(sloppyVariant.description),
+				parameters: sloppyEditSchema,
+				execute: async (
+					tool: EditTool,
+					params: EditParams,
+					signal: AbortSignal | undefined,
+					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
+					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
+				) => {
+					const { input } = params as SloppyParams;
+					const sections = splitSloppySections(input);
+					if (sections.length === 0) throw new Error("Missing file header in sloppy edit payload.");
+					const resolved: SloppySection[] = [];
+					for (const section of sections) {
+						resolved.push({
+							path: await resolveEditPath(tool.session, section.path, { mustExist: true, signal }),
+							body: section.body,
+						});
+					}
+					return executeSloppy({
+						session: tool.session,
+						sections: resolved,
+						signal,
+						batchRequest,
+						writethrough: tool.#writethrough,
+						beginDeferredDiagnosticsForPath: path => tool.#deferredDiagnostics.begin(path),
+						onApplied,
 					});
 				},
 			},
@@ -664,6 +830,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					// `edits` is the internal `ReplaceBatchParams` form only the Cursor
@@ -693,6 +860,7 @@ export class EditTool implements AgentTool<TInput> {
 								fuzzyThreshold: tool.#fuzzyThreshold,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+								onApplied,
 							}),
 					);
 					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);

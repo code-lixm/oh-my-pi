@@ -726,6 +726,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Session history": "会话历史",
 	"View session history": "查看会话历史",
 	"Session shared": "会话已分享",
+	"Pin or unpin a session at the top of the resume list": "将会话固定到恢复列表顶部或取消固定",
+	"No active session to pin.": "没有可固定的活动会话。",
+	"Session pinned to the top of the resume list.": "会话已固定到恢复列表顶部。",
+	"Session unpinned.": "已取消固定会话。",
 	"Set up Oh My Pi in terminal": "在终端里设置 Oh My Pi",
 	Skills: "技能",
 	Subagent: "子代理",
@@ -2399,6 +2403,18 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Select a named custom status line from statusLine.customPresets":
 		"从 statusLine.customPresets 选择命名的自定义状态栏",
 	"Status Line Separator": "状态栏分隔符",
+	"Context-Reactive Line": "上下文响应线",
+	"How the line between the left and right segments reflects context usage (box composer only)":
+		"控制左右状态组之间的连线如何反映上下文用量（仅方框输入框）",
+	"Solid accent line, no context feedback": "使用纯强调色连线，不显示上下文反馈",
+	Percentage: "百分比",
+	"Used portion in accent color, remainder dimmed": "已用部分显示强调色，其余部分变暗",
+	Annotated: "带标记",
+	"Percentage plus ticks at the speculative and auto-compaction boundaries":
+		"显示用量比例及推测压缩、自动压缩边界标记",
+	Embedded: "嵌入式",
+	"Annotated line with the context percentage and window embedded in the gauge":
+		"在带标记的计量线上嵌入上下文百分比和窗口大小",
 	"Status line": "状态栏",
 	"Steering Mode": "引导模式",
 	"Stream First Event Timeout": "流首个事件超时",

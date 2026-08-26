@@ -1,8 +1,9 @@
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
-import { type ApiKeyResolver, completeSimple } from "@oh-my-pi/pi-ai";
+import { type ApiKeyResolver, completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
 import type { Mnemopi } from "@oh-my-pi/pi-mnemopi";
+import type { MnemopiLlmCompleteOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 import type * as MnemopiDiagnoseNs from "@oh-my-pi/pi-mnemopi/diagnose";
 import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -64,6 +65,25 @@ const STATIC_INSTRUCTIONS = [
 	"- Durable project facts, preferences, and decisions are retained automatically from completed turns.",
 	"",
 ].join("\n");
+
+export interface MemoryCompletionInput {
+	prompt: string;
+	systemPrompt?: string;
+}
+
+/** Keep extraction instructions in the system turn and raw memory text in the user turn. */
+export function resolveMemoryCompletionInput(
+	prompt: string,
+	options?: MnemopiLlmCompleteOptions,
+): MemoryCompletionInput {
+	if (options?.task?.kind === "memory-extraction") {
+		return {
+			prompt: options.task.input,
+			systemPrompt: selectPrompt(memoryExtractionPrompt, memoryExtractionPromptZh),
+		};
+	}
+	return { prompt };
+}
 
 async function installMnemopiState(session: AgentSession, config: MnemopiBackendConfig): Promise<MnemopiSessionState> {
 	const state = new MnemopiSessionState({ sessionId: session.sessionId, config, session });
@@ -509,8 +529,13 @@ async function resolveMnemopiProviderOptions(
 		return {
 			...base,
 			llm: {
-				complete: (prompt, opts) => tinyModelClient.complete(memoryModel, prompt, { maxTokens: opts?.maxTokens }),
-				extractionPrompt: selectPrompt(memoryExtractionPrompt, memoryExtractionPromptZh),
+				complete: (prompt, opts) => {
+					const request = resolveMemoryCompletionInput(prompt, opts);
+					return tinyModelClient.complete(memoryModel, request.prompt, {
+						maxTokens: opts?.maxTokens,
+						systemPrompt: request.systemPrompt,
+					});
+				},
 				consolidationPrompt: selectPrompt(memoryConsolidationPrompt, memoryConsolidationPromptZh),
 			},
 		};
@@ -540,6 +565,7 @@ async function resolveMnemopiProviderOptions(
 		return {
 			...base,
 			llm: async (prompt, opts) => {
+				const request = resolveMemoryCompletionInput(prompt, opts);
 				const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
 				if (!hasApiKey) {
 					logger.warn("Mnemopi: smol completion requested but no current API key is available.", {
@@ -548,16 +574,19 @@ async function resolveMnemopiProviderOptions(
 					});
 					return null;
 				}
-				const message = await completeSimple(
-					model,
-					{
-						messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-					},
-					{
-						apiKey: modelRegistry.resolver(model, sessionId),
-						maxTokens: opts?.maxTokens,
-						temperature: opts?.temperature,
-					},
+				const message = await retryTransientCompletion(() =>
+					completeSimple(
+						model,
+						{
+							...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
+							messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
+						},
+						{
+							apiKey: modelRegistry.resolver(model, sessionId),
+							maxTokens: opts?.maxTokens,
+							temperature: opts?.temperature,
+						},
+					),
 				);
 				return message.content
 					.filter(

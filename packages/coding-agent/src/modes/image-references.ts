@@ -3,6 +3,20 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { type BlobPutResult, blobExtensionForImageMimeType } from "../session/blob-store";
 import { fileHyperlink } from "../tui/hyperlink";
 
+const kImageDims = Symbol("omp.imageDimensions");
+
+interface ImageContentWithDims extends ImageContent {
+	[kImageDims]?: { width: number; height: number } | null;
+}
+
+export function cachedImageDimensions(image: ImageContent): { width: number; height: number } | null | undefined {
+	return (image as ImageContentWithDims)[kImageDims];
+}
+
+export function setCachedImageDimensions(image: ImageContent, dims: { width: number; height: number } | null): void {
+	(image as ImageContentWithDims)[kImageDims] = dims;
+}
+
 /** Matches `[Image #N]`/`[Image #N, WxH]` and `[Paste #N, +X lines]`/`[Paste #N, Y chars]` tokens.
  *  Group 1 is the kind (`Image`/`Paste`), group 2 the 1-based index. The optional metadata
  *  tail (`, …`) is captured loosely (no `]`/newline) so future label tweaks keep matching. */

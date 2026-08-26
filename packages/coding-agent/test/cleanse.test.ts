@@ -168,13 +168,19 @@ describe("cleanse progress", () => {
 		const initial = report([...fileDiagnostics("a.rs", 1), ...fileDiagnostics("b.rs", 1)]);
 		const clean = report([]);
 		let runCount = 0;
+		const checker = { id: "mock", label: "mock", language: "Test", cwd: ".", command: "mock" };
 		const suite: cleanseCheckers.CleanseDiagnosticSuite = {
-			checkers: [{ id: "mock", label: "mock", language: "Test", command: "mock" }],
+			checkers: [checker],
+			selected: [checker],
 			skipped: [],
 			select() {},
-			async run() {
+			async run(options) {
 				runCount += 1;
-				return runCount === 1 ? initial : clean;
+				if (runCount === 1) {
+					if (options && "events" in options) options.events?.onDiagnostics?.(checker, initial.diagnostics);
+					return initial;
+				}
+				return clean;
 			},
 		};
 		let hooks: cleanseAgent.CleanseAgentHooks | undefined;
@@ -184,14 +190,18 @@ describe("cleanse progress", () => {
 			async discoverCheckers() {
 				return [];
 			},
-			async dispatch(assignments) {
-				return assignments.map((assignment, index) => {
-					const name = `CleanseW1A${index + 1}`;
-					hooks?.onStart?.(name, assignment);
-					const outcome: CleanseAgentOutcome = { name, success: true, output: "" };
-					hooks?.onFinish?.(outcome, assignment);
-					return outcome;
-				});
+			async dispatch(): Promise<CleanseAgentOutcome[]> {
+				throw new Error("legacy batch dispatch must not be used by streaming cleanse");
+			},
+			async dispatchWorker(assignment, { worker }) {
+				const name = `CleanseA${worker}`;
+				hooks?.onStart?.(name, assignment);
+				const outcome: CleanseAgentOutcome = { name, success: true, output: "" };
+				hooks?.onFinish?.(outcome, assignment);
+				return outcome;
+			},
+			async followUp() {
+				return false;
 			},
 			async close() {},
 		};
@@ -205,11 +215,12 @@ describe("cleanse progress", () => {
 			const result = await runCleanseCommand({ maxAgents: 2, all: true });
 
 			expect(result.status).toBe("clean");
-			const updates = output.filter(chunk => chunk.startsWith("\rRepairing ["));
-			expect(updates).toHaveLength(3);
-			expect(updates[0]).toContain("0/2");
-			expect(updates[1]).toContain("1/2");
-			expect(updates[2]).toContain("2/2");
+			const updates = output.filter(chunk => chunk.includes("Repairing ["));
+			expect(updates).toHaveLength(4);
+			expect(updates[0]).toContain("0/1");
+			expect(updates[1]).toContain("1/1");
+			expect(updates[2]).toContain("1/2");
+			expect(updates[3]).toContain("2/2");
 		} finally {
 			if (isTtyDescriptor) Object.defineProperty(process.stdout, "isTTY", isTtyDescriptor);
 			else Reflect.deleteProperty(process.stdout, "isTTY");
@@ -235,7 +246,7 @@ describe("cleanse progress", () => {
 });
 
 describe("cleanse orchestration", () => {
-	test("dispatches no more than N agents once and verifies their combined edits", async () => {
+	test("dispatches no more than N agents in one streaming pass and verifies their combined edits", async () => {
 		const initial = report([
 			...fileDiagnostics("a.rs", 2),
 			...fileDiagnostics("b.rs", 1),
@@ -243,28 +254,28 @@ describe("cleanse orchestration", () => {
 		]);
 		const clean = report([]);
 		let dispatches = 0;
-		let assignmentCount = 0;
 
 		const result = await runCleanseLoop(
-			{ maxAgents: 2, initialReport: initial },
+			{ maxAgents: 2 },
 			{
-				collect: async () => clean,
-				dispatch: async assignments => {
+				collect: async onDiagnostics => {
+					onDiagnostics(initial.diagnostics);
+					return initial;
+				},
+				verify: async () => clean,
+				dispatch: async (assignment, worker) => {
 					dispatches += 1;
-					assignmentCount = assignments.length;
-					return assignments.map(
-						(assignment, index): CleanseAgentOutcome => ({
-							name: `CleanseW1A${index + 1}`,
-							success: true,
-							output: assignment.groups.map(group => group.file).join(", "),
-						}),
-					);
+					return {
+						name: `CleanseA${worker}`,
+						success: true,
+						output: assignment.groups.map(group => group.file).join(", "),
+					};
 				},
 			},
 		);
 
-		expect(dispatches).toBe(1);
-		expect(assignmentCount).toBe(2);
+		expect(dispatches).toBe(2);
+		expect(result.workers).toBe(2);
 		expect(result.status).toBe("clean");
 		expect(result.report.diagnostics).toEqual([]);
 	});
@@ -274,12 +285,20 @@ describe("cleanse orchestration", () => {
 		let dispatches = 0;
 
 		const result = await runCleanseLoop(
-			{ maxAgents: 8, initialReport: initial },
+			{ maxAgents: 8 },
 			{
-				collect: async () => initial,
-				dispatch: async () => {
+				collect: async onDiagnostics => {
+					onDiagnostics(initial.diagnostics);
+					return initial;
+				},
+				verify: async () => initial,
+				dispatch: async (assignment, worker) => {
 					dispatches += 1;
-					return [];
+					return {
+						name: `CleanseA${worker}`,
+						success: true,
+						output: assignment.groups.map(group => group.file).join(", "),
+					};
 				},
 			},
 		);

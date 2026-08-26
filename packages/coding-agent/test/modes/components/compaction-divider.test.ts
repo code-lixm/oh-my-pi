@@ -20,7 +20,7 @@ const SUMMARY = "Earlier the user fixed the login TTL bug.";
 
 function makeComponent(images?: ImageContent[]): CompactionSummaryMessageComponent {
 	return new CompactionSummaryMessageComponent(
-		createCompactionSummaryMessage(SUMMARY, 84000, new Date().toISOString(), undefined, undefined, images),
+		createCompactionSummaryMessage(SUMMARY, 84000, new Date().toISOString(), { images }),
 	);
 }
 

@@ -2,13 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/pin [session id]`, pinned-first resume ordering, and localized pin indicators across project and global session pickers.
+- Added persisted usage-frequency ranking to slash-command autocomplete suggestions while preserving exact-match priority and registry order for unused commands.
+- Added an immediately editable startup composer with cached first-frame data, draft-preserving handoff, configurable built-in and extension-defined layouts, live settings previews, and setup-wizard selection.
+- Added composer attachment chips for pasted images and large text, including Kitty thumbnails, compact atomic tokens, deletion-aware submission, and restored-draft payload preservation.
+- Added the opt-in image URL broker plus `omp images status|doctor|probe|purge`, provider-file caching, ordered backend fallback, resilience, and savings reporting.
+- Added `omp git`, `/git`, `omp ps`, and `omp render` for repository interaction, supervised-process monitoring, and transcript replay/benchmarking.
+- Added configurable macOS spelling assistance and edit parse-regression safeguards, including opt-in auto-repair and `edit.blackbox.enabled` capture.
+- Added localized status-line context gauges with off, percentage, annotated, and embedded modes, including speculative and automatic compaction boundary markers.
+
 ### Changed
+
+- Accelerated welcome-screen recent-session labels with a history-backed title index and legacy header-scan backfill.
+- Changed user-invoked skill prompts to generate and regenerate session titles from their compact `/skill:<name>` identity or queue chip instead of the expanded skill body.
+- Changed local tiny-model completion requests to preserve an optional trimmed system prompt as a distinct chat-template turn instead of dropping it.
+- Changed Mnemopi extraction completions to send localized extraction instructions as a system turn and only raw memory text as the user turn across local tiny and smol models.
 
 - Replaced the MuPDF-WASM PDF document backend with `pdf-inspector` through `@oh-my-pi/pi-natives`, preserving cached text conversion and PDF line selectors while reporting pages that need OCR.
 - Removed `read <pdf>:` image listings and `read <pdf>:<image>.png` extraction because `pdf-inspector` does not rasterize pages; these reads now direct users to the Puppeteer browser tool for rendering or to read the PDF path for extracted text.
 
 ### Fixed
 
+- Fixed blank or whitespace-only `mnemopi.dbPath` values creating volatile memory banks instead of using persistent agent storage.
 - Prevented idle automatic compaction (`run_idle_compaction`) RPC timeouts from surfacing as fatal unhandled rejections that could close the TUI. The remote session facade and controller call site now log compaction failures, and the RPC uses a 5-minute timeout for large context maintenance.
 
 ## [17.3.3] - 2026-08-14
@@ -499,11 +516,11 @@
 ### Changed
 
 - Session history rewinds (via `Esc-Esc` or `/tree`) now truncate transcript tails in place instead of clearing and replaying the entire terminal scrollback.
-- Switched the fallback edit mode to `sloppy` for models lacking hashline support.
+- Added `sloppy` as an explicit edit mode while preserving the existing replace-mode fallback for Kimi, MiMo, DeepSeek V4 Flash, and Step 3.7 Flash unless explicitly overridden.
 - macOS spelling checks now run in the background to avoid blocking editor rendering and keystroke responsiveness.
 - Word completions accepted via Tab now insert a trailing space when not immediately followed by whitespace or punctuation.
-- Increased default visible autocomplete dropdown rows to 10 and added the `autocompleteMaxVisible` configuration setting.
-- Slash-command descriptions in the autocomplete popup now truncate to two lines instead of wrapping indefinitely.
+- Added the `autocompleteMaxVisible` configuration setting while preserving the existing default of five visible rows.
+- Slash-command descriptions continue to wrap completely; bounded non-command lists can opt into a `maxDescriptionRows` limit.
 
 ### Fixed
 

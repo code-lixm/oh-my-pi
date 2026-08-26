@@ -15,12 +15,9 @@ import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
+import { chipLabel, shiftImageMarkers } from "../../modes/composer-attachments";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
-import {
-	materializeImageReferenceLinks,
-	type ResolvedImageReferences,
-	shiftImageMarkers,
-} from "../../modes/image-references";
+import { materializeImageReferenceLinks, setCachedImageDimensions } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
@@ -30,7 +27,7 @@ import manualContinuePrompt from "../../prompts/system/manual-continue.md" with 
 import manualContinuePromptZh from "../../prompts/system/manual-continue.zh-CN.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
-import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { applyThinkingSummaryVisibility } from "../../thinking";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
@@ -44,6 +41,7 @@ import {
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
 } from "../../utils/clipboard";
+import { getSlashCommandUsage, loadSlashCommandUsage, recordSlashCommandUsage } from "../../utils/command-usage";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
@@ -207,6 +205,8 @@ export class InputController {
 	#escapeCancellationArmedAt = 0;
 	#escapeCancellationSessionSubscribed = false;
 	#imageInsertChain: Promise<void> = Promise.resolve();
+	/** Visible attachment signature; changes require a full render outside the scoped editor path. */
+	#lastChipsSignature = "";
 	// Sequential index for `local://paste-N.md` references created by the large-paste
 	// flow. Seeded from 0 and bumped past existing paste files.
 	#pasteCounter = 0;
@@ -282,11 +282,19 @@ export class InputController {
 		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
-	#resolveEditorImageReferences(text: string): ResolvedImageReferences {
-		const resolved = this.ctx.editor.resolvePendingImageReferences?.(text);
-		if (resolved) return resolved;
+	/** Enforce deleted-chip semantics and densely renumber surviving image markers. */
+	#compactDraftImages(text: string): string {
+		return this.ctx.editor.compactPendingImageReferences(text);
+	}
+
+	#resolveEditorImageReferences(text: string): {
+		text: string;
+		images: ImageContent[];
+		imageLinks: (string | undefined)[];
+	} {
+		const resolvedText = this.#compactDraftImages(text.trim());
 		return {
-			text,
+			text: resolvedText,
 			images: [...this.ctx.editor.pendingImages],
 			imageLinks: [...this.ctx.editor.pendingImageLinks],
 		};
@@ -701,6 +709,14 @@ export class InputController {
 			if (wasBashMode !== this.ctx.isBashMode || wasPythonMode !== this.ctx.isPythonMode) {
 				this.ctx.updateEditorBorderColor();
 			}
+			const chipsSignature = this.ctx.editor
+				.composerChips()
+				.map(chip => `${chip.kind}${chip.n}`)
+				.join(",");
+			if (chipsSignature !== this.#lastChipsSignature) {
+				this.#lastChipsSignature = chipsSignature;
+				this.ctx.ui.requestRender();
+			}
 		};
 	}
 
@@ -791,11 +807,9 @@ export class InputController {
 
 	setupEditorSubmitHandler(): void {
 		this.ctx.editor.onSubmit = async (text: string) => {
-			text = text.trim();
 			const hadPendingImages = this.ctx.editor.pendingImages.length > 0;
-			const resolvedImages = this.#resolveEditorImageReferences(text);
-			text = resolvedImages.text.trim();
-			const hasPendingImages = resolvedImages.images.length > 0;
+			text = this.#compactDraftImages(text.trim());
+			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
 			if ((!isSettingsInitialized() || settings.get("emojiAutocomplete")) && text) text = expandEmoticons(text);
 
 			// The fullscreen subagent view is observation-only. Its own component owns
@@ -838,8 +852,8 @@ export class InputController {
 			}
 
 			const runner = this.ctx.session.extensionRunner;
-			let inputImages = hasPendingImages ? resolvedImages.images : undefined;
-			let inputImageLinks = hasPendingImages ? resolvedImages.imageLinks : undefined;
+			let inputImages = hasPendingImages ? [...this.ctx.editor.pendingImages] : undefined;
+			let inputImageLinks = hasPendingImages ? [...this.ctx.editor.pendingImageLinks] : undefined;
 			let hasInputImages = (inputImages?.length ?? 0) > 0;
 			const submittedImages = inputImages;
 
@@ -895,6 +909,7 @@ export class InputController {
 
 			// Handle built-in slash commands
 			if (text) {
+				this.#recordSlashCommandUsage(text);
 				const input =
 					(inputImages?.length ?? 0) > 0 || (inputImageLinks?.length ?? 0) > 0
 						? { images: inputImages, imageLinks: inputImageLinks }
@@ -1705,16 +1720,13 @@ export class InputController {
 		}
 		const currentText = options?.currentText ?? this.ctx.editor.getText();
 		const combinedText = [queuedText, currentText].filter(t => t.trim()).join("\n\n");
-		this.ctx.editor.setText(combinedText);
-		// Hand queued images back to the pending-image buffer (links are
-		// re-materialized lazily; the restored text already carries the
-		// renumbered `[Image #N, WxH]` markers).
+		// Restore images before collapsing markers so every queued index is recognized.
 		if (queuedImages.length > 0) {
 			this.ctx.editor.pendingImages.push(...queuedImages);
 			this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
 			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
-			this.ctx.editor.markPendingImagesAsMarkerManaged?.();
 		}
+		this.ctx.editor.setCollapsedText(combinedText);
 		this.ctx.updatePendingMessagesDisplay();
 		if (options?.abort) {
 			void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
@@ -1723,30 +1735,19 @@ export class InputController {
 	}
 
 	async #insertPendingImage(imageData: ImageContent): Promise<void> {
+		const image: ImageContent = { type: "image", data: imageData.data, mimeType: imageData.mimeType };
 		const [imageLinks, dims] = await Promise.all([
-			materializeImageReferenceLinks(
-				[{ type: "image", data: imageData.data, mimeType: imageData.mimeType }],
-				this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
-			),
+			materializeImageReferenceLinks([image], this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager)),
 			this.#imageDimensions(imageData),
 		]);
-		const currentText = this.ctx.editor.getText?.() ?? "";
-		const resolved = this.#resolveEditorImageReferences(currentText);
-		if (resolved.text !== currentText) this.ctx.editor.setText?.(resolved.text);
-		this.ctx.editor.pendingImages.splice(0, this.ctx.editor.pendingImages.length, ...resolved.images);
-		this.ctx.editor.pendingImageLinks.splice(0, this.ctx.editor.pendingImageLinks.length, ...resolved.imageLinks);
-
-		this.ctx.editor.pendingImages.push({
-			type: "image",
-			data: imageData.data,
-			mimeType: imageData.mimeType,
-		});
+		this.ctx.editor.pendingImages.push(image);
 		this.ctx.editor.pendingImageLinks.push(imageLinks?.[0]);
 		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+		this.ctx.editor.markPendingImagesManaged();
 		const imageNum = this.ctx.editor.pendingImages.length;
-		const label = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
-		this.ctx.editor.insertText(`${label} `);
-		this.ctx.editor.markPendingImagesAsMarkerManaged?.();
+		setCachedImageDimensions(image, dims ?? null);
+		const expansion = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
+		this.ctx.editor.insertAtom(chipLabel("image", imageNum), expansion);
 		this.ctx.ui.requestRender();
 	}
 
@@ -1898,6 +1899,19 @@ export class InputController {
 			const focusedNow = this.ctx.ui.getFocused();
 			const promptTarget =
 				focusedNow && focusedNow !== this.ctx.editor && hasPasteText(focusedNow) ? focusedNow : null;
+			// Finder places both a file URL and a generated document-icon bitmap on
+			// the macOS pasteboard. Prefer supported image files so the copied file
+			// bytes win; pure bitmaps and non-image file URLs fall through below.
+			const fileUrls = promptTarget ? [] : ((await this.clipboard.readMacFileUrls?.()) ?? []);
+			let attachedFromFileUrls = false;
+			for (const url of fileUrls) {
+				const candidate = extractImagePathFromText(url);
+				if (!candidate) continue;
+				await this.handleImagePathPaste(candidate);
+				attachedFromFileUrls = true;
+			}
+			if (attachedFromFileUrls) return true;
+
 			const image = await this.clipboard.readImage();
 			if (image) {
 				if (promptTarget) {
@@ -1913,27 +1927,6 @@ export class InputController {
 					`Unsupported clipboard image format: ${image.mimeType}`,
 				);
 			}
-			// #3506: macOS Finder `Cmd+C` puts only a `public.file-url`
-			// representation on the pasteboard. `pbpaste` (the backing call
-			// for `readText` on Darwin) only surfaces plain text / RTF / EPS,
-			// so it returns empty for file-url-only pasteboards — the smart
-			// text fallback below would dead-end with "Clipboard is empty".
-			// Reach the file URL directly via AppleScript and route every
-			// image-shaped path through {@link handleImagePathPaste}, matching
-			// the bracketed-paste handler in `CustomEditor.handleInput` which
-			// iterates every extracted image path. Multi-image Finder
-			// selections must not silently drop after the first attach.
-			// `readMacFileUrls` returns an empty list off Darwin, so the
-			// check is free on every other platform.
-			const fileUrls = promptTarget ? [] : ((await this.clipboard.readMacFileUrls?.()) ?? []);
-			let attachedFromFileUrls = false;
-			for (const url of fileUrls) {
-				const candidate = extractImagePathFromText(url);
-				if (!candidate) continue;
-				await this.handleImagePathPaste(candidate);
-				attachedFromFileUrls = true;
-			}
-			if (attachedFromFileUrls) return true;
 			// Smart paste (#1628): no image on the clipboard — fall back to
 			// pasting its text so the same chord covers both payload kinds.
 			// Hosts that pre-empt the terminal's own paste (VS Code's
@@ -2075,10 +2068,38 @@ export class InputController {
 		}
 	}
 
+	/**
+	 * Record a usage hit for a submitted known slash command so autocomplete
+	 * can rank frequent commands first. Builtin aliases canonicalize to the
+	 * primary name; skill/custom/file/template commands record their full
+	 * first token (which may contain `:`).
+	 */
+	#recordSlashCommandUsage(text: string): void {
+		if (!text.startsWith("/")) return;
+		const token = text.slice(1).split(/\s+/, 1)[0] ?? "";
+		if (!token) return;
+		const session = this.ctx.session;
+		const knownToken =
+			this.ctx.skillCommands.has(token) ||
+			this.ctx.fileSlashCommands.has(token) ||
+			session.extensionRunner?.getCommand(token) !== undefined ||
+			session.customCommands.some(loaded => loaded.command.name === token) ||
+			session.promptTemplates.some(template => template.name === token);
+		if (knownToken) {
+			recordSlashCommandUsage(token);
+			return;
+		}
+		const parsedName = parseSlashCommand(text)?.name;
+		const builtin = parsedName ? lookupBuiltinSlashCommand(parsedName) : undefined;
+		if (builtin) recordSlashCommandUsage(builtin.name);
+	}
+
 	createAutocompleteProvider(commands: SlashCommand[], basePath: string): AutocompleteProvider {
+		void loadSlashCommandUsage();
 		return createPromptActionAutocompleteProvider({
 			commands,
 			basePath,
+			commandUsage: getSlashCommandUsage,
 			keybindings: this.ctx.keybindings,
 			copyCurrentLine: () => this.handleCopyCurrentLine(),
 			copyPrompt: () => this.handleCopyPrompt(),

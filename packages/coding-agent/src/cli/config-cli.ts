@@ -301,15 +301,13 @@ export async function runConfigCommand(cmd: ConfigCommandArgs): Promise<void> {
 
 async function handlePortableBundle(cmd: ConfigCommandArgs, authStorage: AuthStorage): Promise<void> {
 	const agentDir = getAgentDir();
-	const syncSettings = cmd.flags.passphraseEnv
-		? undefined
-		: await Settings.loadReadOnly({ agentDir, cwd: agentDir });
-	const profile = syncSettings
-		? await loadSyncProfile(agentDir, syncSettings, { allowDisabled: true })
-		: undefined;
+	const syncSettings = cmd.flags.passphraseEnv ? undefined : await Settings.loadReadOnly({ agentDir, cwd: agentDir });
+	const profile = syncSettings ? await loadSyncProfile(agentDir, syncSettings, { allowDisabled: true }) : undefined;
 	const passphraseEnv =
 		cmd.flags.passphraseEnv ??
-		(syncSettings?.isConfigured("sync.passphraseEnv") ? syncSettings.get("sync.passphraseEnv") : profile?.passphraseEnv) ??
+		(syncSettings?.isConfigured("sync.passphraseEnv")
+			? syncSettings.get("sync.passphraseEnv")
+			: profile?.passphraseEnv) ??
 		DEFAULT_SYNC_PASSPHRASE_ENV;
 	const passphrase = cmd.flags.passphraseEnv
 		? process.env[passphraseEnv]

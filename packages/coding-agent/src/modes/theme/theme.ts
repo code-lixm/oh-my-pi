@@ -8,6 +8,7 @@ import {
 	type CreateThemeOptions,
 	getBuiltinThemes,
 	loadTheme,
+	loadThemeSync,
 	loadThemeJson,
 	resolveThemeExportColors,
 } from "./loader";
@@ -126,6 +127,30 @@ function getCurrentThemeOptions(): CreateThemeOptions {
 		symbolPresetOverride: currentSymbolPresetOverride,
 		colorBlindMode: currentColorBlindMode,
 	};
+}
+
+/** Initialize the active theme synchronously before the first terminal paint. */
+export function initThemeSync(
+	symbolPreset?: SymbolPreset,
+	colorBlindMode?: boolean,
+	darkTheme?: string,
+	lightTheme?: string,
+): void {
+	autoDetectedTheme = true;
+	autoDarkTheme = darkTheme ?? "dark";
+	autoLightTheme = lightTheme ?? "light";
+	terminalPaletteOverride = false;
+	currentSymbolPresetOverride = symbolPreset;
+	currentColorBlindMode = colorBlindMode ?? false;
+	const name = getDefaultTheme();
+	currentThemeName = name;
+	try {
+		theme = loadThemeSync(name, getCurrentThemeOptions());
+	} catch (error) {
+		logger.debug("Theme loading failed, falling back to dark theme", { error: String(error) });
+		currentThemeName = "dark";
+		theme = loadThemeSync("dark", getCurrentThemeOptions());
+	}
 }
 
 export async function initTheme(

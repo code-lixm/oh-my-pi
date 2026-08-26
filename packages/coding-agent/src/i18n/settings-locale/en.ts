@@ -733,6 +733,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Session history": "Session history",
 	"View session history": "View session history",
 	"Session shared": "Session shared",
+	"Pin or unpin a session at the top of the resume list": "Pin or unpin a session at the top of the resume list",
+	"No active session to pin.": "No active session to pin.",
+	"Session pinned to the top of the resume list.": "Session pinned to the top of the resume list.",
+	"Session unpinned.": "Session unpinned.",
 	"Set up Oh My Pi in terminal": "Set up Oh My Pi in terminal",
 	Skills: "Skills",
 	Subagent: "Subagent",
@@ -2496,6 +2500,18 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Select a named custom status line from statusLine.customPresets":
 		"Select a named custom status line from statusLine.customPresets",
 	"Status Line Separator": "Status Line Separator",
+	"Context-Reactive Line": "Context-Reactive Line",
+	"How the line between the left and right segments reflects context usage (box composer only)":
+		"How the line between the left and right segments reflects context usage (box composer only)",
+	"Solid accent line, no context feedback": "Solid accent line, no context feedback",
+	Percentage: "Percentage",
+	"Used portion in accent color, remainder dimmed": "Used portion in accent color, remainder dimmed",
+	Annotated: "Annotated",
+	"Percentage plus ticks at the speculative and auto-compaction boundaries":
+		"Percentage plus ticks at the speculative and auto-compaction boundaries",
+	Embedded: "Embedded",
+	"Annotated line with the context percentage and window embedded in the gauge":
+		"Annotated line with the context percentage and window embedded in the gauge",
 	"Status line": "Status line",
 	"Steering Mode": "Steering Mode",
 	"Stream First Event Timeout": "Stream First Event Timeout",

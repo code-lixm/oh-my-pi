@@ -18,6 +18,8 @@ export interface LoadMCPConfigsOptions {
 	enableProjectConfig?: boolean;
 	/** Whether to filter out Exa MCP servers (default: true) */
 	filterExa?: boolean;
+	/** Whether to filter browser automation MCP servers when builtin browser is enabled. */
+	filterBrowser?: boolean;
 }
 
 /** Result of loading MCP configs */
@@ -97,6 +99,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOptions): Promise<LoadMCPConfigsResult> {
 	const enableProjectConfig = options?.enableProjectConfig ?? true;
 	const filterExa = options?.filterExa ?? true;
+	const filterBrowser = options?.filterBrowser ?? false;
 
 	// Load user-level disable/force-enable lists. The denylist always wins; the
 	// allowlist overrides a non-writable source config's `enabled: false`.
@@ -143,6 +146,12 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		configs = exaResult.configs;
 		sources = exaResult.sources;
 		exaApiKeys = exaResult.exaApiKeys;
+	}
+
+	if (filterBrowser) {
+		const browserResult = filterBrowserMCPServers(configs, sources);
+		configs = browserResult.configs;
+		sources = browserResult.sources;
 	}
 
 	return { configs, exaApiKeys, sources };
@@ -331,4 +340,47 @@ export function validateServerConfig(name: string, config: MCPServerConfig): str
 	}
 
 	return errors;
+}
+
+/** Known browser automation MCP server names. */
+const BROWSER_MCP_NAMES = new Set([
+	"puppeteer",
+	"playwright",
+	"browserbase",
+	"browser-tools",
+	"browser-use",
+	"browser",
+]);
+
+/** Browser MCP package names used by stdio launch commands. */
+const BROWSER_MCP_PKG_PATTERN =
+	/(?:@modelcontextprotocol\/server-puppeteer|@playwright\/mcp|@browserbasehq\/mcp-server-browserbase|@agentdeskai\/browser-tools-mcp|@agent-infra\/mcp-server-browser|puppeteer-mcp|playwright-mcp|pptr-mcp|browser-use-mcp|mcp-browser-use)/i;
+const BROWSER_MCP_URL_PATTERN = /browserbase\.com|browser-use\.com/i;
+
+export function isBrowserMCPServer(name: string, config: MCPServerConfig): boolean {
+	if (BROWSER_MCP_NAMES.has(name.toLowerCase())) return true;
+	if (config.type === "http" || config.type === "sse") {
+		return BROWSER_MCP_URL_PATTERN.test(config.url);
+	}
+	if (BROWSER_MCP_PKG_PATTERN.test(config.command)) return true;
+	return config.args?.some(arg => BROWSER_MCP_PKG_PATTERN.test(arg)) ?? false;
+}
+
+export interface BrowserFilterResult {
+	configs: Record<string, MCPServerConfig>;
+	sources: Record<string, SourceMeta>;
+}
+
+export function filterBrowserMCPServers(
+	configs: Record<string, MCPServerConfig>,
+	sources: Record<string, SourceMeta>,
+): BrowserFilterResult {
+	const filtered: Record<string, MCPServerConfig> = {};
+	const filteredSources: Record<string, SourceMeta> = {};
+	for (const [name, config] of Object.entries(configs)) {
+		if (isBrowserMCPServer(name, config)) continue;
+		filtered[name] = config;
+		if (sources[name]) filteredSources[name] = sources[name];
+	}
+	return { configs: filtered, sources: filteredSources };
 }

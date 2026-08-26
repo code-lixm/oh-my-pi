@@ -25,9 +25,9 @@ import type {
 import {
 	Container,
 	clearRenderCache,
+	getComposerStyle,
 	Loader,
 	Markdown,
-	ProcessTerminal,
 	Spacer,
 	setTerminalTextSizing,
 	setTuiTight,
@@ -171,6 +171,7 @@ import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
 import { CodexResetFireworksController } from "./components/codex-reset-fireworks";
+import { AttachmentChipsBand } from "./components/attachment-chips";
 import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
@@ -218,6 +219,8 @@ import {
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
+import { Composer } from "./composer";
+import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "./theme/mermaid-cache";
 import type { Theme } from "./theme/theme";
@@ -576,12 +579,15 @@ function getTodoDescriptionSemanticKey(descriptions: readonly string[]): string 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
+	#startupSubmitGated: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: Agent;
 	historyStorage?: HistoryStorage;
+	/** Canonical composer shared by startup prepaint and the session-aware runtime. */
+	readonly composer: Composer;
 
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -591,11 +597,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	subagentContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
+	cleanseContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
+	/** Composer attachment cards rendered directly above the prompt box. */
+	attachmentChipsContainer: Container;
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;
@@ -1135,14 +1144,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
-		runtimeFactory?: InteractiveRuntimeFactory,
+		runtimeFactoryOrComposer?: InteractiveRuntimeFactory | Composer,
+		composer?: Composer,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
-		this.#runtimeFactory = runtimeFactory;
+		this.#runtimeFactory = typeof runtimeFactoryOrComposer === "function" ? runtimeFactoryOrComposer : undefined;
 		this.#activeRuntime = { session, setToolUIContext, lspServers, mcpManager, eventBus };
 		this.#primaryRuntime = this.#activeRuntime;
 		this.#registerRuntime(this.#activeRuntime);
@@ -1162,12 +1172,45 @@ export class InteractiveMode implements InteractiveModeContext {
 		const borderStyle = settings.get("display.borderStyle");
 		setOutputBlockBorderStyle(borderStyle);
 		setMarkdownTableBorderStyle(resolveMarkdownTableBorderStyle(borderStyle));
-		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
-		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
-		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
-		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
-		// unless the user opts in, and never emits raw escapes on other terminals.
+		const composerPreferences = {
+			quiet: settings.get("startup.quiet"),
+			composerShape: settings.get("composer.shape") ?? "box",
+			showHardwareCursor: settings.get("showHardwareCursor"),
+			maxInlineImages: settings.get("tui.maxInlineImages"),
+			resizeScrollback: "append" as const,
+			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
+			imeSafeCursor: settings.get("tui.imeSafeCursor"),
+			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
+			spellingTypoDetection: settings.get("spelling.typoDetection"),
+			spellingAutocomplete: settings.get("spelling.autocomplete"),
+			spellingAutocorrect: settings.get("spelling.autocorrect"),
+		};
+		const injectedComposer =
+			composer ?? (typeof runtimeFactoryOrComposer === "function" ? undefined : runtimeFactoryOrComposer);
+		this.composer =
+			injectedComposer ??
+			new Composer({
+				preferences: composerPreferences,
+				welcome: {
+					version,
+					modelName: session.model?.name ?? "Unknown",
+					providerName: session.model?.provider ?? "Unknown",
+					lspServers: lspServers?.map(server => ({
+						name: server.name,
+						status: server.status,
+						fileTypes: server.fileTypes,
+					})),
+				},
+			});
+		this.composer.setPreferences(composerPreferences);
+		this.ui = this.composer.ui;
+		this.editor = this.composer.editor;
+		this.editor.attachTui(this.ui);
+		this.#startupSubmitGated = true;
+		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
+		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
+		this.ui.enableScopedInputRender(this.editor);
+		// OSC 66 text-sizing is Kitty-only; resolve the setting against terminal capability.
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
@@ -1176,16 +1219,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
+		this.cleanseContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
-		this.editor = new CustomEditor(getEditorTheme());
-		this.editor.attachTui(this.ui);
-		this.ui.enableScopedInputRender(this.editor);
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
-		this.editor.setBorderStyle("horizontal");
+		this.editor.setSpellingFeatures({
+			typoDetection: settings.get("spelling.typoDetection"),
+			autocomplete: settings.get("spelling.autocomplete"),
+			autocorrect: settings.get("spelling.autocorrect"),
+		});
+		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.mouseTracking = this.settings.get("tui.mouseInput");
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
@@ -1213,9 +1259,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerAbove = new Container();
 		this.hookWidgetContainerAbove.addChild(new Spacer(1));
 		this.hookWidgetContainerBelow = new Container();
+		this.attachmentChipsContainer = new Container();
+		this.attachmentChipsContainer.addChild(
+			new AttachmentChipsBand(this.editor, this.ui.imageBudget, () => this.ui.requestRender()),
+		);
+		this.editor.draftImageLinkMaterializer = images =>
+			materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session, () => this.ui.requestRender());
+		this.composer.setStatusComponent(this.statusLine);
 		this.#syncStatusLineSettings();
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
 		this.#codexResetFireworksController = new CodexResetFireworksController(this);
@@ -1318,10 +1371,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	playWelcomeIntro(): void {
-		const welcome = this.#welcomeComponent;
-		// Component-scoped: the intro only mutates the welcome box's own rows,
-		// so a resumed long transcript is not re-walked per animation frame.
-		welcome?.playIntro(() => this.ui.requestComponentRender(welcome));
+		this.composer.playWelcomeIntro();
 	}
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
@@ -1370,79 +1420,74 @@ export class InteractiveMode implements InteractiveModeContext {
 		const modelName = this.session.model?.name ?? "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
 
-		// Get recent sessions
-		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
-			getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
-				sessions.map(s => ({
-					name: s.name,
-					timeAgo: s.timeAgo,
-				})),
-			),
-		);
+		// Reuse the startup prepaint's in-flight session listing when available.
+		const recentSessions =
+			(await options.recentSessions) ??
+			(await logger.time("InteractiveMode.init:recentSessions", () =>
+				getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
+					sessions.map(s => ({ name: s.name, timeAgo: s.timeAgo })),
+				),
+			));
 
 		const startupQuiet = settings.get("startup.quiet");
-		this.#welcomeComponent = undefined;
+		this.composer.setPreferences({ quiet: startupQuiet });
+		this.composer.updateWelcome({
+			version: this.#version,
+			modelName,
+			providerName,
+			recentSessions,
+			lspServers: this.#getWelcomeLspServers(),
+		});
+		this.#welcomeComponent = startupQuiet ? undefined : this.composer.welcome;
 
+		const headerBefore: Component[] = [];
 		for (const warning of this.session.configWarnings) {
-			this.ui.addChild(new Text(theme.fg("warning", tSettingsUi("Warning: {warning}", { warning })), 1, 0));
-			this.ui.addChild(new Spacer(1));
-		}
-
-		if (!startupQuiet) {
-			// Add welcome header
-			this.#welcomeComponent = new WelcomeComponent(
-				this.#version,
-				modelName,
-				providerName,
-				recentSessions,
-				this.#getWelcomeLspServers(),
+			headerBefore.push(
+				new Text(theme.fg("warning", tSettingsUi("Warning: {warning}", { warning })), 1, 0),
+				new Spacer(1),
 			);
-
-			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
-			this.ui.addChild(this.#welcomeComponent);
-			this.ui.addChild(new Spacer(1));
-			if (!options.suppressWelcomeIntro) {
-				this.playWelcomeIntro();
-			}
-
-			// Add changelog if provided
-			if (this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
-				this.ui.addChild(new DynamicBorder());
-				this.ui.addChild(new Text(theme.bold(theme.fg("accent", tSettingsUi("What's New"))), 1, 0));
-				this.ui.addChild(new Spacer(1));
-				if (settings.get("startup.changelogMode") === "summary") {
-					const summary = formatStartupChangelogSummary(this.#startupChangelog, getSettingsUiLocale()).replace(
-						/\/changelog(?: full)?/g,
-						command => theme.bold(command),
-					);
-					this.ui.addChild(new Text(summary, 1, 0));
-				} else {
-					this.ui.addChild(new Markdown(this.#startupChangelog.markdown?.trim() ?? "", 1, 0, getMarkdownTheme()));
-				}
-				this.ui.addChild(new Spacer(1));
-				this.ui.addChild(new DynamicBorder());
-			}
 		}
-
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.todoContainer);
-		this.ui.addChild(this.subagentContainer);
-		this.ui.addChild(this.btwContainer);
-		this.ui.addChild(this.omfgContainer);
-		this.ui.addChild(this.errorBannerContainer);
-		this.ui.addChild(this.modelCycleContainer);
-		this.ui.addChild(this.deferredCommandContainer);
-		// Working loader / transient status sits below the sticky todo + subagent
-		// HUDs, just above the editor's hook-widget top margin — so it reads next to
-		// the prompt while keeping the one-line gap above the editor.
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
-		this.ui.addChild(this.hookWidgetContainerAbove);
-		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.hookWidgetContainerBelow);
+		const headerAfter: Component[] = [];
+		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
+			headerAfter.push(
+				new DynamicBorder(),
+				new Text(theme.bold(theme.fg("accent", tSettingsUi("What's New"))), 1, 0),
+				new Spacer(1),
+			);
+			if (settings.get("startup.changelogMode") === "summary") {
+				const summary = formatStartupChangelogSummary(this.#startupChangelog, getSettingsUiLocale()).replace(
+					/\/changelog(?: full)?/g,
+					command => theme.bold(command),
+				);
+				headerAfter.push(new Text(summary, 1, 0));
+			} else {
+				headerAfter.push(new Markdown(this.#startupChangelog.markdown?.trim() ?? "", 1, 0, getMarkdownTheme()));
+			}
+			headerAfter.push(new Spacer(1), new DynamicBorder());
+		}
+		this.composer.setHeaderExtras(headerBefore, headerAfter);
+		this.statusLine.watchBranch(() => this.ui.requestRender());
+		this.composer.setStatusComponent(this.statusLine);
+		this.composer.setRuntimeChildren([
+			this.chatContainer,
+			this.pendingMessagesContainer,
+			this.todoContainer,
+			this.subagentContainer,
+			this.btwContainer,
+			this.omfgContainer,
+			this.cleanseContainer,
+			this.errorBannerContainer,
+			this.modelCycleContainer,
+			this.deferredCommandContainer,
+			this.statusContainer,
+			this.attachmentChipsContainer,
+			this.hookWidgetContainerAbove,
+			this.editorContainer,
+			this.hookWidgetContainerBelow,
+		]);
 		this.ui.setFocus(this.editor);
+		this.syncComposerShape();
+		if (!options.suppressWelcomeIntro) this.playWelcomeIntro();
 		// A main-session ask/selector may mount while the read-only subagent overlay
 		// is open and move TUI focus underneath it. Keep the visible overlay as the
 		// sole input owner; Esc returns to Main, where the pending prompt is waiting.
@@ -1544,19 +1589,23 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#eventBusUnsubscribers.push(startMacOSAppearanceReprobeFallback(this.ui.terminal));
 		}
 
-		// Start the UI. Cold `omp` launch opts into clearing on the first paint so
-		// the initial welcome frame does not append over the previous run's scrollback.
-		this.ui.start({
-			clearScrollback: options.clearInitialTerminalHistory === true,
-			waitForAppearanceMs:
-				options.waitForInitialAppearance === true && isInsideTerminalMultiplexer()
-					? RESUME_APPEARANCE_WAIT_MS
-					: undefined,
-			waitForSynchronizedOutputMs:
-				options.waitForInitialAppearance === true && isInsideTerminalMultiplexer()
-					? RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS
-					: undefined,
-		});
+		// Reuse a prepaint composer when present; otherwise start the shared composer now.
+		if (this.composer.started) {
+			this.composer.enableInput();
+		} else {
+			this.composer.start({
+				clearScrollback: options.clearInitialTerminalHistory === true,
+				waitForAppearanceMs:
+					options.waitForInitialAppearance === true && isInsideTerminalMultiplexer()
+						? RESUME_APPEARANCE_WAIT_MS
+						: undefined,
+				waitForSynchronizedOutputMs:
+					options.waitForInitialAppearance === true && isInsideTerminalMultiplexer()
+						? RESUME_SYNCHRONIZED_OUTPUT_WAIT_MS
+						: undefined,
+				playWelcomeIntro: false,
+			});
+		}
 		pushTerminalTitle();
 		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
@@ -1784,6 +1833,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.onInputCallback = undefined;
 			resolve(input);
 		};
+		if (this.#startupSubmitGated) {
+			this.#startupSubmitGated = false;
+			this.editor.disableSubmit = false;
+			this.ui.requestRender();
+		}
 		this.#scheduleLoopAutoSubmit();
 		this.#scheduleGoalContinuation();
 
@@ -2183,9 +2237,31 @@ export class InteractiveMode implements InteractiveModeContext {
 			transparent: settings.get("statusLine.transparent"),
 			segmentOptions: settings.get("statusLine.segmentOptions"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			contextLine: settings.get("statusLine.contextLine"),
 		});
 	}
 
+	syncComposerShape(): void {
+		const shape = settings.get("composer.shape") ?? "box";
+		const style = getComposerStyle(shape);
+		this.composer.setPreferences({ composerShape: shape });
+		this.statusLine.setAutocompleteActiveProbe(() => this.editor.isAutocompleteActive());
+		switch (style.statusAttachment) {
+			case "top-border":
+				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
+				break;
+			case "top-rule-chip":
+				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getStandaloneTopBorder(availableWidth));
+				break;
+			case "none":
+				this.editor.setTopBorderProvider(undefined);
+				this.editor.setTopBorder(undefined);
+				break;
+		}
+		this.statusLine.setComposerStyle(style);
+		this.updateEditorBorderColor();
+		this.ui.requestRender();
+	}
 	#handleSessionAccentInputsChanged(): void {
 		this.#clearWorkingMessageAccentCache();
 		this.statusLine.invalidate();
@@ -4713,6 +4789,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#sttController.dispose();
 			this.#sttController = undefined;
 		}
+		this.#extensionUiController.disposeComposerShapes();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
@@ -4832,24 +4909,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		const nextEditor = factory
 			? factory(this.ui, getEditorTheme(), this.keybindings)
 			: new CustomEditor(getEditorTheme());
-		if (!factory) nextEditor.attachTui(this.ui);
+		nextEditor.attachTui(this.ui);
 		if (!factory) this.ui.enableScopedInputRender(nextEditor);
-
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
 		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
-		nextEditor.setBorderStyle("horizontal");
-		nextEditor.mouseTracking = this.settings.get("tui.mouseInput");
-		nextEditor.onAutocompleteCancel = () => {
-			this.ui.requestRender(true);
-		};
-		nextEditor.onAutocompleteUpdate = () => {
-			this.ui.requestRender();
-		};
-		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
-		nextEditor.setTopBorderProvider(availableWidth =>
-			this.statusLine.getTopBorder(availableWidth, nextEditor.borderColor),
-		);
+		nextEditor.setSpellingFeatures({
+			typoDetection: this.settings.get("spelling.typoDetection"),
+			autocomplete: this.settings.get("spelling.autocomplete"),
+			autocorrect: this.settings.get("spelling.autocorrect"),
+		});
+		nextEditor.viewportRowsProvider = () => this.ui.terminal.rows;
+		nextEditor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
+		nextEditor.imageReferenceHyperlink = imageReferenceHyperlink;
+		nextEditor.draftImageLinkMaterializer = images =>
+			materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
+		nextEditor.onAutocompleteCancel = () => this.ui.requestRender(true);
+		nextEditor.onAutocompleteUpdate = () => this.ui.requestRender();
+		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(nextEditor));
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
 			nextEditor.setHistoryStorage(this.historyStorage);
@@ -4858,6 +4935,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.editorContainer.clear();
 		this.editor = nextEditor;
+		this.composer.setEditor(nextEditor);
+		this.attachmentChipsContainer.clear();
+		this.attachmentChipsContainer.addChild(
+			new AttachmentChipsBand(nextEditor, this.ui.imageBudget, () => this.ui.requestRender()),
+		);
+		this.syncComposerShape();
 		this.editorContainer.addChild(nextEditor);
 		this.ui.setFocus(nextEditor);
 
@@ -5579,6 +5662,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showAgentsDashboard(): void {
 		void this.#selectorController.showAgentsDashboard();
+	}
+
+	showGitUi(revision?: string): void {
+		void this.#selectorController.showGitTui(revision);
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {

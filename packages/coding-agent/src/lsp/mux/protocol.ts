@@ -81,7 +81,7 @@ export interface MuxConnectParams {
 
 /** Handshake result. */
 export interface MuxConnectResult {
-	/** Server identity key inside the mux (`${command}:${cwd}`). */
+	/** Hash of command, args, cwd, and environment identity inside the mux. */
 	key: string;
 	/** True when this handshake spawned the server process. */
 	spawned: boolean;
@@ -89,7 +89,9 @@ export interface MuxConnectResult {
 	pid?: number;
 }
 
-/** Server identity key used by the mux registry. */
-export function muxServerKey(command: string, cwd: string): string {
-	return `${command}:${cwd}`;
+/** Server identity key used by the mux registry without exposing environment values. */
+export function muxServerKey(params: MuxConnectParams): string {
+	const envEntries = Object.entries(params.env ?? {}).sort(([left], [right]) => left.localeCompare(right));
+	const identity = JSON.stringify([params.command, params.args, params.cwd, envEntries]);
+	return `sha256:${Bun.SHA256.hash(identity, "hex")}`;
 }

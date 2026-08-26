@@ -49,7 +49,7 @@ interface CreateSessionOptions {
 	availableModels?: Model<"openai-responses">[];
 	activeModel?: Model<"openai-responses">;
 	configureVisionRole?: boolean;
-	imageAttachments?: { label: string; uri: string; image: ImageContent }[];
+	imageAttachments?: { label: string; uri: string; image: ImageContent; sourcePath?: string }[];
 }
 
 interface CompleteSimpleStub {
@@ -88,7 +88,8 @@ function createSession(
 		} as unknown as NonNullable<ToolSession["modelRegistry"]>,
 	};
 	if (options.imageAttachments) {
-		session.getImageAttachments = () => options.imageAttachments ?? [];
+		session.getImageAttachments = () =>
+			(options.imageAttachments ?? []).map(a => ({ ...a, sourcePath: a.sourcePath ?? "" }));
 	}
 	return session;
 }
@@ -330,7 +331,7 @@ describe("InspectImageTool", () => {
 				expect(tool).toBeDefined();
 				const wiredToolSession = (tool as unknown as { session?: ToolSession }).session;
 				expect(wiredToolSession?.getImageAttachments?.()).toEqual([
-					{ label: "Image #1", uri: "attachment://1", image },
+					{ label: "Image #1", uri: "attachment://1", image, sourcePath: expect.any(String) },
 				]);
 			} finally {
 				await session.dispose();
