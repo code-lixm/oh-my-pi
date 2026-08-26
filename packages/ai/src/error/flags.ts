@@ -74,7 +74,7 @@ const RETRIABLE_KINDS =
 	Flag.ProviderFinishError |
 	Flag.EmptyResponse;
 
-const OVERFLOW_PATTERNS = [
+const CONTEXT_OVERFLOW_EVIDENCE_PATTERNS = [
 	/prompt is too long/i, // Anthropic
 	/input is too long for requested model/i, // Amazon Bedrock
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
@@ -82,7 +82,6 @@ const OVERFLOW_PATTERNS = [
 	/maximum prompt length is \d+/i, // xAI (Grok)
 	/reduce the length of the messages/i, // Groq
 	/maximum context length is \d+ tokens/i, // OpenRouter (all backends)
-	/exceeds the limit of \d+/i, // GitHub Copilot
 	/exceeds the available context size/i, // llama.cpp server
 	/requested tokens?.*exceed.*context (window|length|size)/i, // llama.cpp / OpenAI-compatible local servers
 	/context (window|length|size).*(exceeded|overflow|too small)/i, // Generic local server variants
@@ -94,22 +93,62 @@ const OVERFLOW_PATTERNS = [
 	/context[_ ]length[_ ]exceeded/i, // Generic fallback
 	/too many tokens/i, // Generic fallback
 	/token limit exceeded/i, // Generic fallback
-	/request_too_large/i, // Anthropic 413 (request body too large)
-	/request exceeds the maximum size/i, // Anthropic 413 variant
-	/payload too large/i, // Generic HTTP 413 variant
-	/entity too large/i, // Generic HTTP 413 variant
-	/\b413\b.*\b(request|payload|entity)\b.*\btoo large\b/i, // "413 Request Entity Too Large" variants
+	/request_too_large[^\n]*\btokens?\b/i,
+	/\btokens?\b[^\n]*request_too_large/i,
 	/model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text
 	/prompt filled the context window/i, // Ollama OpenAI-compatible empty length completion
-];
+	/exceeds the limit of \d+ tokens?\b/i,
+] as const;
+// Numeric limits also describe media budgets, so they cannot veto a payload classification.
+const GENERIC_LIMIT_OVERFLOW_PATTERN = /exceeds the limit of \d+/i;
+const OVERFLOW_PATTERNS = [...CONTEXT_OVERFLOW_EVIDENCE_PATTERNS, GENERIC_LIMIT_OVERFLOW_PATTERN];
+
+function hasTokenContextOverflowEvidence(text: string): boolean {
+	return CONTEXT_OVERFLOW_EVIDENCE_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function hasCauseTokenContextOverflowEvidence(error: unknown): boolean {
+	const seen = new Set<object>();
+	let link: unknown = error;
+	while (link !== undefined && link !== null) {
+		if (typeof link !== "object") {
+			if (typeof link === "string" && hasTokenContextOverflowEvidence(link)) return true;
+			break;
+		}
+		if (seen.has(link)) break;
+		seen.add(link);
+		if ("message" in link) {
+			const message: unknown = link.message;
+			if (typeof message === "string" && hasTokenContextOverflowEvidence(message)) return true;
+		}
+		if ("cause" in link) {
+			link = link.cause;
+			continue;
+		}
+		break;
+	}
+	return false;
+}
 
 const OVERFLOW_NO_BODY_PATTERN = /\b4(00|13)\s*(status code)?\s*\(no body\)/i;
+const PAYLOAD_REJECTION_PATTERNS = [
+	/\b413\s*(?:status code\s*)?\(no body\)/i,
+	/\b413\b[^.\n]{0,120}\b(?:request|payload|entity|body)\b[^.\n]{0,60}\b(?:exceed|too large|limit)/i,
+	/request_too_large/i,
+	/(?:payload|entity) too large/i,
+	/request exceeds the maximum (?:size|number of bytes)/i,
+] as const;
+
+function matchesPayloadRejectionText(text: string): boolean {
+	if (!PAYLOAD_REJECTION_PATTERNS.some(pattern => pattern.test(text))) return false;
+	return !hasTokenContextOverflowEvidence(text);
+}
 const TIMEOUT_PATTERN = /\b(?:operation\s+)?timed?\s*out\b|\btimeout\b|\bstream stall\b/i;
 const TRANSIENT_ENVELOPE_PATTERN = /anthropic stream envelope error:/i;
 const TRANSIENT_ENVELOPE_BEFORE_START_PATTERN = /before message_start/i;
 export const STREAM_READ_ERROR_PATTERN = /stream[_ -]?read[_ -]?error/i;
 export const TRANSIENT_TRANSPORT_PATTERN =
-	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|malformed.?function.?call/i;
+	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|\b(?:408|425|429|500|502|503|504)\b|service.?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|malformed.?function.?call/i;
 const AUTH_FAILURE_PATTERN =
 	/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i;
 const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
@@ -137,6 +176,10 @@ const COPILOT_TRANSIENT_MODEL_CODES: Record<string, true> = {
 	model_not_supported: true,
 };
 const COPILOT_TRANSIENT_MODEL_PATTERN = /model_not_supported/i;
+// OpenAI-compatible backends can wrap a decode-time logits fault in a 400
+// invalid_request_error. The narrow wording distinguishes it from an actual
+// malformed request: replaying the same payload is safe and often succeeds.
+const GENERATION_NAN_PATTERN = /floating[ _-]?point nan\b.*\bdetected in generation/is;
 // Anthropic strict-tool grammar too large / schema too complex (400 invalid_request_error).
 // Feature-gated deployments (Azure Foundry, Baseten, …) reject `strict: true`
 // tools outright when the hosted model lacks structured outputs, e.g.
@@ -345,13 +388,30 @@ function isContentBlockedText(text: string): boolean {
 }
 
 function matchesOverflowText(text: string): boolean {
-	return OVERFLOW_PATTERNS.some(p => p.test(text)) || OVERFLOW_NO_BODY_PATTERN.test(text);
+	return (
+		OVERFLOW_PATTERNS.some(pattern => pattern.test(text)) ||
+		PAYLOAD_REJECTION_PATTERNS.some(pattern => pattern.test(text)) ||
+		OVERFLOW_NO_BODY_PATTERN.test(text)
+	);
 }
 
-function classifyText(errorMessage: string | undefined, errorStatus: number | undefined, api?: Api): number {
+function classifyText(
+	errorMessage: string | undefined,
+	errorStatus: number | undefined,
+	priorTokenOverflowEvidence = false,
+	api?: Api,
+): number {
 	let kinds = 0;
 	if (errorMessage) {
-		if (matchesOverflowText(errorMessage)) kinds |= Flag.ContextOverflow;
+		const payloadRejection = matchesPayloadRejectionText(errorMessage);
+		// Preserve the production-facing text predicate for legacy callers, while
+		// reserving the ContextOverflow flag for evidence that actually warrants
+		// token recovery. A classified payload-only 413 then reaches the byte/media
+		// recovery path; an unclassified legacy message still reads as overflow.
+		if (matchesOverflowText(errorMessage) && (!payloadRejection || OVERFLOW_NO_BODY_PATTERN.test(errorMessage))) {
+			kinds |= Flag.ContextOverflow;
+		}
+		if (payloadRejection) kinds |= Flag.PayloadRejected;
 		if (isMalformedFunctionCallText(errorMessage)) kinds |= Flag.MalformedFunctionCall;
 		if (isProviderFinishErrorText(errorMessage)) kinds |= Flag.ProviderFinishError;
 		if (EMPTY_RESPONSE_PATTERN.test(errorMessage)) kinds |= Flag.EmptyResponse | Flag.Transient;
@@ -398,8 +458,18 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 
 		// Copilot's `model_not_supported` fleet-skew rejection is transient.
 		if (statusClean === 400 && COPILOT_TRANSIENT_MODEL_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
+		// A model-side numerical fault is not a terminal request-validation 400.
+		if (statusClean === 400 && GENERATION_NAN_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
+	}
+	const statusEvidence = errorStatus ?? (errorMessage ? status({ message: errorMessage }) : undefined);
+	if (
+		statusEvidence === 413 &&
+		!priorTokenOverflowEvidence &&
+		!(errorMessage && hasTokenContextOverflowEvidence(errorMessage))
+	) {
+		kinds |= Flag.PayloadRejected;
 	}
 	if (kinds !== 0) return create(kinds);
 	const fallbackStatus = errorStatus ?? (errorMessage ? status({ message: errorMessage }) : undefined);
@@ -410,6 +480,7 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 export function classify(error: unknown, api?: Api): number {
 	let kinds = 0;
 	const seen = new Set<object>();
+	const causeTokenEvidence = hasCauseTokenContextOverflowEvidence(error);
 	let link: unknown = error;
 	while (link !== undefined && link !== null) {
 		if (typeof link === "object") {
@@ -480,7 +551,7 @@ export function classify(error: unknown, api?: Api): number {
 			linkMessage = (link as { message: string }).message;
 		}
 
-		const textId = classifyText(linkMessage, status(link), api);
+		const textId = classifyText(linkMessage, status(link), causeTokenEvidence, api);
 		kinds |= textId & KIND_MASK;
 
 		link = typeof link === "object" && "cause" in link ? (link as { cause: unknown }).cause : undefined;
@@ -563,9 +634,19 @@ export function classifyMessage(message: {
 }): number {
 	const existingId = message.errorId;
 	const currentStatus = message.errorStatus ?? statusFromId(existingId);
-	const textId = classifyText(message.errorMessage, currentStatus, message.api);
+	const existingOverflowOnly =
+		existingId !== undefined && is(existingId, Flag.ContextOverflow) && !is(existingId, Flag.PayloadRejected);
+	const textId = classifyText(message.errorMessage, currentStatus, existingOverflowOnly, message.api);
 
 	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
+	if (
+		currentStatus === 413 &&
+		message.errorMessage &&
+		hasTokenContextOverflowEvidence(message.errorMessage) &&
+		!(textId & Flag.PayloadRejected)
+	) {
+		kinds &= ~Flag.PayloadRejected;
+	}
 	if (message.errorMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(message.errorMessage)) {
 		// Deterministic local-model tool-call JSON parse failure: HTTP 500 is misleading
 		// because the same prompt reproduces the same malformed output, so the agent-level
@@ -583,13 +664,35 @@ export function attach<E extends object>(error: E, id: number): E {
 	return error;
 }
 
+/** Provider-reported usage proves context-window excess. */
+export function isUsageBackedContextOverflow(message: AssistantMessage, contextWindow?: number): boolean {
+	if (!contextWindow) return false;
+	const inputTokens = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
+	return inputTokens > contextWindow;
+}
+
 export function isContextOverflow(message: AssistantMessage, contextWindow?: number): boolean {
 	if (is(message.errorId, Flag.ContextOverflow)) return true;
-	if (contextWindow) {
-		const inputTokens = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
-		if (inputTokens > contextWindow) return true;
-	}
+	if (isUsageBackedContextOverflow(message, contextWindow)) return true;
 	return message.stopReason === "error" && !!message.errorMessage && matchesOverflowText(message.errorMessage);
+}
+
+/** HTTP 413 byte/media rejection; may co-occur with context overflow for ambiguous body-less responses. */
+export function isPayloadRejection(message: AssistantMessage): boolean {
+	if (is(message.errorId, Flag.PayloadRejected)) return true;
+	return message.stopReason === "error" && !!message.errorMessage && matchesPayloadRejectionText(message.errorMessage);
+}
+
+/** Whether a dual-flagged 413 is text-ambiguous rather than usage-proven token overflow. */
+export function isTextAmbiguousContextOverflow(
+	errorId: number,
+	message: AssistantMessage | undefined,
+	contextWindow?: number,
+): boolean {
+	const overflowFlagged =
+		is(errorId, Flag.ContextOverflow) || (message !== undefined && isContextOverflow(message, contextWindow));
+	if (!overflowFlagged || !is(errorId, Flag.PayloadRejected)) return false;
+	return !(message !== undefined && isUsageBackedContextOverflow(message, contextWindow));
 }
 
 export function stringify(id: number | undefined): string {

@@ -1427,6 +1427,41 @@ export function sanitizeSchemaForGrammar(schema: JsonObject): JsonObject {
 	return normalizeNode(schema, true) as JsonObject;
 }
 
+/**
+ * xAI rejects object-root `anyOf`/`oneOf` tool schemas. A union whose branches
+ * express only distinct required-property sets has no alternate value shape, so
+ * the closest compatible wire form is the same object schema without that root
+ * presence constraint. More complex unions remain untouched for quarantine.
+ */
+export function flattenExclusiveRequiredRootUnion(schema: JsonObject): JsonObject {
+	if (schema.type !== "object") return schema;
+	const combiner = Array.isArray(schema.anyOf) ? "anyOf" : Array.isArray(schema.oneOf) ? "oneOf" : undefined;
+	if (!combiner || (combiner === "anyOf" && Array.isArray(schema.oneOf)) || (combiner === "oneOf" && Array.isArray(schema.anyOf))) {
+		return schema;
+	}
+	const branches = schema[combiner];
+	if (!Array.isArray(branches) || branches.length === 0) return schema;
+
+	const rootRequired = new Set(
+		Array.isArray(schema.required) ? schema.required.filter((name): name is string => typeof name === "string") : [],
+	);
+	const branchRequired = new Set<string>();
+	for (const branch of branches) {
+		if (!isJsonObject(branch)) return schema;
+		for (const key in branch) {
+			if (Object.hasOwn(branch, key) && key !== "required") return schema;
+		}
+		if (!Array.isArray(branch.required) || branch.required.some(name => typeof name !== "string")) return schema;
+		const extras = [...new Set(branch.required)].filter(name => !rootRequired.has(name));
+		if (extras.length === 0 || extras.some(name => branchRequired.has(name))) return schema;
+		for (const name of extras) branchRequired.add(name);
+	}
+
+	const flattened = { ...schema };
+	delete flattened[combiner];
+	return flattened;
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI Responses — schema-valued normalization
 // ---------------------------------------------------------------------------

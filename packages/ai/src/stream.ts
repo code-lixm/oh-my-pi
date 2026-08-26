@@ -78,6 +78,7 @@ import type {
 } from "./types";
 import { resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { applyGlyphCodec } from "./utils/glyph-codec";
 import { isFoundryEnabled } from "./utils/foundry";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
@@ -1408,7 +1409,11 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	return streamSimpleWithAnthropicCacheRefresh(model, context, options);
+	if (!model.requiresGlyphTokenization) {
+		return streamSimpleWithAnthropicCacheRefresh(model, context, options);
+	}
+	const glyphCodec = applyGlyphCodec(context);
+	return glyphCodec.wrap(streamSimpleWithAnthropicCacheRefresh(model, glyphCodec.context, options));
 }
 
 function streamSimpleRequest<TApi extends Api>(

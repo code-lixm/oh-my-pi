@@ -34,6 +34,24 @@ const DEFAULT_MAX_ATTEMPTS = 6;
 
 /** Bound the `Error.message` allocation for proxy HTML error pages and the like. */
 const MAX_DETAIL_CHARS = 4096;
+/**
+ * LiteLLM-compatible proxies can reject a request before it reaches a model
+ * when their concurrent-request admission gate is full. That 429 belongs to
+ * session recovery, which owns the short backoff and model fallback; retrying
+ * it here can turn one admission failure into several minute-long sleeps.
+ */
+const CONCURRENCY_ADMISSION_LIMITER = "max_parallel_requests";
+
+/** Body form of the concurrency-admission marker, top-level or under `error`. */
+const CONCURRENCY_ADMISSION_BODY_PATTERN = /"rate_limit_type"\s*:\s*"max_parallel_requests"/;
+
+/** Whether this 429 is a proxy admission rejection rather than an upstream rate limit. */
+function isConcurrencyAdmissionRejection(response: Response, bodyText: string): boolean {
+	return (
+		response.headers.get("rate_limit_type")?.trim() === CONCURRENCY_ADMISSION_LIMITER ||
+		CONCURRENCY_ADMISSION_BODY_PATTERN.test(bodyText)
+	);
+}
 
 export interface OpenAIStreamRequestInit {
 	url: string;
@@ -69,6 +87,9 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		signal: init.signal,
 		fetch: init.fetch,
 		maxAttempts: DEFAULT_MAX_ATTEMPTS,
+		// A proxy concurrency-admission 429 must reach session recovery on the
+		// first attempt; ordinary quota/RPM 429s still honor Retry-After here.
+		shouldRetryResponse: (response, bodyText) => !isConcurrencyAdmissionRejection(response, bodyText),
 		// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 		// Cold large-context streams legitimately exceed it; the caller's
 		// `firstEventTimeoutMs`/`AbortSignal` already govern stuck requests.

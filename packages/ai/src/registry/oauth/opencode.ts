@@ -14,26 +14,31 @@ import type { OAuthController } from "./types";
 
 const AUTH_URL = "https://opencode.ai/auth";
 
+/** Fallback display name when a provider doesn't pass its own. */
+const DEFAULT_PROVIDER_NAME = "OpenCode Zen";
+
 /**
  * Login to OpenCode Zen.
  *
  * Opens browser to auth page, prompts user to paste their API key.
  * Returns the API key directly (not OAuthCredentials - this isn't OAuth).
  */
-export async function loginOpenCode(options: OAuthController): Promise<string> {
+export async function loginOpenCode(
+	options: OAuthController,
+	providerName: string = DEFAULT_PROVIDER_NAME,
+): Promise<string> {
 	if (!options.onPrompt) {
-		throw new AIError.OnPromptRequiredError("OpenCode Zen");
+		throw new AIError.OnPromptRequiredError(providerName);
 	}
 
-	// Open browser to auth page
+	// Go keys are minted from the same Zen console after subscribing to Go.
 	options.onAuth?.({
 		url: AUTH_URL,
-		instructions: "Log in and copy your API key",
+		instructions: `Log in to the OpenCode Zen console and copy your ${providerName} API key`,
 	});
 
-	// Prompt user to paste their API key
 	const apiKey = await options.onPrompt({
-		message: "Paste your OpenCode Zen API key",
+		message: `Paste your ${providerName} API key`,
 		placeholder: "sk-...",
 	});
 

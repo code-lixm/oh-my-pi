@@ -3,7 +3,7 @@ import { isKimiModelId } from "@oh-my-pi/pi-catalog/identity";
 import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
-import { $env, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
+import { $env, logger, parseStreamingJson, parseStreamingJsonThrottled } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
@@ -44,6 +44,8 @@ import { notifyProviderResponse } from "../utils/provider-response";
 import { callWithCopilotModelRetry } from "../utils/retry";
 import {
 	adaptSchemaForStrict,
+	findStrictToolSchemaViolation,
+	flattenExclusiveRequiredRootUnion,
 	NO_STRICT,
 	normalizeSchemaForMoonshot,
 	sanitizeSchemaForGrammar,
@@ -105,6 +107,7 @@ import {
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
 	shouldRetryWithoutStrictTools,
+	shouldDropAutoToolChoiceForReasoning,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
 import {
@@ -600,26 +603,27 @@ const streamOpenAICompletionsOnce = (
 		);
 		const { requestAbortController, requestSignal } = abortTracker;
 		const onSseEvent = options?.onSseEvent;
-		const rawSseObserver = onSseEvent
-			? (event: RawSseEvent) => {
-					if (!event.event && event.data && event.data !== "[DONE]") {
-						try {
-							const parsed = JSON.parse(event.data);
-							const resolvedEvent =
-								typeof parsed.type === "string"
-									? parsed.type
-									: typeof parsed.object === "string"
-										? parsed.object
-										: null;
-							if (resolvedEvent) {
-								event.event = resolvedEvent;
-								event.raw = [`event: ${resolvedEvent}`, ...event.raw];
-							}
-						} catch {}
+		let sawDoneSentinel = false;
+		const rawSseObserver = (event: RawSseEvent) => {
+			if (event.data === "[DONE]") sawDoneSentinel = true;
+			if (!onSseEvent) return;
+			if (!event.event && event.data && event.data !== "[DONE]") {
+				try {
+					const parsed = JSON.parse(event.data);
+					const resolvedEvent =
+						typeof parsed.type === "string"
+							? parsed.type
+							: typeof parsed.object === "string"
+								? parsed.object
+								: null;
+					if (resolvedEvent) {
+						event.event = resolvedEvent;
+						event.raw = [`event: ${resolvedEvent}`, ...event.raw];
 					}
-					onSseEvent(event, model);
-				}
-			: undefined;
+				} catch {}
+			}
+			onSseEvent(event, model);
+		};
 		// Assigned once the block helpers exist (they are scoped to the `try`);
 		// the catch handler uses it to close open blocks before emitting the
 		// terminal error so both exit paths obey the same block lifecycle.
@@ -661,12 +665,14 @@ const streamOpenAICompletionsOnce = (
 				: `${trimmedBaseUrl}/chat/completions`;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				const { params, strictToolsApplied } = buildParams(
+				const builtParams = buildParams(
 					model,
 					context,
 					options,
 					effectiveToolStrictModeOverride,
 				);
+				let params = builtParams.params;
+				const { strictToolsApplied } = builtParams;
 				appliedStrictTools = strictToolsApplied;
 				const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
 					"chat-completions",
@@ -680,8 +686,9 @@ const streamOpenAICompletionsOnce = (
 					applyOpenAIReasoningEffortFallback(params, requestReasoningEffortFallback);
 				}
 				activeReasoningEffortFallbackKey = reasoningEffortFallbackKey;
+				const replacementPayload = await options?.onPayload?.(params, model);
+				if (replacementPayload !== undefined) params = replacementPayload as OpenAICompletionsParams;
 				activeRequestParams = params;
-				options?.onPayload?.(params, model);
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1275,10 +1282,17 @@ const streamOpenAICompletionsOnce = (
 					}
 				}
 
+
 				// If usage arrived on the finish chunk without cache-read fields,
 				// keep draining through the grace window for vLLM-style trailing
 				// usage details instead of finalizing the incomplete accounting.
 				if (streamFinishedAt !== undefined && sawUsagePayload && !awaitTrailingUsageDetails) break;
+			}
+			if (streamFinishedAt === undefined && !sawDoneSentinel && !abortTracker.requestSignal.aborted) {
+				output.stopReason = "error";
+				output.errorMessage = "OpenAI completions stream closed before a finish_reason was received";
+			} else if (!sawDoneSentinel && !abortTracker.requestSignal.aborted) {
+				logger.warn(`OpenAI completions stream ended without [DONE] sentinel (${model.provider}/${model.id})`);
 			}
 
 			if (streamMarkupHealing) {
@@ -1592,7 +1606,7 @@ function buildParams(
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
 
 	if (context.tools?.length) {
-		const builtTools = convertTools(context.tools, initialCompat, toolStrictModeOverride);
+		const builtTools = convertTools(context.tools, initialCompat, toolStrictModeOverride, model.provider);
 		params.tools = builtTools.tools;
 		toolStrictMode = builtTools.toolStrictMode;
 		strictToolsApplied = builtTools.strictToolsApplied;
@@ -1651,6 +1665,9 @@ function buildParams(
 		// `tool_choice` while still accepting tools with the default auto
 		// selector. Keep the tool available and let the model choose it.
 		params.tool_choice = "auto";
+	}
+	if (shouldDropAutoToolChoiceForReasoning(model, initialCompat, params.tool_choice, options)) {
+		delete params.tool_choice;
 	}
 
 	if (params.tool_choice === "none" && (!Array.isArray(params.tools) || params.tools.length === 0)) {
@@ -1711,9 +1728,19 @@ function buildParams(
 
 	applyOpenAIGatewayRouting(params, compat, cacheRetention !== "none");
 
+	const policyVeniceParameters = params.venice_parameters;
 	applyOpenAIExtraBody(params, compat.extraBody, {
 		dropThinkingWhenReasoningEffort: compat.dropThinkingWhenReasoningEffort,
 	});
+	if (policyVeniceParameters !== undefined) {
+		const extraVeniceParameters = params.venice_parameters;
+		params.venice_parameters = {
+			...(typeof extraVeniceParameters === "object" && extraVeniceParameters !== null
+				? extraVeniceParameters
+				: {}),
+			...policyVeniceParameters,
+		};
+	}
 	applyOpenAIChatCompletionsPromptCachePolicy(params, model, options);
 
 	return { params, toolStrictMode, strictToolsApplied };
@@ -1927,7 +1954,7 @@ export function convertMessages(
 						content.push({
 							type: "image_url",
 							image_url: {
-								url: `data:${item.mimeType};base64,${item.data}`,
+								url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
 								// Chat Completions has no "original"; omit it (provider default).
 								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
@@ -2234,7 +2261,7 @@ export function convertMessages(
 							imageBlocks.push({
 								type: "image_url",
 								image_url: {
-									url: `data:${block.mimeType};base64,${block.data}`,
+									url: block.url ?? `data:${block.mimeType};base64,${block.data}`,
 								},
 							});
 						}
@@ -2285,14 +2312,17 @@ function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompat,
 	toolStrictModeOverride?: ToolStrictModeOverride,
+	provider?: string,
 ): BuiltOpenAICompletionTools {
 	const adaptedTools = tools.map(tool => {
 		const strict = !NO_STRICT && compat.supportsStrictMode !== false && tool.strict !== false;
 		const baseParameters = toolWireSchema(tool);
-		const adapted = adaptSchemaForStrict(baseParameters, strict);
+		const providerBaseParameters =
+			provider === "xai" ? flattenExclusiveRequiredRootUnion(baseParameters) : baseParameters;
+		const adapted = adaptSchemaForStrict(providerBaseParameters, strict);
 		return {
 			tool,
-			baseParameters,
+			baseParameters: providerBaseParameters,
 			parameters: adapted.schema,
 			strict: adapted.strict,
 		};
@@ -2308,47 +2338,60 @@ function convertTools(
 					: "none"
 				: "mixed";
 
+	const convertedTools: ChatCompletionTool[] = [];
+	let strictToolsApplied = false;
+	for (const { tool, baseParameters, parameters, strict } of adaptedTools) {
+		const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
+		const includeExplicitFalse =
+			!includeStrict &&
+			tool.strict === false &&
+			toolStrictMode === "mixed" &&
+			compat.supportsStrictMode !== false;
+		const wireParameters = includeStrict ? parameters : baseParameters;
+		const parametersForProvider =
+			compat.toolSchemaFlavor === "moonshot-mfjs"
+				? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
+				: compat.toolSchemaFlavor === "grammar"
+					? sanitizeSchemaForGrammar(wireParameters)
+					: wireParameters;
+		const xaiViolation =
+			provider === "xai"
+				? findStrictToolSchemaViolation(parametersForProvider, "#", { rejectXaiRootObjectUnion: true })
+				: null;
+		const xaiRootUnionViolation = xaiViolation === "#/anyOf" || xaiViolation === "#/oneOf";
+		if (xaiRootUnionViolation) {
+			logger.warn(`xAI rejects root-union tool schema for '${tool.name}' at ${xaiViolation}; omitting tool`);
+			continue;
+		}
+		const xaiStrictViolation = includeStrict ? xaiViolation : null;
+		if (xaiStrictViolation) {
+			logger.warn(
+				`xAI rejects strict tool schema for '${tool.name}' at ${xaiStrictViolation}; sending non-strict schema`,
+			);
+		}
+		convertedTools.push({
+			type: "function",
+			function: {
+				name: tool.name,
+				description: xaiStrictViolation
+					? `${tool.description || ""}\n\n[xAI] Strict tool schema disabled: unsupported ${xaiStrictViolation}`
+					: tool.description || "",
+				parameters: parametersForProvider,
+				...(xaiStrictViolation
+					? { strict: false }
+					: includeStrict
+						? { strict: true }
+						: includeExplicitFalse
+							? { strict: false }
+							: {}),
+			},
+		});
+		if (includeStrict && !xaiStrictViolation) strictToolsApplied = true;
+	}
 	return {
-		tools: adaptedTools.map(({ tool, baseParameters, parameters, strict }) => {
-			const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
-			// `strict: false` is semantically distinct from omitted `strict` on some
-			// backends: with it absent, optional properties may be over-filled with
-			// placeholder values (#4336). Preserve the author's explicit `false`,
-			// but only in "mixed" mode against a provider that understands the
-			// field — the `all_strict → none` collapse and `supportsStrictMode:
-			// false` paths deliberately keep the wire flag uniformly absent.
-			const includeExplicitFalse =
-				!includeStrict &&
-				tool.strict === false &&
-				toolStrictMode === "mixed" &&
-				compat.supportsStrictMode !== false;
-			const wireParameters = includeStrict ? parameters : baseParameters;
-			return {
-				type: "function",
-				function: {
-					name: tool.name,
-					description: tool.description || "",
-					// Moonshot/Kimi native hosts validate against the stricter MFJS subset
-					// (const→enum, typed enums, no validators) and 400 otherwise.
-					// Grammar-constrained local backends (llama.cpp, LM Studio, vLLM)
-					// build a GBNF grammar from the schema and 400 with
-					// `Unrecognized schema: true` on the bare boolean subschema
-					// `toolWireSchema` emits for open fields (issue #5914).
-					parameters:
-						compat.toolSchemaFlavor === "moonshot-mfjs"
-							? (normalizeSchemaForMoonshot(wireParameters) as Record<string, unknown>)
-							: compat.toolSchemaFlavor === "grammar"
-								? sanitizeSchemaForGrammar(wireParameters)
-								: wireParameters,
-					// Only include strict if provider supports it. Some reject unknown fields.
-					...(includeStrict ? { strict: true } : includeExplicitFalse ? { strict: false } : {}),
-				},
-			};
-		}),
+		tools: convertedTools,
 		toolStrictMode,
-		strictToolsApplied:
-			tools.length > 0 &&
-			(toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && adaptedTools.some(tool => tool.strict))),
+		strictToolsApplied: convertedTools.length > 0 && strictToolsApplied,
 	};
 }
 

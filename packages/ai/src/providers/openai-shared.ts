@@ -31,6 +31,7 @@ import {
 	parseStreamingJsonThrottled,
 	stringifyJson,
 	structuredCloneJSON,
+	USER_AGENT,
 } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import {
@@ -314,6 +315,10 @@ export function resolveOpenAIRequestSetup(
 
 	if (options.defaultBaseUrl !== undefined) {
 		baseUrl = baseUrl ?? ($env.OPENAI_BASE_URL?.trim() || options.defaultBaseUrl);
+	}
+	// Attribute xAI traffic as omp unless the caller supplied either header casing.
+	if (model.provider === "xai" || model.provider === "xai-oauth") {
+		setHeaderIfAbsent(headers, "User-Agent", USER_AGENT);
 	}
 	const requestHeaders = { ...headers };
 	// A keyless provider (`auth: none` in models.yml) resolves to the `N/A`
@@ -749,6 +754,7 @@ export type OpenAICompletionsParams = Omit<ChatCompletionCreateParamsStreaming, 
 	tool_stream?: boolean;
 	provider?: OpenAICompat["openRouterRouting"];
 	providerOptions?: { gateway?: { only?: string[]; order?: string[] } };
+	venice_parameters?: Record<string, unknown>;
 };
 
 /** Reasoning-relevant slice of caller options the Chat Completions dialect dispatch reads. */
@@ -836,6 +842,26 @@ function isImplicitDisableWhenNotRequested(disableMode: OpenAIReasoningDisableMo
 		disableMode === "zai-thinking-disabled" ||
 		disableMode === "qwen-enable-thinking-false" ||
 		disableMode === "qwen-template-false"
+	);
+}
+
+/**
+ * Drop only redundant `tool_choice: "auto"` when a provider disables native
+ * reasoning for every explicit tool choice. Forced and `none` directives are
+ * semantic and remain intact; auto is the wire default.
+ */
+export function shouldDropAutoToolChoiceForReasoning(
+	model: Pick<Model, "reasoning">,
+	compat: { disableReasoningOnToolChoice: boolean },
+	toolChoice: unknown,
+	options: { reasoning?: string; disableReasoning?: boolean } | undefined,
+): boolean {
+	return (
+		toolChoice === "auto" &&
+		compat.disableReasoningOnToolChoice &&
+		Boolean(model.reasoning) &&
+		options?.reasoning !== undefined &&
+		!options.disableReasoning
 	);
 }
 
@@ -971,6 +997,14 @@ function encodeChatCompletionsDisabledReasoning(
 				enabled: false,
 			};
 			break;
+		case "venice-disable-thinking": {
+			const veniceParams = params as typeof params & { venice_parameters?: Record<string, unknown> };
+			veniceParams.venice_parameters = {
+				...veniceParams.venice_parameters,
+				disable_thinking: true,
+			};
+			break;
+		}
 		default:
 			delete params.reasoning;
 			break;
@@ -1495,6 +1529,63 @@ export function repairOrphanResponsesToolCalls(input: ResponseInput): ResponseIn
 	return repaired;
 }
 
+type ResponsesBatchItemKind = "call" | "output" | "assistant-message" | "other";
+
+function classifyResponsesBatchItem(item: object): ResponsesBatchItemKind {
+	const type = "type" in item ? item.type : undefined;
+	if (responsesToolCallKind(type) !== undefined) return "call";
+	if (responsesToolOutputKind(type) !== undefined) return "output";
+	const role = "role" in item ? item.role : undefined;
+	if (type === "message" && role === "assistant") return "assistant-message";
+	return "other";
+}
+
+/**
+ * Move assistant messages wedged inside a tool-call → output batch ahead of
+ * that batch. Strict Responses gateways pair outputs only after an uninterrupted
+ * call run; moving model-owned text preserves its content and canonicalizes the
+ * wire order to `message(s) → calls → outputs`.
+ */
+export function hoistInterleavedResponsesToolBatchMessages<T extends object>(items: readonly T[]): T[] {
+	const moved = new Set<number>();
+	const insertBefore = new Map<number, number[]>();
+	for (let index = 0; index < items.length; index++) {
+		if (classifyResponsesBatchItem(items[index]) !== "output") continue;
+		if (index > 0 && classifyResponsesBatchItem(items[index - 1]) === "output") continue;
+		let start = index;
+		let sawCall = false;
+		const messageIndexes: number[] = [];
+		while (start > 0) {
+			const kind = classifyResponsesBatchItem(items[start - 1]);
+			if (kind === "call") {
+				sawCall = true;
+			} else if (kind === "assistant-message") {
+				messageIndexes.push(start - 1);
+			} else {
+				break;
+			}
+			start--;
+		}
+		if (!sawCall || messageIndexes.length === 0) continue;
+		messageIndexes.reverse();
+		const target = insertBefore.get(start) ?? [];
+		for (const messageIndex of messageIndexes) {
+			moved.add(messageIndex);
+			target.push(messageIndex);
+		}
+		insertBefore.set(start, target);
+	}
+	if (moved.size === 0) return items.slice();
+	const result: T[] = [];
+	for (let index = 0; index < items.length; index++) {
+		const pending = insertBefore.get(index);
+		if (pending) for (const messageIndex of pending) result.push(items[messageIndex]);
+		if (moved.has(index)) continue;
+		result.push(items[index]);
+	}
+	return result;
+}
+
 /**
  * Some Responses backends (notably GitHub Copilot) reject the OpenAI image
  * `detail: "original"` value with a 400. When the model does not advertise
@@ -1507,6 +1598,18 @@ function clampResponsesImageDetail(
 ): ResponseInputImage["detail"] {
 	const resolved = detail ?? "auto";
 	return resolved === "original" && !supportsImageDetailOriginal ? "auto" : resolved;
+}
+
+function convertResponsesInputImage(image: ImageContent, supportsImageDetailOriginal: boolean): ResponseInputImage {
+	const detail = clampResponsesImageDetail(image.detail, supportsImageDetailOriginal);
+	if (image.providerFile?.provider === "openai" && image.providerFile.id) {
+		return { type: "input_image", detail, file_id: image.providerFile.id };
+	}
+	return {
+		type: "input_image",
+		detail,
+		image_url: image.url ?? `data:${image.mimeType};base64,${image.data}`,
+	};
 }
 
 export function convertResponsesInputContent(
@@ -1538,11 +1641,7 @@ export function convertResponsesInputContent(
 		} satisfies ResponseInputText);
 	}
 	for (const item of imageBlocks) {
-		normalizedContent.push({
-			type: "input_image",
-			detail: clampResponsesImageDetail(item.detail, supportsImageDetailOriginal),
-			image_url: `data:${item.mimeType};base64,${item.data}`,
-		} satisfies ResponseInputImage);
+		normalizedContent.push(convertResponsesInputImage(item, supportsImageDetailOriginal));
 	}
 	if (omittedImages) {
 		normalizedContent.push({
@@ -1899,7 +1998,8 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 		msgIndex++;
 	}
 
-	const withRepairedOutputs = options.repairOrphanOutputs ? repairOrphanResponsesToolOutputs(messages) : messages;
+	const hoisted = hoistInterleavedResponsesToolBatchMessages(messages);
+	const withRepairedOutputs = options.repairOrphanOutputs ? repairOrphanResponsesToolOutputs(hoisted) : hoisted;
 	const withRepairedCalls = repairOrphanResponsesToolCalls(withRepairedOutputs);
 	return stripUnpairedOpenAIResponsesComputerReasoningIdsForReplay(withRepairedCalls);
 }
@@ -2233,11 +2333,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	];
 	for (const block of toolResult.content) {
 		if (block.type === "image") {
-			contentParts.push({
-				type: "input_image",
-				detail: clampResponsesImageDetail(block.detail, supportsImageDetailOriginal),
-				image_url: `data:${block.mimeType};base64,${block.data}`,
-			} satisfies ResponseInputImage);
+			contentParts.push(convertResponsesInputImage(block, supportsImageDetailOriginal));
 		}
 	}
 	const imageMessage = { role: "user", content: contentParts } satisfies ResponseInput[number];

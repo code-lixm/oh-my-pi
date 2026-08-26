@@ -61,12 +61,20 @@ const SIGNER_OWNED_HEADERS = new Set(["host", "x-amz-date", "x-amz-content-sha25
 const BEDROCK_RESERVED_HEADERS = new Set(["content-type", "accept", "authorization", "content-length"]);
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
+/** Bedrock guardrail trace verbosity, mirroring Converse `guardrailConfig.trace`. */
+export type BedrockGuardrailTrace = "enabled" | "disabled" | "enabled_full";
 
 export interface BedrockOptions extends StreamOptions {
 	region?: string;
 	profile?: string;
 	/** Amazon Bedrock API key sent as `Authorization: Bearer`, ahead of SigV4 credential resolution. */
 	bearerToken?: string;
+	/** Amazon Bedrock Guardrail identifier or ARN. */
+	guardrailIdentifier?: string;
+	/** Guardrail version; defaults to `DRAFT` when an identifier is supplied. */
+	guardrailVersion?: string;
+	/** Optional guardrail trace verbosity. */
+	guardrailTrace?: BedrockGuardrailTrace;
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	/* See https://docs.aws.amazon.com/bedrock/latest/userguide/inference-reasoning.html for supported models. */
 	reasoning?: Effort;
@@ -163,12 +171,14 @@ function resolveBedrockRegion(modelId: string, options: BedrockOptions): string 
 	const explicit = options.region || inferRegionFromBedrockArn(modelId);
 	if (explicit) return explicit;
 	const ambient = resolveAwsAmbientRegion(options.profile);
+	const guardrailRegion = inferRegionFromBedrockArn(options.guardrailIdentifier ?? "");
 	const geo = inferenceProfileGeo(modelId);
 	if (geo) {
 		if (ambient && regionServesGeo(ambient, geo)) return ambient;
+		if (guardrailRegion && regionServesGeo(guardrailRegion, geo)) return guardrailRegion;
 		return INFERENCE_PROFILE_GEO_DEFAULT_REGION[geo];
 	}
-	return ambient || "us-east-1";
+	return ambient || guardrailRegion || "us-east-1";
 }
 
 type Block = (TextContent | ThinkingContent | ToolCall) & {
@@ -253,11 +263,18 @@ interface BedrockToolPlan {
 	sentinelInjected: boolean;
 }
 
+interface WireGuardrailConfig {
+	guardrailIdentifier: string;
+	guardrailVersion: string;
+	trace?: BedrockGuardrailTrace;
+}
+
 interface ConverseStreamRequest {
 	messages: WireMessage[];
 	system?: SystemContent[];
 	inferenceConfig?: { maxTokens?: number; temperature?: number; topP?: number };
 	toolConfig?: WireToolConfig;
+	guardrailConfig?: WireGuardrailConfig;
 	additionalModelRequestFields?: Record<string, unknown>;
 }
 
@@ -342,7 +359,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 				if (tc.any || tc.tool) additionalModelRequestFields = undefined;
 			}
 
-			const commandInput: ConverseStreamRequest = {
+			let commandInput: ConverseStreamRequest = {
 				messages: convertedMessages,
 				system: buildSystemPrompt(context.systemPrompt, promptCachePolicy),
 				inferenceConfig: {
@@ -351,9 +368,11 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					topP: options.topP,
 				},
 				toolConfig,
+				guardrailConfig: buildGuardrailConfig(options),
 				additionalModelRequestFields,
 			};
-			options?.onPayload?.(commandInput, model);
+			const replacementInput = await options?.onPayload?.(commandInput, model);
+			if (replacementInput !== undefined) commandInput = replacementInput as ConverseStreamRequest;
 
 			const host = `bedrock-runtime.${region}.amazonaws.com`;
 			const url = `https://${host}/model/${encodeURIComponent(model.id)}/converse-stream`;
@@ -529,7 +548,12 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 						output.stopReason =
 							sentinelInjected && ev.stopReason === "tool_use" ? "stop" : mapStopReason(ev.stopReason);
 						if (output.stopReason === "error") {
-							output.errorMessage = `Generation failed with stop reason: ${ev.stopReason ?? "unknown"}`;
+							output.errorMessage =
+								ev.stopReason === "guardrail_intervened"
+									? `Response blocked by Amazon Bedrock guardrail (stop reason: ${ev.stopReason}).`
+									: ev.stopReason === "content_filtered"
+										? `Response filtered by Amazon Bedrock content filters (stop reason: ${ev.stopReason}).`
+										: `Generation failed with stop reason: ${ev.stopReason ?? "unknown"}`;
 						}
 						break;
 					}
@@ -781,16 +805,6 @@ function takeCachePoint(policy: BedrockPromptCachePolicy): CachePoint | undefine
 	return { cachePoint: { type: "default", ...(policy.ttl ? { ttl: policy.ttl } : {}) } };
 }
 
-/**
- * Check if the model supports thinking signatures in reasoningContent.
- * Only Anthropic Claude models support the signature field.
- * Other models (Nova, Titan, Mistral, Llama, etc.) reject it with:
- * "This model doesn't support the reasoningContent.reasoningText.signature field"
- */
-function supportsThinkingSignature(model: Model<"bedrock-converse-stream">): boolean {
-	const id = model.id.toLowerCase();
-	return id.includes("anthropic.claude") || id.includes("anthropic/claude");
-}
 
 function buildSystemPrompt(
 	systemPrompt: readonly string[] | string | undefined,
@@ -869,23 +883,18 @@ function convertMessages(
 							});
 							break;
 						case "thinking":
-							// Skip empty thinking blocks
 							if (c.thinking.trim().length === 0) continue;
-							// A captured signature is authoritative even when the model id is an opaque ARN.
-							// Without one, known non-Claude families use unsigned reasoning; known Claude ids demote to text.
+							// A captured signature is authoritative even for an opaque inference-profile ARN.
 							if (c.thinkingSignature) {
 								contentBlocks.push({
 									reasoningContent: {
 										reasoningText: { text: c.thinking.toWellFormed(), signature: c.thinkingSignature },
 									},
 								});
-							} else if (!supportsThinkingSignature(model)) {
-								// Model doesn't support signatures at all — send as unsigned reasoning
-								contentBlocks.push({
-									reasoningContent: { reasoningText: { text: c.thinking.toWellFormed() } },
-								});
 							} else {
-								// Model requires signature but we don't have one — demote to text
+								// A model producing unsigned reasoning does not prove it accepts that
+								// content on replay (Nova rejects it in user messages), so preserve
+								// the text in a safe portable form instead.
 								contentBlocks.push({ text: renderDemotedThinking(model.id, c.thinking) });
 							}
 							break;
@@ -1025,6 +1034,16 @@ function mapStopReason(reason: string | undefined): StopReason {
 		default:
 			return "error";
 	}
+}
+
+/** Build the Converse guardrail block only when a guardrail was requested. */
+function buildGuardrailConfig(options: BedrockOptions): WireGuardrailConfig | undefined {
+	if (!options.guardrailIdentifier) return undefined;
+	return {
+		guardrailIdentifier: options.guardrailIdentifier,
+		guardrailVersion: options.guardrailVersion ?? "DRAFT",
+		...(options.guardrailTrace === undefined ? {} : { trace: options.guardrailTrace }),
+	};
 }
 
 function buildAdditionalModelRequestFields(

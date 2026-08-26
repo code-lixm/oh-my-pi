@@ -18,6 +18,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	 * not a provider stall; idle watchdogs consult {@link hasPendingLocalWork}.
 	 */
 	#pendingLocalWork = 0;
+	#forwardedLocalWork: { readonly hasPendingLocalWork: boolean } | undefined;
 	finalResultPromise: Promise<R>;
 	resolveFinalResult!: (result: R) => void;
 	rejectFinalResult!: (err: unknown) => void;
@@ -127,7 +128,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
 	/** True while local work tracked via {@link trackLocalWork} is pending. */
 	get hasPendingLocalWork(): boolean {
-		return this.#pendingLocalWork > 0;
+		return this.#pendingLocalWork > 0 || this.#forwardedLocalWork?.hasPendingLocalWork === true;
 	}
 
 	/**
@@ -141,6 +142,11 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		} finally {
 			this.#pendingLocalWork--;
 		}
+	}
+
+	/** Reflect local work on a nested retry stream to this stream's watchdog. */
+	forwardLocalWorkFrom(source: { readonly hasPendingLocalWork: boolean } | undefined): void {
+		this.#forwardedLocalWork = source;
 	}
 }
 

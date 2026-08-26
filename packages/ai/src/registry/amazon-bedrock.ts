@@ -12,6 +12,9 @@ export const amazonBedrockProvider = {
 			region: awsOptions?.region,
 			profile: awsOptions?.profile,
 			bearerToken: awsOptions?.bearerToken,
+			guardrailIdentifier: options.guardrailIdentifier,
+			guardrailVersion: options.guardrailVersion,
+			guardrailTrace: options.guardrailTrace,
 		};
 	},
 } as const satisfies ProviderDefinition;

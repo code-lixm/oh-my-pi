@@ -1,13 +1,35 @@
 import { describe, expect, it } from "bun:test";
 import { type OpenAICompletionsOptions, streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
-import type { AssistantMessage, Context, FetchImpl, Model, SimpleStreamOptions, Usage } from "@oh-my-pi/pi-ai/types";
+import type {
+	AssistantMessage,
+	Context,
+	FetchImpl,
+	Model,
+	ModelSpec,
+	SimpleStreamOptions,
+	Usage,
+} from "@oh-my-pi/pi-ai/types";
 import { buildOpenAICompat } from "@oh-my-pi/pi-catalog/compat/openai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
-const model = getBundledModel<"openai-completions">("xai", "grok-code-fast-1");
-if (!model) throw new Error("Expected bundled xAI Grok model");
-if (model.api !== "openai-completions") throw new Error(`Expected Chat Completions model, received ${model.api}`);
+const xaiCacheAffinitySpec = {
+	id: "grok-cache-affinity-fixture",
+	name: "Grok Cache Affinity Fixture",
+	api: "openai-completions",
+	provider: "xai",
+	baseUrl: "https://api.x.ai/v1",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128_000,
+	maxTokens: 8_192,
+} satisfies ModelSpec<"openai-completions">;
+
+const model: Model<"openai-completions"> = {
+	...xaiCacheAffinitySpec,
+	compat: buildOpenAICompat(xaiCacheAffinitySpec),
+};
 const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 0 }] };
 
 const openAI56ResponsesModel = getBundledModel<"openai-responses">("openai", "gpt-5.6");

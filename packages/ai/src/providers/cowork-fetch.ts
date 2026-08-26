@@ -28,7 +28,7 @@ type AgentLease = {
 };
 
 const directAgent = new https.Agent({ keepAlive: true });
-const fallbackFetch: FetchImpl = globalThis.fetch;
+const fallbackFetch: FetchImpl = (input, init) => globalThis.fetch(input, init as RequestInit);
 
 function isHeaderRecord(headers: RequestInit["headers"]): headers is Record<string, string> {
 	return headers !== undefined && !(headers instanceof Headers) && !Array.isArray(headers);
@@ -184,7 +184,12 @@ async function sendCoworkRequest(
 
 /** Sends Cowork-profiled HTTPS requests with stable header order, HTTP/1.1, and streaming decompression. */
 export const coworkFetch: FetchImpl = async (input, init) => {
-	if (input instanceof Request || init === undefined || !isHeaderRecord(init.headers)) {
+	if (
+		init === undefined ||
+		input instanceof Request ||
+		!isHeaderRecord(init.headers) ||
+		("proxy" in init && Boolean(init.proxy))
+	) {
 		return fallbackFetch(input, init);
 	}
 	let url: URL;

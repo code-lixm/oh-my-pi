@@ -5,6 +5,7 @@
 ### Added
 
 - Added optional Codex native-prompt sidecars with Full/Lite role ordering, fingerprint-partitioned prompt caches, stable session/thread identity, and complete generic-prompt fallback.
+- Added provider-native file references and optional remote image URLs to `ImageContent`; matching Anthropic, Google, OpenAI Responses, OpenAI Chat Completions, and Codex encoders now reuse those references while retaining inline base64 fallback.
 
 ### Fixed
 - Fixed MiniMax M3 thinking streams bypassing the generalized thinking-loop guard; exact MiniMax M3 family models now use the retryable loop-abort path while MiniMax M2 remains unaffected.
