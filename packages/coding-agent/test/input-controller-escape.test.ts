@@ -39,6 +39,7 @@ type FakeEditor = {
 	clearCustomKeyHandlers(): void;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
+	compactPendingImageReferences(text: string): string;
 };
 
 function createSubmission(input: {
@@ -138,6 +139,7 @@ function createContext(): {
 		clearCustomKeyHandlers: vi.fn(),
 		pendingImages: [],
 		pendingImageLinks: [],
+		compactPendingImageReferences: (text: string) => text,
 	};
 
 	let ctx!: InteractiveModeContext;
@@ -185,6 +187,8 @@ function createContext(): {
 			getQueuedMessages,
 			maybeStartTitleGeneration: vi.fn(),
 			prompt,
+			customCommands: [],
+			promptTemplates: [],
 			subscribe: vi.fn((listener: (event: { type: string }) => void) => {
 				sessionListeners.push(listener);
 				return () => {
@@ -209,6 +213,8 @@ function createContext(): {
 			getKeys: () => [],
 			matches: () => false,
 		} as unknown as InteractiveModeContext["keybindings"],
+		skillCommands: new Map(),
+		fileSlashCommands: new Map(),
 		compactionQueuedMessages: [],
 		isBashMode: false,
 		isPythonMode: false,
