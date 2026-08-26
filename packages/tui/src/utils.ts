@@ -250,6 +250,9 @@ export function getSegmenter(): Intl.Segmenter {
 // added back so width matches the native truncate/slice/wrap helpers.
 const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
 const OSC66_PREFIX = "\x1b]66;";
+// APC sequences (`ESC _ ... ST|BEL`) carry Kitty graphics commands but occupy zero cells.
+const APC_SPAN_REGEX = /\x1b_[\s\S]*?(?:\x07|\x1b\\)/g;
+const APC_PREFIX = "\x1b_";
 const ESC = "\x1b";
 const TAB = "\t";
 const LONG_WIDTH_FAST_PATH_MIN = 128;
@@ -316,8 +319,9 @@ function correctHangulCompatibilityJamoWidth(width: number, str: string): number
  * Visible width of a string in terminal columns, excluding ANSI/OSC escapes.
  *
  * `Bun.stringWidth` does the heavy lifting (UAX#11 width tables + ANSI/OSC
- * stripping); this adds the two corrections it omits — tabs (expanded to
- * `tabWidth` cells) and OSC 66 text-sizing payloads (scaled by `s=`).
+ * stripping); this adds the corrections it omits — tabs (expanded to
+ * `tabWidth` cells), OSC 66 text-sizing payloads (scaled by `s=`), and APC
+ * graphics commands (zero cells).
  */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
@@ -367,8 +371,10 @@ export function visibleWidth(str: string): number {
 
 	// `Bun.stringWidth` is a JSC builtin (no per-call N-API number box, unlike
 	// the native scanner that traps under Bun 1.3.x GC/N-API load). It strips
-	// CSI/OSC to zero cells and shares the native engine's UAX#11 width tables.
-	let width = Bun.stringWidth(str, STRING_WIDTH_OPTS);
+	// CSI/OSC to zero cells and shares the native engine's UAX#11 width tables,
+	// but still counts APC payloads as printable text.
+	const measurable = str.includes(APC_PREFIX, i) ? str.replace(APC_SPAN_REGEX, "") : str;
+	let width = Bun.stringWidth(measurable, STRING_WIDTH_OPTS);
 	if (tabCount > 0) width += tabCount * DEFAULT_TAB_WIDTH;
 
 	// OSC 66: add back each stripped span as `scale * (explicit w ?? payload

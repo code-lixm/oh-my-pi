@@ -2,6 +2,7 @@ export * from "./borderless";
 export * from "./box";
 export * from "./claude";
 export * from "./field";
+export * from "./horizontal";
 export * from "./pi";
 export * from "./rail";
 export * from "./registry";

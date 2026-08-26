@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import { getDashboardStats, getTotalMessageCount, syncAllSessions } from "./aggregator";
 import { closeDb } from "./db";
-import { startServer } from "./server";
+import { formatStatsDashboardUrl, startServer } from "./server";
 
 export {
 	getDashboardStats,
@@ -17,7 +17,7 @@ export {
 } from "./aggregator";
 export { closeDb } from "./db";
 export { getGainDashboardStats } from "./gain-aggregator";
-export { startServer } from "./server";
+export { formatStatsDashboardUrl, startServer } from "./server";
 export type {
 	GainDashboardStats,
 	GainSource,
@@ -113,6 +113,7 @@ async function main(): Promise<void> {
 	const { values } = parseArgs({
 		options: {
 			port: { type: "string", short: "p", default: "3847" },
+			host: { type: "string", default: "127.0.0.1" },
 			json: { type: "boolean", short: "j", default: false },
 			sync: { type: "boolean", short: "s", default: false },
 			help: { type: "boolean", short: "h", default: false },
@@ -129,6 +130,7 @@ Usage:
 
 Options:
   -p, --port <port>  Port for the dashboard server (default: 3847)
+	--host <host>       Host to bind (default: 127.0.0.1)
   -j, --json         Output stats as JSON and exit
   -s, --sync         Sync session files and show summary
   -h, --help         Show this help message
@@ -137,6 +139,7 @@ Examples:
   omp-stats              # Start dashboard server
   omp-stats --json       # Print stats as JSON
   omp-stats --port 8080  # Start on custom port
+	omp-stats --host 0.0.0.0 # Explicitly expose on all IPv4 interfaces
   omp-stats --sync       # Sync and show summary
 `);
 		return;
@@ -182,8 +185,9 @@ Examples:
 
 		// Start server
 		const port = parseInt(values.port || "3847", 10);
-		const { hostname, port: actualPort } = await startServer(port);
-		console.log(`Dashboard available at: http://${hostname}:${actualPort}`);
+		const hostname = values.host || "127.0.0.1";
+		const { port: actualPort } = await startServer(port, { hostname });
+		console.log(`Dashboard available at: ${formatStatsDashboardUrl(hostname, actualPort)}`);
 		console.log("Press Ctrl+C to stop\n");
 
 		// Keep process running

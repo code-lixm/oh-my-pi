@@ -383,11 +383,24 @@ export function emergencyTerminalRestore(): void {
 }
 /** Terminal-reported appearance (dark/light mode). */
 export type TerminalAppearance = "dark" | "light";
+/** Options for {@link Terminal.start}. */
+export interface TerminalStartOptions {
+	/** Paint-only start that leaves stdin in cooked mode until {@link Terminal.enableInput}. */
+	deferInput?: boolean;
+}
 /** Identity of an accepted explicit terminal appearance refresh request. */
 export type TerminalAppearanceRequestToken = number;
 export interface Terminal {
 	// Start the terminal with input, resize, and host-disconnect handlers.
-	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void;
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		onDisconnect?: () => void,
+		options?: TerminalStartOptions,
+	): void;
+
+	/** Take ownership of stdin after a deferred paint-only start. */
+	enableInput?(): void;
 
 	// Stop the terminal and restore state
 	stop(): void;
@@ -570,6 +583,7 @@ export class ProcessTerminal implements Terminal {
 	#wasRaw = false;
 	#inputHandler?: (data: string) => void;
 	#resizeHandler?: () => void;
+	#inputDeferred = false;
 	#stdoutResizeListener?: () => void;
 	#kittyProtocolActive = false;
 	#kittyEnableSeq: string | null = null;
@@ -752,34 +766,52 @@ export class ProcessTerminal implements Terminal {
 		this.#privateModeCallbacks.push(callback);
 	}
 
-	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void {
+	start(
+		onInput: (data: string) => void,
+		onResize: () => void,
+		onDisconnect?: () => void,
+		options?: TerminalStartOptions,
+	): void {
 		this.#inputHandler = onInput;
 		this.#resizeHandler = onResize;
 		this.#disconnectHandler = onDisconnect;
-		// The host terminal's cursor visibility is unknown until we write it.
+		this.#inputDeferred = false;
 		this.#cursorVisible = undefined;
 
-		// Headless and non-TTY paths suppress every real-terminal side effect. Skip
-		// raw mode, stdin listeners, capability probes, SIGWINCH, and emergency
-		// ownership; #safeWrite is also a no-op, so frame paints and teardown
-		// escapes never reach the developer's terminal during `bun test`.
 		this.#headless = isTerminalHeadless() || !process.stdout.isTTY;
 		if (this.#headless) return;
 		this.#terminalOutput = installTerminalOutputOwner();
 		this.#latestFrameId = 0;
 		registerPostmortemTerminalRestore();
-		// Register for emergency cleanup
 		activeTerminal = this;
 		terminalEverStarted = true;
-
-		// Keep unmanaged fd-2 writes (macOS libmalloc/framework diagnostics) off
-		// the viewport while we own the terminal; released in stop(). See
-		// stderr-guard in pi-utils (mirrors openai/codex#24459).
 		suppressTerminalStderr();
 
-		// A multiplexer or SSH disconnect can leave isTTY true after its pty has
-		// been revoked. Raw mode is then impossible, so take the normal terminal
-		// disconnect path rather than letting Bun abort startup with EIO.
+		this.#stdoutResizeListener = () => {
+			this.#cursorVisible = undefined;
+			this.#reconcileInBandGeometryOnResize();
+			this.#resizeHandler?.();
+		};
+		process.stdout.on("resize", this.#stdoutResizeListener);
+		if (process.platform !== "win32") process.kill(process.pid, "SIGWINCH");
+		setHangulCompatibilityJamoWidth(TERMINAL.hangulJamoWidth);
+
+		if (options?.deferInput) {
+			this.#inputDeferred = true;
+			return;
+		}
+		this.#attachInput();
+	}
+
+	enableInput(): void {
+		if (!this.#inputDeferred) return;
+		this.#inputDeferred = false;
+		if (this.#headless || this.#dead) return;
+		this.#attachInput();
+	}
+
+	/** Own stdin and start every capability probe that elicits an input response. */
+	#attachInput(): void {
 		this.#wasRaw = process.stdin.isRaw || false;
 		if (process.stdin.setRawMode) {
 			try {
@@ -796,90 +828,18 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.on("error", this.#stdinErrorHandler);
 		process.stdin.resume();
 
-		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		this.#safeWrite("\x1b[?2004h");
-
-		// Force normal cursor-key (DECCKM) and numeric-keypad mode (terminfo
-		// `rmkx` = "\x1b[?1l\x1b>"). omp decodes both CSI ("\x1b[A") and SS3
-		// ("\x1bOA") arrow encodings, so it never enables application mode
-		// itself — but a prior program that left the TTY in application-cursor-
-		// keys mode makes arrows arrive as SS3. Normalizing on entry keeps input
-		// in the predictable default state; stop() restores the same on exit.
-		// See #6374.
 		this.#safeWrite("\x1b[?1l\x1b>");
-
-		// Set up resize handler immediately. The OS refreshes process.stdout
-		// dimensions before firing `resize`, so it is authoritative for geometry:
-		// reconcile any stale cached DEC 2048 report before notifying the renderer.
-		this.#stdoutResizeListener = () => {
-			// Conservative: some hosts reset modes across a resize/reattach, so
-			// re-establish cursor visibility on the next explicit call.
-			this.#cursorVisible = undefined;
-			this.#reconcileInBandGeometryOnResize();
-			this.#resizeHandler?.();
-		};
-		process.stdout.on("resize", this.#stdoutResizeListener);
-
-		// Refresh terminal dimensions - they may be stale after suspend/resume
-		// (SIGWINCH is lost while process is stopped). Unix only.
-		if (process.platform !== "win32") {
-			process.kill(process.pid, "SIGWINCH");
-		}
-
-		// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
-		// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
-		// events that lose modifier information. Must run after setRawMode(true)
-		// since that resets console mode flags.
 		this.#enableWindowsVTInput();
-		// Query and enable Kitty keyboard protocol
-		// The query handler intercepts input temporarily, then installs the user's handler
-		// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
 		this.#queryAndEnableKittyProtocol();
-		// Explicit probes are safe only after their response parser and stdin
-		// data handler are installed. Keep this false throughout temporary stops.
 		this.#active = true;
-		setHangulCompatibilityJamoWidth(TERMINAL.hangulJamoWidth);
-
-		// Query terminal background color via OSC 11 for dark/light detection.
-		// Uses DA1 (Primary Device Attributes) as a sentinel: terminals process
-		// sequences in order, so if DA1 arrives before OSC 11 response,
-		// the terminal does not support OSC 11. This avoids indefinite hangs.
-		// Technique used by Neovim, bat, fish, and terminal-colorsaurus.
 		this.#queryBackgroundColor();
-
-		// Query OSC 99 notification capabilities for Kitty. The query uses the
-		// same DA1 sentinel FIFO as OSC 11/DECRQM so unsupported terminals resolve
-		// without leaking probe bytes to application input.
 		this.#queryOsc99Support();
-
-		// Subscribe to Mode 2031 appearance change notifications.
-		// When the terminal reports a change, we re-query OSC 11 to get the
-		// actual background color (following Neovim convention) with 100ms debounce.
 		this.#safeWrite("\x1b[?2031h");
-
-		// Theme detection relies on (1) the startup OSC 11 probe above and
-		// (2) DEC Mode 2031 push notifications. Terminals without Mode 2031
-		// (macOS Terminal.app, Warp, VS Code's built-in, older Alacritty/
-		// WezTerm) detect the appearance once at startup and pick up later OS
-		// theme changes on next launch. Earlier builds polled OSC 11 every 30 s
-		// here for those terminals, but each poll's OSC 11/DA1 write wiped the
-		// user's active text selection on several of them (#3297). Native Windows
-		// Terminal gets a scoped fallback after DECRQM confirms 2031 is unsupported.
-
-		// Probe DEC private-mode support via DECRQM. 2026 (synchronized output)
-		// gates the renderer's begin/end markers; 2048 (in-band resize) is enabled
-		// only after the terminal confirms support; 2031 (appearance change
-		// notifications) drives mid-session theme tracking. Xterm ?1010/?1011
-		// are disabled while OMP owns the TTY so typing in the editor does not
-		// force a reader scrolled into native history back to the tail. Each probe
-		// rides the shared DA1 sentinel, so terminals that ignore DECRQM resolve as
-		// unsupported when the DA1 reply arrives.
 		this.#queryPrivateMode(2026);
 		this.#queryPrivateMode(2048);
 		this.#queryPrivateMode(2031);
-		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) {
-			this.#queryPrivateMode(mode);
-		}
+		for (const mode of XTERM_SCROLL_TO_BOTTOM_MODES) this.#queryPrivateMode(mode);
 		this.#scheduleNativeInputActivation();
 	}
 

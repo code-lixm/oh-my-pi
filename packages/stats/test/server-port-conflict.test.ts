@@ -4,6 +4,7 @@ import { connect, type Subprocess } from "bun";
 import {
 	STATS_DASHBOARD_HEADER,
 	STATS_DASHBOARD_HOSTNAME,
+	STATS_DASHBOARD_HOSTNAME_HEADER,
 	STATS_DASHBOARD_SECURITY_VERSION,
 } from "../src/port-conflict";
 import { startServer } from "../src/server";
@@ -24,6 +25,15 @@ async function tcpConnects(hostname: string, port: number): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+function getNonLoopbackIPv4(): string {
+	const interfaces = networkInterfaces();
+	for (const name in interfaces) {
+		for (const address of interfaces[name] ?? []) {
+			if (address.family === "IPv4" && !address.internal) return address.address;
+		}
+	}
+	throw new Error("No non-loopback IPv4 address is available for access tests.");
 }
 
 const holderProcesses: Array<Subprocess<"ignore", "pipe", "pipe">> = [];
@@ -69,34 +79,38 @@ afterEach(async () => {
 });
 
 describe("startServer access", () => {
-	it("only serves loopback requests without cross-origin access", async () => {
+	it("only binds the default dashboard to loopback without cross-origin access", async () => {
 		const server = await startServer(0);
 
 		try {
-			expect(server.hostname).toBe(STATS_DASHBOARD_HOSTNAME);
-			const response = await fetch(`http://${server.hostname}:${server.port}/api/stats/models`);
+			const response = await fetch(`http://${STATS_DASHBOARD_HOSTNAME}:${server.port}/api/stats/models`);
 			expect(response.status).toBe(200);
 			expect(response.headers.get(STATS_DASHBOARD_HEADER)).toBe(STATS_DASHBOARD_SECURITY_VERSION);
+			expect(response.headers.get(STATS_DASHBOARD_HOSTNAME_HEADER)).toBe(STATS_DASHBOARD_HOSTNAME);
 			expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
 			await response.body?.cancel();
 
-			let nonLoopbackHostname: string | undefined;
-			const interfaces = networkInterfaces();
-			for (const name in interfaces) {
-				const addresses = interfaces[name] ?? [];
-				for (const address of addresses) {
-					if (address.family === "IPv4" && !address.internal) {
-						nonLoopbackHostname = address.address;
-						break;
-					}
-				}
-				if (nonLoopbackHostname) break;
-			}
-			expect(nonLoopbackHostname).toBeDefined();
-			expect(await tcpConnects(server.hostname, server.port)).toBe(true);
-			if (nonLoopbackHostname) {
-				expect(await tcpConnects(nonLoopbackHostname, server.port)).toBe(false);
-			}
+			const nonLoopbackHostname = getNonLoopbackIPv4();
+			expect(await tcpConnects(STATS_DASHBOARD_HOSTNAME, server.port)).toBe(true);
+			expect(await tcpConnects(nonLoopbackHostname, server.port)).toBe(false);
+		} finally {
+			server.stop();
+		}
+	});
+
+	it("binds a requested wildcard host and publishes that exposure scope", async () => {
+		const hostname = "0.0.0.0";
+		const server = await startServer(0, { hostname });
+
+		try {
+			const response = await fetch(`http://${STATS_DASHBOARD_HOSTNAME}:${server.port}/api/stats/models`);
+			expect(response.status).toBe(200);
+			expect(response.headers.get(STATS_DASHBOARD_HEADER)).toBe(STATS_DASHBOARD_SECURITY_VERSION);
+			expect(response.headers.get(STATS_DASHBOARD_HOSTNAME_HEADER)).toBe(hostname);
+			expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+			await response.body?.cancel();
+
+			expect(await tcpConnects(getNonLoopbackIPv4(), server.port)).toBe(true);
 		} finally {
 			server.stop();
 		}
@@ -104,18 +118,23 @@ describe("startServer access", () => {
 });
 
 describe("startServer port conflicts", () => {
-	it("reuses a live stats dashboard identified by its header", async () => {
+	it("reuses only a live dashboard whose security and bind-host headers match", async () => {
 		const existing = Bun.serve({
 			port: 0,
 			hostname: STATS_DASHBOARD_HOSTNAME,
 			fetch: request =>
 				new URL(request.url).pathname === "/api/stats/models"
-					? Response.json([], { headers: { [STATS_DASHBOARD_HEADER]: STATS_DASHBOARD_SECURITY_VERSION } })
+					? Response.json([], {
+							headers: {
+								[STATS_DASHBOARD_HEADER]: STATS_DASHBOARD_SECURITY_VERSION,
+								[STATS_DASHBOARD_HOSTNAME_HEADER]: STATS_DASHBOARD_HOSTNAME,
+							},
+						})
 					: new Response("dashboard"),
 		});
 
 		try {
-			const server = await startServer(existing.port);
+			const server = await startServer(existing.port, { hostname: STATS_DASHBOARD_HOSTNAME });
 			expect(server.port).toBe(existing.port);
 			server.stop();
 
@@ -123,10 +142,29 @@ describe("startServer port conflicts", () => {
 			const response = await fetch(`http://${STATS_DASHBOARD_HOSTNAME}:${existing.port}/api/stats/models`);
 			expect(response.status).toBe(200);
 			expect(response.headers.get(STATS_DASHBOARD_HEADER)).toBe(STATS_DASHBOARD_SECURITY_VERSION);
+			expect(response.headers.get(STATS_DASHBOARD_HOSTNAME_HEADER)).toBe(STATS_DASHBOARD_HOSTNAME);
 			await response.body?.cancel();
 		} finally {
 			existing.stop(true);
 		}
+	});
+
+	it("does not reuse a secure dashboard across different exposure hosts", async () => {
+		const holder = await startBunHolder(
+			`Response.json([], { headers: { "${STATS_DASHBOARD_HEADER}": "${STATS_DASHBOARD_SECURITY_VERSION}", "${STATS_DASHBOARD_HOSTNAME_HEADER}": "${STATS_DASHBOARD_HOSTNAME}" } })`,
+		);
+
+		await expect(startServer(holder.port, { hostname: "0.0.0.0" })).rejects.toThrow(
+			"not identifiable as an omp stats dashboard",
+		);
+		expect(holder.child.exitCode).toBeNull();
+
+		const response = await fetch(`http://${STATS_DASHBOARD_HOSTNAME}:${holder.port}/api/stats/models`);
+		expect(response.status).toBe(200);
+		expect(response.headers.get(STATS_DASHBOARD_HEADER)).toBe(STATS_DASHBOARD_SECURITY_VERSION);
+		expect(response.headers.get(STATS_DASHBOARD_HOSTNAME_HEADER)).toBe(STATS_DASHBOARD_HOSTNAME);
+		expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+		await response.body?.cancel();
 	});
 
 	for (const fixture of [

@@ -858,6 +858,35 @@ describe("trySyncSlashCompletion", () => {
 		expect(result!.items[0]?.value).toBe("settings");
 	});
 
+	it("uses command usage only to break slash-command text-score ties", () => {
+		const commands = [
+			{ name: "settings", description: "Open settings menu" },
+			{ name: "setup", description: "Open provider setup" },
+			{ name: "mode" },
+			{ name: "model" },
+		];
+		const usage: Record<string, number> = { settings: 1, setup: 9, mode: 0, model: 100 };
+		const usageAwareProvider = new CombinedAutocompleteProvider(commands, "/tmp", {
+			commandUsage: name => usage[name] ?? 0,
+		});
+
+		expect(usageAwareProvider.trySyncSlashCompletion("/set")!.items.map(item => item.value)).toEqual([
+			"setup",
+			"settings",
+		]);
+		// A 1000-point exact match must not lose to a frequently used 900-point prefix match.
+		expect(usageAwareProvider.trySyncSlashCompletion("/mode")!.items.map(item => item.value)).toEqual([
+			"mode",
+			"model",
+		]);
+
+		const registryOrderProvider = new CombinedAutocompleteProvider(commands, "/tmp");
+		expect(registryOrderProvider.trySyncSlashCompletion("/set")!.items.map(item => item.value)).toEqual([
+			"settings",
+			"setup",
+		]);
+	});
+
 	it("prefers exact command aliases over fuzzy description matches", () => {
 		const provider = new CombinedAutocompleteProvider(
 			[

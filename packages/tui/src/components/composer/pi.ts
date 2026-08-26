@@ -28,7 +28,8 @@ export const piComposerStyle: ComposerStyle = {
 	},
 
 	renderRow(ctx: ComposerRowContext): string[] {
-		return [padding(this.sideChromeWidth(ctx.paddingX)) + ctx.gutter + ctx.text + ctx.pad];
+		const sidePadding = padding(this.sideChromeWidth(ctx.paddingX));
+		return [sidePadding + ctx.gutter + ctx.text + ctx.pad + sidePadding];
 	},
 
 	renderBottom(ctx: ComposerChromeContext): string {

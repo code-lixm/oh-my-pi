@@ -132,6 +132,36 @@ export interface TUIOptions {
 	responsivenessTestHooks?: TuiResponsivenessTestHooks;
 }
 
+/** Physical terminal dimensions supplied to a frame provider. */
+export interface ViewportSize {
+	readonly columns: number;
+	readonly rows: number;
+}
+
+/** Immutable finalized rows offered until the terminal accepts this identifier. */
+export interface HistoryBatch {
+	readonly id: number;
+	readonly rows: readonly string[];
+}
+
+/** One history append and the complete mutable viewport for a terminal frame. */
+export interface TerminalFramePlan {
+	readonly history?: HistoryBatch;
+	readonly viewport: readonly string[];
+}
+
+/** Produces bounded terminal frames and retires acknowledged history batches. */
+export interface TerminalFrameProvider {
+	renderFrame(viewport: ViewportSize): TerminalFramePlan;
+	acknowledgeHistory(id: number): void;
+	/** Full semantic viewport used only on the transient resize buffer. */
+	renderResizeFrame?(viewport: ViewportSize): readonly string[];
+	/** Re-offer finalized history after a display reset or resize replay. */
+	resetHistory?(): void;
+}
+
+export type ResizeScrollbackMode = "append" | "rebuild" | "preserve";
+
 export interface TUIStartOptions {
 	/** Clear saved native scrollback before the first paint. */
 	clearScrollback?: boolean;
@@ -139,6 +169,8 @@ export interface TUIStartOptions {
 	waitForAppearanceMs?: number;
 	/** Hold the first paint until DEC 2026 support is confirmed or this timeout expires. */
 	waitForSynchronizedOutputMs?: number;
+	/** Paint before taking raw stdin ownership; {@link TUI.enableInput} completes startup. */
+	deferInput?: boolean;
 }
 
 const DEFAULT_RENDER_SCHEDULER: RenderScheduler = {
@@ -1238,6 +1270,23 @@ interface OverlayRouteEntry {
 
 export class TUI extends Container {
 	terminal: Terminal;
+	#frameProvider: TerminalFrameProvider | undefined;
+	#acceptedHistoryBatchId = 0;
+	#providerHistoryRows: string[] = [];
+	// Frame-provider history is committed by explicit batch acknowledgement;
+	// these fields anchor its mutable viewport across an alternate-buffer resize.
+	#providerViewportTop = 0;
+	#parkedViewportOffset = 0;
+	#resizeProbe: { window: readonly string[]; offset: number; timer: RenderTimer } | undefined;
+	#pendingCprReplies = 0;
+	#providerWindow: string[] = [];
+	#resizeSettleTimer: RenderTimer | undefined;
+	#suppressResizeUntil = 0;
+	#resizeReplaySize: string | undefined;
+	#resizeAltViewportTop: number | undefined;
+	#resizeAltFrame: string[] = [];
+	#providerViewportRows = 0;
+	#resizeScrollbackMode: ResizeScrollbackMode = TUI.#initialResizeScrollbackMode();
 	#compositorOutput: CompositorOutput;
 	#compositorShadow = new CompositorShadow();
 	#previousFrameLength = 0;
@@ -1480,6 +1529,7 @@ export class TUI extends Container {
 	// {@link #resizeRepaintsInPlace} routes resizes through the in-place path.
 	#altToggleResizesInPlace = false;
 	#stopped = false;
+	#inputDeferred = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -1585,6 +1635,35 @@ export class TUI extends Container {
 		);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
+	}
+
+	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
+		const mode = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
+		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
+	}
+
+	/** Install the product-owned bounded frame provider. */
+	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
+		if (this.#frameProvider === provider) return;
+		this.#frameProvider = provider;
+		this.#acceptedHistoryBatchId = 0;
+		this.#providerHistoryRows = [];
+		this.#providerViewportTop = 0;
+		this.#parkedViewportOffset = 0;
+		this.#providerWindow = [];
+		this.#resizeReplaySize = undefined;
+		this.#cancelResizeProbe();
+		this.requestRender(true);
+	}
+
+	/** Return how settled resizes refresh native scrollback. */
+	getResizeScrollback(): ResizeScrollbackMode {
+		return this.#resizeScrollbackMode;
+	}
+
+	/** Set how settled resizes refresh native scrollback. */
+	setResizeScrollback(mode: ResizeScrollbackMode): void {
+		this.#resizeScrollbackMode = mode;
 	}
 
 	override captureNativeScrollbackWidthEpoch(): unknown {
@@ -1732,6 +1811,7 @@ export class TUI extends Container {
 		width = Math.max(1, width);
 		this.#nativeScrollbackLiveRegionStart = undefined;
 		this.#nativeScrollbackLiveRegionPinned = false;
+		if (this.#frameProvider !== undefined) return this.#renderProviderRows(width);
 		const children = this.children;
 		const previousSegments = this.#frameSegments;
 		const segments: FrameSegment[] = new Array(children.length);
@@ -1869,6 +1949,314 @@ export class TUI extends Container {
 		this.#renderStablePrefixRows = stableRows;
 		this.#preparedValidRows = Math.min(this.#preparedValidRows, stableRows);
 		return frame;
+	}
+
+	/** Adapt explicit history batches to the append-only renderer's full-frame contract. */
+	#renderProviderRows(width: number): readonly string[] {
+		const provider = this.#frameProvider;
+		if (provider === undefined) return [];
+		const height = Math.max(0, this.terminal.rows);
+		const plan = provider.renderFrame({ columns: width, rows: height });
+		const offered = plan.history;
+		if (offered !== undefined) {
+			if (offered.id > this.#acceptedHistoryBatchId) {
+				this.#providerHistoryRows.push(...offered.rows);
+				this.#acceptedHistoryBatchId = offered.id;
+			}
+			provider.acknowledgeHistory(offered.id);
+		}
+
+		const viewport = plan.viewport.length <= height ? plan.viewport : plan.viewport.slice(-height);
+		const rows = [...this.#providerHistoryRows, ...viewport];
+		const frame = this.#composedFrame;
+		let stableRows = this.#composeWidth === width ? Math.min(frame.length, rows.length) : 0;
+		let stable = 0;
+		while (stable < stableRows && frame[stable] === rows[stable]) stable++;
+		stableRows = stable;
+		frame.length = stableRows;
+		this.#pruneFrameCursorMarkers(stableRows);
+		for (let index = stableRows; index < rows.length; index++) this.#ingestFrameRow(rows[index]!);
+
+		this.#frameSegments = [];
+		this.#composeWidth = width;
+		this.#nativeScrollbackLiveRegionStart = this.#providerHistoryRows.length;
+		this.#nativeScrollbackLiveRegionPinned = true;
+		this.#renderStablePrefixRows = stableRows;
+		this.#preparedValidRows = Math.min(this.#preparedValidRows, stableRows);
+		return frame;
+	}
+
+	#renderProviderFrame(width: number, height: number): void {
+		const provider = this.#frameProvider;
+		if (provider === undefined || width <= 0 || height <= 0) return;
+		this.#imageBudget.beginPass();
+		const plan = provider.renderFrame({ columns: width, rows: height });
+		this.#imageBudget.endPass();
+		let viewport = Array.from(plan.viewport);
+		if (viewport.length > height) {
+			const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
+			if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
+			viewport = viewport.slice(0, height);
+		}
+		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
+		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+	}
+
+	#prepareResizeReplay(width: number, height: number): void {
+		const size = `${width}x${height}`;
+		if (
+			!this.#hasEverRendered ||
+			(this.#previousWidth === width && this.#previousHeight === height) ||
+			this.#resizeReplaySize === size ||
+			this.#resizeScrollbackMode === "preserve"
+		) {
+			return;
+		}
+		const provider = this.#frameProvider;
+		if (provider?.resetHistory === undefined) return;
+		this.#resizeReplaySize = size;
+		if (this.#clearScrollbackOnNextRender) {
+			this.#forceViewportRepaintOnNextRender = true;
+			return;
+		}
+		if (this.#resizeScrollbackMode === "rebuild") {
+			this.#prepareForcedRender(true);
+			return;
+		}
+		provider.resetHistory();
+		this.#forceViewportRepaintOnNextRender = true;
+	}
+
+	#emitPlanFrame(
+		width: number,
+		height: number,
+		viewportRows: string[],
+		offered: HistoryBatch | undefined,
+		provider: TerminalFrameProvider | undefined,
+	): void {
+		let viewport = viewportRows;
+		if (this.#getTopmostVisibleOverlay() !== undefined) {
+			while (viewport.length < height) viewport.push("");
+			viewport = this.#compositeOverlaysIntoWindow(viewport, width, height);
+		}
+		const markers = this.#extractCursorMarkers(viewport);
+		const prepared = this.#prepareLinesArray(viewport, width);
+		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
+		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
+		const historyRows = history?.rows ?? [];
+		const preparedHistory = this.#prepareLinesArray(historyRows, width);
+		const rows = prepared.length;
+		const destructiveReset = this.#clearScrollbackOnNextRender;
+		if (destructiveReset) {
+			this.#providerViewportTop = 0;
+			this.#providerWindow = [];
+		}
+		const geometryStable = this.#hasEverRendered && this.#previousWidth === width && this.#previousHeight === height;
+		const startTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
+		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
+		let buffer = this.#paintBeginSequence;
+		for (const sequence of this.#imageBudget.takeTransmits()) buffer += sequence;
+		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+			for (const id of this.#imageBudget.takePurgeIds()) buffer += encodeKittyDeleteImage(id);
+		} else this.#imageBudget.takePurgeIds();
+		if (destructiveReset) buffer += "\x1b[2J\x1b[H\x1b[3J";
+		const diffable =
+			geometryStable &&
+			historyRows.length === 0 &&
+			startTop === newTop &&
+			!this.#forceViewportRepaintOnNextRender &&
+			!destructiveReset &&
+			this.#providerWindow.length > 0;
+		if (diffable) {
+			for (let index = 0; index < rows; index++) {
+				if (this.#providerWindow[index] === prepared[index]) continue;
+				buffer += `\x1b[${newTop + index + 1};1H${this.#lineRewriteSequence(
+					prepared[index] ?? "",
+					width,
+					newTop + index,
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(prepared, index),
+				)}`;
+			}
+			if (this.#providerWindow.length > rows && newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
+		} else {
+			const pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
+			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
+				buffer += `\x1b[${this.#providerViewportTop + 1};1H\x1b[J`;
+			}
+			buffer += `\x1b[${startTop + 1};1H`;
+			let screenRow = startTop;
+			for (let index = 0; index < preparedHistory.length; index++) {
+				if (screenRow > startTop) buffer += "\r\n";
+				buffer += this.#lineRewriteSequence(preparedHistory[index] ?? "", width, Math.min(screenRow, height - 1), -1, -1, this.#osc66SpacerGlyphWidth(preparedHistory, index));
+				screenRow++;
+			}
+			for (let index = 0; index < rows; index++) {
+				if (screenRow > startTop) buffer += "\r\n";
+				buffer += this.#lineRewriteSequence(prepared[index] ?? "", width, Math.min(screenRow, height - 1), -1, -1, this.#osc66SpacerGlyphWidth(prepared, index));
+				screenRow++;
+			}
+			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
+		}
+		const marker = markers[0];
+		const target = marker !== undefined && rows > 0
+			? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
+			: null;
+		if (target) {
+			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
+			this.#parkedViewportOffset = Math.max(0, target.row - newTop);
+		} else {
+			buffer += `\x1b[?25l\x1b[${newTop + 1};1H`;
+			this.#parkedViewportOffset = 0;
+		}
+		buffer += this.#paintEndSequence;
+		this.#writeTerminal(buffer);
+		if (target) this.#recordHardwareCursorState(target);
+		else this.#recordHardwareCursorHidden();
+		this.#providerWindow = prepared;
+		this.#providerViewportRows = rows;
+		this.#providerViewportTop = newTop;
+		this.#previousWidth = width;
+		this.#previousHeight = height;
+		this.#previousFrameLength = rows;
+		this.#clearScrollbackOnNextRender = false;
+		this.#forceViewportRepaintOnNextRender = false;
+		this.#hasEverRendered = true;
+		this.#resizeReplaySize = undefined;
+		if (history !== undefined) {
+			this.#acceptedHistoryBatchId = history.id;
+			provider?.acknowledgeHistory(history.id);
+			this.requestRender();
+		}
+	}
+
+	#beginResizeAltPaint(): void {
+		if (this.#altActive) {
+			this.requestRender(true);
+			return;
+		}
+		if (!this.#resizeAltActive) {
+			this.#resizeAltActive = true;
+			setAltScreenActive(true);
+			this.#altPreviousLines = [];
+			this.#forgetHardwareCursorState();
+			this.#recordHardwareCursorHidden();
+			let erase = "";
+			// A preserving height-grow has no live-row push risk. Keep the normal
+			// buffer's already-reflowed retired prefix intact; the settled plan only
+			// rewrites the mutable viewport beneath it.
+			const preserveGrowing =
+				this.#resizeScrollbackMode === "preserve" && this.terminal.rows >= this.#previousHeight;
+			if (this.#hasEverRendered && this.#providerWindow.length > 0 && !preserveGrowing) {
+				if (this.terminal.rows < this.#previousHeight) {
+					const staleRows = this.#reflowedRowCount(this.#providerWindow, 0, this.#providerWindow.length, this.terminal.columns);
+					const top = Math.max(0, Math.min(this.#providerViewportTop, this.terminal.rows - staleRows));
+					erase = `\x1b[?25l\x1b[${top + 1};1H\x1b[J`;
+				} else {
+					const up = this.#reflowedRowCount(this.#providerWindow, 0, this.#parkedViewportOffset, this.terminal.columns);
+					erase = `\x1b[?25l${up > 0 ? `\x1b[${up}A` : ""}\r\x1b[J`;
+				}
+				this.#providerWindow = [];
+				this.#parkedViewportOffset = 0;
+			}
+			this.#writeTerminal(`${erase}\x1b[?1049h${this.#keyboardEnhancementEnter()}`);
+		}
+		this.#resizeSettleTimer?.cancel();
+		this.#resizeSettleTimer = this.#renderScheduler.scheduleRender(() => {
+			this.#resizeSettleTimer = undefined;
+			if (this.#stopped || !this.#resizeAltActive) return;
+			this.#resizeAltActive = false;
+			this.#suppressResizeUntil = this.#renderScheduler.now() + 100;
+			this.#writeTerminal(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			setAltScreenActive(false);
+			this.#altPreviousLines = [];
+			this.#beginResizeAnchorProbe();
+		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
+		this.requestRender(true);
+	}
+
+	#beginResizeAnchorProbe(): void {
+		this.#cancelResizeProbe();
+		const timer = this.#renderScheduler.scheduleRender(() => this.#resolveResizeAnchor(undefined), 200);
+		this.#resizeProbe = { window: this.#providerWindow, offset: this.#parkedViewportOffset, timer };
+		this.#pendingCprReplies++;
+		this.#writeTerminal("\x1b[6n");
+	}
+
+	#cancelResizeProbe(): void {
+		if (this.#resizeProbe === undefined) return;
+		this.#resizeProbe.timer.cancel();
+		this.#resizeProbe = undefined;
+	}
+
+	#resolveResizeAnchor(reportedRow: number | undefined): void {
+		const probe = this.#resizeProbe;
+		if (probe === undefined) return;
+		probe.timer.cancel();
+		this.#resizeProbe = undefined;
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		const staleRows = this.#reflowedRowCount(probe.window, 0, probe.window.length, width);
+		const reportedTop =
+			reportedRow === undefined
+				? this.#providerViewportTop
+				: reportedRow - this.#reflowedRowCount(probe.window, 0, probe.offset, width);
+		const semanticTop = this.#resizeAltViewportTop;
+		this.#resizeAltViewportTop = undefined;
+		const top =
+			this.#resizeScrollbackMode === "preserve" && semanticTop !== undefined
+				? semanticTop
+				: Math.max(0, Math.min(reportedTop, height - staleRows));
+		this.#providerViewportTop = Math.min(Math.max(0, top), Math.max(0, height - 1));
+		if (
+			this.#resizeScrollbackMode === "preserve" &&
+			height >= this.#previousHeight &&
+			this.#resizeAltFrame.length > 0
+		) {
+			this.#restoreResizeAltFrame(this.#resizeAltFrame, width, height);
+		}
+		this.#resizeAltFrame = [];
+		this.#forceViewportRepaintOnNextRender = true;
+		this.requestRender(true);
+	}
+
+	#reflowedRowCount(window: readonly string[], start: number, end: number, width: number): number {
+		const stop = Math.min(end, window.length);
+		const from = Math.max(0, start);
+		if (isInsideTerminalMultiplexer()) return Math.max(0, stop - from);
+		let rows = 0;
+		for (let index = from; index < stop; index++) rows += Math.max(1, Math.ceil(visibleWidth(window[index]!) / Math.max(1, width)));
+		return rows;
+	}
+
+	#restoreResizeAltFrame(frame: readonly string[], width: number, height: number): void {
+		let buffer = this.#paintBeginSequence;
+		for (let row = 0; row < height; row++) {
+			buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(
+				frame[row] ?? "",
+				width,
+				row,
+				-1,
+				-1,
+				this.#osc66SpacerGlyphWidth(frame, row),
+			)}`;
+		}
+		buffer += this.#paintEndSequence;
+		this.#writeTerminal(buffer);
+	}
+
+	#renderProviderResizeAltFrame(width: number, height: number): void {
+		const provider = this.#frameProvider;
+		this.#imageBudget.beginPass();
+		const rendered = provider?.renderResizeFrame?.({ columns: width, rows: height }) ?? (provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
+		this.#imageBudget.endPass();
+		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
+		this.#resizeAltViewportTop = Math.max(0, viewport.length - Math.min(this.#providerViewportRows, viewport.length));
+		this.#extractCursorMarkers(viewport);
+		const prepared = this.#prepareLinesArray(viewport, width);
+		this.#resizeAltFrame = Array.from({ length: height }, (_value, row) => prepared[row] ?? "");
+		this.#emitAltFrame(prepared, width, height);
 	}
 
 	/** Drop cached cursor markers at/after `fromRow` (those rows re-ingest). */
@@ -2188,6 +2576,7 @@ export class TUI extends Container {
 	}
 
 	start(options?: TUIStartOptions): void {
+		this.#inputDeferred = options?.deferInput === true;
 		this.#stopped = false;
 		this.#armStartupSynchronizedOutputWait(options?.waitForSynchronizedOutputMs);
 		this.#armStartupAppearanceWait(options?.waitForAppearanceMs);
@@ -2209,6 +2598,19 @@ export class TUI extends Container {
 		this.terminal.start(
 			data => this.#receiveTerminalInput(data),
 			() => {
+				if (this.#frameProvider !== undefined) {
+					if (this.#resizeProbe !== undefined) {
+						this.#cancelResizeProbe();
+						this.#beginResizeAltPaint();
+						return;
+					}
+					if (this.#renderScheduler.now() < this.#suppressResizeUntil) {
+						this.requestRender(true);
+						return;
+					}
+					this.#beginResizeAltPaint();
+					return;
+				}
 				// Real terminals deliver SIGWINCH (and the equivalent ConPTY
 				// notification) atomically with the new `process.stdout` geometry, so
 				// a forced render must fire immediately: it clears and replays at the
@@ -2273,6 +2675,7 @@ export class TUI extends Container {
 				});
 			},
 			() => this.stop(),
+			{ deferInput: this.#inputDeferred },
 		);
 		if (this.#stopped) return;
 		for (const listener of this.#startListeners) {
@@ -2284,9 +2687,20 @@ export class TUI extends Container {
 		}
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
+		if (!this.#inputDeferred) {
+			this.#querySixelSupport();
+			this.#queryCellSize();
+		}
+		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
+	}
+
+	/** Complete a paint-only startup by taking raw stdin ownership and starting probes. */
+	enableInput(): void {
+		if (!this.#inputDeferred || this.#stopped) return;
+		this.#inputDeferred = false;
+		this.terminal.enableInput?.();
 		this.#querySixelSupport();
 		this.#queryCellSize();
-		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
 
 	addStartListener(listener: StartListener): () => void {
@@ -2483,6 +2897,9 @@ export class TUI extends Container {
 		this.#clearSixelProbeState();
 		this.#stopped = true;
 		this.#watchdog.stop();
+		this.#resizeSettleTimer?.cancel();
+		this.#resizeSettleTimer = undefined;
+		this.#cancelResizeProbe();
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
 			this.#renderTimer = undefined;
@@ -2561,6 +2978,10 @@ export class TUI extends Container {
 		// every row, so opt the next full paint out of the ConPTY resume bound.
 		// Set before the multiplexer early-return so it survives a deferred paint.
 		this.#unboundedConptyPaintRequested = true;
+		if (this.#frameProvider !== undefined) {
+			this.#frameProvider.resetHistory?.();
+			this.#providerHistoryRows = [];
+		}
 		this.invalidate();
 		if (this.#startupAppearanceWaitActive) {
 			this.requestRender(true);
@@ -3041,6 +3462,10 @@ export class TUI extends Container {
 		return true;
 	}
 	#prepareForcedRender(clearScrollback: boolean): void {
+		if (clearScrollback && !this.#clearScrollbackOnNextRender) {
+			this.#frameProvider?.resetHistory?.();
+			if (TERMINAL.imageProtocol === ImageProtocol.Kitty) this.#imageBudget.forgetTransmitted();
+		}
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
 		this.#forceViewportRepaintOnNextRender = true;
 		if (this.#renderTimer) {
@@ -3144,6 +3569,14 @@ export class TUI extends Container {
 	}
 
 	#receiveTerminalInput(data: string): void {
+		while (this.#pendingCprReplies > 0) {
+			const match = data.match(/\x1b\[(\d+);(\d+)R/);
+			if (match === null || match.index === undefined) break;
+			this.#pendingCprReplies--;
+			this.#resolveResizeAnchor(Number(match[1]) - 1);
+			data = data.slice(0, match.index) + data.slice(match.index + match[0].length);
+		}
+		if (data.length === 0) return;
 		const receivedAt = this.#renderScheduler.now();
 		this.#runResponsivenessTestStage("input.received");
 		this.#handleInput(data, receivedAt);
@@ -3778,6 +4211,18 @@ export class TUI extends Container {
 			this.#writeTerminal(wantNormalMouseTracking ? MOUSE_CLICK_TRACKING_ON : MOUSE_CLICK_TRACKING_OFF);
 			this.#normalMouseTrackingActive = wantNormalMouseTracking;
 		}
+		if (this.#frameProvider !== undefined) {
+			this.#componentRenderTargets.clear();
+			if (this.#resizeAltActive) {
+				this.#renderProviderResizeAltFrame(width, height);
+				return;
+			}
+			if (this.#resizeProbe !== undefined) return;
+			this.#prepareResizeReplay(width, height);
+			this.#renderProviderFrame(width, height);
+			return;
+		}
+
 
 		// Resize viewport fast path. While a non-multiplexer drag is in flight,
 		// paint only the viewport and skip composing the off-screen history.
@@ -5192,7 +5637,11 @@ try {
 			// rebuild — ED3 + full history — and the clearScrollback intent below
 			// matches the gesture-driven reset path.
 			this.#resizeEventPending = true;
-			this.requestRender(true, { clearScrollback: !isMultiplexerSession() });
+			const clearScrollback =
+				this.#frameProvider === undefined
+					? !isMultiplexerSession()
+					: this.#resizeScrollbackMode === "rebuild" && !isMultiplexerSession();
+			this.requestRender(true, { clearScrollback });
 		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
 	}
 
@@ -5261,6 +5710,16 @@ try {
 		width: number,
 		height: number,
 	): { framed: readonly string[]; viewportTop: number; contentRows: number } {
+		const frameProvider = this.#frameProvider;
+		if (frameProvider !== undefined) {
+			const size = { columns: width, rows: height };
+			const rendered = frameProvider.renderResizeFrame?.(size) ?? frameProvider.renderFrame(size).viewport;
+			const visible = rendered.length <= height ? Array.from(rendered) : Array.from(rendered.slice(-height));
+			const contentRows = visible.length;
+			while (visible.length < height) visible.push("");
+			this.#extractCursorMarkers(visible);
+			return { framed: this.#prepareLinesArray(visible, width), viewportTop: 0, contentRows };
+		}
 		const maxRows = height + TUI.#OSC66_MAX_SPACER_ROWS;
 		const tail: string[] = []; // bottom-first: viewport rows plus context above
 		const children = this.children;
@@ -5336,6 +5795,10 @@ try {
 	 * multiplexer handling remains authoritative through the static predicate.
 	 */
 	#resizeRepaintsInPlace(): boolean {
+		// Frame providers own finalized history in semantic batches. Their append
+		// and preserve modes must keep that tape through a resize rather than let
+		// the generic direct-terminal geometry path erase it with ED3.
+		if (this.#frameProvider !== undefined && this.#resizeScrollbackMode !== "rebuild") return true;
 		const override = Bun.env.PI_TUI_RESIZE_IN_PLACE;
 		const allowAutoDetection = override !== "0" && override !== "false";
 		return resizeRepaintsInPlace() || (allowAutoDetection && this.#altToggleResizesInPlace);

@@ -280,12 +280,16 @@ export class VirtualTerminal implements Terminal {
 
 	// --- Test-only helpers ---------------------------------------------------
 
-	/** Wait for TUI's throttled render pipeline to settle (matches the ~33ms frame budget). */
-	async waitForRender(): Promise<void> {
+	/** Wait for the throttled render pipeline, optionally until an observable frame appears. */
+	async waitForRender(until?: () => boolean): Promise<void> {
 		const nextTick = Promise.withResolvers<void>();
 		process.nextTick(nextTick.resolve);
 		await nextTick.promise;
 		await Bun.sleep(40);
+		if (until) {
+			const deadline = Date.now() + 2_000;
+			while (!until() && Date.now() < deadline) await Bun.sleep(10);
+		}
 		await this.flush();
 	}
 
@@ -429,6 +433,7 @@ export class VirtualTerminal implements Terminal {
 	// --- Internals -----------------------------------------------------------
 
 	#engineWrite(data: string): void {
+		const cursorReports = data.match(/\x1b\[6n/g)?.length ?? 0;
 		const wasBottom = this.#atBottom();
 		const clearScrollbackAfterFullClear = "\x1b[2J\x1b[H\x1b[3J";
 		// Destructive full paints emit home + ED3 without ED2 (TUI#emitFullPaint
@@ -436,7 +441,7 @@ export class VirtualTerminal implements Terminal {
 		const destructiveClear = "\x1b[H\x1b[3J";
 		const fullClearIndex = data.indexOf(clearScrollbackAfterFullClear);
 		const destructiveIndex = data.indexOf(destructiveClear);
-		if (fullClearIndex >= 0 && this.#clearFollowsPaintBegin(data, fullClearIndex)) {
+		if (fullClearIndex >= 0) {
 			// ghostty-web 0.4 can trap in WASM when libghostty-vt processes a
 			// full-clear + ED3 repaint against an existing history buffer. The
 			// sequence's observable effect here is a blank terminal with empty
@@ -464,6 +469,12 @@ export class VirtualTerminal implements Terminal {
 		data = stripCombiningMarksForGhostty(data);
 		this.#writeToGhostty(data);
 		this.#refollowBottom(wasBottom);
+		for (let index = 0; index < cursorReports; index++) {
+			const cursor = this.#term.getCursor();
+			// Deliver asynchronously like a real PTY read loop; synchronous delivery
+			// would re-enter the TUI while its output transaction is still active.
+			queueMicrotask(() => this.#inputHandler?.(`\x1b[${cursor.y + 1};${cursor.x + 1}R`));
+		}
 	}
 
 	#stripSynchronizedOutput(data: string): string {

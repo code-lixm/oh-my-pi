@@ -12,6 +12,8 @@
 - Added a process-owned terminal-output route with FIFO reliable controls and replaceable latest-frame writes, plus bounded flush/close barriers and direct-write fallback when native broker construction is unavailable.
 - Added non-authoritative native row-plan and editor-input shadows that continuously compare against JavaScript compositor/editor state and disable themselves on the first mismatch without changing rendered output or edit semantics.
 - Added a bounded native Unix stdin bridge with priority preservation for control bytes, time/event/byte-budgeted JavaScript draining, conservative multiplexer and unsupported-host fallback, immediate kill switches, and an opt-in-safe hardware-cursor HUD hook.
+- Added registry-backed composer styles for boxed, ruled, borderless, filled, and accent-rail prompts, including extension-defined layouts.
+- Added `EditorTextAssistProvider` support and bounded wrapped-description controls for autocomplete/select lists.
 
 ### Changed
 - Changed TUI render scheduling to expose compose-cost samples only after a frame commits; failed compose attempts and uncommitted deferred frames do not feed owners' adaptive scheduling.
@@ -19,6 +21,8 @@
 ### Fixed
 - Fixed direct-terminal Native stdin becoming unresponsive after an earlier input batch when compiled Bun stranded a wake with its JavaScript loop idle; an event-driven native readiness promise now preserves Rust stdin ownership without polling, and input-triggered paints preempt animation backpressure while retaining the 30 fps cadence so typing and deletion remain responsive.
 - Fixed Native HUD echoes and compact differential frames without a newline remaining in Rust's line-buffered stdout, which left editor text or the hardware cursor visually stale until a later full paint.
+- Fixed Kitty APC graphics commands being counted as printable cells, which misaligned thumbnail-card borders.
+- Fixed editor native-scrollback width epochs missing layout-only changes such as border styles, status revisions, cursor modes, height, and autocomplete rows.
 
 - Fixed event-loop watchdog reports losing render attribution by marking the complete synchronous TUI render and terminal-paint cycle as `ui.render`, including exception-safe phase cleanup.
 

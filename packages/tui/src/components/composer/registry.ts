@@ -2,6 +2,7 @@ import { borderlessComposerStyle } from "./borderless";
 import { boxComposerStyle } from "./box";
 import { claudeComposerStyle } from "./claude";
 import { fieldComposerStyle } from "./field";
+import { horizontalComposerStyle } from "./horizontal";
 import { piComposerStyle } from "./pi";
 import { railComposerStyle } from "./rail";
 import { ruleComposerStyle } from "./rule";
@@ -15,6 +16,7 @@ const BUILTIN_COMPOSER_STYLES: Readonly<Record<string, ComposerStyle>> = {
 	rule: ruleComposerStyle,
 	field: fieldComposerStyle,
 	rail: railComposerStyle,
+	horizontal: horizontalComposerStyle,
 };
 const extensionComposerStyles = new Map<string, ComposerStyle>();
 
