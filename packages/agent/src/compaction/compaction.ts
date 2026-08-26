@@ -16,6 +16,7 @@ import {
 	type Message,
 	type MessageAttribution,
 	type Model,
+	type OneshotRetryOptions,
 	type ProviderSessionState,
 	type SimpleStreamOptions,
 	type Tool,
@@ -27,14 +28,17 @@ import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/provi
 import { convertTools } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { stripOpenAIResponsesOutputOnlyStatusesForReplay } from "@oh-my-pi/pi-ai/utils";
-import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import { type Dialect, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { isRecord, logger, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
-import { countTokens } from "../tokenizer";
+import { Tokenizer } from "../tokenizer";
 import type { AgentMessage } from "../types";
+
+const defaultTokenizer = new Tokenizer();
+
 import {
 	buildCompactionV2Request,
 	getCompactionV2PreserveData,
@@ -67,6 +71,7 @@ import snapcompactArchiveContextPrompt from "./prompts/snapcompact-archive-conte
 import {
 	computeFileLists,
 	createFileOps,
+	escapeSummaryBoundaryTags,
 	extractFileOpsFromMessage,
 	type FileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
@@ -77,6 +82,142 @@ import {
 
 // ============================================================================
 // File Operation Tracking
+const DEFAULT_SUMMARY_INPUT_WINDOW = 200_000;
+const MIN_SUMMARY_INPUT_TOKENS = 16_384;
+
+/** Smallest window worth planning for `model`; below this, overflow recovery gives up. */
+function minSummaryInputTokens(model: Model): number {
+	const window =
+		model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
+	return Math.min(MIN_SUMMARY_INPUT_TOKENS, Math.max(1_024, Math.floor(window / 8)));
+}
+
+/** Usable conversation input for ONE summarization call: window - summary - reserves. */
+function summaryInputBudgetTokens(model: Model, maxTokens: number): number {
+	const window =
+		model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
+	return Math.max(minSummaryInputTokens(model), Math.floor(window * 0.8) - maxTokens - MAX_SUMMARY_TOKENS);
+}
+
+function clampConversationToBudget(text: string, budgetTokens: number, tokens: number): string {
+	if (tokens <= budgetTokens) return text;
+	const keep = Math.max(1024, Math.floor((text.length * budgetTokens * 0.95) / tokens));
+	if (keep >= text.length) return text;
+	return `${text.slice(0, keep)}\n\n[... ${text.length - keep} more characters truncated]`;
+}
+
+/** One planned summarization call: its messages and the budget they were packed for. */
+interface SummaryWindow {
+	messages: Message[];
+	budgetTokens: number;
+	text?: string;
+}
+
+function planSummaryWindows(
+	messages: Message[],
+	tokenizer: Tokenizer,
+	dialect: Dialect | undefined,
+	budgetTokens: number,
+): Message[][] {
+	const windows: Message[][] = [];
+	let current: Message[] = [];
+	let currentTokens = 0;
+	for (const message of messages) {
+		const tokens = tokenizer.countTokens(serializeConversationForSummary([message], dialect));
+		if (currentTokens > 0 && currentTokens + tokens > budgetTokens) {
+			windows.push(current);
+			current = [];
+			currentTokens = 0;
+		}
+		current.push(message);
+		currentTokens += tokens;
+	}
+	if (current.length > 0) windows.push(current);
+	return windows;
+}
+
+async function summarizeConversationWindow(
+	conversationText: string,
+	previousSummary: string | undefined,
+	model: Model,
+	maxTokens: number,
+	apiKey: ApiKey,
+	signal: AbortSignal | undefined,
+	customInstructions: string | undefined,
+	options: SummaryOptions | undefined,
+): Promise<string> {
+	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+	if (options?.promptOverride) {
+		basePrompt = options.promptOverride;
+	}
+	if (customInstructions) {
+		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
+	}
+
+	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
+	if (previousSummary) {
+		promptText += `<previous-summary>\n${escapeSummaryBoundaryTags(previousSummary)}\n</previous-summary>\n\n`;
+	}
+	promptText += formatAdditionalContext(options?.extraContext);
+	promptText += basePrompt;
+
+	const summarizationMessages = [
+		{
+			role: "user" as const,
+			content: [{ type: "text" as const, text: promptText }],
+			timestamp: Date.now(),
+		},
+	];
+
+	if (options?.remoteEndpoint) {
+		const endpoint = options.remoteEndpoint;
+		const remote = await withAuth(
+			apiKey,
+			key =>
+				requestRemoteCompaction(
+					endpoint,
+					{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, prompt: promptText, maxTokens },
+					signal,
+					{ fetch: options.fetch, model, apiKey: key },
+				),
+			{ signal, missingKeyMessage: "Remote compaction credentials unavailable" },
+		);
+		return remote.summary;
+	}
+
+	const response = await instrumentedCompleteSimple(
+		model,
+		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
+		{
+			maxTokens,
+			signal,
+			apiKey,
+			reasoning: resolveCompactionEffort(model, options?.thinkingLevel),
+			initiatorOverride: options?.initiatorOverride,
+			metadata: options?.metadata,
+			fetch: options?.fetch,
+			sessionId: options?.sessionId,
+			promptCacheKey: options?.promptCacheKey,
+			providerSessionState: options?.providerSessionState,
+			codexCompaction: localCodexCompaction(options),
+		},
+		{
+			telemetry: options?.telemetry,
+			oneshotKind: "compaction_summary",
+			completeImpl: options?.completeImpl,
+			retry: summaryOneshotRetry(options),
+		},
+	);
+
+	if (response.stopReason === "error") {
+		throw createSummarizationError("Summarization failed", response);
+	}
+
+	return response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map(c => c.text)
+		.join("\n");
+}
 // ============================================================================
 
 export interface CompactionTodoFact {
@@ -525,104 +666,9 @@ export function estimateTokens(message: AgentMessage, options?: { excludeEncrypt
 	if (cacheable) writeEstimateCache(message, excludeEncryptedReasoning, result);
 	return result;
 }
-
 function computeMessageTokens(message: AgentMessage, options?: { excludeEncryptedReasoning?: boolean }): number {
-	const fragments: string[] = [];
-	let extra = 0;
-	if ((message as { role?: string }).role === "bashExecution") {
-		const bash = message as { command?: unknown; output?: unknown };
-		if (typeof bash.command === "string") fragments.push(bash.command);
-		if (typeof bash.output === "string") fragments.push(bash.output);
-		return fragments.length === 0 ? 0 : countTokens(fragments);
-	}
-
-	switch (message.role) {
-		case "user": {
-			const content = (message as { content: string | Array<{ type: string; text?: string }> }).content;
-			if (typeof content === "string") {
-				fragments.push(content);
-			} else if (Array.isArray(content)) {
-				for (const block of content) {
-					if (block.type === "text" && block.text) {
-						fragments.push(block.text);
-					}
-				}
-			}
-			break;
-		}
-		case "assistant": {
-			const assistant = message as AssistantMessage;
-			for (const block of assistant.content) {
-				if (block.type === "text") {
-					fragments.push(block.text);
-				} else if (block.type === "thinking") {
-					fragments.push(block.thinking);
-					// Providers charge for the opaque signature/reasoning payload that
-					// rides alongside the thinking text (OpenAI Responses encrypted
-					// reasoning items, Anthropic signed thinking blocks, etc.). Without
-					// counting it, this estimator can read ~half of the provider-reported
-					// usage on thinking-heavy turns — see #2275 for the resulting
-					// compaction-trigger / post-check metric divergence. The compaction
-					// floor excludes it (its local byte size diverges from provider billing).
-					if (block.thinkingSignature && !options?.excludeEncryptedReasoning) {
-						fragments.push(block.thinkingSignature);
-					}
-				} else if (block.type === "toolCall") {
-					fragments.push(block.name);
-					fragments.push(stringifyJson(block.arguments) ?? "null");
-				} else if (block.type === "redactedThinking") {
-					// Encrypted reasoning blob the provider still bills for on replay;
-					// excluded from the compaction floor for the same reason as above.
-					if (!options?.excludeEncryptedReasoning) fragments.push(block.data);
-				} else if (block.type === "anthropicServerTool") {
-					// Native Anthropic server-tool call/result replayed verbatim on the
-					// wire (server_tool_use input, web_search_tool_result
-					// encrypted_content). Opaque provider-replay state the provider still
-					// bills for on same-provider replay; excluded from the compaction
-					// floor like other encrypted reasoning because its local byte size
-					// diverges from provider billing.
-					if (!options?.excludeEncryptedReasoning) fragments.push(stringifyJson(block.block) ?? "null");
-				}
-			}
-			break;
-		}
-		case "hookMessage":
-		case "toolResult": {
-			if (typeof message.content === "string") {
-				fragments.push(message.content);
-			} else {
-				for (const block of message.content) {
-					if (block.type === "text" && block.text) {
-						fragments.push(block.text);
-					} else if (block.type === "image") {
-						extra += IMAGE_TOKEN_ESTIMATE;
-					}
-				}
-			}
-			break;
-		}
-		case "branchSummary":
-		case "compactionSummary": {
-			fragments.push(message.summary);
-			if (message.role === "compactionSummary") {
-				if (message.blocks) {
-					for (const block of message.blocks) {
-						if (block.type === "text") fragments.push(block.text);
-						else extra += snapcompact.FRAME_TOKEN_ESTIMATE;
-					}
-				} else if (message.images) {
-					// Snapcompact frames render at ≥1568px; providers bill the downscaled cap.
-					extra += message.images.length * snapcompact.FRAME_TOKEN_ESTIMATE;
-				}
-			}
-			break;
-		}
-		default:
-			return 0;
-	}
-
-	if (fragments.length === 0) return extra;
-	return extra + countTokens(fragments);
+	const tokenizer = defaultTokenizer;
+	return tokenizer.countMessage(message, options);
 }
 
 function estimateEntriesTokens(entries: SessionEntry[], startIndex: number, endIndex: number): number {
@@ -937,6 +983,14 @@ export interface SummaryOptions {
 		ctx: Context,
 		options: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
+	/** Transient retry policy for replay-safe summarization oneshots; false disables it. */
+	oneshotRetry?: OneshotRetryOptions | false;
+}
+
+function summaryOneshotRetry(options: SummaryOptions | undefined): OneshotRetryOptions | undefined {
+	const configured = options?.oneshotRetry;
+	if (configured === false) return undefined;
+	return configured ?? {};
 }
 
 function localCodexCompaction(options: SummaryOptions | undefined) {
@@ -979,91 +1033,63 @@ export async function generateSummary(
 ): Promise<string> {
 	const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), MAX_SUMMARY_TOKENS);
 
-	// Use update prompt if we have a previous summary, otherwise initial prompt
-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-	if (options?.promptOverride) {
-		basePrompt = options.promptOverride;
-	}
-	if (customInstructions) {
-		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
-	}
-
-	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom app messages when caller provides a transformer).
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(currentMessages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id));
+	const tokenizer = new Tokenizer(model);
+	const dialect = preferredDialect(model.id);
+	const wholeConversation = serializeConversationForSummary(llmMessages, dialect);
+	const budgetTokens = summaryInputBudgetTokens(model, maxTokens);
 
-	// Build the prompt with conversation wrapped in tags
-	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+	const pending: SummaryWindow[] = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits
+		? [{ messages: llmMessages, budgetTokens, text: wholeConversation }]
+		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens).map(messages => ({
+				messages,
+				budgetTokens,
+			}));
+
+	let carriedSummary = previousSummary;
+	while (pending.length > 0) {
+		const window = pending[0];
+		const text = window.text ?? serializeConversationForSummary(window.messages, dialect);
+		const budget = tokenizer.checkTokenBudget(text, window.budgetTokens);
+		try {
+			carriedSummary = await summarizeConversationWindow(
+				budget.fits ? text : clampConversationToBudget(text, window.budgetTokens, budget.tokens),
+				carriedSummary,
+				model,
+				maxTokens,
+				apiKey,
+				signal,
+				customInstructions,
+				options,
+			);
+		} catch (error) {
+			const sentTokens = budget.exact ? budget.tokens : tokenizer.countTokens(text, "strict");
+			const halved = Math.floor(Math.min(window.budgetTokens, sentTokens) / 2);
+			if (
+				!AIError.is(AIError.classify(error), AIError.Flag.ContextOverflow) ||
+				halved < minSummaryInputTokens(model)
+			) {
+				throw error;
+			}
+			pending.splice(
+				0,
+				1,
+				...planSummaryWindows(window.messages, tokenizer, dialect, halved).map(messages => ({
+					messages,
+					budgetTokens: halved,
+				})),
+			);
+			continue;
+		}
+		pending.shift();
 	}
-	promptText += formatAdditionalContext(options?.extraContext);
-	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
-
-	if (options?.remoteEndpoint) {
-		const endpoint = options.remoteEndpoint;
-		const remote = await withAuth(
-			apiKey,
-			key =>
-				requestRemoteCompaction(
-					endpoint,
-					{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, prompt: promptText, maxTokens },
-					signal,
-					{ fetch: options.fetch, model, apiKey: key },
-				),
-			{ signal, missingKeyMessage: "Remote compaction credentials unavailable" },
-		);
-		return remote.summary;
-	}
-
-	const response = await instrumentedCompleteSimple(
-		model,
-		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
-		{
-			maxTokens,
-			signal,
-			apiKey,
-			reasoning: resolveCompactionEffort(model, options?.thinkingLevel),
-			initiatorOverride: options?.initiatorOverride,
-			metadata: options?.metadata,
-			fetch: options?.fetch,
-			sessionId: options?.sessionId,
-			promptCacheKey: options?.promptCacheKey,
-			providerSessionState: options?.providerSessionState,
-			codexCompaction: localCodexCompaction(options),
-		},
-		{ telemetry: options?.telemetry, oneshotKind: "compaction_summary", completeImpl: options?.completeImpl },
-	);
-
-	if (response.stopReason === "error") {
-		throw createSummarizationError("Summarization failed", response);
-	}
-
-	const textContent = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map(c => c.text)
-		.join("\n");
-
-	return textContent;
+	return carriedSummary ?? "";
 }
-
-// ============================================================================
-// Handoff generation
-// ============================================================================
 
 export interface HandoffOptions {
 	/** Live agent system prompt — passed verbatim so providers hit the cached prefix. */
 	systemPrompt: string[];
-	/** Live agent tool list — same purpose. Forced to `toolChoice: "none"`. */
 	tools?: Tool[];
 	customInstructions?: string;
 	convertToLlm?: ConvertToLlm;
@@ -1209,7 +1235,7 @@ async function generateShortSummary(
 
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
 	if (historySummary) {
-		promptText += `<previous-summary>\n${historySummary}\n</previous-summary>\n\n`;
+		promptText += `<previous-summary>\n${escapeSummaryBoundaryTags(historySummary)}\n</previous-summary>\n\n`;
 	}
 	promptText += formatAdditionalContext(options?.extraContext);
 	promptText += SHORT_SUMMARY_PROMPT;
@@ -1249,7 +1275,12 @@ async function generateShortSummary(
 			providerSessionState: options?.providerSessionState,
 			codexCompaction: localCodexCompaction(options),
 		},
-		{ telemetry: options?.telemetry, oneshotKind: "compaction_short_summary", completeImpl: options?.completeImpl },
+		{
+			telemetry: options?.telemetry,
+			oneshotKind: "compaction_short_summary",
+			completeImpl: options?.completeImpl,
+			retry: summaryOneshotRetry(options),
+		},
 	);
 
 	if (response.stopReason === "error") {
@@ -1303,7 +1334,7 @@ export interface CompactionPreparation {
  * let the active model replay it, so keying reuse on "any candidate shares the
  * provider" left a provider-switched session permanently context-less (#6343).
  */
-function remotePreserveReusable(
+export function remotePreserveReusable(
 	preserveData: Record<string, unknown> | undefined,
 	activeModel: Model,
 	settings: CompactionSettings,
@@ -1316,6 +1347,21 @@ function remotePreserveReusable(
 	return v2Ok || shouldUseOpenAiRemoteCompaction(activeModel);
 }
 
+/** Index of the newest compaction entry the active model can actually read, or -1. */
+export function findReadableCompactionIndex(
+	pathEntries: SessionEntry[],
+	settings: CompactionSettings,
+	activeModel?: Model,
+): number {
+	for (let i = pathEntries.length - 1; i >= 0; i--) {
+		if (pathEntries[i].type !== "compaction") continue;
+		const entry = pathEntries[i] as CompactionEntry;
+		if (activeModel && !remotePreserveReusable(entry.preserveData, activeModel, settings)) continue;
+		return i;
+	}
+	return -1;
+}
+
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
@@ -1325,22 +1371,16 @@ export function prepareCompaction(
 		return undefined;
 	}
 
-	let prevCompactionIndex = -1;
-	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type !== "compaction") continue;
-		// Skip a prior remote compaction (V2 or V1) whose provider-native replay the
-		// active model cannot read: its summary is only an opaque placeholder, so
-		// re-expand its original messages and summarize them locally rather than
-		// stranding that history. compact() still reuses the payload when the active
-		// model can replay it (same provider, remote enabled).
-		const entry = pathEntries[i] as CompactionEntry;
-		if (activeModel && !remotePreserveReusable(entry.preserveData, activeModel, settings)) {
-			continue;
+	let prevCompactionIndex = findReadableCompactionIndex(pathEntries, settings, activeModel);
+	let resetBoundaryIndex = -1;
+	for (let i = pathEntries.length - 1; i > prevCompactionIndex; i--) {
+		if (pathEntries[i].type === "reset_boundary") {
+			resetBoundaryIndex = i;
+			break;
 		}
-		prevCompactionIndex = i;
-		break;
 	}
-	const boundaryStart = prevCompactionIndex + 1;
+	if (resetBoundaryIndex > prevCompactionIndex) prevCompactionIndex = -1;
+	const boundaryStart = Math.max(prevCompactionIndex, resetBoundaryIndex) + 1;
 	const boundaryEnd = pathEntries.length;
 
 	const lastUsage = getLastAssistantUsage(pathEntries);
@@ -1548,6 +1588,7 @@ export async function compact(
 		tools: options?.tools,
 		fetch: options?.fetch,
 		completeImpl: options?.completeImpl,
+		oneshotRetry: options?.oneshotRetry,
 	};
 
 	const previousSnapcompactArchive = snapcompact.getPreservedArchive(previousPreserveData);
@@ -1825,7 +1866,12 @@ async function generateTurnPrefixSummary(
 			providerSessionState: options?.providerSessionState,
 			codexCompaction: localCodexCompaction(options),
 		},
-		{ telemetry: options?.telemetry, oneshotKind: "compaction_turn_prefix", completeImpl: options?.completeImpl },
+		{
+			telemetry: options?.telemetry,
+			oneshotKind: "compaction_turn_prefix",
+			completeImpl: options?.completeImpl,
+			retry: summaryOneshotRetry(options),
+		},
 	);
 
 	if (response.stopReason === "error") {

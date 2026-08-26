@@ -30,12 +30,14 @@ import {
 	completeSimple,
 	type Message,
 	type Model,
+	type OneshotRetryOptions,
 	type ServiceTier,
 	type SimpleStreamOptions,
 	type StopReason,
 	shouldSendServiceTier,
 	type ToolChoice,
 	type Usage,
+	retryTransientCompletion,
 } from "@oh-my-pi/pi-ai";
 import {
 	type Attributes,
@@ -1749,6 +1751,8 @@ export interface InstrumentedChatSpanOptions {
 		ctx: Context,
 		options: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
+	/** Reviewed opt-in transient retry policy for replay-safe oneshot requests. */
+	readonly retry?: OneshotRetryOptions;
 }
 
 /**
@@ -1810,10 +1814,17 @@ export async function instrumentedCompleteSimple<TApi extends Api>(
 	try {
 		return await runInActiveSpan(chatSpan, async () => {
 			const complete = span.completeImpl ?? completeSimple;
-			const message = await complete(model, ctx, {
-				...options,
-				onResponse: captureOnResponse,
-			});
+			const runOnce = () => {
+				capturedHeaders = undefined;
+				return complete(model, ctx, { ...options, onResponse: captureOnResponse });
+			};
+			const message = span.retry
+				? await retryTransientCompletion(runOnce, {
+						...span.retry,
+						signal: options.signal,
+						getResponseHeaders: () => capturedHeaders,
+					})
+				: await runOnce();
 			await finishChatSpan(telemetry, chatSpan, message, {
 				stepNumber,
 				serviceTier: options.serviceTier,
