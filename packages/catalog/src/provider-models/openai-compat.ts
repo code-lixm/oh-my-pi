@@ -2609,6 +2609,7 @@ const OPENCODE_GO_API_ID_OVERRIDES: Readonly<Record<string, Api>> = {
 	"minimax-m3-free": "openai-completions",
 	"qwen3.5-plus": "openai-completions",
 	"qwen3.6-plus": "openai-completions",
+	"qwen3.7-max": "anthropic-messages",
 };
 
 // Billing-variant suffixes the OpenCode gateways append to a base model id
