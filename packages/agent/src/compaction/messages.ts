@@ -11,7 +11,9 @@ import type { AgentMessage } from "../types";
 import type { CompactionRetainedFacts } from "./compaction";
 import branchSummaryContextPrompt from "./prompts/branch-summary-context.md" with { type: "text" };
 import compactionRetainedFactsPrompt from "./prompts/compaction-retained-facts.md" with { type: "text" };
+import handoffSummaryContextPrompt from "./prompts/handoff-summary-context.md" with { type: "text" };
 
+const HANDOFF_SUMMARY_TEMPLATE = handoffSummaryContextPrompt;
 const BRANCH_SUMMARY_TEMPLATE = branchSummaryContextPrompt;
 
 export interface CustomMessage<T = unknown> {
@@ -43,12 +45,15 @@ export interface BranchSummaryMessage {
 	fromId: string;
 	timestamp: number;
 }
-
 export interface CompactionSummaryMessage {
 	role: "compactionSummary";
 	summary: string;
 	shortSummary?: string;
 	tokensBefore: number;
+	/** Estimated context tokens after the rewrite (display metadata). */
+	tokensAfter?: number;
+	/** Harness compaction method that produced this summary (display metadata). */
+	method?: string;
 	providerPayload?: ProviderPayload;
 	/** Runtime-only ordered archive blocks for snapcompact: old text region,
 	 *  imaged middle, then new text region. When present, `summary` is already
@@ -57,6 +62,7 @@ export interface CompactionSummaryMessage {
 	/** Snapcompact image blocks, kept for display counts / legacy consumers. */
 	images?: ImageContent[];
 	/** Post-pass dead-end warning attached to this compaction (progress guard). */
+
 	warning?: string;
 	/** Deterministic state carried independently of the prose summary. */
 	retainedFacts?: CompactionRetainedFacts;
@@ -87,9 +93,12 @@ function getPrunedToolResultContent(message: ToolResultMessage): (TextContent | 
 export function renderBranchSummaryContext(summary: string): string {
 	return prompt.render(BRANCH_SUMMARY_TEMPLATE, { summary });
 }
-
 export function renderCompactionSummaryContext(summary: string, retainedFacts?: CompactionRetainedFacts): string {
+	if (!retainedFacts) return summary;
 	return prompt.render(compactionRetainedFactsPrompt, { summary, retainedFacts });
+}
+export function renderHandoffSummaryContext(summary: string): string {
+	return prompt.render(HANDOFF_SUMMARY_TEMPLATE, { summary });
 }
 
 export function createBranchSummaryMessage(summary: string, fromId: string, timestamp: string): BranchSummaryMessage {
@@ -100,18 +109,27 @@ export function createBranchSummaryMessage(summary: string, fromId: string, time
 		timestamp: new Date(timestamp).getTime(),
 	};
 }
+/** Optional metadata for {@link createCompactionSummaryMessage}. */
+export interface CompactionSummaryMessageOptions {
+	shortSummary?: string;
+	providerPayload?: ProviderPayload;
+	images?: ImageContent[];
+	blocks?: (TextContent | ImageContent)[];
+	warning?: string;
+	/** Harness compaction method that produced this summary (e.g. "remote", "soft", "handoff"). */
+	method?: string;
+	/** Estimated context tokens after the rewrite, for display alongside `tokensBefore`. */
+	tokensAfter?: number;
+	retainedFacts?: CompactionRetainedFacts;
+}
 
 export function createCompactionSummaryMessage(
 	summary: string,
 	tokensBefore: number,
 	timestamp: string,
-	shortSummary?: string,
-	providerPayload?: ProviderPayload,
-	images?: ImageContent[],
-	blocks?: (TextContent | ImageContent)[],
-	warning?: string,
-	retainedFacts?: CompactionRetainedFacts,
+	options: CompactionSummaryMessageOptions = {},
 ): CompactionSummaryMessage {
+	const { shortSummary, providerPayload, images, blocks, warning, method, tokensAfter, retainedFacts } = options;
 	const imageBlocks =
 		blocks?.filter((block): block is ImageContent => block.type === "image") ??
 		(images && images.length > 0 ? images : undefined);
@@ -120,6 +138,8 @@ export function createCompactionSummaryMessage(
 		summary,
 		shortSummary,
 		tokensBefore,
+		tokensAfter,
+		method,
 		providerPayload,
 		blocks: blocks && blocks.length > 0 ? blocks : undefined,
 		images: imageBlocks && imageBlocks.length > 0 ? imageBlocks : undefined,
@@ -198,13 +218,16 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 			case "compactionSummary":
 				return {
 					role: "user",
-					content: [
-						{
-							type: "text" as const,
-							text: renderCompactionSummaryContext(message.summary, message.retainedFacts),
-						},
-						...(message.blocks ?? message.images ?? []),
-					],
+					content:
+						message.blocks !== undefined
+							? [{ type: "text" as const, text: message.summary }, ...message.blocks]
+							: [
+									{
+										type: "text" as const,
+										text: message.summary,
+									},
+									...(message.images ?? []),
+								],
 					attribution: "agent",
 					providerPayload: message.providerPayload,
 					timestamp: message.timestamp,

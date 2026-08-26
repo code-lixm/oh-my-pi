@@ -1506,7 +1506,16 @@ export class ModelRegistry {
 			"baseUrl" | "headers" | "authHeader" | "apiKey" | "remoteCompaction" | "transport"
 		>,
 	): Model<Api> {
-		return buildModel(this.#applyProviderTransportOverride(toModelSpec(model), override));
+		const spec = { ...this.#applyProviderTransportOverride(toModelSpec(model), override) } as Record<
+			string,
+			unknown
+		> & Parameters<typeof buildModel>[0];
+		// Re-derive supportsComputerUse from the new baseUrl/api so a runtime
+		// transport override reflects the proxied endpoint instead of the bundled
+		// OpenAI GA capability baked into the cached `supportsComputerUseConfig`.
+		delete spec.supportsComputerUse;
+		delete spec.supportsComputerUseConfig;
+		return buildModel(spec);
 	}
 
 	#applyRuntimeProviderOverrides(models: Model<Api>[]): Model<Api>[] {
