@@ -126,6 +126,8 @@ const modelSegment: StatusLineSegment = {
 		if (modelName.startsWith("Claude ")) {
 			modelName = modelName.slice(7);
 		}
+		const provider = opts.showProvider === true ? state.model?.provider?.trim() : undefined;
+		if (provider) modelName = `${provider}/${modelName}`;
 
 		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
 		// when the model supports thinking and the segment isn't hiding it.
@@ -168,14 +170,14 @@ const modelSegment: StatusLineSegment = {
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses status colors to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		// Advisor "++" badge, colored by the worst status in the roster:
-		// success = all running, warning = quota-exhausted, error = failed,
-		// dim = everything paused/no-model. Per-advisor detail lives in
-		// `/advisor status`.
-		// Optional chaining: lightweight session doubles (test mocks) that don't
-		// implement getAdvisorStatusOverview skip the badge instead of crashing.
+		// Advisor "++" badge appears only while at least one configured advisor is
+		// runnable. A roster made entirely of paused, unresolved, exhausted, or
+		// failed advisors is not useful HUD state; `/advisor status` retains those
+		// diagnostics. Mixed rosters keep the badge and color it by their worst
+		// status: success = all running, warning = quota-exhausted, error = failed.
+		// Optional chaining lets lightweight session doubles omit the overview.
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
-		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
+		if (advisorStats?.configured && advisorStats.advisors.some(advisor => advisor.status === "running")) {
 			const statuses = advisorStats.advisors.map(a => a.status);
 			const badgeColor = statuses.includes("error")
 				? "error"

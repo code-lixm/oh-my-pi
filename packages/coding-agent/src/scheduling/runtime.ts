@@ -3,31 +3,27 @@ import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ScheduledPromptDelivery } from "../prime-integration/contracts";
 import type { AgentSession } from "../session/agent-session";
-import { normalizeHeartbeatSchedule, parseSchedule } from "./parser";
+import { parseSchedule } from "./parser";
 import { SetTimeoutScheduleScheduler } from "./scheduler";
 import { JsonScheduleStore, sidecarPathForArtifacts } from "./store";
 import type {
 	CreateScheduleInput,
-	HeartbeatDefaults,
 	ScheduleDeliveryReceipt,
 	ScheduleJob,
 	ScheduleRunResult,
 	ScheduleSessionBinding,
 	ScheduleSource,
 	ScheduleSpec,
-	SetHeartbeatInput,
 	UpdateScheduleJobInput,
 } from "./types";
 
-const DEFAULT_HEARTBEAT_INTERVAL = "every 5m";
-const DEFAULT_HEARTBEAT_DELIVERY_MODE = "steer";
 const DEFAULT_SCHEDULE_DELIVERY_MODE = "follow_up";
 const PERSISTED_SESSION_REQUIRED_ERROR = "Scheduling requires a persisted session and artifacts";
 
 export interface SessionScheduleRuntimeOptions {
 	now?: () => Date;
-	heartbeatDefaults?: HeartbeatDefaults;
 	scheduleDefaultDeliveryMode?: ScheduleJob["deliveryMode"];
+	/** Kept for interface stability; cron is the only source this build ships. */
 	isSourceEnabled?: (source: ScheduleSource) => boolean;
 }
 
@@ -37,7 +33,6 @@ export interface ListScheduledJobsOptions {
 }
 
 export type ScheduleManagementAction = "pause" | "resume" | "cancel";
-export type HeartbeatManagementAction = "pause" | "resume" | "clear";
 
 interface ScheduledPromptDeliveryContext {
 	expectedScheduleBinding: ScheduleSessionBinding;
@@ -67,7 +62,7 @@ export function createSchedulingProvider(session: AgentSession): RuntimeSchedule
 			if (!context) return "skipped";
 			if (!canDeliverScheduledPromptNow(session)) return "skipped";
 			if (hasQueuedScheduleJob(session, job.id)) return "skipped";
-			const customType = job.source === "cron" ? "scheduled-prompt" : "heartbeat-prompt";
+			const customType = "scheduled-prompt";
 			const options = {
 				deliverAs: job.deliveryMode === "follow_up" ? "followUp" : "steer",
 				triggerTurn: true,
@@ -100,7 +95,6 @@ export function createSchedulingProvider(session: AgentSession): RuntimeSchedule
 export class SessionScheduleRuntime implements ScheduledPromptDelivery {
 	readonly #session: AgentSession;
 	readonly #now: () => Date;
-	readonly #heartbeatDefaults: HeartbeatDefaults;
 	readonly #delivery: RuntimeScheduledPromptDelivery;
 	readonly #scheduleDefaultDeliveryMode: ScheduleJob["deliveryMode"];
 	readonly #isSourceEnabled: (source: ScheduleSource) => boolean;
@@ -114,7 +108,6 @@ export class SessionScheduleRuntime implements ScheduledPromptDelivery {
 	constructor(session: AgentSession, options: SessionScheduleRuntimeOptions = {}) {
 		this.#session = session;
 		this.#now = options.now ?? (() => new Date());
-		this.#heartbeatDefaults = options.heartbeatDefaults ?? {};
 		this.#scheduleDefaultDeliveryMode = options.scheduleDefaultDeliveryMode ?? DEFAULT_SCHEDULE_DELIVERY_MODE;
 		this.#isSourceEnabled = options.isSourceEnabled ?? (() => true);
 		this.#delivery = createSchedulingProvider(session);
@@ -238,52 +231,6 @@ export class SessionScheduleRuntime implements ScheduledPromptDelivery {
 				: action === "resume"
 					? await runtime.store.resume(id, this.#now())
 					: await runtime.store.cancel(id, this.#now());
-		this.#assertCurrentBinding(runtime.binding);
-		if (result) runtime.scheduler.wake();
-		return result;
-	}
-
-	async setHeartbeat(input: SetHeartbeatInput): Promise<ScheduleJob> {
-		this.#assertSourceEnabled("heartbeat");
-		const runtime = await this.#currentRuntime();
-		const interval = normalizeHeartbeatSchedule(
-			input.interval?.trim() || this.#heartbeatDefaults.defaultInterval || DEFAULT_HEARTBEAT_INTERVAL,
-		);
-		const parsed = parseSchedule(interval, this.#now());
-		if (parsed.schedule.kind === "once") throw new Error("Heartbeat schedule must be recurring");
-		const job = await runtime.store.createHeartbeat(
-			{
-				deliveryMode:
-					input.deliveryMode ?? this.#heartbeatDefaults.defaultDeliveryMode ?? DEFAULT_HEARTBEAT_DELIVERY_MODE,
-				sessionId: runtime.binding.sessionId,
-				sessionFile: runtime.binding.sessionFile,
-				cwd: runtime.binding.cwd,
-				prompt: input.instruction,
-				...(input.label === undefined ? {} : { label: input.label }),
-			},
-			parsed,
-		);
-		this.#assertCurrentBinding(runtime.binding);
-		runtime.scheduler.wake();
-		return job;
-	}
-
-	async manageHeartbeat(action: HeartbeatManagementAction): Promise<ScheduleJob | undefined> {
-		const runtime = await this.#currentRuntime();
-		const jobs = await runtime.store.listBySession(runtime.binding.sessionId);
-		const heartbeat = jobs.find(
-			job =>
-				this.#isBoundJob(job, runtime.binding) &&
-				job.source === "heartbeat" &&
-				(job.status === "active" || job.status === "paused"),
-		);
-		if (!heartbeat) return undefined;
-		const result =
-			action === "pause"
-				? await runtime.store.pause(heartbeat.id, this.#now())
-				: action === "resume"
-					? await runtime.store.resume(heartbeat.id, this.#now())
-					: await runtime.store.cancel(heartbeat.id, this.#now());
 		this.#assertCurrentBinding(runtime.binding);
 		if (result) runtime.scheduler.wake();
 		return result;

@@ -29,7 +29,8 @@
  *    anchor-free segments; a segment naming a path/identifier resets the run, so
  *    genuine but vocabulary-repetitive work (per-file templates) is spared.
  *
- * Scope is narrow: guarded Gemini, DeepSeek, and Grok family streams before any tool call. Native
+ * Scope: every reasoning-capable model (`reasoning === true`) plus the Minimax-M3,
+ * Gemini, DeepSeek, and Grok families, checked before any tool call. Native
  * thinking is checked first; assistant text can also be checked for providers
  * that surface reasoning as visible prose. On a hit the failed turn is emitted as
  * an empty retryable stream-stall error; result-awaiting callers (`complete`,
@@ -96,29 +97,26 @@ const CONCRETE_ANCHOR =
 	/`[^`]+`|\b\w{2,}\.[a-zA-Z]\w{0,4}\b|[\w-]+(?:\/[\w-]+){2,}|\b\w+_\w+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b/g;
 
 /**
- * True when `model.id` belongs to a family guarded for thinking/response loops:
- * Gemini, DeepSeek, Grok, or MiniMax M3.
+ * True when a model can emit native reasoning. The detector runs incrementally
+ * on streamed thinking deltas, so limiting it to a hand-maintained family list
+ * leaves newly catalogued reasoning models unprotected.
  *
- * Model identity is derived only from its id; provider and compatibility metadata
- * do not opt opaque aliases into the guard. Gemini, DeepSeek, and Grok use their
- * family token; MiniMax is limited to the catalog's exact M3 family predicate.
+ * `supportsTools` is deliberately unrelated: a reasoning-only model still
+ * needs protection before it ever reaches a tool call. Explicit request
+ * opt-out remains authoritative.
  */
+export function isLoopGuardedModel(model: Model<Api>, options?: StreamOptions): boolean {
+	if (options?.loopGuard?.enabled === false) return false;
+	return (
+		model.reasoning === true ||
+		isMinimaxM3FamilyModelId(model.id) ||
+		["gemini", "deepseek", "grok"].includes(modelFamilyToken(model.id))
+	);
+}
+
 /** @deprecated Use isLoopGuardedModel instead. */
 export function isGeminiThinkingModel(model: Model<Api>): boolean {
 	return modelFamilyToken(model.id) === "gemini";
-}
-
-export function isLoopGuardedModel(model: Model<Api>, options?: StreamOptions): boolean {
-	if (options?.loopGuard?.enabled === false) return false;
-	if (isMinimaxM3FamilyModelId(model.id)) return true;
-	switch (modelFamilyToken(model.id)) {
-		case "gemini":
-		case "deepseek":
-		case "grok":
-			return true;
-		default:
-			return false;
-	}
 }
 
 /** @deprecated Use isLoopGuardedModel instead. */
@@ -508,20 +506,33 @@ function detectVerbatimRepetition(text: string): [unit: string, count: number] |
 	return null;
 }
 
-/** Lowercase and tokenize prose plus code/path payloads, dropping pure numbers. */
-function normalizeSegment(segment: string): string {
+/** Lowercase and tokenize prose plus code/path payloads, dropping standalone
+ *  punctuation. Unicode-aware: `\p{L}`/`\p{N}` keep CJK and other non-Latin
+ *  scripts (a Chinese thinking loop normalizes to its characters instead of an
+ *  empty string, which would disable detection entirely). The pre-existing
+ *  `/[a-z]/` filter is replaced by "keep any letter-or-number token" — for
+ *  English tokens the output is identical, so the in-stream detector's
+ *  calibrated thresholds (segment-length gates, trigram windows) still see the
+ *  exact shapes they were tuned on. Consecutive CJK characters tokenize as one
+ *  run each; trigram shingling then treats script runs as words, preserving
+ *  near-duplicate sensitivity.
+ *  Shared with the cross-turn loop guard (`cross-turn-thinking-loop-guard.ts`),
+ *  which compares whole-turn reasoning against recent turns using the same
+ *  normalization the in-stream detector was calibrated on. */
+export function normalizeSegment(segment: string): string {
 	return segment
 		.toLowerCase()
 		.replace(/`([^`]*)`/g, " $1 ")
-		.replace(/[^a-z0-9]+/g, " ")
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
 		.split(/\s+/)
-		.filter(token => /[a-z]/.test(token))
+		.filter(token => /\p{L}/u.test(token))
 		.join(" ")
 		.trim();
 }
 
-/** Word-trigram shingle set of a normalized segment. */
-function trigramShingles(normalized: string): Set<string> {
+/** Word-trigram shingle set of a normalized segment. Shared with the cross-turn
+ *  loop guard. */
+export function trigramShingles(normalized: string): Set<string> {
 	const words = normalized.split(" ").filter(Boolean);
 	if (words.length < 3) return new Set(words.length > 0 ? [words.join(" ")] : []);
 	const shingles = new Set<string>();
@@ -531,7 +542,8 @@ function trigramShingles(normalized: string): Set<string> {
 	return shingles;
 }
 
-function jaccard(a: Set<string>, b: Set<string>): number {
+/** Jaccard similarity over shingle sets. Shared with the cross-turn loop guard. */
+export function jaccard(a: Set<string>, b: Set<string>): number {
 	if (a.size === 0 || b.size === 0) return 0;
 	const [small, large] = a.size < b.size ? [a, b] : [b, a];
 	let intersection = 0;

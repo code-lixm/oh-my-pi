@@ -256,10 +256,14 @@ export async function runExplore(ctx: ExplorerContext, rawQuery: string): Promis
 		for (const node of ctx.queryBuilder.getNodesByName(symbol, 25)) push(node);
 	}
 
-	const ranked = rankCandidates(
-		candidates.filter(node => matchesFilters(node, parsed)),
-		parsed.freeText,
+	const filteredCandidates = candidates.filter(node => matchesFilters(node, parsed));
+	const distinctiveTokens = queryIdentifierTokens(parsed.freeText).filter(({ token }) =>
+		isDistinctiveIdentifierToken(token),
 	);
+	const exactCandidates = filteredCandidates.filter(node =>
+		distinctiveTokens.some(({ token }) => node.name === token || node.name.toLowerCase() === token.toLowerCase()),
+	);
+	const ranked = rankCandidates(exactCandidates.length > 0 ? exactCandidates : filteredCandidates, parsed.freeText);
 	const entryNodes = dedupeByFile(ranked);
 	const entryList = entryNodes.slice(0, budget.effectiveMaxFiles);
 	const emptyCoverage = { complete: [], partial: [], omitted: [] };
@@ -485,8 +489,21 @@ function matchesFilters(node: CodeGraphNode, parsed: ReturnType<typeof parseQuer
 	return true;
 }
 
+function queryIdentifierTokens(query: string): Array<{ token: string; index: number }> {
+	const tokens: Array<{ token: string; index: number }> = [];
+	for (const match of query.matchAll(/\b[A-Za-z][A-Za-z0-9_]*\b/g)) {
+		const token = match[0];
+		if (token && token.length >= 3) tokens.push({ token, index: match.index ?? 0 });
+	}
+	return tokens;
+}
+function isDistinctiveIdentifierToken(token: string): boolean {
+	return /[a-z][A-Z]|[_0-9]/u.test(token);
+}
+
 function rankCandidates(nodes: readonly CodeGraphNode[], query: string): ExplorerRelevantNode[] {
 	const terms = extractSearchTerms(query, { stems: true });
+	const identifierTokens = queryIdentifierTokens(query);
 	const scored: ExplorerRelevantNode[] = [];
 	for (const node of nodes) {
 		if (node.kind === "file" || node.kind === "import" || node.kind === "export") continue;
@@ -499,6 +516,20 @@ function rankCandidates(nodes: readonly CodeGraphNode[], query: string): Explore
 			} else if (splitIdentifierSegments(node.name).some(seg => seg.includes(term))) {
 				matchedTerms.push(term);
 				score += 3;
+			}
+		}
+		// Exact identifiers are stronger evidence than generic prose terms. This
+		// keeps common names such as `TOOLS` from outranking a requested
+		// `createTools` function merely because both contain "tools".
+		for (const { token, index } of identifierTokens) {
+			// Lowercase prose words such as "tools" occur repeatedly and are not
+			// reliable symbol identifiers. Reserve the strong exact-match bonus for
+			// camelCase/PascalCase, snake_case, or digit-bearing tokens.
+			if (!isDistinctiveIdentifierToken(token)) continue;
+			if (node.name === token) {
+				score += 220 + Math.max(0, 40 - Math.floor(index / 10));
+			} else if (node.name.toLowerCase() === token.toLowerCase()) {
+				score += 80;
 			}
 		}
 		score += nameMatchBonus(node.name, query);

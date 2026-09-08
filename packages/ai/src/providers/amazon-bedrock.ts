@@ -805,7 +805,6 @@ function takeCachePoint(policy: BedrockPromptCachePolicy): CachePoint | undefine
 	return { cachePoint: { type: "default", ...(policy.ttl ? { ttl: policy.ttl } : {}) } };
 }
 
-
 function buildSystemPrompt(
 	systemPrompt: readonly string[] | string | undefined,
 	promptCachePolicy: BedrockPromptCachePolicy,

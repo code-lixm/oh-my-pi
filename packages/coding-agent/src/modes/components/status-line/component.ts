@@ -1853,10 +1853,7 @@ export class StatusLineComponent implements Component {
 			compactThinkingLevel: this.#resolveSettings().compactThinkingLevel ?? false,
 			planMode: this.#planModeStatus,
 			loopMode: this.#loopModeStatus,
-			prewalk:
-				typeof this.session.getPrewalkState === "function" && this.session.getPrewalkState()
-					? { enabled: true }
-					: null,
+			prewalk: this.session.getPrewalkStateSnapshot?.() ? { enabled: true } : null,
 			goalMode: this.#goalModeStatus,
 			vibeMode: this.#vibeModeStatus,
 			collab: this.#collabStatus,

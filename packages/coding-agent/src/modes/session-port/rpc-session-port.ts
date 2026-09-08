@@ -81,6 +81,7 @@ function buildProjection(
 			...(state.planMode ? { plan: state.planMode } : {}),
 			...(state.goalMode ? { goal: state.goalMode } : {}),
 			...(state.vibeMode ? { vibe: state.vibeMode } : {}),
+			...(state.prewalk ? { prewalk: state.prewalk } : {}),
 		},
 		...(state.contextUsage ? { context: state.contextUsage } : {}),
 		jobs: state.asyncJobs ?? null,
@@ -247,6 +248,17 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 			case "todo_auto_clear":
 				void this.#scheduleRefresh();
 				return;
+			case "queue_changed":
+				// Push the queue immediately from the event payload (live child
+				// state): waiting for the full snapshot refresh (4 RPC roundtrips)
+				// leaves the foreground TUI's pending-message bar stale for the
+				// whole dispatch window.
+				if (event.queue) {
+					this.#emitReliable({ queue: event.queue });
+					return;
+				}
+				void this.#scheduleRefresh();
+				return;
 			default:
 				return;
 		}
@@ -270,10 +282,17 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 			return this.#refreshPromise;
 		}
 		this.#refreshPromise = (async () => {
-			do {
-				this.#refreshAgain = false;
-				await this.#refreshProjection();
-			} while (this.#refreshAgain && !this.#disposed);
+			try {
+				do {
+					this.#refreshAgain = false;
+					await this.#refreshProjection();
+				} while (this.#refreshAgain && !this.#disposed);
+			} catch {
+				// #refreshProjection already surfaces failures via
+				// #setConnection("disconnected"); swallow here so the IIFE
+				// does not propagate an unhandled rejection when RPC stops
+				// mid-refresh (transport teardown is expected).
+			}
 		})().finally(() => {
 			this.#refreshPromise = undefined;
 		});
@@ -294,12 +313,18 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 				agentId: this.#agentId,
 			});
 			this.#emitReliable(projection);
+			// A successful full snapshot proves the transport is serving again:
+			// clear a stale disconnected marker left by a mid-refresh failure.
+			if (this.#connection.status !== "connected") this.#setConnection({ status: "connected" });
 		} catch (error) {
+			// Disconnect state lands here; do NOT rethrow. The IIFE in
+			// #scheduleRefresh owns the rejection surface, and any caller
+			// that awaits #refreshProjection sees the same connection-state
+			// transition without an unhandled rejection leaking out.
 			this.#setConnection({
 				status: "disconnected",
 				error: error instanceof Error ? error.message : String(error),
 			});
-			throw error;
 		}
 	}
 

@@ -38,7 +38,12 @@ function readSegmentOptions(value: unknown): StatusLineSegmentOptions | undefine
 	if (!isRecord(value)) return undefined;
 	const result: StatusLineSegmentOptions = {};
 	const model = isRecord(value.model) ? value.model : undefined;
-	if (model) result.model = { showThinkingLevel: readBool(model.showThinkingLevel) };
+	if (model) {
+		result.model = {
+			showProvider: readBool(model.showProvider),
+			showThinkingLevel: readBool(model.showThinkingLevel),
+		};
+	}
 	const path = isRecord(value.path) ? value.path : undefined;
 	if (path) {
 		result.path = {

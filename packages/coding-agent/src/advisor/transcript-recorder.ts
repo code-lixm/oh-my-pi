@@ -1,11 +1,12 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Message, UserMessage } from "@oh-my-pi/pi-ai";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { CURRENT_SESSION_VERSION } from "../session/session-entries";
 import { visitEntriesFromFileStream } from "../session/session-loader";
-import { SessionManager } from "../session/session-manager";
-import { FileSessionStorage } from "../session/session-storage";
+import { FileSessionStorage, type SessionStorageWriter } from "../session/session-storage";
 
 /**
  * Reserved transcript stem for advisor session files. Chosen so it cannot
@@ -163,11 +164,21 @@ export async function migrateAdvisorTranscriptCostLedgers(
  * On such a switch the previous writer is closed and the new file opened on the
  * next recorded turn. The recorder never truncates: the advisor's in-memory
  * context resets/compacts independently, but every billed turn is appended here.
+ *
+ * Writes go through a raw append-mode storage writer, never a SessionManager:
+ * a resumed transcript can be gigabytes, and opening a SessionManager on it
+ * would parse and pin every historical entry in resident memory just to append
+ * one line. When the writer first targets an existing file it recovers the
+ * session id (head slice) and last entry id (tail slice) with bounded byte
+ * reads, so the `session` header stays stable across runs and the `parentId`
+ * chain continues — both without scanning the body.
  */
 export class AdvisorTranscriptRecorder {
-	#manager: SessionManager | undefined;
+	#storage = new FileSessionStorage();
+	#writer: SessionStorageWriter | undefined;
 	#file: string | undefined;
 	#filename: string;
+	#lastEntryId: string | null = null;
 	#pendingUser: { file: string; cwd: string; message: UserMessage } | undefined;
 	#ledgerTotals = new Map<string, number>();
 	/** Serializes the async open/close against synchronous appends so records land in order. */
@@ -228,14 +239,14 @@ export class AdvisorTranscriptRecorder {
 	flush(): Promise<void> {
 		this.#enqueuePendingUser();
 		return this.#enqueueResult(async () => {
-			if (this.#manager) await this.#manager.flush();
+			this.#reportWriterError();
 		});
 	}
 
 	/** Flush and close the writer, releasing the session file. */
 	close(): Promise<void> {
 		this.#enqueuePendingUser();
-		return this.#enqueueResult(() => this.#closeManager());
+		return this.#enqueueResult(() => this.#closeWriter());
 	}
 
 	#enqueuePendingUser(): void {
@@ -261,14 +272,63 @@ export class AdvisorTranscriptRecorder {
 
 	async #append(file: string, cwd: string, message: Message): Promise<void> {
 		if (file !== this.#file) {
-			await this.#closeManager();
-			this.#manager = await SessionManager.open(file, undefined, undefined, {
-				initialCwd: cwd,
-				suppressBreadcrumb: true,
-			});
+			await this.#closeWriter();
+			this.#writer = await this.#openWriter(file, cwd);
 			this.#file = file;
 		}
-		this.#manager?.appendMessage(message);
+		const writer = this.#writer;
+		if (!writer) return;
+		const entry = {
+			type: "message",
+			id: crypto.randomUUID().slice(-8),
+			parentId: this.#lastEntryId,
+			timestamp: new Date().toISOString(),
+			message,
+		};
+		this.#lastEntryId = entry.id;
+		writer.appendSync(`${JSON.stringify(entry)}\n`);
+		this.#reportWriterError();
+	}
+
+	/** Open an append-mode writer, creating the session-header line on first write. */
+	async #openWriter(file: string, cwd: string): Promise<SessionStorageWriter | undefined> {
+		let sessionId = Bun.randomUUIDv7();
+		// Decided before openWriter: opening an append writer creates the file.
+		const exists = this.#storage.existsSync(file);
+		if (exists) {
+			try {
+				// Bounded head/tail reads: never parse the transcript body, which may
+				// be gigabytes of prior turns.
+				const [head, tail] = await this.#storage.readTextSlices(file, 4096, 8192);
+				sessionId = parseHeadSessionId(head) ?? sessionId;
+				this.#lastEntryId = parseTailEntryId(tail);
+			} catch (err) {
+				logger.debug("advisor transcript open failed", { file: path.basename(file), err: String(err) });
+			}
+		} else {
+			this.#lastEntryId = null;
+		}
+		const writer = this.#storage.openWriter(file, {
+			flags: "a",
+			onError: err => logger.debug("advisor transcript append failed", { err: String(err) }),
+		});
+		if (!exists) {
+			const header = {
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: sessionId,
+				timestamp: new Date().toISOString(),
+				cwd,
+			};
+			writer.appendSync(`${JSON.stringify(header)}\n`);
+		}
+		return writer;
+	}
+
+	#reportWriterError(): void {
+		const err = this.#writer?.getError();
+		if (err)
+			logger.debug("advisor transcript write failed", { file: path.basename(this.#file ?? ""), err: String(err) });
 	}
 
 	async #recordCost(transcript: string, increment: number): Promise<void> {
@@ -279,13 +339,16 @@ export class AdvisorTranscriptRecorder {
 		this.#ledgerTotals.set(ledger, total);
 	}
 
-	async #closeManager(): Promise<void> {
-		const manager = this.#manager;
-		this.#manager = undefined;
+	async #closeWriter(): Promise<void> {
+		const writer = this.#writer;
+		this.#writer = undefined;
 		this.#file = undefined;
-		if (!manager) return;
+		this.#lastEntryId = null;
+		if (!writer) return;
 		try {
-			await manager.close();
+			const err = writer.getError();
+			if (err) logger.debug("advisor transcript write failed", { err: String(err) });
+			await writer.close();
 		} catch (err) {
 			logger.debug("advisor transcript close failed", { err: String(err) });
 		}
@@ -302,4 +365,45 @@ export class AdvisorTranscriptRecorder {
 		this.#queue = next.catch(() => {});
 		return next;
 	}
+}
+
+/** Find the `session` header id in a bounded head slice (skips the title slot line). */
+function parseHeadSessionId(head: string): string | undefined {
+	for (const line of head.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const entry: unknown = JSON.parse(trimmed);
+			if (
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as { type?: unknown }).type === "session" &&
+				typeof (entry as { id?: unknown }).id === "string"
+			) {
+				return (entry as { id: string }).id;
+			}
+		} catch {
+			// Non-JSON lines (e.g. a legacy padded title slot) are skipped.
+		}
+	}
+	return undefined;
+}
+
+/** Find the last parseable entry id in a bounded tail slice (first line may be mid-line). */
+function parseTailEntryId(tail: string): string | null {
+	const lines = tail.split("\n");
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const trimmed = lines[i]?.trim();
+		if (!trimmed) continue;
+		try {
+			const entry: unknown = JSON.parse(trimmed);
+			if (typeof entry === "object" && entry !== null) {
+				const id = (entry as { id?: unknown }).id;
+				if (typeof id === "string" && id) return id;
+			}
+		} catch {
+			// Partial or corrupt line — keep scanning backwards.
+		}
+	}
+	return null;
 }

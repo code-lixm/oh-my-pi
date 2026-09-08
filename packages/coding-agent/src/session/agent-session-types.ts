@@ -146,6 +146,15 @@ export interface AgentSessionConfig {
 	settings: Settings;
 	/** Whether the session spawn policy permits the read-only `scout` subagent. Defaults to true. */
 	scoutAllowedBySpawnPolicy?: boolean;
+	/**
+	 * Whether streamed text reaching the output sink can be retracted when an
+	 * auto-retry supersedes the turn. Set `false` only for sinks with
+	 * retry-recovery UI (TUI/RPC collapse the superseded block via
+	 * `applyRetryRecovery`); sinks like print mode that write to an unretractable
+	 * stream keep the `true` default so a replayed turn cannot duplicate output.
+	 * Defaults to `true`.
+	 */
+	retractableTextOutput?: boolean;
 	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
 	autoApprove?: boolean;
 	/** Models to cycle through with Ctrl+P (from --models flag). */

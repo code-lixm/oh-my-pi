@@ -47,6 +47,15 @@ export interface SessionInfo {
 	 * synthesized {@link SessionInfo}s (cross-project stubs, tests) leave it unset.
 	 */
 	status?: SessionStatus;
+	/**
+	 * True when the scan found real conversation content (message entries in the
+	 * scanned prefix window). Header-only files — materialized by a draft's
+	 * forced `ensureOnDisk()` or a crash before `#dropIfEmptyAndNoDraft` — have
+	 * none and are skipped by resume flows unless a draft artifact survives.
+	 * Optional: synthesized {@link SessionInfo}s (cross-project stubs, tests)
+	 * leave it unset, and `filterResumableSessions` treats unset as resumable.
+	 */
+	hasConversation?: boolean;
 }
 
 export interface ResolvedSessionMatch {
@@ -494,6 +503,10 @@ async function scanSessionFile(
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.length > 0 ? allMessages.join(" ") : firstMessage,
 			status: withStatus ? deriveSessionStatus(suffix) : undefined,
+			// Conservative: the scan only sees a 4 KB prefix. A session whose
+			// header + session_init exceed the window can hold real messages past
+			// it, so only small files count as truly conversation-less.
+			hasConversation: messageCount > 0 || size > SESSION_LIST_PREFIX_BYTES,
 		};
 		// The cache keeps its own shallow copy; hits also hand out copies, so
 		// callers can never mutate the shared cached object.
@@ -635,6 +648,29 @@ export function listSessions(sessionDir: string, storage: SessionStorage): Promi
 	return scanSessionDir(sessionDir, storage, true);
 }
 
+/** Draft artifacts that keep a header-only session resumable (draft restore reads them). */
+const DRAFT_ARTIFACT_FILES = ["draft.txt", "pending-user-messages.json"] as const;
+
+/** Artifacts live in `<name>/` next to the session's `<name>.jsonl` file. */
+export function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
+	return sessionFile ? sessionFile.slice(0, -".jsonl".length) : null;
+}
+
+/**
+ * Drop sessions with no conversation content and no draft artifact: a bare
+ * session header (materialized by a draft's forced `ensureOnDisk()` or a crash
+ * before the close-time cleanup) is not a resumable conversation, but the
+ * pickers currently surface it as "(no messages)". Sessions carrying
+ * `draft.txt` / `pending-user-messages.json` stay so draft restore still
+ * finds them.
+ */
+export function filterResumableSessions(sessions: SessionInfo[], storage: SessionStorage): SessionInfo[] {
+	return sessions.filter(session => {
+		if (session.hasConversation !== false) return true;
+		const artifactsDir = artifactsDirectoryFor(session.path)!;
+		return DRAFT_ARTIFACT_FILES.some(file => storage.existsSync(path.join(artifactsDir, file)));
+	});
+}
 /** List and merge several session buckets, de-duplicated by absolute file path. */
 export async function listSessionsFromDirs(
 	sessionDirs: readonly string[],
@@ -677,8 +713,7 @@ export async function findMostRecentSession(
 	sessionDir: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<string | null> {
-	const sessions = await scanSessionDir(sessionDir, storage, false);
-	return sessions[0]?.path ?? null;
+	return filterResumableSessions(await scanSessionDir(sessionDir, storage, false), storage)[0]?.path ?? null;
 }
 
 /** Session id embedded in a `<file-safe-timestamp>_<id>.jsonl` filename, if present. */
@@ -734,7 +769,7 @@ export async function getRecentSessions(
 			continue;
 		}
 		const info = await scanSessionFile(file, storage, false);
-		if (!info) continue;
+		if (!info?.hasConversation) continue;
 		const title = sanitizeSessionName(info.title);
 		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
 		recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });
@@ -785,7 +820,7 @@ export async function resolveResumableSession(
 	const managedRoot = sessionDir ? resolveManagedSessionRoot(sessionDir, cwd) : undefined;
 	const localSessionDirs =
 		sessionDir && !managedRoot ? [sessionDir] : computeCompatibleSessionDirs(cwd, storage, managedRoot);
-	const localSessions = await listSessionsFromDirs(localSessionDirs, storage);
+	const localSessions = filterResumableSessions(await listSessionsFromDirs(localSessionDirs, storage), storage);
 	const localMatch = localSessions.find(session => sessionMatchesResumeArg(session, sessionArg));
 	if (localMatch) {
 		return { session: localMatch, scope: "local" };
@@ -795,7 +830,7 @@ export async function resolveResumableSession(
 		return undefined;
 	}
 
-	const globalSessions = await listAllSessions(storage);
+	const globalSessions = filterResumableSessions(await listAllSessions(storage), storage);
 	const globalMatch = globalSessions.find(session => sessionMatchesResumeArg(session, sessionArg));
 	if (!globalMatch) {
 		return undefined;

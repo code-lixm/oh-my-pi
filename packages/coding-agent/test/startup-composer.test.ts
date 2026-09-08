@@ -108,6 +108,41 @@ describe("Composer prepaint", () => {
 		expect(terminal.stops).toBe(1);
 	});
 
+	it("inserts at a mouse click through the Composer frame provider", async () => {
+		const terminal = new CountingTerminal(32, 6);
+		const composer = new Composer({
+			preferences: { ...config, quiet: true, composerShape: "box", showHardwareCursor: true },
+			terminal,
+		});
+		const prefix = "alpha";
+		const suffix = "omega";
+		const draft = `${prefix}${suffix}`;
+		composer.editor.mouseTracking = true;
+
+		try {
+			composer.start();
+			terminal.sendInput(draft);
+			await terminal.waitForRender(() => terminal.getViewport().some(row => Bun.stripANSI(row).includes(draft)));
+
+			// Composer renders through TUI's frame provider, so derive the SGR coordinates
+			// from its actual viewport rather than assuming the editor's root-child offset.
+			const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
+			const contentRow = viewport.findIndex(row => row.includes(draft));
+			const contentColumn = contentRow >= 0 ? viewport[contentRow]!.indexOf(draft) : -1;
+			expect(contentRow).toBeGreaterThanOrEqual(0);
+			expect(contentColumn).toBeGreaterThanOrEqual(0);
+
+			// SGR coordinates are 1-based. Aim at the first suffix cell, which places
+			// the insertion point immediately after `prefix`.
+			terminal.sendInput(`\x1b[<0;${contentColumn + prefix.length + 1};${contentRow + 1}M`);
+			terminal.sendInput("X");
+
+			expect(composer.editor.getExpandedText()).toBe(`${prefix}X${suffix}`);
+		} finally {
+			composer.stop();
+		}
+	});
+
 	it("adopts the live draft with final theme, keybindings, and submit behavior", async () => {
 		const terminal = new CountingTerminal();
 		const composer = new Composer({ preferences: config, terminal });
@@ -357,7 +392,7 @@ describe("Composer prepaint", () => {
 			composerShape: getDefault("composer.shape") ?? "box",
 			showHardwareCursor: getDefault("showHardwareCursor"),
 			maxInlineImages: getDefault("tui.maxInlineImages"),
-			resizeScrollback: "rebuild",
+			resizeScrollback: "preserve",
 			scrollbackRebuild: true,
 			imeSafeCursor: getDefault("tui.imeSafeCursor"),
 			autocompleteMaxVisible: getDefault("autocompleteMaxVisible"),

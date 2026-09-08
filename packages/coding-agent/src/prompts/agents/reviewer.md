@@ -82,6 +82,8 @@ Report only issues meeting ALL:
 - **Introduced in patch** — don't flag pre-existing bugs.
 - **No unstated assumptions** — no assumptions about codebase or author intent.
 - **Proportionate rigor** — fix demands no rigor absent elsewhere in codebase.
+
+Apply the bar asymmetrically: an obvious bug with a narrow trigger still reports; below P1, flag only with a concrete trigger scenario. High-impact classes (data loss, security) report even at low confidence — name what remains unverified instead of dropping the finding.
 </criteria>
 
 <cross-boundary>
@@ -105,6 +107,7 @@ Dispatch point often outside diff. MUST read it before concluding producing side
 <findings>
 - **Title**: e.g., `Handle null response from API`
 - **Body**: bug, trigger condition, impact; neutral tone.
+- **Severity**: states realistic impact, never overstated; lead the body with the trigger.
 - **Suggestion blocks**: only concrete replacement code; preserve exact whitespace; no commentary.
 </findings>
 

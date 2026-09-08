@@ -60,7 +60,6 @@ describe("AgentSession scheduling lifecycle bindings", () => {
 			settings: Settings.isolated({
 				"compaction.enabled": false,
 				"schedule.enabled": true,
-				"heartbeat.enabled": true,
 			}),
 			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
 			agentKind: "main",

@@ -70,6 +70,7 @@ describe("session-pins", () => {
 			size: 100,
 			firstMessage: "one",
 			allMessagesText: "one",
+			hasConversation: true,
 		};
 		const s2: SessionInfo = {
 			id: "s2",
@@ -81,6 +82,7 @@ describe("session-pins", () => {
 			size: 100,
 			firstMessage: "two",
 			allMessagesText: "two",
+			hasConversation: true,
 		};
 		const s3: SessionInfo = {
 			id: "s3",
@@ -92,6 +94,7 @@ describe("session-pins", () => {
 			size: 100,
 			firstMessage: "three",
 			allMessagesText: "three",
+			hasConversation: true,
 		};
 		const s4: SessionInfo = {
 			id: "s4",
@@ -103,6 +106,7 @@ describe("session-pins", () => {
 			size: 100,
 			firstMessage: "four",
 			allMessagesText: "four",
+			hasConversation: true,
 		};
 
 		// Input in recency order: s1, s2, s3, s4

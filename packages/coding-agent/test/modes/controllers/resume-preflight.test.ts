@@ -203,6 +203,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 			size: 1,
 			firstMessage: "first",
 			allMessagesText: "first",
+			hasConversation: true,
 		};
 		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
 		const OriginalSelector = SessionSelector.SessionSelectorComponent;
@@ -259,6 +260,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 			size: 1,
 			firstMessage: "first",
 			allMessagesText: "first",
+			hasConversation: true,
 		};
 		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
 		const OriginalSelector = SessionSelector.SessionSelectorComponent;

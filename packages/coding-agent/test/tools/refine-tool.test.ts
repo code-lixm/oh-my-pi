@@ -41,7 +41,7 @@ function createControllerFixture(options: { agentDir: string; localArtifactsDir:
 	const deps: RefinementControllerDeps = {
 		agentDir: options.agentDir,
 		getLocalHarnessDir: () => options.localArtifactsDir,
-		getMessages: () => [],
+		getMessages: () => [{ role: "user", content: "trajectory", timestamp: 1 }] as never[],
 		planWithLLM: async ({ scope }) => ({
 			summary: "Persist the session-local evidence",
 			rationale: "The session explicitly requested a local refinement.",
@@ -53,10 +53,13 @@ function createControllerFixture(options: { agentDir: string; localArtifactsDir:
 					id: "session-local-memory",
 					title: "Session-local memory",
 					content: `Created for ${scope}.`,
+					evidence: ["turn:0"],
 				},
 			],
 		}),
 		reviewWithLLM: async () => ({ shouldRefine: false, rationale: "not part of this explicit request" }),
+		critiqueWithLLM: async () => "- missing: local memory — evidence: turn:0",
+		verifyWithLLM: async () => ({ verdict: "pass" as const, reasons: [], requiredChanges: [] }),
 		waitForIdle: async () => {},
 		refreshBaseSystemPrompt: async () => {},
 		appendCustomEntry: () => {},

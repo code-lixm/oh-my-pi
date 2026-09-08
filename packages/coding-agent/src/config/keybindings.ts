@@ -33,6 +33,7 @@ interface AppKeybindings {
 	"app.tools.toggleVisibility": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
+	"app.message.bargeIn": true;
 	"app.retry": true;
 	"app.message.dequeue": true;
 	"app.clipboard.pasteImage": true;
@@ -74,6 +75,28 @@ export function getDefaultPasteImageKeys(platform: NodeJS.Platform = process.pla
 	if (platform === "win32") return ["ctrl+v", "alt+v"];
 	if (platform === "darwin") return ["ctrl+v", "super+v"];
 	return ["ctrl+v"];
+}
+
+/**
+ * Resolve default barge-in shortcuts for the current terminal platform: the
+ * Return chord (Cmd+Return on macOS, Ctrl+Return elsewhere) is the primary
+ * gesture, with Ctrl+X kept as the fallback for terminals that swallow the
+ * chord (Terminal.app/iTerm2 fullscreen on macOS, Windows Terminal #1903).
+ */
+export function getBargeInDefaultKeys(platform: NodeJS.Platform = process.platform): KeyId[] {
+	if (platform === "darwin") return ["super+enter", "ctrl+x"];
+	return ["ctrl+enter", "ctrl+x"];
+}
+
+/**
+ * Resolve default follow-up shortcuts for the current terminal platform.
+ * Ctrl+Return belongs to barge-in off macOS, so follow-up keeps only Ctrl+Q
+ * there — the chord that works on every terminal, including Windows Terminal
+ * (#1903).
+ */
+export function getFollowUpDefaultKeys(platform: NodeJS.Platform = process.platform): KeyId[] {
+	if (platform === "darwin") return ["ctrl+q", "ctrl+enter"];
+	return ["ctrl+q"];
 }
 
 /**
@@ -119,11 +142,11 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Toggle thinking mode"),
 	},
 	"app.model.cycleForward": {
-		defaultKeys: "tab",
+		defaultKeys: "alt+p",
 		description: tSettingsUi("Cycle to next model"),
 	},
 	"app.model.cycleBackward": {
-		defaultKeys: "shift+tab",
+		defaultKeys: "ctrl+alt+p",
 		description: tSettingsUi("Cycle to previous model"),
 	},
 	"app.model.select": {
@@ -131,7 +154,7 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Select model"),
 	},
 	"app.model.selectTemporary": {
-		defaultKeys: "alt+p",
+		defaultKeys: "alt+shift+m",
 		description: tSettingsUi("Select temporary model for current session"),
 	},
 	"app.tools.expand": {
@@ -147,11 +170,19 @@ export const KEYBINDINGS = {
 		description: tSettingsUi("Open external editor"),
 	},
 	"app.message.followUp": {
-		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
-		// but Windows Terminal does not emit a distinct event for Ctrl+Enter — Ctrl+Q is listed
-		// first so the default binding works there without remapping (#1903).
-		defaultKeys: ["ctrl+q", "ctrl+enter"],
+		// Ctrl+Return now belongs to barge-in off macOS; follow-up keeps Ctrl+Q, the
+		// chord every terminal delivers, and keeps Ctrl+Enter on macOS where it does
+		// not collide with barge-in (#1903).
+		defaultKeys: getFollowUpDefaultKeys(),
 		description: tSettingsUi("Send follow-up message"),
+	},
+	"app.message.bargeIn": {
+		// Cmd+Return (macOS) / Ctrl+Return: interrupt the in-flight turn right now
+		// and send the draft — more aggressive than steering (waits for the current
+		// step) and follow-up (waits for the whole turn). Ctrl+X remains the
+		// fallback chord for terminals that swallow the Return chord.
+		defaultKeys: getBargeInDefaultKeys(),
+		description: tSettingsUi("Interrupt now and send the draft immediately"),
 	},
 	"app.retry": {
 		defaultKeys: "alt+r",
@@ -565,9 +596,9 @@ function userClaimableDefaultKey(keybinding: Keybinding): KeyId | undefined {
 		case "app.thinking.cycle":
 			return "ctrl+p";
 		case "app.model.cycleForward":
-			return "tab";
+			return "alt+p";
 		case "app.model.cycleBackward":
-			return "shift+tab";
+			return "ctrl+alt+p";
 		default:
 			return undefined;
 	}

@@ -106,7 +106,7 @@ async function waitForSlotReady(repoRoot: string, label: string) {
 function expectIndexingFallback(details: { fallback?: string }) {
 	expect(details.fallback).toContain("CodeGraph is ");
 	expect(details.fallback).toContain("the worker is still preparing the index");
-	expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+	expect(details.fallback).toContain("Fallback: use `grep`/`find`/`read`.");
 }
 
 describe("CodeGraphTool contract", () => {
@@ -203,7 +203,7 @@ describe("CodeGraphTool contract", () => {
 		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string };
 		expect(details.fallback).toContain("CodeGraph unavailable");
-		expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+		expect(details.fallback).toContain("Fallback: use `grep`/`find`/`read`.");
 		expect(await pathExists(path.join(tmp, ".codegraph"))).toBe(false);
 	});
 
@@ -253,7 +253,7 @@ describe("CodeGraphTool contract", () => {
 		expect(result.isError).not.toBe(true);
 		const details = result.details as { fallback?: string };
 		expect(details.fallback).toContain("CodeGraph runtime error");
-		expect(details.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+		expect(details.fallback).toContain("Fallback: use `grep`/`find`/`read`.");
 		expect(await pathExists(path.join(repoRoot, ".codegraph"))).toBe(false);
 	});
 

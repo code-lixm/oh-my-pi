@@ -109,6 +109,12 @@ const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 const MOUSE_CLICK_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_CLICK_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+/** PI_TUI_MOUSE_DEBUG=1 → log every SGR mouse report and the tracking state that gated it. */
+const mouseDebug = Bun.env.PI_TUI_MOUSE_DEBUG === "1" && !isBunTestRuntime();
+function logMouseDebug(message: string): void {
+	if (!mouseDebug) return;
+	fs.appendFileSync(getDebugLogPath(), `[${new Date().toISOString()}] ${message}\n`);
+}
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 
@@ -2079,7 +2085,8 @@ export class TUI extends Container {
 					this.#osc66SpacerGlyphWidth(prepared, index),
 				)}`;
 			}
-			if (this.#providerWindow.length > rows && newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
+			if (this.#providerWindow.length > rows && newTop + rows < height)
+				buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		} else {
 			const pushed = Math.max(0, startTop + preparedHistory.length + rows - height);
 			if (pushed > this.#providerViewportTop && this.#providerWindow.length > 0) {
@@ -2089,20 +2096,35 @@ export class TUI extends Container {
 			let screenRow = startTop;
 			for (let index = 0; index < preparedHistory.length; index++) {
 				if (screenRow > startTop) buffer += "\r\n";
-				buffer += this.#lineRewriteSequence(preparedHistory[index] ?? "", width, Math.min(screenRow, height - 1), -1, -1, this.#osc66SpacerGlyphWidth(preparedHistory, index));
+				buffer += this.#lineRewriteSequence(
+					preparedHistory[index] ?? "",
+					width,
+					Math.min(screenRow, height - 1),
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(preparedHistory, index),
+				);
 				screenRow++;
 			}
 			for (let index = 0; index < rows; index++) {
 				if (screenRow > startTop) buffer += "\r\n";
-				buffer += this.#lineRewriteSequence(prepared[index] ?? "", width, Math.min(screenRow, height - 1), -1, -1, this.#osc66SpacerGlyphWidth(prepared, index));
+				buffer += this.#lineRewriteSequence(
+					prepared[index] ?? "",
+					width,
+					Math.min(screenRow, height - 1),
+					-1,
+					-1,
+					this.#osc66SpacerGlyphWidth(prepared, index),
+				);
 				screenRow++;
 			}
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		}
 		const marker = markers[0];
-		const target = marker !== undefined && rows > 0
-			? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
-			: null;
+		const target =
+			marker !== undefined && rows > 0
+				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
+				: null;
 		if (target) {
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
 			this.#parkedViewportOffset = Math.max(0, target.row - newTop);
@@ -2150,11 +2172,21 @@ export class TUI extends Container {
 				this.#resizeScrollbackMode === "preserve" && this.terminal.rows >= this.#previousHeight;
 			if (this.#hasEverRendered && this.#providerWindow.length > 0 && !preserveGrowing) {
 				if (this.terminal.rows < this.#previousHeight) {
-					const staleRows = this.#reflowedRowCount(this.#providerWindow, 0, this.#providerWindow.length, this.terminal.columns);
+					const staleRows = this.#reflowedRowCount(
+						this.#providerWindow,
+						0,
+						this.#providerWindow.length,
+						this.terminal.columns,
+					);
 					const top = Math.max(0, Math.min(this.#providerViewportTop, this.terminal.rows - staleRows));
 					erase = `\x1b[?25l\x1b[${top + 1};1H\x1b[J`;
 				} else {
-					const up = this.#reflowedRowCount(this.#providerWindow, 0, this.#parkedViewportOffset, this.terminal.columns);
+					const up = this.#reflowedRowCount(
+						this.#providerWindow,
+						0,
+						this.#parkedViewportOffset,
+						this.terminal.columns,
+					);
 					erase = `\x1b[?25l${up > 0 ? `\x1b[${up}A` : ""}\r\x1b[J`;
 				}
 				this.#providerWindow = [];
@@ -2226,7 +2258,8 @@ export class TUI extends Container {
 		const from = Math.max(0, start);
 		if (isInsideTerminalMultiplexer()) return Math.max(0, stop - from);
 		let rows = 0;
-		for (let index = from; index < stop; index++) rows += Math.max(1, Math.ceil(visibleWidth(window[index]!) / Math.max(1, width)));
+		for (let index = from; index < stop; index++)
+			rows += Math.max(1, Math.ceil(visibleWidth(window[index]!) / Math.max(1, width)));
 		return rows;
 	}
 
@@ -2249,7 +2282,9 @@ export class TUI extends Container {
 	#renderProviderResizeAltFrame(width: number, height: number): void {
 		const provider = this.#frameProvider;
 		this.#imageBudget.beginPass();
-		const rendered = provider?.renderResizeFrame?.({ columns: width, rows: height }) ?? (provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
+		const rendered =
+			provider?.renderResizeFrame?.({ columns: width, rows: height }) ??
+			(provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
 		this.#imageBudget.endPass();
 		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
 		this.#resizeAltViewportTop = Math.max(0, viewport.length - Math.min(this.#providerViewportRows, viewport.length));
@@ -2599,6 +2634,16 @@ export class TUI extends Container {
 			data => this.#receiveTerminalInput(data),
 			() => {
 				if (this.#frameProvider !== undefined) {
+					if (this.#resizeScrollbackMode === "preserve") {
+						// Alternate-screen enter/exit restores the normal buffer at its tail
+						// on xterm-style hosts, yanking a reader parked in native scrollback.
+						// Paint the bounded provider tail directly on the normal screen, then
+						// reconcile authoritatively after the resize burst settles.
+						this.#cancelResizeProbe();
+						this.#beginResizeViewport();
+						this.#requestResizeViewportPaint();
+						return;
+					}
 					if (this.#resizeProbe !== undefined) {
 						this.#cancelResizeProbe();
 						this.#beginResizeAltPaint();
@@ -3616,9 +3661,12 @@ export class TUI extends Container {
 			}
 			data = current;
 		}
-
-		// Mouse tracking is opt-in on the normal screen: it would otherwise
-		// consume the terminal's native transcript-selection gestures.
+		if (mouseDebug && data.startsWith("\x1b[<")) {
+			logMouseDebug(
+				`[mouse-debug] SGR: tracking=${this.#normalMouseTrackingActive} alt=${this.#altActive} ` +
+					`focusedTracking=${this.#focusedComponent?.mouseTracking === true} focusedHasMouse=${Boolean(this.#focusedComponent?.handleMouse)}`,
+			);
+		}
 		const mouseTarget = this.#focusedComponent;
 		if (!this.#altActive && this.#normalMouseTrackingActive && data.startsWith("\x1b[<")) {
 			const event = parseSgrMouse(data);
@@ -3628,6 +3676,8 @@ export class TUI extends Container {
 				// intentionally NOT used to pick a target — the click should
 				// reach whatever component actually owns that screen row.
 				const sharedHandled = this.routeMouse(event, event.row, event.col);
+				if (mouseDebug)
+					logMouseDebug(`[mouse-debug] click row=${event.row} col=${event.col} routeMouse=${sharedHandled}`);
 				if (sharedHandled) {
 					if (
 						mouseTarget !== null &&
@@ -3640,12 +3690,10 @@ export class TUI extends Container {
 					}
 					return;
 				}
-				// Migration fallback: keep the legacy `handleMouse(event,cursorScreen)`
-				// path live for components that have not yet opted into the local
-				// `routeMouse` API. The cursor-screen marker is preferred only when
-				// it belongs to the focused component's root segment — otherwise
-				// fabricating one would mis-locate the cursor for any other
-				// focused-at-target.
+				// Fallback for focused components that only expose `handleMouse(event,cursorScreen)`.
+				// Root composition proves marker ownership from its segment ledger. A frame
+				// provider has no segment ledger; its last marker is the active hardware
+				// cursor selected by the provider's viewport composition.
 				if (mouseTarget?.handleMouse) {
 					const segments = this.#frameSegments;
 					let markerRow = -1;
@@ -3653,17 +3701,33 @@ export class TUI extends Container {
 					for (let i = this.#frameCursorMarkers.length - 1; i >= 0; i--) {
 						const marker = this.#frameCursorMarkers[i]!;
 						const ownerSegment = this.#findSegmentAt(segments, marker.row);
-						if (ownerSegment !== undefined && ownerSegment.component === mouseTarget) {
+						const providerOwnsFocusedCursor = this.#frameProvider !== undefined && segments.length === 0;
+						if (
+							(ownerSegment !== undefined && ownerSegment.component === mouseTarget) ||
+							providerOwnsFocusedCursor
+						) {
 							markerRow = marker.row;
 							markerCol = marker.col;
 							break;
 						}
 					}
+					if (
+						markerRow < 0 &&
+						this.#frameProvider !== undefined &&
+						segments.length === 0 &&
+						this.#hardwareCursorState !== null
+					) {
+						markerRow = this.#hardwareCursorState.row;
+						markerCol = this.#hardwareCursorState.col;
+					}
 					if (markerRow >= 0) {
-						const handled = mouseTarget.handleMouse(event, {
-							row: markerRow - this.#windowTopRow,
-							col: markerCol,
-						});
+						const cursorScreen = { row: markerRow - this.#windowTopRow, col: markerCol };
+						const handled = mouseTarget.handleMouse(event, cursorScreen);
+						if (mouseDebug) {
+							logMouseDebug(
+								`[mouse-debug] handleMouse cursorScreen=${JSON.stringify(cursorScreen)} → ${handled}`,
+							);
+						}
 						if (handled) {
 							if (this.#focusedComponent === mouseTarget && this.#scopedInputRenderComponents.has(mouseTarget)) {
 								this.requestComponentRender(mouseTarget);
@@ -4213,6 +4277,16 @@ export class TUI extends Container {
 		}
 		if (this.#frameProvider !== undefined) {
 			this.#componentRenderTargets.clear();
+			if (
+				this.#resizeViewportActive &&
+				this.#hasEverRendered &&
+				this.#resizeScrollbackMode === "preserve" &&
+				this.#getTopmostVisibleOverlay() === undefined
+			) {
+				this.#paintViewportTail(width, height);
+				this.#resizeViewportPaintCount += 1;
+				return;
+			}
 			if (this.#resizeAltActive) {
 				this.#renderProviderResizeAltFrame(width, height);
 				return;
@@ -4222,7 +4296,6 @@ export class TUI extends Container {
 			this.#renderProviderFrame(width, height);
 			return;
 		}
-
 
 		// Resize viewport fast path. While a non-multiplexer drag is in flight,
 		// paint only the viewport and skip composing the off-screen history.
@@ -4647,21 +4720,21 @@ export class TUI extends Container {
 				break;
 			}
 		}
-this.#responsivenessTelemetry.beginPrepare(this.#renderScheduler.now());
-this.#runResponsivenessTestStage("render.prepare");
-let frame: string[];
-let window: string[];
-try {
-	frame = this.#prepareFrame(rawFrame, width);
-	window = new Array(height);
-	for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
-	if (hasVisibleOverlay) {
-		window = this.#compositeOverlaysIntoWindow(window, width, height);
-		const overlayMarkers = this.#extractCursorMarkers(window);
-		if (overlayMarkers.length > 0) {
-			cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
-		}
-		window = this.#prepareLinesArray(window, width);
+		this.#responsivenessTelemetry.beginPrepare(this.#renderScheduler.now());
+		this.#runResponsivenessTestStage("render.prepare");
+		let frame: string[];
+		let window: string[];
+		try {
+			frame = this.#prepareFrame(rawFrame, width);
+			window = new Array(height);
+			for (let r = 0; r < height; r++) window[r] = frame[windowTop + r] ?? "";
+			if (hasVisibleOverlay) {
+				window = this.#compositeOverlaysIntoWindow(window, width, height);
+				const overlayMarkers = this.#extractCursorMarkers(window);
+				if (overlayMarkers.length > 0) {
+					cursorPos = { row: windowTop + overlayMarkers[0]!.row, col: overlayMarkers[0]!.col };
+				}
+				window = this.#prepareLinesArray(window, width);
 			}
 		} finally {
 			this.#responsivenessTelemetry.endPrepare(this.#renderScheduler.now());
@@ -5631,6 +5704,14 @@ try {
 			this.#resizeViewportSettleTimer = undefined;
 			this.#resizeViewportActive = false;
 			if (this.#stopped) return;
+			if (
+				this.#frameProvider !== undefined &&
+				this.#resizeScrollbackMode === "preserve" &&
+				this.#resizeAltViewportTop !== undefined
+			) {
+				this.#providerViewportTop = this.#resizeAltViewportTop;
+				this.#resizeAltViewportTop = undefined;
+			}
 			// The drag is quiet: replay the rewrapped transcript authoritatively.
 			// #resizeEventPending was preserved across every viewport-only frame
 			// (the fast path never consumes it), so this classifies as a geometry
@@ -5716,6 +5797,10 @@ try {
 			const rendered = frameProvider.renderResizeFrame?.(size) ?? frameProvider.renderFrame(size).viewport;
 			const visible = rendered.length <= height ? Array.from(rendered) : Array.from(rendered.slice(-height));
 			const contentRows = visible.length;
+			this.#resizeAltViewportTop = Math.max(
+				0,
+				visible.length - Math.min(this.#providerViewportRows, visible.length),
+			);
 			while (visible.length < height) visible.push("");
 			this.#extractCursorMarkers(visible);
 			return { framed: this.#prepareLinesArray(visible, width), viewportTop: 0, contentRows };
@@ -5826,7 +5911,10 @@ try {
 		width: number,
 	): void {
 		const widthChanged = this.#previousWidth > 0 && this.#previousWidth !== width;
-		const altEnter = widthChanged ? this.#enterResizeAltSequence() : "";
+		const altEnter =
+			widthChanged && !(this.#frameProvider !== undefined && this.#resizeScrollbackMode === "preserve")
+				? this.#enterResizeAltSequence()
+				: "";
 		if (altEnter) this.#writeTerminal(altEnter);
 		let buffer = `${this.#paintBeginSequence}\x1b[H`;
 		for (let r = 0; r < height; r++) {

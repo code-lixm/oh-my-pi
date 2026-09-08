@@ -121,7 +121,7 @@ describe("CodeGraphTool pending mutation contract", () => {
 		expect(initialDetails.indexState).toBeDefined();
 		expect(initialDetails.fallback).toContain("CodeGraph is ");
 		expect(initialDetails.fallback).toContain("the worker is still preparing the index");
-		expect(initialDetails.fallback).toContain("Fallback: use `grep`/`glob`/`read`.");
+		expect(initialDetails.fallback).toContain("Fallback: use `grep`/`find`/`read`.");
 
 		await waitForSlotReady(repoRoot, "pending mutation warmup");
 

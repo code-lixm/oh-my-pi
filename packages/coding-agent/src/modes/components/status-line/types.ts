@@ -21,7 +21,7 @@ export interface CollabStatus {
 }
 
 export interface StatusLineSegmentOptions {
-	model?: { showThinkingLevel?: boolean };
+	model?: { showProvider?: boolean; showThinkingLevel?: boolean };
 	path?: { abbreviate?: boolean; basenameOnly?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
 	usage?: {
 		batteryWidth?: number;

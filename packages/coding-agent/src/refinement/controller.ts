@@ -5,7 +5,11 @@ import {
 	type AutoRefinementReview,
 	applyRefinementProposal,
 	buildRollbackProposal,
+	MAX_PROPOSAL_ROUNDS,
+	type MechanicalValidationResult,
+	serializeConversationWithTurns,
 	snapshotHarnessState,
+	validateProposalMechanically,
 } from "./refinement";
 import {
 	commitHarnessStateAndHistory,
@@ -18,13 +22,36 @@ import type { HarnessScope, HarnessState, RefinementProposal, RefinementResult }
 
 const REFINEMENT_DISABLED_ERROR = "Continual harness refinement is disabled";
 
-export type RefinementPlanFn = (options: {
+export interface RefinementIterationContext {
 	messages: AgentMessage[];
 	state: HarnessState;
 	history: RefinementResult[];
 	instructions?: string;
 	scope: HarnessScope;
-}) => Promise<RefinementProposal>;
+	/** Structured critique findings from the separate evaluator stage. */
+	critique?: string;
+	/** Required changes from the previous round's failed verification. */
+	roundFeedback?: string[];
+	round: number;
+}
+
+export type RefinementPlanFn = (options: RefinementIterationContext) => Promise<RefinementProposal>;
+
+export type RefinementCritiqueFn = (options: {
+	messages: AgentMessage[];
+	state: HarnessState;
+	history: RefinementResult[];
+	scope: HarnessScope;
+	instructions?: string;
+}) => Promise<string>;
+
+export type RefinementVerifyFn = (options: {
+	messages: AgentMessage[];
+	state: HarnessState;
+	history: RefinementResult[];
+	proposal: RefinementProposal;
+	round: number;
+}) => Promise<import("./types").ProposalVerification>;
 
 export type AutoRefinementReviewFn = (options: {
 	messages: AgentMessage[];
@@ -55,6 +82,9 @@ export interface RefinementControllerDeps {
 	getMessages: () => AgentMessage[];
 	planWithLLM: RefinementPlanFn;
 	reviewWithLLM: AutoRefinementReviewFn;
+	/** Separate evaluator stages: critique grounds the proposal, verify gates it. */
+	critiqueWithLLM: RefinementCritiqueFn;
+	verifyWithLLM: RefinementVerifyFn;
 	waitForIdle: () => Promise<void>;
 	refreshBaseSystemPrompt: () => Promise<void>;
 	appendCustomEntry: (type: string, data: unknown) => void;
@@ -130,7 +160,6 @@ export class RefinementControllerImpl implements RefinementController {
 		const now = Date.now();
 		const cooldownMs = Math.max(0, Math.trunc(this.#deps.getAutoRefineCooldownMs()));
 		if (now - this.#lastAutoRefineAt < cooldownMs) return Promise.resolve();
-		this.#lastAutoRefineAt = now;
 		void this.#runExclusive(async () => {
 			const state = await this.getState();
 			const history = await this.#loadMergedHistory();
@@ -142,6 +171,9 @@ export class RefinementControllerImpl implements RefinementController {
 				turnsSinceLastReview,
 			});
 			if (!review.shouldRefine) return;
+			// The cooldown starts when a refinement actually runs: a rejected
+			// review must not consume the window and suppress later real triggers.
+			this.#lastAutoRefineAt = Date.now();
 			await this.#runRefinement("local", review.instructions ?? review.rationale);
 		}).catch(error => this.#deps.logWarning(`Continual-harness review (${reason}) failed`, error));
 		return Promise.resolve();
@@ -262,6 +294,14 @@ export class RefinementControllerImpl implements RefinementController {
 		return mergeHarnessStates(globalState, localState);
 	}
 
+	/**
+	 * The bounded reflection loop: critique → propose → verify → (revise) →
+	 * apply. The critic and the proposer are separate model calls; verification
+	 * is mechanical first (evidence citations resolve, no duplicates, per-kind
+	 * ceiling) then evaluative (forced-format verdict). A failed round feeds its
+	 * required changes back into exactly one revision; exhausting
+	 * {@link MAX_PROPOSAL_ROUNDS} records the failure and applies nothing.
+	 */
 	async #runRefinement(scope: HarnessScope, instructions?: string): Promise<void> {
 		this.#assertEnabled();
 		const [planningState, planningTarget, history] = await Promise.all([
@@ -269,23 +309,74 @@ export class RefinementControllerImpl implements RefinementController {
 			this.#loadScopeState(scope),
 			this.#loadMergedHistory(),
 		]);
-		const proposal = await this.#deps.planWithLLM({
-			messages: this.#deps.getMessages(),
+		const messages = this.#deps.getMessages();
+		const critique = await this.#deps.critiqueWithLLM({
+			messages,
 			state: planningState,
 			history,
-			instructions,
 			scope,
+			instructions,
 		});
-		if (proposal.edits.length === 0) return;
+		const { turnCount } = serializeConversationWithTurns(messages);
+
+		let roundFeedback: string[] | undefined;
+		let lastReasons: string[] | undefined;
+		let accepted: { proposal: RefinementProposal; rounds: number } | undefined;
+		for (let round = 1; round <= MAX_PROPOSAL_ROUNDS; round++) {
+			const proposal = await this.#deps.planWithLLM({
+				messages,
+				state: planningState,
+				history,
+				instructions,
+				scope,
+				critique,
+				round,
+				...(roundFeedback ? { roundFeedback } : {}),
+			});
+			if (proposal.edits.length === 0) return;
+
+			// Cheap gate first: mechanical failures never spend an evaluator call.
+			const mechanical: MechanicalValidationResult = validateProposalMechanically(
+				proposal,
+				planningState,
+				turnCount,
+			);
+			if (mechanical.error) {
+				lastReasons = [mechanical.error];
+				roundFeedback = lastReasons;
+				continue;
+			}
+			const verification = await this.#deps.verifyWithLLM({
+				messages,
+				state: planningState,
+				history,
+				proposal,
+				round,
+			});
+			if (verification.verdict === "pass") {
+				accepted = { proposal, rounds: round };
+				break;
+			}
+			lastReasons = verification.requiredChanges.length > 0 ? verification.requiredChanges : verification.reasons;
+			roundFeedback = lastReasons;
+		}
+		if (!accepted) {
+			// Bounded exhaustion: nothing is applied, and the failure surfaces in
+			// the transcript so the next trigger does not silently repeat it.
+			throw new Error(
+				`Refinement proposal rejected after ${MAX_PROPOSAL_ROUNDS} rounds: ${lastReasons?.join("; ") ?? "unverified"}`,
+			);
+		}
 
 		await this.#deps.waitForIdle();
 		this.#deps.disconnectFromAgent?.();
 		try {
 			const freshState = await this.#loadScopeState(scope);
-			const result = applyRefinementProposal(freshState, proposal, {
+			const result = applyRefinementProposal(freshState, accepted.proposal, {
 				id: String(Snowflake.next()),
 				scope,
 				baselineState: snapshotHarnessState(planningTarget),
+				rounds: accepted.rounds,
 			});
 			await this.#persistResult(scope, freshState, result);
 		} finally {

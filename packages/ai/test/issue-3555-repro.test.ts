@@ -35,6 +35,10 @@ describe("issue 3555 Ollama usage registration", () => {
 			expect(cloudProvider).toBeDefined();
 			if (!cloudProvider) throw new Error("expected Ollama Cloud usage provider");
 
+			// The Cloud provider now fetches real quota data and only accepts
+			// api_key credentials; an oauth credential yields no report (the
+			// account still shows in usage views because the provider itself is
+			// registered — see usageProviderFor assertions above).
 			const report = await cloudProvider.fetchUsage(
 				{
 					provider: "ollama-cloud",
@@ -42,12 +46,7 @@ describe("issue 3555 Ollama usage registration", () => {
 				},
 				{ fetch: globalThis.fetch },
 			);
-			expect(report).toMatchObject({
-				provider: "ollama-cloud",
-				limits: [],
-				metadata: { email: "cloud@example.test" },
-			});
-			expect(report?.notes?.[0]).toContain("does not expose a standalone quota usage API");
+			expect(report).toBeNull();
 		} finally {
 			storage.close();
 		}

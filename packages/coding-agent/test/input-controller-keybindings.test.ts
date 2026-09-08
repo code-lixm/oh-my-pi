@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { getBargeInDefaultKeys } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { HubActivityGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/hub-activity-group";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
@@ -8,6 +9,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import type { SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { type KeyId, matchesKey } from "@oh-my-pi/pi-tui";
 import manualContinuePrompt from "../src/prompts/system/manual-continue.md" with { type: "text" };
+import { USER_INTERRUPT_LABEL } from "../src/session/messages";
 
 type FakeEditor = {
 	onEscape?: () => void;
@@ -42,6 +44,11 @@ type FakeEditor = {
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
 	clearDraft(historyText?: string): void;
+	submit(): void;
+	compactPendingImageReferences(text: string): string;
+	composerChips(): Array<{ kind: string; n: number }>;
+	setCollapsedText(text: string): void;
+	markPendingImagesManaged(): void;
 };
 
 type InputListenerResult = { consume: boolean } | undefined;
@@ -100,6 +107,15 @@ function createDetachedEditor(initialText = ""): FakeEditor {
 			this.pendingImages = [];
 			this.pendingImageLinks = [];
 		},
+		submit: vi.fn(),
+		compactPendingImageReferences(value: string) {
+			return value;
+		},
+		composerChips: () => [],
+		setCollapsedText(value: string) {
+			text = value;
+		},
+		markPendingImagesManaged() {},
 	};
 }
 
@@ -210,6 +226,7 @@ async function createContext() {
 		"app.model.selectTemporary": ["ctrl+y"],
 		"app.model.select": ["alt+m"],
 		"app.session.sendToNew": ["alt+n"],
+		"app.message.bargeIn": ["ctrl+x"],
 		"app.retry": ["alt+r"],
 		"app.clipboard.pasteImage": ["ctrl+v"],
 		"app.tools.toggleVisibility": ["ctrl+shift+o"],
@@ -289,6 +306,17 @@ async function createContext() {
 			this.pendingImages = [];
 			this.pendingImageLinks = [];
 		},
+		submit: vi.fn(),
+		compactPendingImageReferences(text: string) {
+			return text;
+		},
+		composerChips() {
+			return [];
+		},
+		setCollapsedText(text: string) {
+			editorText = text;
+		},
+		markPendingImagesManaged() {},
 	};
 	focused = editor;
 	const ctx = {
@@ -347,9 +375,19 @@ async function createContext() {
 			}
 		},
 		updatePendingMessagesDisplay,
+		optimisticQueuedMessages: [],
+		addOptimisticQueuedMessage: (text: string, mode: "steer" | "followUp") => {
+			ctx.optimisticQueuedMessages.push({ mode, text });
+			updatePendingMessagesDisplay();
+		},
+		retireOptimisticQueuedMessage: (text: string) => {
+			const index = ctx.optimisticQueuedMessages.findIndex(entry => entry.text === text);
+			if (index >= 0) ctx.optimisticQueuedMessages.splice(index, 1);
+			updatePendingMessagesDisplay();
+		},
+		reconcileOptimisticQueuedMessages: () => {},
 		isBashMode: false,
 		isPythonMode: false,
-		hideToolActivity: false,
 		toolOutputExpanded: false,
 		settings: { set: vi.fn() },
 		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
@@ -794,7 +832,8 @@ describe("InputController keybinding setup", () => {
 		expect(spies.prompt).toHaveBeenCalledWith("follow up after current response", {
 			streamingBehavior: "followUp",
 		});
-		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		// One optimistic first-frame refresh + one after the dispatch resolves.
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(2);
 		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
 
@@ -807,8 +846,13 @@ describe("InputController keybinding setup", () => {
 		await controller.handleFollowUp();
 
 		expect(ctx.locallySubmittedUserSignatures.has("plain idle submit\u00000")).toBe(true);
-		// Idle submit calls prompt() with no streamingBehavior (images forwarded, undefined here).
-		expect(spies.prompt).toHaveBeenCalledWith("plain idle submit", { images: undefined });
+		// Idle submit still passes streamingBehavior: "followUp" — a no-op for a
+		// genuinely idle fresh turn, but it queues instead of throwing
+		// AgentBusyError when a background turn flips the session busy in the gap.
+		expect(spies.prompt).toHaveBeenCalledWith("plain idle submit", {
+			streamingBehavior: "followUp",
+			images: undefined,
+		});
 	});
 
 	it("surfaces and recovers from an idle follow-up dispatch failure", async () => {
@@ -1097,5 +1141,111 @@ describe("InputController global tool-output expand (ctrl+o)", () => {
 
 		expect(dispatchInput(listeners, "\x18")).toEqual({ consume: true });
 		expect(context.ctx.toolOutputExpanded).toBe(true);
+	});
+});
+
+describe("InputController barge-in", () => {
+	it("binds the default ctrl+x action to handleBargeIn", async () => {
+		const { InputController, ctx, customHandlers } = await createContext();
+		const controller = new InputController(ctx);
+		const handler = vi.spyOn(controller, "handleBargeIn").mockResolvedValue();
+
+		controller.setupKeyHandlers();
+		expect(customHandlers.get("ctrl+x")).toBeDefined();
+
+		customHandlers.get("ctrl+x")?.();
+		await Promise.resolve();
+
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it("binds the macOS Cmd+Return chord to handleBargeIn", async () => {
+		const { InputController, ctx, setKeybinding, customHandlers } = await createContext();
+		setKeybinding("app.message.bargeIn", getBargeInDefaultKeys("darwin"));
+		const controller = new InputController(ctx);
+		const handler = vi.spyOn(controller, "handleBargeIn").mockResolvedValue();
+
+		controller.setupKeyHandlers();
+		expect(customHandlers.get("super+enter")).toBeDefined();
+		customHandlers.get("super+enter")?.();
+		await Promise.resolve();
+
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it("binds the Ctrl+Return chord to handleBargeIn off macOS", async () => {
+		const { InputController, ctx, setKeybinding, customHandlers } = await createContext();
+		setKeybinding("app.message.bargeIn", getBargeInDefaultKeys("win32"));
+		const controller = new InputController(ctx);
+		const handler = vi.spyOn(controller, "handleBargeIn").mockResolvedValue();
+
+		controller.setupKeyHandlers();
+		expect(customHandlers.get("ctrl+enter")).toBeDefined();
+		customHandlers.get("ctrl+enter")?.();
+		await Promise.resolve();
+
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
+	it("aborts the streaming turn with the user-interrupt reason, then submits the draft through the editor", async () => {
+		const { InputController, ctx, editor } = await createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			abort: ReturnType<typeof vi.fn>;
+		};
+		session.isStreaming = true;
+		editor.setText("stop this and do that instead");
+		const controller = new InputController(ctx);
+
+		await controller.handleBargeIn();
+
+		expect(session.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expect(editor.submit).toHaveBeenCalledTimes(1);
+	});
+
+	it("submits without aborting when the session is idle", async () => {
+		const { InputController, ctx, editor } = await createContext();
+		const session = ctx.session as unknown as { abort: ReturnType<typeof vi.fn> };
+		editor.setText("fresh prompt");
+		const controller = new InputController(ctx);
+
+		await controller.handleBargeIn();
+
+		expect(session.abort).not.toHaveBeenCalled();
+		expect(editor.submit).toHaveBeenCalledTimes(1);
+	});
+
+	it("is a no-op on an empty draft, even while streaming", async () => {
+		const { InputController, ctx, editor } = await createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			abort: ReturnType<typeof vi.fn>;
+		};
+		session.isStreaming = true;
+		editor.setText("   ");
+		const controller = new InputController(ctx);
+
+		await controller.handleBargeIn();
+
+		expect(session.abort).not.toHaveBeenCalled();
+		expect(editor.submit).not.toHaveBeenCalled();
+	});
+
+	it("never tears down an in-flight compaction", async () => {
+		const { InputController, ctx, editor } = await createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			isCompacting: boolean;
+			abort: ReturnType<typeof vi.fn>;
+		};
+		session.isStreaming = true;
+		session.isCompacting = true;
+		editor.setText("do this instead");
+		const controller = new InputController(ctx);
+
+		await controller.handleBargeIn();
+
+		expect(session.abort).not.toHaveBeenCalled();
+		expect(editor.submit).not.toHaveBeenCalled();
 	});
 });

@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
-import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
+import { isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import { containsBlobRef } from "./blob-ref-resolution";
+import { type BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { buildSessionContext } from "./session-context";
 import {
 	type FileEntry,
@@ -307,27 +308,6 @@ async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, ke
 	);
 }
 
-/**
- * Cheap synchronous precheck: does this value's tree contain any `blob:sha256:` string?
- * Early-exits on the first hit and allocates no promises, so blob-free entries skip the
- * async {@link resolvePersistedBlobRefs} descent entirely. Conservative — a blob ref in a
- * non-resolved position still returns true, which only costs an extra (no-op) walk.
- */
-function containsBlobRef(value: unknown): boolean {
-	if (typeof value === "string") return isBlobRef(value);
-	if (Array.isArray(value)) {
-		for (const item of value) {
-			if (containsBlobRef(item)) return true;
-		}
-		return false;
-	}
-	if (typeof value !== "object" || value === null) return false;
-	for (const key in value) {
-		if (containsBlobRef((value as Record<string, unknown>)[key])) return true;
-	}
-	return false;
-}
-
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	const pending: Promise<void>[] = [];
 	// Interleave precheck + initiation per entry so a positive entry begins resolution at the same
@@ -343,17 +323,19 @@ export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: 
 
 /**
  * Read-only transcript view of a session file: load entries, migrate to the
- * current version, resolve blob refs, and build the display transcript along
- * the persisted leaf path (last entry). Uses transcript mode (collapsed to the
- * latest compaction) so failed/aborted tail turns stay visible, unlike the
- * provider-context builder which drops them. Does NOT create a writer or take
- * the session lock — safe to call against a file another session is writing.
+ * current version, and build the display transcript along the persisted leaf
+ * path (last entry). Uses transcript mode (collapsed to the latest compaction)
+ * so failed/aborted tail turns stay visible, unlike the provider-context builder
+ * which drops them. Does NOT create a writer or take the session lock — safe to
+ * call against a file another session is writing.
+ *
+ * Blob refs stay unresolved: consumers of this view render markdown/expanded
+ * text and resolve image data on demand via `session/blob-ref-resolution`.
  */
 export async function loadSessionMessagesReadOnly(filePath: string): Promise<AgentMessage[]> {
 	const entries = await loadEntriesFromFile(filePath);
 	if (entries.length === 0) return [];
 	migrateToCurrentVersion(entries);
-	await resolveBlobRefsInEntries(entries, new BlobStore(getBlobsDir()));
 	const sessionEntries = entries.filter((e): e is SessionEntry => e.type !== "session");
 	return buildSessionContext(sessionEntries, undefined, undefined, {
 		transcript: true,

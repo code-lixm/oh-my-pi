@@ -88,6 +88,9 @@ function createContext(): {
 		showStatus: Spy;
 		startPendingSubmission: StartPendingSubmissionSpy;
 		updatePendingMessagesDisplay: Spy;
+		reconcileOptimisticQueuedMessages: Spy;
+		resumeQueuedMessages: Spy;
+		retireOptimisticQueuedMessage: Spy;
 	};
 	inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined>;
 	sessionListeners: Array<(event: { type: string }) => void>;
@@ -119,6 +122,7 @@ function createContext(): {
 	const handleOmfgEscape = vi.fn(() => true);
 	const hasActiveOmfg = vi.fn(() => false);
 	const updatePendingMessagesDisplay = vi.fn();
+	const resumeQueuedMessages = vi.fn(() => false);
 	const prompt = vi.fn();
 	const startPendingSubmission = vi.fn(
 		(input: { text: string; images?: ImageContent[]; imageLinks?: (string | undefined)[] }) => {
@@ -185,6 +189,7 @@ function createContext(): {
 			cancelAsyncJobs,
 			clearQueue,
 			getQueuedMessages,
+			resumeQueuedMessages,
 			maybeStartTitleGeneration: vi.fn(),
 			prompt,
 			customCommands: [],
@@ -217,6 +222,10 @@ function createContext(): {
 		fileSlashCommands: new Map(),
 		compactionQueuedMessages: [],
 		isBashMode: false,
+		optimisticQueuedMessages: [],
+		addOptimisticQueuedMessage: vi.fn(),
+		retireOptimisticQueuedMessage: vi.fn(),
+		reconcileOptimisticQueuedMessages: vi.fn(),
 		isPythonMode: false,
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
@@ -266,6 +275,7 @@ function createContext(): {
 			clearQueue,
 			clearEditor: ctx.clearEditor as Spy,
 			getQueuedMessages,
+			resumeQueuedMessages,
 			ensureLoadingAnimation,
 			flushSync: ctx.sessionManager.flushSync as Spy,
 			handleBtwCommand,
@@ -281,6 +291,8 @@ function createContext(): {
 			shutdown: ctx.shutdown as Spy,
 			startPendingSubmission,
 			updatePendingMessagesDisplay,
+			reconcileOptimisticQueuedMessages: ctx.reconcileOptimisticQueuedMessages as Spy,
+			retireOptimisticQueuedMessage: ctx.retireOptimisticQueuedMessage as Spy,
 		},
 		inputListeners,
 		sessionListeners,
@@ -313,6 +325,7 @@ type MutableSessionState = InteractiveModeContext["session"] & {
 	isBashRunning: boolean;
 	isEvalRunning: boolean;
 	runningAsyncJobCount: number;
+	queuedMessageCount: number;
 };
 
 function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
@@ -423,7 +436,7 @@ describe("InputController escape behavior", () => {
 		expect(editor.getText()).toBe("");
 	});
 
-	it("requires a second Esc to fall back to aborting the active session when no pending optimistic submission exists", () => {
+	it("requires a second Esc to abort the active session while queued messages stay queued", () => {
 		const clock = installClock();
 		const { ctx, editor, spies } = createContext();
 		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
@@ -441,13 +454,62 @@ describe("InputController escape behavior", () => {
 		editor.onEscape?.();
 
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
-		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
-		expect(spies.clearQueue).toHaveBeenCalledWith({ forInterrupt: true });
+		// Queued messages keep their place: the interrupt must NOT drain them into
+		// the editor — the post-abort stranded-message drain delivers them instead.
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.reconcileOptimisticQueuedMessages).toHaveBeenCalledTimes(1);
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		// The Esc interrupt threads a user-facing reason so the aborted turn and its
 		// synthetic tool results read as a deliberate interrupt, not "Request was aborted".
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
+	it("hints how to resume messages kept in the queue after an interrupt", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		mutableSessionState(ctx).queuedMessageCount = 2;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		// The interrupt keeps the queue without auto-running it, so the status
+		// line must tell the user the kept count and the explicit resume gesture.
+		expect(spies.showStatus).toHaveBeenLastCalledWith(
+			tSettingsUi("Interrupted. {count} queued messages kept — press Enter to run them.", { count: 2 }),
+		);
+	});
+
+	it("resumes kept queued messages on an idle empty submit", async () => {
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).queuedMessageCount = 1;
+		spies.resumeQueuedMessages.mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.prompt).not.toHaveBeenCalled();
+		expect(spies.resumeQueuedMessages).toHaveBeenCalledTimes(1);
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("treats an idle empty submit with an empty queue as a no-op", async () => {
+		const { ctx, editor, spies } = createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.resumeQueuedMessages).not.toHaveBeenCalled();
+		expect(spies.prompt).not.toHaveBeenCalled();
 	});
 
 	it("requires a confirmed second Esc to pause an idle loop, cancel its pending submission, and abort the main session", () => {

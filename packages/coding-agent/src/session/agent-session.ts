@@ -87,6 +87,7 @@ import {
 	escapeXmlText,
 	formatDuration,
 	getAgentDbPath,
+	getAgentDir,
 	isBunTestRuntime,
 	isEnoent,
 	isInteractiveHost,
@@ -96,14 +97,16 @@ import {
 	prompt,
 	Snowflake,
 	stringProperty,
+	untilAborted,
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
-import { reset as resetCapabilities } from "../capability";
 import { createAutonomousProvider } from "../autonomous/continuation-hook";
 import { AutonomousController, createAutonomousRuntimeState, isAutonomousRuntimeState } from "../autonomous/controller";
 import type { AutonomousConfig, AutonomousRuntimeState } from "../autonomous/types";
+import { reset as resetCapabilities } from "../capability";
+import { scheduleAutoArchiveScan } from "../cli/session-retention";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
@@ -208,16 +211,20 @@ import sideChannelNoToolsReminderZh from "../prompts/system/side-channel-no-tool
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import vibeModeActivePromptZh from "../prompts/system/vibe-mode-active.zh-CN.md" with { type: "text" };
 import { createRefinementController } from "../refinement/controller";
-import { planRefinement, reviewAutoRefinement } from "../refinement/refinement";
+import {
+	critiqueHarnessState,
+	planRefinement,
+	reviewAutoRefinement,
+	verifyRefinementProposal,
+} from "../refinement/refinement";
 import type { AgentActivityPhase, AgentActivityState } from "../registry/agent-activity";
 import { AgentRegistry } from "../registry/agent-registry";
-import { normalizeHeartbeatDeliveryMode, normalizeHeartbeatSchedule } from "../scheduling/parser";
+import { normalizeDeliveryMode } from "../scheduling/parser";
 import { SessionScheduleRuntime } from "../scheduling/runtime";
 import {
 	SCHEDULED_JOBS_FILENAME,
 	type ScheduleDeliveryReceipt,
 	type ScheduleSessionBinding,
-	type ScheduleSource,
 } from "../scheduling/types";
 import {
 	deobfuscateAssistantContent,
@@ -368,6 +375,7 @@ import {
 	logProviderTurnError,
 	normalizeCustomMessagePayload,
 	type PythonExecutionMessage,
+	resolveBlobRefMessages,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	sanitizeAssistantForReparentedHistory,
@@ -657,6 +665,10 @@ export class AgentSession {
 
 	// Retry state
 	readonly #recovery: TurnRecovery;
+	// Replay-safety for auto-retry. `true` (default) = streamed text cannot be
+	// retracted, so a replayed turn would duplicate it. Sinks with retry-recovery
+	// UI (TUI/RPC collapse the superseded block via `applyRetryRecovery`) declare
+	// `retractableTextOutput: true` at construction; print mode keeps the default.
 	#textOutputCommitted = true;
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
@@ -668,6 +680,10 @@ export class AgentSession {
 	 *  the session cwd changes. */
 	#titleSystemPrompt: string | undefined;
 	#titleGenerationAbortController = new AbortController();
+	#imageDescriptionAbortController = new AbortController();
+	#queuedImageDescriptionNotices = new Map<string, { pending: PendingUserMessage; notice: CustomMessage }>();
+	#queuedImageDescriptionTasks = new Map<string, Promise<void>>();
+	#queuedImageDescriptionGeneration = 0;
 	#toolChoiceQueue = new ToolChoiceQueue();
 
 	readonly #bash: BashRunner;
@@ -758,6 +774,7 @@ export class AgentSession {
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
+	#detachImageDescriptionBeforeQueueDequeue: (() => void) | undefined;
 	#detachUsageBeforeModelCall: (() => void) | undefined;
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
@@ -1220,7 +1237,7 @@ export class AgentSession {
 				: [];
 		const parkedQueueDrainBlocked = parkedFollowUps.length > 0 && this.#queuedMessageDrainBlocked;
 		if (parkedFollowUps.length > 0) {
-			this.agent.replaceQueues([...this.agent.peekSteeringQueue()], []);
+			this.#replaceAgentQueues([...this.agent.peekSteeringQueue()], []);
 			if (parkedQueueDrainBlocked) this.#queuedMessageDrainBlocked = false;
 		}
 		let finishObservation: ((error?: unknown) => void | Promise<void>) | undefined;
@@ -1252,7 +1269,7 @@ export class AgentSession {
 					logger.warn("IRC wake turn recovery failed", { error: String(error) });
 				}
 				if (parkedFollowUps.length > 0) {
-					this.agent.replaceQueues(
+					this.#replaceAgentQueues(
 						[...this.agent.peekSteeringQueue()],
 						[...parkedFollowUps, ...this.agent.peekFollowUpQueue()],
 					);
@@ -1278,7 +1295,7 @@ export class AgentSession {
 		const followUp = this.agent.peekFollowUpQueue();
 		const cards = [...steering, ...followUp].filter(isAdvisorCard);
 		if (cards.length === 0) return [];
-		this.agent.replaceQueues(
+		this.#replaceAgentQueues(
 			steering.filter(m => !isAdvisorCard(m)),
 			followUp.filter(m => !isAdvisorCard(m)),
 		);
@@ -1559,6 +1576,9 @@ export class AgentSession {
 			withBashBranchTransition: operation => this.#bash.withBranchTransition(operation),
 		};
 		this.#recovery = new TurnRecovery(recoveryHost, { initialRetryFallback: config.initialRetryFallback });
+		this.#detachImageDescriptionBeforeQueueDequeue = this.agent.addBeforeQueuedMessageDequeueHook(signal =>
+			this.#waitForQueuedImageDescriptions(signal),
+		);
 		this.#detachUsageBeforeQueueDequeue = this.agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (
 				!this.settings.get("retry.usageAwareFallback") ||
@@ -1799,7 +1819,7 @@ export class AgentSession {
 			sessionId: () => this.sessionId,
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			transformContext: (messages, signal) => this.#transformContext(messages, signal),
-			convertToLlm: messages => this.#convertToLlm(messages),
+			convertToLlm: messages => this.#convertToLlm(resolveBlobRefMessages(messages)),
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,
@@ -1829,6 +1849,10 @@ export class AgentSession {
 		this.#pythonSkillConfirmer = config.pythonSkillConfirmer;
 		this.#rlmLifecycle = config.primeProviders?.rlm;
 		if (this.#agentKind === "main") {
+			// Enforce the cold-session retention switch on every main-session
+			// start (new/resume/switch). Throttled, fire-and-forget, no-op in
+			// tests; archived sessions keep their stats via gc.archivePreserveStats.
+			void scheduleAutoArchiveScan(config.memoryAgentDir ?? getAgentDir());
 			const autonomousState = this.#resolveAutonomousState();
 			this.#autonomousController = new AutonomousController(autonomousState, state => {
 				this.sessionManager.appendCustomEntry(AUTONOMOUS_STATE_CUSTOM_TYPE, state);
@@ -1836,15 +1860,8 @@ export class AgentSession {
 			this.#autonomousProvider = createAutonomousProvider(this.#autonomousController);
 
 			this.#scheduleRuntime = new SessionScheduleRuntime(this, {
-				heartbeatDefaults: {
-					defaultInterval: normalizeHeartbeatSchedule(this.settings.get("heartbeat.defaultInterval")),
-					defaultDeliveryMode: normalizeHeartbeatDeliveryMode(this.settings.get("heartbeat.defaultDeliveryMode")),
-				},
-				scheduleDefaultDeliveryMode: normalizeHeartbeatDeliveryMode(
-					this.settings.get("schedule.defaultDeliveryMode"),
-				),
-				isSourceEnabled: (source: ScheduleSource) =>
-					source === "cron" ? this.settings.get("schedule.enabled") : this.settings.get("heartbeat.enabled"),
+				scheduleDefaultDeliveryMode: normalizeDeliveryMode(this.settings.get("schedule.defaultDeliveryMode")),
+				isSourceEnabled: () => this.settings.get("schedule.enabled"),
 			});
 			void this.#scheduleRuntime.ready().catch(error => {
 				logger.warn("Failed to start session scheduling runtime", { error: String(error) });
@@ -1856,12 +1873,32 @@ export class AgentSession {
 				// Local harness state is scoped to persisted session artifacts.
 				getLocalHarnessDir: () => this.sessionManager.getArtifactsDir() ?? undefined,
 				getMessages: () => this.agent.state.messages,
-				planWithLLM: async ({ messages, state, history, instructions, scope }) => {
+				planWithLLM: async ({ messages, state, history, instructions, scope, critique, round, roundFeedback }) => {
 					const model = this.model;
 					if (!model) throw new Error("No active model is available for refinement");
 					const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
 					if (!apiKey) throw new Error(`No API key found for ${model.provider}`);
-					return planRefinement(messages, state, history, model, apiKey, { instructions, scope });
+					return planRefinement(messages, state, history, model, apiKey, {
+						instructions,
+						scope,
+						critique,
+						round,
+						roundFeedback,
+					});
+				},
+				critiqueWithLLM: async ({ messages, state, history, scope, instructions }) => {
+					const model = this.model;
+					if (!model) throw new Error("No active model is available for refinement critique");
+					const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+					if (!apiKey) throw new Error(`No API key found for ${model.provider}`);
+					return critiqueHarnessState(messages, state, history, model, apiKey, { scope, instructions });
+				},
+				verifyWithLLM: async ({ messages, state, history, proposal, round }) => {
+					const model = this.model;
+					if (!model) throw new Error("No active model is available for refinement verification");
+					const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+					if (!apiKey) throw new Error(`No API key found for ${model.provider}`);
+					return verifyRefinementProposal(messages, state, history, proposal, model, apiKey, round);
 				},
 				reviewWithLLM: async ({ messages, state, history, reason, turnsSinceLastReview }) => {
 					const model = this.model;
@@ -1889,6 +1926,9 @@ export class AgentSession {
 			void this.#ensurePythonSkillOptions();
 		}
 		this.#scoutAllowedBySpawnPolicy = config.scoutAllowedBySpawnPolicy ?? true;
+		// Sinks with retry-recovery UI retract superseded streamed text on retry;
+		// everything else (print mode, unknown embedders) keeps the safe default.
+		this.#textOutputCommitted = config.retractableTextOutput !== true;
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
@@ -3139,13 +3179,19 @@ export class AgentSession {
 			pending => pending.message.timestamp === message.timestamp && sameMessageContent(pending.message, message),
 		);
 		if (index < 0) return;
+		const pending = this.#pendingUserMessages[index];
+		if (!pending) return;
 		this.#pendingUserMessages.splice(index, 1);
+		this.#queuedImageDescriptionNotices.delete(pending.id);
 		void this.#persistPendingUserMessages();
+		this.#emit({ type: "queue_changed", queue: this.getQueuedMessages() });
 	}
 
 	async #clearPendingUserMessages(): Promise<void> {
 		this.#pendingUserMessages = [];
+		this.#discardQueuedImageDescriptionNotices();
 		await this.#persistPendingUserMessages();
+		this.#emit({ type: "queue_changed", queue: this.getQueuedMessages() });
 	}
 
 	/**
@@ -4795,10 +4841,14 @@ export class AgentSession {
 		this.#usagePreflightAbortControllers.clear();
 		this.#detachUsageBeforeQueueDequeue?.();
 		this.#detachUsageBeforeQueueDequeue = undefined;
+		this.#detachImageDescriptionBeforeQueueDequeue?.();
+		this.#detachImageDescriptionBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
+		this.#discardQueuedImageDescriptionNotices();
+		this.#imageDescriptionAbortController.abort();
 		this.#abortAutolearnCapture();
 		this.#irc.flushPending();
 		this.yieldQueue.clear();
@@ -5826,6 +5876,11 @@ export class AgentSession {
 
 	getPlanModeState(): PlanModeState | undefined {
 		return this.#planModeState;
+	}
+
+	/** Prewalk state snapshot for synchronous render paths. */
+	getPrewalkStateSnapshot(): Prewalk | undefined {
+		return this.#prewalk.state;
 	}
 
 	/** Prewalk state, if armed and active */
@@ -7241,24 +7296,116 @@ export class AgentSession {
 			await this.#persistPendingUserMessages();
 			throw error;
 		}
-		await this.#enqueuePendingUserMessage(pending);
+		this.#enqueuePendingUserMessage(pending);
 		this.#scheduleIdleQueueDrain();
+		this.#emit({ type: "queue_changed", queue: this.getQueuedMessages() });
 	}
 
-	async #enqueuePendingUserMessage(pending: PendingUserMessage): Promise<void> {
+	#enqueuePendingUserMessage(pending: PendingUserMessage): void {
 		const images = Array.isArray(pending.message.content)
 			? pending.message.content.filter((part): part is ImageContent => part.type === "image")
 			: [];
-		// This companion is derived runtime context; only the user-authored message is durable.
-		const imageDescriptionNotice = images.length > 0 ? await this.#buildImageDescriptionNotice(images) : undefined;
 		this.#allowQueuedMessageDrainRetry();
 		if (pending.mode === "followUp") {
-			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
 			this.agent.followUp(pending.message);
-			return;
+		} else {
+			this.agent.steer(pending.message);
 		}
-		if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
-		this.agent.steer(pending.message);
+		this.#attachImageDescriptionNotice(pending, images);
+	}
+
+	/**
+	 * Build the hidden vision-model description for attached images ASYNCHRONOUSLY
+	 * after the user message is already queued. Blocking the enqueue on this
+	 * round-trip (a vision-model request with provider retries and no timeout)
+	 * left the message invisible to the queue UI and to dequeue for the whole
+	 * window — and stranded in pending-user-messages.json when the request
+	 * outlived the user's patience. Dequeue waits for an in-flight description of
+	 * the active queued user message, then prepends that description so the model
+	 * still reads it first. If a session transition temporarily parks that queue,
+	 * retain the notice until the queue is restored; acknowledged or cleared messages
+	 * discard it.
+	 */
+	#discardQueuedImageDescriptionNotices(): void {
+		this.#queuedImageDescriptionGeneration++;
+		this.#queuedImageDescriptionNotices.clear();
+		this.#queuedImageDescriptionTasks.clear();
+	}
+
+	#replaceAgentQueues(steering: AgentMessage[], followUp: AgentMessage[]): void {
+		this.agent.replaceQueues(steering, followUp);
+		this.#flushQueuedImageDescriptionNotices();
+	}
+
+	#prependImageDescriptionNotice(pending: PendingUserMessage, notice: CustomMessage): boolean {
+		const steering = this.agent.peekSteeringQueue();
+		const steeringIndex = steering.indexOf(pending.message);
+		if (steeringIndex >= 0) {
+			const nextSteering = steering.slice();
+			nextSteering.splice(steeringIndex, 0, notice);
+			this.agent.replaceQueues(nextSteering, this.agent.peekFollowUpQueue().slice());
+			return true;
+		}
+		const followUp = this.agent.peekFollowUpQueue();
+		const followUpIndex = followUp.indexOf(pending.message);
+		if (followUpIndex < 0) return false;
+		const nextFollowUp = followUp.slice();
+		nextFollowUp.splice(followUpIndex, 0, notice);
+		this.agent.replaceQueues(this.agent.peekSteeringQueue().slice(), nextFollowUp);
+		return true;
+	}
+
+	#flushQueuedImageDescriptionNotices(): void {
+		for (const [id, entry] of this.#queuedImageDescriptionNotices) {
+			if (!this.#pendingUserMessages.some(candidate => candidate.id === id)) {
+				this.#queuedImageDescriptionNotices.delete(id);
+				continue;
+			}
+			if (this.#prependImageDescriptionNotice(entry.pending, entry.notice)) {
+				this.#queuedImageDescriptionNotices.delete(id);
+			}
+		}
+	}
+	async #waitForQueuedImageDescriptions(signal?: AbortSignal): Promise<void> {
+		while (true) {
+			signal?.throwIfAborted();
+			const steering = this.agent.peekSteeringQueue();
+			const activeQueue = steering.length > 0 ? steering : this.agent.peekFollowUpQueue();
+			const deliveryMode = steering.length > 0 ? this.agent.getSteeringMode() : this.agent.getFollowUpMode();
+			const messagesToDequeue = deliveryMode === "all" ? activeQueue : activeQueue.slice(0, 1);
+			const pendingTasks = this.#pendingUserMessages.flatMap(pending => {
+				if (!messagesToDequeue.includes(pending.message)) return [];
+				const task = this.#queuedImageDescriptionTasks.get(pending.id);
+				return task ? [task] : [];
+			});
+			if (pendingTasks.length === 0) return;
+			await untilAborted(signal, () => Promise.all(pendingTasks));
+			this.#flushQueuedImageDescriptionNotices();
+		}
+	}
+
+	#attachImageDescriptionNotice(pending: PendingUserMessage, images: ImageContent[]): void {
+		if (images.length === 0) return;
+		const generation = this.#queuedImageDescriptionGeneration;
+		const task = this.#buildImageDescriptionNotice(images, this.#imageDescriptionAbortController.signal)
+			.then(notice => {
+				if (!notice || this.#isDisposed || generation !== this.#queuedImageDescriptionGeneration) return;
+				if (this.#prependImageDescriptionNotice(pending, notice)) return;
+				if (this.#pendingUserMessages.some(candidate => candidate.id === pending.id)) {
+					this.#queuedImageDescriptionNotices.set(pending.id, { pending, notice });
+				}
+			})
+			.catch(error => {
+				logger.warn("image attachment vision fallback failed; image left undescribed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+		this.#queuedImageDescriptionTasks.set(pending.id, task);
+		void task.then(() => {
+			if (this.#queuedImageDescriptionTasks.get(pending.id) === task) {
+				this.#queuedImageDescriptionTasks.delete(pending.id);
+			}
+		});
 	}
 
 	async restorePendingUserQueue(): Promise<void> {
@@ -7267,7 +7414,7 @@ export class AgentSession {
 		const loaded = await this.sessionManager.loadPendingUserMessages();
 		this.#pendingUserMessages = loaded.filter(pending => !this.#sessionMessageAlreadyPersisted(pending.message));
 		if (this.#pendingUserMessages.length !== loaded.length) await this.#persistPendingUserMessages();
-		for (const pending of this.#pendingUserMessages) await this.#enqueuePendingUserMessage(pending);
+		for (const pending of this.#pendingUserMessages) this.#enqueuePendingUserMessage(pending);
 		if (this.#pendingUserMessages.length > 0) this.#scheduleIdleQueueDrain();
 	}
 
@@ -7310,6 +7457,11 @@ export class AgentSession {
 		// continuation racing any other session-owned in-flight work.
 		if (this.#promptInFlightCount > (allowCurrentPromptInFlight ? 1 : 0)) return false;
 		if (this.isRetrying) return false;
+		// A user interrupt suppresses ALL idle auto-continue — steering queues
+		// included. The steer bypass below exists for tail validity (a steer is
+		// injected before the first provider call, whatever the transcript tail),
+		// not for overriding the stop; kept entries wait for an explicit resume.
+		if (this.#advisors.autoResumeSuppressed) return false;
 		// A queued steer resumes from ANY tail: Agent.continue() runs #runLoop(undefined),
 		// whose initial steering poll injects the steer before the first provider call, so the
 		// request tail becomes the steer (valid) regardless of any injected custom / bashExecution
@@ -7317,11 +7469,6 @@ export class AgentSession {
 		// why a queued user steer stranded behind a preserved advisor card (or a flushed IRC aside
 		// / eval execution record) still resumes — no tail-role enumeration needed.
 		if (this.agent.peekSteeringQueue().length > 0) return true;
-		// Follow-up-only auto-resume stays suppressed while a deliberate user interrupt is in effect
-		// (#advisorAutoResumeSuppressed, cleared on the next user prompt): the user stopped, so their
-		// queued follow-up waits for an explicit resume — even if an interleaving IRC wake turn has
-		// since left a provider-valid tail.
-		if (this.#advisors.autoResumeSuppressed) return false;
 		// Follow-up-only resume has no steer to inject, so Agent.continue() continues from the
 		// existing context tail — which must itself be a valid provider tail. An injected
 		// non-conversational tail (advisor card → `developer`, bash/python execution) would make
@@ -7672,8 +7819,9 @@ export class AgentSession {
 		const keep: (m: AgentMessage) => boolean = options?.forInterrupt
 			? isAdvisorCard
 			: m => !isUserQueuedMessage(m) && !isHiddenUserCompanion(m);
-		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
+		this.#replaceAgentQueues(steeringAll.filter(keep), followUpAll.filter(keep));
 		this.#pendingUserMessages = [];
+		this.#discardQueuedImageDescriptionNotices();
 		void this.#persistPendingUserMessages();
 		this.#reconcileQueuedMessageDrain();
 		return { steering, followUp };
@@ -7695,6 +7843,19 @@ export class AgentSession {
 			steering: this.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(queueChipText),
 			followUp: this.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(queueChipText),
 		};
+	}
+
+	/**
+	 * Explicitly resume queued messages that a user interrupt kept in the queue
+	 * (the interrupt's auto-resume latch suppressed the idle drain). Clears the
+	 * latch and schedules the queued-message drain. Returns false when there is
+	 * nothing queued, so callers can treat it as a no-op gesture.
+	 */
+	resumeQueuedMessages(): boolean {
+		if (!this.agent.hasQueuedMessages()) return false;
+		this.#advisors.autoResumeSuppressed = false;
+		this.#scheduleIdleQueueDrain();
+		return true;
 	}
 
 	/**
@@ -7724,7 +7885,7 @@ export class AgentSession {
 		const fromSteer = lastUserIndex(steering);
 		if (fromSteer >= 0) {
 			const removed = steering[fromSteer];
-			this.agent.replaceQueues(removeWithCompanions(steering, fromSteer), followUp.slice());
+			this.#replaceAgentQueues(removeWithCompanions(steering, fromSteer), followUp.slice());
 			this.#acknowledgePendingUserMessage(removed);
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
@@ -7732,7 +7893,7 @@ export class AgentSession {
 		const fromFollowUp = lastUserIndex(followUp);
 		if (fromFollowUp >= 0) {
 			const removed = followUp[fromFollowUp];
-			this.agent.replaceQueues(steering.slice(), removeWithCompanions(followUp, fromFollowUp));
+			this.#replaceAgentQueues(steering.slice(), removeWithCompanions(followUp, fromFollowUp));
 			this.#acknowledgePendingUserMessage(removed);
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
@@ -7888,7 +8049,16 @@ export class AgentSession {
 	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
-		if (userInterrupt) this.#advisors.autoResumeSuppressed = true;
+		if (userInterrupt) {
+			// A user interrupt is a hard stop for automatic continuation: queued
+			// steer/follow-up entries keep their place in the queue but wait for an
+			// explicit resume (an empty composer submit, the `.`/`c` continue shortcut,
+			// or any new user prompt) instead of auto-draining as the next turn.
+			// A stranded IRC aside's wake turn must not consume the user's queued
+			// follow-up (seam #5); #wakeForIrc parks the follow-up across the wake,
+			// which is designed around this latch being in place.
+			this.#advisors.autoResumeSuppressed = true;
+		}
 		// Pull advisor concerns out of the steer/follow-up queues before any await so
 		// the post-abort stranded-message drain can't auto-resume the run on them.
 		// They are re-recorded as visible advice once the agent settles (below).
@@ -9352,6 +9522,7 @@ export class AgentSession {
 				this.#notifySessionChangeCallbacks();
 			}
 			await this.#rebindPrimeSessionRuntimes();
+			this.#discardQueuedImageDescriptionNotices();
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
@@ -9363,7 +9534,7 @@ export class AgentSession {
 			this.#memory.restorePromotionSnapshot(previousBaseSystemPromptBeforeMemoryPromotion);
 			this.agent.setSystemPrompt(previousSystemPrompt);
 			this.agent.replaceMessages(previousAgentMessages);
-			this.agent.replaceQueues(previousSteeringMessages, previousFollowUpMessages);
+			this.#replaceAgentQueues(previousSteeringMessages, previousFollowUpMessages);
 			this.#pendingNextTurnMessages = previousPendingNextTurnMessages;
 			this.#scheduledHiddenNextTurnGeneration = previousScheduledHiddenNextTurnGeneration;
 			this.#queuedMessageDrainBlocked = previousQueuedMessageDrainBlocked;
@@ -9595,7 +9766,8 @@ export class AgentSession {
 
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.agent.replaceQueues([], []);
+		this.#replaceAgentQueues([], []);
+		this.#discardQueuedImageDescriptionNotices();
 		this.#nextStepOffers.invalidate();
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;

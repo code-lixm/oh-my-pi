@@ -163,6 +163,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.pluginHelp,
 	},
 	{
+		name: "cron",
+		load: () => loadCommand(() => import("./commands/cron")),
+		help: commandHelp.cronHelp,
+	},
+	{
 		name: "ps",
 		load: () => loadCommand(() => import("./commands/ps")),
 		help: commandHelp.psHelp,

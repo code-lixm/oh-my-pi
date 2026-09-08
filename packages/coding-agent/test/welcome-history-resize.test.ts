@@ -50,8 +50,14 @@ class MutableComposerTail implements Component {
 class WidthTranscriptBlock implements Component {
 	constructor(readonly id: number) {}
 
+	renderCount = 0;
+
 	render(width: number): readonly string[] {
+		this.renderCount++;
 		return [`block-${this.id}@${width}`];
+	}
+	isTranscriptBlockFinalized(): boolean {
+		return true;
 	}
 }
 
@@ -253,7 +259,81 @@ describe("composer welcome native-history resize", () => {
 		expect(countRows(transient, marker)).toBe(0);
 		composer.ui.stop();
 	});
-	it("rebuilds retired transcript rows at the settled width by default", async () => {
+	it("renders only the visible transcript tail during a resize frame", async () => {
+		const terminal = new VirtualTerminal(30, 4);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 30 }, (_, id) => new WidthTranscriptBlock(id));
+		for (const block of blocks) transcript.addChild(block);
+		const tail = new MutableComposerTail();
+		composer.setRuntimeChildren([transcript, tail]);
+
+		try {
+			composer.start({ playWelcomeIntro: false });
+			await scheduler.settle(terminal);
+			for (const block of blocks) block.renderCount = 0;
+
+			const frame = composer.renderResizeFrame({ columns: 30, rows: 4 });
+			const plainFrame = frame.map(row => Bun.stripANSI(row));
+			expect(plainFrame).toContain("block-29@30");
+			expectOneExactEditor(plainFrame, tail.status);
+			expect(blocks.slice(0, 29).every(block => block.renderCount === 0)).toBe(true);
+			expect(blocks[29]!.renderCount).toBeGreaterThan(0);
+		} finally {
+			composer.ui.stop();
+		}
+	});
+
+	it("replays a completed restored transcript into native scrollback after clearing history", async () => {
+		const terminal = new VirtualTerminal(20, 5);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new WidthTranscriptBlock(99));
+		composer.setRuntimeChildren([transcript, new MutableComposerTail()]);
+
+		try {
+			composer.start({ playWelcomeIntro: false });
+			await scheduler.settle(terminal);
+
+			// renderInitialMessages() clears the visible container, mounts the completed
+			// replay, paints its tail, then requests this destructive provider repaint.
+			transcript.clear();
+			for (let id = 0; id < 10; id++) transcript.addChild(new WidthTranscriptBlock(id));
+			composer.ui.paintViewportTail();
+			composer.ui.requestRender(true, { clearScrollback: true });
+			await scheduler.settle(terminal);
+
+			const restoredPosition = terminal.getBufferPosition();
+			expect(restoredPosition.baseY).toBeGreaterThan(0);
+			expect(restoredPosition.viewportY).toBe(restoredPosition.baseY);
+
+			terminal.scrollLines(-Number.MAX_SAFE_INTEGER);
+			const historyPosition = terminal.getBufferPosition();
+			expect(historyPosition.viewportY).toBeLessThan(historyPosition.baseY);
+			const historyViewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(historyViewport).toContain("block-0@20");
+
+			terminal.scrollLines(Number.MAX_SAFE_INTEGER);
+			const bottomPosition = terminal.getBufferPosition();
+			expect(bottomPosition.viewportY).toBe(bottomPosition.baseY);
+			const bottomViewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(bottomViewport).toContain("block-9@20");
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("preserves native history and reader position across resize before appending new rows at bottom", async () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const scheduler = new VirtualRenderScheduler();
 		const composer = new Composer({
@@ -263,19 +343,52 @@ describe("composer welcome native-history resize", () => {
 		});
 		const transcript = new TranscriptContainer();
 		for (let id = 0; id < 4; id++) transcript.addChild(new WidthTranscriptBlock(id));
-		composer.setRuntimeChildren([transcript, new MutableComposerTail()]);
-		composer.start({ playWelcomeIntro: false });
-		await scheduler.settle(terminal);
+		const tail = new MutableComposerTail();
+		composer.setRuntimeChildren([transcript, tail]);
 
-		expect(plainBuffer(terminal)).toContain("block-0@20");
+		try {
+			composer.start({ playWelcomeIntro: false });
+			await scheduler.settle(terminal);
 
-		terminal.resize(30, 4);
-		await scheduler.advance(terminal, 160);
+			expect(plainBuffer(terminal)).toContain("block-0@20");
+			terminal.scrollLines(-1);
+			const beforePosition = terminal.getBufferPosition();
+			const beforeViewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd().replace(/@\d+$/u, "@"));
+			expect(beforePosition.viewportY).toBeLessThan(beforePosition.baseY);
 
-		const resized = plainBuffer(terminal);
-		expect(resized.some(row => row.includes("@20"))).toBe(false);
-		expect(resized).toContain("block-0@30");
-		expect(resized).toContain("block-3@30");
-		composer.ui.stop();
+			terminal.resize(30, 4);
+			await scheduler.advance(terminal, 160);
+
+			const afterPosition = terminal.getBufferPosition();
+			const afterViewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd().replace(/@\d+$/u, "@"));
+			expect(afterPosition.viewportY).toBe(beforePosition.viewportY);
+			expect(afterPosition.viewportY).toBeLessThan(afterPosition.baseY);
+			expect(afterViewport).toEqual(beforeViewport);
+			const resizedBuffer = plainBuffer(terminal);
+			const resizedHistory = resizedBuffer.slice(0, afterPosition.baseY);
+			for (let id = 0; id < 3; id++) expect(resizedHistory).toContain(`block-${id}@20`);
+			expect(resizedHistory.some(row => /@\d+$/u.test(row) && !row.endsWith("@20"))).toBe(false);
+			expect(resizedBuffer).not.toContain("block-0@30");
+			expect(resizedBuffer).not.toContain("block-1@30");
+			expect(resizedBuffer).not.toContain("block-2@30");
+			expect(resizedBuffer).toContain("block-3@30");
+
+			terminal.scrollLines(Number.MAX_SAFE_INTEGER);
+			const bottomBeforeAppend = terminal.getBufferPosition();
+			expect(bottomBeforeAppend.viewportY).toBe(bottomBeforeAppend.baseY);
+			const latest = new WidthTranscriptBlock(4);
+			transcript.addChild(latest);
+			composer.ui.requestRender(true);
+			await scheduler.settle(terminal);
+
+			const finalPosition = terminal.getBufferPosition();
+			expect(finalPosition.viewportY).toBe(finalPosition.baseY);
+			const finalViewport = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			const finalBuffer = plainBuffer(terminal);
+			expect(finalViewport.some(row => row.includes("block-4@30"))).toBe(true);
+			expect(finalBuffer.some(row => row.includes("block-4@30"))).toBe(true);
+		} finally {
+			composer.ui.stop();
+		}
 	});
 });

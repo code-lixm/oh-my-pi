@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed heartbeat scheduled prompts: `/heartbeat`, `/heartbeats`, the `heartbeat.*` settings, and the daemon heartbeat commands are gone; scheduled tasks are cron jobs only. Legacy `heartbeat` entries inside `scheduled-jobs.json` sidecars are retired silently on load (cron jobs in the same file are untouched), and terminal jobs are garbage-collected after 14 days.
+
 ### Added
 
+- Added the barge-in gesture (`app.message.bargeIn`, remappable) on Cmd+Return (macOS), Ctrl+Return (Windows/Linux), and Ctrl+X as the fallback chord: while a turn is running it interrupts immediately with the same semantics as double-Esc and dispatches the current draft through the normal submit pipeline — steering waits for the reasoning/tool step to end, follow-up waits for the whole turn, barge-in replaces both waits with an instant interrupt-and-send. Follow-up keeps Ctrl+Q everywhere and Ctrl+Enter on macOS only; Ctrl+Return hands over to barge-in off macOS.
+- Added `/fork`, the "branch at this moment" counterpart of `/branch`: it copies the live session to a new file and continues there via the existing fork flow, with the streaming guard and localized feedback. `/branch` still branches from a picked historical point.
+- Added session-scoped scheduled-task management around the surviving cron core: a `cron` agent tool creates tasks conversationally (each bound to the current session's lifecycle, with steer/follow-up delivery control), `/cron` opens a fullscreen management list with pause/resume, run-now, cancel, delivery mode, and run history, and `omp cron` lists persisted tasks across sessions from the shell.
 - Added `/pin [session id]`, pinned-first resume ordering, and localized pin indicators across project and global session pickers.
 - Added persisted usage-frequency ranking to slash-command autocomplete suggestions while preserving exact-match priority and registry order for unused commands.
 - Added an immediately editable startup composer with cached first-frame data, draft-preserving handoff, configurable built-in and extension-defined layouts, live settings previews, and setup-wizard selection.
@@ -12,21 +19,60 @@
 - Added `omp git`, `/git`, `omp ps`, and `omp render` for repository interaction, supervised-process monitoring, and transcript replay/benchmarking.
 - Added configurable macOS spelling assistance and edit parse-regression safeguards, including opt-in auto-repair and `edit.blackbox.enabled` capture.
 - Added localized status-line context gauges with off, percentage, annotated, and embedded modes, including speculative and automatic compaction boundary markers.
+- Added `statusLine.segmentOptions.model.showProvider` to distinguish same-named models by displaying their provider in custom status lines.
 
 ### Changed
 
+- Added session retention automation: `gc.archivePreserveStats` (default on) makes cold-session archiving flush each session into stats.db before its files compress and move to the archive, so token/cost/request metrics survive forever while raw files stop consuming space; a new `gc.autoArchive` switch (default on) enforces the retention window (`gc.coldArchiveAfterDays` + keep-newest counts) automatically on every session start, throttled to one scan per 6 hours. Set `gc.archivePreserveStats: false` to restore the previous purge-on-archive behavior.
+- Documented the Mouse Input setting boundary: while enabled, the terminal no longer wheel-scrolls its own scrollback, so older transcript output is reached via the terminal scrollbar, Shift+wheel, or `/history`.
 - Accelerated welcome-screen recent-session labels with a history-backed title index and legacy header-scan backfill.
 - Changed user-invoked skill prompts to generate and regenerate session titles from their compact `/skill:<name>` identity or queue chip instead of the expanded skill body.
 - Changed local tiny-model completion requests to preserve an optional trimmed system prompt as a distinct chat-template turn instead of dropping it.
 - Changed Mnemopi extraction completions to send localized extraction instructions as a system turn and only raw memory text as the user turn across local tiny and smol models.
+- Reduced long-session memory: resuming a session no longer re-inlines every persisted image blob into resident base64 — history keeps compact `blob:` references that resolve on demand at LLM conversion, transcript rendering, attachment materialization, and Web projection.
+- Bounded the LLM conversion memo so a long session no longer retains a second, converted copy of the entire conversation; past the bound the memo resets and the working set reconverts.
+- Resuming a session file of 64 MiB or more now logs a memory-expectation warning alongside the resume.
+- Redesigned the continual harness refinement loop into a bounded actor–evaluator cycle: a separate critic grounds findings in cited `turn:` evidence, every proposal edit must cite evidence that mechanically resolves, duplicate creates and per-kind hoarding are rejected before any state changes, an evaluator gate can reject a proposal with required changes (exactly one bounded revision round), and a rejected auto-review no longer consumes the refinement cooldown.
 
 - Replaced the MuPDF-WASM PDF document backend with `pdf-inspector` through `@oh-my-pi/pi-natives`, preserving cached text conversion and PDF line selectors while reporting pages that need OCR.
 - Removed `read <pdf>:` image listings and `read <pdf>:<image>.png` extraction because `pdf-inspector` does not rasterize pages; these reads now direct users to the Puppeteer browser tool for rendering or to read the PDF path for extracted text.
 
+- Changed the activity spinner frames from block corners to the classic Braille dots animation (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) for the unicode and nerd symbol presets.
+
 ### Fixed
 
+- Fixed auto-retry littering session history with duplicate rows: a retry saga now persists one empty-error diagnostic for its first failed attempt and tracks the latest attempt on that row, instead of appending an identical empty assistant entry per attempt (the source of duplicated-looking history after provider 5xx/socket failures). The terminal error that actually ended the run still gets its own row.
+- Fixed `/clear` (context reset) in process-isolated (`features.processIsolation`) sessions crashing with `resetSessionContext is not a function`: the reset now dispatches to the agent child over RPC (`reset_session_context`) and reports the dropped-message count; a busy child maps back to the existing wait warning instead of an unhandled rejection.
+- Fixed resuming a session with a large advisor transcript parsing the entire `__advisor.jsonl` into memory just to append one turn: the advisor recorder now appends through a raw storage writer, recovering the session id and parent chain from bounded head/tail slices without scanning the body.
+- Fixed follow-up submissions (Ctrl+Q / `app.message.followUp`) right after a turn ends throwing a busy error instead of delivering: the idle check now passes a follow-up queue intent, so a session that flips busy during post-turn recovery queues the message for the idle drain instead of surfacing an error toast.
 - Fixed blank or whitespace-only `mnemopi.dbPath` values creating volatile memory banks instead of using persistent agent storage.
+- Fixed transient stream drops ("The socket connection was closed unexpectedly") ending the turn whenever the model had already streamed visible text: interactive TUI/RPC sessions now declare retractable text output and auto-retry the turn, collapsing the superseded partial block, while print mode keeps the fail-fast behavior.
+- Added a cross-turn thinking-loop steer: when near-identical reasoning repeats across consecutive turns (each turn has visible text and slightly-different tool arguments, so the other loop guards miss it), a corrective system interrupt is injected after the 4th repetition. Covers the observed 69-turn Chinese placeholder-bash loop on reasoning models.
+- Fixed streamed reasoning loops on newly catalogued reasoning models by aborting the provider stream as soon as repeated thinking is detected, while preserving explicit loop-guard opt-out.
+- Fixed advisors configured with models that do not support native tools being started and then rejected by the provider; those advisors are skipped before request construction and remain inactive without emitting invalid-tool warnings.
+- Fixed the status-line Advisor `++` badge remaining visible when every configured advisor was unavailable, paused, or missing a usable model.
+- Fixed the queued-message edit hint remaining visible after `Alt+Up` or `Shift+Up` found no recoverable message.
+- Fixed an older active transcript block making every newer block look hard-clipped at the same terminal edge when live content exceeded the viewport; the emergency view now preserves the newest semantic row tail while still reporting hidden active blocks.
+- Fixed terminal resizes in long interactive sessions hiding usable native scrollback or snapping a scrolled-up reader to the tail; resize frames now render only the visible transcript tail, preserve the reader position, and keep following new output only when already at the bottom.
+- Fixed `omp -c` session restoration leaving the terminal without visible feedback during history reconstruction; the TUI now shows localized live restore progress with exact replay counts.
+- Fixed waiting-for-collaborator loaders appearing frozen, active responses and tasks being labeled as having no activity, and a single queued message briefly rendering twice.
+- Fixed a submitted message sometimes printing twice in the transcript: an error toast (or a silently finished dispatch) landing between submission and delivery cleared the optimistic-bubble dedup while the placeholder stayed on screen, so the real message stacked a second identical copy; the placeholder is now swapped for the real message instead.
+- Fixed process-isolated sessions dying silently when the isolated agent worker's transport dropped: every command (Tab model cycling included) then failed with the raw "Client not started" error until restart. The facade now respawns the worker, restores the projection, and replays the command once, while explicit teardown still never auto-restarts; rejections are logged with the command name for diagnosability.
+- Changed the composer model-role cycling keys: Alt+P cycles forward and Ctrl+Alt+P cycles backward (the temporary-model selector moved to Alt+Shift+M). Tab is no longer bound to model cycling — it keeps the editor's native completion behavior, triggering suggestions when no list is open and accepting the highlighted one while it is, including during slash-command autocomplete.
 - Prevented idle automatic compaction (`run_idle_compaction`) RPC timeouts from surfacing as fatal unhandled rejections that could close the TUI. The remote session facade and controller call site now log compaction failures, and the RPC uses a 5-minute timeout for large context maintenance.
+- Fixed image-attached queued messages staying invisible while a text-model vision fallback ran; messages now appear immediately while model delivery waits for their description.
+- Fixed `/model` selection crashing process-isolated sessions with `Cannot destructure property 'switched'`: the RPC `set_model` command now forwards role/selector/thinking/persist options to the child session and returns `{ model, switched }`, so isolated model switches persist and report their outcome like in-process sessions.
+- Fixed `/vibe` crashing process-isolated sessions with `this.session.activateVibeTools is not a function`: the remote session facade now forwards vibe tool activation, teardown, and mode-state/context commands to the RPC child, so vibe mode works under `features.processIsolation` like in-process sessions.
+- Fixed plan mode, goal mode, and `/btw` crashing process-isolated sessions with missing `AgentSession` methods (`setPlanModeState`, `preparePlanForReview`, `goalRuntime.createGoal`, `branchFromBtw`, and friends): the remote session facade now forwards plan-mode state/proposal/review/reference commands, goal-runtime lifecycle and accounting commands, and `/btw` branching to the RPC child, while resolving the plan role model and rendering goal continuation prompts from the local projection like in-process sessions.
+- Fixed queued steering/follow-up chips hanging in the pending bar after the message was consumed into the conversation. The optimistic chip now retires when the queued message's `message_start` lands, covering the RPC-isolation race where the submit-time reconcile sees the queue already drained.
+- Fixed interrupting a streaming turn (double-Esc) while a message was queued: the queued message no longer vanishes into the editor or lingers as a phantom pending-bar chip. Queued messages keep their place in the queue across the interrupt and the pending bar stays consistent with the real queue.
+- Changed interrupting a turn (double-Esc) into a hard stop for automatic continuation: kept queued messages wait for an explicit resume instead of auto-running as the next turn, with a localized status hint reporting how many were kept.
+- Added an explicit resume for kept queued messages: an empty composer submit (or any new prompt, `.`/`c`) drains them as the next turn after an interrupt.
+- Fixed status-line rendering after isolated-session shutdown from issuing prewalk RPC requests against a stopped client.
+- Fixed generated `todo init` payloads with a non-empty flat `items` list and an empty optional `list` from silently clearing the todo state and causing later progress updates to fail.
+
+- Fixed CodeGraph natural-language exploration preferring exact symbols over generic same-term matches and using the supported `find` fallback.
+- Fixed `tui.mouseInput` clicks missing the active prompt under the production frame renderer and changes from `/settings` requiring a restart before click-to-position editing worked.
 
 ## [17.3.3] - 2026-08-14
 

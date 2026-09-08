@@ -55,7 +55,7 @@ import {
 	persistForeignSession,
 } from "../../session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource } from "../../session/foreign-session-store";
-import type { SessionInfo } from "../../session/session-listing";
+import { filterResumableSessions, type SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { loadPinnedSessionIds } from "../../session/session-pins";
 import { FileSessionStorage } from "../../session/session-storage";
@@ -105,6 +105,7 @@ import { AgentHubOverlayComponent } from "../components/agent-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
 import { CheckpointSelectorComponent } from "../components/checkpoint-selector";
 import { CopySelectorComponent } from "../components/copy-selector";
+import { CronHubOverlayComponent } from "../components/cron-hub";
 import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
 import { HistorySearchComponent } from "../components/history-search";
@@ -833,6 +834,12 @@ export class SelectorController {
 			case "tui.tight":
 				setTuiTight(value as boolean);
 				this.ctx.ui.invalidate();
+				this.ctx.ui.requestRender();
+				break;
+
+			case "tui.mouseInput":
+				this.ctx.editor.mouseTracking = value as boolean;
+				this.ctx.editor.invalidate();
 				this.ctx.ui.requestRender();
 				break;
 
@@ -1771,7 +1778,7 @@ export class SelectorController {
 				SessionManager.list(this.ctx.sessionManager.getCwd(), this.ctx.sessionManager.getSessionDir()),
 				loadPinnedSessionIds(),
 			]);
-			sessions = loadedSessions;
+			sessions = filterResumableSessions(loadedSessions, new FileSessionStorage());
 			const historyStorage = this.ctx.historyStorage;
 			const historyMatcher = historyStorage
 				? (query: string) => historyStorage.matchingSessionIds(query)
@@ -1794,7 +1801,8 @@ export class SelectorController {
 					}
 				},
 				historyMatcher,
-				loadAllSessions: () => SessionManager.listAll(),
+				loadAllSessions: async () =>
+					filterResumableSessions(await SessionManager.listAll(), new FileSessionStorage()),
 				pinnedIds,
 			};
 		}
@@ -2495,6 +2503,38 @@ export class SelectorController {
 			// intentionally resumable in Agent Hub; this action cancels work, not the
 			// durable agent identity.
 			cancelJob: async job => manager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
+		});
+		overlayHandle = this.#showFullscreenMenu(hub, undefined, "top-center");
+	}
+
+	/** Fullscreen management list for this session's cron jobs. */
+	showCronHub(): void {
+		const scheduling = this.ctx.session.getScheduleRuntime();
+		if (!scheduling) {
+			this.ctx.showWarning(tSettingsUi("Scheduling is unavailable in this session."));
+			return;
+		}
+		if (!this.ctx.settings.get("schedule.enabled")) {
+			this.ctx.showWarning(tSettingsUi("Scheduling is disabled. Enable schedule.enabled first."));
+			return;
+		}
+
+		let hub: CronHubOverlayComponent | undefined;
+		let overlayHandle: OverlayHandle | undefined;
+		const done = () => {
+			hub?.dispose();
+			overlayHandle?.hide();
+			if (!this.ctx.focusedAgentId) this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		hub = new CronHubOverlayComponent({
+			listJobs: () => scheduling.list({ includeInactive: true, source: "cron" }),
+			manageJob: (id, action) => scheduling.manageSchedule(id, action),
+			// Manual fire of one due prompt through the same delivery gates the
+			// scheduler uses — steer/follow_up queues, dedup, stale-binding receipt.
+			runNow: job => scheduling.deliverScheduledPrompt(job),
+			onDone: done,
+			requestRender: () => this.ctx.ui.requestRender(),
 		});
 		overlayHandle = this.#showFullscreenMenu(hub, undefined, "top-center");
 	}

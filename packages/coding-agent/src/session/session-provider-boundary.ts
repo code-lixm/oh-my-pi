@@ -15,6 +15,7 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import { stripPendingSecretPlaceholderSuffix } from "../secrets/placeholder";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallback";
+import { resolveImageDataRefSync } from "./blob-ref-resolution";
 import { blobExtensionForImageMimeType } from "./blob-store";
 import { type CustomMessage, convertToLlm } from "./messages";
 import { IMAGE_ATTACHMENT_DESCRIPTION_TYPE } from "./queued-messages";
@@ -61,7 +62,9 @@ export class SessionProviderBoundary {
 				const label = `Image #${index + 1}`;
 				const uri = `attachment://${index + 1}`;
 				try {
-					const sourcePath = this.#host.sessionManager.putBlobSync(Buffer.from(image.data, "base64"), {
+					// Restored entries may carry a persisted `blob:` ref instead of data.
+					const data = resolveImageDataRefSync(image.data);
+					const sourcePath = this.#host.sessionManager.putBlobSync(Buffer.from(data, "base64"), {
 						extension: blobExtensionForImageMimeType(image.mimeType),
 					}).displayPath;
 					return [{ label, uri, image, sourcePath }];

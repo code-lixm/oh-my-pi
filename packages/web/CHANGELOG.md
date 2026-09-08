@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Fixed restored Web sessions rendering persisted image payloads as `blob:sha256:` reference strings instead of pictures: the projection now resolves image references to inline data at the boundary, while live sessions pass through unchanged.
 - Fixed incomplete Web settings localization across every supported locale: OMP settings and keybinding catalogs now use Simplified Chinese when the Web locale is `zh` and English otherwise, enum labels and new schema copy are translated, and MCP/plugin metadata no longer leaks raw scope or kind values.
 - Fixed OMP Web tool calls losing their details behind OpenCode-shaped fields, collapsed Shell cards, and context summaries: historical and live projections now share OMP-aware path/edit metadata, completed Shell results default to expanded with a one-time settings migration, read/search/task results remain expandable, multi-file edits render every diff, and unknown or failed tools expose their complete input, output, metadata, and error.
 - Fixed remaining Web transcript data loss across multi-part user messages, Assistant and tool-result images, orphan tool results, compaction and branch summaries, aborted turns, and hidden custom events; generated images now have a dedicated preview, compaction summaries remain visibly bounded, and generic tool input/output/metadata mounts reliably when opened.

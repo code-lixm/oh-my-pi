@@ -78,8 +78,8 @@ import type {
 } from "./types";
 import { resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
-import { applyGlyphCodec } from "./utils/glyph-codec";
 import { isFoundryEnabled } from "./utils/foundry";
+import { applyGlyphCodec } from "./utils/glyph-codec";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";

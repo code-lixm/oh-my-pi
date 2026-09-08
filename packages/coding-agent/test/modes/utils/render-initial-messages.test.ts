@@ -22,8 +22,17 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { SessionContext, StrippedToolCallsMarker } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	Container,
+	Image,
+	ImageProtocol,
+	Loader,
+	setTerminalImageProtocol,
+	TERMINAL,
+} from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 beforeAll(() => {
@@ -67,9 +76,11 @@ function makeCtx(): {
 	const llmContextSpy = vi.fn(() => makeEmptyContext());
 	const renderSessionContextSpy = vi.fn(async () => {});
 	const chatContainer = new TranscriptContainer();
+	const statusContainer = new Container();
 
 	const ctx = {
 		chatContainer,
+		statusContainer,
 		pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
@@ -92,9 +103,10 @@ function makeCtx(): {
 			getEntries: vi.fn(() => []),
 			getCwd: vi.fn(() => "/tmp"),
 		},
+		editor: { addToHistory: vi.fn() },
 		renderSessionContextIncrementally: renderSessionContextSpy,
 		showStatus: vi.fn(),
-		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
+		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn(), paintViewportTail: vi.fn(() => true) },
 		resetTranscript: () => ctx.chatContainer.disposeChildren(),
 	} as unknown as InteractiveModeContext;
 
@@ -156,6 +168,7 @@ function makeRenderCtx(
 	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer,
+		statusContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
@@ -164,7 +177,12 @@ function makeRenderCtx(
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
 		updateEditorTopBorder: vi.fn(),
-		ui: { requestRender: vi.fn(), paintViewportTail: vi.fn(() => true), imageBudget: undefined },
+		ui: {
+			requestRender: vi.fn(),
+			requestComponentRender: vi.fn(),
+			paintViewportTail: vi.fn(() => true),
+			imageBudget: undefined,
+		},
 		resetTranscript: () => {
 			ctx.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 			ctx.chatContainer.disposeChildren();
@@ -223,7 +241,7 @@ function makeRenderCtx(
 		renderSessionContextIncrementally: (
 			context: SessionContext,
 			options: RenderSessionContextOptions,
-			renderChunk?: () => void,
+			renderChunk?: (completedMessages: number, totalMessages: number) => void,
 		) => helpers.renderSessionContextIncrementally(context, options, renderChunk),
 		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
@@ -293,6 +311,92 @@ describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
 		expect(renderEvents).toEqual(["tail", "authoritative"]);
 	});
 
+	it("shows exact restore progress in a temporary loader until the one clearing replay commits", async () => {
+		await Settings.init({ inMemory: true });
+		const totalMessages = 7;
+		const { ctx, transcriptSpy, renderSessionContextSpy } = makeCtx();
+		const messages: AgentMessage[] = Array.from({ length: totalMessages }, (_, index) => ({
+			role: "user",
+			content: `restored message ${index}`,
+			timestamp: index,
+		}));
+		transcriptSpy.mockReturnValue(transcriptWith(messages));
+		(ctx.viewSession.sessionManager.getEntries as Mock<() => SessionEntry[]>).mockReturnValue([{} as SessionEntry]);
+		let releaseRebuild: (() => void) | undefined;
+		renderSessionContextSpy.mockImplementation(
+			() =>
+				new Promise<void>(resolve => {
+					releaseRebuild = resolve;
+				}),
+		);
+		const renderEvents: string[] = [];
+		const paintViewportTail = ctx.ui.paintViewportTail as Mock<() => boolean>;
+		const requestRender = ctx.ui.requestRender as Mock<
+			(force?: boolean, options?: { clearScrollback?: boolean }) => void
+		>;
+		const requestComponentRender = ctx.ui.requestComponentRender as Mock<(component: Component) => void>;
+		paintViewportTail.mockImplementation(() => {
+			renderEvents.push("tail");
+			return true;
+		});
+		requestRender.mockImplementation(() => {
+			renderEvents.push("authoritative");
+		});
+
+		const restore = new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
+		try {
+			const statusContainer = ctx.statusContainer;
+			expect(statusContainer.children).toHaveLength(1);
+			const restoreLoader = statusContainer.children[0] as Loader;
+			expect(restoreLoader).toBeInstanceOf(Loader);
+			const stopLoader = vi.spyOn(restoreLoader, "stop");
+			expect(Bun.stripANSI(statusContainer.render(120).join("\n"))).toContain("Restoring session…");
+			expect(Bun.stripANSI(statusContainer.render(120).join("\n"))).not.toContain(`0/${totalMessages}`);
+			expect(renderSessionContextSpy).not.toHaveBeenCalled();
+			const componentRendersBeforeTotal = requestComponentRender.mock.calls.length;
+			expect(componentRendersBeforeTotal).toBeGreaterThan(0);
+
+			await new Promise<void>(resolve => setImmediate(resolve));
+
+			expect(renderSessionContextSpy).toHaveBeenCalledTimes(1);
+			expect(Bun.stripANSI(statusContainer.render(120).join("\n"))).toContain(`0/${totalMessages}`);
+			const componentRendersBeforeProgress = requestComponentRender.mock.calls.length;
+			expect(componentRendersBeforeProgress).toBeGreaterThan(componentRendersBeforeTotal);
+
+			const reportProgress = renderSessionContextSpy.mock.calls[0]?.[2] as
+				| ((completedMessages: number, totalMessages: number) => void)
+				| undefined;
+			expect(reportProgress).toBeTypeOf("function");
+			if (!reportProgress) throw new Error("Expected restore progress callback");
+			// This is a real prefix of the controlled seven-message replay, not a percentage.
+			reportProgress(3, totalMessages);
+			expect(requestComponentRender.mock.calls.length).toBeGreaterThan(componentRendersBeforeProgress);
+			expect(Bun.stripANSI(statusContainer.render(120).join("\n"))).toContain(`3/${totalMessages}`);
+			expect(paintViewportTail).not.toHaveBeenCalled();
+
+			if (!releaseRebuild) throw new Error("Expected incremental replay to start");
+			releaseRebuild();
+			await restore;
+
+			expect(stopLoader).toHaveBeenCalled();
+			expect(statusContainer.children).toHaveLength(0);
+			expect(paintViewportTail).toHaveBeenCalledTimes(1);
+			const clearingRenders = requestRender.mock.calls.filter(
+				([force, options]) => force === true && options?.clearScrollback === true,
+			);
+			expect(clearingRenders).toEqual([[true, { clearScrollback: true }]]);
+			expect(requestRender.mock.calls[requestRender.mock.calls.length - 1]).toEqual([
+				true,
+				{ clearScrollback: true },
+			]);
+			expect(renderEvents.slice(-2)).toEqual(["tail", "authoritative"]);
+		} finally {
+			if (!releaseRebuild) await new Promise<void>(resolve => setImmediate(resolve));
+			releaseRebuild?.();
+			await restore.catch(() => undefined);
+		}
+	});
+
 	it("retains the ordinary incremental repaint without a tail snapshot or scrollback clear", async () => {
 		await Settings.init({ inMemory: true });
 		const { ctx } = makeRenderCtx(transcriptWith([{ role: "user", content: "ordinary transcript", timestamp: 1 }]));
@@ -304,6 +408,7 @@ describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
 			(force?: boolean, options?: { clearScrollback?: boolean }) => void
 		>;
 		expect(paintViewportTail).not.toHaveBeenCalled();
+		expect(ctx.statusContainer.children).toHaveLength(0);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 		const [force, options] = requestRender.mock.calls[0] ?? [];
 		expect(force).not.toBe(true);

@@ -35,6 +35,10 @@ type StubEditor = {
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
 	imageLinks?: (string | undefined)[];
+	compactPendingImageReferences: (text: string) => string;
+	setCollapsedText: (text: string) => void;
+	markPendingImagesManaged: () => void;
+	composerChips: () => Array<{ kind: string; n: number }>;
 };
 
 type PromptCustomMessage = Mock<
@@ -82,6 +86,12 @@ function createStubInputControllerContext(opts: {
 		addToHistory: vi.fn(),
 		pendingImages: [] as ImageContent[],
 		pendingImageLinks: [] as (string | undefined)[],
+		compactPendingImageReferences: (text: string) => text,
+		setCollapsedText(text: string) {
+			editorText = text;
+		},
+		markPendingImagesManaged() {},
+		composerChips: () => [],
 	};
 	const promptCustomMessage: PromptCustomMessage = vi.fn(async () => {});
 	const prompt = vi.fn(async (_text: string, _options?: unknown) => {});
@@ -646,6 +656,12 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 		addToHistory: vi.fn(),
 		pendingImages: [] as ImageContent[],
 		pendingImageLinks: [] as (string | undefined)[],
+		compactPendingImageReferences: (text: string) => text,
+		setCollapsedText(text: string) {
+			editorText = text;
+		},
+		markPendingImagesManaged() {},
+		composerChips: () => [],
 	};
 	const pendingMessagesContainer = new Container();
 	const requestRender = vi.fn();
@@ -659,6 +675,7 @@ function createStubInteractiveModeContextForUiHelpers(session: AgentSession) {
 		session,
 		viewSession: session,
 		compactionQueuedMessages: [],
+		optimisticQueuedMessages: [],
 		keybindings: {
 			getDisplayString: (_action: string) => "Alt+Up",
 		},
@@ -703,6 +720,110 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).not.toContain("Steer:");
 	});
 
+	it("deduplicates one confirmed steer against one matching optimistic steer", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "same task");
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "same task", confirmedBaseline: 0 });
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(rendered).toContain("Steering · 1");
+		expect(rendered).toContain("1. same task");
+		expect(rendered).not.toContain("2. same task");
+		expect(rendered.match(/1\. same task/g)).toHaveLength(1);
+	});
+
+	it("keeps a second identical optimistic steer visible", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "same task");
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "same task", confirmedBaseline: 0 });
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "same task", confirmedBaseline: 1 });
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(rendered).toContain("Steering · 2");
+		expect(rendered).toContain("1. same task");
+		expect(rendered).toContain("2. same task");
+	});
+
+	it("renders a staged duplicate until confirmations grow past its baseline", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "stage-time task");
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "stage-time task", confirmedBaseline: 1 });
+		const uiHelpers = new UiHelpers(ctx);
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const renderedBeforeConfirmation = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(renderedBeforeConfirmation).toContain("Steering · 2");
+		expect(renderedBeforeConfirmation).toContain("1. stage-time task");
+		expect(renderedBeforeConfirmation).toContain("2. stage-time task");
+
+		queueCustomSteer(session, "stage-time task");
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const renderedAfterConfirmation = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(renderedAfterConfirmation).toContain("Steering · 2");
+		expect(renderedAfterConfirmation).toContain("1. stage-time task");
+		expect(renderedAfterConfirmation).toContain("2. stage-time task");
+		expect(renderedAfterConfirmation).not.toContain("3. stage-time task");
+		expect(renderedAfterConfirmation.match(/(?:1|2)\. stage-time task/g)).toHaveLength(2);
+	});
+
+	it("bases optimism on the same-key confirmed count, not the same-mode total", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+		queueCustomSteer(session, "other task");
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "staged task", confirmedBaseline: 0 });
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		queueCustomSteer(session, "staged task");
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		// The queued B must not inflate A's baseline: once A confirms, the
+		// optimistic chip retires instead of hiding forever behind B.
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(rendered).toContain("Steering · 2");
+		expect(rendered).toContain("1. other task");
+		expect(rendered).toContain("2. staged task");
+	});
+
+	it("spends one confirmation per staged duplicate instead of hiding both", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "twin task", confirmedBaseline: 0 });
+		ctx.optimisticQueuedMessages.push({ mode: "steer", text: "twin task", confirmedBaseline: 0 });
+		const uiHelpers = new UiHelpers(ctx);
+
+		queueCustomSteer(session, "twin task");
+		uiHelpers.updatePendingMessagesDisplay();
+
+		// One confirmed twin retires only the first staged copy; the second
+		// remains visible until its own confirmation.
+		const renderedAfterFirst = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(renderedAfterFirst).toContain("Steering · 2");
+		expect(renderedAfterFirst.match(/twin task/g)).toHaveLength(2);
+
+		queueCustomSteer(session, "twin task");
+		uiHelpers.updatePendingMessagesDisplay();
+
+		const renderedAfterSecond = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect(renderedAfterSecond).toContain("Steering · 2");
+		expect(renderedAfterSecond.match(/twin task/g)).toHaveLength(2);
+	});
+
 	it("requests the pending-container repaint after rebuilding and clearing it", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
@@ -744,6 +865,27 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(rendered).toContain("2. run tests");
 		expect(rendered).toContain("3. summarize");
 		expect(rendered).not.toContain("Follow-up:");
+	});
+
+	it("does not show an editable queue when no real queued messages can be restored", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		ctx.optimisticQueuedMessages.push({
+			mode: "followUp",
+			text: "after yield",
+			confirmedBaseline: 0,
+		});
+
+		const restored = new InputController(ctx).restoreQueuedMessagesToEditor();
+
+		expect(restored).toBe(0);
+		expect(ctx.optimisticQueuedMessages).toHaveLength(0);
+
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		expect(pendingMessagesContainer.children).toHaveLength(0);
 	});
 
 	it("restores the compact slash form into the editor and clears the queue", async () => {

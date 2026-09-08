@@ -31,13 +31,13 @@ import {
 	type Message,
 	type Model,
 	type OneshotRetryOptions,
+	retryTransientCompletion,
 	type ServiceTier,
 	type SimpleStreamOptions,
 	type StopReason,
 	shouldSendServiceTier,
 	type ToolChoice,
 	type Usage,
-	retryTransientCompletion,
 } from "@oh-my-pi/pi-ai";
 import {
 	type Attributes,

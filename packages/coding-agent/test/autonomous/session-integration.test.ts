@@ -115,7 +115,6 @@ async function createResumedSession(
 			"async.enabled": false,
 			"marketplace.autoUpdate": "off",
 			"schedule.enabled": false,
-			"heartbeat.enabled": false,
 			"autonomous.enabled": false,
 			"autonomous.maxContinuations": 8,
 			"autonomous.maxTurns": 800,

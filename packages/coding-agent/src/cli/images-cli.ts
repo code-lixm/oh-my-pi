@@ -1,7 +1,6 @@
 import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { AuthStorage } from "../session/auth-storage";
 import { getBundledModels } from "@oh-my-pi/pi-catalog";
 import { $which, type FetchImpl, isEnoent } from "@oh-my-pi/pi-utils";
 import {
@@ -45,6 +44,7 @@ import { providerFileCachePath, resolveBlobBrokerConfigs } from "../blob-broker/
 import { createConfiguredUploader } from "../blob-broker/uploaders";
 import { Settings } from "../config/settings";
 import { discoverAuthStorage } from "../session/auth-broker-config";
+import type { AuthStorage } from "../session/auth-storage";
 
 export const IMAGES_ACTIONS = ["status", "doctor", "probe", "purge"] as const;
 export type ImagesAction = (typeof IMAGES_ACTIONS)[number];

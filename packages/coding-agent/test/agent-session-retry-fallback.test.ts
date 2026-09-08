@@ -271,6 +271,58 @@ describe("AgentSession retry fallback", () => {
 		}
 	});
 
+	it("collapses repeated same-model retry attempts into one persisted empty-error row", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!primaryModel) throw new Error("Expected bundled test model to exist");
+
+		let streamCalls = 0;
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				streamCalls++;
+				if (streamCalls <= 2) mock.push({ throw: "overloaded_error: provider returned error 503" });
+				else mock.push({ content: ["Recovered after transient failures"] });
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 2,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+
+		await session.prompt("Survive transient provider failures");
+		await session.waitForIdle();
+
+		expect(streamCalls).toBe(3);
+		const errorEntries = sessionManager
+			.getBranch()
+			.filter(entry => entry.type === "message" && entry.message.role === "assistant")
+			.filter(entry => (entry.message as { stopReason?: string }).stopReason === "error");
+		// Two failed attempts, one persisted row: the retry saga collapsed the
+		// duplicates instead of appending an identical empty-error entry per attempt.
+		expect(errorEntries).toHaveLength(1);
+		expect((errorEntries[0]?.message as { retryRecovery?: { attempt?: number; status?: string } }).retryRecovery)
+			.toMatchObject({ kind: "auto-retry", status: "recovered", attempt: 2 });
+	});
+
 	it("keeps non-Gemini empty-body errors on the model-fallback path", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");

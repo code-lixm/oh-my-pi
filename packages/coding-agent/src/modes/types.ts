@@ -31,9 +31,7 @@ import type { WorkspaceCheckpointAccessResult } from "../session/workspace-check
 import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import type { AssistantMessageComponent } from "./components/assistant-message";
-import type { Composer } from "./composer";
 import type { BashExecutionComponent } from "./components/bash-execution";
-import type { RecentSession } from "./components/welcome";
 import type { CustomEditor } from "./components/custom-editor";
 import type { EvalExecutionComponent } from "./components/eval-execution";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -42,6 +40,8 @@ import type { HookSelectorComponent, HookSelectorOptions } from "./components/ho
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { TranscriptContainer } from "./components/transcript-container";
+import type { RecentSession } from "./components/welcome";
+import type { Composer } from "./composer";
 import type { EventController } from "./controllers/event-controller";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
@@ -51,6 +51,15 @@ export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
 	images?: ImageContent[];
+};
+
+/** A dispatch-in-flight queued message chip; see InteractiveModeContext. */
+export type OptimisticQueuedMessage = {
+	mode: "steer" | "followUp";
+	text: string;
+	/** Same-mode confirmed-queue length when this chip was staged. Older
+	 *  constructors omit it; staged entries always carry it. */
+	confirmedBaseline?: number;
 };
 
 export type SubmittedUserInput = {
@@ -232,6 +241,11 @@ export interface InteractiveModeContext {
 	noteDisplayableThinkingContent(message: AgentMessage): boolean;
 	proseOnlyThinking: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
+	/** Dispatch-in-flight queue entries shown in the pending bar before the
+	 *  session's own queue reflects them (RPC dispatch window). Keyed by
+	 *  submission text so the projection's confirmed entry retires it. */
+	optimisticQueuedMessages: OptimisticQueuedMessage[];
+
 	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
 	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
 	pendingTools: Map<string, ToolExecutionHandle>;
@@ -322,6 +336,9 @@ export interface InteractiveModeContext {
 	showSubagentFeedback?(feedback: SubagentFeedback): void;
 	refreshSubagentList?(): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
+	addOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void;
+	retireOptimisticQueuedMessage(text: string, mode?: "steer" | "followUp"): void;
+	reconcileOptimisticQueuedMessages(): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;
 	flushPendingModelSwitch(): Promise<void>;
@@ -356,6 +373,8 @@ export interface InteractiveModeContext {
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
 	/** Clears bookkeeping for an optimistic local user message once the matching session event arrives. */
 	clearOptimisticUserMessage(): void;
+	/** True while an optimistically painted user bubble is still owned, even after the signature dedup was defused. */
+	hasOwnedOptimisticUserBubble(): boolean;
 	/** Replaces the raw optimistic user render with the canonical message emitted by the session. */
 	replaceOptimisticUserMessage(
 		message: AgentMessage,
@@ -371,11 +390,11 @@ export interface InteractiveModeContext {
 		},
 	): Component[];
 	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void;
-	/** Render a session context in bounded chunks so terminal input runs between transcript paints. */
+	/** Render a session context in bounded chunks and report exact completed/total message counts at each checkpoint. */
 	renderSessionContextIncrementally(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions,
-		renderChunk?: () => void,
+		renderChunk?: (completedMessages: number, totalMessages: number) => void,
 	): Promise<void>;
 	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): Promise<void>;
 	getUserMessageText(message: Message): string;
@@ -464,6 +483,7 @@ export interface InteractiveModeContext {
 	showDebugSelector(): Promise<void>;
 	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
 	showJobsHub(): void;
+	showCronHub(): void;
 	resetObserverRegistry(): void;
 
 	// Input handling

@@ -29,6 +29,7 @@ export function foreignSessionInfoToSessionInfo(info: ForeignSessionInfo): Sessi
 		size: 0,
 		firstMessage,
 		allMessagesText: firstMessage,
+		hasConversation: (info.messageCount ?? 0) > 0,
 	};
 }
 

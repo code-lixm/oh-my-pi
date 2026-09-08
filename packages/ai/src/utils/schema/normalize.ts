@@ -1436,7 +1436,11 @@ export function sanitizeSchemaForGrammar(schema: JsonObject): JsonObject {
 export function flattenExclusiveRequiredRootUnion(schema: JsonObject): JsonObject {
 	if (schema.type !== "object") return schema;
 	const combiner = Array.isArray(schema.anyOf) ? "anyOf" : Array.isArray(schema.oneOf) ? "oneOf" : undefined;
-	if (!combiner || (combiner === "anyOf" && Array.isArray(schema.oneOf)) || (combiner === "oneOf" && Array.isArray(schema.anyOf))) {
+	if (
+		!combiner ||
+		(combiner === "anyOf" && Array.isArray(schema.oneOf)) ||
+		(combiner === "oneOf" && Array.isArray(schema.anyOf))
+	) {
 		return schema;
 	}
 	const branches = schema[combiner];

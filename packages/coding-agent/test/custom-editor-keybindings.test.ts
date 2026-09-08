@@ -138,6 +138,33 @@ describe("Tab model cycling", () => {
 		expect(onCycleForward).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps Tab off model cycling by default and hands it to the base editor's completion", async () => {
+		// Tab's composer job is the native editor behavior: trigger completion
+		// when no list is open, accept the highlighted suggestion when one is.
+		// Model cycling moved to Alt+P.
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setAutocompleteProvider(new OptionalProvider([{ value: "alpha", label: "alpha" }]));
+		const onCycleForward = vi.fn();
+		editor.onCycleModelForward = onCycleForward;
+
+		editor.handleInput("\t");
+		expect(onCycleForward).not.toHaveBeenCalled();
+		for (let index = 0; index < 50 && !editor.isShowingAutocomplete(); index++) {
+			await Bun.sleep(2);
+		}
+		expect(editor.isShowingAutocomplete()).toBe(true);
+	});
+
+	it("routes the default Alt+P chord to model.cycleForward", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onCycleForward = vi.fn();
+		editor.onCycleModelForward = onCycleForward;
+
+		editor.handleInput("\x1bp");
+
+		expect(onCycleForward).toHaveBeenCalledTimes(1);
+	});
+
 	it("leaves Tab to visible slash-command autocomplete instead of cycling models", async () => {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.setActionKeys("app.model.cycleForward", ["tab"]);

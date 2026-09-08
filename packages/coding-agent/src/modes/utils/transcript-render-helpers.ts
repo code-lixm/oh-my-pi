@@ -7,8 +7,8 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
-import { tSettingsUi } from "../../i18n/settings-locale";
 import type { AsyncJobType } from "../../async";
+import { tSettingsUi } from "../../i18n/settings-locale";
 import {
 	type CustomMessage,
 	type FileMentionMessage,

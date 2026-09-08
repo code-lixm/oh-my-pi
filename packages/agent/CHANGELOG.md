@@ -16,7 +16,9 @@
 
 ### Fixed
 
-- Fixed terminal tool results allowing later calls from the same assistant message to start; not-yet-started calls now receive explicit synthetic results without executing.
+- Fixed unknown-tool calls giving the model no path to recover: the error result now names the available tools and suggests the closest match ("Tool x not found. Available tools: … Did you mean \"y\"?"), so a model that hallucinates a tool name can self-repair on its next step instead of stalling.
+- Fixed handoff generation failing the session transition on a transient provider stream drop (e.g. "The socket connection was closed unexpectedly"): the handoff oneshot now retries transient failures by default (3 attempts with backoff, opt-out via `oneshotRetry: false`), matching the summarization oneshots.
+
 ## [17.3.0] - 2026-08-13
 
 ### Fixed

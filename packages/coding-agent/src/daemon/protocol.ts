@@ -117,7 +117,6 @@ export type OmpDaemonClientCapability =
 /** Features a daemon supervisor advertises to connected clients. */
 export type OmpDaemonServerCapability =
 	| OmpDaemonClientCapability
-	| "heartbeat_management"
 	| "cron_management"
 	| "agent_messaging"
 	| "rlm_subagents"
@@ -177,9 +176,6 @@ export type OmpDaemonCommand =
 	| { id?: string; type: "cancel"; activeSessionId?: string }
 	| { id?: string; type: "steer"; message: string }
 	| { id?: string; type: "set_model"; model: string }
-	| { id?: string; type: "heartbeat_set"; prompt: string; interval: string }
-	| { id?: string; type: "heartbeat_clear" }
-	| { id?: string; type: "heartbeat_status" }
 	| { id?: string; type: "cron_add"; schedule: string; prompt: string }
 	| { id?: string; type: "cron_cancel"; jobId: string }
 	| { id?: string; type: "cron_list" }

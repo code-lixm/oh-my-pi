@@ -385,6 +385,7 @@ export function buildSessionContext(
 						},
 					),
 				);
+			} else {
 				appendMessage(entry);
 			}
 		}
@@ -415,18 +416,18 @@ export function buildSessionContext(
 		// Re-attach any archived snapcompact frames so the model can keep
 		// reading the archived history after every context rebuild.
 		const snapcompactArchive = snapcompact.getPreservedArchive(compaction.preserveData);
-	const compactionSummaryMsg = createCompactionSummaryMessage(
-		compaction.summary,
-		compaction.tokensBefore,
-		compaction.timestamp,
-		{
-			shortSummary: compaction.shortSummary,
-			providerPayload,
-			blocks: snapcompactHistoryBlocksForContext(snapcompactArchive, options),
-			warning: compaction.warning,
-			retainedFacts: getCompactionRetainedFacts(compaction.details),
-		},
-	);
+		const compactionSummaryMsg = createCompactionSummaryMessage(
+			compaction.summary,
+			compaction.tokensBefore,
+			compaction.timestamp,
+			{
+				shortSummary: compaction.shortSummary,
+				providerPayload,
+				blocks: snapcompactHistoryBlocksForContext(snapcompactArchive, options),
+				warning: compaction.warning,
+				retainedFacts: getCompactionRetainedFacts(compaction.details),
+			},
+		);
 		// Agent context (non-transcript): summary first so the LLM sees the
 		// compacted context before recent messages.
 		if (!options?.transcript) {

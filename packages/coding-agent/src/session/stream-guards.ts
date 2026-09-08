@@ -7,6 +7,10 @@ import {
 	TERMINAL_TOOL_RESULT_ABORT_REASON,
 } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
+import {
+	type CrossTurnThinkingLoopDetection,
+	CrossTurnThinkingLoopGuard,
+} from "@oh-my-pi/pi-ai/utils/cross-turn-thinking-loop-guard";
 import { type NoProgressLoopDetection, NoProgressLoopGuard } from "@oh-my-pi/pi-ai/utils/no-progress-loop-guard";
 import { GeminiHeaderRunDetector } from "@oh-my-pi/pi-ai/utils/thinking-loop";
 import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-ai/utils/tool-call-loop-guard";
@@ -16,6 +20,12 @@ import type { Settings } from "../config/settings";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import { selectPrompt } from "../prompts/prompt-locale";
+import crossTurnThinkingLoopRedirectTemplate from "../prompts/system/cross-turn-thinking-loop-redirect.md" with {
+	type: "text",
+};
+import crossTurnThinkingLoopRedirectTemplateZh from "../prompts/system/cross-turn-thinking-loop-redirect.zh-CN.md" with {
+	type: "text",
+};
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import noProgressLoopRedirectTemplate from "../prompts/system/no-progress-loop-redirect.md" with { type: "text" };
 import noProgressLoopRedirectTemplateZh from "../prompts/system/no-progress-loop-redirect.zh-CN.md" with {
@@ -34,6 +44,12 @@ const GEMINI_TOOL_REMINDER_TYPE = "gemini-tool-call-reminder";
 const TOOL_CALL_LOOP_REDIRECT_TYPE = "tool-call-loop-redirect";
 const NO_PROGRESS_LOOP_REDIRECT_TYPE = "no-progress-loop-redirect";
 const NO_PROGRESS_LOOP_HALTED_TYPE = "no-progress-loop-halted";
+const CROSS_TURN_THINKING_LOOP_REDIRECT_TYPE = "cross-turn-thinking-loop-redirect";
+/** Near-duplicate reasoning turns (current + window matches) that trip the
+ *  cross-turn thinking-loop steer. Calibrated so the real failure shape (same
+ *  paragraph re-emitted 8-9 times verbatim) fires on the 4th repetition, well
+ *  before the observed 69-turn runaway. */
+const CROSS_TURN_THINKING_LOOP_THRESHOLD = 4;
 
 /** Capabilities borrowed by the session's streaming and loop guards. */
 export interface StreamGuardsHost {
@@ -293,6 +309,8 @@ export class LoopGuards {
 	#noProgressLoopGuard: NoProgressLoopGuard | undefined;
 	#noProgressLoopGuardThreshold: number | undefined;
 	#noProgressRecoveryGeneration: number | undefined;
+	#crossTurnThinkingLoopGuard: CrossTurnThinkingLoopGuard | undefined;
+	#crossTurnThinkingLoopGuardThreshold: number | undefined;
 	constructor(host: StreamGuardsHost) {
 		this.#host = host;
 	}
@@ -311,6 +329,11 @@ export class LoopGuards {
 			toolResults: context.toolResults,
 		});
 		if (noProgressDetection) this.#interruptNoProgressLoop(messages, noProgressDetection);
+
+		const crossTurnDetection = this.#activeCrossTurnThinkingLoopGuard()?.recordTurn({
+			message: context.message,
+		});
+		if (crossTurnDetection) this.#injectCrossTurnThinkingLoopRedirect(messages, crossTurnDetection);
 	}
 
 	/** Feeds a streamed assistant event to the Gemini header-runaway detector. */
@@ -360,6 +383,24 @@ export class LoopGuards {
 		return this.#noProgressLoopGuard;
 	}
 
+	#activeCrossTurnThinkingLoopGuard(): CrossTurnThinkingLoopGuard | undefined {
+		if (this.#host.settings.get("model.loopGuard.enabled") !== true) {
+			this.#crossTurnThinkingLoopGuard = undefined;
+			this.#crossTurnThinkingLoopGuardThreshold = undefined;
+			return undefined;
+		}
+		if (
+			!this.#crossTurnThinkingLoopGuard ||
+			this.#crossTurnThinkingLoopGuardThreshold !== CROSS_TURN_THINKING_LOOP_THRESHOLD
+		) {
+			this.#crossTurnThinkingLoopGuard = new CrossTurnThinkingLoopGuard({
+				threshold: CROSS_TURN_THINKING_LOOP_THRESHOLD,
+			});
+			this.#crossTurnThinkingLoopGuardThreshold = CROSS_TURN_THINKING_LOOP_THRESHOLD;
+		}
+		return this.#crossTurnThinkingLoopGuard;
+	}
+
 	#injectToolCallLoopRedirect(messages: AgentMessage[], detection: RepeatedToolCallDetection): void {
 		const content = prompt.render(toolCallLoopRedirectTemplate, {
 			tool_name: detection.toolName,
@@ -387,6 +428,56 @@ export class LoopGuards {
 		if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(redirectMessage);
 		this.#host.sessionManager.appendCustomMessageEntry(
 			TOOL_CALL_LOOP_REDIRECT_TYPE,
+			content,
+			false,
+			details,
+			"agent",
+		);
+	}
+
+	/**
+	 * Steer away from a cross-turn reasoning loop: the same thinking paragraph
+	 * re-emitted across consecutive turns (each turn locally healthy — text +
+	 * a slightly-different tool call — so the other guards miss it). Injects a
+	 * corrective instruction as a next-turn aside; unlike the no-progress guard
+	 * there is no abort, since the turn's tool call may still be legitimate
+	 * work and only the *reasoning* is stuck.
+	 */
+	#injectCrossTurnThinkingLoopRedirect(messages: AgentMessage[], detection: CrossTurnThinkingLoopDetection): void {
+		const content = prompt.render(
+			selectPrompt(crossTurnThinkingLoopRedirectTemplate, crossTurnThinkingLoopRedirectTemplateZh),
+			{
+				count: detection.count,
+				summary: detection.summary,
+			},
+		);
+		const details = {
+			count: detection.count,
+			summary: detection.summary,
+		};
+		logger.warn("cross-turn thinking loop detected; injecting corrective steer", {
+			count: detection.count,
+			model: this.#host.model()?.id,
+			provider: this.#host.model()?.provider,
+		});
+		this.#host.emitNotice(
+			"warning",
+			`Detected the same reasoning repeated across ${detection.count} turns; injected a corrective steer.`,
+			"loop-guard",
+		);
+		const redirectMessage: CustomMessage = {
+			role: "custom",
+			customType: CROSS_TURN_THINKING_LOOP_REDIRECT_TYPE,
+			content,
+			display: false,
+			details,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		messages.push(redirectMessage);
+		if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(redirectMessage);
+		this.#host.sessionManager.appendCustomMessageEntry(
+			CROSS_TURN_THINKING_LOOP_REDIRECT_TYPE,
 			content,
 			false,
 			details,

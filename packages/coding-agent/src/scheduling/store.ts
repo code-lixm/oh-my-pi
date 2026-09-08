@@ -19,6 +19,8 @@ import {
 
 const SCHEDULE_FILE_VERSION = 1 as const;
 const INTERRUPTED_DISPATCH_ERROR = "Interrupted before scheduled operation completion";
+/** Terminal (completed/cancelled/failed) jobs are pruned from the sidecar after this long. */
+const TERMINAL_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1_000;
 
 export interface JsonScheduleStoreOptions {
 	filePath: string;
@@ -104,17 +106,7 @@ export class JsonScheduleStore implements ScheduleStore {
 
 	/** Create a general cron/interval/once job in this sidecar. */
 	async create(input: CreateScheduleJobInput, parsed: ParsedSchedule): Promise<ScheduleJob> {
-		return await this.#createJob(input, parsed, input.source ?? "cron", false);
-	}
-
-	/** Create/replace the one user-visible heartbeat for a session. */
-	async createHeartbeat(input: CreateScheduleJobInput, parsed: ParsedSchedule): Promise<ScheduleJob> {
-		return await this.#createJob(input, parsed, "heartbeat", true);
-	}
-
-	/** Create an RLM heartbeat without replacing other RLM heartbeats. */
-	async createRlmHeartbeat(input: CreateScheduleJobInput, parsed: ParsedSchedule): Promise<ScheduleJob> {
-		return await this.#createJob(input, parsed, "rlm_heartbeat", false);
+		return await this.#createJob(input, parsed, input.source ?? "cron");
 	}
 
 	async pause(id: string, now: Date = this.#now()): Promise<ScheduleJob | undefined> {
@@ -280,19 +272,12 @@ export class JsonScheduleStore implements ScheduleStore {
 		input: CreateScheduleJobInput,
 		parsed: ParsedSchedule,
 		source: ScheduleJobSource,
-		replaceHeartbeat: boolean,
 	): Promise<ScheduleJob> {
 		const now = this.#now();
 		assertValidDate(now, "creation time");
 		assertParsedSchedule(parsed);
-		if (source !== "cron" && parsed.schedule.kind === "once") {
-			throw new Error("Heartbeat schedule must be recurring");
-		}
 		const prompt = input.prompt.trim();
-		if (!prompt)
-			throw new Error(
-				source === "cron" ? "Schedule prompt cannot be empty" : "Heartbeat instruction cannot be empty",
-			);
+		if (!prompt) throw new Error("Schedule prompt cannot be empty");
 
 		const job = createScheduleJob(
 			{
@@ -308,18 +293,6 @@ export class JsonScheduleStore implements ScheduleStore {
 		return await this.#mutate(state => {
 			if (state.jobs.some(current => current.id === job.id)) {
 				throw new Error(`Schedule job already exists: ${job.id}`);
-			}
-			if (replaceHeartbeat) {
-				state.jobs = state.jobs.map(current => {
-					if (
-						current.sessionId === job.sessionId &&
-						current.source === "heartbeat" &&
-						(current.status === "active" || current.status === "paused")
-					) {
-						return withoutNextRunAt({ ...current, status: "cancelled", updatedAt: now.toISOString() });
-					}
-					return current;
-				});
 			}
 			state.jobs.push(job);
 			return { value: clone(job), changed: true };
@@ -351,12 +324,13 @@ export class JsonScheduleStore implements ScheduleStore {
 		} catch (error) {
 			throw corruptionError(`invalid JSON (${errorMessage(error)})`);
 		}
+		const pruned = pruneLegacyState(parsed, this.#now().getTime());
 		try {
-			assertScheduleFileState(parsed);
+			assertScheduleFileState(pruned);
 		} catch (error) {
 			throw corruptionError(errorMessage(error));
 		}
-		return clone(parsed);
+		return clone(pruned);
 	}
 
 	async #writeState(state: ScheduleFileState): Promise<void> {
@@ -569,12 +543,48 @@ function normalizeOptional(value: string | undefined): string | undefined {
 	return normalized || undefined;
 }
 
+/**
+ * Load-time tolerance for sidecars written by older builds:
+ * - jobs with sources this build does not know (legacy heartbeats) are dropped
+ *   instead of failing the whole store as corrupt — heartbeat jobs no longer
+ *   have any consumer, so silently retiring them preserves the cron jobs that
+ *   share the file;
+ * - terminal jobs (completed/cancelled/failed) whose last update predates
+ *   TERMINAL_JOB_RETENTION_MS are garbage-collected so run history cannot grow
+ *   a sidecar without bound.
+ */
+function pruneLegacyState(value: unknown, nowMs: number): unknown {
+	if (!isRecord(value) || !Array.isArray(value.jobs)) return value;
+	const now = nowMs;
+	const jobs = value.jobs.filter(
+		job =>
+			isRecord(job) &&
+			isScheduleJobSource(job.source) &&
+			!(isTerminalScheduleStatusValue(job.status) && isExpiredTerminalJob(job, now)),
+	);
+	if (jobs.length === value.jobs.length) return value;
+	const keptIds = new Set(jobs.map(job => (isRecord(job) ? job.id : "")));
+	const dispatches = Array.isArray(value.dispatches)
+		? value.dispatches.filter(dispatch => isRecord(dispatch) && keptIds.has(dispatch.jobId))
+		: value.dispatches;
+	return { ...value, jobs, dispatches };
+}
+
+function isTerminalScheduleStatusValue(value: unknown): boolean {
+	return value === "completed" || value === "cancelled" || value === "failed";
+}
+
+function isExpiredTerminalJob(job: Record<string, unknown>, now: number): boolean {
+	const updatedAt = typeof job.updatedAt === "string" ? Date.parse(job.updatedAt) : Number.NaN;
+	return Number.isFinite(updatedAt) && now - updatedAt > TERMINAL_JOB_RETENTION_MS;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isScheduleJobSource(value: unknown): value is ScheduleJobSource {
-	return value === "cron" || value === "heartbeat" || value === "rlm_heartbeat";
+	return value === "cron";
 }
 
 function isScheduleJobStatus(value: unknown): value is ScheduleJobStatus {

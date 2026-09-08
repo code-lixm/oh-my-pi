@@ -30,6 +30,7 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 interface AdvisorEntry {
 	type?: string;
 	id?: unknown;
+	parentId?: unknown;
 	message?: {
 		role?: string;
 		model?: string;
@@ -319,6 +320,89 @@ describe("AdvisorTranscriptRecorder", () => {
 			await fs.truncate(transcript, 16 * 1024 * 1024);
 
 			expect(Object.fromEntries(await loadAdvisorTranscriptCosts(sessionFile))).toEqual({ "": 0.25 });
+		});
+	});
+
+	it("writes a session header with cwd as the first line of a fresh transcript", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "sess.jsonl");
+			const recorder = new AdvisorTranscriptRecorder(
+				() => sessionFile,
+				() => dir,
+			);
+			recorder.record(assistantMessage("review", 1));
+			await recorder.close();
+
+			const transcript = path.join(dir, "sess", ADVISOR_TRANSCRIPT_FILENAME);
+			const firstLine = (await Bun.file(transcript).text()).split("\n")[0];
+			const header = JSON.parse(firstLine) as { type?: string; id?: string; cwd?: string };
+			// SessionManager readers (loadEntriesFromFile) refuse files whose first
+			// JSON line is not a session header, and stats attributes project by it.
+			expect(header.type).toBe("session");
+			expect(typeof header.id).toBe("string");
+			expect(header.id?.length).toBeGreaterThan(0);
+			expect(header.cwd).toBe(dir);
+		});
+	});
+
+	it("appends after a restart without rewriting history and continues the entry chain", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "sess.jsonl");
+			const initial = new AdvisorTranscriptRecorder(
+				() => sessionFile,
+				() => dir,
+			);
+			initial.record(userMessage("session update"));
+			initial.record(assistantMessage("before restart", 1));
+			await initial.close();
+
+			const transcript = path.join(dir, "sess", ADVISOR_TRANSCRIPT_FILENAME);
+			const before = await Bun.file(transcript).text();
+
+			const resumed = new AdvisorTranscriptRecorder(
+				() => sessionFile,
+				() => dir,
+			);
+			resumed.record(assistantMessage("after restart", 2));
+			await resumed.close();
+			const after = await Bun.file(transcript).text();
+
+			// Nothing before the append may be rewritten or dropped — opening must
+			// never parse/re-serialize the (potentially gigabyte) body.
+			expect(after.startsWith(before)).toBe(true);
+
+			const entries = await readMessageEntries(transcript);
+			expect(entries.map(entry => entry.message?.usage?.input)).toEqual([undefined, 1, 2]);
+			// The parent chain bridges the restart via the recovered tail id.
+			expect(entries[2]?.parentId).toBe(entries[1]?.id);
+			// And the session header id is stable across recorder instances.
+			const headerBefore = JSON.parse(before.split("\n")[0] ?? "{}") as { id?: string };
+			const headerAfter = JSON.parse(after.split("\n")[0] ?? "{}") as { id?: string };
+			expect(headerAfter.id).toBe(headerBefore.id);
+		});
+	});
+
+	it("preserves legacy headerless transcript content when appending", async () => {
+		await withTempDir(async dir => {
+			const sessionFile = path.join(dir, "sess.jsonl");
+			const sessionDir = sessionFile.slice(0, -".jsonl".length);
+			await fs.mkdir(sessionDir, { recursive: true });
+			const transcript = path.join(sessionDir, ADVISOR_TRANSCRIPT_FILENAME);
+			const legacyLine = JSON.stringify({ type: "message", id: "legacy01", message: assistantMessage("legacy", 7) });
+			await fs.writeFile(transcript, `${legacyLine}\n`);
+
+			const recorder = new AdvisorTranscriptRecorder(
+				() => sessionFile,
+				() => dir,
+			);
+			recorder.record(assistantMessage("appended", 8));
+			await recorder.close();
+
+			const after = await Bun.file(transcript).text();
+			// A headerless file must not be reset to a bare header — legacy content survives.
+			expect(after.startsWith(`${legacyLine}\n`)).toBe(true);
+			const entries = await readMessageEntries(transcript);
+			expect(entries.map(entry => entry.message?.usage?.input)).toEqual([7, 8]);
 		});
 	});
 });

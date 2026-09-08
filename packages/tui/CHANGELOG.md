@@ -19,6 +19,11 @@
 - Changed TUI render scheduling to expose compose-cost samples only after a frame commits; failed compose attempts and uncommitted deferred frames do not feed owners' adaptive scheduling.
 
 ### Fixed
+- Fixed wheel events over transcript rows scrolling the input draft: the editor's fallback mouse handler now only responds to the wheel when the pointer is over the editor's own rendered rows.
+- Fixed large-paste and big-buffer editor jank: undo snapshots no longer deep-copy the whole buffer per keystroke, per-line width/wrap caches stop thrashing on buffers larger than the cache, giant uniform single-line wraps skip grapheme segmentation (~1244ms → ~16ms on a 9.6MB line), clean pastes skip redundant sanitize scans, and oversized payloads skip image-path detection (a 4.4MB paste drops from ~70ms to ~12ms end to end).
+- Restored the complete top status line for the legacy horizontal composer, so `composer.shape: horizontal` no longer drops model, path, and Git segments.
+
+- Fixed the Loader spinner freezing between activity-message updates under the frame-provider composer: unsafe direct writes now fall back to component-scoped renders instead of silently dropping every animation tick.
 - Fixed direct-terminal Native stdin becoming unresponsive after an earlier input batch when compiled Bun stranded a wake with its JavaScript loop idle; an event-driven native readiness promise now preserves Rust stdin ownership without polling, and input-triggered paints preempt animation backpressure while retaining the 30 fps cadence so typing and deletion remain responsive.
 - Fixed Native HUD echoes and compact differential frames without a newline remaining in Rust's line-buffered stdout, which left editor text or the hardware cursor visually stale until a later full paint.
 - Fixed Kitty APC graphics commands being counted as printable cells, which misaligned thumbnail-card borders.

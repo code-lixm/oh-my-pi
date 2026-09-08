@@ -4,9 +4,11 @@ import type {
 	AgentState,
 	AgentTool,
 	AgentToolContext,
+	AgentToolResult,
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
+	AssistantMessage,
 	Effort,
 	ImageContent,
 	Model,
@@ -18,25 +20,33 @@ import type {
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { SlashCommand } from "@oh-my-pi/pi-tui";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "../../advisor";
 import type { WorkspaceCheckpointAccessResult } from "../../commands/workspace-checkpoint-support";
 import type { ModelRegistry } from "../../config/model-registry";
-import { formatModelString } from "../../config/model-resolver";
+import { formatModelString, type ResolvedModelRoleValue } from "../../config/model-resolver";
 import type { PromptTemplate } from "../../config/prompt-templates";
 import type { Settings } from "../../config/settings";
 import type { ExtensionUIContext } from "../../extensibility/extensions/types";
 import type { Skill } from "../../extensibility/skills";
 import type { FileSlashCommand } from "../../extensibility/slash-commands";
+import { renderGoalPrompt } from "../../goals/runtime";
+import type { Goal, GoalModeState } from "../../goals/state";
+import { tSettingsUi } from "../../i18n/settings-locale";
+import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
+import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSession } from "../../session/agent-session";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
 import type {
 	AsyncJobSnapshot,
+	Prewalk,
+	ResetSessionContextResult,
 	ResolvedRoleModel,
 	RoleModelCycle,
 	RoleModelCycleResult,
 } from "../../session/agent-session-types";
+import { resolveRoleModelFull } from "../../session/role-models";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { SessionContext } from "../../session/session-context";
 import type { SessionManager } from "../../session/session-manager";
@@ -46,14 +56,18 @@ import {
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
 } from "../../task/types";
 import type { ConfiguredThinkingLevel } from "../../thinking";
+import type { PlanProposalHandler } from "../../tools/resolve";
 import type { TodoPhase } from "../../tools/todo";
 import type { EventBus } from "../../utils/event-bus";
 import type { InspectImageMode } from "../../utils/inspect-image-mode";
+import type { VibeModeState } from "../../vibe/state";
 import type { WorkspaceRestoreResult, WorkspaceRestoreScope } from "../../workspace-checkpoints";
-import type { RpcClient } from "../rpc/rpc-client";
+import { isRpcClientDisconnectedError, type RpcClient } from "../rpc/rpc-client";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcHandoffResult,
 	RpcNavigateTreeOptions,
 	RpcNavigateTreeResult,
 	RpcResponse,
@@ -61,6 +75,9 @@ import type {
 import type { InteractiveSessionPort, InteractiveSessionSettingsCapabilities } from "./port";
 import { RpcInteractiveSessionPort } from "./rpc-session-port";
 import type { InteractiveSessionProjection } from "./types";
+
+/** Debounce window for mirror-history reloads; coalesces streaming deltas. */
+const HISTORY_MIRROR_SYNC_DEBOUNCE_MS = 500;
 
 export interface RemoteAgentSessionOptions {
 	readonly client: RpcClient;
@@ -116,8 +133,28 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	readonly extensionRunner = undefined;
 	readonly asyncJobManager = undefined;
 	readonly goalRuntime = {
-		clearAccounting: (): void => {},
-		onThreadResumed: async (): Promise<undefined> => undefined,
+		clearAccounting: (): void => {
+			this.#fireRpc("clear goal accounting", this.#client.goalRuntimeClearAccounting());
+		},
+		onThreadResumed: async (options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> =>
+			(await this.#client.goalRuntimeOnThreadResumed(options?.preserveActiveGoal)) ?? undefined,
+		createGoal: async (input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> =>
+			await this.#client.goalRuntimeCreate(input.objective, input.tokenBudget),
+		replaceGoal: async (input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> =>
+			await this.#client.goalRuntimeReplace(input.objective, input.tokenBudget),
+		resumeGoal: async (): Promise<GoalModeState> => await this.#client.goalRuntimeResume(),
+		pauseGoal: async (): Promise<GoalModeState | undefined> => (await this.#client.goalRuntimePause()) ?? undefined,
+		dropGoal: async (): Promise<Goal | undefined> => (await this.#client.goalRuntimeDrop()) ?? undefined,
+		onBudgetMutated: async (newBudget: number | undefined): Promise<GoalModeState | undefined> =>
+			(await this.#client.goalRuntimeOnBudgetMutated(newBudget)) ?? undefined,
+		// Pure render of the projected goal state — must stay synchronous because
+		// `#scheduleGoalContinuation` reads it without awaiting.
+		buildContinuationPrompt: (): string | undefined => {
+			const state = this.#projection.modes.goal;
+			return state?.enabled && state.goal.status === "active"
+				? renderGoalPrompt("continuation", state.goal)
+				: undefined;
+		},
 	};
 	readonly #client: RpcClient;
 	readonly #port: InteractiveSessionPort;
@@ -126,10 +163,20 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	readonly #unsubscribers: Array<() => void> = [];
 	#extensionUiContext: ExtensionUIContext | undefined;
 	#pendingExtensionUiRequests: RpcExtensionUIRequest[] = [];
+	/**
+	 * In-flight `#handleExtensionUiRequest` promises, tracked so dispose() can
+	 * reject them before the RPC transport tears down. Without this the awaited
+	 * `uiContext.select/confirm/input/editor` may resolve after the client has
+	 * stopped, the resulting `respondToExtensionUi` call throws "Client not
+	 * started" synchronously, and the void caller lets it escape as an
+	 * unhandled rejection.
+	 */
+	#inFlightExtensionUiRequests = new Set<Promise<void>>();
 	#projection: InteractiveSessionProjection;
 	#state: AgentState;
 	#disposed = false;
 	#mountedToolNames: string[] = [];
+	#historyMirrorSyncTimer: NodeJS.Timeout | undefined;
 
 	private constructor(options: RemoteAgentSessionOptions) {
 		this.#client = options.client;
@@ -176,6 +223,7 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 				if (!queuesEqual(previousQueue, this.#projection.queue)) {
 					for (const listener of this.#eventListeners) listener({ type: "queue_changed" });
 				}
+				this.#scheduleHistoryMirrorSync();
 			}),
 			this.#port.onView(frame => {
 				this.#projection = { ...this.#projection, ...frame.patch };
@@ -229,23 +277,54 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 			this.#pendingExtensionUiRequests.push(request);
 			return;
 		}
-		void this.#handleExtensionUiRequest(uiContext, request);
+		const promise = this.#handleExtensionUiRequest(uiContext, request).finally(() => {
+			this.#inFlightExtensionUiRequests.delete(promise);
+		});
+		this.#inFlightExtensionUiRequests.add(promise);
 	}
 
 	#cancelExtensionUiRequest(request: RpcExtensionUIRequest): void {
 		if (request.method === "select" || request.method === "input" || request.method === "editor") {
-			this.#client.respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
+			this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
 		} else if (request.method === "confirm") {
-			this.#client.respondToExtensionUi({ type: "extension_ui_response", id: request.id, confirmed: false });
+			this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, confirmed: false });
+		}
+	}
+
+	/**
+	 * Reply to a pending extension UI request without letting a transport
+	 * shutdown ("Client not started") escape as an unhandled rejection. The
+	 * response is fire-and-forget at every caller, so a throw here would
+	 * otherwise bubble out of the `#handleExtensionUiRequest` try/catch chain
+	 * once the client has been stopped by `dispose()`.
+	 */
+	#safeRespondToExtensionUi(response: RpcExtensionUIResponse): void {
+		try {
+			this.#client.respondToExtensionUi(response);
+		} catch (error) {
+			if (this.#disposed) return;
+			logger.warn("Failed to respond to remote extension UI request", { error: String(error) });
 		}
 	}
 
 	async #handleExtensionUiRequest(uiContext: ExtensionUIContext, request: RpcExtensionUIRequest): Promise<void> {
 		try {
+			// If `dispose()` already started, the local UI surface is gone and
+			// any dialog awaiting user input will never resolve normally. Skip
+			// straight to a best-effort cancel response so we don't await a
+			// dead uiContext.
+			if (this.#disposed) {
+				if (request.method === "select" || request.method === "input" || request.method === "editor") {
+					this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
+				} else if (request.method === "confirm") {
+					this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, confirmed: false });
+				}
+				return;
+			}
 			switch (request.method) {
 				case "select": {
 					const value = await uiContext.select(request.title, request.options, { timeout: request.timeout });
-					this.#client.respondToExtensionUi(
+					this.#safeRespondToExtensionUi(
 						value === undefined
 							? { type: "extension_ui_response", id: request.id, cancelled: true }
 							: { type: "extension_ui_response", id: request.id, value },
@@ -254,12 +333,12 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 				}
 				case "confirm": {
 					const confirmed = await uiContext.confirm(request.title, request.message, { timeout: request.timeout });
-					this.#client.respondToExtensionUi({ type: "extension_ui_response", id: request.id, confirmed });
+					this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, confirmed });
 					return;
 				}
 				case "input": {
 					const value = await uiContext.input(request.title, request.placeholder, { timeout: request.timeout });
-					this.#client.respondToExtensionUi(
+					this.#safeRespondToExtensionUi(
 						value === undefined
 							? { type: "extension_ui_response", id: request.id, cancelled: true }
 							: { type: "extension_ui_response", id: request.id, value },
@@ -270,7 +349,7 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 					const value = await uiContext.editor(request.title, request.prefill, undefined, {
 						promptStyle: request.promptStyle,
 					});
-					this.#client.respondToExtensionUi(
+					this.#safeRespondToExtensionUi(
 						value === undefined
 							? { type: "extension_ui_response", id: request.id, cancelled: true }
 							: { type: "extension_ui_response", id: request.id, value },
@@ -300,9 +379,10 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 					uiContext.notify(request.instructions ?? request.launchUrl ?? request.url, "info");
 					return;
 			}
-		} catch {
+		} catch (error) {
+			if (this.#disposed && postmortem.isExpectedCleanupError(error)) return;
 			if (request.method === "select" || request.method === "input" || request.method === "editor") {
-				this.#client.respondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
+				this.#safeRespondToExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
 			}
 		}
 	}
@@ -663,8 +743,23 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		await this.#client.waitForIdle();
 	}
 
-	async setModel(model: Model): Promise<void> {
-		await this.#client.setModel(model.provider, model.id);
+	async setModel(
+		model: Model,
+		role: string = "default",
+		options?: {
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+		},
+	): Promise<{ switched: boolean }> {
+		const result = await this.#client.setModel(model.provider, model.id, {
+			role,
+			...(options?.selector ? { selector: options.selector } : {}),
+			...(options?.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+			...(options?.persist !== undefined ? { persist: options.persist } : {}),
+		});
+		await this.#refreshProjection();
+		return { switched: result.switched };
 	}
 
 	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
@@ -676,6 +771,11 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		)
 			return undefined;
 		return projected.cycle;
+	}
+
+	/** Resolve a role to its model AND thinking level from local settings/registry state. */
+	resolveRoleModelWithThinking(role: string): ResolvedModelRoleValue {
+		return resolveRoleModelFull(this.settings, role, this.modelRegistry.getAvailable(), this.model);
 	}
 
 	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
@@ -848,7 +948,7 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		this.#state = this.#buildAgentState();
 		void this.#client.clearQueue(options).catch(error => {
 			logger.warn("Failed to clear remote session queue", { error: String(error) });
-			void this.#refreshProjection();
+			this.#safeRefresh();
 		});
 		return {
 			steering: queue.steering.map(text => ({ text })),
@@ -860,7 +960,7 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		const running = this.runningAsyncJobCount;
 		void this.#client.cancelAsyncJobs().catch(error => {
 			logger.warn("Failed to cancel remote async jobs", { error: String(error) });
-			void this.#refreshProjection();
+			this.#safeRefresh();
 		});
 		return running;
 	}
@@ -877,6 +977,38 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 
 	compact(customInstructions?: string) {
 		return this.#client.compact(customInstructions);
+	}
+	async handoff(customInstructions?: string): Promise<RpcHandoffResult | undefined> {
+		const response = await this.#dispatch({
+			type: "handoff",
+			...(customInstructions ? { customInstructions } : {}),
+		});
+		// Handoff rewrites the remote session (compaction entry + new session file when
+		// the child splits). Refresh the projection so `messages` reflects the new
+		// transcript before the TUI rebuilds, and re-point the local mirror at the
+		// child's session file so `sessionManager.getEntries()` reads the replacement.
+		await this.#refreshProjection(true);
+		if (!response.success) throw new Error(response.error);
+		return response.command === "handoff" ? (response.data ?? undefined) : undefined;
+	}
+
+	/**
+	 * Reset the child's conversation in place (`/clear`): drop every message,
+	 * queued turn, and pending tool call while the session id, title, and
+	 * transcript file survive. Returns `undefined` when the child refused —
+	 * a response was streaming or a foreground bash/python execution was in
+	 * flight — mirroring {@link AgentSession.resetSessionContext}.
+	 */
+	async resetSessionContext(): Promise<ResetSessionContextResult | undefined> {
+		const response = await this.#dispatch({ type: "reset_session_context" });
+		if (!response.success) throw new Error(response.error);
+		// The reset dropped every message on the child and appended a reset
+		// boundary; refresh the projection so `messages` reflects the collapsed
+		// transcript before the TUI clears its rendered view.
+		await this.#refreshProjection(true);
+		return response.command === "reset_session_context" && response.data
+			? { droppedCount: response.data.droppedCount }
+			: undefined;
 	}
 
 	runIdleCompaction(): Promise<void> {
@@ -927,6 +1059,159 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		this.#applyActiveTools(result.activeToolNames, result.mountedToolNames);
 	}
 
+	/** Install and activate the ephemeral vibe tool set in the backend session. */
+	async activateVibeTools(baseToolNames: string[]): Promise<void> {
+		await this.#client.activateVibeTools(baseToolNames);
+		await this.#refreshProjection();
+	}
+
+	/** Uninstall vibe tools and activate the replacement set in the backend session. */
+	async deactivateVibeTools(nextToolNames: string[]): Promise<void> {
+		await this.#client.deactivateVibeTools(nextToolNames);
+		await this.#refreshProjection();
+	}
+
+	/** Remove vibe tools from the backend session without restoring a source-session snapshot. */
+	async removeVibeToolsPreservingActive(): Promise<void> {
+		await this.#client.removeVibeToolsPreservingActive();
+		await this.#refreshProjection();
+	}
+
+	/** Persist the backend session's vibe-mode state. */
+	setVibeModeState(state: VibeModeState | undefined): void {
+		this.#fireRpc("set vibe mode state", this.#client.setVibeModeState(state ?? null));
+	}
+
+	/** Deliver the vibe-mode context message to the backend session. */
+	async sendVibeModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
+		await this.#client.sendVibeModeContext(options?.deliverAs);
+	}
+
+	/** Persist the backend session's goal-mode state. */
+	setGoalModeState(state: GoalModeState | undefined): void {
+		this.#fireRpc("set goal mode state", this.#client.setGoalModeState(state ?? null));
+	}
+
+	/** Deliver the goal-mode context message to the backend session. */
+	async sendGoalModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
+		await this.#client.sendGoalModeContext(options?.deliverAs);
+	}
+
+	/** Persist the backend session's plan-mode state. */
+	setPlanModeState(state: PlanModeState | undefined): void {
+		this.#fireRpc("set plan mode state", this.#client.setPlanModeState(state ?? null));
+	}
+
+	/** Install or clear the backend session's plan-proposal handler. */
+	setPlanProposalHandler(handler: PlanProposalHandler | null): void {
+		this.#fireRpc("set plan proposal handler", this.#client.setPlanProposalHandler(handler !== null));
+	}
+
+	/** Run the backend session's plan-review preparation and return approval details. */
+	async preparePlanForReview(title: string): Promise<AgentToolResult<PlanApprovalDetails>> {
+		const details = await this.#client.preparePlanForReview(title);
+		return {
+			content: [{ type: "text", text: tSettingsUi("Plan ready for review.") }],
+			details,
+		};
+	}
+
+	/** Deliver the plan-mode context message to the backend session. */
+	async sendPlanModeContext(options?: { deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void> {
+		await this.#client.sendPlanModeContext(options?.deliverAs);
+	}
+
+	/** Mark the backend session's silent plan-abort flag. */
+	markPlanInternalAbortPending(): void {
+		this.#fireRpc("mark plan internal abort pending", this.#client.markPlanInternalAbortPending());
+	}
+
+	/** Clear the backend session's silent plan-abort flag. */
+	clearPlanInternalAbortPending(): void {
+		this.#fireRpc("clear plan internal abort pending", this.#client.clearPlanInternalAbortPending());
+	}
+
+	/** Mark the backend session's plan reference as sent. */
+	markPlanReferenceSent(): void {
+		this.#fireRpc("mark plan reference sent", this.#client.markPlanReferenceSent());
+	}
+
+	/** Set the backend session's plan reference path. */
+	setPlanReferencePath(path: string): void {
+		this.#fireRpc("set plan reference path", this.#client.setPlanReferencePath(path));
+	}
+
+	/** Read the backend session's plan reference path. */
+	async getPlanReferencePath(): Promise<string> {
+		return await this.#client.getPlanReferencePath();
+	}
+
+	/** Read the cached backend prewalk state synchronously for render paths. */
+	getPrewalkStateSnapshot(): Prewalk | undefined {
+		return this.#projection.modes.prewalk;
+	}
+
+	/** Read the backend session's prewalk state through RPC. */
+	async getPrewalkState(): Promise<Prewalk | undefined> {
+		return (await this.#client.getPrewalkState()) ?? undefined;
+	}
+
+	/** Create a goal in the backend session's goal runtime. */
+	async createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
+		return await this.#client.goalRuntimeCreate(input.objective, input.tokenBudget);
+	}
+
+	/** Replace the backend session's active goal. */
+	async replaceGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
+		return await this.#client.goalRuntimeReplace(input.objective, input.tokenBudget);
+	}
+
+	/** Resume the backend session's paused goal. */
+	async resumeGoal(): Promise<GoalModeState> {
+		return await this.#client.goalRuntimeResume();
+	}
+
+	/** Pause the backend session's active goal. */
+	async pauseGoal(): Promise<GoalModeState | undefined> {
+		return (await this.#client.goalRuntimePause()) ?? undefined;
+	}
+
+	/** Drop the backend session's goal. */
+	async dropGoal(): Promise<Goal | undefined> {
+		return (await this.#client.goalRuntimeDrop()) ?? undefined;
+	}
+
+	/** Mutate the backend session's goal budget. */
+	async onBudgetMutated(newBudget: number | undefined): Promise<GoalModeState | undefined> {
+		return (await this.#client.goalRuntimeOnBudgetMutated(newBudget)) ?? undefined;
+	}
+
+	/** Build the backend session's goal continuation prompt. */
+	async buildContinuationPrompt(): Promise<string | undefined> {
+		return (await this.#client.goalRuntimeBuildContinuationPrompt()) ?? undefined;
+	}
+
+	/** Resume accounting in the backend session's goal runtime. */
+	async onThreadResumed(options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> {
+		return (await this.#client.goalRuntimeOnThreadResumed(options?.preserveActiveGoal)) ?? undefined;
+	}
+
+	/** Clear accounting in the backend session's goal runtime. */
+	clearAccounting(): void {
+		this.#fireRpc("clear goal accounting", this.#client.goalRuntimeClearAccounting());
+	}
+
+	/** Branch the backend session from a /btw question. */
+	async branchFromBtw(
+		question: string,
+		assistantMessage: AssistantMessage,
+		leafId: string,
+		sessionId: string,
+	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
+		const result = await this.#client.branchFromBtw(question, assistantMessage, leafId, sessionId);
+		return { cancelled: result.cancelled, sessionFile: result.sessionFile ?? undefined };
+	}
+
 	async setActiveToolPresentation(toolNames: string[], mountedToolNames: string[]): Promise<void> {
 		const result = await this.#client.setActiveToolPresentation(toolNames, mountedToolNames);
 		this.#applyActiveTools(result.activeToolNames, result.mountedToolNames);
@@ -937,8 +1222,25 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	async dispose(): Promise<void> {
 		if (this.#disposed) return;
 		this.#disposed = true;
+		if (this.#historyMirrorSyncTimer) {
+			clearTimeout(this.#historyMirrorSyncTimer);
+			this.#historyMirrorSyncTimer = undefined;
+		}
 		this.#extensionUiContext = undefined;
 		for (const request of this.#pendingExtensionUiRequests.splice(0)) this.#cancelExtensionUiRequest(request);
+		// Drain any extension UI requests already routed into the switch before
+		// tearing down the RPC transport. Their awaited `uiContext.xxx(...)`
+		// may still be pending in the dying TUI; we let them settle (via the
+		// `#disposed` short-circuit at the head of `#handleExtensionUiRequest`
+		// or via the TUI cancelling its own dialogs) so the trailing
+		// `respondToExtensionUi` doesn't fire after the transport is gone.
+		if (this.#inFlightExtensionUiRequests.size > 0) {
+			const inFlight = [...this.#inFlightExtensionUiRequests];
+			await Promise.race([
+				Promise.allSettled(inFlight),
+				Bun.sleep(50), // bounded drain — don't hang on a stuck dialog
+			]);
+		}
 		for (const unsubscribe of this.#unsubscribers.splice(0)) unsubscribe();
 		await this.#port.dispose();
 	}
@@ -971,6 +1273,16 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		});
 	}
 
+	/**
+	 * Fire-and-forget `#refreshProjection()` wrapper. Plain
+	 * `void this.#refreshProjection()` lets "Client not started" rejections
+	 * escape after `dispose()`; this catches and swallows them so the caller
+	 * can stay terse.
+	 */
+	#safeRefresh(): void {
+		void this.#refreshProjection().catch(() => undefined);
+	}
+
 	async #refreshProjection(reloadSessionManager = false): Promise<void> {
 		const snapshot = await this.#port.requestSnapshot();
 		this.#projection = snapshot.projection;
@@ -981,11 +1293,73 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		}
 	}
 
+	/**
+	 * Debounced read-only reload of the mirror SessionManager. The rpc-ui child
+	 * owns the session file; the foreground mirror only reads it, so without
+	 * this `/history` (backed by `sessionManager.getBranch()`) stays frozen at
+	 * whatever existed when the mirror opened. Debounced because reliable
+	 * frames arrive per streaming delta.
+	 */
+	#scheduleHistoryMirrorSync(): void {
+		if (this.#disposed || this.#historyMirrorSyncTimer) return;
+		this.#historyMirrorSyncTimer = setTimeout(() => {
+			this.#historyMirrorSyncTimer = undefined;
+			void this.sessionManager.refreshFromDisk().catch(error => {
+				logger.warn("Failed to refresh history mirror", { error: String(error) });
+			});
+		}, HISTORY_MIRROR_SYNC_DEBOUNCE_MS);
+		this.#historyMirrorSyncTimer.unref?.();
+	}
+
 	async #dispatch(command: RpcCommand): Promise<RpcResponse> {
-		const response = await this.#port.dispatch(command);
+		let response: RpcResponse;
+		try {
+			response = await this.#port.dispatch(command);
+		} catch (error) {
+			if (this.#disposed || !isRpcClientDisconnectedError(error)) throw error;
+			// The worker transport is gone (crash, closed stdio, or a facade that
+			// was never attached). The session file is authoritative: respawn the
+			// worker, restore the projection from it, then replay the command —
+			// a "Client not started" rejection means nothing was ever written.
+			await this.#recoverConnection();
+			response = await this.#port.dispatch(command);
+		}
 		const error = responseError(response);
 		if (error) throw error;
 		return response;
+	}
+
+	#recoveryPromise: Promise<void> | undefined;
+
+	/**
+	 * Respawn the isolated agent worker after a transport loss and rebuild the
+	 * local projection from the reloaded session. Concurrent callers share one
+	 * recovery attempt; the next dispatch after a failed recovery surfaces the
+	 * retry's error instead of the cryptic pre-send rejection.
+	 */
+	async #recoverConnection(): Promise<void> {
+		this.#recoveryPromise ??= (async () => {
+			logger.warn("Isolated session RPC transport is down; restarting agent worker", {
+				sessionId: this.#projection.identity.sessionId,
+			});
+			await this.#client.ensureStarted();
+			await this.#client.setSubagentSubscription("events").catch(error => {
+				logger.warn("Failed to restore subagent subscription after RPC restart", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+			if (this.#extensionUiContext) {
+				await this.#client.initializeExtensions().catch(error => {
+					logger.warn("Failed to re-initialize extensions after RPC restart", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			}
+			await this.#port.requestSnapshot();
+		})().finally(() => {
+			this.#recoveryPromise = undefined;
+		});
+		return this.#recoveryPromise;
 	}
 
 	#replaceMessages(messages: AgentMessage[]): void {

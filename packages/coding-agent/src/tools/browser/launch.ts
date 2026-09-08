@@ -122,17 +122,26 @@ async function loadBrowsers(): Promise<typeof BrowsersNs> {
 
 /**
  * Resolve the Chromium executable puppeteer will launch, honoring
- * PUPPETEER_EXECUTABLE_PATH before system browser detection and lazily
- * downloading Chromium otherwise. The browser is cached under
- * ~/.omp/puppeteer (getPuppeteerDir). Returns undefined when platform
- * detection fails (puppeteer default resolution takes over). Exported so
- * real-browser tests can probe launchability and skip on hosts missing
- * Chrome's system libraries.
+ * PUPPETEER_EXECUTABLE_PATH before the OMP-managed Chrome for Testing build,
+ * then system browser detection, and lazily downloading Chromium otherwise.
+ * The browser is cached under ~/.omp/puppeteer (getPuppeteerDir). Returns
+ * undefined when platform detection fails (puppeteer default resolution takes
+ * over). Exported so real-browser tests can probe launchability and skip on
+ * hosts missing Chrome's system libraries.
  */
 let chromiumExecutablePromise: Promise<string | undefined> | undefined;
 export async function ensureChromiumExecutable(): Promise<string | undefined> {
 	const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
 	if (envPath) return envPath;
+	// Prefer the OMP-managed Chrome for Testing build over a system
+	// Chrome/Chromium: the managed build carries its own bundle id
+	// (com.google.chrome.for.testing), so a headless automation instance never
+	// registers with LaunchServices as the user's Google Chrome and never
+	// intercepts double-click launches of the real browser (singleton routing
+	// hands the open request to the windowless headless process). Fall back to
+	// a system browser when the managed build is not installed yet.
+	const managed = await resolveManagedChromium();
+	if (managed) return managed;
 	const sysChrome = await resolveSystemChromium();
 	if (sysChrome) return sysChrome;
 	if (chromiumExecutablePromise) return chromiumExecutablePromise;
@@ -338,6 +347,51 @@ function systemChromiumCandidates(
 		}
 	}
 	return candidates;
+}
+
+/**
+ * Locate an already-installed OMP-managed Chrome for Testing build under
+ * ~/.omp/puppeteer (the cache dir used by the lazy download path). Returns
+ * undefined when no managed build is present yet; the caller then falls back
+ * to a system browser or triggers the download.
+ */
+async function resolveManagedChromium(): Promise<string | undefined> {
+	const cacheDir = getPuppeteerDir();
+	const chromeDir = path.join(cacheDir, "chrome");
+	let entries: string[];
+	try {
+		entries = await fs.promises.readdir(chromeDir);
+	} catch {
+		return undefined;
+	}
+	for (const entry of entries) {
+		const buildDir = path.join(chromeDir, entry);
+		let candidates: string[];
+		try {
+			candidates = await fs.promises.readdir(buildDir);
+		} catch {
+			continue;
+		}
+		for (const candidate of candidates) {
+			const candidatePath = path.join(buildDir, candidate);
+			let executable: string;
+			if (process.platform === "darwin") {
+				executable = path.join(
+					candidatePath,
+					"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+				);
+			} else if (process.platform === "win32") {
+				executable = path.join(candidatePath, "chrome.exe");
+			} else {
+				executable = path.join(candidatePath, "chrome");
+			}
+			if (await isChromiumExecutable(executable)) {
+				logger.debug("Using OMP-managed Chrome for Testing", { path: executable });
+				return executable;
+			}
+		}
+	}
+	return undefined;
 }
 
 async function resolveSystemChromium(): Promise<string | undefined> {

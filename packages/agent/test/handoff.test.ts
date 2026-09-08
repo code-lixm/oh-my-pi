@@ -262,4 +262,59 @@ describe("handoff helpers", () => {
 			reasoning: Effort.Medium,
 		});
 	});
+
+	test("generateHandoffFromContext retries a transient stream drop and succeeds", async () => {
+		// Regression: a socket-closed blip during handoff generation used to
+		// surface as "Handoff failed" and killed the session transition. A
+		// oneshot produces no side effects, so the default retry policy must
+		// re-issue the request.
+		const completeSimpleSpy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValueOnce(createAssistantError(0, "The socket connection was closed unexpectedly."))
+			.mockResolvedValueOnce(createAssistantMessage([{ type: "text", text: "## Goal\nRecovered" }]));
+		const model = getTestModel();
+		const context = {
+			systemPrompt: ["Live system prompt"],
+			tools: [] as AgentTool[],
+			messages: [{ role: "user" as const, content: "prepare handoff", timestamp: 1 }],
+		};
+
+		const document = await generateHandoffFromContext(context, model, {
+			streamOptions: {
+				apiKey: "test-key",
+				sessionId: "sess-socket-drop:side:42",
+				promptCacheKey: "sess-socket-drop",
+			},
+			thinkingLevel: ThinkingLevel.Medium,
+		});
+
+		expect(document).toBe("## Goal\nRecovered");
+		expect(completeSimpleSpy).toHaveBeenCalledTimes(2);
+	});
+
+	test("generateHandoffFromContext honors oneshotRetry: false", async () => {
+		const completeSimpleSpy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValueOnce(createAssistantError(0, "The socket connection was closed unexpectedly."));
+		const model = getTestModel();
+		const context = {
+			systemPrompt: ["Live system prompt"],
+			tools: [] as AgentTool[],
+			messages: [{ role: "user" as const, content: "prepare handoff", timestamp: 1 }],
+		};
+
+		const error = await generateHandoffFromContext(context, model, {
+			streamOptions: {
+				apiKey: "test-key",
+				sessionId: "sess-retry-off:side:42",
+				promptCacheKey: "sess-retry-off",
+			},
+			thinkingLevel: ThinkingLevel.Medium,
+			oneshotRetry: false,
+		}).catch((caught: unknown) => caught);
+
+		if (!(error instanceof Error)) throw new Error("Expected handoff generation to reject");
+		expect(error.message).toContain("Handoff generation failed");
+		expect(completeSimpleSpy).toHaveBeenCalledTimes(1);
+	});
 });

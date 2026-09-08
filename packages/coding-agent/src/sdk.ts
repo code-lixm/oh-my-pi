@@ -633,6 +633,16 @@ export interface CreateAgentSessionOptions {
 
 	/** Whether to auto-approve all tool calls (--auto-approve CLI flag). Default: false */
 	autoApprove?: boolean;
+
+	/**
+	 * Whether streamed assistant text reaching the output sink can be retracted
+	 * when an auto-retry supersedes the turn. Interactive surfaces with
+	 * retry-recovery UI (TUI, web/RPC transcript) pass `true` so a transient
+	 * stream drop retries instead of terminating the turn; sinks like print mode
+	 * keep the `false` default so a replayed turn cannot duplicate output.
+	 * Default: false.
+	 */
+	retractableTextOutput?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -3906,6 +3916,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentKind,
 			providerSessionId: options.providerSessionId,
 			providerPromptCacheKeySource,
+			retractableTextOutput: options.retractableTextOutput === true,
 			// Same `replace`-mode requirement as the primary bridge; the advisor
 			// path gates it on the advisor's own `edit` grant.
 			advisorCreateGrepTool,

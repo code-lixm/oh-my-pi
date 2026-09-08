@@ -141,8 +141,6 @@ export function isOmpDaemonCommand(value: unknown): value is OmpDaemonCommand {
 				(value.resumeCursor === undefined || isCursor(value.resumeCursor))
 			);
 		case "detach":
-		case "heartbeat_clear":
-		case "heartbeat_status":
 		case "cron_list":
 		case "list_sessions":
 		case "shutdown":
@@ -154,8 +152,6 @@ export function isOmpDaemonCommand(value: unknown): value is OmpDaemonCommand {
 		case "steer":
 		case "set_model":
 			return hasString(value, value.type === "steer" ? "message" : "model");
-		case "heartbeat_set":
-			return hasString(value, "prompt") && hasString(value, "interval");
 		case "cron_add":
 			return hasString(value, "schedule") && hasString(value, "prompt");
 		case "cron_cancel":
@@ -575,9 +571,6 @@ export class OmpDaemonWorker {
 				case "list_sessions":
 					this.#respond(command.id, true, this.#summary());
 					return;
-				case "heartbeat_set":
-				case "heartbeat_clear":
-				case "heartbeat_status":
 				case "cron_add":
 				case "cron_cancel":
 				case "cron_list":

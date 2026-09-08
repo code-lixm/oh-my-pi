@@ -25,6 +25,10 @@ function createContext(options?: {
 				return editorText;
 			},
 			addToHistory: vi.fn(),
+			compactPendingImageReferences: (text: string) => text,
+			setCollapsedText(text: string) {
+				editorText = text;
+			},
 			pendingImages: options?.pendingImages ? [...options.pendingImages] : ([] as ImageContent[]),
 			pendingImageLinks:
 				options?.pendingImageLinks ??
@@ -32,6 +36,10 @@ function createContext(options?: {
 				([] as (string | undefined)[]),
 		},
 		ui: { requestRender },
+		showStatus: vi.fn(),
+		addOptimisticQueuedMessage: vi.fn(),
+		retireOptimisticQueuedMessage: vi.fn(),
+		reconcileOptimisticQueuedMessages: vi.fn(),
 		session: {
 			isStreaming: true,
 			isCompacting: false,

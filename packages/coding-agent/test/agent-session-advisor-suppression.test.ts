@@ -796,11 +796,13 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(mock.calls.length).toBe(1);
 	});
 
-	it("resumes a queued user steer stranded behind a preserved advisor card", async () => {
+	it("keeps a queued user steer parked behind a preserved advisor card until an explicit resume", async () => {
 		// Reported bug: typing a message during a run (queued as a steer) then pressing
 		// enter again (empty-submit interrupt) recorded the advisor card but stranded the
-		// user message — nothing resumed the run. The preserved advisor card is the
-		// trailing `custom` message, which #canAutoContinueForFollowUp must look past.
+		// user message — nothing resumed the run. Under the interrupt queue semantics the
+		// steer intentionally stays parked (the interrupt is a hard stop); the explicit
+		// resume (empty submit / `.` / `c` / next prompt) must then deliver it in exactly
+		// one resume turn, with the preserved advisor card kept as visible advice.
 		const { session, sessionManager, mock, streamStarted } = await createParkedSession([
 			{ content: ["resumed on the steer"] },
 		]);
@@ -816,10 +818,16 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		await session.waitForIdle();
 		await running.catch(() => {});
 
-		// Advisor card preserved as a visible/persisted card AND the user steer delivered
-		// in exactly one resume turn (no spurious extra call).
+		// Advisor card preserved as a visible/persisted card; the user steer stays
+		// parked and nothing auto-resumes (model still called exactly once).
 		expect(session.agent.state.messages.filter(isAdvisorCard)).toHaveLength(1);
 		expect(persisted).toEqual(["breaks the build"]);
+		expect(userMessageText(session.agent.state.messages)).not.toContain("also rename the helper");
+		expect(mock.calls.length).toBe(1);
+
+		// The explicit resume delivers the parked steer in exactly one turn.
+		expect(session.resumeQueuedMessages()).toBe(true);
+		await session.waitForIdle();
 		expect(session.agent.peekSteeringQueue()).toEqual([]);
 		expect(mock.calls.length).toBe(2);
 		expect(userMessageText(session.agent.state.messages)).toContain("also rename the helper");

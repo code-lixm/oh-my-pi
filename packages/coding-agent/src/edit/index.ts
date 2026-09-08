@@ -22,10 +22,10 @@ import { resolvePlanPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { attemptEditAutoRepair, type EditAutoRepairOutcome } from "./auto-repair";
 import {
-	createEditBlackboxRecorder,
-	introducedParseFailure,
 	type AppliedEditObserver,
 	type AppliedEditSnapshot,
+	createEditBlackboxRecorder,
+	introducedParseFailure,
 } from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
@@ -33,23 +33,23 @@ import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
 import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEditSchema } from "./modes/replace";
 import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, type LspBatchRequest } from "./renderer";
-import { pruneOversizedEditSnapshots } from "./snapshot-details";
-import { EDIT_MODE_STRATEGIES } from "./streaming";
 import {
 	executeSloppy,
+	type SloppyParams,
+	type SloppySection,
 	sloppyEditSchema,
 	sloppyGrammar,
 	sloppyVariant,
 	splitSloppySections,
-	type SloppyParams,
-	type SloppySection,
 } from "./sloppy";
+import { pruneOversizedEditSnapshots } from "./snapshot-details";
+import { EDIT_MODE_STRATEGIES } from "./streaming";
 
 export * from "@oh-my-pi/hashline";
-export * from "./auto-repair";
-export * from "./blackbox";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 export * from "./apply-patch";
+export * from "./auto-repair";
+export * from "./blackbox";
 export * from "./diff";
 export * from "./file-snapshot-store";
 export * from "./hashline";
@@ -58,8 +58,8 @@ export * from "./modes/patch";
 export * from "./modes/replace";
 export * from "./normalize";
 export * from "./renderer";
-export * from "./snapshot-details";
 export * from "./sloppy";
+export * from "./snapshot-details";
 export * from "./streaming";
 
 type TInput =

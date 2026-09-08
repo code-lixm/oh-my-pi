@@ -57,6 +57,7 @@ function localState(session: AgentSession): RpcSessionState {
 		planMode: session.getPlanModeState(),
 		goalMode: session.getGoalModeState(),
 		vibeMode: session.getVibeModeState(),
+		prewalk: session.getPrewalkStateSnapshot(),
 	};
 }
 
@@ -96,6 +97,7 @@ function localProjection(session: AgentSession): InteractiveSessionProjection {
 			...(state.planMode ? { plan: state.planMode } : {}),
 			...(state.goalMode ? { goal: state.goalMode } : {}),
 			...(state.vibeMode ? { vibe: state.vibeMode } : {}),
+			...(state.prewalk ? { prewalk: state.prewalk } : {}),
 		},
 		context: state.contextUsage,
 		jobs: state.asyncJobs ?? null,
@@ -329,6 +331,10 @@ export class LocalInteractiveSessionPort implements InteractiveSessionPort {
 			case "set_session_name":
 				this.#session.setSessionName(command.name);
 				return success(command);
+			case "reset_session_context": {
+				const result = await this.#session.resetSessionContext();
+				return success(command, result ? { droppedCount: result.droppedCount } : null);
+			}
 			default:
 				return failure(command, `Unsupported local interactive session command: ${command.type}`);
 		}

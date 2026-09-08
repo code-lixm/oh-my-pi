@@ -3,14 +3,14 @@ import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from ".
 
 /**
  * Legacy horizontal-rule composer used by existing normal-screen editor hosts.
- * It preserves the prior editor chrome while participating in the shared
- * ComposerStyle registry.
+ * It preserves the prior editor chrome: the complete status line is embedded
+ * in the top rule, without side borders or a standalone bottom bar.
  */
 export const horizontalComposerStyle: ComposerStyle = {
 	id: "horizontal",
 	sideBorders: false,
 	verticalChrome: 2,
-	statusAttachment: "top-rule-chip",
+	statusAttachment: "top-border",
 	bottomBar: "none",
 	bottomBarGap: false,
 	defaultPromptGutter: undefined,
@@ -22,6 +22,7 @@ export const horizontalComposerStyle: ComposerStyle = {
 	sideChromeWidth(): number {
 		return 0;
 	},
+	topBorderInset: 2,
 
 	renderTop(ctx: ComposerChromeContext): string {
 		if (ctx.width <= 0) return "";

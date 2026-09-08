@@ -18,12 +18,17 @@ import type {
 import type { AdvisorConfig } from "../../advisor";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
-import type { GoalModeState } from "../../goals/state";
+import type { Goal, GoalModeState } from "../../goals/state";
 import type { LspServerStatus } from "../../lsp";
 import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { AsyncJobSnapshot, RoleModelCycle, RoleModelCycleResult } from "../../session/agent-session-types";
+import type {
+	AsyncJobSnapshot,
+	Prewalk,
+	RoleModelCycle,
+	RoleModelCycleResult,
+} from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -155,6 +160,40 @@ export type RpcCommand =
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
 	| { id?: string; type: "set_active_tools"; toolNames: string[] }
+	| { id?: string; type: "activate_vibe_tools"; baseToolNames: string[] }
+	| { id?: string; type: "deactivate_vibe_tools"; nextToolNames: string[] }
+	| { id?: string; type: "remove_vibe_tools_preserving_active" }
+	| { id?: string; type: "set_vibe_mode_state"; state: VibeModeState | null }
+	| { id?: string; type: "send_vibe_mode_context"; deliverAs?: "steer" | "followUp" | "nextTurn" }
+	| { id?: string; type: "set_goal_mode_state"; state: GoalModeState | null }
+	| { id?: string; type: "send_goal_mode_context"; deliverAs?: "steer" | "followUp" | "nextTurn" }
+	| { id?: string; type: "set_plan_mode_state"; state: PlanModeState | null }
+	| { id?: string; type: "set_plan_proposal_handler"; active: boolean }
+	| { id?: string; type: "prepare_plan_for_review"; title: string }
+	| { id?: string; type: "send_plan_mode_context"; deliverAs?: "steer" | "followUp" | "nextTurn" }
+	| { id?: string; type: "mark_plan_internal_abort_pending" }
+	| { id?: string; type: "clear_plan_internal_abort_pending" }
+	| { id?: string; type: "mark_plan_reference_sent" }
+	| { id?: string; type: "set_plan_reference_path"; path: string }
+	| { id?: string; type: "get_plan_reference_path" }
+	| { id?: string; type: "get_prewalk_state" }
+	| { id?: string; type: "goal_runtime_create"; objective: string; tokenBudget?: number }
+	| { id?: string; type: "goal_runtime_replace"; objective: string; tokenBudget?: number }
+	| { id?: string; type: "goal_runtime_resume" }
+	| { id?: string; type: "goal_runtime_pause" }
+	| { id?: string; type: "goal_runtime_drop" }
+	| { id?: string; type: "goal_runtime_on_budget_mutated"; budget: number | null }
+	| { id?: string; type: "goal_runtime_build_continuation_prompt" }
+	| { id?: string; type: "goal_runtime_on_thread_resumed"; preserveActiveGoal?: boolean }
+	| { id?: string; type: "goal_runtime_clear_accounting" }
+	| {
+			id?: string;
+			type: "branch_from_btw";
+			question: string;
+			assistantMessage: AgentMessage;
+			leafId: string;
+			sessionId: string;
+	  }
 	| { id?: string; type: "set_active_tool_presentation"; toolNames: string[]; mountedToolNames: string[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
 	| { id?: string; type: "set_host_uri_schemes"; schemes: RpcHostUriSchemeDefinition[] }
@@ -164,7 +203,16 @@ export type RpcCommand =
 	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| {
+			id?: string;
+			type: "set_model";
+			provider: string;
+			modelId: string;
+			role?: string;
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+	  }
 	| {
 			id?: string;
 			type: "set_model_temporary";
@@ -238,6 +286,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
 	| { id?: string; type: "handoff"; customInstructions?: string }
+	| { id?: string; type: "reset_session_context" }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -294,6 +343,7 @@ export interface RpcSessionState {
 	planMode?: PlanModeState;
 	goalMode?: GoalModeState;
 	vibeMode?: VibeModeState;
+	prewalk?: Prewalk;
 }
 
 export interface RpcAvailableSlashCommand {
@@ -512,6 +562,69 @@ export type RpcResponse =
 			success: true;
 			data: { activeToolNames: string[]; mountedToolNames: string[] };
 	  }
+	| { id?: string; type: "response"; command: "activate_vibe_tools"; success: true }
+	| { id?: string; type: "response"; command: "deactivate_vibe_tools"; success: true }
+	| { id?: string; type: "response"; command: "remove_vibe_tools_preserving_active"; success: true }
+	| { id?: string; type: "response"; command: "set_vibe_mode_state"; success: true }
+	| { id?: string; type: "response"; command: "send_vibe_mode_context"; success: true }
+	| { id?: string; type: "response"; command: "set_goal_mode_state"; success: true }
+	| { id?: string; type: "response"; command: "send_goal_mode_context"; success: true }
+	| { id?: string; type: "response"; command: "set_plan_mode_state"; success: true }
+	| { id?: string; type: "response"; command: "set_plan_proposal_handler"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "prepare_plan_for_review";
+			success: true;
+			data: { planFilePath: string; title: string; planExists: boolean };
+	  }
+	| { id?: string; type: "response"; command: "send_plan_mode_context"; success: true }
+	| { id?: string; type: "response"; command: "mark_plan_internal_abort_pending"; success: true }
+	| { id?: string; type: "response"; command: "clear_plan_internal_abort_pending"; success: true }
+	| { id?: string; type: "response"; command: "mark_plan_reference_sent"; success: true }
+	| { id?: string; type: "response"; command: "set_plan_reference_path"; success: true }
+	| { id?: string; type: "response"; command: "get_plan_reference_path"; success: true; data: { path: string } }
+	| { id?: string; type: "response"; command: "get_prewalk_state"; success: true; data: { prewalk: Prewalk | null } }
+	| { id?: string; type: "response"; command: "goal_runtime_create"; success: true; data: { state: GoalModeState } }
+	| { id?: string; type: "response"; command: "goal_runtime_replace"; success: true; data: { state: GoalModeState } }
+	| { id?: string; type: "response"; command: "goal_runtime_resume"; success: true; data: { state: GoalModeState } }
+	| {
+			id?: string;
+			type: "response";
+			command: "goal_runtime_pause";
+			success: true;
+			data: { state: GoalModeState | null };
+	  }
+	| { id?: string; type: "response"; command: "goal_runtime_drop"; success: true; data: { goal: Goal | null } }
+	| {
+			id?: string;
+			type: "response";
+			command: "goal_runtime_on_budget_mutated";
+			success: true;
+			data: { state: GoalModeState | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "goal_runtime_build_continuation_prompt";
+			success: true;
+			data: { prompt: string | null };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "goal_runtime_on_thread_resumed";
+			success: true;
+			data: { state: GoalModeState | null };
+	  }
+	| { id?: string; type: "response"; command: "goal_runtime_clear_accounting"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "branch_from_btw";
+			success: true;
+			data: { cancelled: boolean; sessionFile: string | null };
+	  }
 	| { id?: string; type: "response"; command: "set_host_tools"; success: true; data: { toolNames: string[] } }
 	| { id?: string; type: "response"; command: "set_host_uri_schemes"; success: true; data: { schemes: string[] } }
 	| {
@@ -542,7 +655,7 @@ export type RpcResponse =
 			type: "response";
 			command: "set_model";
 			success: true;
-			data: Model;
+			data: { model: Model; switched: boolean };
 	  }
 	| { id?: string; type: "response"; command: "set_model_temporary"; success: true; data: Model }
 	| { id?: string; type: "response"; command: "apply_role_model"; success: true; data: RoleModelCycleResult }
@@ -625,6 +738,14 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
 	| { id?: string; type: "response"; command: "maybe_start_title_generation"; success: true }
 	| { id?: string; type: "response"; command: "handoff"; success: true; data: RpcHandoffResult | null }
+	| {
+			id?: string;
+			type: "response";
+			command: "reset_session_context";
+			success: true;
+			/** `null` when the child refused (response streaming / foreground exec in flight). */
+			data: { droppedCount: number } | null;
+	  }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

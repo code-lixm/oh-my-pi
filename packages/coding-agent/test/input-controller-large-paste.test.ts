@@ -50,7 +50,25 @@ describe("InputController.handleLargePaste gate", () => {
 		const { controller } = createContext({ threshold: 100 });
 		const menu = vi.spyOn(controller, "presentLargePasteMenu").mockResolvedValue();
 
-		expect(controller.handleLargePaste("x", 50)).toBe(false);
+		expect(controller.handleLargePaste("x", 50, 1)).toBe(false);
+		expect(menu).not.toHaveBeenCalled();
+	});
+
+	it("offers the menu for a giant single-line paste over the char gate", () => {
+		const { controller } = createContext({ threshold: 100 });
+		const menu = vi.spyOn(controller, "presentLargePasteMenu").mockResolvedValue();
+
+		// One line, 300k chars: never reaches the line threshold but the
+		// char gate catches it so minified JSON/logs get wrap/file options.
+		expect(controller.handleLargePaste("y".repeat(300_000), 1, 300_000)).toBe(true);
+		expect(menu).toHaveBeenCalledWith(expect.any(String), 1);
+	});
+
+	it("declines a single-line paste under the char gate", () => {
+		const { controller } = createContext({ threshold: 100 });
+		const menu = vi.spyOn(controller, "presentLargePasteMenu").mockResolvedValue();
+
+		expect(controller.handleLargePaste("y".repeat(199_999), 1, 199_999)).toBe(false);
 		expect(menu).not.toHaveBeenCalled();
 	});
 
@@ -58,7 +76,7 @@ describe("InputController.handleLargePaste gate", () => {
 		const { controller } = createContext({ threshold: 0 });
 		const menu = vi.spyOn(controller, "presentLargePasteMenu").mockResolvedValue();
 
-		expect(controller.handleLargePaste("x", 5000)).toBe(false);
+		expect(controller.handleLargePaste("x", 5000, 1)).toBe(false);
 		expect(menu).not.toHaveBeenCalled();
 	});
 
@@ -66,7 +84,7 @@ describe("InputController.handleLargePaste gate", () => {
 		const { controller } = createContext({ threshold: 100 });
 		const menu = vi.spyOn(controller, "presentLargePasteMenu").mockResolvedValue();
 
-		expect(controller.handleLargePaste("payload", 100)).toBe(true);
+		expect(controller.handleLargePaste("payload", 100, 7)).toBe(true);
 		expect(menu).toHaveBeenCalledWith("payload", 100);
 	});
 });

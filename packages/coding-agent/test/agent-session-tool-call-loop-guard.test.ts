@@ -238,4 +238,106 @@ describe("AgentSession tool-call loop guard", () => {
 		expect(recoveryMessages).toHaveLength(1);
 		expect(recoveryMessages[0]!.display).toBe(false);
 	});
+
+	it("injects a corrective steer when Chinese reasoning repeats across turns with varying tool args", async () => {
+		// Regression: a real deepseek-v4-flash run emitted the same reasoning
+		// paragraph 8-9 times across 69 placeholder bash turns whose arguments
+		// differed each turn (self-incrementing counter), so the verbatim
+		// tool-call guard never matched. The cross-turn thinking fingerprint
+		// (CJK char bigrams) must catch it on the 4th repetition.
+		const model = createMockModel({ provider: "openai", id: "gpt-test" }).model;
+		const modelRegistry = new ModelRegistry(authStorage);
+		const contexts: Context[] = [];
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Mock bash tool",
+			parameters: type({ command: "string" }),
+			execute: async () => ({ content: [{ type: "text" as const, text: "placeholder" }] }),
+		};
+		const loopThinking = [
+			"我陷入了循环，一直在用 bash 写 JSON 文件而不是直接调用 inspect_image 工具。inspect_image 是内置工具，我应该直接调用它。让我直接调用。",
+			"我陷入了循环，一直在用 bash 输出占位符而不是直接调用 inspect_image 工具。让我直接调用 inspect_image 工具来检查截图。",
+			"我一直在错误地使用 bash 而不是直接调用 inspect_image 工具。让我直接调用 inspect_image 工具来检查截图。",
+			"我陷入了循环，一直在用 bash 写占位符。我应该直接调用 inspect_image 工具来检查截图。让我直接调用它。",
+			"我陷入了循环，一直在用 bash 输出占位符而不是直接调用 inspect_image 工具。inspect_image 是内置工具，我应该直接调用它。让我直接调用。",
+			"我陷入了循环，一直在用 bash 写占位符。我应该直接调用 inspect_image 工具来检查截图。让我直接调用它。",
+		];
+		let callCount = 0;
+		const STEER_LANDS_ON_CALL = 5; // threshold 4 → steer visible on the 5th model call
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [bashTool], messages: [] },
+			convertToLlm,
+			streamFn: (_model, context) => {
+				contexts.push(context);
+				const call = callCount;
+				callCount++;
+				// Steer visible in this call's context → finish the run cleanly.
+				const toolCallTurn = call < STEER_LANDS_ON_CALL;
+				const turnIndex = Math.min(toolCallTurn ? call : 0, loopThinking.length - 1);
+				const toolCallId = `tc-${call}`;
+				// Same reasoning every turn; bash args drift per turn (mimics the
+				// real counter-variable drift that defeated the verbatim signature).
+				const message: AssistantMessage = {
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: loopThinking[turnIndex] },
+						...(toolCallTurn
+							? [
+									{ type: "text" as const, text: "直接调用 inspect_image 检查截图：" },
+									{
+										type: "toolCall" as const,
+										id: toolCallId,
+										name: "bash",
+										arguments: { command: `echo placeholder${call}` },
+									},
+								]
+							: [{ type: "text" as const, text: "Stopped repeating." }]),
+					],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: zeroUsage,
+					stopReason: toolCallTurn ? "toolUse" : "stop",
+					timestamp: Date.now(),
+				};
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: message });
+					stream.push({ type: "done", reason: toolCallTurn ? "toolUse" : "stop", message });
+				});
+				return stream;
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"todo.enabled": false,
+			"model.loopGuard.enabled": true,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings,
+			modelRegistry,
+			toolRegistry: new Map([[bashTool.name, bashTool]]),
+		});
+
+		await session.prompt("检查截图");
+		await session.waitForIdle();
+
+		// Threshold 4 → the steer is injected at turn-end #4 and lands in the
+		// 5th model call's context.
+		expect(contexts.length).toBeGreaterThanOrEqual(STEER_LANDS_ON_CALL);
+		expect(JSON.stringify(contexts[STEER_LANDS_ON_CALL - 1]!.messages)).toContain(
+			"cross_turn_thinking_loop_detected",
+		);
+		const steers = session.agent.state.messages.filter(
+			(message): message is CustomMessage =>
+				message.role === "custom" && message.customType === "cross-turn-thinking-loop-redirect",
+		);
+		expect(steers).toHaveLength(1);
+		expect(steers[0]!.display).toBe(false);
+	});
 });

@@ -1486,6 +1486,124 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after partial socket close" });
 	});
 
+	it("retries the same partial-text socket close when the session declares retractable text output", async () => {
+		// TUI/RPC sinks retract the superseded streamed block on retry
+		// (`applyRetryRecovery`), so they declare `retractableTextOutput: true`
+		// at construction — no manual `setTextOutputCommitted` dance. A partial
+		// visible text followed by a transient socket close must auto-retry
+		// instead of terminating the turn (the user-facing "socket connection
+		// was closed unexpectedly" stop).
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+
+		let streamCalls = 0;
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: requestedModel => {
+				streamCalls += 1;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const partial: AssistantMessage = {
+						role: "assistant",
+						content: [],
+						api: requestedModel.api,
+						provider: requestedModel.provider,
+						model: requestedModel.id,
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					};
+
+					if (streamCalls === 1) {
+						const text = { type: "text" as const, text: "partial streamed answer" };
+						partial.content.push(text);
+						stream.push({ type: "start", partial });
+						stream.push({ type: "text_start", contentIndex: 0, partial });
+						stream.push({ type: "text_delta", contentIndex: 0, delta: text.text, partial });
+						stream.push({
+							type: "error",
+							reason: "error",
+							error: {
+								...partial,
+								stopReason: "error",
+								errorMessage:
+									"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+								duration: 1000,
+							},
+						});
+						return;
+					}
+
+					const recovered = { type: "text" as const, text: "recovered after partial socket close" };
+					partial.content.push(recovered);
+					stream.push({ type: "start", partial });
+					stream.push({ type: "text_start", contentIndex: 0, partial });
+					stream.push({ type: "text_delta", contentIndex: 0, delta: recovered.text, partial });
+					stream.push({ type: "text_end", contentIndex: 0, content: recovered.text, partial });
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: {
+							...partial,
+							stopReason: "stop",
+							duration: 1000,
+						},
+					});
+				});
+				return stream;
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 5_000,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			retractableTextOutput: true,
+		});
+
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryStartEvents: AutoRetryStartEvent[] = [];
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStartEvents.push(event);
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		await session.prompt("Trigger partial socket close");
+		await session.waitForIdle();
+
+		expect(streamCalls).toBe(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true });
+		const last = lastAssistant(session);
+		expect(last.stopReason).toBe("stop");
+		expect(last.content).toContainEqual({ type: "text", text: "recovered after partial socket close" });
+	});
+
 	it("retries on Bun HTTP/2 stream reset errors", async () => {
 		// Regression: Bun's fetch surfaces HTTP/2 RST_STREAM as `Error: HTTP2StreamReset
 		// fetching "<url>". For more information, pass \`verbose: true\` ...`. The verbatim

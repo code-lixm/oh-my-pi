@@ -6,7 +6,6 @@ import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { HarnessState } from "../refinement/types";
-import { normalizeHeartbeatDeliveryMode, parseHeartbeatInput } from "../scheduling/parser";
 import type { ScheduleJob } from "../scheduling/types";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -65,7 +64,7 @@ function formatScheduleJob(job: ScheduleJob): string {
 		`scope=session:${job.sessionId}`,
 		`label=${compactScheduleText(job.label ?? "—")}`,
 		`schedule=${compactScheduleText(job.schedule.expression)}`,
-		`delivery=${job.deliveryMode ?? (job.source === "cron" ? "follow_up" : "steer")}`,
+		`delivery=${job.deliveryMode ?? "follow_up"}`,
 		`nextRun=${job.nextRunAt ?? "—"}`,
 		`lastRun=${job.lastRunAt ?? "—"}`,
 		`runCount=${job.runCount}`,
@@ -111,44 +110,6 @@ function parseScheduleJobId(value: string, usageText: string): string {
 	const id = value.trim();
 	if (!SCHEDULE_JOB_ID_PATTERN.test(id)) throw new Error(usageText);
 	return id;
-}
-
-async function handleHeartbeatCommand(
-	command: ParsedSlashCommand,
-	runtime: SlashCommandRuntime,
-): Promise<SlashCommandResult> {
-	const scheduling = runtime.session.getScheduleRuntime();
-	if (!scheduling) return usage(tSettingsUi("Heartbeat scheduling is unavailable in this session."), runtime);
-	try {
-		const parsed = parseHeartbeatInput(command.text, {
-			defaultInterval: runtime.settings.get("heartbeat.defaultInterval"),
-			defaultDeliveryMode: normalizeHeartbeatDeliveryMode(runtime.settings.get("heartbeat.defaultDeliveryMode")),
-		});
-		if (parsed.action === "create") {
-			if (!runtime.settings.get("heartbeat.enabled") && !runtime.settings.isConfigured("heartbeat.enabled")) {
-				runtime.settings.set("heartbeat.enabled", true);
-			}
-			const job = await scheduling.setHeartbeat({
-				instruction: parsed.instruction ?? "",
-				interval: parsed.interval,
-				deliveryMode: parsed.deliveryMode,
-			});
-			await runtime.output(tSettingsUi("Heartbeat scheduled: {job}", { job: formatScheduleJob(job) }));
-			return commandConsumed();
-		}
-		if (parsed.action === "status") {
-			const jobs = (await scheduling.list({ includeInactive: true })).filter(job => job.source === "heartbeat");
-			await runtime.output(
-				jobs.length > 0 ? jobs.map(formatScheduleJob).join("\n") : tSettingsUi("No heartbeat is configured."),
-			);
-			return commandConsumed();
-		}
-		const job = await scheduling.manageHeartbeat(parsed.action);
-		await runtime.output(job ? formatScheduleJob(job) : tSettingsUi("No heartbeat is configured."));
-		return commandConsumed();
-	} catch (error) {
-		return usage(localizeLifecycleError(error), runtime);
-	}
 }
 
 async function handleScheduleCommand(
@@ -259,25 +220,6 @@ async function handleRefineCommand(
 	}
 }
 
-async function handleHeartbeatsCommand(
-	command: ParsedSlashCommand,
-	runtime: SlashCommandRuntime,
-): Promise<SlashCommandResult> {
-	const scheduling = runtime.session.getScheduleRuntime();
-	if (!scheduling) return usage(tSettingsUi("Heartbeat scheduling is unavailable in this session."), runtime);
-	if (command.args.trim() && command.args.trim() !== "list")
-		return usage(tSettingsUi("Usage: /heartbeats [list]"), runtime);
-	try {
-		const jobs = (await scheduling.list({ includeInactive: true })).filter(job => job.source !== "cron");
-		await runtime.output(
-			jobs.length > 0 ? jobs.map(formatScheduleJob).join("\n") : tSettingsUi("No heartbeats are configured."),
-		);
-		return commandConsumed();
-	} catch (error) {
-		return usage(localizeLifecycleError(error), runtime);
-	}
-}
-
 export const refinementSlashCommand: SlashCommandSpec = {
 	name: "refine",
 	description: "Review the trajectory and update the continual harness",
@@ -339,25 +281,33 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
-		name: "heartbeat",
-		description: "Manage persisted heartbeat prompts for the current session",
+		name: "cron",
+		description: "Open the cron management list for this session's scheduled tasks",
+		acpDescription: "Manage this session's scheduled tasks",
+		acpInputHint: "<add|list|pause|resume|cancel|update> ...",
 		allowArgs: true,
-		acpInputHint: "[status|pause|resume|clear|--every <interval> <instruction>]",
 		subcommands: [
-			{ name: "status", description: "Show the current heartbeat" },
-			{ name: "pause", description: "Pause the current heartbeat" },
-			{ name: "resume", description: "Resume the current heartbeat" },
-			{ name: "clear", description: "Remove the current heartbeat" },
+			{ name: "add", description: "Create a scheduled task", usage: "<schedule> -- <prompt>" },
+			{ name: "list", description: "List scheduled tasks" },
+			{ name: "pause", description: "Pause a scheduled task", usage: "<id>" },
+			{ name: "resume", description: "Resume a scheduled task", usage: "<id>" },
+			{ name: "cancel", description: "Cancel a scheduled task", usage: "<id>" },
+			{ name: "update", description: "Update a scheduled task", usage: "<id> <schedule> -- <prompt>" },
 		],
-		handle: handleHeartbeatCommand,
-	},
-	{
-		name: "heartbeats",
-		description: "List persisted heartbeat prompts for the current session",
-		allowArgs: true,
-		acpInputHint: "[list]",
-		subcommands: [{ name: "list", description: "List user and RLM heartbeats" }],
-		handle: handleHeartbeatsCommand,
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			if (!command.args.trim()) {
+				runtime.ctx.showCronHub();
+				return;
+			}
+			const parsed: ParsedSlashCommand = {
+				name: "schedule",
+				args: command.args,
+				text: `/schedule ${command.args}`,
+			};
+			await handleScheduleCommand(parsed, runtime);
+		},
+		handle: handleScheduleCommand,
 	},
 	{
 		name: "schedule",

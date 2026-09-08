@@ -20,13 +20,13 @@ import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { type BridgeFileMutation, routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
+import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import {
 	deleteFileWithFallback,
 	hasFileWriteFallback,
 	isPermissionDeniedError,
 	writeFileWithFallback,
 } from "../../tools/file-write-fallback";
-import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutation-hook";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -36,6 +36,7 @@ import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { ToolError } from "../../tools/tool-errors";
+import type { AppliedEditObserver } from "../blackbox";
 import {
 	ApplyPatchError,
 	type DiffHunk,
@@ -43,7 +44,6 @@ import {
 	normalizeCreateContent,
 	parseDiffHunks,
 } from "../diff";
-import type { AppliedEditObserver } from "../blackbox";
 import {
 	adjustIndentation,
 	convertLeadingTabsToSpaces,

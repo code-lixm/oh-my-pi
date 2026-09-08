@@ -557,6 +557,48 @@ describe("TodoTool lenient init shapes", () => {
 		]);
 	});
 
+	it("uses non-empty flat items when an init payload also carries an empty list", async () => {
+		const tool = new TodoTool(createSession());
+		const initialized = await tool.execute("call-1", {
+			op: "init",
+			list: [],
+			items: ["定位退出时客户端状态调用链", "应用最小安全修复", "运行聚焦验证并检查差异"],
+			phase: "",
+			task: "",
+			reason: "",
+		});
+
+		expect(initialized.isError).toBeUndefined();
+		expect(
+			initialized.details?.phases[0]?.tasks.map(task => ({ content: task.content, status: task.status })),
+		).toEqual([
+			{ content: "定位退出时客户端状态调用链", status: "in_progress" },
+			{ content: "应用最小安全修复", status: "pending" },
+			{ content: "运行聚焦验证并检查差异", status: "pending" },
+		]);
+
+		const completed = await tool.execute("call-2", { op: "done", task: "定位退出时客户端状态调用链" });
+
+		expect(completed.isError).toBeUndefined();
+		expect(completed.details?.phases[0]?.tasks.map(task => ({ content: task.content, status: task.status }))).toEqual(
+			[
+				{ content: "定位退出时客户端状态调用链", status: "completed" },
+				{ content: "应用最小安全修复", status: "in_progress" },
+				{ content: "运行聚焦验证并检查差异", status: "pending" },
+			],
+		);
+	});
+
+	it("keeps an empty init list as an explicit clear when flat items are absent", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", { op: "init", list: [{ phase: "Work", items: ["Existing task"] }] });
+
+		const cleared = await tool.execute("call-2", { op: "init", list: [] });
+
+		expect(cleared.isError).toBeUndefined();
+		expect(cleared.details?.phases).toEqual([]);
+	});
+
 	it("honors a bare phase on a flattened init", async () => {
 		const tool = new TodoTool(createSession());
 		const result = await tool.execute("call-1", { op: "init", phase: "Cleanup", items: ["Remove dead code"] });

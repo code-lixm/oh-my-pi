@@ -4,7 +4,14 @@ import { clearCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockContent, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { complete, completeSimple, stream, streamSimple } from "@oh-my-pi/pi-ai/stream";
-import type { Api, AssistantMessage, AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai/types";
+import type {
+	Api,
+	AssistantMessage,
+	AssistantMessageEvent,
+	Context,
+	Model,
+	StreamOptions,
+} from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import {
 	GEMINI_HEADER_RUNAWAY_THRESHOLD,
@@ -489,9 +496,53 @@ describe("withThinkingLoopGuard (MiniMax transport)", () => {
 		expect(AIError.is(result.errorId, AIError.Flag.ThinkingLoop)).toBe(true);
 		expect(isRetryableError(new Error(result.errorMessage))).toBe(true);
 	});
+
+	test("aborts repeated native thinking deltas for custom reasoning models", async () => {
+		const model = {
+			api: "openai-completions",
+			provider: "custom",
+			id: "new-reasoning-model",
+			reasoning: true,
+		} as unknown as Model<Api>;
+		const partial = { role: "assistant", content: [] } as unknown as AssistantMessage;
+		let upstreamSignal: AbortSignal | undefined;
+
+		// StreamOptions widening keeps `signal` visible on the forwarded options.
+		const guarded = withThinkingLoopGuard(
+			model,
+			{ loopGuard: { enabled: true } } as StreamOptions,
+			forwardedOptions => {
+				upstreamSignal = forwardedOptions?.signal;
+				const inner = new AssistantMessageEventStream();
+				const events: AssistantMessageEvent[] = [
+					{ type: "start", partial },
+					{ type: "thinking_start", contentIndex: 0, partial },
+					...nearDuplicateLoop(12)
+						.split("\n\n\n")
+						.map(delta => ({
+							type: "thinking_delta" as const,
+							contentIndex: 0,
+							delta: `${delta}\n\n\n`,
+							partial,
+						})),
+					{ type: "thinking_end", contentIndex: 0, content: "", partial },
+					{ type: "done", reason: "stop", message: partial },
+				];
+				for (const event of events) inner.push(event);
+				return inner;
+			},
+		);
+
+		const result = await guarded.result();
+		expect(upstreamSignal?.aborted).toBe(true);
+		expect(result.stopReason).toBe("error");
+		expect(result.content).toEqual([]);
+		expect(result.errorMessage).toContain(THINKING_LOOP_ERROR_MARKER);
+		expect(AIError.is(result.errorId, AIError.Flag.ThinkingLoop)).toBe(true);
+	});
 });
 describe("isLoopGuardedModel", () => {
-	test("guards Gemini, DeepSeek, and Grok model-id families only", () => {
+	test("guards reasoning-capable models plus the Gemini, DeepSeek, and Grok model-id families", () => {
 		const gemini = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" }).model;
 		const deepseek = createMockModel({ provider: "deepseek", id: "deepseek-reasoner" }).model;
 		const grok46 = createMockModel({ provider: "venice", id: "grok-4-6" }).model;
@@ -500,6 +551,7 @@ describe("isLoopGuardedModel", () => {
 		const grok45 = createMockModel({ provider: "cursor", id: "cursor-grok-4.5-high" }).model;
 		const opaqueDeepseek = createMockModel({ provider: "deepseek", id: "opaque-model" }).model;
 		const other = createMockModel({ provider: "openai", id: "gpt-4o" }).model;
+		const reasoningCapable = createMockModel({ provider: "openai", id: "gpt-5.2", reasoning: true }).model;
 		const openaiNamespacedGemini = createMockModel({ provider: "custom", id: "openai/gemini-pro" }).model;
 		const openaiNamespacedDeepseek = createMockModel({ provider: "custom", id: "openai/deepseek-r1" }).model;
 		const openaiNamespacedGrok = createMockModel({ provider: "custom", id: "openai/grok-4.6" }).model;
@@ -512,14 +564,17 @@ describe("isLoopGuardedModel", () => {
 		expect(isLoopGuardedModel(grok45)).toBe(true);
 		expect(isLoopGuardedModel(opaqueDeepseek)).toBe(false);
 		expect(isLoopGuardedModel(other)).toBe(false);
+		// Any reasoning-capable model is guarded, regardless of family.
+		expect(isLoopGuardedModel(reasoningCapable)).toBe(true);
 
 		expect(isLoopGuardedModel(openaiNamespacedGemini)).toBe(true);
 		expect(isLoopGuardedModel(openaiNamespacedDeepseek)).toBe(true);
 		expect(isLoopGuardedModel(openaiNamespacedGrok)).toBe(true);
-		// enabled: false disables every guarded family.
+		// enabled: false disables every guarded family and reasoning model.
 		expect(isLoopGuardedModel(gemini, { loopGuard: { enabled: false } })).toBe(false);
 		expect(isLoopGuardedModel(deepseek, { loopGuard: { enabled: false } })).toBe(false);
 		expect(isLoopGuardedModel(grok45, { loopGuard: { enabled: false } })).toBe(false);
+		expect(isLoopGuardedModel(reasoningCapable, { loopGuard: { enabled: false } })).toBe(false);
 
 		// enabled: true does not opt unrelated models into the guard.
 		expect(isLoopGuardedModel(other, { loopGuard: { enabled: true } })).toBe(false);
@@ -541,6 +596,13 @@ describe("isLoopGuardedModel", () => {
 		expect(isLoopGuardedModel(minimaxM3, { loopGuard: { enabled: true } })).toBe(true);
 		expect(isLoopGuardedModel(minimaxM3, { loopGuard: { enabled: false } })).toBe(false);
 		expect(isLoopGuardedModel(minimaxM2)).toBe(false);
+	});
+	test("guards custom reasoning models", () => {
+		const model = { id: "new-reasoning-model", provider: "custom", reasoning: true } as Model<Api>;
+		const nonReasoningModel = { id: "new-reasoning-model", provider: "custom", reasoning: false } as Model<Api>;
+
+		expect(isLoopGuardedModel(model)).toBe(true);
+		expect(isLoopGuardedModel(nonReasoningModel)).toBe(false);
 	});
 });
 

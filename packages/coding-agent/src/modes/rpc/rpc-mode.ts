@@ -11,7 +11,7 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 import { once } from "node:events";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, Snowflake } from "@oh-my-pi/pi-utils";
@@ -1306,6 +1306,7 @@ export async function runRpcMode(
 					planMode: session.getPlanModeState(),
 					goalMode: session.getGoalModeState(),
 					vibeMode: session.getVibeModeState(),
+					prewalk: session.getPrewalkStateSnapshot(),
 				};
 				return success(id, "get_state", state);
 			}
@@ -1545,6 +1546,157 @@ export async function runRpcMode(
 				});
 			}
 
+			case "activate_vibe_tools": {
+				await session.activateVibeTools(command.baseToolNames);
+				return success(id, "activate_vibe_tools");
+			}
+
+			case "deactivate_vibe_tools": {
+				await session.deactivateVibeTools(command.nextToolNames);
+				return success(id, "deactivate_vibe_tools");
+			}
+
+			case "remove_vibe_tools_preserving_active": {
+				await session.removeVibeToolsPreservingActive();
+				return success(id, "remove_vibe_tools_preserving_active");
+			}
+
+			case "set_vibe_mode_state": {
+				session.setVibeModeState(command.state ?? undefined);
+				return success(id, "set_vibe_mode_state");
+			}
+
+			case "send_vibe_mode_context": {
+				await session.sendVibeModeContext(command.deliverAs ? { deliverAs: command.deliverAs } : undefined);
+				return success(id, "send_vibe_mode_context");
+			}
+
+			case "set_goal_mode_state": {
+				session.setGoalModeState(command.state ?? undefined);
+				return success(id, "set_goal_mode_state");
+			}
+
+			case "send_goal_mode_context": {
+				await session.sendGoalModeContext(command.deliverAs ? { deliverAs: command.deliverAs } : undefined);
+				return success(id, "send_goal_mode_context");
+			}
+
+			case "set_plan_mode_state": {
+				session.setPlanModeState(command.state ?? undefined);
+				return success(id, "set_plan_mode_state");
+			}
+
+			case "set_plan_proposal_handler": {
+				session.setPlanProposalHandler(command.active ? title => session.preparePlanForReview(title) : null);
+				return success(id, "set_plan_proposal_handler");
+			}
+
+			case "prepare_plan_for_review": {
+				const result = await session.preparePlanForReview(command.title);
+				const details = result.details as { planFilePath: string; title: string; planExists: boolean };
+				return success(id, "prepare_plan_for_review", details);
+			}
+
+			case "send_plan_mode_context": {
+				await session.sendPlanModeContext(command.deliverAs ? { deliverAs: command.deliverAs } : undefined);
+				return success(id, "send_plan_mode_context");
+			}
+
+			case "mark_plan_internal_abort_pending": {
+				session.markPlanInternalAbortPending();
+				return success(id, "mark_plan_internal_abort_pending");
+			}
+
+			case "clear_plan_internal_abort_pending": {
+				session.clearPlanInternalAbortPending();
+				return success(id, "clear_plan_internal_abort_pending");
+			}
+
+			case "mark_plan_reference_sent": {
+				session.markPlanReferenceSent();
+				return success(id, "mark_plan_reference_sent");
+			}
+
+			case "set_plan_reference_path": {
+				session.setPlanReferencePath(command.path);
+				return success(id, "set_plan_reference_path");
+			}
+
+			case "get_plan_reference_path": {
+				return success(id, "get_plan_reference_path", { path: session.getPlanReferencePath() });
+			}
+
+			case "get_prewalk_state": {
+				return success(id, "get_prewalk_state", { prewalk: session.getPrewalkState() ?? null });
+			}
+
+			case "goal_runtime_create": {
+				const state = await session.goalRuntime.createGoal({
+					objective: command.objective,
+					...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+				});
+				return success(id, "goal_runtime_create", { state });
+			}
+
+			case "goal_runtime_replace": {
+				const state = await session.goalRuntime.replaceGoal({
+					objective: command.objective,
+					...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+				});
+				return success(id, "goal_runtime_replace", { state });
+			}
+
+			case "goal_runtime_resume": {
+				const state = await session.goalRuntime.resumeGoal();
+				return success(id, "goal_runtime_resume", { state });
+			}
+
+			case "goal_runtime_pause": {
+				const state = await session.goalRuntime.pauseGoal();
+				return success(id, "goal_runtime_pause", { state: state ?? null });
+			}
+
+			case "goal_runtime_drop": {
+				const goal = await session.goalRuntime.dropGoal();
+				return success(id, "goal_runtime_drop", { goal: goal ?? null });
+			}
+
+			case "goal_runtime_on_budget_mutated": {
+				const state = await session.goalRuntime.onBudgetMutated(command.budget ?? undefined);
+				return success(id, "goal_runtime_on_budget_mutated", { state: state ?? null });
+			}
+
+			case "goal_runtime_build_continuation_prompt": {
+				return success(id, "goal_runtime_build_continuation_prompt", {
+					prompt: session.goalRuntime.buildContinuationPrompt() ?? null,
+				});
+			}
+
+			case "goal_runtime_on_thread_resumed": {
+				const state = await session.goalRuntime.onThreadResumed({
+					...(command.preserveActiveGoal ? { preserveActiveGoal: command.preserveActiveGoal } : {}),
+				});
+				return success(id, "goal_runtime_on_thread_resumed", { state: state ?? null });
+			}
+
+			case "goal_runtime_clear_accounting": {
+				session.goalRuntime.clearAccounting();
+				return success(id, "goal_runtime_clear_accounting");
+			}
+
+			case "branch_from_btw": {
+				const result = await session.branchFromBtw(
+					command.question,
+					command.assistantMessage as AssistantMessage,
+					command.leafId,
+					command.sessionId,
+				);
+				return success(id, "branch_from_btw", {
+					cancelled: result.cancelled,
+					sessionFile: result.sessionFile ?? null,
+				});
+			}
+
 			case "set_active_tool_presentation": {
 				await session.setActiveToolPresentation(command.toolNames, command.mountedToolNames);
 				return success(id, "set_active_tool_presentation", {
@@ -1631,12 +1783,18 @@ export async function runRpcMode(
 				if (!model) {
 					return error(id, command.type, `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				if (command.type === "set_model") await session.setModel(model);
-				else {
+				if (command.type === "set_model") {
+					const { switched } = await session.setModel(model, command.role ?? "default", {
+						...(command.selector ? { selector: command.selector } : {}),
+						...(command.thinkingLevel ? { thinkingLevel: command.thinkingLevel } : {}),
+						...(command.persist !== undefined ? { persist: command.persist } : {}),
+					});
+					return success(id, command.type, { model, switched });
+				} else {
 					const thinkingLevel = command.thinkingLevel ?? session.resolveTemporaryModelThinkingLevel(model);
 					await session.setModelTemporary(model, thinkingLevel);
+					return success(id, command.type, model);
 				}
-				return success(id, command.type, model);
 			}
 
 			case "apply_role_model": {
@@ -1827,6 +1985,15 @@ export async function runRpcMode(
 				}
 				const result = await session.handoff(command.customInstructions);
 				return success(id, "handoff", result ? { savedPath: result.savedPath } : null);
+			}
+
+			case "reset_session_context": {
+				// resetSessionContext() refuses (returns undefined) while a response
+				// streams or a foreground bash/python execution is in flight; surface
+				// that as null so the caller shows its busy warning instead of a thrown
+				// session-busy error.
+				const result = await session.resetSessionContext();
+				return success(id, "reset_session_context", result ? { droppedCount: result.droppedCount } : null);
 			}
 
 			// =================================================================

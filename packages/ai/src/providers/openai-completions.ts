@@ -106,8 +106,8 @@ import {
 	resolveOpenAICompletionsOutputClamp,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
-	shouldRetryWithoutStrictTools,
 	shouldDropAutoToolChoiceForReasoning,
+	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
 import {
@@ -665,12 +665,7 @@ const streamOpenAICompletionsOnce = (
 				: `${trimmedBaseUrl}/chat/completions`;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				const builtParams = buildParams(
-					model,
-					context,
-					options,
-					effectiveToolStrictModeOverride,
-				);
+				const builtParams = buildParams(model, context, options, effectiveToolStrictModeOverride);
 				let params = builtParams.params;
 				const { strictToolsApplied } = builtParams;
 				appliedStrictTools = strictToolsApplied;
@@ -1282,7 +1277,6 @@ const streamOpenAICompletionsOnce = (
 					}
 				}
 
-
 				// If usage arrived on the finish chunk without cache-read fields,
 				// keep draining through the grace window for vLLM-style trailing
 				// usage details instead of finalizing the incomplete accounting.
@@ -1735,9 +1729,7 @@ function buildParams(
 	if (policyVeniceParameters !== undefined) {
 		const extraVeniceParameters = params.venice_parameters;
 		params.venice_parameters = {
-			...(typeof extraVeniceParameters === "object" && extraVeniceParameters !== null
-				? extraVeniceParameters
-				: {}),
+			...(typeof extraVeniceParameters === "object" && extraVeniceParameters !== null ? extraVeniceParameters : {}),
 			...policyVeniceParameters,
 		};
 	}
@@ -2343,10 +2335,7 @@ function convertTools(
 	for (const { tool, baseParameters, parameters, strict } of adaptedTools) {
 		const includeStrict = toolStrictMode === "all_strict" || (toolStrictMode === "mixed" && strict);
 		const includeExplicitFalse =
-			!includeStrict &&
-			tool.strict === false &&
-			toolStrictMode === "mixed" &&
-			compat.supportsStrictMode !== false;
+			!includeStrict && tool.strict === false && toolStrictMode === "mixed" && compat.supportsStrictMode !== false;
 		const wireParameters = includeStrict ? parameters : baseParameters;
 		const parametersForProvider =
 			compat.toolSchemaFlavor === "moonshot-mfjs"

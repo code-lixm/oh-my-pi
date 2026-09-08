@@ -38,6 +38,7 @@ function createContext(options: {
 	};
 	const addMessageToChat = vi.fn();
 	const updatePendingMessagesDisplay = vi.fn();
+	const retireOptimisticQueuedMessage = vi.fn();
 	const clearOptimisticUserMessage = vi.fn(() => {
 		ctx.optimisticUserMessageSignature = undefined;
 	});
@@ -53,6 +54,7 @@ function createContext(options: {
 		chatContainer,
 		addMessageToChat,
 		updatePendingMessagesDisplay,
+		retireOptimisticQueuedMessage,
 		getUserMessageText: (message: UserMessage) =>
 			typeof message.content === "string"
 				? message.content
@@ -64,6 +66,7 @@ function createContext(options: {
 		locallySubmittedUserSignatures: new Set<string>(options.locallySubmittedSignatures ?? []),
 		clearOptimisticUserMessage,
 		replaceOptimisticUserMessage,
+		hasOwnedOptimisticUserBubble: vi.fn(() => false),
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		viewSession: { isStreaming: false },
@@ -77,6 +80,7 @@ function createContext(options: {
 		setText,
 		addMessageToChat,
 		updatePendingMessagesDisplay,
+		retireOptimisticQueuedMessage,
 		clearOptimisticUserMessage,
 		replaceOptimisticUserMessage,
 	};
@@ -155,6 +159,23 @@ describe("EventController message_start (user role)", () => {
 		expect(addMessageToChat).not.toHaveBeenCalled();
 		expect(setText).not.toHaveBeenCalled();
 		expect(ctx.optimisticUserMessageSignature).toBeUndefined();
+	});
+
+	it("retires the optimistic pending-bar chip when the queued message is delivered", async () => {
+		// Regression: the submit-time reconcile can lose the race when the backend
+		// consumes the queued message before the dispatch roundtrip returns (RPC
+		// isolation), so the chip must also retire at delivery time — otherwise it
+		// hangs in the pending bar for the rest of the session.
+		const message = createUserMessage("queued steer text");
+		const { ctx, retireOptimisticQueuedMessage, updatePendingMessagesDisplay } = createContext({
+			editorText: "",
+		});
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({ type: "message_start", message });
+
+		expect(retireOptimisticQueuedMessage).toHaveBeenCalledWith("queued steer text");
+		expect(updatePendingMessagesDisplay).toHaveBeenCalled();
 	});
 
 	it("appends a queued image submission synchronously so later events cannot reorder it", async () => {

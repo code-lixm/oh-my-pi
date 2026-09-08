@@ -402,13 +402,14 @@ const DEFAULT_INIT_PHASE = "Tasks";
 function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	// Models routinely flatten the single-phase init into `{op:"init", items:[...]}`
 	// (optionally with a bare `phase`) instead of the canonical
-	// `list: [{phase, items}]`. Accept that shape by synthesizing a one-phase list
-	// so a common, recoverable mistake isn't a hard error.
+	// `list` as `[]`; ignore that empty placeholder only when real flat items exist.
+	// A canonical empty list with no items retains its historical clear behavior.
 	const list =
-		entry.list ??
-		(entry.items && entry.items.length > 0
-			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, items: entry.items }]
-			: undefined);
+		entry.list && entry.list.length > 0
+			? entry.list
+			: entry.items && entry.items.length > 0
+				? [{ phase: entry.phase || DEFAULT_INIT_PHASE, items: entry.items }]
+				: entry.list;
 	if (!list) {
 		errors.push(tSettingsUi("Missing list for init operation"));
 		return [];

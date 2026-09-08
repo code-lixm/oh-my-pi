@@ -157,6 +157,7 @@ describe("SelectorController session replacement overlay", () => {
 			size: 1,
 			firstMessage: "first",
 			allMessagesText: "first second",
+			hasConversation: true,
 		};
 		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
 

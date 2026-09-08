@@ -237,17 +237,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Workspace checkpoints",
 		"Python Skills",
 	],
-	tasks: [
-		"Modes",
-		"Subagents",
-		"Isolation",
-		"Commands & Skills",
-		"Heartbeat",
-		"Schedule",
-		"Autonomous",
-		"Refinement",
-		"RLM",
-	],
+	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills", "Schedule", "Autonomous", "Refinement", "RLM"],
 	providers: ["Services", "Network", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 	sync: ["S3 Storage", "Credentials", "Automation"],
 };
@@ -1560,7 +1550,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Mouse Input"),
 			description: tSettingsUi(
-				"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.",
+				"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
 			),
 		},
 	},
@@ -6008,37 +5998,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"heartbeat.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tasks",
-			group: tSettingsUi("Heartbeat"),
-			label: tSettingsUi("Enable Heartbeat"),
-			description: tSettingsUi("Enable persisted heartbeat prompts for the current session"),
-		},
-	},
-	"heartbeat.defaultInterval": {
-		type: "string",
-		default: "5m",
-		ui: {
-			tab: "tasks",
-			group: tSettingsUi("Heartbeat"),
-			label: tSettingsUi("Default Interval"),
-			description: tSettingsUi("Default interval used by /heartbeat when no interval is specified"),
-		},
-	},
-	"heartbeat.defaultDeliveryMode": {
-		type: "enum",
-		default: "steer",
-		values: ["steer", "follow_up"] as const,
-		ui: {
-			tab: "tasks",
-			group: tSettingsUi("Heartbeat"),
-			label: tSettingsUi("Delivery Mode"),
-			description: tSettingsUi("Default delivery mode used by /heartbeat"),
-		},
-	},
 	"schedule.enabled": {
 		type: "boolean",
 		default: true,
@@ -7651,6 +7610,10 @@ export const SETTINGS_SCHEMA = {
 	"gc.blobs": { type: "boolean", default: true },
 
 	"gc.archive": { type: "boolean", default: true },
+
+	"gc.archivePreserveStats": { type: "boolean", default: true },
+
+	"gc.autoArchive": { type: "boolean", default: true },
 
 	"gc.wal": { type: "boolean", default: true },
 

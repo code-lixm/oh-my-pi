@@ -215,6 +215,23 @@ describe("convertToLlm caching", () => {
 		const afterUser = after.find(entry => entry.role === "user");
 		expect(Array.isArray(afterUser?.content) && afterUser.content.some(b => b.type === "image")).toBe(false);
 	});
+
+	it("keeps conversions correct after the memo limit resets the caches", () => {
+		const history: AgentMessage[] = [userMessage("memo survivor", 1), settledAssistant("kept reply")];
+		const expected = convertToLlm(history);
+
+		// Push enough fresh histories through the converter to blow past the
+		// internal memo limit and force a wholesale cache reset.
+		for (let i = 0; i < 8300; i++) {
+			convertToLlm([userMessage(`filler ${i}`, 10 + i)]);
+		}
+
+		// The reset must be invisible to consumers: identical content comes back
+		// (reconverted, so a fresh outer array), with no dropped or stale turns.
+		const again = convertToLlm(history);
+		expect(again).not.toBe(expected);
+		expect(again).toEqual(expected);
+	});
 });
 
 describe("replaceLlmImagesWithText", () => {

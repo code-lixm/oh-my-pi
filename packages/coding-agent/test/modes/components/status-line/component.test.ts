@@ -41,7 +41,8 @@ function makeSessionWithLastMessage(
 			}),
 			getSessionName: () => "test-session",
 		},
-		getPrewalkState: () => (prewalkArmed ? { target: { id: "cheap-model", provider: "openai" } } : undefined),
+		getPrewalkStateSnapshot: () => (prewalkArmed ? { target: { id: "cheap-model", provider: "openai" } } : undefined),
+		getPrewalkState: async () => (prewalkArmed ? { target: { id: "cheap-model", provider: "openai" } } : undefined),
 		getAsyncJobSnapshot: () => undefined,
 		getVisibleAsyncJobCount: () => 0,
 		isAdvisorActive: () => false,
@@ -93,6 +94,34 @@ describe("StatusLineComponent", () => {
 		// SGR codes might be included, so we check if the stripped content contains "Prewalk"
 		const stripped = border.content.replace(/\x1b\[[0-9;]*m/g, "");
 		expect(stripped).toContain("Prewalk");
+	});
+
+	it("renders a stopped remote session from its prewalk snapshot without an RPC", () => {
+		const client = {
+			stopped: false,
+			stop() {
+				this.stopped = true;
+			},
+		};
+		const prewalk = { target: { id: "cheap-model", provider: "openai" } };
+		let asyncPrewalkCalls = 0;
+		const session = {
+			...makeSessionWithLastMessage(null),
+			getPrewalkStateSnapshot: () => prewalk,
+			async getPrewalkState() {
+				asyncPrewalkCalls++;
+				if (client.stopped) throw new Error("RPC client stopped");
+				return prewalk;
+			},
+		} as unknown as AgentSession;
+		const statusLine = new StatusLineComponent(session);
+		statusLine.updateSettings({ preset: "custom", leftSegments: ["mode"], rightSegments: [] });
+		statusLine.setComposerStyle({ bottomBar: "full", bottomBarGap: false });
+		client.stop();
+
+		const rendered = Bun.stripANSI(statusLine.render(120).join("\n"));
+		expect(rendered).toContain("Prewalk");
+		expect(asyncPrewalkCalls).toBe(0);
 	});
 
 	it("renders multiple hook statuses with exactly two ASCII spaces between them", () => {

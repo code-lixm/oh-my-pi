@@ -30,7 +30,7 @@ import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/
 import { stripOpenAIResponsesOutputOnlyStatusesForReplay } from "@oh-my-pi/pi-ai/utils";
 import { type Dialect, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
-import { isRecord, logger, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
 import { ThinkingLevel } from "../thinking";
@@ -87,15 +87,13 @@ const MIN_SUMMARY_INPUT_TOKENS = 16_384;
 
 /** Smallest window worth planning for `model`; below this, overflow recovery gives up. */
 function minSummaryInputTokens(model: Model): number {
-	const window =
-		model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
+	const window = model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
 	return Math.min(MIN_SUMMARY_INPUT_TOKENS, Math.max(1_024, Math.floor(window / 8)));
 }
 
 /** Usable conversation input for ONE summarization call: window - summary - reserves. */
 function summaryInputBudgetTokens(model: Model, maxTokens: number): number {
-	const window =
-		model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
+	const window = model.contextWindow && model.contextWindow > 0 ? model.contextWindow : DEFAULT_SUMMARY_INPUT_WINDOW;
 	return Math.max(minSummaryInputTokens(model), Math.floor(window * 0.8) - maxTokens - MAX_SUMMARY_TOKENS);
 }
 
@@ -635,12 +633,6 @@ export function resolveThresholdTokens(contextWindow: number, settings: Compacti
 // ============================================================================
 
 /**
- * Image content has no tokenizer representation; charge a fixed estimate
- * matching what providers typically bill for inline images.
- */
-const IMAGE_TOKEN_ESTIMATE = 1200;
-
-/**
  * Estimate token count for a message using cl100k_base via the native
  * tokenizer. This is not Claude's first-party tokenizer (Anthropic doesn't
  * publish one) but is within ~5–10% across English/code text.
@@ -1137,6 +1129,13 @@ export interface HandoffFromContextOptions {
 	telemetry?: AgentTelemetry;
 	/** See {@link HandoffOptions.thinkingLevel}. */
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * Transient retry policy for the handoff oneshot; `false` disables it.
+	 * Defaults to enabled (3 attempts, exponential backoff): a handoff produces
+	 * no side effects, so re-issuing on a transient stream drop is safe and the
+	 * error otherwise kills the whole session transition.
+	 */
+	oneshotRetry?: OneshotRetryOptions | false;
 }
 
 /**
@@ -1148,9 +1147,10 @@ export interface HandoffFromContextOptions {
  * `streamOptions` that mirror the live turn's cache routing. That keeps the
  * cache-preserving context construction in the host (which owns the transform
  * pipeline) while this function centralizes the handoff request contract:
- * cache-first `toolChoice: "none"`, clamped reasoning effort, one retry for
- * auto-only `tool_choice` providers, oneshot telemetry, text-only extraction,
- * and provider-error mapping.
+ * cache-first `toolChoice: "none"`, clamped reasoning effort, transient oneshot
+ * retry (opt-out via `oneshotRetry: false`), one retry for auto-only
+ * `tool_choice` providers, oneshot telemetry, text-only extraction, and
+ * provider-error mapping.
  */
 export async function generateHandoffFromContext(
 	context: Context,
@@ -1162,17 +1162,19 @@ export async function generateHandoffFromContext(
 		reasoning: resolveCompactionEffort(model, options.thinkingLevel),
 		toolChoice: "none" as const,
 	};
+	const retry = options.oneshotRetry === false ? undefined : (options.oneshotRetry ?? {});
 	let response = await instrumentedCompleteSimple(model, context, requestOptions, {
 		telemetry: options.telemetry,
 		oneshotKind: "handoff",
 		completeImpl: options.completeImpl,
+		retry,
 	});
 	if (response.stopReason === "error" && shouldRetryHandoffWithAutoToolChoice(response)) {
 		response = await instrumentedCompleteSimple(
 			model,
 			context,
 			{ ...requestOptions, toolChoice: "auto" },
-			{ telemetry: options.telemetry, oneshotKind: "handoff", completeImpl: options.completeImpl },
+			{ telemetry: options.telemetry, oneshotKind: "handoff", completeImpl: options.completeImpl, retry },
 		);
 	}
 

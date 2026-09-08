@@ -551,9 +551,6 @@ export class OmpDaemonSupervisor {
 				case "ui_owner_release":
 					await this.#releaseUiOwnerForConnection(connection, command);
 					return;
-				case "heartbeat_set":
-				case "heartbeat_clear":
-				case "heartbeat_status":
 				case "cron_add":
 				case "cron_cancel":
 				case "cron_list":

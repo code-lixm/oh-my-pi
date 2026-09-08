@@ -5,8 +5,8 @@ import {
 	canonicalKeyId,
 	Editor,
 	type EditorTextDecorationContext,
-	isInsideTerminalMultiplexer,
 	type EditorTheme,
+	isInsideTerminalMultiplexer,
 	type KeyId,
 	parseKey,
 	parseKittySequence,
@@ -60,10 +60,10 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.suspend": ["ctrl+z"],
 	"app.display.reset": ["alt+l"],
 	"app.thinking.cycle": ["shift+tab"],
-	"app.model.cycleForward": ["ctrl+p"],
-	"app.model.cycleBackward": ["shift+ctrl+p"],
+	"app.model.cycleForward": ["alt+p"],
+	"app.model.cycleBackward": ["ctrl+alt+p"],
 	"app.model.select": ["alt+m"],
-	"app.model.selectTemporary": ["alt+p"],
+	"app.model.selectTemporary": ["alt+shift+m"],
 	"app.tools.toggleVisibility": ["ctrl+shift+o"],
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
@@ -246,6 +246,14 @@ function splitPastedPathSegments(payload: string): string[] | undefined {
 function extractExplicitPathSegments(payload: string): string[] | undefined {
 	const pasted = payload.trim();
 	if (!pasted) return undefined;
+
+	// Oversize gate: filesystem paths are bounded by PATH_MAX (1KB on POSIX,
+	// 260 on Windows), so even a many-file drag lands far below 64KB. Anything
+	// larger is prose/code/log — the common giant paste — and cannot be a path
+	// list. Skipping the splitter avoids materializing O(payload) segments
+	// (a 4.4MB paste spent ~56ms building ~1M segments before per-segment
+	// validation rejected them).
+	if (pasted.length > 64 * 1024) return undefined;
 
 	const segments = splitPastedPathSegments(pasted);
 	if (!segments) return undefined;
@@ -1058,6 +1066,15 @@ export class CustomEditor extends Editor {
 
 		// Space-hold push-to-talk: a sustained space bar starts/stops STT instead of typing spaces.
 		if (this.#handleSpaceHold(data, canonical)) return;
+
+		// While the completion list is visible, Tab and Shift+Tab belong to the
+		// base editor's selection handling (accept the highlighted suggestion /
+		// navigate), never to app-level model cycling — the composer keeps the
+		// editor's native completion behavior on those chords.
+		if (this.isShowingAutocomplete() && (canonical === "tab" || canonical === "shift+tab")) {
+			super.handleInput(data);
+			return;
+		}
 
 		// One union probe decides whether any per-action interception below can
 		// match — plain typing then skips the ~20 per-action set lookups per key.

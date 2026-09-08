@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { resolveImageDataRefSync } from "@oh-my-pi/pi-coding-agent/session/blob-ref-resolution";
 import type {
 	OmpAssistantMessage as AssistantMessage,
 	OmpCompactionPart as CompactionPart,
@@ -24,7 +25,6 @@ interface ProjectedImageContent {
 }
 const SNAPCOMPACT_RESOURCE_CLIENT = "omp-snapcompact";
 
-
 function projectedContent(content: unknown): { text: string; images: ProjectedImageContent[] } {
 	if (typeof content === "string") return { text: content, images: [] };
 	if (!Array.isArray(content)) return { text: "", images: [] };
@@ -43,7 +43,9 @@ function projectedContent(content: unknown): { text: string; images: ProjectedIm
 			"mimeType" in item &&
 			typeof item.mimeType === "string"
 		) {
-			images.push({ data: item.data, mimeType: item.mimeType });
+			// Restored sessions keep persisted image payloads as `blob:` refs;
+			// the browser needs inline data, so resolve at the projection boundary.
+			images.push({ data: resolveImageDataRefSync(item.data), mimeType: item.mimeType });
 		}
 	}
 	return { text: text.join("\n"), images };

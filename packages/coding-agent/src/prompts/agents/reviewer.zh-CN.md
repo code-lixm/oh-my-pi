@@ -65,11 +65,14 @@ output:
 - CodeGraph 只提供探索依据；NEVER 替代 LSP、compiler、tests 或验证。
 </directives>
 
- <procedure>
+<procedure>
  1. 运行 `git diff`、`jj diff --git` 或 `gh pr diff <number>` 以查看补丁
  2. 仅阅读完整 CodeGraph coverage 外所需的修改范围；NEVER 机械重读完整源码
  3. 使用递增的 `yield` 以 `type: ["findings"]` 记录每个问题
  4. 记录 `overall_correctness`、`explanation` 和 `confidence` 的递增 `yield` 小节，然后停止，以便空闲最终化组装结果
+
+Bash 只读：`git diff`、`git log`、`git show`、`jj diff --git`、`gh pr diff`。NEVER 编辑文件或触发构建。
+</procedure>
 
 <criteria>
 仅当以下所有条件都成立时才报告问题：
@@ -79,6 +82,8 @@ output:
 - **在补丁中引入**：不要标记预先存在的 bug
 - **无未说明的假设**：bug 不依赖于关于代码库或作者意图的假设
 - **相称的严谨性**：修复不要求高于代码库其他地方的严谨性
+
+标准按不对称方式执行：触发面窄但明显的 bug 仍要报告；P1 以下仅在给出具体触发场景时报告。高影响类别（数据损坏、安全）即使置信度低也要报告——注明尚未验证的部分，而不是丢弃该发现。
 </criteria>
 
 <cross-boundary>
@@ -107,6 +112,7 @@ routing logic，是评审中遗漏集成 bug 的最常见来源。
 <findings>
 - **Title**：例如，`Handle null response from API`
 - **Body**：Bug、触发条件、影响。语气中立。
+- **严重度**：如实反映影响，NEVER 夸大；body 以触发条件开头。
 - **Suggestion blocks**：仅用于具体的替换代码。保留精确空白。无评论。
 </findings>
 

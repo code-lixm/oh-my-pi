@@ -28,6 +28,7 @@ import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import userInterjectionTemplateZh from "../prompts/steering/user-interjection.zh-CN.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
+import { containsBlobRef, resolveMessageBlobRefsSync } from "./blob-ref-resolution";
 
 export {
 	type BranchSummaryMessage,
@@ -1138,7 +1139,14 @@ interface ConvertMemoEntry {
 	interruptedNext: boolean;
 	fragment: Message[];
 }
-const convertCache = new WeakMap<AgentMessage, ConvertMemoEntry>();
+let convertCache = new WeakMap<AgentMessage, ConvertMemoEntry>();
+
+// Session entries pin their messages for the process lifetime, so without a
+// bound the per-message fragments would retain a second, LLM-shaped copy of
+// the entire conversation forever. Past the limit the memos reset wholesale:
+// conversion is a pure memo, so the working set simply reconverts.
+const CONVERT_MEMO_LIMIT = 8192;
+let convertMemoSize = 0;
 
 // Array-level shortcuts over the per-message memo. The live agent mutates one
 // `AgentMessage[]` identity across a turn: appending new messages and swapping
@@ -1164,7 +1172,7 @@ interface ConvertArrayMemo {
 }
 
 let convertGeneration = 0;
-const convertArrayCache = new WeakMap<AgentMessage[], ConvertArrayMemo>();
+let convertArrayCache = new WeakMap<AgentMessage[], ConvertArrayMemo>();
 
 registerMessageCacheInvalidator(message => {
 	convertCache.delete(message);
@@ -1299,8 +1307,61 @@ function convertOneCached(m: AgentMessage, interruptedNext: boolean): Message[] 
 	const cached = convertCache.get(m);
 	if (cached !== undefined && cached.interruptedNext === interruptedNext) return cached.fragment;
 	const fragment = convertOne(m, interruptedNext);
+	if (++convertMemoSize >= CONVERT_MEMO_LIMIT) {
+		convertMemoSize = 0;
+		convertCache = new WeakMap();
+		convertArrayCache = new WeakMap();
+	}
 	convertCache.set(m, { interruptedNext, fragment });
 	return fragment;
+}
+
+// Persisted `blob:` image refs stay unresolved in hydrated session entries (see
+// session/blob-ref-resolution); the LLM wire copy is where they become data
+// again. Per-message and per-array clones are memoized so identities stay
+// stable across turns — the array-level convert memo below keys on them.
+const messageHasBlobRefs = new WeakMap<AgentMessage, boolean>();
+const messageBlobResolved = new WeakMap<AgentMessage, AgentMessage>();
+const arrayBlobResolved = new WeakMap<AgentMessage[], AgentMessage[]>();
+
+function resolveBlobRefMessageCached(m: AgentMessage): AgentMessage {
+	let hasRefs = messageHasBlobRefs.get(m);
+	if (hasRefs === undefined) {
+		hasRefs = containsBlobRef(m);
+		messageHasBlobRefs.set(m, hasRefs);
+	}
+	if (!hasRefs) return m;
+	let clone = messageBlobResolved.get(m);
+	if (clone === undefined) {
+		clone = resolveMessageBlobRefsSync(m);
+		messageBlobResolved.set(m, clone);
+	}
+	return clone;
+}
+
+/**
+ * Resolve persisted blob refs across a message list without mutating it.
+ * Returns the input array untouched when nothing carries refs; otherwise a
+ * stable per-input array whose ref-bearing slots hold resolved clones. Exported
+ * for AgentSession so injected custom `convertToLlm` implementations see the
+ * same resolved view the built-in conversion applies.
+ */
+export function resolveBlobRefMessages(messages: AgentMessage[]): AgentMessage[] {
+	const cached = arrayBlobResolved.get(messages);
+	if (cached) return cached;
+	let resolved: AgentMessage[] | undefined;
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i];
+		if (m === undefined || m === null || typeof m !== "object") continue;
+		const clone = resolveBlobRefMessageCached(m);
+		if (clone !== m) {
+			resolved ??= messages.slice();
+			resolved[i] = clone;
+		}
+	}
+	const out = resolved ?? messages;
+	arrayBlobResolved.set(messages, out);
+	return out;
 }
 
 /**
@@ -1318,6 +1379,7 @@ function convertOneCached(m: AgentMessage, interruptedNext: boolean): Message[] 
  * through the shared registry before the next pass.
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
+	messages = resolveBlobRefMessages(messages);
 	const len = messages.length;
 	const memo = convertArrayCache.get(messages);
 	const sameGeneration = memo !== undefined && memo.generation === convertGeneration;

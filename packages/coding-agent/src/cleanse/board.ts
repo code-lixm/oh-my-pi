@@ -12,8 +12,8 @@
  */
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { tSettingsUi } from "../i18n/settings-locale";
 import { createLiveBoard, type LiveBoardOutput } from "../cli/live-board";
+import { tSettingsUi } from "../i18n/settings-locale";
 import type { AgentProgress } from "../task/types";
 import type { CleanseCheckerDescriptor } from "./checkers";
 import type { CleanseAgentOutcome, CleanseAssignment, CleanseCheckResult } from "./types";

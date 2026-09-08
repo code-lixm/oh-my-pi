@@ -34,4 +34,3 @@ describe("compaction summary message with snapcompact frames", () => {
 		expect(content[2]).toEqual(images[1]);
 	});
 });
-

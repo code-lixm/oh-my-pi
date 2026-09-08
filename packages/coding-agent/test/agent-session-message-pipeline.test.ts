@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { scheduler } from "node:timers/promises";
 import {
 	Agent,
 	type AgentMessage,
@@ -18,6 +19,7 @@ import {
 	type SimpleStreamOptions,
 	type TextContent,
 } from "@oh-my-pi/pi-ai";
+import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -44,8 +46,9 @@ function createAgent(): Agent {
 	});
 }
 
-function createModelRegistryStub(key = "key") {
+function createModelRegistryStub(key = "key", available: Model[] = []) {
 	return {
+		getAvailable: vi.fn(() => available),
 		getApiKey: vi.fn(async () => key),
 		resolver: vi.fn(() => async () => key),
 	};
@@ -153,6 +156,231 @@ describe("AgentSession message pipeline", () => {
 		session.clearQueue();
 	});
 
+	it.each(["steer", "followUp"] as const)(
+		"queues a text-model image via %s before its vision description resolves, then prepends the hidden description",
+		async delivery => {
+			const prompt = "Describe this queued image";
+			const description = "A blue square used to verify queued image descriptions.";
+			const image: ImageContent = {
+				type: "image",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+				mimeType: "image/png",
+			};
+			using tempDir = TempDir.createSync("@pi-queued-image-description-");
+			const mainPromptStarted = Promise.withResolvers<void>();
+			const descriptionStarted = Promise.withResolvers<void>();
+			const releaseDescription = Promise.withResolvers<void>();
+			const textModel = createMockModel({
+				id: "queued-image-text",
+				responses: [
+					() => {
+						mainPromptStarted.resolve();
+						return { content: ["working"], delayMs: 60_000 };
+					},
+				],
+			});
+			const visionModel = createMockModel({
+				id: "queued-image-vision",
+				handler: async () => {
+					descriptionStarted.resolve();
+					await releaseDescription.promise;
+					return { content: [description] };
+				},
+			});
+			visionModel.input.push("image");
+			registerMockApi();
+
+			const session = new AgentSession({
+				agent: new Agent({
+					getApiKey: () => "test-key",
+					initialState: { model: textModel, systemPrompt: ["Test"], tools: [] },
+					streamFn: textModel.stream,
+				}),
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"images.autoResize": false,
+					"images.blockImages": false,
+					"images.describeForTextModels": true,
+				}),
+				modelRegistry: createModelRegistryStub("test-key", [textModel, visionModel]) as never,
+			});
+			sessions.push(session);
+			const running = session.prompt("Keep the primary turn streaming");
+			await mainPromptStarted.promise;
+			expect(session.isStreaming).toBe(true);
+			let queueMethodReturned = false;
+			const queued = (
+				delivery === "steer" ? session.steer(prompt, [image]) : session.followUp(prompt, [image])
+			).then(() => {
+				queueMethodReturned = true;
+			});
+
+			try {
+				await descriptionStarted.promise;
+				await Promise.resolve();
+				expect(queueMethodReturned).toBe(true);
+				expect(session.getQueuedMessages()).toEqual(
+					delivery === "steer" ? { steering: [prompt], followUp: [] } : { steering: [], followUp: [prompt] },
+				);
+				const queuedBeforeDescription =
+					delivery === "steer" ? session.agent.peekSteeringQueue() : session.agent.peekFollowUpQueue();
+				expect(queuedBeforeDescription.map(message => message.role)).toEqual(["user"]);
+
+				releaseDescription.resolve();
+				let queuedAfterDescription =
+					delivery === "steer" ? session.agent.peekSteeringQueue() : session.agent.peekFollowUpQueue();
+				for (let attempt = 0; attempt < 20 && queuedAfterDescription.length !== 2; attempt++) {
+					await scheduler.yield();
+					queuedAfterDescription =
+						delivery === "steer" ? session.agent.peekSteeringQueue() : session.agent.peekFollowUpQueue();
+				}
+				expect(
+					queuedAfterDescription.map(message => (message.role === "custom" ? message.customType : message.role)),
+				).toEqual(["image-attachment-description", "user"]);
+
+				const [notice, user] = queuedAfterDescription;
+				if (notice?.role !== "custom" || user?.role !== "user") {
+					throw new Error("Expected hidden image description immediately before queued user message");
+				}
+				expect(notice.display).toBe(false);
+				const noticeText = Array.isArray(notice.content)
+					? notice.content
+							.filter((part): part is TextContent => part.type === "text")
+							.map(part => part.text)
+							.join("")
+					: notice.content;
+				expect(noticeText).toContain(description);
+				const userText = Array.isArray(user.content)
+					? user.content.find((part): part is TextContent => part.type === "text")?.text
+					: user.content;
+				expect(userText).toBe(prompt);
+			} finally {
+				releaseDescription.resolve();
+				await queued.catch(() => {});
+				session.clearQueue();
+				await session.abort();
+				await running.catch(() => {});
+			}
+		},
+	);
+
+	it.each(["steer", "followUp"] as const)(
+		"holds a queued text-model image via %s until its vision description is ready before the next request",
+		async delivery => {
+			const prompt = "Describe this queued image after the primary response";
+			const description = "A blue square that must reach the next text-model request first.";
+			const image: ImageContent = {
+				type: "image",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+				mimeType: "image/png",
+			};
+			using tempDir = TempDir.createSync("@pi-queued-image-dequeue-barrier-");
+			const mainPromptStarted = Promise.withResolvers<void>();
+			const releaseMainPrompt = Promise.withResolvers<void>();
+			const descriptionStarted = Promise.withResolvers<void>();
+			const releaseDescription = Promise.withResolvers<void>();
+			const nextTextRequestStarted = Promise.withResolvers<void>();
+			const textModel = createMockModel({
+				id: "queued-image-dequeue-text",
+				responses: [
+					async () => {
+						mainPromptStarted.resolve();
+						await releaseMainPrompt.promise;
+						return { content: ["primary response"] };
+					},
+					() => {
+						nextTextRequestStarted.resolve();
+						return { content: ["queued response"] };
+					},
+				],
+			});
+			const visionModel = createMockModel({
+				id: "queued-image-dequeue-vision",
+				handler: async () => {
+					descriptionStarted.resolve();
+					await releaseDescription.promise;
+					return { content: [description] };
+				},
+			});
+			visionModel.input.push("image");
+			registerMockApi();
+
+			const session = new AgentSession({
+				agent: new Agent({
+					getApiKey: () => "test-key",
+					initialState: { model: textModel, systemPrompt: ["Test"], tools: [] },
+					convertToLlm,
+					steeringMode: "all",
+					followUpMode: "all",
+					streamFn: textModel.stream,
+				}),
+				sessionManager: SessionManager.inMemory(tempDir.path()),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"images.autoResize": false,
+					"images.blockImages": false,
+					"images.describeForTextModels": true,
+				}),
+				modelRegistry: createModelRegistryStub("test-key", [textModel, visionModel]) as never,
+			});
+			sessions.push(session);
+			const running = session.prompt("Keep the primary turn streaming");
+			let queued: Promise<void> | undefined;
+
+			try {
+				await mainPromptStarted.promise;
+				expect(session.isStreaming).toBe(true);
+				let queueMethodReturned = false;
+				queued = (delivery === "steer" ? session.steer(prompt, [image]) : session.followUp(prompt, [image])).then(
+					() => {
+						queueMethodReturned = true;
+					},
+				);
+
+				await descriptionStarted.promise;
+				await Promise.resolve();
+				expect(queueMethodReturned).toBe(true);
+				expect(session.getQueuedMessages()).toEqual(
+					delivery === "steer" ? { steering: [prompt], followUp: [] } : { steering: [], followUp: [prompt] },
+				);
+
+				releaseMainPrompt.resolve();
+				for (let attempt = 0; attempt < 20 && textModel.calls.length === 1; attempt++) {
+					await scheduler.yield();
+				}
+				expect(textModel.calls).toHaveLength(1);
+
+				releaseDescription.resolve();
+				await nextTextRequestStarted.promise;
+				expect(textModel.calls).toHaveLength(2);
+				const nextRequestMessages = textModel.calls[1]?.context.messages;
+				if (!nextRequestMessages) {
+					throw new Error("Expected the queued message to start a second text-model request");
+				}
+				const descriptionIndex = nextRequestMessages.findIndex(
+					message =>
+						message.role === "developer" &&
+						Array.isArray(message.content) &&
+						message.content.some(part => part.type === "text" && part.text.includes(description)),
+				);
+				const queuedUserIndex = nextRequestMessages.findIndex(
+					message => message.role === "user" && getConvertedUserText(message).includes(prompt),
+				);
+				expect(descriptionIndex).toBeGreaterThanOrEqual(0);
+				expect(queuedUserIndex).toBeGreaterThan(descriptionIndex);
+				await running;
+			} finally {
+				releaseMainPrompt.resolve();
+				releaseDescription.resolve();
+				await queued?.catch(() => {});
+				session.clearQueue();
+				await session.abort();
+				await running.catch(() => {});
+			}
+		},
+	);
+
 	it("resolves image attachments from submitted messages, not tool-result images", () => {
 		const userImage: ImageContent = { type: "image", data: "user-image", mimeType: "image/png" };
 		const toolImage: ImageContent = { type: "image", data: "tool-image", mimeType: "image/png" };
@@ -178,9 +406,9 @@ describe("AgentSession message pipeline", () => {
 			isError: false,
 		});
 
-	expect(session.getImageAttachments()).toEqual([
-		{ label: "Image #1", uri: "attachment://1", image: userImage, sourcePath: expect.any(String) },
-	]);
+		expect(session.getImageAttachments()).toEqual([
+			{ label: "Image #1", uri: "attachment://1", image: userImage, sourcePath: expect.any(String) },
+		]);
 	});
 
 	it("normalizes historical WebP on the main provider request path", async () => {

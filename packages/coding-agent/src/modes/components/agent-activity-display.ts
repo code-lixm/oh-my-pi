@@ -67,7 +67,7 @@ export function resolveAgentTerminalStatus(options: {
 }
 
 export interface AgentActivityDisplay {
-	/** Current phase, activity detail, and phase/quiet elapsed time. */
+	/** Current phase, activity detail, and phase elapsed time. */
 	activityLine?: string;
 	/** Retry, task timing, and stable telemetry. */
 	statsLine?: string;
@@ -274,11 +274,7 @@ export function renderAgentActivityDisplay(options: {
 		const healthLabel = tSettingsUi(formatted.healthLabel);
 		const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && healthLabel !== phaseLabel;
 		const phaseText = showHealth ? `${healthLabel} ${theme.sep.dot} ${phaseLabel}` : phaseLabel;
-		const elapsed = formatted.quietElapsed
-			? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
-			: formatted.phaseElapsed
-				? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
-				: "";
+		const elapsed = formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "";
 		activityLine = joinFitted(
 			[
 				{ text: theme.fg(activityHealthColor(formatted.health), phaseText) },

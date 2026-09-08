@@ -11,8 +11,8 @@ import {
 	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
-	type ViewportSize,
 	type TUIStartOptions,
+	type ViewportSize,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { CustomEditor } from "./components/custom-editor";
@@ -43,7 +43,7 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 	composerShape: "box",
 	showHardwareCursor: true,
 	maxInlineImages: 8,
-	resizeScrollback: "rebuild",
+	resizeScrollback: "preserve",
 	scrollbackRebuild: true,
 	imeSafeCursor: false,
 	autocompleteMaxVisible: 5,
@@ -249,9 +249,31 @@ export class Composer implements TerminalFrameProvider {
 		if (!this.#started || this.#stopped) return [];
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
-		const tail = this.#runtimeMounted
-			? this.#renderRoots([...this.#runtimeChildren, this.#statusHost], width)
-			: this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
+		let tail: readonly string[];
+		if (this.#runtimeMounted) {
+			const roots = [...this.#runtimeChildren, this.#statusHost];
+			const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
+			if (transcriptIndex < 0) {
+				tail = this.#renderRoots(roots, width);
+			} else {
+				const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+				const available = Math.max(0, rows - after.length);
+				const transcript = roots[transcriptIndex] as TranscriptContainer;
+				const transcriptTail = transcript.renderViewportTail(width, available);
+				// Pre-transcript chrome shares the tail's row budget; clamp it so the
+				// composite stays within the viewport instead of clipping mid-element
+				// in the final slice (the rows closest to the transcript win).
+				const beforeBudget = Math.max(0, available - transcriptTail.length);
+				let before: readonly string[] = [];
+				if (transcriptTail.length < available) {
+					const rendered = this.#renderRoots(roots.slice(0, transcriptIndex), width);
+					before = rendered.length > beforeBudget ? rendered.slice(rendered.length - beforeBudget) : rendered;
+				}
+				tail = [...before, ...transcriptTail, ...after];
+			}
+		} else {
+			tail = this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
+		}
 		let header: readonly string[];
 		if (this.#headerRetired) {
 			this.#resizeRetiredHeaderStart ??= Math.max(

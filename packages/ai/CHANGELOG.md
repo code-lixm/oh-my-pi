@@ -6,6 +6,11 @@
 
 - Added optional Codex native-prompt sidecars with Full/Lite role ordering, fingerprint-partitioned prompt caches, stable session/thread identity, and complete generic-prompt fallback.
 - Added provider-native file references and optional remote image URLs to `ImageContent`; matching Anthropic, Google, OpenAI Responses, OpenAI Chat Completions, and Codex encoders now reuse those references while retaining inline base64 fallback.
+- Added a cross-turn thinking-loop guard: reasoning near-duplicated across consecutive completed turns (each turn locally healthy — visible text plus slightly-different tool arguments) now trips a corrective steer after 4 repetitions. Fingerprinting is script-aware — word trigrams for Latin thinking, character bigrams for CJK thinking, where word-level n-grams collapse (measured on a real 69-turn Chinese loop: near-duplicates 0.42-0.58 vs healthy ≤ 0.026).
+
+### Fixed
+
+- Fixed `normalizeSegment` dropping all CJK content (`/[^a-z0-9]+/g` → Unicode `\p{L}\p{N}`), which made Chinese reasoning invisible to every loop detector; English tokenization output is unchanged, so the in-stream detector's calibrated thresholds still see identical shapes.
 
 ### Fixed
 - Fixed MiniMax M3 thinking streams bypassing the generalized thinking-loop guard; exact MiniMax M3 family models now use the retryable loop-abort path while MiniMax M2 remains unaffected.
@@ -46,6 +51,7 @@
 ### Changed
 
 - Updated OpenCode Go integration to use the official usage endpoint, removing hardcoded caps, enabling real-time credential validation, and routing multi-key pools based on rolling and weekly headroom.
+
 - Optimized Anthropic prompt caching with rolling 5-minute breakpoints and idle refreshes to keep the prompt prefix warm.
 
 ### Fixed

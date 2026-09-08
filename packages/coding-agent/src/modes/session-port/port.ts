@@ -1,4 +1,3 @@
-import type { AdvisorConfig } from "../../advisor";
 import type {
 	Effort,
 	ResetCreditAccountStatus,
@@ -6,6 +5,8 @@ import type {
 	ResetCreditTarget,
 	UsageReport,
 } from "@oh-my-pi/pi-ai";
+import type { AdvisorConfig } from "../../advisor";
+import type { Prewalk } from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { RpcCommand, RpcResponse } from "../rpc/rpc-types";
 import type {
@@ -42,6 +43,8 @@ export interface InteractiveSessionSettingsCapabilities {
 	isAdvisorEnabled(): boolean;
 	setAdvisorEnabled(enabled: boolean): boolean | Promise<boolean>;
 	toggleAdvisorEnabled(): boolean | Promise<boolean>;
+	/** Synchronous cached prewalk state for render paths. */
+	getPrewalkStateSnapshot(): Prewalk | undefined;
 	setThinkToolEnabled(enabled: boolean): Promise<boolean>;
 	applyInspectImageModeChange(): Promise<boolean>;
 	applyMemoryBackend(): Promise<void>;

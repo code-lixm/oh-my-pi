@@ -1164,6 +1164,63 @@ describe("agentLoop with AgentMessage", () => {
 		);
 	});
 
+	it("gives self-repair feedback for unknown tool calls: available tools and closest match", async () => {
+		const toolSchema = type({ value: "string" });
+		const echoTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				return { content: [{ type: "text", text: `echoed: ${params.value}` }], details: { value: params.value } };
+			},
+		};
+		const editTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "edit",
+			label: "Edit",
+			description: "Edit tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				return { content: [{ type: "text", text: `edited: ${params.value}` }], details: { value: params.value } };
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [echoTool, editTool] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "bad-1", name: "edits", arguments: {} },
+						{ type: "toolCall", id: "bad-2", name: "totally-unrelated", arguments: {} },
+					],
+				},
+				{ content: ["recovered"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const messages = await agentLoop(
+			[createUserMessage("call the wrong tools")],
+			context,
+			config,
+			undefined,
+			mock.stream,
+		).result();
+
+		const results = messages.filter((m): m is ToolResultMessage => m.role === "toolResult");
+		const nearMiss = results.find(r => r.toolCallId === "bad-1");
+		expect(nearMiss?.isError).toBe(true);
+		const nearMissText = nearMiss?.content.find(c => c.type === "text");
+		expect(nearMissText && "text" in nearMissText ? nearMissText.text : "").toContain(
+			'Tool edits not found. Available tools: echo, edit. Did you mean "edit"?',
+		);
+		const unrelated = results.find(r => r.toolCallId === "bad-2");
+		const unrelatedText = unrelated?.content.find(c => c.type === "text");
+		expect(unrelatedText && "text" in unrelatedText ? unrelatedText.text : "").toContain(
+			"Tool totally-unrelated not found. Available tools: echo, edit.",
+		);
+		expect(unrelatedText && "text" in unrelatedText ? unrelatedText.text : "").not.toContain("Did you mean");
+	});
+
 	it("injects and strips intent when intent tracing is enabled", async () => {
 		const toolSchema = type({ value: "string" });
 		const executedParams: Record<string, unknown>[] = [];

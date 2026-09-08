@@ -569,6 +569,7 @@ export function arkToWireSchema(schema: Type): Record<string, unknown> {
  */
 export function toolWireSchema(tool: Tool): Record<string, unknown> {
 	const params: TSchema = tool.parameters;
+	if (params === undefined) return { type: "object", properties: {} };
 	if (isArkSchema(params)) return arkToWireSchema(params);
 	return stamp(params as Record<string, unknown>, kJsonWireSchema, p => {
 		const raw = isArkJsonAst(p) ? arkJsonAstToWire(p) : p;

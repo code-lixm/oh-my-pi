@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { withStatsSyncLock } from "@oh-my-pi/omp-stats/aggregator";
+import { syncSessionFiles, withStatsSyncLock } from "@oh-my-pi/omp-stats/aggregator";
 import {
 	getAgentDir,
 	getBlobsDir,
@@ -40,9 +40,13 @@ export interface GcCommandFlags {
 	coldArchiveAfterDays?: number;
 	retainNewestGlobal?: number;
 	retainNewestPerCwd?: number;
+	/** Keep stats.db rows for archived sessions (default: gc.archivePreserveStats, itself defaulting to true). */
+	preserveStats?: boolean;
 }
 
 export interface GcCommandArgs {
+	/** Test seam: override the pre-archive stats flush. Production uses syncSessionFiles. */
+	syncStatsForSession?: (session: SessionInfo) => Promise<void>;
 	flags: GcCommandFlags;
 }
 
@@ -56,6 +60,7 @@ export interface BlobGcResult {
 }
 
 export interface ArchiveGcResult {
+	statsPreserved?: boolean;
 	scanned: number;
 	skippedActive: number;
 	keptNewestGlobal: number;
@@ -117,6 +122,8 @@ interface ResolvedGcOptions {
 	coldArchiveAfterDays: number;
 	retainNewestGlobal: number;
 	retainNewestPerCwd: number;
+	preserveStats: boolean;
+	syncStatsForSession: (session: SessionInfo) => Promise<void>;
 }
 
 interface SqliteRunResult {
@@ -148,7 +155,10 @@ function numberSetting(value: number | undefined, fallback: unknown, defaultValu
 	return normalizeNumberSetting(fallback, defaultValue);
 }
 
-async function resolveOptions(flags: GcCommandFlags): Promise<ResolvedGcOptions> {
+async function resolveOptions(
+	flags: GcCommandFlags,
+	syncStatsForSession?: GcCommandArgs["syncStatsForSession"],
+): Promise<ResolvedGcOptions> {
 	const agentDir = path.resolve(flags.agentDir ?? getAgentDir());
 	const selected = flags.blobs === true || flags.archive === true || flags.wal === true;
 	const archiveSelected = selected && flags.archive === true;
@@ -156,14 +166,16 @@ async function resolveOptions(flags: GcCommandFlags): Promise<ResolvedGcOptions>
 		archiveSelected &&
 		(flags.coldArchiveAfterDays === undefined ||
 			flags.retainNewestGlobal === undefined ||
-			flags.retainNewestPerCwd === undefined);
+			flags.retainNewestPerCwd === undefined ||
+			flags.preserveStats === undefined);
 	const settings =
 		!selected || needsArchiveSettings
 			? flags.apply === true
 				? await Settings.loadIsolated({ agentDir })
 				: await Settings.loadReadOnly({ agentDir })
 			: undefined;
-	const getBoolean = (pathKey: "gc.blobs" | "gc.archive" | "gc.wal") => settings?.get(pathKey) ?? getDefault(pathKey);
+	const getBoolean = (pathKey: "gc.blobs" | "gc.archive" | "gc.wal" | "gc.archivePreserveStats") =>
+		settings?.get(pathKey) ?? getDefault(pathKey);
 	const getNumber = (pathKey: "gc.coldArchiveAfterDays" | "gc.retainNewestGlobal" | "gc.retainNewestPerCwd") =>
 		settings?.get(pathKey) ?? getDefault(pathKey);
 	return {
@@ -173,6 +185,12 @@ async function resolveOptions(flags: GcCommandFlags): Promise<ResolvedGcOptions>
 		runBlobs: selected ? flags.blobs === true : getBoolean("gc.blobs"),
 		runArchive: selected ? flags.archive === true : getBoolean("gc.archive"),
 		runWal: selected ? flags.wal === true : getBoolean("gc.wal"),
+		preserveStats: flags.preserveStats ?? getBoolean("gc.archivePreserveStats"),
+		syncStatsForSession:
+			syncStatsForSession ??
+			(async session => {
+				await syncStatsForSessionBeforeArchive(session, agentDir);
+			}),
 		coldArchiveAfterDays: numberSetting(
 			flags.coldArchiveAfterDays,
 			getNumber("gc.coldArchiveAfterDays"),
@@ -1233,6 +1251,7 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 		archived: 0,
 		historyRowsDeleted: 0,
 		statsRowsDeleted: 0,
+		statsPreserved: options.preserveStats,
 		ftsRebuilt: false,
 		errors: [],
 	};
@@ -1281,6 +1300,12 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 	const archivedSessions: SessionInfo[] = [];
 	for (const candidate of candidates) {
 		try {
+			if (options.preserveStats) {
+				// Stats-first guarantee: the session's rows must exist in stats.db
+				// before its raw files move to the archive. A failed sync aborts
+				// archiving of that session instead of silently losing metrics.
+				await options.syncStatsForSession(candidate.session);
+			}
 			await moveSessionWithArtifacts(candidate);
 			result.archived += 1;
 			archivedSessionIds.push(candidate.session.id);
@@ -1291,8 +1316,26 @@ async function runArchiveGc(options: ResolvedGcOptions, archiveRoot: string): Pr
 	}
 
 	await cleanupHistoryRowsForArchivedSessions(options, archiveRoot, archivedSessionIds, result);
-	await cleanupStatsRowsForArchivedSessions(options, archiveRoot, archivedSessions, result);
+	if (!options.preserveStats) {
+		await cleanupStatsRowsForArchivedSessions(options, archiveRoot, archivedSessions, result);
+	}
 	return result;
+}
+
+/**
+ * Flush one session's events into stats.db right before its files are
+ * archived, so every token/cost/request metric survives the move. Raw content
+ * drill-down is the only thing an archived session loses.
+ */
+async function syncStatsForSessionBeforeArchive(session: SessionInfo, agentDir: string): Promise<void> {
+	// The dashboard reads the global stats.db, so pre-sync only applies when
+	// this command runs against that same agent dir. Isolated `--agent-dir`
+	// stores have their own convention and nothing to pre-sync into the global
+	// database.
+	if (path.resolve(agentDir) !== path.resolve(getAgentDir())) return;
+	const artifacts = sessionArtifactsPath(session.path);
+	const files = [session.path, ...(await collectJsonlFiles(artifacts))];
+	await syncSessionFiles(files);
 }
 
 async function checkpointWal(dbPath: string, apply: boolean): Promise<WalCheckpointResult> {
@@ -1560,7 +1603,7 @@ function renderText(result: GcResult): string {
 }
 
 export async function runGcCommand(args: GcCommandArgs): Promise<GcResult> {
-	const options = await resolveOptions(args.flags);
+	const options = await resolveOptions(args.flags, args.syncStatsForSession);
 	const archiveRoot = getArchivedSessionsDir(options.agentDir);
 	const result = await withGcLock(options.agentDir, async lockPath => {
 		const next: GcResult = { agentDir: options.agentDir, apply: options.apply, lockPath };

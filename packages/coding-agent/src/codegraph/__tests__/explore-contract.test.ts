@@ -205,4 +205,37 @@ describe("CodeGraph bounded source sections", () => {
 			runtime.close();
 		}
 	});
+	test("ranks an exact camelCase symbol above a generic same-term constant in natural-language queries", async () => {
+		const repoRoot = await initGitRepo(path.join(tmp, "ranking"), {
+			"packages/coding-agent/src/tools/index.ts": [
+				"export async function createTools(): Promise<string[]> {",
+				'\treturn ["created"];',
+				"}",
+				"",
+			].join("\n"),
+			"packages/coding-agent/src/utils/tools-manager.ts": [
+				"export const TOOLS = {",
+				"\tcreate: true,",
+				"};",
+				"",
+			].join("\n"),
+		});
+		const location = await resolveCodeGraphIndexLocation(repoRoot);
+		expect(location.available).toBe(true);
+		const runtime = await openCodeGraphRuntime({ location, sourceRoot: repoRoot });
+		try {
+			await runtime.initialize();
+			const result = await runtime.explore(
+				"Which tools are available for the createTools function, and which tools does that tool create?",
+				{ mode: "locate" },
+			);
+
+			expect(result.entries[0]?.node).toMatchObject({
+				name: "createTools",
+				filePath: "packages/coding-agent/src/tools/index.ts",
+			});
+		} finally {
+			runtime.close();
+		}
+	});
 });

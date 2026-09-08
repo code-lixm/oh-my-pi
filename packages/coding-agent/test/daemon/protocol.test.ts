@@ -92,7 +92,6 @@ describe("daemon command validation", () => {
 		).toBe(true);
 		expect(isOmpDaemonCommand({ type: "steer", message: "go" })).toBe(true);
 		expect(isOmpDaemonCommand({ type: "set_model", model: "a/b" })).toBe(true);
-		expect(isOmpDaemonCommand({ type: "heartbeat_set", prompt: "p", interval: "5m" })).toBe(true);
 		expect(isOmpDaemonCommand({ type: "cron_add", schedule: "* * * * *", prompt: "p" })).toBe(true);
 		expect(isOmpDaemonCommand({ type: "list_sessions" })).toBe(true);
 		expect(isOmpDaemonCommand({ type: "shutdown" })).toBe(true);

@@ -14,6 +14,7 @@ import { notifyFileMutation, prepareFileMutation } from "../../tools/file-mutati
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString, replaceText } from "../diff";
 import {
 	countLeadingWhitespace,
@@ -27,7 +28,6 @@ import {
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
 import { pruneOversizedEditSnapshots } from "../snapshot-details";
-import type { AppliedEditObserver } from "../blackbox";
 
 export interface FuzzyMatch {
 	actualText: string;

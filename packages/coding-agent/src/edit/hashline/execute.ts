@@ -28,6 +28,7 @@ import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredH
 import type { ToolSession } from "../../tools";
 import { outputMeta } from "../../tools/output-meta";
 import { ToolError } from "../../tools/tool-errors";
+import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString } from "../diff";
 import { getEditClipboard } from "../edit-clipboard";
 import { getFileSnapshotStore } from "../file-snapshot-store";
@@ -37,7 +38,6 @@ import { nativeBlockResolver } from "./block-resolver";
 import { HashlineFilesystem } from "./filesystem";
 import { hashPatchInput, NOOP_HARD_LIMIT, recordNoopEdit, resetNoopEdit } from "./noop-loop-guard";
 import { type HashlineParams, hashlineEditParamsSchema } from "./params";
-import type { AppliedEditObserver } from "../blackbox";
 
 export interface ExecuteHashlineSingleOptions {
 	session: ToolSession;

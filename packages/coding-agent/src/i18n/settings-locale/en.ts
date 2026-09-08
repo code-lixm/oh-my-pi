@@ -141,6 +141,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Download tiny local models (session titles + memory)": "Download tiny local models (session titles + memory)",
 	"Get the API key or OAuth token for a provider": "Get the API key or OAuth token for a provider",
 	"Inspect and test Time-Traveling Stream Rules (TTSR)": "Inspect and test Time-Traveling Stream Rules (TTSR)",
+	"Interrupted. {count} queued messages kept — press Enter to run them.":
+		"Interrupted. {count} queued messages kept — press Enter to run them.",
 	"Check for and install updates": "Check for and install updates",
 	"Show provider usage limits for every authenticated account":
 		"Show provider usage limits for every authenticated account",
@@ -1333,6 +1335,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Select value for {key}": "Select value for {key}",
 	"Select {providerName} account to log out:": "Select {providerName} account to log out:",
 	"Send follow-up message": "Send follow-up message",
+	"Interrupt now and send the draft immediately": "Interrupt now and send the draft immediately",
+	"Fork the current session now and continue in the copy": "Fork the current session now and continue in the copy",
 	"Sent first message; queued {count} for later yields": "Sent first message; queued {count} for later yields",
 	"Sent queued message": "Sent queued message",
 	'Server "{name}" already exists in {scope} config.': 'Server "{name}" already exists in {scope} config.',
@@ -2354,8 +2358,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
 	"Mouse Input": "Mouse Input",
-	"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.":
-		"Enable pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection.",
+	"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.":
+		"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
 	"Show Agent Communication": "Show Agent Communication",
 	"Show agent-to-agent messages and coordination activity in the transcript":
 		"Show agent-to-agent messages and coordination activity in the transcript",
@@ -3282,6 +3286,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Loading all projects…": "Loading all projects…",
 	"Loading themes…": "Loading themes…",
 	"Loading transcript from host…": "Loading transcript from host…",
+	"Restoring session… {completed}/{total}": "Restoring session… {completed}/{total}",
+	"Restoring session…": "Restoring session…",
 	Local: "Local",
 	"Model roles — f adds a retry fallback, cleared roles fall back to auto-selection":
 		"Model roles — f adds a retry fallback, cleared roles fall back to auto-selection",
@@ -5350,7 +5356,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Suspected stall": "Suspected stall",
 	Blocked: "Blocked",
 	"phase {elapsed}": "phase {elapsed}",
-	"quiet {elapsed}": "quiet {elapsed}",
 	"Updated omp. Use /changelog for recent changes.": "Updated omp. Use /changelog for recent changes.",
 	"Updated to v{latestVersion} · {changeCount} {changeWord} in 1 release":
 		"Updated to v{latestVersion} · {changeCount} {changeWord} in 1 release",
@@ -5406,15 +5411,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Next-Step Offers": "Next-Step Offers",
 	"Record up to three structured, user-selectable next-step offers after successful final responses.":
 		"Record up to three structured, user-selectable next-step offers after successful final responses.",
-	Heartbeat: "Heartbeat",
-	"Enable Heartbeat": "Enable Heartbeat",
-	"Enable persisted heartbeat prompts for the current session":
-		"Enable persisted heartbeat prompts for the current session",
 	"Default Interval": "Default Interval",
-	"Default interval used by /heartbeat when no interval is specified":
-		"Default interval used by /heartbeat when no interval is specified",
 	"Delivery Mode": "Delivery Mode",
-	"Default delivery mode used by /heartbeat": "Default delivery mode used by /heartbeat",
 	Schedule: "Schedule",
 	"Enable Scheduling": "Enable Scheduling",
 	"Enable persisted scheduled prompts for the current session":
@@ -5526,9 +5524,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Refinement {id} was not found": "Refinement {id} was not found",
 	"{source} scheduling is disabled": "{source} scheduling is disabled",
 	"Usage: /schedule add <schedule> -- <prompt>": "Usage: /schedule add <schedule> -- <prompt>",
-	"Heartbeat scheduling is unavailable in this session.": "Heartbeat scheduling is unavailable in this session.",
-	"Heartbeat scheduled: {job}": "Heartbeat scheduled: {job}",
-	"No heartbeat is configured.": "No heartbeat is configured.",
 	"Scheduling is unavailable in this session.": "Scheduling is unavailable in this session.",
 	"No scheduled prompts.": "No scheduled prompts.",
 	"Scheduled prompt created: {job}": "Scheduled prompt created: {job}",
@@ -5548,8 +5543,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Rollback completed: {id}": "Rollback completed: {id}",
 	"Refinement completed and the supplemental prompt was refreshed.":
 		"Refinement completed and the supplemental prompt was refreshed.",
-	"Usage: /heartbeats [list]": "Usage: /heartbeats [list]",
-	"No heartbeats are configured.": "No heartbeats are configured.",
 	"Last gate failure: {command} ({exitText}, attempt {attempt}/{maxRetries}).":
 		"Last gate failure: {command} ({exitText}, attempt {attempt}/{maxRetries}).",
 	"Last gate failure: none.": "Last gate failure: none.",
@@ -5581,15 +5574,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Review the trajectory and update the continual harness": "Review the trajectory and update the continual harness",
 	"Show harness entry counts and recent refinements": "Show harness entry counts and recent refinements",
 	"Rollback a refinement": "Rollback a refinement",
-	"Manage persisted heartbeat prompts for the current session":
-		"Manage persisted heartbeat prompts for the current session",
-	"Show the current heartbeat": "Show the current heartbeat",
-	"Pause the current heartbeat": "Pause the current heartbeat",
-	"Resume the current heartbeat": "Resume the current heartbeat",
-	"Remove the current heartbeat": "Remove the current heartbeat",
-	"List persisted heartbeat prompts for the current session":
-		"List persisted heartbeat prompts for the current session",
-	"List user and RLM heartbeats": "List user and RLM heartbeats",
 	"Manage persisted scheduled prompts for the current session":
 		"Manage persisted scheduled prompts for the current session",
 	"Create a scheduled prompt": "Create a scheduled prompt",
@@ -5607,8 +5591,6 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Add or clear quality gates": "Add or clear quality gates",
 	"Set a continuation, turn, token, or time budget": "Set a continuation, turn, token, or time budget",
 	cron: "cron",
-	heartbeat: "heartbeat",
-	rlm_heartbeat: "rlm heartbeat",
 	"Continual harness refinement is disabled or unavailable.":
 		"Continual harness refinement is disabled or unavailable.",
 	"resultId is required for rollback": "resultId is required for rollback",

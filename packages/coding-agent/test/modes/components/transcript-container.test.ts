@@ -680,6 +680,35 @@ describe("TranscriptContainer", () => {
 	});
 });
 
+describe("TranscriptContainer renderViewport", () => {
+	it("keeps long paragraphs from looking hard-clipped at a shared right edge when an older active block is hidden", () => {
+		const container = new TranscriptContainer();
+		container.addChild(new StreamingBlock(["active operation still running"]));
+		container.addChild(
+			new CountingFinalizedBlock(["settled paragraph 0 first row", "settled paragraph 0 continuation"]),
+		);
+		container.addChild(
+			new CountingFinalizedBlock(["settled paragraph 1 first row", "settled paragraph 1 continuation"]),
+		);
+		container.addChild(
+			new CountingFinalizedBlock([
+				"latest paragraph first row",
+				"latest paragraph continuation one",
+				"latest paragraph continuation two",
+			]),
+		);
+
+		const viewport = container.renderViewport(40, 3, { now: 0, tick: 0 });
+
+		expect(viewport.length).toBeLessThanOrEqual(3);
+		expect(viewport).toEqual([
+			"1 more transcript blocks active",
+			"latest paragraph continuation one",
+			"latest paragraph continuation two",
+		]);
+	});
+});
+
 describe("TranscriptContainer spacing", () => {
 	it("inserts exactly one blank line between consecutive blocks", () => {
 		const container = new TranscriptContainer();

@@ -97,6 +97,24 @@ function wordWrapLine(line: string, maxWidth: number, knownLineWidth?: number): 
 		return [{ text: line, startIndex: 0, endIndex: line.length, width: lineWidth }];
 	}
 
+	// Uniform-width fast path for giant space-free lines: when every code unit
+	// is a printable single-cell ASCII byte (0x21-0x7E — minified JSON, logs,
+	// base64: the common giant single-line paste), chunk boundaries are plain
+	// code-unit offsets and grapheme segmentation is skippable. Turns a 9.6MB
+	// single-line wrap from ~1.2s (O(n) segmenter) into ~2ms. The regex is a
+	// negated-class scan; it fails fast on the first wide/multibyte/escape/
+	// whitespace code unit, so qualifying text pays one linear pass while
+	// everything else (spaces keep word-wrap semantics; wide, combining,
+	// surrogate, and escape-bearing content) falls through to the segmenter.
+	if (line.length > 4096 && lineWidth === line.length && !/[^\x21-\x7e]/.test(line)) {
+		const chunks: TextChunk[] = [];
+		for (let start = 0; start < line.length; start += maxWidth) {
+			const end = Math.min(start + maxWidth, line.length);
+			chunks.push({ text: line.slice(start, end), startIndex: start, endIndex: end, width: end - start });
+		}
+		return chunks;
+	}
+
 	// Single segmentation pass: grapheme start offsets (with end sentinel),
 	// lazily-filled grapheme widths, and word/whitespace token boundaries.
 	const gStart: number[] = [];
@@ -372,6 +390,10 @@ function isPlainTextRun(data: string): boolean {
 const DEFAULT_PAGE_SCROLL_LINES = 10;
 
 const MAX_UNDO_STACK = 100;
+/** Per-line measurement cache ceiling. Generous enough to hold a whole
+ *  typical composer buffer; overflow evicts the older half instead of
+ *  clearing everything (see #lineEntry) so big buffers stop thrashing. */
+const WRAP_CACHE_LIMIT = 8192;
 
 interface EditorState {
 	lines: string[];
@@ -618,7 +640,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	 *  "wrap in a code block / XML / attach as file" menu for very large pastes), which re-inserts
 	 *  via {@link insertPaste} or {@link insertText}. Return `false` (or leave unset) for the
 	 *  default collapse-to-marker behavior. `lineCount` is the sanitized paste's line count. */
-	onLargePaste?: (text: string, lineCount: number) => boolean;
+	onLargePaste?: (text: string, lineCount: number, charCount: number) => boolean;
 	onAutocompleteCancel?: () => void;
 	disableSubmit: boolean = false;
 
@@ -780,13 +802,15 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	/**
 	 * Get the available width for top border content given a total terminal width.
-	 * Horizontal rules reserve one visible cell at each edge; full frames reserve side chrome.
+	 * Full frames reserve side chrome; rule-based styles reserve their top chrome
+	 * inset (see {@link ComposerStyle.topBorderInset}).
 	 */
 	getTopBorderAvailableWidth(terminalWidth: number): number {
-		if (this.#borderStyle === "horizontal") return Math.max(0, terminalWidth - 2);
+		const style = this.#effectiveStyle();
 		const paddingX = this.#getEditorPaddingX();
+		const inset = style.statusAttachment === "none" ? 0 : (style.topBorderInset ?? 0);
 		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
-		return Math.max(0, terminalWidth - borderWidth * 2);
+		return Math.max(0, terminalWidth - borderWidth * 2 - inset);
 	}
 
 	/**
@@ -1139,7 +1163,6 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		const box = this.#theme.symbols.boxRound;
 		const borderWidth = this.#getHorizontalChromeWidth(paddingX);
 
-
 		// Layout the text
 		const layoutLines = this.#layoutText(layoutWidth);
 		const visibleContentHeight = this.#getVisibleContentHeight(layoutLines.length);
@@ -1169,8 +1192,13 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 		// Resolve the custom top-border content once per frame; the style decides
 		// how (and whether) to draw it. Provider evaluation stays editor-owned,
-		// coalescing per-event rebuilds to one per painted frame.
-		const topFillWidth = Math.max(0, width - borderWidth * 2);
+		// coalescing per-event rebuilds to one per painted frame. The inset gate
+		// mirrors {@link getTopBorderAvailableWidth} so both budget computations
+		// agree for any style combining topBorderInset with statusAttachment "none".
+		const topFillWidth = Math.max(
+			0,
+			width - borderWidth * 2 - (style.statusAttachment === "none" ? 0 : (style.topBorderInset ?? 0)),
+		);
 		let topBorder: EditorTopBorder | undefined;
 		if (style.statusAttachment !== "none") {
 			if (this.#topBorderProvider) {
@@ -1931,8 +1959,16 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		}
 		let entry = this.#wrapCache.get(line);
 		if (entry === undefined) {
-			if (this.#wrapCache.size >= 256) {
-				this.#wrapCache.clear();
+			if (this.#wrapCache.size >= WRAP_CACHE_LIMIT) {
+				// Evict the oldest half (Map preserves insertion order) instead of
+				// clearing: lines measured recently — typically the viewport and
+				// its neighbours — survive to the next frame.
+				const evict = this.#wrapCache.size - WRAP_CACHE_LIMIT / 2;
+				let dropped = 0;
+				for (const key of this.#wrapCache.keys()) {
+					this.#wrapCache.delete(key);
+					if (++dropped >= evict) break;
+				}
 			}
 			entry = { width: visibleWidth(line), chunks: null };
 			this.#wrapCache.set(line, entry);
@@ -2141,6 +2177,13 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	 * delta path when the hit map is empty (unfocused, mid-resize, or stale).
 	 */
 	handleMouse(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean {
+		if (event.wheel !== null) {
+			// The host's fallback calls `handleMouse` for events no frame segment
+			// consumed — including wheel over transcript rows that live in native
+			// scrollback. Scroll only when the pointer is over this editor's own
+			// rendered rows, mirroring the click path's origin math.
+			return this.#isPointerOverEditor(event, cursorScreen) && this.#wheelScroll(event.wheel);
+		}
 		if (!event.leftClick) return false;
 
 		const hitMap = this.#lastHitMap;
@@ -2184,6 +2227,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	 * or borders — the caller should keep routing.
 	 */
 	routeMouse(event: SgrMouseEvent, line: number, col: number): boolean {
+		if (event.wheel !== null) return this.#wheelScroll(event.wheel);
 		if (!event.leftClick) return false;
 		const hitMap = this.#lastHitMap;
 		if (hitMap === null) return false;
@@ -2590,7 +2634,7 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		// Let the host intercept marker-sized pastes (e.g. the large-paste menu). When it takes
 		// over, the editor inserts nothing and records no undo state — the host re-inserts via
 		// `insertPaste`/`insertText` once the user chooses.
-		if (isMarkerSized && this.onLargePaste?.(filteredText, pastedLines.length)) {
+		if (isMarkerSized && this.onLargePaste?.(filteredText, pastedLines.length, totalChars)) {
 			return;
 		}
 
@@ -2622,10 +2666,27 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	 *  normalize CRLF and
 	 *  NFC (macOS NFD filename drag-drops), expand tabs, and strip control characters except newline. */
 	#sanitizePastedText(pastedText: string): string {
+		// Fast path: escape-free text cannot carry tmux re-encoded control bytes,
+		// and control-character/tab/CR-free text needs none of the replace passes
+		// — normalize is then a no-op on engines with an ASCII NFC fast path
+		// (measured 0ms). A 4.4MB clean paste drops from ~6ms of scans to ~2.5ms
+		// (one probe); dirty pastes take the original multi-pass route.
+		const HAS_ESC = pastedText.includes("\x1b");
+		const NEEDS_CLEANUP = /[\t\r\x00-\x09\x0B-\x1F]/;
+
 		// Decode tmux's re-encoded control bytes (both extended-keys formats) back to
 		// their literal byte so the per-char filter below preserves newlines instead of
 		// stripping ESC and leaking the printable tail into the editor. See the decoder.
-		const decodedText = decodeReencodedPasteControls(pastedText);
+		const decodedText = HAS_ESC ? decodeReencodedPasteControls(pastedText) : pastedText;
+
+		if (!NEEDS_CLEANUP.test(decodedText)) {
+			// NFC-normalize so macOS Finder drag-drops of Korean filenames (which
+			// arrive as NFD: e.g. `ᄒ`+`ᅪ` instead of `화`) land in the buffer as
+			// the same precomposed syllables a terminal renders — without this,
+			// cursor column accounting drifts by `(NFD cells − NFC cells)` and the
+			// visible glyph desyncs from the hardware cursor.
+			return decodedText.normalize("NFC");
+		}
 
 		// Clean the pasted text. NFC-normalize so macOS Finder drag-drops of
 		// Korean filenames (which arrive as NFD: e.g. `ᄒ`+`ᅪ` instead of `화`)
@@ -2987,7 +3048,15 @@ export class Editor implements Component, Focusable, MouseRoutable {
 
 	#recordUndoState(): void {
 		if (this.#suspendUndo) return;
-		this.#undoStack.push(structuredClone(this.#state));
+		// Lines are immutable JS strings, so a snapshot only needs a fresh array
+		// shell — `structuredClone` deep-copied every line (O(buffer) per edit,
+		// 14-18ms at 100k lines). Consumers (`#applyUndo`,
+		// `#matchesTransientUndoSnapshot`) treat snapshots as read-only.
+		this.#undoStack.push({
+			lines: [...this.#state.lines],
+			cursorLine: this.#state.cursorLine,
+			cursorCol: this.#state.cursorCol,
+		});
 		if (this.#undoStack.length > MAX_UNDO_STACK) {
 			this.#undoStack.shift();
 		}
@@ -3374,11 +3443,41 @@ export class Editor implements Component, Focusable, MouseRoutable {
 	 * - startCol: starting column in the logical line
 	 * - length: length of this visual line segment
 	 */
+	// Visual-line map cache, keyed by everything the map derives from: the
+	// lines array reference + length (structural edits), the cursor line/col
+	// (cursor movement re-runs #findCurrentVisualLine callers but not the map
+	// itself — kept in the key anyway for safety), the layout width, and the
+	// width-config epoch. In-place line writes replace the array slot without
+	// changing the reference, so the cursor line's text is also stamped.
+	#visualMapCache: {
+		linesRef: string[];
+		linesLength: number;
+		cursorLineText: string;
+		width: number;
+		epoch: number;
+		map: Array<{ logicalLine: number; startCol: number; length: number }>;
+	} | null = null;
+
 	#buildVisualLineMap(width: number): Array<{ logicalLine: number; startCol: number; length: number }> {
+		const lines = this.#state.lines;
+		const cursorLineText = lines[this.#state.cursorLine] ?? "";
+		const epoch = getWidthConfigEpoch();
+		const cached = this.#visualMapCache;
+		if (
+			cached !== null &&
+			cached.linesRef === lines &&
+			cached.linesLength === lines.length &&
+			cached.cursorLineText === cursorLineText &&
+			cached.width === width &&
+			cached.epoch === epoch
+		) {
+			return cached.map;
+		}
+
 		const visualLines: Array<{ logicalLine: number; startCol: number; length: number }> = [];
 
-		for (let i = 0; i < this.#state.lines.length; i++) {
-			const line = this.#state.lines[i] || "";
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i] || "";
 			const lineVisWidth = this.#lineEntry(line, width).width;
 			if (line.length === 0) {
 				// Empty line still takes one visual line
@@ -3398,6 +3497,14 @@ export class Editor implements Component, Focusable, MouseRoutable {
 			}
 		}
 
+		this.#visualMapCache = {
+			linesRef: lines,
+			linesLength: lines.length,
+			cursorLineText,
+			width,
+			epoch,
+			map: visualLines,
+		};
 		return visualLines;
 	}
 
@@ -3479,6 +3586,61 @@ export class Editor implements Component, Focusable, MouseRoutable {
 				}
 			}
 		}
+	}
+
+	/** Wheel lines per notch. Smaller than a page scroll: the wheel is a
+	 *  fine-grained gesture, and each notch moves the cursor (the viewport
+	 *  follows the cursor), so 3 keeps drift predictable. */
+	static readonly #WHEEL_SCROLL_LINES = 3;
+
+	/** Whether an event reported at screen coordinates points at this editor's
+	 *  rendered content rows. Used by the `handleMouse` fallback so an
+	 *  unconsumed wheel over transcript/dead rows never scrolls the draft.
+	 *  Mirrors the click path's hit-map origin math, falling back to the
+	 *  cursorScreen-relative viewport bounds when the hit map is stale. */
+	#isPointerOverEditor(event: SgrMouseEvent, cursorScreen: { row: number; col: number }): boolean {
+		const hitMap = this.#lastHitMap;
+		if (hitMap !== null && this.#lastVisibleHeight > 0) {
+			let cursorVisibleIndex = -1;
+			for (let i = 0; i < hitMap.length; i++) {
+				if (hitMap[i]!.hasCursor) {
+					cursorVisibleIndex = i;
+					break;
+				}
+			}
+			if (cursorVisibleIndex >= 0) {
+				const borderTopOffset = this.#effectiveStyle().verticalChrome > 0 ? 1 : 0;
+				const editorOriginRow = cursorScreen.row - cursorVisibleIndex - borderTopOffset;
+				const eventVisibleRow = event.row - editorOriginRow - borderTopOffset;
+				return eventVisibleRow >= 0 && eventVisibleRow < this.#lastVisibleHeight;
+			}
+		}
+		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
+		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
+		const targetVisualLine = currentVisualLine + event.row - cursorScreen.row;
+		const visibleHeight = this.#getVisibleContentHeight(visualLines.length);
+		return targetVisualLine >= this.#scrollOffset && targetVisualLine < this.#scrollOffset + visibleHeight;
+	}
+
+	/** Wheel-over-editor viewport scroll. The editor viewport is cursor-anchored
+	 *  (`#updateScrollOffset` clamps around the cursor), so scrolling means moving
+	 *  the cursor by `#WHEEL_SCROLL_LINES` visual lines via the PageUp/PageDown
+	 *  machinery. Consumed only when content actually overflows the visible
+	 *  height — otherwise the event falls through so a host (e.g. an overlay's
+	 *  own scroll region) can still route it. */
+	#wheelScroll(direction: -1 | 1): boolean {
+		if (this.#maxHeight === undefined) return false;
+		const visualLines = this.#buildVisualLineMap(this.#lastLayoutWidth);
+		if (visualLines.length <= this.#getVisibleContentHeight(visualLines.length)) return false;
+		const currentVisualLine = this.#findCurrentVisualLine(visualLines);
+		const target = Math.max(
+			0,
+			Math.min(visualLines.length - 1, currentVisualLine + direction * Editor.#WHEEL_SCROLL_LINES),
+		);
+		if (target === currentVisualLine) return true;
+		this.#resetKillSequence();
+		this.#moveToVisualLine(visualLines, currentVisualLine, target);
+		return true;
 	}
 
 	#pageScroll(direction: -1 | 1): void {

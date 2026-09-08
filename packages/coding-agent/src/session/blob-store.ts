@@ -293,3 +293,16 @@ export function resolveImageDataSync(blobStore: BlobStore, data: string): string
 	}
 	return buffer.toString("base64");
 }
+
+/** Synchronous variant of {@link resolveImageDataUrl} — restores the stored data-URL text. */
+export function resolveImageDataUrlSync(blobStore: BlobStore, data: string): string {
+	const hash = parseBlobRef(data);
+	if (!hash) return data;
+
+	const buffer = blobStore.getSync(hash);
+	if (!buffer) {
+		logger.warn("Blob not found for persisted image data URL", { hash });
+		return data;
+	}
+	return buffer.toString("utf8");
+}

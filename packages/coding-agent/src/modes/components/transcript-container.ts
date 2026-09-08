@@ -1,7 +1,7 @@
 import {
 	type Component,
-	type HistoryBatch,
 	Container,
+	type HistoryBatch,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
 	type NativeScrollbackWidthEpoch,
@@ -596,20 +596,52 @@ export class TranscriptContainer
 		rows: number,
 		frame: AnimationFrame,
 	): readonly string[] {
-		const output: string[] = [];
-		const hiddenCount = Math.max(0, shown.length - rows);
-		let hiddenActive = 0;
-		for (let index = 0; index < hiddenCount; index++) {
-			if (shown[index]!.state === "active") hiddenActive++;
-		}
-		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
-		const visibleRows = rows - output.length;
-		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
-		for (const entry of visible) {
-			this.#setTranscriptAllocation(entry.component, 1, frame);
-			output.push(trimBlankEdges(entry.component.render(width))[0] ?? "");
-		}
-		return output.slice(0, rows);
+		const collectTail = (capacity: number): { firstVisibleIndex: number; rows: string[] } => {
+			const chunks: (readonly string[])[] = [];
+			let firstVisibleIndex = shown.length;
+			let used = 0;
+			for (let index = shown.length - 1; index >= 0; index--) {
+				const separator = chunks.length > 0 ? 1 : 0;
+				const available = capacity - used - separator;
+				if (available <= 0) break;
+
+				const entry = shown[index]!;
+				this.#setTranscriptAllocation(entry.component, available, frame);
+				const rendered = trimBlankEdges(entry.component.render(width));
+				if (rendered.length === 0) continue;
+				const contribution = rendered.length <= available ? rendered : rendered.slice(-available);
+				chunks.push(contribution);
+				firstVisibleIndex = index;
+				used += contribution.length + separator;
+			}
+
+			const output: string[] = [];
+			for (let index = chunks.length - 1; index >= 0; index--) {
+				if (output.length > 0) output.push("");
+				output.push(...chunks[index]!);
+			}
+			return { firstVisibleIndex, rows: output };
+		};
+		const countHiddenActive = (firstVisibleIndex: number): number => {
+			let hidden = 0;
+			for (let index = 0; index < firstVisibleIndex; index++) {
+				if (shown[index]!.state === "active") hidden++;
+			}
+			return hidden;
+		};
+
+		let selection = collectTail(rows);
+		let hiddenActive = countHiddenActive(selection.firstVisibleIndex);
+		if (hiddenActive === 0) return selection.rows;
+		if (rows === 1) return [`${hiddenActive} more transcript blocks active`];
+
+		// Reserve the diagnostic row, then recompute the semantic tail. The old
+		// fallback allocated one physical row to every block and selected row 0;
+		// wrapped prose consequently lost every continuation row and looked hard-
+		// clipped at the terminal edge whenever an older active block pinned history.
+		selection = collectTail(rows - 1);
+		hiddenActive = countHiddenActive(selection.firstVisibleIndex);
+		return [`${hiddenActive} more transcript blocks active`, ...selection.rows];
 	}
 
 	#setTranscriptAllocation(component: Component, rows: number, frame: AnimationFrame): void {

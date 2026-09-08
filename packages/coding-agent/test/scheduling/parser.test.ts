@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	nextRunAtForSchedule,
-	normalizeHeartbeatSchedule,
-	parseHeartbeatInput,
-	parseSchedule,
-} from "../../src/scheduling/parser";
+import { nextRunAtForSchedule, parseSchedule } from "../../src/scheduling/parser";
 
 const NOW = new Date(2026, 7, 9, 12, 34, 56, 789);
 
@@ -87,51 +82,5 @@ describe("nextRunAtForSchedule", () => {
 
 	it("does not reschedule a one-shot schedule", () => {
 		expect(nextRunAtForSchedule({ kind: "once", expression: "in 2h" }, NOW)).toBeUndefined();
-	});
-});
-
-describe("normalizeHeartbeatSchedule", () => {
-	it.each([
-		{ input: " 15 minutes ", expected: "every 15 minutes" },
-		{ input: " each 2h ", expected: "each 2h" },
-	] as const)("normalizes $input", ({ input, expected }) => {
-		expect(normalizeHeartbeatSchedule(input)).toBe(expected);
-	});
-});
-
-describe("parseHeartbeatInput", () => {
-	it.each([
-		{ input: "/heartbeat status", expected: { action: "status" } },
-		{ input: "/heartbeat pause", expected: { action: "pause" } },
-		{ input: "/heartbeat resume", expected: { action: "resume" } },
-		{ input: "/heartbeat clear", expected: { action: "clear" } },
-		{ input: "/heartbeat stop", expected: { action: "clear" } },
-	] as const)("maps $input to its management action", ({ input, expected }) => {
-		expect(parseHeartbeatInput(input)).toEqual(expected);
-	});
-
-	it.each([
-		{
-			label: "a leading follow-up flag",
-			input: "/heartbeat --follow-up --every 15m inspect the queue",
-			expected: {
-				action: "create",
-				interval: "every 15m",
-				instruction: "inspect the queue",
-				deliveryMode: "follow_up",
-			},
-		},
-		{
-			label: "a trailing steer flag",
-			input: "/heartbeat each 2h inspect the queue --steer",
-			expected: {
-				action: "create",
-				interval: "each 2h",
-				instruction: "inspect the queue",
-				deliveryMode: "steer",
-			},
-		},
-	] as const)("captures $label without retaining it in the instruction", ({ input, expected }) => {
-		expect(parseHeartbeatInput(input)).toEqual(expected);
 	});
 });

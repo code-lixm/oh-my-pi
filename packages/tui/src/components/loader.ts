@@ -211,7 +211,10 @@ export class Loader extends Text {
 	#requestAnimationPaint() {
 		if (!this.#ui) return;
 		if (typeof this.#ui.tryDirectWrite === "function") {
-			this.#ui.tryDirectWrite(this);
+			// Provider-mode composers keep #frameSegments empty, so tryDirectWrite
+			// fails every tick there; fall back to a component-scoped render so
+			// the spinner keeps animating instead of silently dropping frames.
+			if (!this.#ui.tryDirectWrite(this)) this.#ui.requestComponentRender(this);
 			return;
 		}
 		if (typeof this.#ui.requestDirectWrite === "function") this.#ui.requestDirectWrite(this);

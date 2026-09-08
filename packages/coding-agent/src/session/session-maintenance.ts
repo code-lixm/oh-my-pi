@@ -78,11 +78,6 @@ import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import { findCompactMode } from "./compact-modes";
 import {
-	SPECULATION_LEAD_MIN_TOKENS,
-	resolveSpeculationGraceCapTokens,
-	resolveSpeculationLeadTokens,
-} from "./compaction-speculation";
-import {
 	type CompactionMethod,
 	canUseRemoteCompaction,
 	resolveCompactionMethodOrder,
@@ -90,6 +85,11 @@ import {
 	resolveSpeculationMethod,
 } from "./compaction-methods";
 import { withCompactionRetainedFacts } from "./compaction-retained-facts";
+import {
+	resolveSpeculationGraceCapTokens,
+	resolveSpeculationLeadTokens,
+	SPECULATION_LEAD_MIN_TOKENS,
+} from "./compaction-speculation";
 import { convertToLlm, stripImagesFromMessage } from "./messages";
 import { isTerminalTextAssistantAnswer } from "./queued-messages";
 import {

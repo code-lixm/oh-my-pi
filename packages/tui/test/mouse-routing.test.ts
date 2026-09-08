@@ -465,4 +465,146 @@ describe("frame-level mouse routing", () => {
 		expect(consumed).toBe(true);
 		expect(editor.getCursor()).toEqual({ line: 0, col: 11 });
 	});
+
+	it("consumes wheel over an overflowing editor and moves the cursor by 3 visual lines", () => {
+		// Width 5 forces every word onto its own wrapped row: 5 visual rows,
+		// maxHeight 2 leaves 1 content row visible → overflow.
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderVisible(false);
+		editor.setMaxHeight(2);
+		editor.setText("alpha beta gamma delta epsilon");
+		editor.moveToMessageEnd();
+		editor.render(5);
+		const wheelUp = {
+			button: 64,
+			col: 0,
+			row: 0,
+			release: false,
+			wheel: -1 as const,
+			motion: false,
+			leftClick: false,
+		};
+
+		expect(editor.routeMouse(wheelUp, 0, 0)).toBe(true);
+		// One wheel step moves the cursor up 3 visual rows keeping the visual
+		// column: from the end of "epsilon" (col 30) to inside "gamma".
+		expect(editor.getCursor()).toEqual({ line: 0, col: 13 });
+
+		// Reaching the top still reports consumed (the gesture was over a
+		// scrollable surface) but the cursor clamps at the first visual row.
+		editor.routeMouse(wheelUp, 0, 0);
+		editor.routeMouse(wheelUp, 0, 0);
+		const topCursor = editor.getCursor();
+		expect(topCursor).toEqual({ line: 0, col: 2 });
+		editor.routeMouse(wheelUp, 0, 0);
+		expect(editor.getCursor()).toEqual(topCursor);
+	});
+
+	it("does not consume wheel when the editor content fits its viewport", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderVisible(false);
+		editor.setMaxHeight(3);
+		editor.setText("one two");
+		editor.render(20);
+		const wheelDown = {
+			button: 65,
+			col: 0,
+			row: 0,
+			release: false,
+			wheel: 1 as const,
+			motion: false,
+			leftClick: false,
+		};
+
+		expect(editor.routeMouse(wheelDown, 0, 0)).toBe(false);
+		expect(editor.getCursor()).toEqual({ line: 0, col: 7 });
+	});
+
+	it("does not consume wheel when no max height is set", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderVisible(false);
+		editor.setText("one two");
+		editor.render(20);
+		const wheelDown = {
+			button: 65,
+			col: 0,
+			row: 0,
+			release: false,
+			wheel: 1 as const,
+			motion: false,
+			leftClick: false,
+		};
+
+		expect(editor.routeMouse(wheelDown, 0, 0)).toBe(false);
+	});
+
+	it("handleMouse fallback ignores wheel that lands outside the editor's rendered rows", () => {
+		// Overflow fixture: width 5 puts each word on its own visual row;
+		// maxHeight 1 shows a single cursor-anchored content row, so the hit
+		// map has exactly one row and the cursor owns visible row 0.
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderVisible(false);
+		editor.setMaxHeight(1);
+		editor.setText("alpha beta gamma delta epsilon");
+		editor.moveToMessageEnd();
+		editor.render(5);
+		const wheelUp = {
+			button: 64,
+			col: 0,
+			release: false,
+			wheel: -1 as const,
+			motion: false,
+			leftClick: false,
+		};
+		const before = editor.getCursor();
+
+		// A wheel far from the editor (transcript/dead rows reaching the
+		// fallback handler) must not scroll the draft.
+		expect(editor.handleMouse({ ...wheelUp, row: 12 }, { row: 0, col: 0 })).toBe(false);
+		expect(editor.getCursor()).toEqual(before);
+
+		// A wheel over the editor's own visible row still scrolls.
+		expect(editor.handleMouse({ ...wheelUp, row: 0 }, { row: 0, col: 0 })).toBe(true);
+		expect(editor.getCursor()).not.toEqual(before);
+	});
+
+	it("does not scroll the focused editor when the wheel lands on a transcript row", async () => {
+		// Main-screen regression: with mouse tracking on, the terminal hands
+		// wheel reports to the TUI. A wheel over transcript rows that live in
+		// native scrollback must not leak into the focused editor's fallback
+		// handler and scroll the draft; a wheel over the editor itself still
+		// scrolls it.
+		const terminal = new VirtualTerminal(20, 6, 1_000);
+		const tui = new TUI(terminal, true);
+		const transcript = new Recorder("TTTT");
+		transcript.routeReturns = false; // transcript rows never consume wheel
+		const editor = new Editor(defaultEditorTheme);
+		editor.mouseTracking = true;
+		editor.setBorderVisible(false);
+		editor.setMaxHeight(2);
+		editor.setText("alpha beta gamma delta epsilon zeta eta theta");
+		tui.addChild(transcript);
+		tui.addChild(editor);
+		tui.setFocus(editor);
+
+		try {
+			tui.start();
+			await terminal.waitForRender();
+			const before = editor.getCursor();
+
+			// Screen row 0 is the transcript row: wheel up must leave the draft alone.
+			terminal.sendInput("\x1b[<64;1;1M");
+			expect(editor.getCursor()).toEqual(before);
+
+			// Screen row 1 is the editor's first content row: wheel up scrolls it.
+			terminal.sendInput("\x1b[<64;1;2M");
+			expect(editor.getCursor()).not.toEqual(before);
+		} finally {
+			tui.stop();
+		}
+	});
 });

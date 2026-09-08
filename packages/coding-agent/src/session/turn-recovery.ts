@@ -123,7 +123,13 @@ export interface TurnRecoveryHost {
 	 * `SessionMaintenance.contextFitsModel`.
 	 */
 	contextFitsModel(model: Model, excludedMessage?: AssistantMessage): boolean;
-	/** Whether streamed text has already been committed to the active output sink. */
+	/**
+	 * Whether streamed text has already been committed to the active output sink.
+	 * `true` (default) = text cannot be retracted, so a replayed turn would
+	 * duplicate it. Sinks with retry-recovery UI (TUI/RPC collapse the superseded
+	 * block via `applyRetryRecovery`) declare `false`, letting a transient stream
+	 * drop retry instead of terminating the turn.
+	 */
 	textOutputCommitted(): boolean;
 	thinkingLevel(): ThinkingLevel | undefined;
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
@@ -204,6 +210,13 @@ export class TurnRecovery {
 	#fallbackRecoveryReady: ActiveRetryFallbackState | undefined;
 	#usageReserveApprovedSelector: string | undefined;
 	#pendingRetryErrors: PendingRetryError[] = [];
+	/**
+	 * The retry saga's already-persisted empty-error row. Every failed attempt of
+	 * one saga would otherwise persist its own identical empty `stopReason:"error"`
+	 * message (N retries ⇒ N duplicate JSONL rows — the duplicated-history
+	 * artifact), so attempts after the first reuse this record instead.
+	 */
+	#sagaEmptyErrorRecord: PendingRetryError | undefined;
 	#usageLimitOutcomes = new WeakMap<AssistantMessage, Promise<UsageLimitOutcome>>();
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
@@ -754,6 +767,7 @@ export class TurnRecovery {
 
 	#clearPendingRetryErrors(): void {
 		this.#pendingRetryErrors = [];
+		this.#sagaEmptyErrorRecord = undefined;
 	}
 
 	/**
@@ -808,7 +822,15 @@ export class TurnRecovery {
 		id: number,
 		options: { switchedCredential: boolean; switchedModel: boolean; delayMs: number },
 	): Promise<void> {
-		await this.persistTerminalEmptyErrorTurn(message);
+		// Collapse: once this saga has persisted one empty-error row, later failed
+		// attempts of the same saga must not append identical duplicate rows — the
+		// single row's attempt counter tracks the latest failure instead. Terminal
+		// and dead-end persists bypass this collapse: the error that actually ended
+		// the run always gets its own row.
+		const collapsed = isEmptyErrorTurn(message) && this.#sagaEmptyErrorRecord !== undefined;
+		if (!collapsed) {
+			await this.persistTerminalEmptyErrorTurn(message);
+		}
 		const persistenceKey = sessionMessagePersistenceKey(message);
 		if (!persistenceKey) return;
 		let branchEntry: SessionEntry | undefined;
@@ -821,18 +843,29 @@ export class TurnRecovery {
 			branchEntry = entry;
 			break;
 		}
-		if (!branchEntry) return;
+		if (!branchEntry) {
+			// Collapsed: this saga's empty-error row is already persisted, so this
+			// attempt has no branch entry of its own — keep the row's attempt counter
+			// current instead of appending a duplicate row.
+			const record = this.#sagaEmptyErrorRecord;
+			if (collapsed && record) {
+				record.attempt = this.#retrySagaAttempt;
+			}
+			return;
+		}
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
 		const rateLimited = AIError.is(id, AIError.Flag.UsageLimit);
 		const recovery = this.#retryRecoveryKind(id, options.switchedCredential, options.switchedModel, options.delayMs);
 		const note = this.#retryRecoveryNote(recovery, rateLimited);
-		this.#pendingRetryErrors.push({
+		const record: PendingRetryError = {
 			entryId: branchEntry.id,
 			persistenceKey,
 			recovery,
 			attempt: this.#retrySagaAttempt,
 			note,
-		});
+		};
+		this.#pendingRetryErrors.push(record);
+		if (isEmptyErrorTurn(message)) this.#sagaEmptyErrorRecord = record;
 	}
 
 	async #markPendingRetryErrors(

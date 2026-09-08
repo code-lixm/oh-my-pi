@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KEYBINDINGS, type Keybinding, KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import {
+	getBargeInDefaultKeys,
+	getFollowUpDefaultKeys,
+	KEYBINDINGS,
+	type Keybinding,
+	KeybindingsManager,
+} from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import {
@@ -325,16 +331,16 @@ describe("KeybindingsManager.create", () => {
 		expect(manager.getKeys("app.display.reset")).toEqual(["ctrl+l"]);
 	});
 
-	it("defaults the follow-up shortcut to both Ctrl+Q and Ctrl+Enter (#1903)", async () => {
+	it("defaults the follow-up shortcut to the platform chords (#1903)", async () => {
 		const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-keybindings-"));
 
 		try {
 			const manager = KeybindingsManager.create(agentDir);
 
-			// Both chords must be registered so Windows Terminal users (which swallow
-			// Ctrl+Enter at the terminal layer) get a working follow-up binding out
-			// of the box, without breaking users on Kitty/iTerm2/WezTerm/Ghostty.
-			expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
+			// Ctrl+Q everywhere (the chord every terminal delivers, including Windows
+			// Terminal which swallows Ctrl+Enter); macOS additionally keeps Ctrl+Enter
+			// because Cmd+Return owns barge-in there.
+			expect(manager.getKeys("app.message.followUp")).toEqual(getFollowUpDefaultKeys());
 		} finally {
 			await removeWithRetries(agentDir);
 		}
@@ -346,10 +352,13 @@ describe("KeybindingsManager.create", () => {
 		});
 		setKeybindings(manager);
 
+		const remaining = getFollowUpDefaultKeys().filter(key => key !== "ctrl+q");
 		expect(manager.getKeys("app.plan.toggle")).toEqual(["ctrl+q"]);
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+enter"]);
-		expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter");
-		expect(manager.getEffectiveConfig()["app.message.followUp"]).toBe("ctrl+enter");
+		expect(manager.getKeys("app.message.followUp")).toEqual(remaining);
+		if (remaining.length > 0) {
+			expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter");
+			expect(manager.getEffectiveConfig()["app.message.followUp"]).toBe("ctrl+enter");
+		}
 		expect(matchesAppFollowUp(ctrl("q"))).toBe(false);
 		expect(matchesAppFollowUp("\x1b[13;5u")).toBe(true);
 	});
@@ -359,7 +368,7 @@ describe("KeybindingsManager.create", () => {
 			"unknown.action": "ctrl+q",
 		});
 
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
+		expect(manager.getKeys("app.message.followUp")).toEqual(getFollowUpDefaultKeys());
 	});
 
 	it("keeps Ctrl+Q when the user explicitly assigns it to follow-up (#1903)", () => {
@@ -368,6 +377,29 @@ describe("KeybindingsManager.create", () => {
 		});
 
 		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q"]);
+	});
+});
+
+describe("platform default chords", () => {
+	it("binds barge-in to Cmd+Return on macOS with Ctrl+X as the fallback chord", () => {
+		expect(getBargeInDefaultKeys("darwin")).toEqual(["super+enter", "ctrl+x"]);
+	});
+
+	it("binds barge-in to Ctrl+Return off macOS with Ctrl+X as the fallback chord", () => {
+		expect(getBargeInDefaultKeys("win32")).toEqual(["ctrl+enter", "ctrl+x"]);
+		expect(getBargeInDefaultKeys("linux")).toEqual(["ctrl+enter", "ctrl+x"]);
+	});
+
+	it("keeps follow-up on Ctrl+Q alone wherever Ctrl+Return belongs to barge-in", () => {
+		expect(getFollowUpDefaultKeys("win32")).toEqual(["ctrl+q"]);
+		expect(getFollowUpDefaultKeys("linux")).toEqual(["ctrl+q"]);
+		expect(getFollowUpDefaultKeys("darwin")).toEqual(["ctrl+q", "ctrl+enter"]);
+	});
+
+	it("wires the host platform's chords into the bundled defaults", () => {
+		const manager = KeybindingsManager.inMemory();
+		expect(manager.getKeys("app.message.bargeIn")).toEqual(getBargeInDefaultKeys());
+		expect(manager.getKeys("app.message.followUp")).toEqual(getFollowUpDefaultKeys());
 	});
 });
 

@@ -14,6 +14,10 @@ type FakeEditor = {
 	clearCustomKeyHandlers(): void;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
+	compactPendingImageReferences(text: string): string;
+	setCollapsedText(text: string): void;
+	markPendingImagesManaged(): void;
+	composerChips(): Array<{ kind: string; n: number }>;
 };
 
 function createContext() {
@@ -38,6 +42,12 @@ function createContext() {
 		clearCustomKeyHandlers: vi.fn(),
 		pendingImages: [] as ImageContent[],
 		pendingImageLinks: [] as (string | undefined)[],
+		compactPendingImageReferences: (text: string) => text,
+		setCollapsedText(text: string) {
+			editorText = text;
+		},
+		markPendingImagesManaged() {},
+		composerChips: () => [],
 	};
 
 	const ctx = {

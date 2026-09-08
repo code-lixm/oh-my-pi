@@ -81,6 +81,10 @@ export const joinHelp = { description: "Join a shared collab session (same as /j
 export const modelsHelp = { description: "List, search, and refresh available models" } satisfies CommandMetadata;
 
 export const pluginHelp = { description: "Manage plugins (install, uninstall, list, etc.)" } satisfies CommandMetadata;
+export const cronHelp = {
+	description: "List persisted session-bound scheduled tasks (cron jobs) across all sessions",
+} satisfies CommandMetadata;
+
 export const psHelp = {
 	description: "List and control daemon-supervised background processes (logs, stop, kill, restart)",
 } satisfies CommandMetadata;

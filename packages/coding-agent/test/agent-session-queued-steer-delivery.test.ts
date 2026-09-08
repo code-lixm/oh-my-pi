@@ -63,6 +63,14 @@ describe("AgentSession queued steer delivery", () => {
 		authStorage.close();
 		removeSyncWithRetries(fixtureDir);
 	});
+	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (predicate()) return;
+			await Bun.sleep(1);
+		}
+		throw new Error("Timed out waiting for condition");
+	}
 
 	async function createSession(responses: MockResponse[]): Promise<SteerHarness> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -186,7 +194,7 @@ describe("AgentSession queued steer delivery", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
-	it("drains steering left after aborting an auto-continued queued turn", async () => {
+	it("keeps steering queued across a user interrupt until an explicit resume", async () => {
 		const { session, mock } = await createSession([
 			{ content: ["initial response"] },
 			{ content: ["first queued response"], delayMs: 1_000 },
@@ -210,9 +218,47 @@ describe("AgentSession queued steer delivery", () => {
 			session.agent.state.messages.some(message => message.role === "assistant" && message.stopReason === "aborted"),
 		).toBe(true);
 
+		// The interrupt is a hard stop: the kept steer must NOT auto-resume.
+		expect(mock.calls.length).toBe(2);
+		expect(session.getQueuedMessages().steering).toEqual(["second queued"]);
+
+		// An explicit resume drains it.
+		expect(session.resumeQueuedMessages()).toBe(true);
+		await nextUserMessage(session, "second queued");
+		await session.waitForIdle();
 		expect(mock.calls.length).toBe(3);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
-		expect(session.getQueuedMessages().steering).toEqual([]);
+	});
+
+	it("keeps a follow-up stranded by a user interrupt until an explicit resume", async () => {
+		const { session, mock } = await createSession([
+			// Slow first turn keeps isStreaming true while the follow-up queues.
+			{ content: ["initial response"], delayMs: 400 },
+			{ content: ["follow-up response"] },
+		]);
+		const firstPrompt = session.prompt("hello");
+		await waitFor(() => session.isStreaming);
+
+		// Interrupt the run before its boundary poll can consume the follow-up:
+		// the abort strands it in the agent queue, and the interrupt's latch
+		// must keep it parked instead of letting the idle drain run it.
+		await session.followUp("queued follow-up");
+		expect(session.getQueuedMessages().followUp).toContain("queued follow-up");
+		await session.abort({ reason: USER_INTERRUPT_LABEL });
+		await firstPrompt.catch(() => {});
+		await session.waitForIdle();
+
+		expect(mock.calls.length).toBe(1);
+		expect(session.getQueuedMessages().followUp).toContain("queued follow-up");
+
+		expect(session.resumeQueuedMessages()).toBe(true);
+		await waitFor(() => mock.calls.length === 2);
+		await session.waitForIdle();
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+		const assistantTexts = session.agent.state.messages
+			.filter((message): message is Extract<typeof message, { role: "assistant" }> => message.role === "assistant")
+			.flatMap(message => message.content.filter(c => c.type === "text").map(c => c.text));
+		expect(assistantTexts).toContain("follow-up response");
 	});
 
 	it("dequeuing an ultrathink prompt mid-stream restores the text and drops its companion notice", async () => {

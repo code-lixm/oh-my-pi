@@ -28,6 +28,7 @@ export const ruleComposerStyle: ComposerStyle = {
 	id: "rule",
 	sideBorders: false,
 	verticalChrome: 1,
+	topBorderInset: 2,
 	statusAttachment: "top-rule-chip",
 	bottomBar: "left",
 	bottomBarGap: true,

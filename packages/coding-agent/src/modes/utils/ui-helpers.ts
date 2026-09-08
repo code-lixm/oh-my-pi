@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { type Component, Loader, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
@@ -46,8 +46,9 @@ import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
-import { theme } from "../../modes/theme/theme";
+import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
+import { resolveMessageBlobRefsSync } from "../../session/blob-ref-resolution";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -94,6 +95,10 @@ type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
 };
+
+function queuedMessageKey(mode: "steer" | "followUp", text: string): string {
+	return `${mode}\u0000${text}`;
+}
 type AddMessageOptions = {
 	populateHistory?: boolean;
 	imageLinks?: readonly (string | undefined)[];
@@ -155,6 +160,10 @@ export class UiHelpers {
 	}
 
 	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
+		// Hydrated session entries keep persisted image payloads as `blob:` refs;
+		// components read image data synchronously, so hand them a resolved clone
+		// (the original entry keeps the compact ref).
+		message = resolveMessageBlobRefsSync(message);
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -348,12 +357,20 @@ export class UiHelpers {
 	async renderSessionContextIncrementally(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions,
-		renderChunk?: () => void,
+		renderChunk?: (completedMessages: number, totalMessages: number) => void,
 	): Promise<void> {
 		const steps = this.#renderSessionContextSteps(sessionContext, options);
+		const totalMessages = sessionContext.messages.length;
+		let completedMessages = 0;
 		let messagesSinceYield = 0;
 		let chunkStartedAt = performance.now();
-		while (!steps.next().done) {
+		while (true) {
+			const step = steps.next();
+			if (step.done) {
+				renderChunk?.(totalMessages, totalMessages);
+				return;
+			}
+			completedMessages++;
 			messagesSinceYield++;
 			if (
 				messagesSinceYield < TRANSCRIPT_RENDER_CHUNK_MESSAGES &&
@@ -361,7 +378,7 @@ export class UiHelpers {
 			) {
 				continue;
 			}
-			renderChunk?.();
+			renderChunk?.(completedMessages, totalMessages);
 			await waitForImmediate();
 			messagesSinceYield = 0;
 			chunkStartedAt = performance.now();
@@ -875,22 +892,70 @@ export class UiHelpers {
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		let context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
-			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
-		});
-		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+		const hasRestorableEntries =
+			options.clearTerminalHistory && this.ctx.viewSession.sessionManager.getEntries().length > 0;
 		const renderOptions: RenderSessionContextOptions = {
 			updateFooter: true,
 			populateHistory: false,
 		};
 		if (options.clearTerminalHistory) renderOptions.deferRender = true;
 		let committed = false;
+		let restoreLoader: Loader | undefined;
+		const restoreProgressMessage = (completedMessages: number, totalMessages: number) =>
+			tSettingsUi("Restoring session… {completed}/{total}", {
+				completed: completedMessages,
+				total: totalMessages,
+			});
+		const removeRestoreLoader = (): boolean => {
+			const loader = restoreLoader;
+			if (!loader) return false;
+			restoreLoader = undefined;
+			loader.stop();
+			this.ctx.statusContainer.removeChild(loader);
+			return true;
+		};
+		const ensureRestoreLoader = (totalMessages?: number): void => {
+			if (!hasRestorableEntries) return;
+			if (restoreLoader) {
+				if (totalMessages !== undefined && totalMessages > 0) {
+					restoreLoader.setMessage(restoreProgressMessage(0, totalMessages));
+				}
+				return;
+			}
+			restoreLoader = new Loader(
+				this.ctx.ui,
+				spinner => theme.fg("accent", spinner),
+				text => theme.fg("muted", text),
+				totalMessages !== undefined && totalMessages > 0
+					? restoreProgressMessage(0, totalMessages)
+					: tSettingsUi("Restoring session…"),
+				getSymbolTheme().spinnerFrames,
+			);
+			this.ctx.statusContainer.addChild(restoreLoader);
+		};
 		this.ctx.initialChatRendered = false;
 		try {
+			ensureRestoreLoader();
+			// Context materialization can dominate a large resume. Give the mounted
+			// live loader a terminal frame before its synchronous scan begins.
+			if (restoreLoader) await waitForImmediate();
+			let context = this.ctx.viewSession.buildTranscriptSessionContext({
+				collapseCompactedHistory: settings.get("display.collapseCompacted"),
+				keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
+			});
+			let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+			ensureRestoreLoader(context.messages.length);
 			while (true) {
 				if (this.ctx.viewSession.isStreaming) {
 					this.ctx.renderSessionContext(context, renderOptions);
+				} else if (restoreLoader) {
+					await this.ctx.renderSessionContextIncrementally(
+						context,
+						renderOptions,
+						(completedMessages, totalMessages) => {
+							restoreLoader?.setMessage(restoreProgressMessage(completedMessages, totalMessages));
+						},
+					);
 				} else {
 					await this.ctx.renderSessionContextIncrementally(context, renderOptions);
 				}
@@ -906,6 +971,7 @@ export class UiHelpers {
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});
 				replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
+				ensureRestoreLoader(context.messages.length);
 			}
 
 			const replayedChatChildren = [...stagedChatContainer.children];
@@ -942,6 +1008,7 @@ export class UiHelpers {
 						: tSettingsUi("{compactionCount} times", { compactionCount });
 				this.ctx.showStatus(tSettingsUi("Session compacted {times}", { times }));
 			}
+			removeRestoreLoader();
 			if (options.clearTerminalHistory) {
 				this.ctx.ui.paintViewportTail();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
@@ -959,6 +1026,7 @@ export class UiHelpers {
 				stagedChatContainer.disposeChildren();
 			}
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
+			if (!committed && removeRestoreLoader()) this.ctx.ui.requestRender();
 		}
 	}
 
@@ -1067,13 +1135,37 @@ export class UiHelpers {
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
 		const steeringMessages = [...queuedMessages.steering];
-		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "steer") steeringMessages.push(entry.text);
-		}
-
 		const followUpMessages = [...queuedMessages.followUp];
-		for (const entry of this.ctx.compactionQueuedMessages as CompactionQueuedMessage[]) {
-			if (entry.mode === "followUp") followUpMessages.push(entry.text);
+		// A queue_changed event can expose the confirmed item before the dispatch
+		// path retires its optimistic copy. Each optimistic entry stage-stamps how
+		// many messages already sat in the confirmed queue, so the Nth confirmed
+		// copy retires entry N — a stale race never paints a duplicate, and a
+		// genuine second identical submission stays visible as real work.
+		const confirmedCounts = new Map<string, number>();
+		const tallyConfirmed = (pool: readonly string[], mode: "steer" | "followUp") => {
+			for (const text of pool) {
+				const key = queuedMessageKey(mode, text);
+				confirmedCounts.set(key, (confirmedCounts.get(key) ?? 0) + 1);
+			}
+		};
+		tallyConfirmed(queuedMessages.steering, "steer");
+		tallyConfirmed(queuedMessages.followUp, "followUp");
+		// Same-key confirmed copies retire optimistic entries in stage order, one
+		// confirmation each: with two staged copies of A, one confirmed A hides
+		// only the first; the second stays visible until its own confirmation.
+		const confirmedByOptimistic = new Map<string, number>();
+		for (const entry of this.ctx.optimisticQueuedMessages) {
+			const key = queuedMessageKey(entry.mode, entry.text);
+			// Baseline-less legacy entries (test doubles) never suppress rendering;
+			// staged entries always carry one.
+			if (entry.confirmedBaseline === undefined) continue;
+			const consumed = confirmedByOptimistic.get(key) ?? 0;
+			if ((confirmedCounts.get(key) ?? 0) - consumed > entry.confirmedBaseline) {
+				confirmedByOptimistic.set(key, consumed + 1);
+				continue;
+			}
+			if (entry.mode === "steer") steeringMessages.push(entry.text);
+			else followUpMessages.push(entry.text);
 		}
 
 		const groups = [
@@ -1111,6 +1203,66 @@ export class UiHelpers {
 				? tSettingsUi("Queued message with image for after compaction")
 				: tSettingsUi("Queued message for after compaction"),
 		);
+	}
+
+	/** Show a dispatch-in-flight queue entry immediately (first frame after
+	 *  Enter / Alt+Q) instead of waiting for the session queue to confirm it. */
+	addOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void {
+		// Baseline is the same-key confirmed count, not the same-mode total: a
+		// queued B must never inflate A's baseline, or A would never retire.
+		const confirmed = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
+		const key = queuedMessageKey(mode, text);
+		const sameKeyConfirmed = (mode === "steer" ? confirmed.steering : confirmed.followUp).filter(
+			queuedText => queuedMessageKey(mode, queuedText) === key,
+		).length;
+		this.ctx.optimisticQueuedMessages.push({ mode, text, confirmedBaseline: sameKeyConfirmed });
+		this.ctx.updatePendingMessagesDisplay();
+	}
+
+	/** Retire one optimistic entry when its dispatch failed and the caller
+	 *  hands the draft back to the editor. The dispatching mode narrows the
+	 *  match so a failed steer cannot consume a same-text followUp chip. */
+	retireOptimisticQueuedMessage(text: string, mode?: "steer" | "followUp"): void {
+		const index = this.ctx.optimisticQueuedMessages.findIndex(
+			entry => entry.text === text && (mode === undefined || entry.mode === mode),
+		);
+		if (index < 0) return;
+		this.ctx.optimisticQueuedMessages.splice(index, 1);
+		this.ctx.updatePendingMessagesDisplay();
+	}
+
+	/** Retire optimistic entries the session queue has now confirmed. Same-key
+	 *  confirmed copies retire entries in stage order, one confirmation each, so
+	 *  queueing the same text twice does not retire both copies at once. */
+	reconcileOptimisticQueuedMessages(): void {
+		if (this.ctx.optimisticQueuedMessages.length === 0) return;
+		const confirmed = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
+		const counts = new Map<string, number>();
+		const tally = (pool: readonly string[], prefix: "steer" | "followUp") => {
+			for (const text of pool) {
+				const key = queuedMessageKey(prefix, text);
+				counts.set(key, (counts.get(key) ?? 0) + 1);
+			}
+		};
+		tally(confirmed.steering, "steer");
+		tally(confirmed.followUp, "followUp");
+
+		// Baseline-less legacy entries (test doubles) never retire here; only
+		// their explicit text retire path removes them.
+		const consumedByKey = new Map<string, number>();
+		let changed = false;
+		for (let index = this.ctx.optimisticQueuedMessages.length - 1; index >= 0; index--) {
+			const entry = this.ctx.optimisticQueuedMessages[index];
+			if (!entry || entry.confirmedBaseline === undefined) continue;
+			const key = queuedMessageKey(entry.mode, entry.text);
+			const consumed = consumedByKey.get(key) ?? 0;
+			if ((counts.get(key) ?? 0) - consumed > entry.confirmedBaseline) {
+				consumedByKey.set(key, consumed + 1);
+				this.ctx.optimisticQueuedMessages.splice(index, 1);
+				changed = true;
+			}
+		}
+		if (changed) this.ctx.updatePendingMessagesDisplay();
 	}
 
 	async #deliverQueuedMessage(message: CompactionQueuedMessage): Promise<void> {

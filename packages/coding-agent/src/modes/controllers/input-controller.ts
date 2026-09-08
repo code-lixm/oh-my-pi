@@ -362,7 +362,13 @@ export class InputController {
 				this.ctx.session.queuedMessageCount > 0 ||
 				this.ctx.compactionQueuedMessages.length > 0)
 		) {
-			this.restoreQueuedMessagesToEditor({ forInterrupt: true });
+			// Queued messages stay queued across an interrupt: the user queued them FOR
+			// this conversation, so the post-abort stranded-message drain delivers them
+			// as the next turn (steers immediately; follow-ups once auto-resume applies).
+			// Retiring the optimistic chips keeps the pending bar consistent with the
+			// confirmed queue instead of showing entries that already live in the queue.
+			this.ctx.reconcileOptimisticQueuedMessages();
+			this.ctx.updatePendingMessagesDisplay();
 		}
 		if (this.ctx.collabGuest?.state?.isStreaming || (this.ctx.collabGuest && this.ctx.loadingAnimation)) {
 			this.ctx.collabGuest.sendAbort();
@@ -379,7 +385,18 @@ export class InputController {
 			if (viewSession.isRetrying) safeAbort("retry", () => viewSession.abortRetry());
 			if (viewSession.isStreaming) void viewSession.abort({ reason: USER_INTERRUPT_LABEL });
 		}
-		if (hadMainWork) this.#abortStreamingTurn();
+		if (hadMainWork) {
+			this.#abortStreamingTurn();
+			// The interrupt keeps queued messages instead of running them, so say
+			// how many survived and how to run them now.
+			if (this.ctx.session.queuedMessageCount > 0) {
+				this.ctx.showStatus(
+					tSettingsUi("Interrupted. {count} queued messages kept — press Enter to run them.", {
+						count: this.ctx.session.queuedMessageCount,
+					}),
+				);
+			}
+		}
 		this.ctx.ui.requestRender();
 	}
 
@@ -609,7 +626,7 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
 		);
 		this.ctx.editor.onPasteTextRaw = () => void this.handleClipboardTextRawPaste();
-		this.ctx.editor.onLargePaste = (text, lineCount) => this.handleLargePaste(text, lineCount);
+		this.ctx.editor.onLargePaste = (text, lineCount, charCount) => this.handleLargePaste(text, lineCount, charCount);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.copyPrompt",
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
@@ -649,6 +666,9 @@ export class InputController {
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
+		}
+		for (const key of this.ctx.keybindings.getKeys("app.message.bargeIn")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleBargeIn());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
@@ -817,12 +837,17 @@ export class InputController {
 			if (this.ctx.focusedAgentId) return;
 
 			// Empty submit while streaming with queued messages: abort the active
-			// turn and let the post-unwind drain deliver the agent-core queue.
+			// turn; the queue is kept and waits for an explicit resume.
 			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
 				if (hadPendingImages) this.ctx.editor.clearDraft();
 				if (this.ctx.session.queuedMessageCount > 0) {
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
+					this.ctx.showStatus(
+						tSettingsUi("Interrupted. {count} queued messages kept — press Enter to run them.", {
+							count: this.ctx.session.queuedMessageCount,
+						}),
+					);
 					this.ctx.updatePendingMessagesDisplay();
 					this.ctx.ui.requestRender();
 				}
@@ -831,6 +856,13 @@ export class InputController {
 
 			if (!text && !hasPendingImages) {
 				if (hadPendingImages) this.ctx.editor.clearDraft();
+				// An idle empty submit is the explicit "run them now" gesture for
+				// messages a prior interrupt kept in the queue. Gated on the
+				// displayable count so internal-only queues stay a silent no-op.
+				if (this.ctx.session.queuedMessageCount > 0 && this.ctx.session.resumeQueuedMessages()) {
+					this.ctx.updatePendingMessagesDisplay();
+					this.ctx.ui.requestRender();
+				}
 				return;
 			}
 
@@ -1052,6 +1084,9 @@ export class InputController {
 				// (a user-role `message_start` event) leaves any draft the user has
 				// typed since queuing intact. Same protection as #783, applied to
 				// the streaming/queue path.
+				// First-frame feedback: show the entry while the dispatch is in
+				// flight (the RPC roundtrip can span a whole dispatch window).
+				this.ctx.addOptimisticQueuedMessage(text, "steer");
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
@@ -1069,8 +1104,10 @@ export class InputController {
 							: images.map(() => undefined);
 						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 					}
+					this.ctx.retireOptimisticQueuedMessage(text, "steer");
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
+				this.ctx.reconcileOptimisticQueuedMessages();
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
 				return;
@@ -1532,6 +1569,8 @@ export class InputController {
 			while (queuedCount < messages.length) {
 				const message = messages[queuedCount] ?? "";
 				const queuedImages = queuedCount === 0 ? images : undefined;
+				// First-frame feedback while each dispatch is in flight.
+				this.ctx.addOptimisticQueuedMessage(message, "followUp");
 				await this.ctx.withLocalSubmission(
 					message,
 					async () => {
@@ -1566,10 +1605,15 @@ export class InputController {
 								.join("\n")}`;
 				this.ctx.editor.setText(restored);
 			}
+			// Drop every in-flight entry: delivered ones are confirmed by the
+			// queue; undelivered ones return to the editor above.
+			for (const message of messages) this.ctx.retireOptimisticQueuedMessage(message);
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 
+		this.ctx.reconcileOptimisticQueuedMessages();
 		this.ctx.updatePendingMessagesDisplay();
+
 		if (queuedCount === messages.length) {
 			this.ctx.showStatus(
 				startImmediately
@@ -1642,6 +1686,9 @@ export class InputController {
 
 		if (this.ctx.session.isStreaming) {
 			this.ctx.editor.clearDraft(text);
+			// First-frame feedback while the dispatch is in flight; retired on
+			// failure, reconciled against the confirmed queue on success.
+			this.ctx.addOptimisticQueuedMessage(text, "followUp");
 			try {
 				await this.ctx.withLocalSubmission(
 					text,
@@ -1649,23 +1696,67 @@ export class InputController {
 					{ imageCount: images?.length ?? 0 },
 				);
 			} catch (error) {
+				this.ctx.retireOptimisticQueuedMessage(text, "followUp");
 				restoreOnError(error);
 			}
+			this.ctx.reconcileOptimisticQueuedMessages();
 			this.ctx.updatePendingMessagesDisplay();
 			// Editor input and the pending-message refresh each schedule their own
 			// scoped paint; a full compose here would replay the transcript on every queue append.
 			return;
 		}
 
-		// Not streaming — just submit normally
+		// Not streaming at check time — submit as a fresh turn. Reading
+		// `session.isStreaming` is NOT atomic with the eventual turn dispatch inside
+		// `session.prompt()`: the prior turn's post-prompt recovery (or a background
+		// continuation) can flip the session busy in the gap, and a bare prompt()
+		// would then throw AgentBusyError straight to an error toast even though the
+		// UI shows no "Working…". Passing `streamingBehavior: "followUp"` is a no-op
+		// when the session is genuinely idle (a fresh turn runs and the option is
+		// ignored) and queues the message for the idle drain instead of erroring
+		// when a turn is still underway — mirroring `submitInteractiveInput`'s
+		// unconditional default on the Enter path.
 		this.ctx.editor.clearDraft(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
-				imageCount: images?.length ?? 0,
-			});
+			await this.ctx.withLocalSubmission(
+				text,
+				() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+				{
+					imageCount: images?.length ?? 0,
+				},
+			);
 		} catch (error) {
 			restoreOnError(error);
 		}
+		this.ctx.reconcileOptimisticQueuedMessages();
+		this.ctx.updatePendingMessagesDisplay();
+	}
+
+	/**
+	 * Barge-in: interrupt the in-flight turn immediately and send the current
+	 * draft. Steering waits for the reasoning/tool step to end and follow-up
+	 * waits for the whole turn — this gesture replaces the wait with the same
+	 * user-interrupt abort as double-Esc, then dispatches the draft through the
+	 * editor's regular submit pipeline so every Enter semantic (image
+	 * compaction, slash commands, skills, error restore) applies unchanged. The
+	 * draft's prompt is itself the explicit resume gesture, so steer/follow-up
+	 * entries kept by the interrupt flow into the new turn per the standard
+	 * queued-delivery contract.
+	 */
+	async handleBargeIn(): Promise<void> {
+		// Observation-only subagent focus keeps all main submission gestures inert.
+		if (this.ctx.focusedAgentId) return;
+		// A barge-in must not tear down an in-flight compaction; the compaction
+		// queue owns text typed during it.
+		if (this.ctx.session.isCompacting) return;
+		if (!this.ctx.editor.getExpandedText().trim() && this.ctx.editor.pendingImages.length === 0) return;
+
+		if (this.ctx.session.isStreaming) {
+			await this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+			this.ctx.updatePendingMessagesDisplay();
+			this.ctx.ui.requestRender();
+		}
+		this.ctx.editor.submit();
 	}
 
 	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string; forInterrupt?: boolean }): number {
@@ -1690,6 +1781,8 @@ export class InputController {
 			...compactionQueued.filter(e => e.mode === "followUp").map(e => ({ text: e.text, images: e.images })),
 		];
 		if (allQueued.length === 0) {
+			// The pending bar's optimistic entries cannot be restored; dismiss them so its edit hint stays truthful.
+			this.ctx.optimisticQueuedMessages.length = 0;
 			this.ctx.updatePendingMessagesDisplay();
 			if (options?.abort) {
 				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
@@ -1980,9 +2073,15 @@ export class InputController {
 	 * configured `paste.largeMenuThreshold` line count; otherwise `false` for default collapse-to-marker
 	 * behavior. The async menu is fired and forgotten — the editor only needs the synchronous verdict.
 	 */
-	handleLargePaste(text: string, lineCount: number): boolean {
+	handleLargePaste(text: string, lineCount: number, charCount: number): boolean {
 		const threshold = this.ctx.settings.get("paste.largeMenuThreshold");
-		if (!(threshold > 0) || lineCount < threshold) return false;
+		if (!(threshold > 0)) return false;
+		// Line-count gate as before, plus a character-count gate so giant
+		// single-line payloads (minified JSON, logs — which never reach the
+		// line threshold) also get the wrap/file menu instead of collapsing
+		// into an inline marker. 200k chars ≈ one large file inline.
+		const charThreshold = Math.max(threshold * 2048, 200_000);
+		if (lineCount < threshold && charCount < charThreshold) return false;
 		void this.presentLargePasteMenu(text, lineCount);
 		return true;
 	}

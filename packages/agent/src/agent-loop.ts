@@ -2152,6 +2152,34 @@ function resolveToolForCall(
  * scheduling, and `tool.execute` all agree. Failures are recorded per call and
  * surfaced by `executeToolCalls` at the record's scheduled slot.
  */
+/**
+ * Self-repair feedback for a tool call the runtime cannot resolve. Naming the
+ * available tools (and the closest candidate) lets the model correct the call
+ * in its next step instead of failing the turn.
+ */
+function unknownToolCallError(name: string, tools: readonly { name: string }[] | undefined): string {
+	const names = (tools ?? []).map(tool => tool.name);
+	if (names.length === 0) return `Tool ${name} not found`;
+	const suggestion = suggestToolName(name, names);
+	const listed = names.length > 40 ? `${names.slice(0, 40).join(", ")} …+${names.length - 40} more` : names.join(", ");
+	const hint = suggestion ? ` Did you mean "${suggestion}"?` : "";
+	return `Tool ${name} not found. Available tools: ${listed}.${hint}`;
+}
+
+function suggestToolName(name: string, candidates: readonly string[]): string | undefined {
+	const target = name.toLowerCase();
+	let best: { name: string; score: number } | undefined;
+	for (const candidate of candidates) {
+		const lower = candidate.toLowerCase();
+		let score = 0;
+		if (lower === target) score = 100;
+		else if (lower.startsWith(target) || target.startsWith(lower)) score = 80 - Math.abs(lower.length - target.length);
+		else if (lower.includes(target) || target.includes(lower)) score = 60 - Math.abs(lower.length - target.length);
+		if (score > (best?.score ?? 0)) best = { name: candidate, score };
+	}
+	return best?.name;
+}
+
 async function prepareToolCallDispatch(
 	assistantMessage: AssistantMessage,
 	context: AgentContext,
@@ -2185,7 +2213,7 @@ async function prepareToolCallDispatch(
 		}
 		const validate = (args: Record<string, unknown>): Record<string, unknown> | undefined => {
 			try {
-				if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+				if (!tool) throw new Error(unknownToolCallError(toolCall.name, context.tools));
 				return validateToolArguments(tool, { ...toolCall, arguments: args });
 			} catch (validationError) {
 				if (tool?.lenientArgValidation) {
@@ -2527,7 +2555,7 @@ async function executeToolCalls(
 
 		await runInActiveSpan(toolSpan, async () => {
 			try {
-				if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+				if (!tool) throw new Error(unknownToolCallError(toolCall.name, tools));
 				if (record.signal.aborted) {
 					result = createToolSignalAbortedResult(record.signal);
 					isError = true;

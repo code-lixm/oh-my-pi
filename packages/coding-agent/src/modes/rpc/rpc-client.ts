@@ -15,13 +15,16 @@ import type {
 	ResetCreditTarget,
 	UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "../../advisor";
 import type { BashResult } from "../../exec/bash-executor";
+import type { Goal, GoalModeState } from "../../goals/state";
+import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
-import type { AsyncJobSnapshot } from "../../session/agent-session-types";
+import type { AsyncJobSnapshot, Prewalk } from "../../session/agent-session-types";
 import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
+import type { VibeModeState } from "../../vibe/state";
 import type {
 	ApplyWorkspaceRestoreRequest,
 	WorkspaceCheckpointRecord,
@@ -109,6 +112,15 @@ export interface RpcClientOptions {
 }
 
 export type ModelInfo = Pick<Model, "provider" | "id" | "contextWindow" | "reasoning" | "thinking">;
+
+/**
+ * True when the error is the pre-send transport-not-attached rejection. Such a
+ * command was never written to any worker, so it is always safe to replay
+ * after the client recovers a transport.
+ */
+export function isRpcClientDisconnectedError(error: unknown): boolean {
+	return error instanceof Error && error.message === "Client not started";
+}
 
 export type RpcEventListener = (event: AgentEvent) => void;
 export type RpcSessionEventListener = (event: AgentSessionEvent) => void;
@@ -310,6 +322,8 @@ export class RpcClient {
 	#pendingExtensionUiRequests: RpcExtensionUIRequest[] = [];
 	#abortController = new AbortController();
 	#startFailure: ((error: Error) => void) | null = null;
+	#startInFlight: Promise<boolean> | undefined;
+	#intentionallyStopped = false;
 
 	constructor(options: RpcClientOptions = {}) {
 		this.#transport = options.transport ?? new ChildProcessRpcTransport(options);
@@ -325,6 +339,7 @@ export class RpcClient {
 	 * retry without leaking processes.
 	 */
 	async start(): Promise<void> {
+		this.#intentionallyStopped = false;
 		await this.#stopping;
 		if (this.#activeTransport) {
 			throw new Error("Client already started");
@@ -468,9 +483,37 @@ export class RpcClient {
 	 * Stop the RPC agent process.
 	 */
 	stop(): Promise<void> {
+		this.#intentionallyStopped = true;
 		const transport = this.#activeTransport;
 		if (!transport) return this.#stopping ?? Promise.resolve();
 		return this.#stopTransport(transport, new Error("Client stopped"));
+	}
+
+	/** Whether a transport is attached and accepting commands right now. */
+	get connected(): boolean {
+		return this.#activeTransport !== null && this.#stopping === null;
+	}
+
+	/**
+	 * Spawn a fresh agent worker on this client instance after a transport
+	 * loss. Session state reloads from the session file inside the new
+	 * worker, so facade callers can replay the interrupted command safely.
+	 * Concurrent callers share one start attempt. Resolves `false` when a
+	 * transport is already active (nothing to do); rejects when the client is
+	 * stopping or was explicitly stopped — recovery must never fight a
+	 * deliberate teardown.
+	 */
+	async ensureStarted(): Promise<boolean> {
+		if (this.#activeTransport && !this.#stopping) return false;
+		if (this.#stopping) throw new Error("Client is stopping");
+		if (this.#intentionallyStopped) throw new Error("Client was stopped");
+		this.#startInFlight ??= this.start()
+			.then(() => true)
+			.finally(() => {
+				this.#startInFlight = undefined;
+			});
+		await this.#startInFlight;
+		return true;
 	}
 
 	/**
@@ -570,7 +613,6 @@ export class RpcClient {
 	): Promise<void> {
 		if (this.#activeTransport !== transport) return this.#stopping ?? Promise.resolve();
 
-		this.#activeTransport = null;
 		this.#startFailure?.(error);
 		this.#abortController.abort(error);
 		this.#clearTransportSubscriptions();
@@ -597,7 +639,12 @@ export class RpcClient {
 		} else {
 			for (const request of pendingRequests) request.reject(error);
 		}
+		// Defer clearing #activeTransport until `transport.stop()` resolves so
+		// in-flight callers that race with stop see `stopping` instead of a
+		// null transport — those callers reject cleanly via the marked error
+		// path instead of throwing sync "Client not started".
 		void stopping.then(() => {
+			if (this.#activeTransport === transport) this.#activeTransport = null;
 			if (this.#stopping === stopping) this.#stopping = null;
 		});
 		return stopping;
@@ -901,10 +948,28 @@ export class RpcClient {
 	}
 
 	/**
-	 * Set model by provider and ID.
+	 * Set model by provider and ID. Forwards role/selector/thinking/persist
+	 * options to the child session and reports whether the active model changed.
 	 */
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		const response = await this.#send({ type: "set_model", provider, modelId });
+	async setModel(
+		provider: string,
+		modelId: string,
+		options?: {
+			role?: string;
+			selector?: string;
+			thinkingLevel?: ThinkingLevel;
+			persist?: boolean;
+		},
+	): Promise<{ model: { provider: string; id: string }; switched: boolean }> {
+		const response = await this.#send({
+			type: "set_model",
+			provider,
+			modelId,
+			...(options?.role ? { role: options.role } : {}),
+			...(options?.selector ? { selector: options.selector } : {}),
+			...(options?.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+			...(options?.persist !== undefined ? { persist: options.persist } : {}),
+		});
 		return this.#getData(response);
 	}
 
@@ -944,6 +1009,169 @@ export class RpcClient {
 
 	async setActiveTools(toolNames: string[]): Promise<{ activeToolNames: string[]; mountedToolNames: string[] }> {
 		const response = await this.#send({ type: "set_active_tools", toolNames });
+		return this.#getData(response);
+	}
+
+	/** Install and activate the ephemeral vibe tool set in the backend session. */
+	async activateVibeTools(baseToolNames: string[]): Promise<void> {
+		await this.#send({ type: "activate_vibe_tools", baseToolNames });
+	}
+
+	/** Uninstall vibe tools and activate the replacement set in the backend session. */
+	async deactivateVibeTools(nextToolNames: string[]): Promise<void> {
+		await this.#send({ type: "deactivate_vibe_tools", nextToolNames });
+	}
+
+	/** Remove vibe tools from the backend session without restoring a source-session snapshot. */
+	async removeVibeToolsPreservingActive(): Promise<void> {
+		await this.#send({ type: "remove_vibe_tools_preserving_active" });
+	}
+
+	/** Persist the backend session's vibe-mode state. */
+	async setVibeModeState(state: VibeModeState | null): Promise<void> {
+		await this.#send({ type: "set_vibe_mode_state", state });
+	}
+
+	/** Deliver the vibe-mode context message to the backend session. */
+	async sendVibeModeContext(deliverAs?: "steer" | "followUp" | "nextTurn"): Promise<void> {
+		await this.#send({ type: "send_vibe_mode_context", ...(deliverAs ? { deliverAs } : {}) });
+	}
+
+	/** Persist the backend session's goal-mode state. */
+	async setGoalModeState(state: GoalModeState | null): Promise<void> {
+		await this.#send({ type: "set_goal_mode_state", state });
+	}
+
+	/** Deliver the goal-mode context message to the backend session. */
+	async sendGoalModeContext(deliverAs?: "steer" | "followUp" | "nextTurn"): Promise<void> {
+		await this.#send({ type: "send_goal_mode_context", ...(deliverAs ? { deliverAs } : {}) });
+	}
+
+	/** Persist the backend session's plan-mode state. */
+	async setPlanModeState(state: PlanModeState | null): Promise<void> {
+		await this.#send({ type: "set_plan_mode_state", state });
+	}
+
+	/** Install or clear the backend session's plan-proposal handler. */
+	async setPlanProposalHandler(active: boolean): Promise<void> {
+		await this.#send({ type: "set_plan_proposal_handler", active });
+	}
+
+	/** Run the backend session's plan-review preparation and return approval details. */
+	async preparePlanForReview(title: string): Promise<{ planFilePath: string; title: string; planExists: boolean }> {
+		const response = await this.#send({ type: "prepare_plan_for_review", title });
+		return this.#getData(response);
+	}
+
+	/** Deliver the plan-mode context message to the backend session. */
+	async sendPlanModeContext(deliverAs?: "steer" | "followUp" | "nextTurn"): Promise<void> {
+		await this.#send({ type: "send_plan_mode_context", ...(deliverAs ? { deliverAs } : {}) });
+	}
+
+	/** Mark the backend session's silent plan-abort flag. */
+	async markPlanInternalAbortPending(): Promise<void> {
+		await this.#send({ type: "mark_plan_internal_abort_pending" });
+	}
+
+	/** Clear the backend session's silent plan-abort flag. */
+	async clearPlanInternalAbortPending(): Promise<void> {
+		await this.#send({ type: "clear_plan_internal_abort_pending" });
+	}
+
+	/** Mark the backend session's plan reference as sent. */
+	async markPlanReferenceSent(): Promise<void> {
+		await this.#send({ type: "mark_plan_reference_sent" });
+	}
+
+	/** Set the backend session's plan reference path. */
+	async setPlanReferencePath(path: string): Promise<void> {
+		await this.#send({ type: "set_plan_reference_path", path });
+	}
+
+	/** Read the backend session's plan reference path. */
+	async getPlanReferencePath(): Promise<string> {
+		const response = await this.#send({ type: "get_plan_reference_path" });
+		return this.#getData<{ path: string }>(response).path;
+	}
+
+	/** Read the backend session's prewalk state. */
+	async getPrewalkState(): Promise<Prewalk | null> {
+		const response = await this.#send({ type: "get_prewalk_state" });
+		return this.#getData<{ prewalk: Prewalk | null }>(response).prewalk;
+	}
+
+	/** Create a goal in the backend session's goal runtime. */
+	async goalRuntimeCreate(objective: string, tokenBudget?: number): Promise<GoalModeState> {
+		const response = await this.#send({
+			type: "goal_runtime_create",
+			objective,
+			...(tokenBudget !== undefined ? { tokenBudget } : {}),
+		});
+		return this.#getData<{ state: GoalModeState }>(response).state;
+	}
+
+	/** Replace the backend session's active goal. */
+	async goalRuntimeReplace(objective: string, tokenBudget?: number): Promise<GoalModeState> {
+		const response = await this.#send({
+			type: "goal_runtime_replace",
+			objective,
+			...(tokenBudget !== undefined ? { tokenBudget } : {}),
+		});
+		return this.#getData<{ state: GoalModeState }>(response).state;
+	}
+
+	/** Resume the backend session's paused goal. */
+	async goalRuntimeResume(): Promise<GoalModeState> {
+		const response = await this.#send({ type: "goal_runtime_resume" });
+		return this.#getData<{ state: GoalModeState }>(response).state;
+	}
+
+	/** Pause the backend session's active goal. */
+	async goalRuntimePause(): Promise<GoalModeState | null> {
+		const response = await this.#send({ type: "goal_runtime_pause" });
+		return this.#getData<{ state: GoalModeState | null }>(response).state;
+	}
+
+	/** Drop the backend session's goal. */
+	async goalRuntimeDrop(): Promise<Goal | null> {
+		const response = await this.#send({ type: "goal_runtime_drop" });
+		return this.#getData<{ goal: Goal | null }>(response).goal;
+	}
+
+	/** Mutate the backend session's goal budget. */
+	async goalRuntimeOnBudgetMutated(budget: number | undefined): Promise<GoalModeState | null> {
+		const response = await this.#send({ type: "goal_runtime_on_budget_mutated", budget: budget ?? null });
+		return this.#getData<{ state: GoalModeState | null }>(response).state;
+	}
+
+	/** Build the backend session's goal continuation prompt. */
+	async goalRuntimeBuildContinuationPrompt(): Promise<string | null> {
+		const response = await this.#send({ type: "goal_runtime_build_continuation_prompt" });
+		return this.#getData<{ prompt: string | null }>(response).prompt;
+	}
+
+	/** Resume accounting in the backend session's goal runtime. */
+	async goalRuntimeOnThreadResumed(preserveActiveGoal?: boolean): Promise<GoalModeState | null> {
+		const response = await this.#send({
+			type: "goal_runtime_on_thread_resumed",
+			...(preserveActiveGoal ? { preserveActiveGoal } : {}),
+		});
+		return this.#getData<{ state: GoalModeState | null }>(response).state;
+	}
+
+	/** Clear accounting in the backend session's goal runtime. */
+	async goalRuntimeClearAccounting(): Promise<void> {
+		await this.#send({ type: "goal_runtime_clear_accounting" });
+	}
+
+	/** Branch the backend session from a /btw question. */
+	async branchFromBtw(
+		question: string,
+		assistantMessage: AgentMessage,
+		leafId: string,
+		sessionId: string,
+	): Promise<{ cancelled: boolean; sessionFile: string | null }> {
+		const response = await this.#send({ type: "branch_from_btw", question, assistantMessage, leafId, sessionId });
 		return this.#getData(response);
 	}
 
@@ -1441,8 +1669,15 @@ export class RpcClient {
 	}
 
 	#send(command: RpcCommandBody, timeoutMs = 30_000): Promise<RpcResponse> {
-		if (!this.#activeTransport) {
-			throw new Error("Client not started");
+		if (!this.#activeTransport || this.#stopping) {
+			// Nothing was written: the frame never left this process, so callers
+			// (or the facade-level recovery) can replay the command safely.
+			logger.error("RPC command rejected: client transport is not active", {
+				command: command.type,
+				hasTransport: this.#activeTransport !== null,
+				stopping: this.#stopping !== null,
+			});
+			return Promise.reject(postmortem.markExpectedCleanupError(new Error("Client not started")));
 		}
 
 		const id = `req_${++this.#requestId}`;
@@ -1541,8 +1776,17 @@ export class RpcClient {
 		onError?: (error: Error) => void,
 	): void {
 		const transport = this.#activeTransport;
-		if (!transport) {
-			throw new Error("Client not started");
+		if (!transport || this.#stopping) {
+			// Transport is gone or tearing down. Reject synchronously through
+			// `onError` so callers with a pending request can clean up, or
+			// drop the frame silently otherwise. The marked error lets the
+			// global unhandled-rejection handler downgrade it to a log line.
+			const error = postmortem.markExpectedCleanupError(new Error("Client not started"));
+			if (onError) {
+				onError(error);
+				return;
+			}
+			return;
 		}
 
 		try {

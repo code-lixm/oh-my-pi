@@ -89,3 +89,6 @@ packages/coding-agent/bench/boot-baseline.json
 # Bazel
 /bazel-*
 /.bazelrc.user
+
+# Workspace-checkpoint runtime store (live SQLite metadata DB, WAL mode)
+checkpoints/

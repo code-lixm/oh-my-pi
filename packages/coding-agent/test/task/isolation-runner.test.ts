@@ -86,13 +86,12 @@ async function git(repoRoot: string, ...args: string[]): Promise<string> {
 }
 
 type FooRepoSeedOptions = {
-	initialContent?: string;
 	patchText?: string;
 };
 
 async function seedFooRepo(
 	finalContent: string,
-	{ initialContent = "old\n", patchText = FOO_OLD_TO_NEW_PATCH }: FooRepoSeedOptions = {},
+	{ patchText = FOO_OLD_TO_NEW_PATCH }: FooRepoSeedOptions = {},
 ): Promise<{ repoRoot: string; patchPath: string }> {
 	if (!patchText.trim()) {
 		throw new Error("seedFooRepo requires a non-empty patch fixture");
@@ -343,7 +342,6 @@ describe("mergeIsolatedChanges", () => {
 
 	it("applies forward when both forward and reverse patch checks succeed", async () => {
 		const { repoRoot, patchPath } = await seedFooRepo(FOO_AMBIGUOUS_CONTENT, {
-			initialContent: FOO_AMBIGUOUS_CONTENT,
 			patchText: FOO_AMBIGUOUS_OLD_TO_NEW_PATCH,
 		});
 

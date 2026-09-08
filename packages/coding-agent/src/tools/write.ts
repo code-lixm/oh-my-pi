@@ -55,10 +55,10 @@ import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import {
 	formatPathRelativeToCwd,
-	resolveFileWriteApprovalTier,
 	pathTargetsSsh,
 	peelWriteUrlSelector,
 	probeLiteralPathExists,
+	resolveFileWriteApprovalTier,
 	splitPathAndSel,
 } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";

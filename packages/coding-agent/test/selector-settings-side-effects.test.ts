@@ -67,6 +67,24 @@ describe("selector setting side effects", () => {
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
+
+	it("updates the live editor mouse tracking when tui.mouseInput flips on", () => {
+		const invalidate = vi.fn();
+		const requestRender = vi.fn();
+		// Stale false initial value proves the change overwrites, not just initializes.
+		const editor = { mouseTracking: false, invalidate };
+		const controller = new SelectorController({
+			editor,
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.mouseInput", true);
+
+		expect(editor.mouseTracking).toBe(true);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
 	it("applies memory backend changes to the live session", () => {
 		const applyMemoryBackend = vi.fn(async () => {});
 		const controller = new SelectorController({

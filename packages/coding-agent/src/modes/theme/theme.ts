@@ -8,8 +8,8 @@ import {
 	type CreateThemeOptions,
 	getBuiltinThemes,
 	loadTheme,
-	loadThemeSync,
 	loadThemeJson,
+	loadThemeSync,
 	resolveThemeExportColors,
 } from "./loader";
 import type { ThemeColor, ThemeJson } from "./schema";

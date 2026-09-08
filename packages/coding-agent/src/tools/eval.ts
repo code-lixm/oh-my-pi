@@ -18,8 +18,8 @@ import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, 
 import { tSettingsUi } from "../i18n/settings-locale";
 import { selectPrompt } from "../prompts/prompt-locale";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
-import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import evalDescriptionZh from "../prompts/tools/eval.zh-CN.md" with { type: "text" };
+import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import evalImageNote from "../prompts/tools/eval-image-note.md" with { type: "text" };
 import evalImageNoteZh from "../prompts/tools/eval-image-note.zh-CN.md" with { type: "text" };
 import imageDimensionNote from "../prompts/tools/image-dimension-note.md" with { type: "text" };

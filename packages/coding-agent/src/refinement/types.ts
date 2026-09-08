@@ -33,6 +33,8 @@ export interface RefinementEdit {
 	id: string;
 	title?: string;
 	content?: string;
+	/** Trajectory citations backing this edit (`turn:<index>`), validated mechanically. */
+	evidence?: string[];
 	[key: string]: unknown;
 }
 
@@ -41,6 +43,13 @@ export interface RefinementProposal {
 	rationale: string;
 	edits: RefinementEdit[];
 	expectedOutcome: string;
+}
+
+/** Evaluator verdict over a proposal before it is allowed to touch state. */
+export interface ProposalVerification {
+	verdict: "pass" | "fail";
+	reasons: string[];
+	requiredChanges: string[];
 }
 
 export interface AppliedRefinementEdit extends RefinementEdit {
@@ -60,4 +69,6 @@ export interface RefinementResult {
 	harnessStatePath: string;
 	rollbackOf?: string;
 	scope?: HarnessScope;
+	/** Proposal rounds consumed before this result was accepted. */
+	rounds?: number;
 }

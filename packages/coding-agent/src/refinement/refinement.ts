@@ -8,16 +8,25 @@ import autoReviewRequestPrompt from "../prompts/refinement/auto-review-request.m
 import autoReviewRequestPromptZh from "../prompts/refinement/auto-review-request.zh-CN.md" with { type: "text" };
 import autoReviewSystemPrompt from "../prompts/refinement/auto-review-system.md" with { type: "text" };
 import autoReviewSystemPromptZh from "../prompts/refinement/auto-review-system.zh-CN.md" with { type: "text" };
+import critiqueRequestPrompt from "../prompts/refinement/critique-request.md" with { type: "text" };
+import critiqueRequestPromptZh from "../prompts/refinement/critique-request.zh-CN.md" with { type: "text" };
+import critiqueSystemPrompt from "../prompts/refinement/critique-system.md" with { type: "text" };
+import critiqueSystemPromptZh from "../prompts/refinement/critique-system.zh-CN.md" with { type: "text" };
 import refinementRequestPrompt from "../prompts/refinement/refinement-request.md" with { type: "text" };
 import refinementRequestPromptZh from "../prompts/refinement/refinement-request.zh-CN.md" with { type: "text" };
 import refinementSystemPrompt from "../prompts/refinement/refinement-system.md" with { type: "text" };
 import refinementSystemPromptZh from "../prompts/refinement/refinement-system.zh-CN.md" with { type: "text" };
+import verifyRequestPrompt from "../prompts/refinement/verify-request.md" with { type: "text" };
+import verifyRequestPromptZh from "../prompts/refinement/verify-request.zh-CN.md" with { type: "text" };
+import verifySystemPrompt from "../prompts/refinement/verify-system.md" with { type: "text" };
+import verifySystemPromptZh from "../prompts/refinement/verify-system.zh-CN.md" with { type: "text" };
 import { convertToLlm } from "../session/messages";
 import type {
 	AppliedRefinementEdit,
 	HarnessEntry,
 	HarnessScope,
 	HarnessState,
+	ProposalVerification,
 	RefinementAction,
 	RefinementEdit,
 	RefinementKind,
@@ -33,6 +42,17 @@ const MAX_HISTORY_ENTRIES = 20;
 const MAX_TRAJECTORY_CHARS = 80_000;
 const MAX_REFINEMENT_OUTPUT_TOKENS = 32_000;
 const MAX_REVIEW_OUTPUT_TOKENS = 4_096;
+/**
+ * Hard bound on propose→verify rounds per refinement trigger. Reflection loops
+ * without an iteration cap either run away or stop on self-declared success;
+ * a small fixed cap plus a mechanical-then-LLM gate keeps the loop honest
+ * (Reflexion stops on bounded failures, Self-Refine's STOP alone is trusted).
+ */
+export const MAX_PROPOSAL_ROUNDS = 2;
+/** Per-kind entry ceiling enforced at proposal validation: consolidate, don't hoard. */
+export const MAX_ENTRIES_PER_KIND = 24;
+/** Normalized-content Jaccard similarity above which a create/update is a duplicate. */
+export const DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
 const TRUNCATED_JSON_ERROR =
 	"the model stopped before completing its JSON object. This usually means the output budget was exhausted; retry with a smaller request.";
 
@@ -75,6 +95,11 @@ type ScopedHarnessEntry = HarnessEntry & { scope?: HarnessScope };
 export interface RefinementPlanningOptions {
 	instructions?: string;
 	scope?: HarnessScope;
+	/** Structured critique findings from the separate evaluator stage. */
+	critique?: string;
+	/** Required changes from the previous round's failed verification. */
+	roundFeedback?: string[];
+	round?: number;
 }
 
 export interface AutoRefinementReview {
@@ -292,6 +317,7 @@ function parseEdit(value: unknown): RefinementEdit | undefined {
 		id: typeof record.id === "string" ? record.id : "",
 		...(typeof record.title === "string" ? { title: record.title } : {}),
 		...(typeof record.content === "string" ? { content: record.content } : {}),
+		...(Array.isArray(record.evidence) ? { evidence: record.evidence.filter(item => typeof item === "string") } : {}),
 	};
 }
 
@@ -309,6 +335,220 @@ function parseProposal(text: string): RefinementProposal {
 		rationale: typeof value.rationale === "string" ? value.rationale : "",
 		expectedOutcome: typeof value.expectedOutcome === "string" ? value.expectedOutcome : "",
 		edits,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Grounded trajectory serialization + mechanical proposal validation
+// ---------------------------------------------------------------------------
+
+const TURN_REF_PATTERN = /^turn:(\d+)$/i;
+
+/** Serialize the converted trajectory with per-message `[turn N]` markers so critique and edits can cite evidence mechanically. */
+export function serializeConversationWithTurns(messages: AgentMessage[]): { text: string; turnCount: number } {
+	const converted = convertToLlm(messages);
+	const blocks: string[] = [];
+	converted.forEach((message, index) => {
+		const serialized = serializeConversation([message]).trim();
+		if (serialized) blocks.push(`[turn ${index}]\n${serialized}`);
+	});
+	return { text: blocks.join("\n\n").slice(-MAX_TRAJECTORY_CHARS), turnCount: converted.length };
+}
+
+function citationTurn(citation: string): number | undefined {
+	const match = TURN_REF_PATTERN.exec(citation.trim());
+	if (!match) return undefined;
+	const index = Number.parseInt(match[1] ?? "", 10);
+	return Number.isSafeInteger(index) && index >= 0 ? index : undefined;
+}
+
+function contentTokens(text: string): Set<string> {
+	const tokens = new Set<string>();
+	for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+		if (raw.length < 3) continue;
+		tokens.add(raw);
+		if (tokens.size >= 200) break;
+	}
+	return tokens;
+}
+
+function jaccardSimilarity(left: string, right: string): number {
+	const leftTokens = contentTokens(left);
+	const rightTokens = contentTokens(right);
+	if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+	let intersection = 0;
+	for (const token of leftTokens) if (rightTokens.has(token)) intersection++;
+	return intersection / (leftTokens.size + rightTokens.size - intersection);
+}
+
+export interface MechanicalValidationResult {
+	/** undefined when the proposal is mechanically acceptable. */
+	error?: string;
+}
+
+/**
+ * Cheap, deterministic checks that run before the evaluator model:
+ * evidence citations must resolve to real turns and be present, creates and
+ * updates must not duplicate existing entries, and per-kind population is
+ * bounded. This is the NOOP/dedup discipline (mem0) plus the evidence-grounding
+ * requirement (grounded Reflexion), enforced by code rather than by prompt.
+ */
+export function validateProposalMechanically(
+	proposal: RefinementProposal,
+	state: HarnessState,
+	turnCount: number,
+): MechanicalValidationResult {
+	if (proposal.edits.length === 0) return {};
+	for (const edit of proposal.edits) {
+		const citations = Array.isArray(edit.evidence) ? edit.evidence : [];
+		if (citations.length === 0) {
+			return {
+				error: `edit ${edit.action} ${edit.kind}:${edit.id || "(new)"} cites no evidence; add turn:<index> citations`,
+			};
+		}
+		for (const citation of citations) {
+			const turn = citationTurn(citation);
+			if (turn === undefined) {
+				return {
+					error: `edit ${edit.action} ${edit.kind}:${edit.id || "(new)"} has malformed citation "${citation}" (expected turn:<index>)`,
+				};
+			}
+			if (turn >= turnCount) {
+				return {
+					error: `edit ${edit.action} ${edit.kind}:${edit.id || "(new)"} cites turn ${turn} which is outside this trajectory (${turnCount} turns)`,
+				};
+			}
+		}
+		const id = resolveEditId(edit);
+		const existing = state.entries[edit.kind]?.[id];
+		if (edit.action === "create" && !existing) {
+			const kindEntries = Object.values(state.entries[edit.kind] ?? {});
+			if (kindEntries.length >= MAX_ENTRIES_PER_KIND) {
+				return {
+					error: `kind ${edit.kind} already holds ${kindEntries.length} entries (max ${MAX_ENTRIES_PER_KIND}); update or delete existing entries instead of adding`,
+				};
+			}
+			const content = asNonEmptyString(edit.content) ?? "";
+			for (const candidate of kindEntries) {
+				if (jaccardSimilarity(content, candidate.content) >= DUPLICATE_SIMILARITY_THRESHOLD) {
+					return {
+						error: `create ${edit.kind} duplicates existing entry "${candidate.id}" (similarity >= ${DUPLICATE_SIMILARITY_THRESHOLD}); update it instead or drop this edit`,
+					};
+				}
+			}
+		}
+		if (edit.action === "update" && existing) {
+			const content = asNonEmptyString(edit.content) ?? "";
+			for (const candidate of Object.values(state.entries[edit.kind] ?? {})) {
+				if (candidate.id === existing.id) continue;
+				if (jaccardSimilarity(content, candidate.content) >= DUPLICATE_SIMILARITY_THRESHOLD) {
+					return {
+						error: `update ${edit.kind}:${existing.id} would duplicate existing entry "${candidate.id}"; merge or delete instead`,
+					};
+				}
+			}
+		}
+	}
+	return {};
+}
+
+// ---------------------------------------------------------------------------
+// Separate critique / verify model stages (actor–evaluator split)
+// ---------------------------------------------------------------------------
+
+export interface RefinementCritiqueContext {
+	instructions?: string;
+	scope: HarnessScope;
+}
+
+export type RefinementCritiqueFn = (options: {
+	messages: AgentMessage[];
+	state: HarnessState;
+	history: RefinementResult[];
+	scope: HarnessScope;
+	instructions?: string;
+}) => Promise<string>;
+
+/** Structured critique of the current harness state against cited trajectory evidence (separate evaluator role). */
+export async function critiqueHarnessState(
+	messages: AgentMessage[],
+	state: HarnessState,
+	history: RefinementResult[],
+	model: Model,
+	apiKey: ApiKey,
+	context: RefinementCritiqueContext,
+): Promise<string> {
+	const { text: conversation, turnCount } = serializeConversationWithTurns(messages);
+	const userPrompt = prompt.render(selectPrompt(critiqueRequestPrompt, critiqueRequestPromptZh), {
+		turns: String(turnCount),
+		state: overviewForPrompt(state),
+		history: historyForPrompt(history),
+		conversation,
+		scope: context.scope,
+		instructions: context.instructions ?? "",
+	});
+	const response = await completeSimple(
+		model,
+		{
+			systemPrompt: [selectPrompt(critiqueSystemPrompt, critiqueSystemPromptZh)],
+			messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }],
+		},
+		{ apiKey, maxTokens: reviewOutputTokens(model), disableReasoning: true },
+	);
+	if (response.stopReason === "error")
+		throw new Error(`Refinement critique failed: ${response.errorMessage ?? "unknown error"}`);
+	if (response.stopReason === "length") throw new Error(`Refinement critique failed: ${TRUNCATED_JSON_ERROR}`);
+	return textFromResponse(response.content).trim();
+}
+
+export type RefinementVerifyFn = (options: {
+	messages: AgentMessage[];
+	state: HarnessState;
+	history: RefinementResult[];
+	proposal: RefinementProposal;
+	round: number;
+}) => Promise<ProposalVerification>;
+
+/** Evaluator pass over a proposal: forced-format verdict with required changes, kept separate from the proposer. */
+export async function verifyRefinementProposal(
+	messages: AgentMessage[],
+	state: HarnessState,
+	history: RefinementResult[],
+	proposal: RefinementProposal,
+	model: Model,
+	apiKey: ApiKey,
+	round: number,
+): Promise<ProposalVerification> {
+	const { text: conversation, turnCount } = serializeConversationWithTurns(messages);
+	const userPrompt = prompt.render(selectPrompt(verifyRequestPrompt, verifyRequestPromptZh), {
+		turns: String(turnCount),
+		round: String(round),
+		state: overviewForPrompt(state),
+		history: historyForPrompt(history),
+		conversation,
+		proposal: JSON.stringify(proposal, null, 2),
+	});
+	const response = await completeSimple(
+		model,
+		{
+			systemPrompt: [selectPrompt(verifySystemPrompt, verifySystemPromptZh)],
+			messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }],
+		},
+		{ apiKey, maxTokens: reviewOutputTokens(model), disableReasoning: true },
+	);
+	if (response.stopReason === "error")
+		throw new Error(`Refinement verification failed: ${response.errorMessage ?? "unknown error"}`);
+	if (response.stopReason === "length") throw new Error(`Refinement verification failed: ${TRUNCATED_JSON_ERROR}`);
+	const record = asRecord(extractJsonObject(textFromResponse(response.content)));
+	if (!record) throw new Error("Verification JSON must be an object");
+	const reasons = Array.isArray(record.reasons) ? record.reasons.filter(item => typeof item === "string") : [];
+	const requiredChanges = Array.isArray(record.requiredChanges)
+		? record.requiredChanges.filter(item => typeof item === "string")
+		: [];
+	return {
+		verdict: record.verdict === "pass" ? "pass" : "fail",
+		reasons: reasons.length > 0 ? reasons : ["No reasons provided."],
+		requiredChanges,
 	};
 }
 
@@ -342,13 +582,17 @@ export async function planRefinement(
 	apiKey: ApiKey,
 	options: RefinementPlanningOptions = {},
 ): Promise<RefinementProposal> {
-	const conversation = serializeConversation(convertToLlm(messages)).slice(-MAX_TRAJECTORY_CHARS);
+	const { text: conversation, turnCount } = serializeConversationWithTurns(messages);
 	const userPrompt = prompt.render(selectPrompt(refinementRequestPrompt, refinementRequestPromptZh), {
 		state: overviewForPrompt(state),
 		history: historyForPrompt(history),
 		conversation,
+		turns: String(turnCount),
 		scope: options.scope ?? "local",
 		instructions: options.instructions ?? "",
+		critique: options.critique ?? "",
+		round: String(options.round ?? 1),
+		roundFeedback: (options.roundFeedback ?? []).map(change => `- ${change}`).join("\n"),
 	});
 	const response = await completeSimple(
 		model,
@@ -500,7 +744,7 @@ function stateEntry(
 export function applyRefinementProposal(
 	state: HarnessState,
 	proposal: RefinementProposal,
-	options: { id: string; rollbackOf?: string; scope?: HarnessScope; baselineState?: HarnessState },
+	options: { id: string; rollbackOf?: string; scope?: HarnessScope; baselineState?: HarnessState; rounds?: number },
 ): RefinementResult {
 	const scope = options.scope ?? "local";
 	const appliedEdits: AppliedRefinementEdit[] = [];
@@ -551,6 +795,7 @@ export function applyRefinementProposal(
 		appliedEdits,
 		harnessStatePath: "",
 		...(options.rollbackOf ? { rollbackOf: options.rollbackOf } : {}),
+		...(options.rounds === undefined ? {} : { rounds: options.rounds }),
 		scope,
 	};
 }

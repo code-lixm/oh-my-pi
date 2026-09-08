@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import { resolveMessageBlobRefsSync } from "@oh-my-pi/pi-coding-agent/session/blob-ref-resolution";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getBlobsDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -74,6 +75,8 @@ describe("SessionManager signature persistence", () => {
 		const persistedBlob = await fs.readFile(path.join(getBlobsDir(), expectedBlobHash), "utf8");
 		expect(persistedBlob).toBe(largeImageUrl);
 
+		// Reload keeps persisted image URLs as compact blob refs — eager re-inlining
+		// would pin every historical image's base64 in resident memory.
 		const reloaded = await SessionManager.open(session.getSessionFile()!);
 		const reloadedUserEntry = reloaded
 			.getEntries()
@@ -82,7 +85,25 @@ describe("SessionManager signature persistence", () => {
 			throw new Error("Expected user message");
 		}
 
+		const blobRef = `blob:sha256:${expectedBlobHash}`;
 		expect(reloadedUserEntry.message.providerPayload).toEqual({
+			type: "openaiResponsesHistory",
+			provider: "openai-codex",
+			items: [
+				{
+					type: "message",
+					role: "user",
+					content: [
+						{ type: "input_text", text: "look at this" },
+						{ type: "input_image", detail: "auto", image_url: blobRef },
+					],
+				},
+			],
+		});
+
+		// Deferred resolution (LLM conversion / provider replay) restores the URL.
+		const resolved = resolveMessageBlobRefsSync(reloadedUserEntry.message);
+		expect(resolved.providerPayload).toEqual({
 			type: "openaiResponsesHistory",
 			provider: "openai-codex",
 			items: [
@@ -96,6 +117,11 @@ describe("SessionManager signature persistence", () => {
 				},
 			],
 		});
+		// The stored entry keeps the ref — resolution must not mutate it.
+		expect(
+			(reloadedUserEntry.message.providerPayload as { items: Array<{ content: Array<{ image_url: string }> }> })
+				.items[0]?.content[1]?.image_url,
+		).toBe(blobRef);
 	});
 
 	it("externalizes and restores tool result image blocks across reload", async () => {
@@ -159,8 +185,22 @@ describe("SessionManager signature persistence", () => {
 			throw new Error("Expected tool result message");
 		}
 
-		expect(reloadedToolEntry.message.content).toEqual([{ type: "text", text: "displayed image" }, contentImage]);
-		expect((reloadedToolEntry.message.details as { images?: ImageContent[] }).images).toEqual([detailImage]);
+		// Reload keeps compact blob refs instead of re-inlining base64 payloads...
+		const contentRef = `blob:sha256:${contentHash}`;
+		const detailRef = `blob:sha256:${detailHash}`;
+		expect(reloadedToolEntry.message.content).toEqual([
+			{ type: "text", text: "displayed image" },
+			{ type: "image", data: contentRef, mimeType: "image/png" },
+		]);
+		expect((reloadedToolEntry.message.details as { images?: ImageContent[] }).images).toEqual([
+			{ type: "image", data: detailRef, mimeType: "image/png" },
+		]);
+
+		// ...and deferred resolution restores the data without mutating the entry.
+		const resolved = resolveMessageBlobRefsSync(reloadedToolEntry.message);
+		expect(resolved.content).toEqual([{ type: "text", text: "displayed image" }, contentImage]);
+		expect((resolved.details as { images?: ImageContent[] }).images).toEqual([detailImage]);
+		expect(reloadedToolEntry.message.content[1]).toEqual({ type: "image", data: contentRef, mimeType: "image/png" });
 	});
 
 	it("rehydrates assistant replay metadata in memory without rewriting the session file", async () => {

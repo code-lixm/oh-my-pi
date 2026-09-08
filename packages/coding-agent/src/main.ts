@@ -62,6 +62,7 @@ import { tSettingsUi } from "./i18n/settings-locale";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import { discoverStartupLspServers } from "./lsp";
 import type { MCPManager } from "./mcp";
+import { COMPOSER_DEFAULTS } from "./modes/composer";
 import { InteractiveMode } from "./modes/interactive-mode";
 import { asInteractiveSession, createIsolatedInteractiveSession } from "./modes/isolated-interactive-session";
 import type { PrintModeOptions } from "./modes/print-mode";
@@ -95,8 +96,9 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
-import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import { filterResumableSessions, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
+import { FileSessionStorage } from "./session/session-storage";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
@@ -1506,7 +1508,7 @@ export async function runRootCommand(
 		composerShape: settingsInstance.get("composer.shape") ?? "box",
 		showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 		maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
-		resizeScrollback: "append",
+		resizeScrollback: COMPOSER_DEFAULTS.resizeScrollback,
 		scrollbackRebuild: settingsInstance.get("tui.scrollbackRebuild"),
 		imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
 		autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
@@ -1642,14 +1644,18 @@ export async function runRootCommand(
 	// Handle --resume (no value): show session picker
 	if (parsedArgs.resume === true && !parsedArgs.fork) {
 		const folderSessions = await logger.time("SessionManager.list", SessionManager.list, cwd, parsedArgs.sessionDir);
+		const resumableFolderSessions = filterResumableSessions(folderSessions, new FileSessionStorage());
 		let preloadedAllSessions: SessionInfo[] | undefined;
-		if (folderSessions.length === 0) {
+		if (resumableFolderSessions.length === 0) {
 			// Probe globally so we can exit fast when the user has no sessions at
 			// all, but never auto-switch the picker into all-projects scope — that
 			// silently surfaced other projects' history when the cwd was empty
 			// (issue #3099). The preloaded list also makes the user's Tab switch
 			// instant on the way in.
-			preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
+			preloadedAllSessions = filterResumableSessions(
+				await logger.time("SessionManager.listAll", SessionManager.listAll),
+				new FileSessionStorage(),
+			);
 			if (preloadedAllSessions.length === 0) {
 				writeStartupNotice(parsedArgs, `${chalk.dim(tSettingsUi("No sessions found"))}\n`);
 				stopStartupWatchdog();
@@ -1657,9 +1663,14 @@ export async function runRootCommand(
 			}
 		}
 		pauseStartupWatchdog();
-		const selected = await logger.time("selectSession", deps.selectSession ?? selectSession, folderSessions, {
-			allSessions: preloadedAllSessions,
-		});
+		const selected = await logger.time(
+			"selectSession",
+			deps.selectSession ?? selectSession,
+			resumableFolderSessions,
+			{
+				allSessions: preloadedAllSessions,
+			},
+		);
 		resumeStartupWatchdog();
 		if (!selected) {
 			writeStartupNotice(parsedArgs, `${chalk.dim(tSettingsUi("No session selected"))}\n`);
@@ -1726,6 +1737,9 @@ export async function runRootCommand(
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
 	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+	// TUI/RPC transcripts retract superseded streamed text on retry
+	// (`applyRetryRecovery`), so a transient stream drop may replay the turn.
+	sessionOptions.retractableTextOutput = isInteractive || mode === "rpc-ui" || mode === "rpc";
 	sessionOptions.settings = settingsInstance;
 
 	// OTEL: register global OTLP exporters when an endpoint is configured via

@@ -277,6 +277,53 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 		await client.stop();
 	}, 10_000);
 
+	test("ensureStarted() respawns a dead worker and the same instance serves commands again", async () => {
+		using tempDir = TempDir.createSync("@omp-rpc-ensure-started-");
+		const pidFile = tempDir.join("pid");
+		using client = new RpcClient({
+			cliPath: MOCK_AGENT,
+			env: { MOCK_RPC_PID_FILE: pidFile },
+			terminationGraceMs: 10,
+		});
+
+		await client.start();
+		const firstPid = Number(await Bun.file(pidFile).text());
+		expect(client.connected).toBe(true);
+
+		// Simulate a mid-session worker crash: the child dies out from under
+		// the transport, which tears itself down silently.
+		process.kill(firstPid, "SIGKILL");
+		for (let index = 0; index < 100 && client.connected; index++) {
+			await Bun.sleep(10);
+		}
+		expect(client.connected).toBe(false);
+		await expect(client.getState()).rejects.toThrow("Client not started");
+
+		// Recovery respawns a fresh worker on the same client instance; the
+		// replayed command is served by it.
+		expect(await client.ensureStarted()).toBe(true);
+		expect(client.connected).toBe(true);
+		const secondPid = Number(await Bun.file(pidFile).text());
+		expect(secondPid).not.toBe(firstPid);
+		expect(await client.getState()).toBeDefined();
+		await client.stop();
+	}, 20_000);
+
+	test("ensureStarted() is a no-op while connected and rejects after an explicit stop", async () => {
+		using client = new RpcClient({
+			cliPath: MOCK_AGENT,
+			env: { MOCK_RPC_IGNORE_COMMANDS: "1" },
+		});
+		await client.start();
+
+		// Connected: nothing to recover, resolves false without a respawn.
+		expect(await client.ensureStarted()).toBe(false);
+		await client.stop();
+		// An explicit stop is deliberate teardown: recovery must never
+		// respawn a worker behind the caller's back.
+		await expect(client.ensureStarted()).rejects.toThrow("Client was stopped");
+	}, 20_000);
+
 	test("stop() rejects active requests instead of leaving them to time out", async () => {
 		using client = new RpcClient({
 			cliPath: MOCK_AGENT,

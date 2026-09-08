@@ -5,7 +5,7 @@ import type { SlashCommandInfo } from "../../extensibility/slash-commands";
 import type { GoalModeState } from "../../goals/state";
 import type { PlanModeState } from "../../plan-mode/state";
 import type { AgentActivityState } from "../../registry/agent-activity";
-import type { AsyncJobSnapshot, RoleModelCycle } from "../../session/agent-session-types";
+import type { AsyncJobSnapshot, Prewalk, RoleModelCycle } from "../../session/agent-session-types";
 import type { AdvisorStats } from "../../session/session-advisors";
 import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo";
@@ -38,6 +38,7 @@ export interface InteractiveSessionModes {
 	readonly plan?: PlanModeState;
 	readonly goal?: GoalModeState;
 	readonly vibe?: VibeModeState;
+	readonly prewalk?: Prewalk;
 }
 
 /** Serializable tool metadata required by an interactive session view. */

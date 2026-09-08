@@ -84,6 +84,12 @@ describe("composer shape preview", () => {
 		expect(box).toContain("omp"); // stand-in title forwarded to the status source
 		expect(box).not.toContain("BOTTOM"); // box has no standalone bottom bar
 
+		const horizontal = renderComposerShapePreview("horizontal", 80, status).join("\n");
+		expect(horizontal).toContain("TOPBAR omp"); // complete status is embedded in the top rule
+		expect(horizontal).not.toContain("CHIP"); // never degrade to the right-only chip
+		expect(horizontal).not.toContain("BOTTOM-"); // no standalone status bar
+		expect(horizontal).not.toContain("│"); // no rounded box side borders
+
 		const claude = renderComposerShapePreview("claude", 80, status).join("\n");
 		expect(claude).toContain("CHIP"); // right group chips onto the top rule
 		expect(claude).toContain("omp");

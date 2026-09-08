@@ -15,7 +15,7 @@ const DARK_THEME_PATH = path.join(import.meta.dir, "..", "src", "modes", "theme"
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
-const ACTIVITY_CORNER_FRAMES = ["▖", "▘", "▝", "▗"];
+const ACTIVITY_DOT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const UNICODE_STATUS_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
 const NERD_STATUS_FRAMES = ["󱑖", "󱑋", "󱑌", "󱑍", "󱑎", "󱑏", "󱑐", "󱑑", "󱑒", "󱑓", "󱑔", "󱑕"];
 const ASCII_STATUS_FRAMES = ["|", "/", "-", "\\"];
@@ -71,7 +71,7 @@ describe("theme symbols.spinnerFrames", () => {
 		const theme = await getThemeByName("custom-status-only");
 		expect(theme).toBeDefined();
 		expect(theme!.getSpinnerFrames("status")).toEqual(statusFrames);
-		expect(theme!.getSpinnerFrames("activity")).toEqual(ACTIVITY_CORNER_FRAMES);
+		expect(theme!.getSpinnerFrames("activity")).toEqual(ACTIVITY_DOT_FRAMES);
 	});
 
 	it("rejects empty arrays and empty objects at validation time", async () => {
@@ -88,9 +88,9 @@ describe("theme symbols.spinnerFrames", () => {
 				name: "unicode",
 				preset: "unicode",
 				statusFrames: UNICODE_STATUS_FRAMES,
-				activityFrames: ACTIVITY_CORNER_FRAMES,
+				activityFrames: ACTIVITY_DOT_FRAMES,
 			},
-			{ name: "nerd", preset: "nerd", statusFrames: NERD_STATUS_FRAMES, activityFrames: ACTIVITY_CORNER_FRAMES },
+			{ name: "nerd", preset: "nerd", statusFrames: NERD_STATUS_FRAMES, activityFrames: ACTIVITY_DOT_FRAMES },
 			{ name: "ascii", preset: "ascii", statusFrames: ASCII_STATUS_FRAMES, activityFrames: ASCII_ACTIVITY_FRAMES },
 		] as const;
 

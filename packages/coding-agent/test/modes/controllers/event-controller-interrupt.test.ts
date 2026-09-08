@@ -27,6 +27,7 @@ function createContext() {
 		addMessageToChat: vi.fn(),
 		editor: { setText: vi.fn() },
 		updatePendingMessagesDisplay: vi.fn(),
+		retireOptimisticQueuedMessage: vi.fn(),
 		setWorkingMessage,
 		clearPinnedError: vi.fn(),
 		ensureLoadingAnimation,

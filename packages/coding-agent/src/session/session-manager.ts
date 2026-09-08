@@ -64,7 +64,7 @@ import {
 	type WorkspaceCheckpointEntry,
 	type WorkspaceRestoreEntry,
 } from "./session-entries";
-import { listAllSessions, listSessionsFromDirs, type SessionInfo } from "./session-listing";
+import { artifactsDirectoryFor, listAllSessions, listSessionsFromDirs, type SessionInfo } from "./session-listing";
 import { loadEntriesFromFile, readTitleSlotFromFile, resolveBlobRefsInEntries } from "./session-loader";
 import { generateId, migrateToCurrentVersion } from "./session-migrations";
 import {
@@ -154,10 +154,6 @@ function nowIso(): string {
 
 function fileSafeTimestamp(iso: string): string {
 	return iso.replace(/[:.]/g, "-");
-}
-
-function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
-	return sessionFile ? sessionFile.slice(0, -JSONL_SUFFIX_LENGTH) : null;
 }
 
 /**
@@ -1404,9 +1400,60 @@ export class SessionManager {
 		if (this.#sessionFile) this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 	}
 
+	/**
+	 * Re-read the session file from disk and replace the in-memory entry tree,
+	 * WITHOUT switching files and without scheduling any write. For read-only
+	 * session mirrors: a foreground TUI in RPC process-isolation mode opens the
+	 * session path while the rpc-ui child appends to it — this refreshes the
+	 * mirror so `getBranch()`/`/history` see the child's new entries. Never call
+	 * it on a manager that also appends (a concurrent writer would corrupt its
+	 * own view when the file is rewritten underneath it).
+	 */
+	async refreshFromDisk(): Promise<boolean> {
+		const sessionFile = this.#sessionFile;
+		if (!sessionFile) return false;
+		let loaded: FileEntry[];
+		try {
+			loaded = await loadEntriesFromFile(sessionFile, this.#storage);
+		} catch (error) {
+			logger.warn("Session mirror refresh read failed", { sessionFile, error: String(error) });
+			return false;
+		}
+		// The header row is usually first, but a partial or foreign write can
+		// place it elsewhere; slice relative to the header so no entry is
+		// dropped and the remaining rows stay aligned.
+		const headerIndex = loaded.findIndex(entry => entry.type === "session");
+		if (headerIndex < 0) return false;
+		const header = loaded[headerIndex] as SessionHeader;
+		if (header.id !== this.#sessionId) return false;
+		this.#applyEntries(header, loaded.slice(headerIndex + 1) as SessionEntry[]);
+		this.#fileIsCurrent = true;
+		return true;
+	}
 	/** Switch to a different session file (resume / branch). */
 	async setSessionFile(sessionFile: string): Promise<void> {
 		await this.#setSessionFile(sessionFile);
+	}
+
+	/**
+	 * Sessions above this size hydrate into a resident entry graph several times
+	 * the file's byte size (measured ~3×); resume stays correct but RSS grows
+	 * accordingly, so surface the cost when it happens.
+	 */
+	static readonly #sessionSizeWarningBytes = 64 * 1024 * 1024;
+
+	#warnIfOversized(sessionFile: string): void {
+		try {
+			const size = this.#storage.statSync(sessionFile).size;
+			if (size >= SessionManager.#sessionSizeWarningBytes) {
+				logger.warn("Large session file resumed; expect elevated memory use", {
+					file: sessionFile,
+					sizeBytes: size,
+				});
+			}
+		} catch {
+			// Diagnostics only — never block resume on a stat failure.
+		}
 	}
 
 	async #setSessionFile(sessionFile: string, loadedEntries?: FileEntry[]): Promise<void> {
@@ -1420,6 +1467,7 @@ export class SessionManager {
 
 		const titleSlot = await readTitleSlotFromFile(resolvedSessionFile, this.#storage);
 		const fileEntries = loadedEntries ?? (await loadEntriesFromFile(resolvedSessionFile, this.#storage));
+		this.#warnIfOversized(resolvedSessionFile);
 		if (fileEntries.length === 0) {
 			// Explicit but empty/missing path (e.g. --session flag): start fresh but
 			// keep the requested path and materialize the header immediately.
@@ -1431,7 +1479,9 @@ export class SessionManager {
 		}
 
 		const migrated = migrateToCurrentVersion(fileEntries);
-		await resolveBlobRefsInEntries(fileEntries, this.#blobs);
+		// Persisted blob refs stay unresolved here: eager re-inlining pinned every
+		// historical image's base64 in resident memory for the process lifetime.
+		// Consumers resolve on demand via session/blob-ref-resolution.
 		// loadEntriesFromFile guarantees entries[0] is a valid session header.
 		const header = fileEntries[0] as SessionHeader;
 

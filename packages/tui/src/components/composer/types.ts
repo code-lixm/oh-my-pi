@@ -12,7 +12,16 @@ import type { SymbolTheme } from "../../symbols";
 export type ComposerBox = SymbolTheme["boxRound"];
 
 /** Built-in composer shape identifiers shipped by pi-tui. */
-export const BUILTIN_EDITOR_BORDER_STYLES = ["box", "claude", "pi", "borderless", "rule", "field", "rail", "horizontal"] as const;
+export const BUILTIN_EDITOR_BORDER_STYLES = [
+	"box",
+	"claude",
+	"pi",
+	"borderless",
+	"rule",
+	"field",
+	"rail",
+	"horizontal",
+] as const;
 
 /** Identifier for a built-in composer shape. */
 export type BuiltinEditorBorderStyle = (typeof BUILTIN_EDITOR_BORDER_STYLES)[number];
@@ -88,6 +97,10 @@ export interface ComposerStyle {
 	defaultPaddingX(themePaddingX: number | undefined): number;
 	/** Cells consumed per side on content rows (border glyph + padding). */
 	sideChromeWidth(paddingX: number): number;
+	/** Total cells the top chrome reserves around status content (rule caps,
+	 *  border glyphs). Budget computations must subtract this so a fitting
+	 *  status line is never truncated at paint time. */
+	readonly topBorderInset?: number;
 	/** Top chrome row; `undefined` renders none. */
 	renderTop(ctx: ComposerChromeContext): string | undefined;
 	/** Chrome-wrapped content row; box's IME-safe last row emits two rows. */

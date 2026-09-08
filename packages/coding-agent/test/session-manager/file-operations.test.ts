@@ -3,9 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { FileEntry, SessionHeader } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { findMostRecentSession, resolveResumableSession } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import {
+	filterResumableSessions,
+	findMostRecentSession,
+	resolveResumableSession,
+} from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { getTerminalId } from "@oh-my-pi/pi-tui";
 import {
 	getConfigRootDir,
@@ -72,7 +77,13 @@ describe("findMostRecentSession", () => {
 
 	it("returns single valid session file", async () => {
 		const file = path.join(tempDir, "session.jsonl");
-		fs.writeFileSync(file, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.writeFileSync(
+			file,
+			`${[
+				'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
+				'{"type":"message","id":"m1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}',
+			].join("\n")}\n`,
+		);
 		expect(await findMostRecentSession(tempDir)).toBe(file);
 	});
 
@@ -80,9 +91,21 @@ describe("findMostRecentSession", () => {
 		const file1 = path.join(tempDir, "older.jsonl");
 		const file2 = path.join(tempDir, "newer.jsonl");
 
-		fs.writeFileSync(file1, '{"type":"session","id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.writeFileSync(
+			file1,
+			`${[
+				'{"type":"session","id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
+				'{"type":"message","id":"m1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}',
+			].join("\n")}\n`,
+		);
 		fs.utimesSync(file1, OLDER_MTIME, OLDER_MTIME);
-		fs.writeFileSync(file2, '{"type":"session","id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.writeFileSync(
+			file2,
+			`${[
+				'{"type":"session","id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
+				'{"type":"message","id":"m2","parentId":null,"timestamp":"2025-01-01T00:00:02Z","message":{"role":"user","content":"hi","timestamp":2}}',
+			].join("\n")}\n`,
+		);
 		fs.utimesSync(file2, NEWER_MTIME, NEWER_MTIME);
 
 		expect(await findMostRecentSession(tempDir)).toBe(file2);
@@ -93,9 +116,41 @@ describe("findMostRecentSession", () => {
 		const valid = path.join(tempDir, "valid.jsonl");
 
 		fs.writeFileSync(invalid, '{"type":"not-session"}\n');
-		fs.writeFileSync(valid, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.writeFileSync(
+			valid,
+			`${[
+				'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
+				'{"type":"message","id":"m1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}',
+			].join("\n")}\n`,
+		);
 
 		expect(await findMostRecentSession(tempDir)).toBe(valid);
+	});
+
+	it("skips header-only sessions and returns the most recent with conversation", async () => {
+		const empty = path.join(tempDir, "empty.jsonl");
+		const valid = path.join(tempDir, "valid.jsonl");
+
+		fs.writeFileSync(empty, '{"type":"session","id":"empty","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.utimesSync(empty, NEWER_MTIME, NEWER_MTIME);
+		fs.writeFileSync(
+			valid,
+			`${[
+				'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}',
+				'{"type":"message","id":"m1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}',
+			].join("\n")}\n`,
+		);
+
+		expect(await findMostRecentSession(tempDir)).toBe(valid);
+	});
+
+	it("keeps a header-only session resumable when a draft artifact exists", async () => {
+		const empty = path.join(tempDir, "empty.jsonl");
+		fs.writeFileSync(empty, '{"type":"session","id":"empty","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.mkdirSync(path.join(tempDir, "empty"), { recursive: true });
+		fs.writeFileSync(path.join(tempDir, "empty", "draft.txt"), "draft text");
+
+		expect(await findMostRecentSession(tempDir)).toBe(empty);
 	});
 });
 
@@ -165,6 +220,134 @@ describe("resolveResumableSession", () => {
 
 		expect(match?.scope).toBe("local");
 		expect(match?.session.path).toBe(path.join(sessionDir, "2025-01-01_moved.jsonl"));
+	});
+});
+
+describe("empty session filtering", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = path.join(os.tmpdir(), `session-test-${Snowflake.next()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		removeSyncWithRetries(tempDir);
+	});
+
+	function writeSessionFile(fileName: string, id: string, withMessage: boolean): string {
+		const filePath = path.join(tempDir, fileName);
+		const lines = [JSON.stringify({ type: "session", id, timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp/project" })];
+		if (withMessage) {
+			lines.push(
+				JSON.stringify({
+					type: "message",
+					id: "msg-1",
+					parentId: null,
+					timestamp: "2025-01-01T00:00:01Z",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				}),
+			);
+		}
+		fs.writeFileSync(filePath, `${lines.join("\n")}\n`);
+		return filePath;
+	}
+
+	it("omits header-only sessions from resumable listings while keeping real sessions", async () => {
+		const emptyFile = writeSessionFile("2025-01-01_empty.jsonl", "emptyid1", false);
+		const realFile = writeSessionFile("2025-01-02_real.jsonl", "realid1", true);
+		// `list` returns recency (mtime) order; pin the mtimes instead of
+		// relying on write ordering so the fixture is deterministic.
+		fs.utimesSync(emptyFile, OLDER_MTIME, OLDER_MTIME);
+		fs.utimesSync(realFile, NEWER_MTIME, NEWER_MTIME);
+
+		const sessions = await SessionManager.list("/tmp/project", tempDir);
+		const resumable = filterResumableSessions(sessions, new FileSessionStorage());
+
+		expect(sessions.map(session => session.id)).toEqual(["realid1", "emptyid1"]);
+		expect(resumable.map(session => session.path)).toEqual([realFile]);
+	});
+});
+
+describe("SessionManager.refreshFromDisk", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = path.join(os.tmpdir(), `session-test-${Snowflake.next()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		removeSyncWithRetries(tempDir);
+	});
+
+	it("picks up entries appended by another writer without rewriting the file", async () => {
+		const sessionFile = path.join(tempDir, "2025-01-01_mirror.jsonl");
+		fs.writeFileSync(
+			sessionFile,
+			`${[
+				JSON.stringify({ type: "session", id: "mirror1", timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp/project" }),
+				JSON.stringify({
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "2025-01-01T00:00:01Z",
+					message: { role: "user", content: "before", timestamp: 1 },
+				}),
+			].join("\n")}\n`,
+		);
+		const mirror = await SessionManager.open(sessionFile, tempDir);
+		try {
+			expect(mirror.getBranch().filter(entry => entry.type === "message")).toHaveLength(1);
+
+			// Simulate the rpc-ui child appending while the mirror holds the file open.
+			fs.appendFileSync(
+				sessionFile,
+				`${JSON.stringify({
+					type: "message",
+					id: "m2",
+					parentId: "m1",
+					timestamp: "2025-01-01T00:00:02Z",
+					message: { role: "assistant", content: "after", timestamp: 2 },
+				})}\n`,
+			);
+			const mtimeBeforeRefresh = fs.statSync(sessionFile).mtimeMs;
+
+			const refreshed = await mirror.refreshFromDisk();
+			expect(refreshed).toBe(true);
+			const branch = mirror.getBranch().filter(entry => entry.type === "message");
+			expect(branch).toHaveLength(2);
+			// The mirror must not rewrite the file the child owns.
+			expect(fs.statSync(sessionFile).mtimeMs).toBe(mtimeBeforeRefresh);
+		} finally {
+			await mirror.close();
+		}
+	});
+
+	it("leaves entries untouched when the on-disk session id diverges", async () => {
+		const sessionFile = path.join(tempDir, "2025-01-01_diverged.jsonl");
+		fs.writeFileSync(
+			sessionFile,
+			JSON.stringify({ type: "session", id: "original1", timestamp: "2025-01-01T00:00:00Z", cwd: "/tmp/project" }) +
+				"\n",
+		);
+		const mirror = await SessionManager.open(sessionFile, tempDir);
+		try {
+			fs.writeFileSync(
+				sessionFile,
+				`${JSON.stringify({
+					type: "session",
+					id: "other-session",
+					timestamp: "2025-01-01T00:00:00Z",
+					cwd: "/tmp/project",
+				})}\n`,
+			);
+			const refreshed = await mirror.refreshFromDisk();
+			expect(refreshed).toBe(false);
+			expect(mirror.getSessionId()).toBe("original1");
+		} finally {
+			await mirror.close();
+		}
 	});
 });
 

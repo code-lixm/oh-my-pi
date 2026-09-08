@@ -219,10 +219,13 @@ describe("runRootCommand — cross-project --resume", () => {
 			await resumedManager?.close();
 		}
 
-		// Launch scope had no patterns, so the only resolution is the post-switch
+		// Launch scope had no patterns, so every resolution is the post-switch
 		// one; the pre-fix code never recomputed and would not call it at all.
-		expect(resolveModelScope).toHaveBeenCalledTimes(1);
+		// The mock collapses the scope to empty, so the cache-aware discovery
+		// pass re-runs resolution exactly once after the registry refresh.
+		expect(resolveModelScope).toHaveBeenCalledTimes(2);
 		expect(resolveModelScope.mock.calls[0]?.[0]).toEqual(["model-resumed"]);
+		expect(resolveModelScope.mock.calls[1]?.[0]).toEqual(["model-resumed"]);
 	}, 15_000);
 });
 
@@ -290,6 +293,7 @@ describe("createSessionManager — cross-project --resume relocation (moved work
 			size: 0,
 			firstMessage: "before local move",
 			allMessagesText: "before local move",
+			hasConversation: true,
 		};
 		await moved.close();
 		expect(fs.existsSync(missingProject)).toBe(false);

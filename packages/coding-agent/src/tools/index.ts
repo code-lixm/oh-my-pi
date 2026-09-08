@@ -53,6 +53,7 @@ import { CheckpointTool, RewindTool } from "./checkpoint";
 import { CodeGraphTool } from "./codegraph";
 import type { CodeGraphCoverageLedger } from "./codegraph-coverage-ledger";
 import { ComputerTool } from "./computer";
+import { CronTool } from "./cron-tool";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -555,6 +556,11 @@ export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
 			() => s.getRefinementController?.(),
 			() => s.settings.get("refinement.enabled"),
 		),
+	cron: s =>
+		new CronTool(
+			() => s.getScheduleRuntime?.(),
+			() => s.settings.get("schedule.enabled"),
+		),
 };
 
 export type ToolName = BuiltinToolName;
@@ -574,6 +580,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const goalEnabled = session.settings.get("goal.enabled");
 	const refinementEnabled = session.settings.get("refinement.enabled");
 	const refinementToolActive = !restrictToolNames && refinementEnabled;
+	const cronToolActive = !restrictToolNames && session.settings.get("schedule.enabled");
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	const externalThinkingActive =
 		session.settings.get("externalThinking") && supportsExternalThinking(session.getActiveModel?.());
@@ -707,6 +714,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "refine") return refinementToolActive;
+		if (name === "cron") return cronToolActive;
 		if (name === "tool_search") return !restrictToolNames && session.settings.get("tools.xdev");
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
@@ -776,6 +784,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 					...(refinementToolActive ? ([["refine", HIDDEN_TOOLS.refine]] as const) : []),
+					...(cronToolActive ? ([["cron", HIDDEN_TOOLS.cron]] as const) : []),
 				];
 
 	const activeToolNames = new Set(baseEntries.map(([name]) => name));

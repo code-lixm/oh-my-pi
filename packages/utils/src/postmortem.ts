@@ -224,9 +224,12 @@ export function registerStdioDisconnectHandling(): () => void {
 }
 
 // Well-known key marking an error as an *expected* teardown artifact (e.g. a
-// browser run-scope abort at normal run end). `Symbol.for` so the marker
-// survives duplicate module instances across bundles/realms.
-const EXPECTED_CLEANUP = Symbol.for("omp.expectedCleanupError");
+// browser run-scope abort at normal run end, or an RPC client race after
+// `RemoteAgentSession.dispose()` closes the transport mid-flight). Exported so
+// transports and remote-session facades stamp the same shared key instead of
+// inventing local symbols; `Symbol.for` so the marker survives duplicate module
+// instances across bundles/realms.
+export const EXPECTED_CLEANUP = Symbol.for("omp.expectedCleanupError");
 
 /**
  * Mark an error as expected cleanup fallout so the global fatal handlers

@@ -1,11 +1,9 @@
-export type ScheduleJobSource = "cron" | "heartbeat" | "rlm_heartbeat";
+export type ScheduleJobSource = "cron";
 export type ScheduleSource = ScheduleJobSource;
 export type ScheduleJobStatus = "active" | "paused" | "completed" | "cancelled" | "failed";
 export type ScheduleStatus = ScheduleJobStatus;
 export type ScheduleKind = "once" | "cron" | "interval";
 export type ScheduleDeliveryMode = "steer" | "follow_up";
-/** Backwards-compatible name used by early consumers of the scheduling types. */
-export type HeartbeatDeliveryMode = ScheduleDeliveryMode;
 export type ScheduleRunResult = "ran" | "skipped";
 
 export interface ScheduleDeliveryReceipt {
@@ -19,9 +17,6 @@ export interface ScheduleSpec {
 	expression: string;
 	intervalMs?: number;
 }
-
-/** Backwards-compatible name for the persisted schedule specification. */
-export type AgentCronSchedule = ScheduleSpec;
 
 export interface ScheduleJob {
 	id: string;
@@ -93,36 +88,10 @@ export interface UpdateScheduleJobInput {
 	deliveryMode?: ScheduleDeliveryMode;
 }
 
-export interface SetHeartbeatInput {
-	instruction: string;
-	interval?: string;
-	deliveryMode?: ScheduleDeliveryMode;
-	label?: string;
-}
-
 export interface CreateScheduleInput {
 	schedule: string | ScheduleSpec;
 	prompt: string;
 	label?: string;
-	deliveryMode?: ScheduleDeliveryMode;
-}
-
-export interface HeartbeatDefaults {
-	/** Canonical setting name. */
-	defaultInterval?: string;
-	/** Canonical setting name. */
-	defaultDeliveryMode?: ScheduleDeliveryMode;
-	/** Short aliases useful for isolated parser callers. */
-	interval?: string;
-	deliveryMode?: ScheduleDeliveryMode;
-}
-
-export type HeartbeatAction = "create" | "status" | "pause" | "resume" | "clear";
-
-export interface ParsedHeartbeatInput {
-	action: HeartbeatAction;
-	instruction?: string;
-	interval?: string;
 	deliveryMode?: ScheduleDeliveryMode;
 }
 
@@ -152,9 +121,6 @@ export interface ScheduleSchedulerHooks {
 	onError?: (job: ScheduleJob, error: unknown) => void;
 }
 
-/** Older spelling retained for consumers compiled against the initial draft. */
-export type SchedulerHooks = ScheduleSchedulerHooks;
-
 export interface Scheduler {
 	start(): Promise<void>;
 	stop(): void;
@@ -163,5 +129,3 @@ export interface Scheduler {
 	cancel(id: string): Promise<ScheduleJob | undefined>;
 	runDue(now?: Date): Promise<number>;
 }
-
-export interface ScheduleParseResult extends ParsedSchedule {}

@@ -89,21 +89,33 @@ describe("agent activity display contracts", () => {
 		expect(text).not.toMatch(/[\t\n]/);
 	});
 
-	it("shows a running task's start time and complete fixed duration without an end time", () => {
+	it("shows a running task's phase elapsed after the quiet threshold and complete fixed duration without an end time", () => {
 		const startedAtMs = new Date(2025, 0, 2, 3, 4, 5).getTime();
-		const display = renderAgentActivityDisplay({
-			progress: {
-				status: "running",
-				startedAtMs,
-				durationMs: 0,
-				tokens: 0,
-				toolCount: 0,
-				cost: 0,
-			},
-			width: 160,
-			now: startedAtMs + 3_723_000,
-		});
+		const render = () =>
+			renderAgentActivityDisplay({
+				activity: activity({ phaseStartedAtMs: startedAtMs, lastActivityAtMs: startedAtMs }),
+				progress: {
+					status: "running",
+					startedAtMs,
+					durationMs: 0,
+					tokens: 0,
+					toolCount: 0,
+					cost: 0,
+				},
+				width: 160,
+				now: startedAtMs + 3_723_000,
+			});
+		const display = render();
 		const text = Bun.stripANSI(display.statsLine ?? "");
+		const activityLine = Bun.stripANSI(display.activityLine ?? "");
+		expect(activityLine).toContain("phase 1h2m");
+		expect(activityLine).not.toContain("quiet");
+
+		setSettingsUiLocale("zh-CN");
+		const localizedActivityLine = Bun.stripANSI(render().activityLine ?? "");
+		expect(localizedActivityLine).toContain("阶段 1h2m");
+		expect(localizedActivityLine).not.toContain("无活动");
+		expect(localizedActivityLine).not.toContain("暂时无活动");
 		const started = new Date(startedAtMs);
 		const clock = [started.getHours(), started.getMinutes(), started.getSeconds()]
 			.map(value => String(value).padStart(2, "0"))
@@ -190,8 +202,8 @@ describe("agent activity display contracts", () => {
 				const later = render(registryStatus);
 
 				expect(later).toBe(first);
-				expect(first).toContain("quiet");
-				expect(first).not.toContain("phase");
+				expect(first).toContain("phase 1h2m");
+				expect(first).not.toContain("quiet");
 				expect(first).toContain("Ended");
 				expect(first).toContain("Duration 1h2m");
 			}

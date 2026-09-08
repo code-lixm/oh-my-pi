@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRefinementController, type RefinementControllerDeps } from "../../src/refinement/controller";
-import { applyRefinementProposal } from "../../src/refinement/refinement";
+import { applyRefinementProposal, MAX_ENTRIES_PER_KIND } from "../../src/refinement/refinement";
 import {
 	appendRefinementHistory,
 	createHarnessState,
@@ -42,10 +42,21 @@ interface CallLog {
 	waitForIdle: number;
 	refresh: number;
 	appended: Array<{ type: string; data: unknown }>;
-	planned: Array<{ scope: string; instructions?: string; state: HarnessState }>;
+	planned: Array<{
+		scope: string;
+		instructions?: string;
+		state: HarnessState;
+		round: number;
+		critique?: string;
+		roundFeedback?: string[];
+	}>;
 	reviewed: Array<{ reason: string; turnsSinceLastReview: number }>;
+	critiqued: number;
+	verified: Array<{ round: number; proposalEdits: number }>;
 	warnings: string[];
 }
+
+const ONE_USER_TURN = [{ role: "user", content: "trajectory", timestamp: 1 }] as never[];
 
 function makeDeps(overrides: Partial<RefinementControllerDeps> = {}): {
 	deps: RefinementControllerDeps;
@@ -55,18 +66,35 @@ function makeDeps(overrides: Partial<RefinementControllerDeps> = {}): {
 } {
 	const agentDir = "";
 	const localDir: string | undefined = undefined;
-	const calls: CallLog = { waitForIdle: 0, refresh: 0, appended: [], planned: [], reviewed: [], warnings: [] };
+	const calls: CallLog = {
+		waitForIdle: 0,
+		refresh: 0,
+		appended: [],
+		planned: [],
+		reviewed: [],
+		critiqued: 0,
+		verified: [],
+		warnings: [],
+	};
 	const deps: RefinementControllerDeps = {
 		agentDir,
 		getLocalHarnessDir: () => localDir,
-		getMessages: () => [],
-		planWithLLM: async ({ state, instructions, scope }) => {
-			calls.planned.push({ scope, instructions, state });
+		getMessages: () => ONE_USER_TURN,
+		planWithLLM: async ({ state, instructions, scope, round, critique, roundFeedback }) => {
+			calls.planned.push({ scope, instructions, state, round, critique, roundFeedback });
 			return { summary: "summary", rationale: "rationale", expectedOutcome: "expected", edits: [] };
 		},
 		reviewWithLLM: async ({ reason, turnsSinceLastReview }) => {
 			calls.reviewed.push({ reason, turnsSinceLastReview });
 			return { shouldRefine: false, rationale: "no evidence" };
+		},
+		critiqueWithLLM: async () => {
+			calls.critiqued++;
+			return "- [global:plan-memory] improvable — evidence: turn:0 — stale";
+		},
+		verifyWithLLM: async ({ round, proposal }) => {
+			calls.verified.push({ round, proposalEdits: proposal.edits.length });
+			return { verdict: "pass", reasons: [], requiredChanges: [] };
 		},
 		waitForIdle: async () => {
 			calls.waitForIdle++;
@@ -122,6 +150,7 @@ describe("RefinementController", () => {
 							id: "plan-memory",
 							title: "Updated",
 							content: "Updated instruction.",
+							evidence: ["turn:0"],
 						},
 					],
 				};
@@ -255,6 +284,7 @@ describe("RefinementController", () => {
 							id: "auto-memory",
 							title: "New",
 							content: "New text.",
+							evidence: ["turn:0"],
 						},
 					],
 				};
@@ -311,6 +341,7 @@ describe("RefinementController", () => {
 						id: "iso-memory",
 						title: "A",
 						content: "Only session A sees this.",
+						evidence: ["turn:0"],
 					},
 				],
 			}),
@@ -381,6 +412,7 @@ describe("RefinementController", () => {
 						id: "disk-memory",
 						title: "Updated",
 						content: "Updated.",
+						evidence: ["turn:0"],
 					},
 				],
 			}),
@@ -403,5 +435,258 @@ describe("RefinementController", () => {
 				.catch(() => false),
 		).toBe(true);
 		expect(calls.appended[0]?.type).toBe("omp.refinement");
+	});
+});
+
+describe("RefinementController reflection loop", () => {
+	test("a failed verification feeds requiredChanges into exactly one revision, then applies with rounds recorded", async () => {
+		const agentDir = await makeRoot("loop-revise");
+		await seedGlobalEntry(agentDir, fixtureEntry("loop-memory", "memory", "Old", "Old text."));
+		const roundsSeen: number[] = [];
+		let verifications = 0;
+		const { deps, calls } = makeDeps({
+			agentDir,
+			planWithLLM: async ({ round, roundFeedback }) => {
+				roundsSeen.push(round);
+				if (round === 1) {
+					return {
+						summary: "Weak proposal",
+						rationale: "thin evidence",
+						expectedOutcome: "updated",
+						edits: [
+							{
+								action: "update",
+								kind: "memory",
+								id: "loop-memory",
+								title: "R1",
+								content: "Round one text.",
+								evidence: ["turn:0"],
+							},
+						],
+					};
+				}
+				// The revision must carry the evaluator's required changes.
+				expect(roundFeedback).toEqual(["cite the contradicted turn"]);
+				return {
+					summary: "Revised proposal",
+					rationale: "evidence",
+					expectedOutcome: "updated",
+					edits: [
+						{
+							action: "update",
+							kind: "memory",
+							id: "loop-memory",
+							title: "R2",
+							content: "Round two text.",
+							evidence: ["turn:0"],
+						},
+					],
+				};
+			},
+			verifyWithLLM: async ({ round, proposal }) => {
+				verifications++;
+				if (round === 1) {
+					return { verdict: "fail", reasons: ["weak grounding"], requiredChanges: ["cite the contradicted turn"] };
+				}
+				expect(proposal.edits[0]?.title).toBe("R2");
+				return { verdict: "pass", reasons: [], requiredChanges: [] };
+			},
+		});
+		const controller = createRefinementController(deps);
+		await controller.refine(undefined, { scope: "global" });
+
+		expect(roundsSeen).toEqual([1, 2]);
+		expect(verifications).toBe(2);
+		expect(calls.refresh).toBe(1);
+		const history = await loadRefinementHistory(agentDir, "global");
+		expect(history[0]?.rounds).toBe(2);
+	});
+
+	test("mechanical rejection (no evidence) exhausts the bound without spending an evaluator call", async () => {
+		const agentDir = await makeRoot("loop-mechanical");
+		let plans = 0;
+		const { deps, calls } = makeDeps({
+			agentDir,
+			planWithLLM: async () => {
+				plans++;
+				return {
+					summary: "No evidence",
+					rationale: "evidence",
+					expectedOutcome: "noop",
+					edits: [{ action: "update", kind: "memory", id: "whatever", title: "T", content: "C" }],
+				};
+			},
+			verifyWithLLM: async () => {
+				throw new Error("evaluator must not be called when mechanical validation already failed");
+			},
+		});
+		const controller = createRefinementController(deps);
+		await expect(controller.refine(undefined, { scope: "global" })).rejects.toThrow("rejected after 2 rounds");
+		expect(plans).toBe(2);
+		expect(calls.verified).toHaveLength(0);
+		expect(calls.refresh).toBe(0);
+		expect(calls.appended.some(entry => entry.type === "omp.refinement.failed")).toBe(false);
+	});
+
+	test("out-of-bounds evidence citations are rejected mechanically", async () => {
+		const agentDir = await makeRoot("loop-bounds");
+		const { deps, calls } = makeDeps({
+			agentDir,
+			planWithLLM: async () => ({
+				summary: "Fabricated evidence",
+				rationale: "evidence",
+				expectedOutcome: "noop",
+				edits: [{ action: "update", kind: "memory", id: "x", title: "T", content: "C", evidence: ["turn:99"] }],
+			}),
+		});
+		const controller = createRefinementController(deps);
+		await expect(controller.refine(undefined, { scope: "global" })).rejects.toThrow("outside this trajectory");
+		expect(calls.verified).toHaveLength(0);
+	});
+
+	test("duplicate creates are rejected mechanically in favor of updates", async () => {
+		const agentDir = await makeRoot("loop-dedup");
+		await seedGlobalEntry(
+			agentDir,
+			fixtureEntry(
+				"existing",
+				"memory",
+				"Deploy flow",
+				"The deploy flow runs through the release pipeline and signs the bundle.",
+			),
+		);
+		const { deps } = makeDeps({
+			agentDir,
+			planWithLLM: async () => ({
+				summary: "Duplicate memory",
+				rationale: "evidence",
+				expectedOutcome: "noop",
+				edits: [
+					{
+						action: "create",
+						kind: "memory",
+						id: "deploy-flow-copy",
+						title: "Deploy flow copy",
+						content: "The deploy flow runs through the release pipeline and signs the bundle!",
+						evidence: ["turn:0"],
+					},
+				],
+			}),
+		});
+		const controller = createRefinementController(deps);
+		await expect(controller.refine(undefined, { scope: "global" })).rejects.toThrow("duplicates existing entry");
+	});
+
+	test("kind ceiling forces consolidation instead of hoarding", async () => {
+		const agentDir = await makeRoot("loop-ceiling");
+		const state = createHarnessState();
+		for (let i = 0; i < MAX_ENTRIES_PER_KIND; i++) {
+			state.entries.memory[`m${i}`] = fixtureEntry(
+				`m${i}`,
+				"memory",
+				`M${i}`,
+				`Distinct content number ${i} about topic ${i}.`,
+			);
+		}
+		await saveHarnessState(state, path.join(agentDir, "harness", "harness-state.json"));
+		const { deps } = makeDeps({
+			agentDir,
+			planWithLLM: async () => ({
+				summary: "One more",
+				rationale: "evidence",
+				expectedOutcome: "noop",
+				edits: [
+					{
+						action: "create",
+						kind: "memory",
+						id: "overflow",
+						title: "Overflow",
+						content: "Overflowing distinct content.",
+						evidence: ["turn:0"],
+					},
+				],
+			}),
+		});
+		const controller = createRefinementController(deps);
+		await expect(controller.refine(undefined, { scope: "global" })).rejects.toThrow("already holds 24 entries");
+	});
+
+	test("critique findings flow into the proposer", async () => {
+		const agentDir = await makeRoot("loop-critique");
+		let receivedCritique = "";
+		await seedGlobalEntry(agentDir, fixtureEntry("critiqued", "memory", "Old", "Old text."));
+		const { deps } = makeDeps({
+			agentDir,
+			critiqueWithLLM: async () => "- [global:critiqued] contradicted — evidence: turn:0 — flow changed",
+			planWithLLM: async ({ critique }) => {
+				receivedCritique = critique ?? "";
+				return {
+					summary: "Grounded update",
+					rationale: "evidence",
+					expectedOutcome: "updated",
+					edits: [
+						{
+							action: "update",
+							kind: "memory",
+							id: "critiqued",
+							title: "New",
+							content: "New text.",
+							evidence: ["turn:0"],
+						},
+					],
+				};
+			},
+		});
+		const controller = createRefinementController(deps);
+		await controller.refine(undefined, { scope: "global" });
+		expect(receivedCritique).toContain("contradicted");
+	});
+
+	test("a rejected auto-review does not consume the cooldown window", async () => {
+		const agentDir = await makeRoot("loop-cooldown");
+		const localDir = await makeRoot("loop-cooldown-local");
+		await seedGlobalEntry(agentDir, fixtureEntry("cool-memory", "memory", "Old", "Old text."));
+		let reviewCount = 0;
+		let plans = 0;
+		const { deps, calls } = makeDeps({
+			agentDir,
+			getLocalHarnessDir: () => localDir,
+			getAutoRefineTurns: () => 1,
+			getAutoRefineCooldownMs: () => 60_000,
+			reviewWithLLM: async ({ reason, turnsSinceLastReview }) => {
+				calls.reviewed.push({ reason, turnsSinceLastReview });
+				reviewCount++;
+				if (reviewCount < 3) return { shouldRefine: false, rationale: "not yet" };
+				return { shouldRefine: true, rationale: "now", instructions: "update" };
+			},
+			planWithLLM: async () => {
+				plans++;
+				return {
+					summary: "Cooldown update",
+					rationale: "evidence",
+					expectedOutcome: "updated",
+					edits: [
+						{
+							action: "update",
+							kind: "memory",
+							id: "cool-memory",
+							title: "New",
+							content: "New text.",
+							evidence: ["turn:0"],
+						},
+					],
+				};
+			},
+		});
+		const controller = createRefinementController(deps);
+		await controller.onTurnEnd(undefined);
+		await waitForSignal(() => calls.reviewed.length === 1, "first review");
+		// Turns 2 and 3: the rejected reviews must not suppress later triggers.
+		await controller.onTurnEnd(undefined);
+		await waitForSignal(() => calls.reviewed.length === 2, "second review");
+		await controller.onTurnEnd(undefined);
+		await waitForSignal(() => calls.reviewed.length === 3, "third review");
+		await waitForSignal(() => calls.refresh === 1, "refinement finally applied");
+		expect(plans).toBe(1);
 	});
 });

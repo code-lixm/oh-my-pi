@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import type * as node_fs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -218,11 +219,12 @@ describe("runGcCommand blob sweep", () => {
 				"  coldArchiveAfterDays: 7",
 				"  retainNewestGlobal: 0",
 				"  retainNewestPerCwd: 0",
+				"  archivePreserveStats: false",
 				"",
 			].join("\n"),
 		);
 
-		const result = await runGcCommand({ flags: { agentDir: root, apply: true } });
+		const result = await runGcCommand({ flags: { agentDir: root, apply: true, preserveStats: false } });
 
 		expect(result.blobs).toBeUndefined();
 		expect(result.wal).toBeUndefined();
@@ -251,6 +253,7 @@ describe("runGcCommand blob sweep", () => {
 				"  coldArchiveAfterDays: 7",
 				"  retainNewestGlobal: 0",
 				"  retainNewestPerCwd: 0",
+				"  archivePreserveStats: false",
 				"",
 			].join("\n"),
 		);
@@ -277,6 +280,7 @@ describe("runGcCommand blob sweep", () => {
 				"  coldArchiveAfterDays: nope",
 				"  retainNewestGlobal: 0",
 				"  retainNewestPerCwd: 0",
+				"  archivePreserveStats: false",
 				"",
 			].join("\n"),
 		);
@@ -336,6 +340,7 @@ describe("runGcCommand blob sweep", () => {
 				"  coldArchiveAfterDays: 7",
 				"  retainNewestGlobal: 0",
 				"  retainNewestPerCwd: 0",
+				"  archivePreserveStats: false",
 				"",
 			].join("\n"),
 		);
@@ -376,6 +381,7 @@ describe("runGcCommand blob sweep", () => {
 				"  coldArchiveAfterDays: 7",
 				"  retainNewestGlobal: 0",
 				"  retainNewestPerCwd: 0",
+				"  archivePreserveStats: false",
 				"",
 			].join("\n"),
 		);
@@ -562,6 +568,7 @@ describe("runGcCommand cold-session archive", () => {
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
 				apply: true,
+				preserveStats: false,
 			},
 		});
 
@@ -598,6 +605,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -615,6 +623,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -818,6 +827,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -850,6 +860,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -941,6 +952,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -987,6 +999,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1069,6 +1082,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1128,6 +1142,7 @@ describe("runGcCommand cold-session archive", () => {
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
 				apply: true,
+				preserveStats: false,
 			},
 		});
 		const check = new Database(statsDbPath);
@@ -1158,6 +1173,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1189,6 +1205,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1278,6 +1295,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1323,6 +1341,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1415,6 +1434,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1456,6 +1476,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1500,6 +1521,7 @@ describe("runGcCommand cold-session archive", () => {
 				flags: {
 					agentDir: root,
 					archive: true,
+					preserveStats: false,
 					coldArchiveAfterDays: 30,
 					retainNewestGlobal: 0,
 					retainNewestPerCwd: 0,
@@ -1535,6 +1557,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1555,6 +1578,7 @@ describe("runGcCommand cold-session archive", () => {
 			flags: {
 				agentDir: root,
 				archive: true,
+				preserveStats: false,
 				coldArchiveAfterDays: 30,
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
@@ -1588,6 +1612,7 @@ describe("runGcCommand cold-session archive", () => {
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
 				apply: true,
+				preserveStats: false,
 			},
 		});
 		const archived = path.join(root, "archive", "sessions", "project", "20260626_archive-me.jsonl.gz");
@@ -1610,6 +1635,7 @@ describe("runGcCommand cold-session archive", () => {
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
 				apply: true,
+				preserveStats: false,
 			},
 		});
 
@@ -1666,6 +1692,7 @@ describe("runGcCommand cold-session archive", () => {
 				retainNewestGlobal: 0,
 				retainNewestPerCwd: 0,
 				apply: true,
+				preserveStats: false,
 			},
 		});
 
@@ -1774,3 +1801,90 @@ describe("runGcCommand lock handling", () => {
 		expect(await Bun.file(breakerPath).exists()).toBe(true);
 	});
 });
+
+describe("runGcCommand archive stats preservation", () => {
+	test("preserve mode syncs the session before the move and keeps every stats row", async () => {
+		const sessionsDir = path.join(getSessionsDir(root), "project");
+		await fs.mkdir(sessionsDir, { recursive: true });
+		const file = path.join(sessionsDir, "preserve-me.jsonl");
+		await fs.writeFile(
+			file,
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "preserve-me",
+					timestamp: "2026-01-01T00:00:00.000Z",
+					cwd: "/tmp",
+				}),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [] } }),
+				"",
+			].join("\n"),
+		);
+		const ts = new Date(Date.now() - 90 * 86_400_000);
+		await fs.utimes(file, ts, ts);
+
+		// Pre-existing stats rows for the session (as an earlier sync wrote them).
+		const statsDbPath = path.join(root, "stats.db");
+		const tables = ["messages", "user_messages", "tool_calls", "file_offsets"] as const;
+		const db = new Database(statsDbPath);
+		for (const table of tables) {
+			db.run(`CREATE TABLE ${table} (session_file TEXT NOT NULL)`);
+			db.prepare(`INSERT INTO ${table} (session_file) VALUES (?)`).run(file);
+		}
+		db.close();
+
+		const syncedFiles: string[][] = [];
+		const result = await runGcCommand({
+			flags: {
+				agentDir: root,
+				archive: true,
+				coldArchiveAfterDays: 30,
+				retainNewestGlobal: 0,
+				retainNewestPerCwd: 0,
+				apply: true,
+			},
+			// Injected sync: runs in place of the real stats flush. It asserts the
+			// ordering guarantee by checking the raw files still exist when called.
+			syncStatsForSession: async session => {
+				syncedFiles.push([session.path, ...(await collectJsonlFilesForTest(session.path))]);
+				expect(await Bun.file(session.path).exists()).toBe(true);
+			},
+		});
+
+		expect(result.archive?.archived).toBe(1);
+		expect(result.archive?.statsPreserved).toBe(true);
+		expect(result.archive?.statsRowsDeleted).toBe(0);
+		expect(syncedFiles.length).toBe(1);
+
+		expect(await Bun.file(path.join(root, "archive", "sessions", "project", "preserve-me.jsonl.gz")).exists()).toBe(
+			true,
+		);
+		expect(await Bun.file(file).exists()).toBe(false);
+
+		// Preservation means preservation: every pre-existing stats row survives.
+		const check = new Database(statsDbPath);
+		for (const table of tables) {
+			const row = check.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE session_file = ?`).get(file) as {
+				count: number;
+			};
+			expect(row.count).toBe(1);
+		}
+		check.close();
+	});
+});
+
+async function collectJsonlFilesForTest(sessionPath: string): Promise<string[]> {
+	const artifacts = sessionPath.slice(0, -".jsonl".length);
+	const out: string[] = [];
+	let entries: node_fs.Dirent[];
+	try {
+		entries = await fs.readdir(artifacts, { withFileTypes: true });
+	} catch {
+		return out;
+	}
+	for (const entry of entries) {
+		if (entry.isFile() && entry.name.endsWith(".jsonl")) out.push(path.join(artifacts, entry.name));
+	}
+	return out;
+}

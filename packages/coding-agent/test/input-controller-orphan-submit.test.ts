@@ -40,6 +40,10 @@ type FakeEditor = {
 	setActionKeys(action: string, keys: string[]): void;
 	setCustomKeyHandler(key: string, handler: () => void): void;
 	clearCustomKeyHandlers(): void;
+	compactPendingImageReferences(text: string): string;
+	setCollapsedText(text: string): void;
+	markPendingImagesManaged(): void;
+	composerChips(): Array<{ kind: string; n: number }>;
 };
 
 function createContext(sessionOverride?: InteractiveModeContext["session"]) {
@@ -71,6 +75,12 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		setActionKeys: vi.fn(),
 		setCustomKeyHandler: vi.fn(),
 		clearCustomKeyHandlers: vi.fn(),
+		compactPendingImageReferences: (text: string) => text,
+		setCollapsedText(text: string) {
+			editorText = text;
+		},
+		markPendingImagesManaged() {},
+		composerChips: () => [],
 	};
 
 	const session =
@@ -97,6 +107,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],
 		compactionQueuedMessages: [] as InteractiveModeContext["compactionQueuedMessages"],
 		fileSlashCommands: new Set<string>(),
+		skillCommands: new Map<string, never>(),
 		locallySubmittedUserSignatures: new Set<string>(),
 		isKnownSlashCommand: () => false,
 		recordLocalSubmission(this: InteractiveModeContext, text: string, imageCount = 0) {
@@ -123,6 +134,17 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		// No input waiter: the state under test.
 		onInputCallback: undefined,
 		updatePendingMessagesDisplay,
+		optimisticQueuedMessages: [],
+		addOptimisticQueuedMessage: (text: string, mode: "steer" | "followUp") => {
+			ctx.optimisticQueuedMessages.push({ mode, text });
+			updatePendingMessagesDisplay();
+		},
+		retireOptimisticQueuedMessage: (text: string) => {
+			const index = ctx.optimisticQueuedMessages.findIndex(entry => entry.text === text);
+			if (index >= 0) ctx.optimisticQueuedMessages.splice(index, 1);
+			updatePendingMessagesDisplay();
+		},
+		reconcileOptimisticQueuedMessages: () => {},
 		flushPendingBashComponents,
 		showError,
 		isBashMode: false,
@@ -343,5 +365,38 @@ describe("InputController orphaned submit", () => {
 				Bun.env.PI_NO_TITLE = previousNoTitle;
 			}
 		}
+	});
+
+	it("updates the pending bar while a streaming steer dispatch is still in flight", async () => {
+		// Contract (processIsolation Enter path): the RPC roundtrip for
+		// session.prompt() can take a whole dispatch window; the queued message
+		// must appear in the pending bar on the first frame after Enter, not
+		// only after the await resolves.
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			getQueuedMessages(): { steering: string[]; followUp: string[] };
+		};
+		session.isStreaming = true;
+		const dispatchSettled = Promise.withResolvers<void>();
+		spies.prompt.mockImplementationOnce(async () => {
+			// Simulate the in-flight RPC: the queue is NOT yet visible through
+			// getQueuedMessages() until the backend enqueues it.
+			await dispatchSettled.promise;
+		});
+		editor.setText("steered mid-turn");
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		const submitted = editor.onSubmit?.("steered mid-turn");
+		await Promise.resolve();
+		// The dispatch has not resolved yet: the display must already have been
+		// refreshed (first frame), not only after `await prompt`.
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalled();
+		expect(editor.getText()).toBe("");
+
+		dispatchSettled.resolve();
+		await submitted;
+		expect(spies.showError).not.toHaveBeenCalled();
 	});
 });

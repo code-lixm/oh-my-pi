@@ -349,7 +349,7 @@ export class CodeGraphTool implements AgentTool<typeof codegraphSchema, CodeGrap
 	}
 
 	#standardFallback(reason: string): string {
-		return `${reason}. Fallback: use \`grep\`/\`glob\`/\`read\`. Use \`lsp\` for symbol intelligence. Do not wait for or retry CodeGraph for this project in this task.`;
+		return `${reason}. Fallback: use \`grep\`/\`find\`/\`read\`. Use \`lsp\` for symbol intelligence. Do not wait for or retry CodeGraph for this project in this task.`;
 	}
 
 	async #resolveLocationAndScope(

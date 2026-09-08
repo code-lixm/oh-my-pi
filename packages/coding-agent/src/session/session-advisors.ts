@@ -633,6 +633,14 @@ export class SessionAdvisors {
 				model = sel.model;
 				thinkingLevel = concreteThinkingLevel(sel.thinkingLevel);
 			}
+			// Advisors communicate through the `advise` tool. A model explicitly
+			// marked as non-tool-capable cannot deliver a note through this protocol;
+			// skip it before constructing an Agent/request instead of sending a
+			// request that the provider will reject with an invalid-tool warning.
+			if (model.supportsTools === false) {
+				this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
+				continue;
+			}
 			// Clamp the effort against the resolved model. Historically we defaulted
 			// to `ThinkingLevel.Medium` unconditionally, which threw at first stream
 			// on reasoning models that expose no controllable effort surface
@@ -730,7 +738,14 @@ export class SessionAdvisors {
 
 			const names = config.tools === undefined ? ADVISOR_DEFAULT_TOOL_NAMES : new Set(config.tools);
 			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
-			const advisorLoopTools: AgentTool<any>[] = [adviseTool, ...tools];
+			// Some catalog/discovery models explicitly cannot receive native tools. Do
+			// not send the advisor's `advise` tool (or tool_choice) to those models:
+			// providers reject the whole request before the advisor can produce output.
+			// `AgentTool<any>` is the agent loop's own heterogeneous tool-array type
+			// (`tools?: AgentTool<any>[]` in packages/agent); the parameter `any`
+			// erases concrete schema args so AdviseTool and registry tools share one
+			// array — a bare `AgentTool` annotation rejects AdviseTool's exec args.
+			const advisorLoopTools: AgentTool<any>[] = advisorModel.supportsTools === false ? [] : [adviseTool, ...tools];
 			const advisorToolMap = new Map<string, AgentTool<any>>();
 			const availableAdvisorToolNames = new Set<string>();
 			for (const tool of advisorLoopTools) {
@@ -1627,13 +1642,13 @@ export class SessionAdvisors {
 		// compaction. Record their exact array boundary on the in-memory summary so
 		// only assistants appended afterward can become the next usage anchor.
 		const advisorUsageAnchorStartIndex = preparation.recentMessages.length + 1;
-	const summaryMessage = {
-		...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), {
-			shortSummary,
-		}),
-		firstKeptEntryId,
-		advisorUsageAnchorStartIndex,
-	} satisfies AdvisorCompactionSummaryMessage;
+		const summaryMessage = {
+			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), {
+				shortSummary,
+			}),
+			firstKeptEntryId,
+			advisorUsageAnchorStartIndex,
+		} satisfies AdvisorCompactionSummaryMessage;
 
 		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
 		return false;

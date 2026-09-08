@@ -519,6 +519,13 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "fork",
+		description: "Fork the current session now and continue in the copy",
+		handleTui: (_command, runtime) => {
+			void runtime.ctx.handleForkCommand();
+		},
+	},
+	{
 		name: "checkpoint",
 		description: "Snapshot the workspace (optional label) — restores via /rewind, /undo, /redo",
 		acpDescription: "Snapshot the workspace",

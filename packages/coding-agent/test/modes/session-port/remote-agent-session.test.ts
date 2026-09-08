@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
+	type AssistantMessage,
 	Effort,
 	type Model,
 	type ResetCreditAccountStatus,
@@ -17,6 +18,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 } from "../../../src/extensibility/extensions/types";
+import type { Goal } from "../../../src/goals/state";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client";
 import type { RpcTransport } from "../../../src/modes/rpc/rpc-transport";
 import type {
@@ -65,6 +67,8 @@ class InMemoryRpcTransport implements RpcTransport {
 	}
 
 	async start(): Promise<void> {
+		// Restartable: a recovery path may re-start the client after stop().
+		this.#stopped = false;
 		void this.sendFromServer({ type: "ready" });
 	}
 
@@ -97,6 +101,16 @@ class InMemoryRpcTransport implements RpcTransport {
 	async stop(): Promise<void> {
 		this.#stopped = true;
 		this.#wakeReader();
+	}
+
+	/** Simulate a worker crash without an explicit client stop(): readers end
+	 * and the client's close/error listeners fire, leaving the client in the
+	 * recoverable transport-loss state (unlike stop(), which is deliberate). */
+	crash(error: Error): void {
+		this.#stopped = true;
+		this.#wakeReader();
+		for (const listener of this.#errorListeners) listener(error);
+		for (const listener of this.#closeListeners) listener();
 	}
 
 	getStderr(): string {
@@ -222,6 +236,7 @@ type RemoteSessionHarnessOptions = BootstrapRpcServerOptions & {
 async function createRemoteSession(options: RemoteSessionHarnessOptions = {}): Promise<{
 	session: RemoteAgentSession;
 	transport: InMemoryRpcTransport;
+	client: RpcClient;
 }> {
 	const sessionManager = options.sessionManager ?? SessionManager.inMemory("/workspace/remote-session");
 	const transport = new InMemoryRpcTransport();
@@ -237,7 +252,7 @@ async function createRemoteSession(options: RemoteSessionHarnessOptions = {}): P
 			modelRegistry: {} as ModelRegistry,
 			...(options.eventBus ? { eventBus: options.eventBus } : {}),
 		});
-		return { session, transport };
+		return { session, transport, client };
 	} catch (error) {
 		await client.stop();
 		throw error;
@@ -540,6 +555,25 @@ describe("RemoteAgentSession RPC state projection", () => {
 			await session.dispose();
 		}
 	});
+
+	test("applies a queue_changed event payload immediately without a snapshot roundtrip", async () => {
+		const { session, transport } = await createRemoteSession({
+			state: () => ({ ...initialState, queuedMessages: { steering: [], followUp: [] } }),
+		});
+		try {
+			// The backend emits queue_changed with a live queue snapshot; the
+			// projection must adopt it synchronously (no get_state roundtrip)
+			// so the foreground pending bar renders on the first frame.
+			await transport.sendFromServer({
+				type: "queue_changed",
+				queue: { steering: ["steered mid-turn"], followUp: [] },
+			});
+			expect(session.getQueuedMessages()).toEqual({ steering: ["steered mid-turn"], followUp: [] });
+			expect(session.queuedMessageCount).toBe(1);
+		} finally {
+			await session.dispose();
+		}
+	});
 });
 
 describe("RemoteAgentSession interactive facade", () => {
@@ -562,6 +596,44 @@ describe("RemoteAgentSession interactive facade", () => {
 			});
 			expect(facade.scopedModels).toEqual([]);
 			expect(facade.getRoleModelCycle(["default"])).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards /clear context reset to the child and reports the dropped count", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "reset_session_context") return false;
+				received.push(command);
+				respond({ droppedCount: 12 });
+				return true;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+
+			await expect(facade.resetSessionContext()).resolves.toEqual({ droppedCount: 12 });
+			expect(received).toEqual([expect.objectContaining({ type: "reset_session_context" })]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("maps a refused /clear reset (busy child) to undefined without throwing", async () => {
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "reset_session_context") return false;
+				// The child refuses while a response streams / a foreground exec runs.
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+
+			await expect(facade.resetSessionContext()).resolves.toBeUndefined();
 		} finally {
 			await session.dispose();
 		}
@@ -625,6 +697,48 @@ describe("RemoteAgentSession interactive facade", () => {
 			}).not.toThrow();
 			await flushQueuedMicrotasks();
 			expect(rejected).toEqual(["abort", "abort_retry", "abort_bash", "set_session_name"]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("respawns the worker and replays a command after the RPC transport dies", async () => {
+		// Regression: a lost worker transport made every session command fail
+		// with the raw pre-send "Client not started" rejection (e.g. Tab model
+		// cycling surfacing one error toast per keypress) with no recovery path.
+		let cycleCalls = 0;
+		const { session, client, transport } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type === "cycle_role_models") {
+					cycleCalls++;
+					respond({ model: null, role: "default" });
+					return true;
+				}
+				return false;
+			},
+		});
+		try {
+			// Kill the transport the way a mid-session worker crash does: the
+			// client ends up with no active transport and every dispatch is
+			// rejected before anything is written.
+			transport.crash(new Error("worker crashed"));
+			await flushQueuedMicrotasks();
+			await expect(client.getState()).rejects.toThrow("Client not started");
+
+			// The facade must recover the worker and replay the command once.
+			const result = await session.cycleRoleModels(["default", "slow"], "forward");
+			expect(result).toEqual({ model: null, role: "default" });
+			expect(cycleCalls).toBe(1);
+
+			const replayed = transport.writes.filter(frame => (frame as { type?: string }).type === "cycle_role_models");
+			expect(replayed).toHaveLength(1);
+			// Recovery restored the subagent subscription for the new worker.
+			const subscriptions = transport.writes.filter(
+				frame => (frame as { type?: string }).type === "set_subagent_subscription",
+			);
+			expect(subscriptions.length).toBeGreaterThanOrEqual(2);
+			// The facade stays usable for follow-up commands.
+			await expect(client.getState()).resolves.toBeDefined();
 		} finally {
 			await session.dispose();
 		}
@@ -700,6 +814,55 @@ describe("RemoteAgentSession interactive facade", () => {
 				}),
 				expect.objectContaining({ type: "apply_role_model", role: "fast" }),
 				expect.objectContaining({ type: "cycle_role_models", roleOrder, direction: "backward" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards role and persistence options on setModel and returns a switched flag", async () => {
+		const primaryModel = {
+			provider: "anthropic",
+			id: "claude-sonnet",
+			name: "Claude Sonnet",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		} as Model;
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, model: primaryModel }),
+			onCommand: (command, respond) => {
+				if (command.type === "set_model") {
+					received.push(command);
+					respond({ model: primaryModel, switched: true });
+					return true;
+				}
+				return false;
+			},
+		});
+		try {
+			const facade = session.asAgentSession();
+			// The selector controller destructures the result — an undefined return
+			// used to throw "Cannot destructure property 'switched'" (processIsolation).
+			const result = await facade.setModel(primaryModel, "default", {
+				selector: "anthropic/claude-sonnet",
+				persist: true,
+			});
+			expect(result).toEqual({ switched: true });
+			expect(received).toEqual([
+				expect.objectContaining({
+					type: "set_model",
+					provider: primaryModel.provider,
+					modelId: primaryModel.id,
+					role: "default",
+					selector: "anthropic/claude-sonnet",
+					persist: true,
+				}),
 			]);
 		} finally {
 			await session.dispose();
@@ -1315,6 +1478,465 @@ describe("RemoteAgentSession subagent frame bridge", () => {
 			expect(observedLifecycle).toEqual([lifecycle]);
 			expect(observedProgress).toEqual([progress]);
 			expect(observedEvents).toEqual([event]);
+		} finally {
+			await session.dispose();
+		}
+	});
+});
+
+describe("RemoteAgentSession handoff", () => {
+	test("forwards the handoff command and returns the savedPath result", async () => {
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "handoff") return false;
+				respond({ savedPath: "/workspace/remote-session/handoff.md" });
+				return true;
+			},
+		});
+		try {
+			const result = await session.handoff("focus notes");
+			expect(result).toEqual({ savedPath: "/workspace/remote-session/handoff.md" });
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("rethrows the RPC error verbatim", async () => {
+		const { session } = await createRemoteSession({
+			onCommand: (command, _respond, reject) => {
+				if (command.type !== "handoff") return false;
+				reject("Cannot hand off while a response is in progress");
+				return true;
+			},
+		});
+		try {
+			await expect(session.handoff()).rejects.toThrow("Cannot hand off while a response is in progress");
+		} finally {
+			await session.dispose();
+		}
+	});
+});
+
+describe("RemoteAgentSession vibe/goal mode forwarding", () => {
+	test("forwards vibe tool activation and deactivation to the RPC child", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "activate_vibe_tools" && command.type !== "deactivate_vibe_tools") return false;
+				received.push(command);
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			await session.activateVibeTools(["read", "todo"]);
+			await session.deactivateVibeTools(["read", "bash", "edit"]);
+			expect(received).toEqual([
+				expect.objectContaining({ type: "activate_vibe_tools", baseToolNames: ["read", "todo"] }),
+				expect.objectContaining({ type: "deactivate_vibe_tools", nextToolNames: ["read", "bash", "edit"] }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards vibe-mode state and context delivery to the RPC child", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (
+					command.type !== "set_vibe_mode_state" &&
+					command.type !== "send_vibe_mode_context" &&
+					command.type !== "remove_vibe_tools_preserving_active"
+				) {
+					return false;
+				}
+				received.push(command);
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			session.setVibeModeState({ enabled: true });
+			await session.sendVibeModeContext({ deliverAs: "steer" });
+			await session.removeVibeToolsPreservingActive();
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "set_vibe_mode_state", state: { enabled: true } }),
+				expect.objectContaining({ type: "send_vibe_mode_context", deliverAs: "steer" }),
+				expect.objectContaining({ type: "remove_vibe_tools_preserving_active" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards goal-mode state and context delivery to the RPC child", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "set_goal_mode_state" && command.type !== "send_goal_mode_context") return false;
+				received.push(command);
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			session.setGoalModeState({
+				enabled: true,
+				mode: "active",
+				goal: {
+					id: "goal-1",
+					objective: "Ship the fix",
+					status: "active",
+					tokensUsed: 0,
+					timeUsedSeconds: 0,
+					createdAt: 1,
+					updatedAt: 1,
+				},
+			});
+			await session.sendGoalModeContext({ deliverAs: "followUp" });
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([
+				expect.objectContaining({
+					type: "set_goal_mode_state",
+					state: expect.objectContaining({ enabled: true, mode: "active" }),
+				}),
+				expect.objectContaining({ type: "send_goal_mode_context", deliverAs: "followUp" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+});
+
+describe("RemoteAgentSession plan-mode forwarding", () => {
+	test("forwards plan-mode state, proposal handler, and context delivery to the RPC child", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (
+					command.type !== "set_plan_mode_state" &&
+					command.type !== "set_plan_proposal_handler" &&
+					command.type !== "send_plan_mode_context"
+				) {
+					return false;
+				}
+				received.push(command);
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			session.setPlanModeState({ enabled: true, planFilePath: "/tmp/plan.md" });
+			session.setPlanProposalHandler(async title => ({ content: [{ type: "text", text: title }] }));
+			await session.sendPlanModeContext({ deliverAs: "steer" });
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([
+				expect.objectContaining({
+					type: "set_plan_mode_state",
+					state: expect.objectContaining({ enabled: true, planFilePath: "/tmp/plan.md" }),
+				}),
+				expect.objectContaining({ type: "set_plan_proposal_handler", active: true }),
+				expect.objectContaining({ type: "send_plan_mode_context", deliverAs: "steer" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("clears the plan proposal handler and forwards plan abort/reference flags", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (
+					command.type !== "set_plan_proposal_handler" &&
+					command.type !== "mark_plan_internal_abort_pending" &&
+					command.type !== "clear_plan_internal_abort_pending" &&
+					command.type !== "mark_plan_reference_sent" &&
+					command.type !== "set_plan_reference_path"
+				) {
+					return false;
+				}
+				received.push(command);
+				respond(null);
+				return true;
+			},
+		});
+		try {
+			session.setPlanProposalHandler(null);
+			session.markPlanInternalAbortPending();
+			session.clearPlanInternalAbortPending();
+			session.markPlanReferenceSent();
+			session.setPlanReferencePath("/tmp/ref.md");
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "set_plan_proposal_handler", active: false }),
+				expect.objectContaining({ type: "mark_plan_internal_abort_pending" }),
+				expect.objectContaining({ type: "clear_plan_internal_abort_pending" }),
+				expect.objectContaining({ type: "mark_plan_reference_sent" }),
+				expect.objectContaining({ type: "set_plan_reference_path", path: "/tmp/ref.md" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards plan review preparation and returns approval details", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "prepare_plan_for_review") return false;
+				received.push(command);
+				respond({ planFilePath: "/tmp/plan.md", title: "Fix the bug", planExists: true });
+				return true;
+			},
+		});
+		try {
+			const result = await session.preparePlanForReview("Fix the bug");
+			expect(received).toEqual([expect.objectContaining({ type: "prepare_plan_for_review", title: "Fix the bug" })]);
+			expect(result.details).toEqual({ planFilePath: "/tmp/plan.md", title: "Fix the bug", planExists: true });
+			expect(result.content).toEqual([{ type: "text", text: "Plan ready for review." }]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards plan reference path and prewalk state reads", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type === "get_plan_reference_path") {
+					received.push(command);
+					respond({ path: "/tmp/ref.md" });
+					return true;
+				}
+				if (command.type === "get_prewalk_state") {
+					received.push(command);
+					respond({ prewalk: null });
+					return true;
+				}
+				return false;
+			},
+		});
+		try {
+			expect(await session.getPlanReferencePath()).toBe("/tmp/ref.md");
+			expect(await session.getPrewalkState()).toBeUndefined();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "get_plan_reference_path" }),
+				expect.objectContaining({ type: "get_prewalk_state" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+});
+
+describe("RemoteAgentSession goal runtime forwarding", () => {
+	const activeGoal: Goal = {
+		id: "goal-1",
+		objective: "Ship the fix",
+		status: "active",
+		tokensUsed: 0,
+		timeUsedSeconds: 0,
+		createdAt: 1,
+		updatedAt: 1,
+	};
+
+	test("forwards goal create, replace, resume, pause, and drop to the RPC child", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "goal_runtime_create":
+						received.push(command);
+						respond({ state: { enabled: true, mode: "active", goal: activeGoal } });
+						return true;
+					case "goal_runtime_replace":
+						received.push(command);
+						respond({ state: { enabled: true, mode: "active", goal: activeGoal } });
+						return true;
+					case "goal_runtime_resume":
+						received.push(command);
+						respond({ state: { enabled: true, mode: "active", goal: activeGoal } });
+						return true;
+					case "goal_runtime_pause":
+						received.push(command);
+						respond({ state: null });
+						return true;
+					case "goal_runtime_drop":
+						received.push(command);
+						respond({ goal: null });
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			expect(await session.goalRuntime.createGoal({ objective: "Ship the fix", tokenBudget: 1000 })).toEqual(
+				expect.objectContaining({ enabled: true, mode: "active" }),
+			);
+			expect(await session.goalRuntime.replaceGoal({ objective: "Ship the fix" })).toEqual(
+				expect.objectContaining({ enabled: true, mode: "active" }),
+			);
+			expect(await session.goalRuntime.resumeGoal()).toEqual(expect.objectContaining({ enabled: true }));
+			expect(await session.goalRuntime.pauseGoal()).toBeUndefined();
+			expect(await session.goalRuntime.dropGoal()).toBeUndefined();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "goal_runtime_create", objective: "Ship the fix", tokenBudget: 1000 }),
+				expect.objectContaining({ type: "goal_runtime_replace", objective: "Ship the fix" }),
+				expect.objectContaining({ type: "goal_runtime_resume" }),
+				expect.objectContaining({ type: "goal_runtime_pause" }),
+				expect.objectContaining({ type: "goal_runtime_drop" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("forwards goal budget mutation, thread resume, and accounting clear", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				switch (command.type) {
+					case "goal_runtime_on_budget_mutated":
+						received.push(command);
+						respond({ state: { enabled: true, mode: "active", goal: activeGoal } });
+						return true;
+					case "goal_runtime_on_thread_resumed":
+						received.push(command);
+						respond({ state: null });
+						return true;
+					case "goal_runtime_clear_accounting":
+						received.push(command);
+						respond(null);
+						return true;
+					default:
+						return false;
+				}
+			},
+		});
+		try {
+			expect(await session.goalRuntime.onBudgetMutated(500)).toEqual(
+				expect.objectContaining({ enabled: true, mode: "active" }),
+			);
+			expect(await session.goalRuntime.onThreadResumed({ preserveActiveGoal: true })).toBeUndefined();
+			session.goalRuntime.clearAccounting();
+			await flushQueuedMicrotasks();
+			expect(received).toEqual([
+				expect.objectContaining({ type: "goal_runtime_on_budget_mutated", budget: 500 }),
+				expect.objectContaining({ type: "goal_runtime_on_thread_resumed", preserveActiveGoal: true }),
+				expect.objectContaining({ type: "goal_runtime_clear_accounting" }),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("renders the goal continuation prompt from the projected state", async () => {
+		const { session } = await createRemoteSession({
+			state: () => ({
+				...initialState,
+				goalMode: { enabled: true, mode: "active", goal: activeGoal },
+			}),
+		});
+		try {
+			const prompt = session.goalRuntime.buildContinuationPrompt();
+			expect(prompt).toBeTypeOf("string");
+			expect(prompt).toContain("Ship the fix");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("returns no continuation prompt when the projected goal is disabled", async () => {
+		const { session } = await createRemoteSession();
+		try {
+			expect(session.goalRuntime.buildContinuationPrompt()).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
+	});
+});
+
+describe("RemoteAgentSession /btw branch forwarding", () => {
+	test("forwards branchFromBtw and returns the branch result", async () => {
+		const received: RpcCommandEnvelope[] = [];
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "Here is the plan" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "branch_from_btw") return false;
+				received.push(command);
+				respond({ cancelled: false, sessionFile: "/workspace/remote-session/branch.md" });
+				return true;
+			},
+		});
+		try {
+			const result = await session.branchFromBtw("What next?", assistantMessage, "leaf-1", "session-1");
+			expect(result).toEqual({ cancelled: false, sessionFile: "/workspace/remote-session/branch.md" });
+			expect(received).toEqual([
+				expect.objectContaining({
+					type: "branch_from_btw",
+					question: "What next?",
+					leafId: "leaf-1",
+					sessionId: "session-1",
+					assistantMessage: expect.objectContaining({ role: "assistant", model: "claude-sonnet" }),
+				}),
+			]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("maps a cancelled branch to an undefined session file", async () => {
+		const { session } = await createRemoteSession({
+			onCommand: (command, respond) => {
+				if (command.type !== "branch_from_btw") return false;
+				respond({ cancelled: true, sessionFile: null });
+				return true;
+			},
+		});
+		try {
+			const result = await session.branchFromBtw(
+				"What next?",
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Plan" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				"leaf-1",
+				"session-1",
+			);
+			expect(result).toEqual({ cancelled: true, sessionFile: undefined });
 		} finally {
 			await session.dispose();
 		}

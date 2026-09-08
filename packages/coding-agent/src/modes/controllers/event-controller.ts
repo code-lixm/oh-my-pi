@@ -130,11 +130,7 @@ function formatWorkingActivityMessage(activity: AgentActivityState): string {
 	const health = tSettingsUi(formatted.healthLabel);
 	const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && phase !== health;
 	const state = showHealth ? `${health} · ${phase}` : phase;
-	const elapsed = formatted.quietElapsed
-		? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
-		: formatted.phaseElapsed
-			? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
-			: "";
+	const elapsed = formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "";
 	return previewLine(
 		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(" · "),
 		TRUNCATE_LENGTHS.LINE,
@@ -970,8 +966,7 @@ export class EventController {
 			if (
 				event.message.customType === "async-result" &&
 				event.message.display &&
-				hubActivityGroup &&
-				hubActivityGroup.appendAsyncResult(event.message.details)
+				hubActivityGroup?.appendAsyncResult(event.message.details)
 			) {
 				this.ctx.ui.requestComponentRender(hubActivityGroup);
 			} else if (
@@ -1020,6 +1015,13 @@ export class EventController {
 				this.ctx.clearOptimisticUserMessage();
 			} else if (replacesOptimistic) {
 				this.ctx.replaceOptimisticUserMessage(event.message);
+			} else if (this.ctx.optimisticUserMessageSignature === undefined && this.ctx.hasOwnedOptimisticUserBubble()) {
+				// The signature dedup was defused while the optimistic bubble stayed
+				// painted (an error toast cleared it mid-window, or an idle finish
+				// dropped it before the event landed). The tracked bubble is stale:
+				// swap it for the real message instead of stacking a second
+				// identical copy.
+				this.ctx.replaceOptimisticUserMessage(event.message);
 			} else {
 				// Append synchronously: #emit dispatches to this listener fire-and-forget
 				// (see AgentSession.#emit), so any await between the user message_start and
@@ -1039,6 +1041,12 @@ export class EventController {
 				if (!wasLocallySubmitted) {
 					this.ctx.editor.setText("");
 				}
+				// The queued message has now been delivered into the transcript, so any
+				// optimistic pending-bar entry showing it must retire here. The
+				// submit-time reconcile can lose the race when the backend consumes
+				// the message before the dispatch roundtrip returns (RPC isolation),
+				// which would otherwise leave the chip hanging for the whole session.
+				this.ctx.retireOptimisticQueuedMessage(textContent);
 				this.ctx.updatePendingMessagesDisplay();
 			}
 			if (queuedLocalSubmission) {

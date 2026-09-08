@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { UserMessage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -210,5 +212,133 @@ describe("issue #2372 pre-streaming chat rebuild preserves optimistic submission
 		mode.rebuildChatFromMessages();
 		expect(addMessageSpy).toHaveBeenCalledTimes(callsAfterCancel);
 		expect(mode.optimisticUserMessageSignature).toBeUndefined();
+	});
+});
+
+describe("optimistic user bubble survives a defused dedup signature", () => {
+	let authStorage: AuthStorage;
+	let mode: InteractiveMode;
+	let session: AgentSession;
+	let tempDir: TempDir;
+
+	beforeAll(async () => {
+		initTheme();
+		vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		vi.spyOn(process.stdin, "resume").mockReturnValue(process.stdin);
+		vi.spyOn(process.stdin, "pause").mockReturnValue(process.stdin);
+		vi.spyOn(process.stdin, "setEncoding").mockReturnValue(process.stdin);
+		if (typeof process.stdin.setRawMode === "function") {
+			vi.spyOn(process.stdin, "setRawMode").mockReturnValue(process.stdin);
+		}
+
+		resetSettingsForTest();
+		tempDir = TempDir.createSync("@pi-optimistic-bubble-");
+		await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		authStorage = createInMemoryAuthStorage();
+		const modelRegistry = new ModelRegistry(authStorage);
+		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
+
+		session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated(),
+			modelRegistry,
+		});
+		mode = new InteractiveMode(session, "test");
+		mode.ui.requestRender = vi.fn();
+	});
+
+	beforeEach(() => {
+		mode.clearOptimisticUserMessage();
+		mode.chatContainer.clear();
+		mode.locallySubmittedUserSignatures.clear();
+		mode.optimisticUserMessageSignature = undefined;
+		mode.isInitialized = true;
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	afterAll(async () => {
+		mode.stop();
+		await session.dispose();
+		authStorage.close();
+		tempDir.removeSync();
+		vi.restoreAllMocks();
+		resetSettingsForTest();
+	});
+
+	function countUserBubbles(): number {
+		return mode.chatContainer.children.filter(child => child instanceof UserMessageComponent).length;
+	}
+
+	function userMessage(text: string): UserMessage {
+		return {
+			role: "user",
+			content: [{ type: "text", text }],
+			attribution: "user",
+			timestamp: Date.now(),
+		};
+	}
+
+	it("swaps the optimistic bubble for the real message when an error toast defused the signature", async () => {
+		const addMessageSpy = vi.spyOn(mode, "addMessageToChat");
+		const controller = new EventController(mode);
+
+		mode.startPendingSubmission({ text: "design question" });
+		expect(countUserBubbles()).toBe(1);
+
+		// An unrelated background failure surfaces an error toast mid-window:
+		// the signature dedup is gone, but the painted bubble must stay owned
+		// so the real message replaces it instead of stacking a twin.
+		mode.showError("background failure");
+		expect(mode.optimisticUserMessageSignature).toBeUndefined();
+		expect(countUserBubbles()).toBe(1);
+
+		await controller.handleEvent({ type: "message_start", message: userMessage("design question") });
+
+		// Exactly one user bubble: the optimistic render was swapped out.
+		expect(countUserBubbles()).toBe(1);
+		const addCalls = addMessageSpy.mock.calls.length;
+		expect(addCalls).toBe(2);
+	});
+
+	it("swaps the optimistic bubble when an idle finish dropped the signature before delivery", async () => {
+		const addMessageSpy = vi.spyOn(mode, "addMessageToChat");
+		const controller = new EventController(mode);
+
+		const submission = mode.startPendingSubmission({ text: "late delivery" });
+		expect(countUserBubbles()).toBe(1);
+
+		// `finishPendingSubmission` with an idle session (dispatch silently
+		// bailed, or the turn already ended) clears the signature but must not
+		// release the painted bubble.
+		mode.finishPendingSubmission(submission);
+		expect(mode.optimisticUserMessageSignature).toBeUndefined();
+		expect(countUserBubbles()).toBe(1);
+
+		await controller.handleEvent({ type: "message_start", message: userMessage("late delivery") });
+
+		expect(countUserBubbles()).toBe(1);
+		expect(addMessageSpy.mock.calls.length).toBe(2);
+	});
+
+	it("keeps the queued-append path intact while another optimistic prompt is still pending", async () => {
+		const controller = new EventController(mode);
+
+		mode.startPendingSubmission({ text: "pending optimistic" });
+		mode.locallySubmittedUserSignatures.add("queued during streaming\u00000");
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: userMessage("queued during streaming"),
+		});
+
+		// The still-pending optimistic bubble and the queued delivery coexist:
+		// the fallback must only fire once the signature is gone.
+		expect(countUserBubbles()).toBe(2);
+		expect(mode.optimisticUserMessageSignature).toBe("pending optimistic\u00000");
 	});
 });

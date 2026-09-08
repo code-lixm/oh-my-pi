@@ -35,9 +35,17 @@ async function writeSession(
 	sessionDir = computeDefaultSessionDir(cwd, storage),
 ): Promise<string> {
 	const sessionPath = path.join(sessionDir, `2026-01-01T00-00-00-000Z_${id}.jsonl`);
+	// A resumable session needs conversation content: header-only files are
+	// filtered out of resume resolution.
 	await Bun.write(
 		sessionPath,
-		`${JSON.stringify({ type: "session", id, timestamp: "2026-01-01T00:00:00.000Z", cwd })}\n`,
+		`${JSON.stringify({ type: "session", id, timestamp: "2026-01-01T00:00:00.000Z", cwd })}\n${JSON.stringify({
+			type: "message",
+			id: `${id}-msg-1`,
+			parentId: null,
+			timestamp: "2026-01-01T00:00:01.000Z",
+			message: { role: "user", content: "hello", timestamp: 1 },
+		})}\n`,
 	);
 	return sessionPath;
 }

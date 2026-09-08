@@ -146,7 +146,7 @@ describe("Loader component", () => {
 		loader.stop();
 	});
 
-	it("falls back for semantic changes but drops unsafe spinner frames", () => {
+	it("falls back to component-scoped renders when direct writes are unsafe", () => {
 		vi.useFakeTimers();
 		const ui = { tryDirectWrite: vi.fn(() => false), requestComponentRender: vi.fn() };
 		const loader = new Loader(
@@ -164,9 +164,12 @@ describe("Loader component", () => {
 		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(2);
 		expect(ui.requestComponentRender).toHaveBeenCalledTimes(2);
 
+		// Provider-mode composers keep #frameSegments empty, so every spinner
+		// tick must fall back to a component-scoped render instead of dropping
+		// the frame — otherwise the spinner freezes between message updates.
 		vi.advanceTimersByTime(80);
 		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(3);
-		expect(ui.requestComponentRender).toHaveBeenCalledTimes(2);
+		expect(ui.requestComponentRender).toHaveBeenCalledTimes(3);
 		expect(loader.render(30).join("\n")).toContain("1 Still checking");
 
 		loader.stop();
@@ -195,7 +198,7 @@ describe("Loader component", () => {
 		loader.stop();
 	});
 
-	it("drops unsafe synchronized shimmer frames without scheduling a component render", () => {
+	it("falls back to component-scoped renders for synchronized shimmer frames", () => {
 		vi.useFakeTimers();
 		const ui = {
 			synchronizedOutput: true,
@@ -209,9 +212,12 @@ describe("Loader component", () => {
 		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(1);
 		expect(ui.requestComponentRender).toHaveBeenCalledTimes(1);
 
+		// Unsafe direct writes no longer drop animation frames: shimmer must
+		// keep repainting through the component-scoped path, or the shimmer
+		// freezes whenever direct writes are unavailable.
 		vi.advanceTimersByTime(34);
 		expect(ui.tryDirectWrite).toHaveBeenCalledTimes(2);
-		expect(ui.requestComponentRender).toHaveBeenCalledTimes(1);
+		expect(ui.requestComponentRender).toHaveBeenCalledTimes(2);
 
 		loader.stop();
 	});

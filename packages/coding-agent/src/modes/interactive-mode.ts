@@ -33,7 +33,7 @@ import {
 	setTuiTight,
 	TERMINAL,
 	Text,
-	TUI,
+	type TUI,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import type { TerminalAppearanceRequestToken } from "@oh-my-pi/pi-tui/terminal";
@@ -168,10 +168,10 @@ import {
 import { formatAgentActivity } from "./components/agent-activity";
 import { truncateAgentActivityLine } from "./components/agent-activity-display";
 import type { AssistantMessageComponent } from "./components/assistant-message";
+import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
 import { CodexResetFireworksController } from "./components/codex-reset-fireworks";
-import { AttachmentChipsBand } from "./components/attachment-chips";
 import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import { ErrorBannerComponent } from "./components/error-banner";
@@ -186,7 +186,8 @@ import { SessionHistoryViewer } from "./components/session-history-viewer";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
-import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import type { WelcomeComponent, LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import { COMPOSER_DEFAULTS, Composer } from "./composer";
 import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
@@ -200,6 +201,7 @@ import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
+import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
 import {
 	consumeLoopLimitIteration,
 	createLoopLimitRuntime,
@@ -219,8 +221,6 @@ import {
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
-import { Composer } from "./composer";
-import { imageReferenceHyperlink, materializeImageReferenceLinks } from "./image-references";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "./theme/mermaid-cache";
 import type { Theme } from "./theme/theme";
@@ -291,11 +291,7 @@ function formatWorkingActivityMessage(
 	const health = tSettingsUi(formatted.healthLabel);
 	const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && phase !== health;
 	const state = showHealth ? `${health}${theme.sep.dot}${phase}` : phase;
-	const elapsed = formatted.quietElapsed
-		? tSettingsUi("quiet {elapsed}", { elapsed: formatted.quietElapsed })
-		: formatted.phaseElapsed
-			? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed })
-			: "";
+	const elapsed = formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "";
 	return truncateToWidth(
 		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(theme.sep.dot),
 		width,
@@ -658,6 +654,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 	proseOnlyThinking = false;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
+	optimisticQueuedMessages: { mode: "steer" | "followUp"; text: string }[] = [];
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 	pendingBashComponents: BashExecutionComponent[] = [];
@@ -1177,7 +1174,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			composerShape: settings.get("composer.shape") ?? "box",
 			showHardwareCursor: settings.get("showHardwareCursor"),
 			maxInlineImages: settings.get("tui.maxInlineImages"),
-			resizeScrollback: "append" as const,
+			resizeScrollback: COMPOSER_DEFAULTS.resizeScrollback,
 			scrollbackRebuild: settings.get("tui.scrollbackRebuild"),
 			imeSafeCursor: settings.get("tui.imeSafeCursor"),
 			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
@@ -2085,6 +2082,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#optimisticUserMessageComponents = [];
 	}
 
+	/**
+	 * True while an optimistic user bubble painted by the submission flow is
+	 * still owned. Ownership deliberately survives paths that defuse the
+	 * signature dedup without removing the painted bubble (`showError`, an
+	 * idle `finishPendingSubmission`), so the real `message_start` can swap
+	 * the bubble for the canonical message instead of appending a duplicate.
+	 */
+	hasOwnedOptimisticUserBubble(): boolean {
+		return this.#optimisticUserMessageComponents.length > 0;
+	}
+
 	replaceOptimisticUserMessage(
 		message: AgentMessage,
 		options?: { imageLinks?: readonly (string | undefined)[] },
@@ -2209,7 +2217,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
 			pendingSubmissionDispose?.();
-			this.#optimisticUserMessageComponents = [];
+			// Ownership of the painted optimistic bubble deliberately survives:
+			// if the dispatch silently bailed and the message lands anyway, the
+			// EventController must swap the bubble rather than append a twin.
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
 				this.#stopLoadingAnimation(true);
@@ -4920,6 +4930,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			autocorrect: this.settings.get("spelling.autocorrect"),
 		});
 		nextEditor.viewportRowsProvider = () => this.ui.terminal.rows;
+		nextEditor.mouseTracking = this.settings.get("tui.mouseInput");
 		nextEditor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		nextEditor.imageReferenceHyperlink = imageReferenceHyperlink;
 		nextEditor.draftImageLinkMaterializer = images =>
@@ -5051,7 +5062,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	showError(message: string): void {
 		this.#pendingSubmittedInput = undefined;
 		this.#pendingSubmissionPreservesDraft = false;
-		this.clearOptimisticUserMessage();
+		// Defuse the signature dedup without releasing the painted optimistic
+		// bubble: an error toast (frequently from an unrelated background
+		// subsystem racing the submission window) must not turn the real
+		// `message_start` into a second identical bubble. Ownership survives so
+		// EventController swaps the optimistic component for the real message.
+		this.optimisticUserMessageSignature = undefined;
+		this.#pendingSubmissionDispose?.();
+		this.#pendingSubmissionDispose = undefined;
 		this.#pendingWorkingMessage = undefined;
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(true);
@@ -5187,7 +5205,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#refreshWorkingActivityMessage(
-		activity: AgentActivityState = this.#workingActivity ?? this.viewSession.activity,
+		activity: AgentActivityState | undefined = this.#workingActivity ?? this.viewSession.activity,
 	): void {
 		this.#workingActivity = activity;
 		const loader = this.loadingAnimation;
@@ -5196,7 +5214,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		const waitingMessage = this.#waitingActivityMessage(activity);
-		loader.setAnimationEnabled(waitingMessage === undefined);
+		const waitingForUser = activity?.phase === "waiting-user";
+		loader.setAnimationEnabled(!waitingForUser);
 		if (waitingMessage) this.#stopWorkingActivityRefresh();
 		if (this.#pendingWorkingMessage !== undefined) return;
 		const hint = interruptHint();
@@ -5304,6 +5323,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.queueCompactionMessage(text, mode, images);
 	}
 
+	addOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void {
+		this.#uiHelpers.addOptimisticQueuedMessage(text, mode);
+	}
+
+	retireOptimisticQueuedMessage(text: string, mode?: "steer" | "followUp"): void {
+		this.#uiHelpers.retireOptimisticQueuedMessage(text, mode);
+	}
+
+	reconcileOptimisticQueuedMessages(): void {
+		this.#uiHelpers.reconcileOptimisticQueuedMessages();
+	}
+
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {
 		return this.#uiHelpers.flushCompactionQueue(options);
 	}
@@ -5338,7 +5369,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async renderSessionContextIncrementally(
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions,
-		renderChunk?: () => void,
+		renderChunk?: (completedMessages: number, totalMessages: number) => void,
 	): Promise<void> {
 		for (const message of sessionContext.messages) {
 			this.noteDisplayableThinkingContent(message);
@@ -5586,6 +5617,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showJobsHub(): void {
 		this.#selectorController.showJobsHub();
+	}
+
+	showCronHub(): void {
+		this.#selectorController.showCronHub();
 	}
 
 	resetObserverRegistry(): void {
