@@ -2149,6 +2149,17 @@ export class Editor implements Component, Focusable, MouseRoutable {
 		this.#atoms.clear();
 	}
 
+	/** Snapshot the atomic-token table (`label → expansion`) so a host that destroyed part of
+	 *  a draft can rebuild its chips verbatim via {@link restoreAtoms}. */
+	snapshotAtoms(): [string, string][] {
+		return [...this.#atoms];
+	}
+
+	/** Replace the atomic-token table with a {@link snapshotAtoms} result. */
+	restoreAtoms(entries: readonly (readonly [string, string])[]): void {
+		this.#atoms = new Map(entries);
+	}
+
 	/**
 	 * Get text with paste markers expanded to their actual content.
 	 * Use this when you need the full content (e.g., for external editor).

@@ -1193,6 +1193,20 @@ describe("InputController barge-in", () => {
 		expect(handler).toHaveBeenCalledTimes(1);
 	});
 
+	it("binds the default Alt+Return chord to handleBargeIn", async () => {
+		const { InputController, ctx, setKeybinding, customHandlers } = await createContext();
+		setKeybinding("app.message.bargeIn", getBargeInDefaultKeys("darwin"));
+		const controller = new InputController(ctx);
+		const handler = vi.spyOn(controller, "handleBargeIn").mockResolvedValue();
+
+		controller.setupKeyHandlers();
+		expect(customHandlers.get("alt+enter")).toBeDefined();
+		customHandlers.get("alt+enter")?.();
+		await Promise.resolve();
+
+		expect(handler).toHaveBeenCalledTimes(1);
+	});
+
 	it("aborts the streaming turn with the user-interrupt reason, then submits the draft through the editor", async () => {
 		const { InputController, ctx, editor } = await createContext();
 		const session = ctx.session as unknown as {

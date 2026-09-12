@@ -10,6 +10,7 @@ import { EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/p
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "../async";
+import { sounds } from "../audio/sounds";
 import type { Rule } from "../capability/rule";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -96,6 +97,12 @@ export type { YieldItem } from "./types";
 
 const MCP_CALL_TIMEOUT_MS = 60_000;
 const TASK_ABORT_CLEANUP_GRACE_MS = 10_000;
+/**
+ * A subagent counts as "was queued" only once it has waited this long for a
+ * runnable slot. Agents that start instantly never waited in line and stay
+ * silent, so a wide fan-out does not turn into a chime storm.
+ */
+const QUEUED_CHIME_MIN_WAIT_MS = 500;
 
 /**
  * Soft per-agent request budgets (assistant requests per run). Crossing the
@@ -1092,6 +1099,15 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const setActivity = (phase: AgentActivityState["phase"], label: string, detail?: string): void => {
 		const now = Date.now();
 		const previous = progress.activity;
+
+		// Announce a queued subagent the moment it actually starts running.
+		if (
+			previous?.phase === "queued" &&
+			phase !== "queued" &&
+			now - previous.phaseStartedAtMs >= QUEUED_CHIME_MIN_WAIT_MS
+		) {
+			sounds.play("queued");
+		}
 		progress.activity = {
 			phase,
 			label,

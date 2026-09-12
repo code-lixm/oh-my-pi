@@ -1375,12 +1375,27 @@ describe("askToolRenderer malformed call args", () => {
 		for (const questions of ["[{trunc", 42, { 0: { id: "x" } }]) {
 			const rendered = askToolRenderer.renderCall(
 				{ questions } as never,
-				{ expanded: true, isPartial: true },
+				{ expanded: true, isPartial: true, argsComplete: true },
 				theme!,
 			);
 			const text = stripAnsi(rendered.render(120).join("\n"));
 			expect(text).toContain("No question provided");
 		}
+	});
+
+	it("keeps the pending frame while streamed args carry no question yet", async () => {
+		const theme = darkTheme;
+		const rendered = askToolRenderer.renderCall(
+			{} as never,
+			{ expanded: true, isPartial: true, argsComplete: false },
+			theme!,
+		);
+		const raw = rendered.render(120).join("\n");
+		const text = stripAnsi(raw);
+		expect(text).toContain("Ask");
+		expect(text).not.toContain("No question provided");
+		const errorFg = theme!.fg("error", "\u0000");
+		expect(raw).not.toContain(errorFg.slice(0, errorFg.indexOf("\u0000")));
 	});
 
 	it("drops malformed question entries and option items while keeping valid ones", async () => {

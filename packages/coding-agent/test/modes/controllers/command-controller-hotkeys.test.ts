@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { setKeyHintPlatform } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import { getBargeInDefaultKeys, setKeyHintPlatform } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { buildHotkeysMarkdown } from "@oh-my-pi/pi-coding-agent/modes/utils/hotkeys-markdown";
 
 describe("buildHotkeysMarkdown", () => {
@@ -91,6 +91,19 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Ctrl+A` / `Home` / `Cmd+Left` | Start of line |");
 		expect(markdown).toContain("| `Ctrl+W` / `Option+Backspace` | Delete word backwards |");
 		expect(markdown).toContain("| `Shift+Enter` / `Option+Enter` | New line |");
+	});
+
+	it("drops the Alt+Enter newline hint once barge-in claims the chord", () => {
+		setKeyHintPlatform("darwin");
+		const markdown = buildHotkeysMarkdown({
+			keybindings: {
+				getDisplayString: () => "Disabled",
+				getKeys: key => (key === "app.message.bargeIn" ? getBargeInDefaultKeys("darwin") : []),
+			},
+		});
+
+		expect(markdown).toContain("| `Shift+Enter` | New line |");
+		expect(markdown).not.toContain("`Shift+Enter` / `Option+Enter`");
 	});
 
 	it("drops Option/Cmd static navigation labels off darwin", () => {

@@ -52,4 +52,46 @@ describe("Editor atom table", () => {
 		editor.handleInput("\x7f");
 		expect(editor.getText()).toBe("");
 	});
+
+	it("returns an empty snapshot when no atoms are registered", () => {
+		const editor = new Editor(defaultEditorTheme);
+		expect(editor.snapshotAtoms()).toEqual([]);
+	});
+
+	it("snapshots every registered atom label and expansion", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.registerAtom("🖼 #1", "[Image #1, 800x600]");
+		editor.registerAtom("📎 #2", "[Attachment #2, report.pdf]");
+
+		expect(Object.fromEntries(editor.snapshotAtoms())).toEqual({
+			"🖼 #1": "[Image #1, 800x600]",
+			"📎 #2": "[Attachment #2, report.pdf]",
+		});
+	});
+
+	it("restores cleared atom expansions for chip tokens still in the draft", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.registerAtom("🖼 #1", "[Image #1, 800x600]");
+		editor.registerAtom("📎 #2", "[Attachment #2, report.pdf]");
+		editor.setText("include 🖼 #1 and 📎 #2");
+		const snapshot = editor.snapshotAtoms();
+
+		editor.clearAtoms();
+		expect(editor.getExpandedText()).toBe("include 🖼 #1 and 📎 #2");
+		editor.restoreAtoms(snapshot);
+
+		expect(editor.getExpandedText()).toBe("include [Image #1, 800x600] and [Attachment #2, report.pdf]");
+	});
+
+	it("replaces rather than merges atoms when restoring a partial snapshot", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.registerAtom("🖼 #1", "[Image #1, 800x600]");
+		editor.registerAtom("📎 #2", "[Attachment #2, report.pdf]");
+		editor.setText("🖼 #1 📎 #2");
+		const partialSnapshot = editor.snapshotAtoms().filter(([label]) => label === "🖼 #1");
+
+		editor.restoreAtoms(partialSnapshot);
+
+		expect(editor.getExpandedText()).toBe("[Image #1, 800x600] 📎 #2");
+	});
 });

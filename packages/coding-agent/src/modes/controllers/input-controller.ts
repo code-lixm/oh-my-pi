@@ -616,6 +616,8 @@ export class InputController {
 		this.ctx.editor.onExit = () => this.handleCtrlD();
 		this.ctx.editor.setActionKeys("app.suspend", this.ctx.keybindings.getKeys("app.suspend"));
 		this.ctx.editor.onSuspend = () => this.handleCtrlZ();
+		this.ctx.editor.setActionKeys("app.draft.restore", this.ctx.keybindings.getKeys("app.draft.restore"));
+		this.ctx.editor.onRestoreDraft = () => this.handleRestoreDraft();
 		this.ctx.editor.setActionKeys("app.thinking.cycle", this.ctx.keybindings.getKeys("app.thinking.cycle"));
 		this.ctx.editor.onCycleThinkingLevel = () => this.cycleThinkingLevel();
 		this.ctx.editor.setActionKeys("app.model.cycleForward", this.ctx.keybindings.getKeys("app.model.cycleForward"));
@@ -1371,9 +1373,27 @@ export class InputController {
 		if (now - this.ctx.lastSigintTime < 500) {
 			void this.ctx.shutdown();
 		} else {
+			const restorable = this.ctx.editor.captureClearedDraft();
 			this.ctx.clearEditor();
+			if (restorable) {
+				this.ctx.showStatus(
+					tSettingsUi("Draft cleared — press {key} to restore it", {
+						key: this.ctx.keybindings.getDisplayString("app.draft.restore"),
+					}),
+				);
+			}
 			this.ctx.lastSigintTime = now;
 		}
+	}
+
+	/** Put back the draft the previous Ctrl+C discarded (`CustomEditor.captureClearedDraft`). */
+	handleRestoreDraft(): void {
+		if (this.ctx.editor.restoreClearedDraft()) {
+			this.ctx.showStatus(tSettingsUi("Draft restored"));
+		} else {
+			this.ctx.showStatus(tSettingsUi("Clear the composer to restore the discarded draft"));
+		}
+		this.ctx.ui.requestRender();
 	}
 
 	handleCtrlD(): void {

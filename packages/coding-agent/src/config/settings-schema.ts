@@ -212,6 +212,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Communication",
 		"Approvals",
 		"Notifications",
+		"Sounds",
 		"Speech",
 		"Collab",
 		"Magic Keywords",
@@ -3094,6 +3095,68 @@ export const SETTINGS_SCHEMA = {
 				{ value: "300", label: tSettingsUi("5 minutes") },
 				{ value: "600", label: tSettingsUi("10 minutes") },
 			],
+		},
+	},
+
+	// Sounds
+	"sound.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Sounds"),
+			label: tSettingsUi("Notification Sounds"),
+			description: tSettingsUi(
+				"Play short chimes for pending input, turn completion, failure, and queued subagents",
+			),
+		},
+	},
+
+	"sound.ask": {
+		type: "enum",
+		values: ["on", "off"] as const,
+		default: "on",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Sounds"),
+			label: tSettingsUi("Pending Input Chime"),
+			description: tSettingsUi("Chime every 2 seconds while the ask tool waits for a selection"),
+		},
+	},
+
+	"sound.completion": {
+		type: "enum",
+		values: ["on", "off"] as const,
+		default: "on",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Sounds"),
+			label: tSettingsUi("Success Chime"),
+			description: tSettingsUi("Chime when a turn completes"),
+		},
+	},
+
+	"sound.error": {
+		type: "enum",
+		values: ["on", "off"] as const,
+		default: "on",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Sounds"),
+			label: tSettingsUi("Failure Chime"),
+			description: tSettingsUi("Chime when a turn stops with an error"),
+		},
+	},
+
+	"sound.queued": {
+		type: "enum",
+		values: ["on", "off"] as const,
+		default: "on",
+		ui: {
+			tab: "interaction",
+			group: tSettingsUi("Sounds"),
+			label: tSettingsUi("Queued Task Chime"),
+			description: tSettingsUi("Chime when a queued subagent starts running"),
 		},
 	},
 
@@ -8025,6 +8088,7 @@ export type SettingScope = "shared" | "cli";
 const CLI_ONLY_SETTING_PREFIXES = [
 	"display.",
 	"live.",
+	"sound.",
 	"speech.",
 	"startup.",
 	"statusLine.",

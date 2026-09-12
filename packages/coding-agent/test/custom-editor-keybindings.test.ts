@@ -89,6 +89,71 @@ describe("CustomEditor keybindings", () => {
 	});
 });
 
+describe("Draft restore shortcut routing", () => {
+	it("restores a captured draft instead of suspending for the shared Ctrl+Z chord", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onRestoreDraft = vi.fn(() => editor.restoreClearedDraft());
+		const onSuspend = vi.fn();
+
+		editor.onRestoreDraft = onRestoreDraft;
+		editor.onSuspend = onSuspend;
+		editor.setText("restore this draft");
+		editor.captureClearedDraft();
+		editor.clearDraft();
+		editor.handleInput("\x1a");
+
+		expect(onRestoreDraft).toHaveBeenCalledTimes(1);
+		expect(onSuspend).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("restore this draft");
+	});
+
+	it("suspends for Ctrl+Z when no cleared draft is waiting", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onRestoreDraft = vi.fn();
+		const onSuspend = vi.fn();
+		editor.onRestoreDraft = onRestoreDraft;
+		editor.onSuspend = onSuspend;
+		editor.handleInput("\x1a");
+
+		expect(onSuspend).toHaveBeenCalledTimes(1);
+		expect(onRestoreDraft).not.toHaveBeenCalled();
+	});
+
+	it("prefers restore for a captured draft when both actions are remapped to Alt+Z", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onRestoreDraft = vi.fn(() => editor.restoreClearedDraft());
+		const onSuspend = vi.fn();
+
+		editor.setActionKeys("app.draft.restore", ["alt+z"]);
+		editor.setActionKeys("app.suspend", ["alt+z"]);
+		editor.onRestoreDraft = onRestoreDraft;
+		editor.onSuspend = onSuspend;
+		editor.setText("restore remapped draft");
+		editor.captureClearedDraft();
+		editor.clearDraft();
+		editor.handleInput("\x1bz");
+
+		expect(onRestoreDraft).toHaveBeenCalledTimes(1);
+		expect(onSuspend).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("restore remapped draft");
+	});
+
+	it("suspends when both actions are remapped to Alt+Z without a captured draft", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onRestoreDraft = vi.fn();
+		const onSuspend = vi.fn();
+
+		editor.setActionKeys("app.draft.restore", ["alt+z"]);
+		editor.setActionKeys("app.suspend", ["alt+z"]);
+		editor.onRestoreDraft = onRestoreDraft;
+		editor.onSuspend = onSuspend;
+		editor.handleInput("\x1bz");
+
+		expect(onSuspend).toHaveBeenCalledTimes(1);
+		expect(onRestoreDraft).not.toHaveBeenCalled();
+	});
+});
+
 /**
  * Minimal provider that exposes an autocomplete popup only when candidates
  * are explicitly configured.

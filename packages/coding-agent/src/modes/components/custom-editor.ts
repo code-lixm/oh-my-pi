@@ -51,6 +51,7 @@ type ConfigurableEditorAction = Extract<
 	| "app.clipboard.pasteImage"
 	| "app.clipboard.pasteTextRaw"
 	| "app.clipboard.copyPrompt"
+	| "app.draft.restore"
 >;
 
 const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
@@ -58,6 +59,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.clear": ["ctrl+c"],
 	"app.exit": ["ctrl+d"],
 	"app.suspend": ["ctrl+z"],
+	"app.draft.restore": ["ctrl+z"],
 	"app.display.reset": ["alt+l"],
 	"app.thinking.cycle": ["shift+tab"],
 	"app.model.cycleForward": ["alt+p"],
@@ -412,6 +414,21 @@ export type ComposerChipDescriptor =
 	| { kind: "image"; n: number; image: ImageContent; link: string | undefined }
 	| { kind: "paste"; n: number; text: TextAttachment };
 
+/** Everything a discarded composer draft needs to come back verbatim: the buffer text, the
+ *  attachments it references, and the chip table that expands its tokens on submit. Captured by
+ *  {@link CustomEditor.captureClearedDraft} right before a destructive clear. */
+interface ClearedDraftSnapshot {
+	text: string;
+	pendingImages: ImageContent[];
+	pendingImageLinks: (string | undefined)[];
+	imageLinks: readonly (string | undefined)[] | undefined;
+	pendingTexts: TextAttachment[];
+	textAttachmentCounter: number;
+	/** Whether the marker-managed image array was the same instance as `pendingImages`. */
+	markerManaged: boolean;
+	atoms: [string, string][];
+}
+
 /**
  * Custom editor that handles configurable app-level shortcuts for coding-agent.
  */
@@ -436,6 +453,9 @@ export class CustomEditor extends Editor {
 	#nativeAccelerationConfigured = false;
 	/** The current image array is marker-managed once a chip or expanded marker has represented it. */
 	#markerManagedImages: ImageContent[] | undefined;
+
+	/** Last draft captured before a destructive clear (Ctrl+C), restorable once. */
+	#clearedDraft: ClearedDraftSnapshot | undefined;
 
 	/**
 	 * The host {@link TUI}, captured when a plugin constructs this editor through
@@ -522,7 +542,11 @@ export class CustomEditor extends Editor {
 	 *  reset the editor text and all pending draft-image state. The shared tail of
 	 *  every "message submitted" path; pass no argument for a plain discard. */
 	clearDraft(historyText?: string): void {
-		if (historyText !== undefined) this.addToHistory(historyText);
+		if (historyText !== undefined) {
+			this.addToHistory(historyText);
+			// The text now belongs to the transcript: restoring it would replay a sent prompt.
+			this.#clearedDraft = undefined;
+		}
 		this.setText("");
 		this.clearAtoms();
 		this.imageLinks = undefined;
@@ -531,6 +555,52 @@ export class CustomEditor extends Editor {
 		this.pendingTexts = [];
 		this.#textAttachmentCounter = 0;
 		this.#markerManagedImages = undefined;
+	}
+
+	/** Snapshot the draft ahead of a destructive clear (Ctrl+C) so {@link restoreClearedDraft}
+	 *  can put the text, its attachments, and the chip expansions back verbatim. Replaces any
+	 *  earlier snapshot; returns false when the draft held nothing worth restoring. */
+	captureClearedDraft(): boolean {
+		const text = this.getText();
+		if (text.length === 0 && this.pendingImages.length === 0 && this.pendingTexts.length === 0) {
+			this.#clearedDraft = undefined;
+			return false;
+		}
+		this.#clearedDraft = {
+			text,
+			pendingImages: [...this.pendingImages],
+			pendingImageLinks: [...this.pendingImageLinks],
+			imageLinks: this.imageLinks ? [...this.imageLinks] : undefined,
+			pendingTexts: [...this.pendingTexts],
+			textAttachmentCounter: this.#textAttachmentCounter,
+			markerManaged: this.#markerManagedImages === this.pendingImages,
+			atoms: this.snapshotAtoms(),
+		};
+		return true;
+	}
+
+	/** Whether a {@link captureClearedDraft} snapshot is still waiting to be restored. */
+	hasClearedDraft(): boolean {
+		return this.#clearedDraft !== undefined;
+	}
+
+	/** Put the last captured draft back, chip tokens and all. Refuses while the composer already
+	 *  holds text, so restoring can never overwrite something typed after the clear; returns
+	 *  whether it restored. */
+	restoreClearedDraft(): boolean {
+		const snapshot = this.#clearedDraft;
+		if (!snapshot) return false;
+		if (this.getText().length > 0) return false;
+		this.#clearedDraft = undefined;
+		this.pendingImages = [...snapshot.pendingImages];
+		this.pendingImageLinks = [...snapshot.pendingImageLinks];
+		this.imageLinks = snapshot.imageLinks ? [...snapshot.imageLinks] : undefined;
+		this.pendingTexts = [...snapshot.pendingTexts];
+		this.#textAttachmentCounter = snapshot.textAttachmentCounter;
+		this.#markerManagedImages = snapshot.markerManaged ? this.pendingImages : undefined;
+		this.setCollapsedText(snapshot.text);
+		this.restoreAtoms(snapshot.atoms);
+		return true;
 	}
 
 	/** Replace the composer draft with a restored historical prompt: re-attaches the message's
@@ -777,6 +847,8 @@ export class CustomEditor extends Editor {
 	onExternalEditor?: () => void;
 	onHistorySearch?: () => void;
 	onSuspend?: () => void;
+	/** Called when the configured draft-restore shortcut is pressed with a cleared draft waiting. */
+	onRestoreDraft?: () => void;
 	onSelectModelTemporary?: () => void;
 	/** Called when the configured copy-prompt shortcut is pressed. */
 	onCopyPrompt?: () => void;
@@ -1109,6 +1181,14 @@ export class CustomEditor extends Editor {
 			// Intercept configured display reset shortcut
 			if (this.#matchesAction(canonical, "app.display.reset") && this.onDisplayReset) {
 				this.onDisplayReset();
+				return;
+			}
+
+			// Intercept the draft-restore shortcut. It runs ahead of suspend because both
+			// default to Ctrl+Z: the restore gesture only claims the chord while a cleared
+			// draft is actually waiting, so suspend keeps its meaning everywhere else.
+			if (this.#matchesAction(canonical, "app.draft.restore") && this.hasClearedDraft() && this.onRestoreDraft) {
+				this.onRestoreDraft();
 				return;
 			}
 

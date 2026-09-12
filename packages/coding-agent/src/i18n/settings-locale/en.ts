@@ -1399,6 +1399,10 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Successfully logged out {accountLabel} from {providerId}",
 	"Suggestions:": "Suggestions:",
 	"Suspend application": "Suspend application",
+	"Clear the composer to restore the discarded draft": "Clear the composer to restore the discarded draft",
+	"Draft cleared — press {key} to restore it": "Draft cleared — press {key} to restore it",
+	"Draft restored": "Draft restored",
+	"Restore the draft Ctrl+C cleared": "Restore the draft Ctrl+C cleared",
 	"Switch between the project and user WATCHDOG.yml. Currently editing the {scope}-level file.":
 		"Switch between the project and user WATCHDOG.yml. Currently editing the {scope}-level file.",
 	"Tab to switch tabs": "Tab to switch tabs",
@@ -5043,6 +5047,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"install path": "install path",
 	"installed at": "installed at",
 	"last updated": "last updated",
+	"Last update": "Last update",
 	"git sha": "git sha",
 	"(unknown)": "(unknown)",
 	"{enabled}/{total} features": "{enabled}/{total} features",
@@ -5639,4 +5644,17 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Process Isolation": "Process Isolation",
 	"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering":
 		"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering",
+	Sounds: "Sounds",
+	"Notification Sounds": "Notification Sounds",
+	"Play short chimes for pending input, turn completion, failure, and queued subagents":
+		"Play short chimes for pending input, turn completion, failure, and queued subagents",
+	"Pending Input Chime": "Pending Input Chime",
+	"Chime every 2 seconds while the ask tool waits for a selection":
+		"Chime every 2 seconds while the ask tool waits for a selection",
+	"Success Chime": "Success Chime",
+	"Chime when a turn completes": "Chime when a turn completes",
+	"Failure Chime": "Failure Chime",
+	"Chime when a turn stops with an error": "Chime when a turn stops with an error",
+	"Queued Task Chime": "Queued Task Chime",
+	"Chime when a queued subagent starts running": "Chime when a queued subagent starts running",
 };

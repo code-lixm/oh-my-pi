@@ -74,3 +74,82 @@ describe("CustomEditor draft restore", () => {
 		expect(chips[0]).toMatchObject({ kind: "paste", n: 2 });
 	});
 });
+
+describe("CustomEditor cleared draft snapshots", () => {
+	it("restores the text discarded by a plain clear", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const draft = "keep every character\nincluding this line";
+		editor.setText(draft);
+
+		expect(editor.captureClearedDraft()).toBe(true);
+		editor.clearDraft();
+		expect(editor.getText()).toBe("");
+
+		expect(editor.restoreClearedDraft()).toBe(true);
+		expect(editor.getText()).toBe(draft);
+	});
+
+	it("round-trips image chips with their submit-time expansion", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const draft = "look at [Image #1, 800x600] please";
+		editor.setDraft(draft, [image]);
+
+		expect(editor.captureClearedDraft()).toBe(true);
+		editor.clearDraft();
+
+		expect(editor.restoreClearedDraft()).toBe(true);
+		expect(editor.getText()).toContain(chipLabel("image", 1));
+		expect(editor.pendingImages).toEqual([image]);
+		expect(editor.getExpandedText()).toBe(draft);
+	});
+
+	it("round-trips text attachment chips without recycling their numbers", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.insertTextAttachment("a\nb");
+
+		expect(editor.captureClearedDraft()).toBe(true);
+		editor.clearDraft();
+
+		expect(editor.restoreClearedDraft()).toBe(true);
+		expect(editor.pendingTexts).toHaveLength(1);
+		expect(editor.pendingTexts[0]?.n).toBe(1);
+		expect(editor.getExpandedText()).toBe("a\nb ");
+
+		editor.insertTextAttachment("c");
+		expect(editor.pendingTexts.map(attachment => attachment.n)).toEqual([1, 2]);
+	});
+
+	it("does not overwrite text entered after the draft was cleared", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setText("discarded draft");
+
+		expect(editor.captureClearedDraft()).toBe(true);
+		editor.clearDraft();
+		editor.setText("new draft");
+
+		expect(editor.restoreClearedDraft()).toBe(false);
+		expect(editor.getText()).toBe("new draft");
+		expect(editor.hasClearedDraft()).toBe(true);
+	});
+
+	it("drops an earlier snapshot when an empty draft is captured", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setText("discarded draft");
+		expect(editor.captureClearedDraft()).toBe(true);
+		editor.clearDraft();
+
+		expect(editor.captureClearedDraft()).toBe(false);
+		expect(editor.hasClearedDraft()).toBe(false);
+		expect(editor.restoreClearedDraft()).toBe(false);
+	});
+
+	it("invalidates a cleared snapshot when its text is submitted", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setText("sent prompt");
+		expect(editor.captureClearedDraft()).toBe(true);
+
+		editor.clearDraft("sent prompt");
+
+		expect(editor.restoreClearedDraft()).toBe(false);
+	});
+});

@@ -1361,6 +1361,10 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Step: How to provide the key?": "步骤：如何提供该密钥？",
 	"Suggestions:": "建议：",
 	"Suspend application": "挂起应用",
+	"Clear the composer to restore the discarded draft": "请先清空输入框，再恢复已丢弃的草稿",
+	"Draft cleared — press {key} to restore it": "草稿已清空 — 按 {key} 可恢复",
+	"Draft restored": "已恢复草稿",
+	"Restore the draft Ctrl+C cleared": "恢复被 Ctrl+C 清空的草稿",
 	"Switch between the project and user WATCHDOG.yml. Currently editing the {scope}-level file.":
 		"在项目和用户 WATCHDOG.yml 之间切换。当前正在编辑 {scope} 级别的文件。",
 	"Tab to switch tabs": "Tab 切换标签页",
@@ -4798,6 +4802,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"install path": "安装路径",
 	"installed at": "安装于",
 	"last updated": "最近更新",
+	"Last update": "最后更新",
 	"git sha": "Git SHA",
 	"(unknown)": "（未知）",
 	"{enabled}/{total} features": "{enabled}/{total} 项功能",
@@ -5492,4 +5497,16 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Process Isolation": "进程隔离",
 	"Run the active agent, providers, and tools in a separate process so backend work cannot block terminal input and rendering":
 		"将当前 Agent、模型提供商和工具运行在独立进程中，避免后端工作阻塞终端输入与渲染",
+	Sounds: "提示音",
+	"Notification Sounds": "提示音",
+	"Play short chimes for pending input, turn completion, failure, and queued subagents":
+		"为等待输入、任务完成、任务失败、排队子代理开始播放短提示音",
+	"Pending Input Chime": "等待输入提示音",
+	"Chime every 2 seconds while the ask tool waits for a selection": "ask 工具等待选择时每 2 秒响一次",
+	"Success Chime": "成功提示音",
+	"Chime when a turn completes": "一轮对话完成时响一次",
+	"Failure Chime": "失败提示音",
+	"Chime when a turn stops with an error": "一轮对话因错误停止时响一次",
+	"Queued Task Chime": "排队任务提示音",
+	"Chime when a queued subagent starts running": "排队的子代理开始运行时响一次",
 };

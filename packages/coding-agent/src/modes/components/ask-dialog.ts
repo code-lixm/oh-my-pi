@@ -14,6 +14,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { sounds } from "../../audio/sounds";
 import type {
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
@@ -454,10 +455,14 @@ export class AskDialogComponent implements Component {
 	dispose(): void {
 		this.#closed = true;
 		this.#countdown?.dispose();
+		sounds.stopRepeat("ask");
 	}
 
 	handleInput(keyData: string): void {
 		if (this.#closed || this.#promptActive) return;
+		// The ask tool starts the pending-input chime; any keystroke means the
+		// user is back at the prompt, so silence it immediately.
+		sounds.stopRepeat("ask");
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
 			return;

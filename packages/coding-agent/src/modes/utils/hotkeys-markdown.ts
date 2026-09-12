@@ -1,7 +1,7 @@
 import { type AppKeybinding, type KeybindingsManager, keyHintPlatform, modifierLabel } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
-	keybindings: Pick<KeybindingsManager, "getDisplayString">;
+	keybindings: Pick<KeybindingsManager, "getDisplayString"> & Partial<Pick<KeybindingsManager, "getKeys">>;
 }
 
 function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
@@ -13,6 +13,10 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 	const isMac = platform === "darwin";
 	const alt = modifierLabel("alt", platform);
 	const cmd = modifierLabel("super", platform);
+
+	// Alt+Enter stops inserting a newline once barge-in claims the chord, so the
+	// static "New line" row must not advertise a key that now interrupts instead.
+	const altEnterInsertsNewLine = !(bindings.keybindings.getKeys?.("app.message.bargeIn") ?? []).includes("alt+enter");
 	return [
 		"**Navigation**",
 		"| Key | Action |",
@@ -27,7 +31,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"|-----|--------|",
 		"| `Enter` | Send message |",
 		`| \`${appKey(bindings, "app.session.sendToNew")}\` | Send current draft to a new session and keep the current session running in the background |`,
-		`| \`Shift+Enter\` / \`${alt}+Enter\` | New line |`,
+		`| \`Shift+Enter\`${altEnterInsertsNewLine ? ` / \`${alt}+Enter\`` : ""} | New line |`,
 		`| \`Ctrl+W\` / \`${alt}+Backspace\` | Delete word backwards |`,
 		"| `Ctrl+U` | Delete to start of line |",
 		"| `Ctrl+K` | Delete to end of line |",
@@ -42,6 +46,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| \`${appKey(bindings, "app.message.bargeIn")}\` | Interrupt the current turn now and send the draft |`,
 		`| \`${appKey(bindings, "app.clear")}\` | Clear editor (first) / exit (second) |`,
 		`| \`${appKey(bindings, "app.exit")}\` | Exit application (configure a keybinding or run \`/exit\`) |`,
+		`| \`${appKey(bindings, "app.draft.restore")}\` | Restore the draft the last Ctrl+C discarded (while one is pending) |`,
 		`| \`${appKey(bindings, "app.suspend")}\` | Suspend to background |`,
 		`| \`${appKey(bindings, "app.display.reset")}\` | Reset terminal display |`,
 		`| \`${appKey(bindings, "app.thinking.cycle")}\` | Cycle thinking level |`,

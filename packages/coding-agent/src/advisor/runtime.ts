@@ -124,12 +124,17 @@ const ADVISOR_OUTPUT_ONLY_HAZARDS: readonly AdvisorOutputHazard[] = [
 ];
 
 /**
- * Replaces an advisor assistant turn that requested unavailable tools or generated
- * output-only destructive directives with a sanitized error before dispatch.
+ * Rewrites an advisor assistant turn before dispatch: ungranted tool calls are
+ * dropped in place (they can never execute — the advisor loop only holds granted
+ * tools), and output-only destructive directives replace the whole turn with a
+ * sanitized error.
  *
  * The agent loop records assistant turns before dispatching tools. Without this
  * pre-dispatch rewrite, an advisor hallucination can leave unrelated text in the
  * advisor transcript even though the action itself never executes.
+ *
+ * @returns the sanitized error text when the turn was quarantined; `undefined`
+ * when the turn is usable (possibly after dropping ungranted calls).
  */
 export function quarantineAdvisorUnsafeOutput(
 	message: AssistantMessage,
@@ -137,32 +142,30 @@ export function quarantineAdvisorUnsafeOutput(
 	sourceText = "",
 ): string | undefined {
 	const reasons: string[] = [];
-	const unavailableToolNames = new Set<string>();
 	const generatedParts: string[] = [];
+	const keptContent: AssistantMessage["content"] = [];
+	const droppedToolNames = new Set<string>();
 	for (const block of message.content) {
-		// Cursor exec-channel native blocks (bash/read/grep/...) are stamped
-		// kCursorExecResolved: they already ran server-side through the
-		// advisor-scoped CursorExecHandlers bridge, which rejects ungranted
-		// tools in-band ("Tool not available") and lets the model self-correct.
-		// Quarantining them would discard the legitimate advise emitted in the
-		// same turn (issue #5900). The scoped bridge is the grant gate here, not
-		// this pre-dispatch check.
+		// A tool call outside the advisor's grant never dispatches: the loop only
+		// holds the granted tool set. Drop it in place rather than discarding the
+		// whole review — a hallucinated `bash`/`edit` frame (common on small/fast
+		// models) is inert, so quarantining it only surfaced a phantom failure.
+		// Cursor exec-channel native blocks are stamped `kCursorExecResolved`: they
+		// already ran server-side through the advisor-scoped bridge, which rejects
+		// ungranted tools in-band; the bridge is the grant gate for those.
 		if (
 			block.type === "toolCall" &&
 			!availableToolNames.has(block.name) &&
 			(block as CursorExecResolvedCarrier)[kCursorExecResolved] !== true
 		) {
-			unavailableToolNames.add(block.name);
+			droppedToolNames.add(block.name);
+			continue;
 		}
+		keptContent.push(block);
 		if (block.type === "toolCall" && block.name === "advise" && typeof block.arguments.note === "string") {
 			generatedParts.push(block.arguments.note);
 		}
 		if (block.type === "text") generatedParts.push(block.text);
-	}
-	if (unavailableToolNames.size > 0) {
-		const names = [...unavailableToolNames].sort();
-		const toolLabel = names.length === 1 ? "tool" : "tools";
-		reasons.push(`requested unavailable ${toolLabel} ${names.join(", ")}`);
 	}
 
 	const generatedText = generatedParts.join("\n");
@@ -189,7 +192,20 @@ export function quarantineAdvisorUnsafeOutput(
 		}
 	}
 
-	if (reasons.length === 0) return undefined;
+	if (reasons.length === 0) {
+		if (droppedToolNames.size === 0) return undefined;
+		// Only authorized calls (chiefly `advise`) survive; the free text of a turn
+		// that emitted an ungranted call is untrusted and dropped with it. An empty
+		// result is a deliberate silent review, not a malformed turn.
+		message.content = authorizedToolCalls;
+		message.stopReason = authorizedToolCalls.length > 0 ? "toolUse" : "stop";
+		message.stopDetails = undefined;
+		message.providerPayload = undefined;
+		message.toolCallAbortMessages = undefined;
+		message.errorMessage = undefined;
+		logger.debug("advisor dropped unavailable tool calls", { tools: [...droppedToolNames].sort() });
+		return undefined;
+	}
 
 	const messageText = `${ADVISOR_QUARANTINE_PREFIX}: ${reasons.join("; ")}`;
 	message.content = [{ type: "text", text: messageText }];

@@ -8,6 +8,7 @@ import {
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { sounds } from "../../audio/sounds";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { getEditClipboard } from "../../edit/edit-clipboard";
@@ -2748,13 +2749,6 @@ export class EventController {
 		// coalescing is never mistaken for a mid-retry blip.
 		if (this.#retryPending) return;
 
-		// Warp structured OSC 777 already drives native completion UX when the
-		// protocol is negotiated — avoid a second legacy desktop/OSC-9 toast.
-		if (isWarpCliAgentProtocolActive()) return;
-
-		const notify = settings.get("error.notify");
-		if (notify === "off") return;
-
 		// Read the turn's own outcome from `agent_end.messages`, not the mutable
 		// active context: a classifier-refusal failure is final (stopReason ===
 		// "error") but gets pruned from `viewSession`'s active context before this
@@ -2763,6 +2757,17 @@ export class EventController {
 		// absent assistant and silently drop the notification.
 		const last = event.messages.findLast((message): message is AssistantMessage => message.role === "assistant");
 		if (last?.stopReason !== "error") return;
+
+		// The chime has its own switch: `error.notify` and the Warp protocol only
+		// govern the desktop toast, so neither may silence `sound.error`.
+		sounds.play("error");
+
+		// Warp structured OSC 777 already drives native completion UX when the
+		// protocol is negotiated — avoid a second legacy desktop/OSC-9 toast.
+		if (isWarpCliAgentProtocolActive()) return;
+
+		const notify = settings.get("error.notify");
+		if (notify === "off") return;
 
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({
@@ -2774,13 +2779,6 @@ export class EventController {
 	}
 
 	sendCompletionNotification(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
-		const notify = settings.get("completion.notify");
-		if (notify === "off") return;
-
-		// Warp structured OSC 777 already drives native completion UX when the
-		// protocol is negotiated — avoid a second legacy desktop/OSC-9 toast.
-		if (isWarpCliAgentProtocolActive()) return;
-
 		// Read the turn's own outcome from `agent_end.messages`, not the mutable
 		// active context (see `sendErrorNotification` above for why `viewSession`'s
 		// snapshot can be stale): an aborted or errored turn is not "Task
@@ -2788,6 +2786,17 @@ export class EventController {
 		// keeps the two notifications mutually exclusive for one settled turn.
 		const last = event.messages.findLast((message): message is AssistantMessage => message.role === "assistant");
 		if (last?.stopReason === "aborted" || last?.stopReason === "error") return;
+
+		// Independent of `completion.notify` and the Warp protocol, which only
+		// govern the desktop toast.
+		sounds.play("completion");
+
+		const notify = settings.get("completion.notify");
+		if (notify === "off") return;
+
+		// Warp structured OSC 777 already drives native completion UX when the
+		// protocol is negotiated — avoid a second legacy desktop/OSC-9 toast.
+		if (isWarpCliAgentProtocolActive()) return;
 
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({

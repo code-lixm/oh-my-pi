@@ -31,6 +31,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { sounds } from "../audio/sounds";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { tSettingsUi } from "../i18n/settings-locale";
@@ -939,6 +940,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 		const richAskDialog = extensionUi.askDialog;
 		if (richAskDialog) {
+			sounds.startRepeat("ask");
 			try {
 				const showRichDialog = () =>
 					richAskDialog(
@@ -1026,6 +1028,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 					throw new ToolAbortError("Ask input was cancelled");
 				}
 				throw error;
+			} finally {
+				sounds.stopRepeat("ask");
 			}
 		}
 
@@ -1041,6 +1045,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			const recommended = getValidRecommendedIndex(questionOptions, q.recommended);
 			const questionDeadline =
 				timeout !== undefined && recommended !== undefined ? new AskDeadline(timeout) : undefined;
+			sounds.startRepeat("ask");
 			try {
 				const { selectedOptions, customInput, note, navigation, cancelled, timedOut } = await askSingleQuestion(
 					ui,
@@ -1062,6 +1067,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				}
 				throw error;
 			} finally {
+				sounds.stopRepeat("ask");
 				questionDeadline?.dispose();
 			}
 		};
@@ -1325,7 +1331,7 @@ function renderAnswerOptionLines(
 
 export const askToolRenderer = {
 	mergeCallAndResult: true,
-	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
+	renderCall(args: AskRenderArgs, options: RenderResultOptions & { argsComplete?: boolean }, uiTheme: Theme): Component {
 		const label = formatTitle(tSettingsUi("Ask"), uiTheme);
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
@@ -1357,6 +1363,19 @@ export const askToolRenderer = {
 
 		// Single question
 		if (typeof args.question !== "string" || !args.question) {
+			// Streamed call args arrive empty before the model emits `question`, so
+			// this is the card's first frame rather than a failure. Painting the
+			// error frame there flashes a red block on every streaming ask call
+			// before the real question lands.
+			if (options.argsComplete !== true) {
+				return framedBlock(uiTheme, width => ({
+					header: label,
+					sections: [],
+					state: "pending",
+					borderColor: "borderMuted",
+					width,
+				}));
+			}
 			const errorLine = formatErrorMessage(tSettingsUi("No question provided"), uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header: errorLine,

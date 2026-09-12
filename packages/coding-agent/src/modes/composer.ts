@@ -179,6 +179,7 @@ export class Composer implements TerminalFrameProvider {
 		this.editor.setActionKeys("app.exit", ["ctrl+d"]);
 		this.editor.onClear = () => this.#handleInterrupt();
 		this.editor.onExit = () => this.#requestExit(0);
+		this.editor.onRestoreDraft = () => this.#restoreClearedDraft();
 		this.editor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
 
 		if (!this.#preferences.quiet) this.#ensureWelcome();
@@ -538,8 +539,15 @@ export class Composer implements TerminalFrameProvider {
 			this.#requestExit(130);
 			return;
 		}
+		this.editor.captureClearedDraft();
 		this.editor.setText("");
 		this.#lastInterruptAt = now;
+	}
+
+	/** Put back the draft the previous Ctrl+C discarded, while the startup composer still owns
+	 *  Ctrl+C (before InteractiveMode installs its configured bindings). */
+	#restoreClearedDraft(): void {
+		if (this.editor.restoreClearedDraft()) this.ui.requestComponentRender(this.editor);
 	}
 
 	#requestExit(code: number): void {

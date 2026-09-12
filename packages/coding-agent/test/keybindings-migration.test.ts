@@ -381,13 +381,13 @@ describe("KeybindingsManager.create", () => {
 });
 
 describe("platform default chords", () => {
-	it("binds barge-in to Cmd+Return on macOS with Ctrl+X as the fallback chord", () => {
-		expect(getBargeInDefaultKeys("darwin")).toEqual(["super+enter", "ctrl+x"]);
+	it("binds barge-in to Cmd+Return and Alt+Return on macOS with Ctrl+X as the fallback chord", () => {
+		expect(getBargeInDefaultKeys("darwin")).toEqual(["super+enter", "alt+enter", "ctrl+x"]);
 	});
 
-	it("binds barge-in to Ctrl+Return off macOS with Ctrl+X as the fallback chord", () => {
-		expect(getBargeInDefaultKeys("win32")).toEqual(["ctrl+enter", "ctrl+x"]);
-		expect(getBargeInDefaultKeys("linux")).toEqual(["ctrl+enter", "ctrl+x"]);
+	it("binds barge-in to Ctrl+Return and Alt+Return off macOS with Ctrl+X as the fallback chord", () => {
+		expect(getBargeInDefaultKeys("win32")).toEqual(["ctrl+enter", "alt+enter", "ctrl+x"]);
+		expect(getBargeInDefaultKeys("linux")).toEqual(["ctrl+enter", "alt+enter", "ctrl+x"]);
 	});
 
 	it("keeps follow-up on Ctrl+Q alone wherever Ctrl+Return belongs to barge-in", () => {

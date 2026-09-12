@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { sounds } from "@oh-my-pi/pi-coding-agent/audio/sounds";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
@@ -134,12 +135,14 @@ describe("EventController.sendCompletionNotification — abort guard", () => {
 
 	it("fires notification when stopReason === 'stop' (normal completion)", () => {
 		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
+		const playSpy = vi.spyOn(sounds, "play").mockImplementation(() => {});
 		settings.override("completion.notify", "on");
 		const controller = new EventController(makeContext());
 		controller.sendCompletionNotification(makeAgentEndEvent([makeAssistantMessage("stop")]));
 		expect(spy).toHaveBeenCalledTimes(1);
 		// Completion now sends a structured notification (title=session, body="Complete").
 		expect(spy).toHaveBeenCalledWith(expect.objectContaining({ body: "Complete", type: "completion" }));
+		expect(playSpy).toHaveBeenCalledWith("completion");
 	});
 
 	it("fires notification when agent_end carries no assistant message (e.g. brand-new session)", () => {
@@ -159,6 +162,17 @@ describe("EventController.sendCompletionNotification — abort guard", () => {
 		expect(spy).toHaveBeenCalledTimes(0);
 	});
 
+	it("plays the completion sound for stopReason === 'stop' when completion.notify=off without sending a desktop notification", () => {
+		const notificationSpy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
+		const playSpy = vi.spyOn(sounds, "play").mockImplementation(() => {});
+		settings.override("completion.notify", "off");
+		const controller = new EventController(makeContext());
+		controller.sendCompletionNotification(makeAgentEndEvent([makeAssistantMessage("stop")]));
+		expect(notificationSpy).not.toHaveBeenCalled();
+		expect(playSpy).toHaveBeenCalledTimes(1);
+		expect(playSpy).toHaveBeenCalledWith("completion");
+	});
+
 	it("skips legacy completion notify when Warp CLI-agent protocol is active", () => {
 		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
 		settings.override("completion.notify", "on");
@@ -176,6 +190,7 @@ describe("EventController.sendErrorNotification", () => {
 
 	it("fires an error notification when stopReason === 'error'", () => {
 		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
+		const playSpy = vi.spyOn(sounds, "play").mockImplementation(() => {});
 		settings.override("error.notify", "on");
 		const controller = new EventController(makeContext());
 		controller.sendErrorNotification(makeAgentEndEvent([makeAssistantMessage("error")]));
@@ -183,6 +198,7 @@ describe("EventController.sendErrorNotification", () => {
 		expect(spy).toHaveBeenCalledWith(
 			expect.objectContaining({ body: "Stopped with error", type: "error", title: "test-session" }),
 		);
+		expect(playSpy).toHaveBeenCalledWith("error");
 	});
 
 	it("uses the last assistant message when agent_end carries multiple messages", () => {
@@ -208,6 +224,17 @@ describe("EventController.sendErrorNotification", () => {
 		completionController.sendCompletionNotification(makeAgentEndEvent([makeAssistantMessage("stop")]));
 		expect(spy).toHaveBeenCalledTimes(1);
 		expect(spy).toHaveBeenCalledWith(expect.objectContaining({ body: "Complete", type: "completion" }));
+	});
+
+	it("plays the error sound for stopReason === 'error' when error.notify=off without sending a desktop notification", () => {
+		const notificationSpy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
+		const playSpy = vi.spyOn(sounds, "play").mockImplementation(() => {});
+		settings.override("error.notify", "off");
+		const controller = new EventController(makeContext());
+		controller.sendErrorNotification(makeAgentEndEvent([makeAssistantMessage("error")]));
+		expect(notificationSpy).not.toHaveBeenCalled();
+		expect(playSpy).toHaveBeenCalledTimes(1);
+		expect(playSpy).toHaveBeenCalledWith("error");
 	});
 
 	it("skips user-aborted turns", () => {
@@ -256,11 +283,13 @@ describe("EventController — notifications through the real turn-end path (#han
 
 	it("skips the error notification when the dispatched turn settles with stopReason === 'aborted'", async () => {
 		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
+		const playSpy = vi.spyOn(sounds, "play").mockImplementation(() => {});
 		settings.override("error.notify", "on");
 		settings.override("completion.notify", "off");
 		const controller = new EventController(makeTurnEndContext());
 		await controller.handleEvent(makeAgentEndEvent([makeAssistantMessage("aborted")]));
 		expect(spy).not.toHaveBeenCalled();
+		expect(playSpy).not.toHaveBeenCalled();
 	});
 
 	it("fires only the error toast — never a paired 'Complete' toast — for one error-ending turn", async () => {

@@ -329,6 +329,35 @@ describe("CustomEditor configured clear shortcut", () => {
 	});
 });
 
+describe("CustomEditor barge-in Alt+Return", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("routes Alt+Return to the registered barge-in handler instead of inserting a newline", () => {
+		for (const chord of ["\x1b[13;3u", "\x1b\r"]) {
+			const { editor } = makeEditor();
+			const bargeIn = vi.fn();
+			editor.setCustomKeyHandler("alt+enter", bargeIn);
+			editor.setText("stop this and do that");
+
+			editor.handleInput(chord);
+
+			expect(bargeIn).toHaveBeenCalledTimes(1);
+			expect(editor.getText()).toBe("stop this and do that");
+		}
+	});
+
+	it("still inserts a newline for Alt+Return when nothing claims the chord", () => {
+		const { editor } = makeEditor();
+		editor.setText("first");
+
+		editor.handleInput("\x1b[13;3u");
+
+		expect(editor.getText()).toBe("first\n");
+	});
+});
+
 describe("CustomEditor queue shorthand decoration", () => {
 	beforeAll(async () => {
 		await initTheme();

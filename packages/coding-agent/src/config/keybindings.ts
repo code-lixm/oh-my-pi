@@ -22,6 +22,7 @@ interface AppKeybindings {
 	"app.clear": true;
 	"app.exit": true;
 	"app.suspend": true;
+	"app.draft.restore": true;
 	"app.display.reset": true;
 	"app.thinking.cycle": true;
 	"app.thinking.toggle": true;
@@ -78,14 +79,18 @@ export function getDefaultPasteImageKeys(platform: NodeJS.Platform = process.pla
 }
 
 /**
- * Resolve default barge-in shortcuts for the current terminal platform: the
+ * Resolve default barge-in shortcuts for the current terminal platform. The
  * Return chord (Cmd+Return on macOS, Ctrl+Return elsewhere) is the primary
- * gesture, with Ctrl+X kept as the fallback for terminals that swallow the
- * chord (Terminal.app/iTerm2 fullscreen on macOS, Windows Terminal #1903).
+ * gesture, but macOS terminals commonly keep Cmd for their own window
+ * shortcuts and never forward it, so Alt+Return is bound as the chord that
+ * actually reaches the app; Ctrl+X stays the last-resort fallback for
+ * terminals that swallow modified Return entirely (Terminal.app/iTerm2
+ * fullscreen on macOS, Windows Terminal #1903). Alt+Return no longer inserts a
+ * newline — Shift+Return keeps that.
  */
 export function getBargeInDefaultKeys(platform: NodeJS.Platform = process.platform): KeyId[] {
-	if (platform === "darwin") return ["super+enter", "ctrl+x"];
-	return ["ctrl+enter", "ctrl+x"];
+	if (platform === "darwin") return ["super+enter", "alt+enter", "ctrl+x"];
+	return ["ctrl+enter", "alt+enter", "ctrl+x"];
 }
 
 /**
@@ -128,6 +133,10 @@ export const KEYBINDINGS = {
 	"app.suspend": {
 		defaultKeys: "ctrl+z",
 		description: tSettingsUi("Suspend application"),
+	},
+	"app.draft.restore": {
+		defaultKeys: "ctrl+z",
+		description: tSettingsUi("Restore the draft Ctrl+C cleared"),
 	},
 	"app.display.reset": {
 		defaultKeys: "alt+l",

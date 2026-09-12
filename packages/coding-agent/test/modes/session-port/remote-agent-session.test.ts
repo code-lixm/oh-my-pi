@@ -28,8 +28,11 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcSessionState,
+	RpcSubagentSnapshot,
 } from "../../../src/modes/rpc/rpc-types";
-import { RemoteAgentSession } from "../../../src/modes/session-port/remote-agent-session";
+import { RemoteAgentSession, type RemoteAgentSessionOptions } from "../../../src/modes/session-port/remote-agent-session";
+import type { InteractiveSessionPort, InteractiveSessionViewListener } from "../../../src/modes/session-port/port";
+import type { InteractiveSessionProjection, InteractiveSessionProjectionPatch } from "../../../src/modes/session-port/types";
 import type { InteractiveModeContext } from "../../../src/modes/types";
 import { buildToolsMarkdown } from "../../../src/modes/utils/tools-markdown";
 import type { AsyncJobSnapshot } from "../../../src/session/agent-session-types";
@@ -192,6 +195,10 @@ const initialState: RpcSessionState = {
 	todoPhases: [],
 };
 
+const RemoteAgentSessionForTest = RemoteAgentSession as unknown as new (
+	options: RemoteAgentSessionOptions,
+) => RemoteAgentSession;
+
 type BootstrapRpcServerOptions = {
 	readonly state?: () => RpcSessionState;
 	readonly onCommand?: (
@@ -276,6 +283,47 @@ async function createRemoteSession(options: RemoteSessionHarnessOptions = {}): P
 	}
 }
 
+function createProjectionPort(initialProjection: InteractiveSessionProjection): {
+	readonly port: InteractiveSessionPort;
+	readonly apply: (patch: InteractiveSessionProjectionPatch) => void;
+} {
+	let projection = initialProjection;
+	const cursor = { generation: "projection-test", sequence: 0 };
+	const viewListeners = new Set<InteractiveSessionViewListener>();
+	const port: InteractiveSessionPort = {
+		get projection() {
+			return projection;
+		},
+		cursor,
+		dispatch: async () => {
+			throw new Error("Projection count test does not dispatch RPC commands");
+		},
+		requestSnapshot: async () => ({ cursor, projection }),
+		onReliable: () => () => {},
+		onView: listener => {
+			viewListeners.add(listener);
+			return () => viewListeners.delete(listener);
+		},
+		onConnection: () => () => {},
+		dispose: async () => {},
+	};
+	return {
+		port,
+		apply: patch => {
+			projection = { ...projection, ...patch };
+			for (const listener of viewListeners) {
+				listener({
+					generation: cursor.generation,
+					key: "subagents",
+					revision: 1,
+					baseReliableSequence: cursor.sequence,
+					patch,
+				});
+			}
+		},
+	};
+}
+
 async function flushQueuedMicrotasks(): Promise<void> {
 	for (let index = 0; index < 4; index++) await Promise.resolve();
 }
@@ -336,6 +384,17 @@ function createProgress(overrides: Partial<AgentProgress> = {}): AgentProgress {
 		cost: 0.01,
 		durationMs: 7,
 		...overrides,
+	};
+}
+
+function createSubagentSnapshot(id: string, status: RpcSubagentSnapshot["status"]): RpcSubagentSnapshot {
+	return {
+		id,
+		index: 1,
+		agent: "task",
+		agentSource: "bundled",
+		status,
+		lastUpdate: 1,
 	};
 }
 
@@ -485,6 +544,64 @@ describe("RemoteAgentSession RPC UI bridge", () => {
 });
 
 describe("RemoteAgentSession RPC state projection", () => {
+	test("counts only running subagents from live projection updates", async () => {
+		const { port, apply } = createProjectionPort({
+			identity: { sessionId: "remote-session" },
+			cwd: "/workspace/remote-session",
+			thinkingLevel: undefined,
+			configuredThinkingLevel: undefined,
+			busy: { isStreaming: false, isBashRunning: false, isEvalRunning: false, isCompacting: false },
+			scopedModels: [],
+			todo: [],
+			queue: { steering: [], followUp: [] },
+			modes: {
+				steering: "all",
+				followUp: "all",
+				interrupt: "immediate",
+				autoCompactionEnabled: false,
+				fastModeEnabled: false,
+				fastModeActive: false,
+			},
+			jobs: null,
+			subagents: [
+				createSubagentSnapshot("pending", "pending"),
+				createSubagentSnapshot("running", "running"),
+				createSubagentSnapshot("completed", "completed"),
+				createSubagentSnapshot("failed", "failed"),
+				createSubagentSnapshot("aborted", "aborted"),
+			],
+			commands: [],
+			tools: [],
+			messages: [],
+		});
+		const session = new RemoteAgentSessionForTest({
+			client: {
+				onSessionEvent: () => () => {},
+				onExtensionUiRequest: () => () => {},
+			} as unknown as RpcClient,
+			port,
+			sessionManager: SessionManager.inMemory("/workspace/remote-session"),
+			settings: {} as Settings,
+			modelRegistry: {} as ModelRegistry,
+		});
+		try {
+			expect(session.getRunningSubagentCount()).toBe(1);
+
+			apply({ subagents: [] });
+			expect(session.getRunningSubagentCount()).toBe(0);
+
+			apply({
+				subagents: [
+					createSubagentSnapshot("first-live-running", "running"),
+					createSubagentSnapshot("second-live-running", "running"),
+				],
+			});
+			expect(session.getRunningSubagentCount()).toBe(2);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("refreshes queued messages after dispatch and forwards title generation", async () => {
 		let state: RpcSessionState = {
 			...initialState,
