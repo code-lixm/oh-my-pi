@@ -568,6 +568,7 @@ export class Theme {
 			context: this.#symbols["icon.context"],
 			cost: this.#symbols["icon.cost"],
 			time: this.#symbols["icon.time"],
+			schedule: this.#symbols["icon.schedule"],
 			pi: this.#symbols["icon.pi"],
 			ghost: this.#symbols["icon.ghost"],
 			agents: this.#symbols["icon.agents"],

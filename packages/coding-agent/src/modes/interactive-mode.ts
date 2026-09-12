@@ -108,6 +108,7 @@ import planModeCompactInstructionsPromptZh from "../prompts/system/plan-mode-com
 };
 import type { AgentActivityState } from "../registry/agent-activity";
 import { AgentRegistry, compareAgentNavigationOrder, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { ScheduleStatusCache } from "../scheduling/status-summary";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -688,7 +689,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	#rateTracker = new StreamingRateTracker();
 	#pendingWorkingMessage: string | undefined;
 	#workingActivityRefreshTimer?: NodeJS.Timeout;
+	// Session-scheduled prompts for the activity row's metrics suffix; the cache
+	// keeps the async sidecar read off the render path.
+	#scheduleStatus = new ScheduleStatusCache({
+		getSource: () => this.session.getScheduleRuntime?.(),
+		onChange: () => this.#refreshIdleActivityRow(),
+	});
 	#interruptLoaderTeardown?: NodeJS.Timeout;
+	#interruptedLoaderFrozen = false;
 	#workingActivity?: AgentActivityState;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
@@ -4870,6 +4878,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
 		this.#focusController.dispose();
+		this.#scheduleStatus.dispose();
 
 		// Surface an explicit "Closing session…" line so the user sees a reason
 		// for the pause while `session.dispose()` flushes memory consolidate and
@@ -5231,6 +5240,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	#refreshWorkingActivityMessage(
 		activity: AgentActivityState | undefined = this.#workingActivity ?? this.viewSession.activity,
 	): void {
+		if (this.#interruptedLoaderFrozen) {
+			// A confirmed interrupt stops advertising work even while the abort is
+			// still unwinding; only a settled agent (no live work left) unfreezes
+			// the row and hands it back to the regular reconcile below.
+			if (this.#hasLiveAgentWork()) return;
+			this.#interruptedLoaderFrozen = false;
+		}
 		this.#workingActivity = activity;
 		const loader = this.loadingAnimation;
 		if (!loader) {
@@ -5344,6 +5360,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				`${theme.icon.time} ${theme.fg(getMetricThemeColor(getTtftLevel(ttft)), `${(ttft / 1000).toFixed(1)}s`)}`,
 			);
 		}
+
+		// A scheduled prompt is a background job the user cannot otherwise see;
+		// the delay sits with the other live metrics so the next run stays in
+		// view, including on the idle persistent row.
+		const schedule = this.#scheduleStatus.read();
+		if (schedule && schedule.nextRunAt !== null) {
+			const remaining = schedule.nextRunAt - Date.now();
+			const label =
+				remaining <= 0
+					? tSettingsUi("due")
+					: tSettingsUi("{duration} from now", { duration: formatDuration(remaining) });
+			const queued = schedule.activeCount > 1 ? ` +${schedule.activeCount - 1}` : "";
+			parts.push(`${theme.icon.schedule} ${theme.fg("statusLineContext", `${label}${queued}`)}`);
+		}
 		return parts.join(theme.sep.dot);
 	}
 
@@ -5438,6 +5468,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.session.agent.state.isStreaming !== false || this.#pendingSubmittedInput !== undefined;
 	}
 
+	/**
+	 * Repaint the standing idle activity row after an async schedule refresh. A
+	 * working row already re-renders on its heartbeat, which reads the same
+	 * summary, so only the idle presentation needs this nudge.
+	 */
+	#refreshIdleActivityRow(): void {
+		if (this.#hasLiveAgentWork()) return;
+		this.keepLoadingAnimationIdle();
+	}
+
 	#stopLoadingAnimation(clearStatusContainer: boolean): void {
 		this.#stopWorkingActivityRefresh();
 		this.#workingActivity = undefined;
@@ -5478,9 +5518,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * unwind — a turn that genuinely resumes recreates the loader on agent_start.
 	 */
 	scheduleLoaderTeardownAfterInterrupt(): void {
+		this.#freezeLoaderForInterrupt();
 		if (this.#interruptLoaderTeardown) return;
 		this.#interruptLoaderTeardown = setTimeout(() => {
 			this.#interruptLoaderTeardown = undefined;
+			this.#interruptedLoaderFrozen = false;
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) this.#stopLoadingAnimation(true);
 			this.ui.requestRender();
@@ -5488,7 +5530,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#interruptLoaderTeardown.unref?.();
 	}
 
+	/**
+	 * Freeze the activity row the instant an interrupt is confirmed. The abort is
+	 * asynchronous — when a request never produced its first token, its
+	 * `agent_end` can arrive long after the keystroke — and the activity
+	 * heartbeat would keep re-enabling the spinner from the stale snapshot
+	 * meanwhile, leaving the row turning for the whole teardown grace period.
+	 * Stop advertising work now; `#refreshWorkingActivityMessage` bails out while
+	 * frozen, and `startPendingSubmission` clears the flag for the next turn.
+	 */
+	#freezeLoaderForInterrupt(): void {
+		this.#interruptedLoaderFrozen = true;
+		this.#stopWorkingActivityRefresh();
+		this.#workingActivity = undefined;
+		this.#pendingWorkingMessage = undefined;
+		const loader = this.loadingAnimation;
+		if (!loader) return;
+		loader.setAnimationEnabled(false);
+		loader.setSpinnerVisible(false);
+		loader.setMessage(tSettingsUi("Interrupted."));
+		this.ui.requestRender();
+	}
+
 	#clearInterruptLoaderTeardown(): void {
+		this.#interruptedLoaderFrozen = false;
 		if (!this.#interruptLoaderTeardown) return;
 		clearTimeout(this.#interruptLoaderTeardown);
 		this.#interruptLoaderTeardown = undefined;

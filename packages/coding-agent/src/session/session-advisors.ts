@@ -61,6 +61,7 @@ import {
 	quarantineAdvisorUnsafeOutput,
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
+	withReadOnlyBashTool,
 } from "../advisor";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -737,7 +738,13 @@ export class SessionAdvisors {
 			if (config.instructions?.trim()) systemPrompt.push(config.instructions.trim());
 
 			const names = config.tools === undefined ? ADVISOR_DEFAULT_TOOL_NAMES : new Set(config.tools);
-			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
+			// The advisor reviews; it does not mutate. A granted `bash` is narrowed to
+			// provably read-only command lines, so the reviewer can inspect a
+			// repository (`git log`, `ls`, `cat`) without ever writing through a shell
+			// — and without the whole `bash` tool having to be withheld.
+			const tools = (this.#advisorTools ?? [])
+				.filter(t => names.has(t.name))
+				.map(tool => withReadOnlyBashTool(tool));
 			// Some catalog/discovery models explicitly cannot receive native tools. Do
 			// not send the advisor's `advise` tool (or tool_choice) to those models:
 			// providers reject the whole request before the advisor can produce output.
@@ -856,6 +863,12 @@ export class SessionAdvisors {
 				providerSessionState: this.#host.providerSessionState,
 				cursorExecHandlers: advisorCursorExecHandlers,
 				cwdResolver: () => this.#host.sessionManager.getCwd(),
+				// Without this the advisor's own loop executes every tool with an
+				// undefined context, and `ExtensionToolWrapper` falls back to `yolo`:
+				// `tools.approvalMode` and `tools.approval.<tool>` (including `deny`)
+				// were silently bypassed for advisor-dispatched tools. The Cursor
+				// bridge below already passes the same context.
+				getToolContext: () => this.#advisorGetToolContext?.(),
 				preferWebsockets: this.#host.preferWebsockets,
 				getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
 				streamFn: advisorStreamFn,

@@ -476,6 +476,30 @@ const tokenTtftSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Next session-scheduled prompt (the `cron` tool / `/schedule` sidecar). Shows
+ * the remaining delay so a background schedule stays visible without opening
+ * `/schedule list`; hidden when nothing is pending or the session has no
+ * scheduling runtime (subagents, unpersisted sessions).
+ */
+const scheduleSegment: StatusLineSegment = {
+	id: "schedule",
+	render(ctx) {
+		const { schedule } = ctx;
+		if (!schedule || schedule.nextRunAt === null) return { content: "", visible: false };
+		const remaining = schedule.nextRunAt - Date.now();
+		// A due-but-unclaimed run keeps rendering until the dispatcher claims it;
+		// a negative countdown would read as a broken clock.
+		const label =
+			remaining <= 0
+				? tSettingsUi("due")
+				: tSettingsUi("{duration} from now", { duration: formatDuration(remaining) });
+		const queued = schedule.activeCount > 1 ? ` +${schedule.activeCount - 1}` : "";
+		const content = withIcon(theme.icon.schedule, `${label}${queued}`, "statusLineContext");
+		return { content, visible: true };
+	},
+};
+
 const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
@@ -921,6 +945,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_total: tokenTotalSegment,
 	token_rate: tokenRateSegment,
 	token_ttft: tokenTtftSegment,
+	schedule: scheduleSegment,
 	cost: costSegment,
 	context_pct: contextPctSegment,
 	context_total: contextTotalSegment,

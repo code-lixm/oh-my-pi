@@ -47,6 +47,7 @@ function createContext(loopMode: SegmentContext["loopMode"]): SegmentContext {
 		worktree: null,
 		git: { branch: null, status: null, pr: null },
 		usage: null,
+		schedule: null,
 	};
 }
 

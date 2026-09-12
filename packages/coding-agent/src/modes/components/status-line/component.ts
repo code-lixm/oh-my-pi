@@ -10,6 +10,7 @@ import {
 import { type Component, type ComposerStyle, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { adjustHsv, formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
+import { ScheduleStatusCache } from "../../../scheduling/status-summary";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
@@ -362,6 +363,12 @@ export class StatusLineComponent implements Component {
 	#gitWatcherUnavailable = false;
 	#onBranchChange: (() => void) | null = null;
 	#disposed = false;
+	// Scheduled-prompt summary for the `schedule` segment. The read-through
+	// cache keeps the sidecar read off the synchronous render path.
+	#scheduleStatus = new ScheduleStatusCache({
+		getSource: () => this.session.getScheduleRuntime?.(),
+		onChange: () => this.#requestRender?.(),
+	});
 	#autoCompactEnabled: boolean = true;
 	#hookStatuses: Map<string, string> = new Map();
 	#standalone: false | "left-only" | "full" = false;
@@ -756,6 +763,7 @@ export class StatusLineComponent implements Component {
 		this.#onCodexResetFireworks = undefined;
 		this.#codexResetSnapshots.clear();
 		this.#retireGitWatcher();
+		this.#scheduleStatus.dispose();
 	}
 
 	#clearUsageStartTimer(): void {
@@ -811,6 +819,7 @@ export class StatusLineComponent implements Component {
 		this.#contextUsageCache = undefined;
 		this.#lastTokensPerSecond = null;
 		this.#lastTokensPerSecondTimestamp = null;
+		this.#scheduleStatus.reset();
 	}
 
 	/**
@@ -1782,6 +1791,7 @@ export class StatusLineComponent implements Component {
 		includePr: boolean,
 		includeTokenRate: boolean,
 		includeTtft: boolean,
+		includeSchedule: boolean,
 	): SegmentContext {
 		const state = this.session.state;
 
@@ -1879,6 +1889,7 @@ export class StatusLineComponent implements Component {
 			},
 			worktree: activeRepoCache.worktree,
 			usage: this.#cachedUsage,
+			schedule: includeSchedule ? this.#scheduleStatus.read() : null,
 		};
 	}
 
@@ -1962,6 +1973,8 @@ export class StatusLineComponent implements Component {
 		const includeTtft =
 			effectiveSettings.leftSegments.includes("token_ttft") ||
 			effectiveSettings.rightSegments.includes("token_ttft");
+		const includeSchedule =
+			effectiveSettings.leftSegments.includes("schedule") || effectiveSettings.rightSegments.includes("schedule");
 		const ctx = this.#buildSegmentContext(
 			width,
 			effectiveSettings.segmentOptions,
@@ -1971,6 +1984,7 @@ export class StatusLineComponent implements Component {
 			includePr,
 			includeTokenRate,
 			includeTtft,
+			includeSchedule,
 		);
 		const separatorDef = getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
 

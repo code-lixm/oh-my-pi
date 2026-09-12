@@ -887,6 +887,8 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Add MCP Server": "添加 MCP 服务器",
 	"Add a marketplace first: /marketplace add <source>": "请先添加市场：/marketplace add <source>",
 	"Adding server anyway...": "仍将添加服务器…",
+	"Advisor bash is read-only; this command was not run: {command}":
+		"审阅助手的 bash 仅允许只读命令；该命令未执行：{command}",
 	"Advisor config: {message}": "审阅助手配置：{message}",
 	"Advisor {count}": "审阅助手 {count}",
 	"Agent Control Center": "代理控制中心",
@@ -5509,4 +5511,5 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Chime when a turn stops with an error": "一轮对话因错误停止时响一次",
 	"Queued Task Chime": "排队任务提示音",
 	"Chime when a queued subagent starts running": "排队的子代理开始运行时响一次",
+	"{duration} from now": "{duration} 后",
 };

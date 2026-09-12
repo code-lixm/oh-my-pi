@@ -194,11 +194,12 @@ export function quarantineAdvisorUnsafeOutput(
 
 	if (reasons.length === 0) {
 		if (droppedToolNames.size === 0) return undefined;
-		// Only authorized calls (chiefly `advise`) survive; the free text of a turn
-		// that emitted an ungranted call is untrusted and dropped with it. An empty
-		// result is a deliberate silent review, not a malformed turn.
-		message.content = authorizedToolCalls;
-		message.stopReason = authorizedToolCalls.length > 0 ? "toolUse" : "stop";
+		// The rest of the review — read-only lookups, `advise`, prose — is kept: an
+		// ungranted call is evidence of a hallucination, not of hostile output, and
+		// only the `advise` note reaches the driving agent anyway. With no tool call
+		// left the turn is an ordinary stop, never a malformed turn.
+		message.content = keptContent;
+		if (!keptContent.some(block => block.type === "toolCall")) message.stopReason = "stop";
 		message.stopDetails = undefined;
 		message.providerPayload = undefined;
 		message.toolCallAbortMessages = undefined;

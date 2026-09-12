@@ -898,6 +898,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Add MCP Server": "Add MCP Server",
 	"Add a marketplace first: /marketplace add <source>": "Add a marketplace first: /marketplace add <source>",
 	"Adding server anyway...": "Adding server anyway...",
+	"Advisor bash is read-only; this command was not run: {command}":
+		"Advisor bash is read-only; this command was not run: {command}",
 	"Advisor config: {message}": "Advisor config: {message}",
 	"Advisor {count}": "Advisor {count}",
 	"Agent Control Center": "Agent Control Center",
@@ -5657,4 +5659,5 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Chime when a turn stops with an error": "Chime when a turn stops with an error",
 	"Queued Task Chime": "Queued Task Chime",
 	"Chime when a queued subagent starts running": "Chime when a queued subagent starts running",
+	"{duration} from now": "{duration} from now",
 };

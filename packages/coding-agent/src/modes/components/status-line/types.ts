@@ -6,11 +6,12 @@ import type {
 	StatusLineSegmentId,
 	StatusLineSeparatorStyle,
 } from "../../../config/settings-schema";
+import type { ScheduleStatusSummary } from "../../../scheduling/status-summary";
 import type { AgentSession } from "../../../session/agent-session";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { LoopLimitRuntime } from "../../loop-limit";
 
-export type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
+export type { ContextLineMode, ScheduleStatusSummary, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle };
 
 /** Collab session indicator + (guest-only) host-state override for segments. */
 export interface CollabStatus {
@@ -173,6 +174,8 @@ export interface SegmentContext {
 	 */
 	worktree: { projectName: string; worktreeName: string } | null;
 	usage: StatusLineUsageSummary | null;
+	/** Null until the first background read, when scheduling is unavailable, or when no job is bound. */
+	schedule: ScheduleStatusSummary | null;
 }
 
 export interface RenderedSegment {

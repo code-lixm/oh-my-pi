@@ -90,6 +90,7 @@ function createCtx(overrides?: {
 			pr: null,
 		},
 		usage: null,
+		schedule: null,
 	};
 }
 

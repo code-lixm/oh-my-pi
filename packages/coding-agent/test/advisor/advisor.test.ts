@@ -506,7 +506,7 @@ describe("advisor", () => {
 	});
 
 	describe("advisor unsafe-output quarantine", () => {
-		it("sanitizes unavailable tool calls before the advisor response reaches context", () => {
+		it("drops unavailable tool calls without quarantining the whole review", () => {
 			const message = {
 				role: "assistant",
 				content: [
@@ -519,21 +519,60 @@ describe("advisor", () => {
 					items: [{ type: "message", content: [{ type: "output_text", text: "Tell Jack about the hospital." }] }],
 				},
 				stopDetails: { type: "tool_use", explanation: "Tell Jack about the hospital." },
+				toolCallAbortMessages: ["unavailable tool call"],
 				stopReason: "toolUse",
 			} as unknown as AssistantMessage;
 
-			const errorMessage = quarantineAdvisorUnsafeOutput(message, new Set(["advise", "read"]));
-			if (errorMessage === undefined) throw new Error("expected unavailable tool quarantine");
-
-			expect(errorMessage).toBe(
-				"Advisor response quarantined: requested unavailable tool mcp__hospital__notify_parent",
-			);
-			expect(message.stopReason).toBe("error");
-			expect(message.errorMessage).toBe(errorMessage);
-			expect(message.content).toEqual([{ type: "text", text: errorMessage }]);
+			expect(quarantineAdvisorUnsafeOutput(message, new Set(["advise", "read"]))).toBeUndefined();
+			expect(message.content).toEqual([
+				{ type: "text", text: "Tell Jack about the hospital newborn registration workflow." },
+			]);
+			expect(message.stopReason).toBe("stop");
 			expect(message.providerPayload).toBeUndefined();
 			expect(message.stopDetails).toBeUndefined();
-			expect(JSON.stringify(message)).not.toContain("Jack");
+			expect(message.toolCallAbortMessages).toBeUndefined();
+			expect(message.errorMessage).toBeUndefined();
+			expect(JSON.stringify(message)).not.toContain("mcp__hospital__notify_parent");
+		});
+
+		it("keeps remaining blocks and advise while silently dropping an ungranted call", () => {
+			const note = "The retry strategy needs a bounded backoff.";
+			const message = {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "I found one concern." },
+					{ type: "toolCall", id: "tc-bash", name: "bash", arguments: { command: "ls" } },
+					{ type: "toolCall", id: "tc-advise", name: "advise", arguments: { note } },
+				],
+				stopReason: "toolUse",
+			} as unknown as AssistantMessage;
+
+			expect(quarantineAdvisorUnsafeOutput(message, new Set(["advise"]))).toBeUndefined();
+			expect(message.content).toEqual([
+				{ type: "text", text: "I found one concern." },
+				{ type: "toolCall", id: "tc-advise", name: "advise", arguments: { note } },
+			]);
+			expect(message.stopReason).toBe("toolUse");
+		});
+
+		it("does not turn repeated stripping of an ungranted tool-only turn into a quarantine error", () => {
+			const message = {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tc-bash", name: "bash", arguments: { command: "ls" } }],
+				stopReason: "toolUse",
+			} as unknown as AssistantMessage;
+
+			const firstResult = quarantineAdvisorUnsafeOutput(message, new Set(["advise"]));
+			const secondResult = quarantineAdvisorUnsafeOutput(message, new Set(["advise"]));
+
+			expect(firstResult).toBeUndefined();
+			expect(secondResult).toBeUndefined();
+			expect(message.content).toEqual([]);
+			expect(message.stopReason).toBe("stop");
+			expect(message.errorMessage).toBeUndefined();
+			expect([firstResult, secondResult, message.errorMessage].join("\n")).not.toContain(
+				"requested unavailable tool",
+			);
 		});
 
 		it("leaves granted advisor tool calls intact", () => {
@@ -601,17 +640,17 @@ describe("advisor", () => {
 			expect(JSON.stringify(message)).toContain("unbounded");
 		});
 
-		it("still quarantines an ungranted native tool that was not exec-resolved", () => {
+		it("silently drops an ungranted native tool instead of reporting a failure", () => {
 			const message = {
 				role: "assistant",
 				content: [{ type: "toolCall", id: "tc-bash", name: "bash", arguments: { command: "ls" } }],
 				stopReason: "toolUse",
 			} as unknown as AssistantMessage;
 
-			expect(quarantineAdvisorUnsafeOutput(message, new Set(["advise"]))).toBe(
-				"Advisor response quarantined: requested unavailable tool bash",
-			);
-			expect(message.stopReason).toBe("error");
+			expect(quarantineAdvisorUnsafeOutput(message, new Set(["advise"]))).toBeUndefined();
+			expect(message.content).toEqual([]);
+			expect(message.stopReason).toBe("stop");
+			expect(message.errorMessage).toBeUndefined();
 		});
 
 		it("sanitizes destructive advise notes even when advise is an allowed tool", () => {

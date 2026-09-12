@@ -88,6 +88,7 @@ export type SymbolKey =
 	| "icon.context"
 	| "icon.cost"
 	| "icon.time"
+	| "icon.schedule"
 	| "icon.pi"
 	| "icon.ghost"
 	| "icon.agents"
@@ -306,6 +307,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.context": "◫",
 	"icon.cost": "💲",
 	"icon.time": "⏱",
+	"icon.schedule": "⏰",
 	"icon.pi": "π",
 	"icon.ghost": "👻",
 	"icon.agents": "🤖",
@@ -591,6 +593,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.cost": "\uf155",
 	// pick:  | alt: ◷ ◴
 	"icon.time": "\uf017",
+	// pick:  (nf-fa-calendar) | alt: 󰃭 (nf-md-calendar) ⏰
+	"icon.schedule": "\uf073",
 	// pick:  | alt: π ∏ ∑
 	"icon.pi": "\ue22c",
 	// pick: 󰊠 (nf-md-ghost) | alt: 👻
@@ -843,6 +847,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.context": "ctx:",
 	"icon.cost": "$",
 	"icon.time": "t:",
+	"icon.schedule": "cron:",
 	"icon.pi": "pi",
 	"icon.ghost": "@",
 	"icon.agents": "AG",
