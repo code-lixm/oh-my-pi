@@ -136,6 +136,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Inspect and test Time-Traveling Stream Rules (TTSR)": "检查并测试时间旅行流规则（TTSR）",
 	"Interrupted. {count} queued messages kept — press Enter to run them.":
 		"已中断：保留 {count} 条排队消息，按 Enter 继续。",
+	"Interrupted.": "已中断。",
 	"Check for and install updates": "检查并安装更新",
 	"Show provider usage limits for every authenticated account": "显示每个已认证帐户的提供商使用限制",
 	"List or clear agent-managed git worktrees (~/.omp/wt)": "列出或清理代理管理的 Git 工作树（~/.omp/wt）",
@@ -746,6 +747,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand":
 		"{previous}:上一个 · {next}:下一个 · Esc:主任务 · j/k:滚动 · {expand}:展开",
 	"last {rate}": "上次 {rate}",
+	"avg {rate}": "平均 {rate}",
 	"retry failed after {attempt}": "重试 {attempt} 次后失败",
 	"retry {attempt}/{max} · {delay}": "重试 {attempt}/{max} · {delay}",
 	"Successfully logged in to {providerId}": "已成功登录 {providerId}",
@@ -804,7 +806,7 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"stays text ({reason})": "保持文本（{reason}）",
 	"tokens ({pct})": "tokens（{pct}）",
 	"tokens on the wire": "传输中的 tokens",
-	"toks/s": "toks/秒",
+	"t/s": "t/s",
 	unknown: "未知",
 	visible: "可见",
 	"{codeCount} code": "{codeCount} 处代码",
@@ -1859,6 +1861,18 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Grep Context Before": "Grep 前置上下文",
 	"HTTP SSE providers populate this view while a model response is streaming.":
 		"当模型响应正在流式传输时，HTTP SSE provider 会填充此视图。",
+	"Built-in Sensitive Patterns": "内置敏感模式",
+	"E-mail Addresses": "邮箱地址",
+	"IPv4 Addresses": "IPv4 地址",
+	"MAC Addresses": "MAC 地址",
+	"National IDs": "身份证号",
+	"Obfuscate For Models": "脱敏模型范围",
+	"Obfuscate For Providers": "脱敏厂商范围",
+	"Phone Numbers": "手机号",
+	"Placeholder Label": "占位符标签",
+	"Structured identifiers obfuscated in addition to the configured terms, e.g. phone numbers and e-mail addresses.":
+		"除配置的敏感词外，额外脱敏的结构化标识，例如手机号与邮箱地址。",
+	UUIDs: "UUID",
 	"Headless Browser": "无头浏览器",
 	"Headless? Paste the redirect URL or code with /login <value>.":
 		"无头环境？请用 /login <value> 粘贴重定向 URL 或授权码。",
@@ -2271,10 +2285,13 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"在对话记录中内联渲染 read 工具结果，而不是显示为摘要行",
 	"Mouse Input": "鼠标输入",
-	"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.":
-		"启用输入框点击定位编辑，以及 Agent Hub 和选择器等应用内面板的鼠标交互。会话历史和主会话保留终端原生文本选择。启用期间终端不再用滚轮滚动自身回滚缓冲区——请改用终端滚动条、Shift+滚轮或 /history 查看更早的输出。",
+	"Enable click-to-position editing in the prompt and pointer interaction in the main transcript (links, images). Fullscreen panels such as Agent Hub, selectors, and session history always capture the wheel so it scrolls them — text selection inside them stays reachable via the terminal's shift-drag. While enabled, the terminal no longer wheel-scrolls its own scrollback from the main screen — use the terminal scrollbar, Shift+wheel, or /history to browse older output.":
+		"启用输入框点击定位编辑，以及主会话中的鼠标交互（链接、图片）。Agent Hub、选择器、会话历史等全屏面板始终捕获滚轮并滚动自身——其中的文本选择可用终端 Shift+拖拽。启用期间，主界面不再用滚轮滚动终端自身回滚缓冲区——请改用终端滚动条、Shift+滚轮或 /history 查看更早的输出。",
 	"Show Agent Communication": "显示代理通信",
 	"Show agent-to-agent messages and coordination activity in the transcript": "在对话记录中显示代理间消息和协调活动",
+	"Persistent Activity Row": "常驻活动行",
+	"Keep the activity row above the prompt after a turn ends, showing the last turn's t/s and time-to-first-token instead of hiding it":
+		"回合结束后保留提示框上方的活动行，显示上一轮的 t/s 和首字延迟，而不是隐藏它",
 	"Show Subagent List": "显示子代理列表",
 	"Show the live subagent list above the Main prompt": "在 Main 输入框上方显示实时子代理列表",
 	"Repeated grid with ink cycling six hues at sentence boundaries.": "重复网格，在句子边界按六种色相轮换墨色。",
@@ -4334,6 +4351,26 @@ export const SETTINGS_ZH_CN_MESSAGES: Record<string, string> = {
 		"自动批准只读和写入工具；对 bash、eval、browser、task 等 exec 工具要求确认。",
 	"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.":
 		"启用 generate_image 工具（文本生成/编辑图像）。当 tools.xdev 开启时，它会作为 xd:// 设备暴露。",
+	"GPT-2 Image": "GPT-2 图像",
+	"Enable the gpt_2_image tool: OpenAI gpt-image-2 generation via a configurable base URL and API key":
+		"启用 gpt_2_image 工具：通过可配置的 base URL 和 API key 调用 OpenAI gpt-image-2 生成图像",
+	"GPT-2 Image API Key": "GPT-2 图像 API 密钥",
+	"API key for the gpt_2_image tool. Falls back to GPT2_IMAGE_API_KEY, then OPENAI_API_KEY.":
+		"gpt_2_image 工具的 API 密钥。依次回退到 GPT2_IMAGE_API_KEY、OPENAI_API_KEY。",
+	"GPT-2 Image Base URL": "GPT-2 图像 Base URL",
+	"OpenAI-compatible base URL (default https://api.openai.com/v1).":
+		"OpenAI 兼容的 Base URL（默认 https://api.openai.com/v1）。",
+	"GPT-2 Image Model": "GPT-2 图像模型",
+	"Image model id (default gpt-image-2).": "图像模型 ID（默认 gpt-image-2）。",
+	"GPT-2 Image Output Directory": "GPT-2 图像输出目录",
+	"Default directory for generated images (default ~/.omp/gpt-2-image/<project>/).":
+		"生成图像的默认目录（默认 ~/.omp/gpt-2-image/<project>/）。",
+	"GPT-2 Image Max Files": "GPT-2 图像最大文件数",
+	"Earliest-written generated images over this many are pruned (never files younger than 2h).":
+		"最早写入的生成图像超过此数量将被清理（2 小时内的文件不会删除）。",
+	"GPT-2 Image Max Output Bytes": "GPT-2 图像输出字节上限",
+	"Disk ceiling for the output directory; oldest files are pruned past this (never younger than 2h).":
+		"输出目录的磁盘上限；超出后清理最旧文件（2 小时内的不会删除）。",
 	"How long a `hub` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.":
 		"hub wait 在返回当前状态前监视后台任务的时长。固定值表示每次都精确等待该时长。`smart` 会自适应：从 5s 开始，每次连续 wait 都会延长（最长 5m），在约 1 分钟未等待后重置回 5s。",
 	"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout":

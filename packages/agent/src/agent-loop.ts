@@ -150,13 +150,15 @@ export function createToolScopedAbortReason(
 	return { kind: "tool-scoped-abort", message, toolCallMessages, defaultToolCallMessage };
 }
 
-/**
- * Marks an abort raised by a completed post-tool hook as terminal for the
- * current run. External/user aborts still synthesize an aborted assistant
- * boundary; this reason stops after persisting the completed tool batch.
- */
+/** Marks an abort raised by a completed post-tool hook as terminal for the current run. */
 export const TERMINAL_TOOL_RESULT_ABORT_REASON = Symbol.for("pi-agent-core.terminal-tool-result");
 
+/** Marks a no-progress loop halt; this reason is allowed through session turn-end hooks. */
+export const NO_PROGRESS_LOOP_ABORT_REASON = Symbol.for("pi-agent-core.no-progress-loop");
+
+export function isTerminalToolResultAbortReason(reason: unknown): boolean {
+	return reason === TERMINAL_TOOL_RESULT_ABORT_REASON || reason === NO_PROGRESS_LOOP_ABORT_REASON;
+}
 const STEERING_INTERRUPT_POLL_MS = 250;
 
 class HarmonyLeakInterruption extends Error {
@@ -638,7 +640,8 @@ async function emitTurnEnd(
 	stream.push({ type: "turn_end", message, toolResults });
 	const isAbortedOrError =
 		message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error");
-	if (signal?.aborted || (isAbortedOrError && !runHookOnAbortedMessage)) return;
+	const isNoProgressLoopAbort = signal?.reason === NO_PROGRESS_LOOP_ABORT_REASON;
+	if ((signal?.aborted && !isNoProgressLoopAbort) || (isAbortedOrError && !runHookOnAbortedMessage)) return;
 	await config.onTurnEnd?.(currentContext.messages, signal, { message, toolResults, ...context });
 }
 
@@ -1401,7 +1404,7 @@ async function runLoopBody(
 
 				// A tool hook may mark its completed result as terminal (e.g. subagent yield).
 				// Stop before the next provider call without changing external/user abort semantics.
-				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+				if (isTerminalToolResultAbortReason(signal?.reason)) {
 					hasMoreToolCalls = false;
 				}
 
@@ -1427,7 +1430,10 @@ async function runLoopBody(
 					inputMessages: logicalTurnInputs.slice(),
 				});
 				if (!hasMoreToolCalls) logicalTurnInputs = [];
-				if (signal?.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) hasMoreToolCalls = false;
+				if (isTerminalToolResultAbortReason(signal?.reason)) {
+					hasMoreToolCalls = false;
+					pendingMessages = [];
+				}
 				turnOpen = false;
 
 				if (isDeadlineExceeded(config.deadline)) {
@@ -2173,7 +2179,8 @@ function suggestToolName(name: string, candidates: readonly string[]): string | 
 		const lower = candidate.toLowerCase();
 		let score = 0;
 		if (lower === target) score = 100;
-		else if (lower.startsWith(target) || target.startsWith(lower)) score = 80 - Math.abs(lower.length - target.length);
+		else if (lower.startsWith(target) || target.startsWith(lower))
+			score = 80 - Math.abs(lower.length - target.length);
 		else if (lower.includes(target) || target.includes(lower)) score = 60 - Math.abs(lower.length - target.length);
 		if (score > (best?.score ?? 0)) best = { name: candidate, score };
 	}
@@ -2470,7 +2477,7 @@ async function executeToolCalls(
 	};
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
-		if (record.signal.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+		if (isTerminalToolResultAbortReason(record.signal.reason)) {
 			emitTerminalSkippedToolResult(record);
 			return;
 		}
@@ -2496,7 +2503,7 @@ async function executeToolCalls(
 		// engaged. Tools already executing are unaffected (pausing never aborts);
 		// a batch interrupted mid-pause unwinds via the signal checks below.
 		if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(record.signal);
-		if (record.signal.reason === TERMINAL_TOOL_RESULT_ABORT_REASON) {
+		if (isTerminalToolResultAbortReason(record.signal.reason)) {
 			emitTerminalSkippedToolResult(record);
 			return;
 		}

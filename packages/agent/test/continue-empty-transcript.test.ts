@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { createAssistantMessage } from "./helpers";
 
 /**
  * Regression: a `steer` (or follow-up) queued on an empty transcript must be
@@ -50,6 +51,43 @@ describe("Agent.continue() on an empty transcript", () => {
 		expect(mock.calls.length).toBe(1);
 		expect(agent.hasQueuedMessages()).toBe(false);
 		expect(agent.state.messages.map(m => m.role)).toEqual(["user", "assistant"]);
+	});
+
+	it("runs a queued follow-up after a non-assistant custom transcript tail", async () => {
+		const mock = createMockModel({ responses: [{ content: ["Answer"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
+
+		agent.replaceMessages([
+			{ role: "user", content: [{ type: "text", text: "first" }], timestamp: Date.now() },
+			createAssistantMessage([{ type: "text", text: "first answer" }]),
+			{
+				role: "custom",
+				customType: "irc:incoming",
+				content: "peer pinged",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+		]);
+		agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "queued follow-up" }],
+			timestamp: Date.now(),
+		});
+
+		await expect(agent.continue()).resolves.toBeUndefined();
+
+		expect(agent.hasQueuedMessages()).toBe(false);
+		expect(mock.calls.length).toBe(1);
+		expect(
+			agent.state.messages.some(
+				message =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some(part => part.type === "text" && part.text === "queued follow-up"),
+			),
+		).toBe(true);
+		expect(agent.state.messages.at(-1)?.role).toBe("assistant");
 	});
 
 	it("still throws when the transcript is empty and nothing is queued", async () => {

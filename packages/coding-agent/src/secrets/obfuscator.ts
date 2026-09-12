@@ -5,6 +5,8 @@ import {
 	defaultPlaceholderKey,
 	inferCaseHint,
 	lookupFriendlyPlaceholderAlias,
+	MIN_EXPLICIT_OBFUSCATE_REGEX_LEN,
+	MIN_EXPLICIT_OBFUSCATE_SECRET_LEN,
 	MIN_OBFUSCATE_SECRET_LEN,
 	PLACEHOLDER_RE,
 	placeholderWithoutFriendlyName,
@@ -50,6 +52,18 @@ export interface SecretEntry {
 	replacement?: string;
 	flags?: string;
 	friendlyName?: string;
+	/**
+	 * Opt this entry out of the short-match floor (`MIN_OBFUSCATE_SECRET_LEN`).
+	 *
+	 * The floor exists to tone down accidental matches on small words when
+	 * secrets are discovered heuristically (environment variables, built-in
+	 * credential patterns). A user who explicitly writes a short term into
+	 * `secrets.yml` is asserting it IS sensitive — CJK terms in particular are
+	 * information-dense at 2-3 characters, so an 8-character floor silently
+	 * drops almost every configured word. Only the `secrets.yml` loader sets
+	 * this; heuristic sources leave it undefined and keep the floor.
+	 */
+	explicit?: boolean;
 }
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue | undefined };
@@ -64,8 +78,13 @@ export class SecretObfuscator {
 	#plainMappings = new Map<string, number>();
 
 	/** Regex entries (patterns compiled at construction) */
-	#regexEntries: Array<{ regex: RegExp; mode: "obfuscate" | "replace"; replacement?: string; friendlyName?: string }> =
-		[];
+	#regexEntries: Array<{
+		regex: RegExp;
+		mode: "obfuscate" | "replace";
+		replacement?: string;
+		friendlyName?: string;
+		explicit: boolean;
+	}> = [];
 
 	/** All obfuscate-mode mappings: index → { secret, placeholder } */
 	#obfuscateMappings = new Map<number, { secret: string; placeholder: string }>();
@@ -120,7 +139,20 @@ export class SecretObfuscator {
 	#key: string | undefined;
 	#keyProvider: (() => string) | undefined;
 
-	constructor(entries: SecretEntry[], key: string | (() => string) = defaultPlaceholderKey()) {
+	/**
+	 * Friendly-name label applied to entries that do not declare their own. The
+	 * `$$…$$` envelope is deliberately NOT configurable: the scanner, the
+	 * obfuscate/deobfuscate round trip, and prompt-cache prefix stability all
+	 * depend on that exact shape. Only the human-readable label varies.
+	 */
+	#placeholderLabel: string | undefined;
+
+	constructor(
+		entries: SecretEntry[],
+		key: string | (() => string) = defaultPlaceholderKey(),
+		placeholderLabel?: string,
+	) {
+		this.#placeholderLabel = sanitizeSecretFriendlyName(placeholderLabel ?? "");
 		if (typeof key === "function") {
 			this.#keyProvider = key;
 		} else {
@@ -158,6 +190,7 @@ export class SecretObfuscator {
 					mode,
 					replacement: entry.replacement,
 					friendlyName: entry.friendlyName,
+					explicit: entry.explicit === true,
 				});
 			} catch {
 				// Invalid regex — skip silently (validation happens at load time)
@@ -169,8 +202,12 @@ export class SecretObfuscator {
 			if (entry.type !== "plain") continue;
 			const mode = entry.mode ?? "obfuscate";
 			if (mode === "obfuscate") {
-				if (entry.content.length < MIN_OBFUSCATE_SECRET_LEN) {
-					// Tone down short plain secret obfuscation to avoid false matches on small words like "esp".
+				const floor = entry.explicit ? MIN_EXPLICIT_OBFUSCATE_SECRET_LEN : MIN_OBFUSCATE_SECRET_LEN;
+				if (entry.content.length < floor) {
+					// Tone down short plain secret obfuscation to avoid false matches on small
+					// words like "esp". An explicit `secrets.yml` entry gets the lower floor
+					// (see MIN_EXPLICIT_OBFUSCATE_SECRET_LEN) but is still held above a single
+					// character, whose unbounded substring match redacts unrelated compounds.
 					continue;
 				}
 				const placeholder = this.#createPlaceholder(entry.content, entry.friendlyName);
@@ -371,12 +408,14 @@ export class SecretObfuscator {
 						origin = replaceRange(origin, match.start, match.end, "I".repeat(replacement.length));
 					}
 				} else {
-					if (match.scanMatchLength < MIN_OBFUSCATE_SECRET_LEN) {
+					const minLen = entry.explicit ? MIN_EXPLICIT_OBFUSCATE_REGEX_LEN : MIN_OBFUSCATE_SECRET_LEN;
+					if (match.scanMatchLength < minLen) {
 						// Tone down short regex matches to avoid obfuscating small
 						// words/fragments. Measure the regex's own match length in the
 						// canonical (placeholder-expanded) scan view, not the rewritten
 						// source span, so the threshold reflects how much content the regex
-						// actually matched.
+						// actually matched. An explicit `secrets.yml` regex gets its own floor:
+						// the pattern states its own boundaries, so one character is allowed.
 						continue;
 					}
 					if (match.preserveInputPlaceholders) {
@@ -722,11 +761,21 @@ export class SecretObfuscator {
 		// caught: a truncated `requestedFriendlyName` can never contain a longer
 		// secret's full sanitized form, so checking the truncated label would let
 		// the secret's first 32 (post-cap) characters leak as an accepted prefix.
-		const requestedFriendlyName = friendlyName ? sanitizeSecretFriendlyName(friendlyName) : undefined;
+		// An entry that declares no label falls back to the configured one, so a
+		// transcript can attribute redacted spans to this feature. The collision
+		// check then runs against whichever name actually reaches the placeholder.
+		const effectiveFriendlyName = friendlyName ?? this.#placeholderLabel;
+		const requestedFriendlyName = effectiveFriendlyName
+			? sanitizeSecretFriendlyName(effectiveFriendlyName)
+			: undefined;
 		const sanitizedFriendlyName =
 			requestedFriendlyName !== undefined &&
-			friendlyName !== undefined &&
-			!this.#friendlyNameCollidesWithSecret(sanitizeForCollisionCheck(friendlyName), friendlyName, secret)
+			effectiveFriendlyName !== undefined &&
+			!this.#friendlyNameCollidesWithSecret(
+				sanitizeForCollisionCheck(effectiveFriendlyName),
+				effectiveFriendlyName,
+				secret,
+			)
 				? requestedFriendlyName
 				: undefined;
 		const preferredBase = this.#resolvePreferredPlaceholderBase(baseKey);

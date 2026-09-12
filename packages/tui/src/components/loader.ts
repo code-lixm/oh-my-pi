@@ -22,6 +22,8 @@ export class Loader extends Text {
 	#currentFrame = 0;
 	#intervalId?: NodeJS.Timeout;
 	#animationEnabled = true;
+	#spinnerVisible = true;
+	#idle = false;
 	#ui: TUI | null = null;
 	#lastSpinnerTick = 0;
 	#layoutSource?: readonly string[];
@@ -82,7 +84,7 @@ export class Loader extends Text {
 		const layout = this.#layout ?? [];
 		for (let i = 0; i < layout.length; i++) {
 			const { leading, content, trailing } = layout[i];
-			if (i === 0 && content.startsWith(sentinel)) {
+			if (this.#spinnerVisible && i === 0 && content.startsWith(sentinel)) {
 				const remainder = content.slice(sentinel.length);
 				const separator = remainder.startsWith(" ") ? " " : "";
 				const message = remainder.slice(separator.length);
@@ -131,6 +133,29 @@ export class Loader extends Text {
 		this.#frozenMessageColors.set(this.message, frozenMessage);
 		this.#animationEnabled = false;
 		this.stop();
+	}
+
+	/** Hide or show the leading spinner glyph without changing the message. */
+	setSpinnerVisible(visible: boolean): void {
+		if (visible === this.#spinnerVisible) return;
+		this.#spinnerVisible = visible;
+		this.#syncText();
+		this.#requestSemanticPaint();
+	}
+
+	/**
+	 * Mark the loader as a persistent idle readout rather than a pending-work
+	 * indicator. It keeps rendering its last message but stops advertising work,
+	 * so consumers that gate on "is a loader mounted" (Esc-to-cancel, queue
+	 * dispatch) must consult this instead of the loader's mere presence.
+	 */
+	setIdle(idle: boolean): void {
+		this.#idle = idle;
+	}
+
+	/** Whether this loader is an idle readout with no work behind it. */
+	get idle(): boolean {
+		return this.#idle;
 	}
 
 	setMessage(message: string) {
@@ -190,6 +215,10 @@ export class Loader extends Text {
 	}
 	/** Re-wrap the underlying Text only when its message or frame width changes. */
 	#syncText(): boolean {
+		if (!this.#spinnerVisible) {
+			this.#layoutFrame = "";
+			return this.setText(this.message);
+		}
 		const layoutFrame = this.#layoutFrames[this.#currentFrame];
 		this.#layoutFrame = layoutFrame;
 		return this.setText(`${layoutFrame} ${this.message}`);

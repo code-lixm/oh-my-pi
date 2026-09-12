@@ -14,14 +14,16 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { runAutoArchiveScan } from "@oh-my-pi/pi-coding-agent/cli/session-retention";
-import { getHistoryDbPath, getSessionsDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getHistoryDbPath, getSessionsDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 let root: string;
 let settingsState: SettingsTestState | undefined;
+let originalAgentDir: string;
 
 beforeEach(async () => {
 	settingsState = beginSettingsTest();
+	originalAgentDir = getAgentDir();
 	root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-retention-"));
 	setAgentDir(root);
 });
@@ -29,7 +31,7 @@ beforeEach(async () => {
 afterEach(async () => {
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
-	setAgentDir(undefined);
+	setAgentDir(originalAgentDir);
 	await fs.rm(root, { recursive: true, force: true });
 });
 

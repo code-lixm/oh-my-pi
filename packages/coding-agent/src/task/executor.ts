@@ -3480,6 +3480,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				task,
 				agentDisplayName: options.displayName ?? agent.name,
 				tools: session.getActiveToolNames(),
+				builtInToolNames: session.getBuiltInToolNames(),
 				agent: agent.name,
 				modelRole: effectiveModelRole,
 				resolvedModel: progress.resolvedModel,

@@ -269,8 +269,8 @@ describe("RefinementController", () => {
 				calls.reviewed.push({ reason, turnsSinceLastReview });
 				return { shouldRefine: true, rationale: "change it", instructions: "update" };
 			},
-			planWithLLM: async ({ scope, instructions, state }) => {
-				calls.planned.push({ scope, instructions, state });
+			planWithLLM: async ({ scope, instructions, state, round }) => {
+				calls.planned.push({ scope, instructions, state, round });
 				expect(scope).toBe("local");
 				expect(instructions).toBe("update");
 				return {

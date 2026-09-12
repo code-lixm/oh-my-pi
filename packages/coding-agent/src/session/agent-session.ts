@@ -38,6 +38,7 @@ import {
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
 	EventLoopKeepalive,
+	NO_PROGRESS_LOOP_ABORT_REASON,
 	resolveTelemetry,
 	type StreamFn,
 	TERMINAL_TOOL_RESULT_ABORT_REASON,
@@ -289,6 +290,7 @@ import type {
 	AgentSessionConfig,
 	AgentSessionDisposeOptions,
 	AsyncJobSnapshot,
+	AsyncJobSnapshotItem,
 	CommandMetadataChangedListener,
 	ContextUsageBreakdown,
 	FollowUpOptions,
@@ -1677,13 +1679,13 @@ export class AgentSession {
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.agent.setOnTurnEnd(async (messages, signal, context) => {
-			if (signal?.aborted) return;
+			if (signal?.aborted && signal.reason !== NO_PROGRESS_LOOP_ABORT_REASON) return;
 			const rewindReport = this.#extractRewindReport(messages);
 			if (rewindReport) {
 				this.#pendingRewindReport = undefined;
 				await this.#applyRewind(rewindReport, messages);
 			}
-			this.#loopGuards.recordTurn(messages, context);
+			if (this.#loopGuards.recordTurn(messages, context)) return;
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			await this.#advisors.onPrimaryTurnEnd(messages, context, signal);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
@@ -2500,22 +2502,23 @@ export class AgentSession {
 		const manager = this.#asyncJobManager;
 		if (!manager) return null;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
-		const running = manager.getRunningJobs(ownerFilter).map(job => ({
+		const projectJob = (job: AsyncJob): AsyncJobSnapshotItem => ({
 			id: job.id,
 			type: job.type,
 			status: job.status,
 			label: job.label,
 			startTime: job.startTime,
-			endedAt: job.endedAt,
-		}));
-		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(job => ({
-			id: job.id,
-			type: job.type,
-			status: job.status,
-			label: job.label,
-			startTime: job.startTime,
-			endedAt: job.endedAt,
-		}));
+			...(job.endedAt === undefined ? {} : { endedAt: job.endedAt }),
+			...(job.description === undefined ? {} : { description: job.description }),
+			...(job.latestProgressText === undefined ? {} : { latestProgressText: job.latestProgressText }),
+			...(job.latestDetails === undefined ? {} : { latestDetails: job.latestDetails }),
+			...(job.lastProgressAt === undefined ? {} : { lastProgressAt: job.lastProgressAt }),
+			...(job.ownerId === undefined ? {} : { ownerId: job.ownerId }),
+			...(job.agentId === undefined ? {} : { agentId: job.agentId }),
+			...(job.queued === undefined ? {} : { queued: job.queued }),
+		});
+		const running = manager.getRunningJobs(ownerFilter).map(projectJob);
+		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(projectJob);
 		const delivery = manager.getDeliveryState(ownerFilter);
 		return { running, recent, delivery };
 	}
@@ -5510,6 +5513,11 @@ export class AgentSession {
 		return this.#tools.hasBuiltInTool(name);
 	}
 
+	/** Built-in tool names (wire aliases included); see {@link SessionTools.getBuiltInToolNames}. */
+	getBuiltInToolNames(): string[] {
+		return this.#tools.getBuiltInToolNames();
+	}
+
 	/** Updates source provenance when a live registry entry is replaced or restored. */
 	setToolBuiltIn(name: string, builtIn: boolean): void {
 		this.#tools.setToolBuiltIn(name, builtIn);
@@ -7452,6 +7460,11 @@ export class AgentSession {
 	 */
 	#canAutoContinueForFollowUp(allowCurrentPromptInFlight = false): boolean {
 		if (this.agent.state.isStreaming) return false;
+		// A queued message must not start a continuation while the session wrapper
+		// still owns the active prompt, even if Agent already cleared its streaming
+		// bit during post-prompt recovery. The continuation's second check is allowed
+		// to observe the slot it just claimed.
+		if (this.isStreaming && !allowCurrentPromptInFlight) return false;
 		// #scheduleAgentContinue claims one session in-flight slot before its
 		// second shouldContinue check. Allow that slot, but still reject a
 		// continuation racing any other session-owned in-flight work.
@@ -7469,13 +7482,13 @@ export class AgentSession {
 		// why a queued user steer stranded behind a preserved advisor card (or a flushed IRC aside
 		// / eval execution record) still resumes — no tail-role enumeration needed.
 		if (this.agent.peekSteeringQueue().length > 0) return true;
-		// Follow-up-only resume has no steer to inject, so Agent.continue() continues from the
-		// existing context tail — which must itself be a valid provider tail. An injected
-		// non-conversational tail (advisor card → `developer`, bash/python execution) would make
-		// the first model call invalid, so leave the follow-up queued for the next explicit resume.
-		const messages = this.agent.state.messages;
-		const last = messages[messages.length - 1];
-		return last?.role === "assistant" || last?.role === "toolResult";
+		// A queued follow-up is delivered as an explicit user turn by
+		// Agent.continue(), so it remains valid even when an out-of-band custom
+		// message is the current transcript tail. The agent core appends the
+		// queued user message before the provider call instead of trying to
+		// continue from that custom tail.
+		if (this.agent.peekFollowUpQueue().length > 0) return true;
+		return false;
 	}
 
 	queueDeferredMessage(message: CustomMessage): void {

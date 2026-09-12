@@ -209,6 +209,7 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 			sessionManager: sessionManagerMock,
 			viewSession: { sessionManager: sessionManagerMock },
 			transcriptMessageComponents: new WeakMap(),
+			ui: { imageBudget: undefined, requestRender: () => {} },
 		} as unknown as InteractiveModeContext);
 		const message: AgentMessage = {
 			role: "user",

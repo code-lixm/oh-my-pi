@@ -17,6 +17,27 @@ const MAX_FRIENDLY_NAME_LEN = 32;
 // behind a reversible placeholder) to avoid redacting small words/fragments.
 export const MIN_OBFUSCATE_SECRET_LEN = 8;
 
+// Floor for entries the user declared explicitly in `secrets.yml`. Lower than
+// the heuristic floor above because a deliberate declaration is evidence the
+// term IS sensitive, and CJK terms carry meaning at two characters.
+//
+// Deliberately NOT 1 for plain entries: they match as unbounded substrings, so
+// a single CJK character also matches inside unrelated compounds (`毒` inside
+// `病毒`/`消毒`, `黄` inside `黄色`/`黄山`). Measured on realistic text that
+// produced a 4.1x token blow-up from pure false positives. A one-character term
+// must instead be written as a regex with its own boundary assertions — see
+// `MIN_EXPLICIT_OBFUSCATE_REGEX_LEN`, which does allow one character because
+// the pattern itself is what constrains the match.
+export const MIN_EXPLICIT_OBFUSCATE_SECRET_LEN = 2;
+
+// Floor for explicit REGEX entries. Unlike a plain substring, a regex states its
+// own boundaries, so a one-character CJK term can be made safe:
+// `(?<![一-鿿])毒(?![一-鿿])` matches only a standalone 毒. Note that lookarounds
+// are zero-width, so the match text stays one character long and the match-length
+// floor cannot distinguish "safe one-char term" from "bare one-char term" — the
+// distinction lives entirely in the pattern the user wrote.
+export const MIN_EXPLICIT_OBFUSCATE_REGEX_LEN = 1;
+
 // Per-process fallback key used when a caller does not supply a persisted
 // per-install key. It is random (never shipped in source), so model-visible
 // placeholders cannot be reversed by dictionary-hashing candidate secrets; it
@@ -81,7 +102,11 @@ export function sanitizedLabelCollidesWithSecret(sanitizedLabel: string, sanitiz
 export function secretEntryNeedsPlaceholderKey(entry: SecretEntry): boolean {
 	if ((entry.mode ?? "obfuscate") === "obfuscate") {
 		if (entry.type === "regex") return true;
-		return entry.content.length >= MIN_OBFUSCATE_SECRET_LEN;
+		// Must mirror the constructor's accept floor exactly: a plain entry below its
+		// floor is toned down rather than placeheld, so counting it here would create
+		// and persist a `secret-placeholder.key` for a config that mints nothing.
+		const floor = entry.explicit ? MIN_EXPLICIT_OBFUSCATE_SECRET_LEN : MIN_OBFUSCATE_SECRET_LEN;
+		return entry.content.length >= floor;
 	}
 	return entry.type === "regex" && entry.replacement === undefined;
 }

@@ -141,11 +141,15 @@ describe("InteractiveMode plan review rendering", () => {
 	it("keeps queued-message rows in the live region instead of native scrollback", () => {
 		const liveRegion = mode.pendingMessagesContainer as {
 			getNativeScrollbackLiveRegionStart?: () => number | undefined;
+			isNativeScrollbackLiveRegionPinned?: () => boolean;
 		};
 
 		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBeUndefined();
 		mode.pendingMessagesContainer.addChild(new Text("Queued: follow-up"));
 		expect(liveRegion.getNativeScrollbackLiveRegionStart?.()).toBe(0);
+		// A seam alone never stopped a commit — the engine clips only a pinned
+		// live region, so the chip rows need this flag too.
+		expect(liveRegion.isNativeScrollbackLiveRegionPinned?.()).toBe(true);
 	});
 
 	it("exits empty plan mode without confirmation", async () => {
@@ -488,7 +492,7 @@ describe("InteractiveMode plan review rendering", () => {
 		}
 	});
 
-	it("leaves terminal mouse tracking disabled while Plan Review is open", async () => {
+	it("keeps terminal mouse tracking enabled while Plan Review is open", async () => {
 		let capturedOverlay: PlanReviewOverlay | undefined;
 		let capturedOptions: OverlayOptions | undefined;
 		const overlayHandle: OverlayHandle = {
@@ -505,7 +509,7 @@ describe("InteractiveMode plan review rendering", () => {
 
 		const choice = mode.showPlanReview("# Plan\n\nSelectable body", "Plan mode - next step", ["Approve"]);
 
-		expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: false });
+		expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: true });
 		capturedOverlay?.handleInput("\x1b");
 		await expect(choice).resolves.toBeUndefined();
 	});

@@ -60,6 +60,14 @@ export type OptimisticQueuedMessage = {
 	/** Same-mode confirmed-queue length when this chip was staged. Older
 	 *  constructors omit it; staged entries always carry it. */
 	confirmedBaseline?: number;
+	/**
+	 * When the dispatch promise settled. A settled chip stays painted until the
+	 * confirmed queue (or the delivered transcript turn) proves where the
+	 * message went — the RPC projection can lag the dispatch by a whole
+	 * roundtrip, and dropping the chip at settle time left the pending bar blank
+	 * in that window.
+	 */
+	settledAt?: number;
 };
 
 export type SubmittedUserInput = {
@@ -265,6 +273,9 @@ export interface InteractiveModeContext {
 	loadingAnimation: Loader | undefined;
 	autoCompactionLoader: Loader | undefined;
 	retryLoader: Loader | undefined;
+	/** True while `/handoff` is generating on the session port (isolated mode has no
+	 *  remote handoff flag of its own); makes the double-Escape interrupt cover it. */
+	handoffInFlight: boolean;
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
@@ -339,11 +350,18 @@ export interface InteractiveModeContext {
 	addOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void;
 	retireOptimisticQueuedMessage(text: string, mode?: "steer" | "followUp"): void;
 	reconcileOptimisticQueuedMessages(): void;
+	/** Retire this dispatch's optimistic queue entry once its dispatch promise
+	 *  settled (message accepted into the confirmed queue or thrown). */
+	settleOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
 	flushPendingBashComponents(): void;
 	flushPendingModelSwitch(): Promise<void>;
 	setWorkingMessage(message?: string): void;
+	/** Keep the activity row mounted after a turn ends (persistent-activity-row setting). */
+	keepLoadingAnimationIdle?(): boolean;
 	applyPendingWorkingMessage(): void;
+	/** Tear the working row down after an interrupt, unless a new turn restarts it. */
+	scheduleLoaderTeardownAfterInterrupt?(): void;
 	ensureLoadingAnimation(): void;
 	/** Reconcile the loading row with the latest event-backed activity snapshot and visible live cards. */
 	refreshWorkingActivitySummary?(activity?: AgentActivityState): void;

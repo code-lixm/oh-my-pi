@@ -630,24 +630,31 @@ export function classifyMessage(message: {
 	api?: Api;
 	errorId?: number;
 	errorMessage?: string;
+	/**
+	 * Stable recovery-classification text. Providers whose `errorMessage`
+	 * appends display-only Connect diagnostics (Cursor) keep the raw upstream
+	 * text here so classification never scrapes the enriched message.
+	 */
+	errorClassificationMessage?: string;
 	errorStatus?: number;
 }): number {
 	const existingId = message.errorId;
 	const currentStatus = message.errorStatus ?? statusFromId(existingId);
 	const existingOverflowOnly =
 		existingId !== undefined && is(existingId, Flag.ContextOverflow) && !is(existingId, Flag.PayloadRejected);
-	const textId = classifyText(message.errorMessage, currentStatus, existingOverflowOnly, message.api);
+	const classificationMessage = message.errorClassificationMessage ?? message.errorMessage;
+	const textId = classifyText(classificationMessage, currentStatus, existingOverflowOnly, message.api);
 
 	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
 	if (
 		currentStatus === 413 &&
-		message.errorMessage &&
-		hasTokenContextOverflowEvidence(message.errorMessage) &&
+		classificationMessage &&
+		hasTokenContextOverflowEvidence(classificationMessage) &&
 		!(textId & Flag.PayloadRejected)
 	) {
 		kinds &= ~Flag.PayloadRejected;
 	}
-	if (message.errorMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(message.errorMessage)) {
+	if (classificationMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(classificationMessage)) {
 		// Deterministic local-model tool-call JSON parse failure: HTTP 500 is misleading
 		// because the same prompt reproduces the same malformed output, so the agent-level
 		// auto-retry would loop. Strip Transient so the recovery message surfaces immediately.

@@ -4,7 +4,7 @@ import {
 	type AgentEvent,
 	type AgentMessage,
 	type AgentTurnEndContext,
-	TERMINAL_TOOL_RESULT_ABORT_REASON,
+	NO_PROGRESS_LOOP_ABORT_REASON,
 } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model, ToolCall } from "@oh-my-pi/pi-ai";
 import {
@@ -316,8 +316,8 @@ export class LoopGuards {
 	}
 
 	/** Records a completed turn and interrupts a repeated no-progress run. */
-	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): void {
-		if (context?.message.role !== "assistant") return;
+	recordTurn(messages: AgentMessage[], context: AgentTurnEndContext | undefined): boolean {
+		if (context?.message.role !== "assistant") return false;
 		const toolCallDetection = this.#activeToolCallLoopGuard()?.recordTurn({
 			message: context.message,
 			toolResults: context.toolResults,
@@ -328,12 +328,13 @@ export class LoopGuards {
 			message: context.message,
 			toolResults: context.toolResults,
 		});
-		if (noProgressDetection) this.#interruptNoProgressLoop(messages, noProgressDetection);
+		if (noProgressDetection && this.#interruptNoProgressLoop(messages, noProgressDetection)) return true;
 
 		const crossTurnDetection = this.#activeCrossTurnThinkingLoopGuard()?.recordTurn({
 			message: context.message,
 		});
 		if (crossTurnDetection) this.#injectCrossTurnThinkingLoopRedirect(messages, crossTurnDetection);
+		return false;
 	}
 
 	/** Feeds a streamed assistant event to the Gemini header-runaway detector. */
@@ -485,7 +486,7 @@ export class LoopGuards {
 		);
 	}
 
-	#interruptNoProgressLoop(messages: AgentMessage[], detection: NoProgressLoopDetection): void {
+	#interruptNoProgressLoop(messages: AgentMessage[], detection: NoProgressLoopDetection): boolean {
 		const generation = this.#host.promptGeneration();
 		const canRecover = this.#noProgressRecoveryGeneration !== generation;
 		const content = prompt.render(selectPrompt(noProgressLoopRedirectTemplate, noProgressLoopRedirectTemplateZh), {
@@ -510,7 +511,7 @@ export class LoopGuards {
 		messages.push(redirectMessage);
 		if (this.#host.agent.state.messages !== messages) this.#host.agent.appendMessage(redirectMessage);
 		this.#host.sessionManager.appendCustomMessageEntry(customType, content, false, details, "agent");
-		this.#host.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+		this.#host.agent.abort(NO_PROGRESS_LOOP_ABORT_REASON);
 
 		if (!canRecover) {
 			logger.warn("no-progress loop recurred after automatic recovery; stopping", {
@@ -523,7 +524,7 @@ export class LoopGuards {
 				`Stopped after ${detection.count} repeated no-progress turns following automatic recovery; change the approach or submit a new prompt.`,
 				"loop-guard",
 			);
-			return;
+			return true;
 		}
 
 		this.#noProgressRecoveryGeneration = generation;
@@ -546,6 +547,7 @@ export class LoopGuards {
 				logger.warn("no-progress loop recovery continue failed", { error: String(error) });
 			}
 		});
+		return false;
 	}
 
 	#geminiHeaderGuardActive(): boolean {

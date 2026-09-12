@@ -169,6 +169,53 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
+	it("keeps a scrolled-up reader anchored when a provider streams a history batch", async () => {
+		const terminal = new VirtualTerminal(20, 4, 100);
+		const provider = new Provider({
+			history: {
+				id: 1,
+				rows: [
+					"initial-0",
+					"initial-1",
+					"initial-2",
+					"initial-3",
+					"initial-4",
+					"initial-5",
+					"initial-6",
+					"initial-7",
+				],
+			},
+			viewport: ["initial-live"],
+		});
+		const renderScheduler = new VirtualRenderScheduler();
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+
+		try {
+			await renderScheduler.settle(terminal);
+			terminal.scrollLines(-4);
+			const before = terminal.getBufferPosition();
+			const visibleBefore = terminal.getViewport().map(row => row.trimEnd());
+			expect(before.viewportY).toBeGreaterThan(0);
+			expect(before.viewportY).toBeLessThan(before.baseY);
+
+			provider.plan = {
+				history: { id: 2, rows: ["streamed-history-0", "streamed-history-1"] },
+				viewport: ["streamed-live", "editor"],
+			};
+			tui.requestRender();
+			await renderScheduler.settle(terminal);
+
+			const after = terminal.getBufferPosition();
+			expect(after.viewportY).toBe(before.viewportY);
+			expect(after.viewportY).toBeLessThan(after.baseY);
+			expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(visibleBefore);
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("uses the alternate buffer during resize and restores anchored history", () => {
 		const terminal = new VirtualTerminal(20, 4);
 		const provider = new Provider({ history: { id: 1, rows: ["welcome"] }, viewport: ["editor"] });

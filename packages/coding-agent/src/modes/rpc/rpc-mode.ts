@@ -402,6 +402,19 @@ export function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps
 }
 
 /**
+ * Commands dispatched in the background instead of the serialized queue.
+ *
+ * `bash` runs for a long time, and a cancellation frame must stay reachable
+ * while another long command owns the queue: `handoff` and `compact` block it
+ * for a full provider round trip (up to their multi-minute client budget), so
+ * an `abort` that waited its turn would only be processed after the work it
+ * was meant to stop — and the client would report a timeout for a
+ * cancellation that never landed. Responses correlate by `id`, so overtaking
+ * preserves the protocol contract.
+ */
+const OVERTAKING_RPC_COMMANDS: Record<string, true> = { bash: true, abort: true };
+
+/**
  * Dispatch a single parsed frame from the RPC input stream.
  *
  * Bash commands are dispatched in the background so the caller can keep reading
@@ -424,11 +437,10 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	// the union here.
 	const command = parsed as RpcCommand;
 
-	// `bash` can run for a long time. Dispatch it in the background so a
-	// subsequent `abort_bash` frame can be read and handled without waiting
-	// for the shell command to finish on its own. The response is emitted
-	// when `handleCommand` resolves; clients correlate via `command.id`.
-	if (command.type === "bash") {
+	// Long-running commands and the cancellation frames that must reach them are
+	// dispatched in the background so later frames stay readable; responses are
+	// correlated via `command.id`.
+	if (OVERTAKING_RPC_COMMANDS[command.type]) {
 		const task = (async () => {
 			try {
 				deps.output(await deps.handleCommand(command));
@@ -464,7 +476,7 @@ export class RpcInputDispatcher {
 			if (dispatchRpcControlFrame(parsed, this.#deps)) return;
 
 			const command = parsed as RpcCommand;
-			if (command.type === "bash") {
+			if (OVERTAKING_RPC_COMMANDS[command.type]) {
 				dispatchRpcInputFrame(command, this.#deps);
 				return;
 			}

@@ -319,7 +319,12 @@ export class EventController {
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
-			queue_changed: async () => this.ctx.updatePendingMessagesDisplay(),
+			queue_changed: async () => {
+				// Confirmed entries retire their staged copies here, so a chip painted
+				// for a dispatch in flight never outlives the queue that admits it.
+				this.ctx.reconcileOptimisticQueuedMessages();
+				this.ctx.updatePendingMessagesDisplay();
+			},
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
 			model_changed: async () => {
@@ -641,6 +646,7 @@ export class EventController {
 		if (
 			this.ctx.session.isAborting ||
 			!this.ctx.loadingAnimation ||
+			this.ctx.loadingAnimation.idle ||
 			this.ctx.autoCompactionLoader ||
 			this.ctx.retryLoader ||
 			this.#lastIntent ||
@@ -956,7 +962,7 @@ export class EventController {
 	}
 
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
 			if (this.#renderedCustomMessages.has(signature)) return;
@@ -1240,7 +1246,7 @@ export class EventController {
 	}
 
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		if (!this.#vocalizedMessageUpdates.delete(event)) {
 			this.#vocalizeDelta(event);
 		}
@@ -1667,7 +1673,7 @@ export class EventController {
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {
 		if (this.#retractedToolCallIds.has(event.toolCallId)) return;
 		this.#executionStartedCallIds.add(event.toolCallId);
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		this.#updateWorkingMessageFromIntent(event.intent);
 		if (event.toolName === "ask" || this.#toolWillPromptForApproval(event.toolName, event.args)) {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
@@ -1825,7 +1831,7 @@ export class EventController {
 	}
 
 	async #handleToolExecutionUpdate(event: ToolExecutionUpdateEvent): Promise<void> {
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		const component = this.ctx.pendingTools.get(event.toolCallId);
 		if (component) {
 			if (component instanceof HubActivityGroupComponent) {
@@ -1920,7 +1926,7 @@ export class EventController {
 		// reappears mid-tool; mirror it here so subagent (`task`) completions —
 		// which only fire `tool_execution_end`, never `_update` — do not leave
 		// the UI looking idle while the session keeps streaming (#3857).
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		if (event.toolName === "todo" && !this.#serverResolvedTodoCallIds.has(event.toolCallId)) {
 			this.#suppressLiveTodoComponent(event.toolCallId);
 		}
@@ -2142,7 +2148,10 @@ export class EventController {
 		this.ctx.statusLine.markActivityEnd();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.flushAll();
-		if (this.ctx.loadingAnimation) {
+		// A persistent activity row survives the turn boundary in its idle
+		// presentation (spinner dropped, stats frozen); every other configuration
+		// tears the row down as before.
+		if (!this.ctx.keepLoadingAnimationIdle?.() && this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
 			this.ctx.statusContainer.disposeChildren();
@@ -2217,12 +2226,26 @@ export class EventController {
 	}
 
 	/**
-	 * Restore the live "Working…" loader when a streaming event lands after a
-	 * transient status overlay cleared the container. Focus mode dispatches events
-	 * for `viewSession`, so key the reconciler on that session, not the main one.
+	 * Restore the persistent activity row after a transient overlay (auto
+	 * compaction / retry / handoff) cleared the status container. The row is a
+	 * standing readout, so an overlay taking the container must not retire it.
 	 */
-	#ensureWorkingLoaderWhileStreaming(): void {
-		if (!this.ctx.viewSession.isStreaming) return;
+	#restorePersistentActivityRow(): void {
+		if (this.ctx.keepLoadingAnimationIdle?.()) this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * Restore the activity row after a transient status overlay (auto-compaction /
+	 * auto-retry / handoff) took the container. While a turn is streaming the live
+	 * "Working…" loader comes back; otherwise the persistent row returns in its
+	 * idle presentation, so an overlay ending does not retire a standing readout.
+	 * Focus mode dispatches events for `viewSession`, so key on that session.
+	 */
+	#reconcileActivityRow(): void {
+		if (!this.ctx.viewSession.isStreaming) {
+			this.#restorePersistentActivityRow();
+			return;
+		}
 		if (this.ctx.autoCompactionLoader || this.ctx.retryLoader) return;
 		this.ctx.ensureLoadingAnimation();
 	}
@@ -2350,7 +2373,7 @@ export class EventController {
 			this.ctx.showWarning(tSettingsUi("Auto context-full maintenance failed; continuing without maintenance"));
 		}
 		await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		this.ctx.ui.requestRender();
 	}
 
@@ -2487,7 +2510,7 @@ export class EventController {
 				this.ctx.showStatus(event.finalError || tSettingsUi("Unknown error"));
 			}
 		}
-		this.#ensureWorkingLoaderWhileStreaming();
+		this.#reconcileActivityRow();
 		this.ctx.ui.requestRender();
 	}
 

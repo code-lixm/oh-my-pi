@@ -1,11 +1,11 @@
 import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { tSettingsUi } from "../i18n/settings-locale";
 import { selectPrompt } from "../prompts/prompt-locale";
 import cronToolDescription from "../prompts/scheduling/cron-tool.md" with { type: "text" };
 import cronToolDescriptionZh from "../prompts/scheduling/cron-tool.zh-CN.md" with { type: "text" };
 import type { SessionScheduleRuntime } from "../scheduling/runtime";
-import type { ScheduleJob } from "../scheduling/types";
+import type { ScheduleJob, ScheduleManagementAction } from "../scheduling/types";
 
 const cronSchema = type({
 	op: type("'add' | 'list' | 'pause' | 'resume' | 'cancel' | 'update'").describe("cron management operation"),
@@ -89,7 +89,7 @@ export class CronTool implements AgentTool<typeof cronSchema, CronToolDetails> {
 				case "pause":
 				case "resume":
 				case "cancel":
-					return await this.#manage(runtime, params);
+					return await this.#manage(runtime, params, params.op);
 				case "update":
 					return await this.#update(runtime, params);
 			}
@@ -123,12 +123,16 @@ export class CronTool implements AgentTool<typeof cronSchema, CronToolDetails> {
 		return { content: [{ type: "text", text: message }], details: { op: "list", jobs, message } };
 	}
 
-	async #manage(runtime: SessionScheduleRuntime, params: CronToolInput): Promise<AgentToolResult<CronToolDetails>> {
-		if (!params.jobId) throw new Error(tSettingsUi("jobId is required for {op}", { op: params.op }));
-		const job = await runtime.manageSchedule(params.jobId, params.op);
+	async #manage(
+		runtime: SessionScheduleRuntime,
+		params: CronToolInput,
+		action: ScheduleManagementAction,
+	): Promise<AgentToolResult<CronToolDetails>> {
+		if (!params.jobId) throw new Error(tSettingsUi("jobId is required for {op}", { op: action }));
+		const job = await runtime.manageSchedule(params.jobId, action);
 		if (!job) throw new Error(tSettingsUi("Schedule not found: {id}", { id: params.jobId }));
 		const message = formatCronJobSummary(job);
-		return { content: [{ type: "text", text: message }], details: { op: params.op, job, message } };
+		return { content: [{ type: "text", text: message }], details: { op: action, job, message } };
 	}
 
 	async #update(runtime: SessionScheduleRuntime, params: CronToolInput): Promise<AgentToolResult<CronToolDetails>> {

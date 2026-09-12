@@ -113,7 +113,7 @@ describe("NoProgressLoopGuard", () => {
 		});
 	});
 
-	test("clears a no-progress run when the assistant emits visible text alongside a tool call", () => {
+	test("counts repeated tool turns even when the assistant emits the same visible status text", () => {
 		const guard = new NoProgressLoopGuard({ threshold: 2 });
 
 		expect(guard.recordTurn(toolTurn("first", { command: "git status --short" }, "No files changed."))).toBeNull();
@@ -126,14 +126,34 @@ describe("NoProgressLoopGuard", () => {
 					"I verified the current repository state.",
 				),
 			),
-		).toBeNull();
-		expect(guard.recordTurn(toolTurn("third", { command: "git status --short" }, "No files changed."))).toBeNull();
+		).toMatchObject({ kind: "repeated_no_progress", count: 2 });
+	});
+
+	test("normalizes incrementing literal placeholder echoes as one no-progress run", () => {
+		const guard = new NoProgressLoopGuard({ threshold: 2 });
+
 		expect(
-			guard.recordTurn(toolTurn("fourth", { command: "git status --short" }, "No files changed.")),
-		).toMatchObject({
-			kind: "repeated_no_progress",
-			count: 2,
-		});
+			guard.recordTurn(toolTurn("first", { command: "echo placeholder1" }, "placeholder1\nWall time: 0.01 seconds")),
+		).toBeNull();
+		expect(
+			guard.recordTurn(
+				toolTurn("second", { command: "echo placeholder2" }, "placeholder2\nWall time: 0.02 seconds"),
+			),
+		).toMatchObject({ kind: "repeated_no_progress", count: 2 });
+	});
+
+	test("does not classify shell expressions as literal placeholder echoes", () => {
+		const guard = new NoProgressLoopGuard({ threshold: 2 });
+
+		expect(guard.recordTurn(toolTurn("first", { command: "echo placeholder1 | cat" }, "placeholder1"))).toBeNull();
+		expect(guard.recordTurn(toolTurn("second", { command: "echo placeholder2 | cat" }, "placeholder2"))).toBeNull();
+	});
+
+	test("does not collapse different non-placeholder literal echoes", () => {
+		const guard = new NoProgressLoopGuard({ threshold: 2 });
+
+		expect(guard.recordTurn(toolTurn("first", { command: "echo ready" }, "ready"))).toBeNull();
+		expect(guard.recordTurn(toolTurn("second", { command: "echo complete" }, "complete"))).toBeNull();
 	});
 
 	test("detects normalized repeated thinking-only turns", () => {

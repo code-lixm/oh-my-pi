@@ -106,6 +106,8 @@ interface PersistedAgentMetadata {
 	history?: AgentHistorySummary;
 	/** True when the file is only a SessionManager header (no session_init, no messages). */
 	incomplete?: boolean;
+	/** Built-in tool names recorded at spawn, replayed to parked transcripts. */
+	builtInToolNames?: string[];
 }
 
 interface PersistedTranscript {
@@ -327,6 +329,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 	let history: AgentHistorySummary = {};
 	let hasSessionInit = false;
 	let hasConversation = false;
+	let builtInToolNames: string[] | undefined;
 	try {
 		await visitEntriesFromFileStream(
 			sessionFile,
@@ -355,6 +358,9 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 				hasSessionInit = true;
 				createdAt ??= timestampOf(record.timestamp);
 				if (typeof record.task === "string") activity = summarizePersistedTask(record.task);
+				if (Array.isArray(record.builtInToolNames)) {
+					builtInToolNames = record.builtInToolNames.filter((name): name is string => typeof name === "string");
+				}
 				const inferred = typeof record.systemPrompt === "string" ? inferBundledAgent(record.systemPrompt) : {};
 				history = {
 					...history,
@@ -384,6 +390,7 @@ async function readPersistedAgentMetadata(sessionFile: string): Promise<Persiste
 			...(hasOutput ? { outputPath } : {}),
 			...(hasPatch ? { patchPath } : {}),
 		},
+		builtInToolNames,
 	};
 }
 
@@ -509,6 +516,7 @@ async function registerPersistedSubagentsFromDir(
 					activity: metadata.activity,
 					createdAt: metadata.createdAt,
 					lastActivity: metadata.lastActivity,
+					builtInToolNames: metadata.builtInToolNames,
 					history: {
 						...metadata.history,
 						...(snapshot.resolvedModel ? { resolvedModel: snapshot.resolvedModel } : {}),
@@ -563,6 +571,7 @@ async function registerPersistedSubagentsFromDir(
 					activity: metadata.activity,
 					createdAt: metadata.createdAt,
 					lastActivity: metadata.lastActivity,
+					builtInToolNames: metadata.builtInToolNames,
 					history: {
 						...metadata.history,
 						...(snapshot.resolvedModel ? { resolvedModel: snapshot.resolvedModel } : {}),
@@ -582,6 +591,16 @@ async function registerPersistedSubagentsFromDir(
 					createdAt: ref.createdAt,
 					lastActivity: ref.lastActivity,
 				});
+			}
+		} else if (ref.session === null && ref.builtInToolNames === undefined) {
+			// A ref predating this scan (an older pre-registration path or a stale
+			// collab mirror) may lack the provenance snapshot entirely. Backfill it
+			// from the transcript, but never touch a generation that attached a live
+			// session while this scan was yielding.
+			const metadata = await readPersistedAgentMetadata(sessionFile);
+			if (!shouldContinue()) return;
+			if (registry.get(id) === ref && ref.session === null) {
+				ref.builtInToolNames = metadata.builtInToolNames;
 			}
 		}
 		if (ref.sessionFile === sessionFile) applyPersistedSnapshot(registry, ref, snapshot, ref.session === null);

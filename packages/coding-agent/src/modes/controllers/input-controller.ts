@@ -304,7 +304,8 @@ export class InputController {
 		const viewSession = this.ctx.viewSession;
 		return Boolean(
 			this.ctx.loopModeEnabled ||
-				this.ctx.loadingAnimation ||
+				this.#hasWorkingLoader() ||
+				this.ctx.handoffInFlight ||
 				this.ctx.session.isStreaming ||
 				this.ctx.session.isCompacting ||
 				this.ctx.session.isGeneratingHandoff ||
@@ -318,6 +319,17 @@ export class InputController {
 				viewSession.isRetrying ||
 				this.ctx.collabGuest?.state?.isStreaming,
 		);
+	}
+
+	/**
+	 * Whether the activity row currently advertises real work. A persistent idle
+	 * row stays mounted with nothing behind it, so its mere presence must not
+	 * register as cancelable work — otherwise one Esc would report an interrupt
+	 * (and schedule a teardown) on an idle session.
+	 */
+	#hasWorkingLoader(): boolean {
+		const loader = this.ctx.loadingAnimation;
+		return loader !== undefined && !loader.idle;
 	}
 
 	#handleFirstEscapeSurface(): void {
@@ -340,7 +352,8 @@ export class InputController {
 		const viewSession = this.ctx.viewSession;
 		const hadMainWork = Boolean(
 			this.ctx.loopModeEnabled ||
-				this.ctx.loadingAnimation ||
+				this.#hasWorkingLoader() ||
+				this.ctx.handoffInFlight ||
 				this.ctx.session.isStreaming ||
 				this.ctx.session.isCompacting ||
 				this.ctx.session.isGeneratingHandoff ||
@@ -355,10 +368,10 @@ export class InputController {
 		if (vocalizer.isSpeaking()) vocalizer.clear();
 		if (this.ctx.loopModeEnabled) this.ctx.pauseLoop();
 
-		const pendingCancelled = this.ctx.loadingAnimation ? this.ctx.cancelPendingSubmission() : false;
+		const pendingCancelled = this.#hasWorkingLoader() ? this.ctx.cancelPendingSubmission() : false;
 		if (
 			!pendingCancelled &&
-			(this.ctx.loadingAnimation ||
+			(this.#hasWorkingLoader() ||
 				this.ctx.session.queuedMessageCount > 0 ||
 				this.ctx.compactionQueuedMessages.length > 0)
 		) {
@@ -370,7 +383,7 @@ export class InputController {
 			this.ctx.reconcileOptimisticQueuedMessages();
 			this.ctx.updatePendingMessagesDisplay();
 		}
-		if (this.ctx.collabGuest?.state?.isStreaming || (this.ctx.collabGuest && this.ctx.loadingAnimation)) {
+		if (this.ctx.collabGuest?.state?.isStreaming || (this.ctx.collabGuest && this.#hasWorkingLoader())) {
 			this.ctx.collabGuest.sendAbort();
 		}
 
@@ -395,7 +408,17 @@ export class InputController {
 						count: this.ctx.session.queuedMessageCount,
 					}),
 				);
+			} else {
+				// Keep the immediate feedback on the existing loader row. The abort is
+				// asynchronous, so removing/replacing the loader before it settles can
+				// leave the user with no visible indication that Esc took effect.
+				this.ctx.setWorkingMessage?.(tSettingsUi("Interrupted."));
 			}
+			// The abort is authoritative but asynchronous: a transport that ignores
+			// the signal can leave the agent reporting streaming forever, which
+			// would keep this row mounted. Tear it down once the abort has settled
+			// (a genuinely resumed turn recreates the loader on agent_start).
+			this.ctx.scheduleLoaderTeardownAfterInterrupt?.();
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -1107,6 +1130,7 @@ export class InputController {
 					this.ctx.retireOptimisticQueuedMessage(text, "steer");
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
 				}
+				this.ctx.settleOptimisticQueuedMessage(text, "steer");
 				this.ctx.reconcileOptimisticQueuedMessages();
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();
@@ -1585,6 +1609,7 @@ export class InputController {
 					},
 					{ imageCount: queuedImages?.length ?? 0 },
 				);
+				this.ctx.settleOptimisticQueuedMessage(message, "followUp");
 				queuedCount++;
 			}
 		} catch (error) {
@@ -1605,9 +1630,9 @@ export class InputController {
 								.join("\n")}`;
 				this.ctx.editor.setText(restored);
 			}
-			// Drop every in-flight entry: delivered ones are confirmed by the
-			// queue; undelivered ones return to the editor above.
-			for (const message of messages) this.ctx.retireOptimisticQueuedMessage(message);
+			// Undelivered entries return to the editor above, so their chips must
+			// drop; delivered ones are already confirmed by the queue.
+			for (const message of messages) this.ctx.retireOptimisticQueuedMessage(message, "followUp");
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 
@@ -1699,6 +1724,7 @@ export class InputController {
 				this.ctx.retireOptimisticQueuedMessage(text, "followUp");
 				restoreOnError(error);
 			}
+			this.ctx.settleOptimisticQueuedMessage(text, "followUp");
 			this.ctx.reconcileOptimisticQueuedMessages();
 			this.ctx.updatePendingMessagesDisplay();
 			// Editor input and the pending-message refresh each schedule their own

@@ -5,6 +5,8 @@ export type ScheduleStatus = ScheduleJobStatus;
 export type ScheduleKind = "once" | "cron" | "interval";
 export type ScheduleDeliveryMode = "steer" | "follow_up";
 export type ScheduleRunResult = "ran" | "skipped";
+/** Mutation verbs accepted by {@link ScheduleStore}/{@link SessionScheduleRuntime.manageSchedule}. */
+export type ScheduleManagementAction = "pause" | "resume" | "cancel";
 
 export interface ScheduleDeliveryReceipt {
 	outcome: ScheduleRunResult;

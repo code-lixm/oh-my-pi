@@ -24,6 +24,8 @@ export function isSettingsUiConditionMet(
 			return settings.get("memory.backend") === "hindsight";
 		case "mnemopiActive":
 			return settings.get("memory.backend") === "mnemopi";
+		case "gpt2ImageEnabled":
+			return settings.get("gpt2image.enabled") === true;
 		case "autolearnActive":
 			return settings.get("autolearn.enabled") === true;
 		case "autoThinkingActive":

@@ -237,7 +237,10 @@ describe("AgentSession queued steer delivery", () => {
 			{ content: ["follow-up response"] },
 		]);
 		const firstPrompt = session.prompt("hello");
-		await waitFor(() => session.isStreaming);
+		// Wait for the provider call itself: isStreaming flips before the request
+		// is issued (#promptInFlightCount), so aborting on that signal alone can
+		// land before the stream starts — no recorded call, nothing to strand.
+		await waitFor(() => mock.calls.length === 1);
 
 		// Interrupt the run before its boundary poll can consume the follow-up:
 		// the abort strands it in the agent queue, and the interrupt's latch
@@ -350,5 +353,35 @@ describe("AgentSession queued steer delivery", () => {
 		await session.waitForIdle();
 
 		expect(session.agent.peekSteeringQueue()).toEqual([]);
+	});
+
+	it("auto-delivers a queued follow-up left behind a non-advisor custom transcript tail", async () => {
+		const { session } = await createSession([{ content: ["first answer"] }, { content: ["follow-up answer"] }]);
+		await session.prompt("first");
+
+		const aside = {
+			role: "custom" as const,
+			customType: "irc:incoming",
+			content: "peer pinged you",
+			display: true,
+			attribution: "agent" as const,
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_start", message: aside });
+		session.agent.emitExternalEvent({ type: "message_end", message: aside });
+
+		await session.followUp("queued follow-up");
+		await session.waitForIdle();
+
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+		expect(
+			session.agent.state.messages.some(
+				message =>
+					message.role === "user" &&
+					(typeof message.content === "string"
+						? message.content === "queued follow-up"
+						: message.content.some(part => part.type === "text" && part.text === "queued follow-up")),
+			),
+		).toBe(true);
 	});
 });

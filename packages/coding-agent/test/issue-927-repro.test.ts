@@ -73,4 +73,36 @@ describe("issue #927 optimistic pending spinner", () => {
 		expect(mode.locallySubmittedUserSignatures.has("/extension-no-turn\u00000")).toBe(false);
 		expect(mode.statusContainer.children.length).toBe(0);
 	});
+	it("tears the optimistic loader down when an interrupt settles before any agent turn", () => {
+		vi.useFakeTimers();
+		let streamingFlag = true;
+		const originalDescriptor = Object.getOwnPropertyDescriptor(session, "isStreaming");
+		try {
+			Object.defineProperty(session, "isStreaming", { configurable: true, get: () => streamingFlag });
+			// The dispatch never reaches the provider: the session still reports
+			// streaming when prompt() returns (the interrupt window), then settles.
+			// No agent_start/agent_end ever reaches EventController, so nothing else
+			// would tear the optimistic loader down.
+			const input = mode.startPendingSubmission({ text: "count to 500" });
+			expect(mode.loadingAnimation).toBeDefined();
+
+			// The submission settles while the session still reports streaming; the
+			// loader must survive that window, then be torn down by the activity
+			// heartbeat once the session settles (no agent_end ever arrives).
+			mode.finishPendingSubmission(input);
+			expect(mode.loadingAnimation).toBeDefined();
+			streamingFlag = false;
+			vi.advanceTimersByTime(1_000);
+
+			expect(mode.loadingAnimation).toBeUndefined();
+			expect(mode.statusContainer.children.length).toBe(0);
+		} finally {
+			vi.useRealTimers();
+			if (originalDescriptor) {
+				Object.defineProperty(session, "isStreaming", originalDescriptor);
+			} else {
+				delete (session as { isStreaming?: unknown }).isStreaming;
+			}
+		}
+	});
 });

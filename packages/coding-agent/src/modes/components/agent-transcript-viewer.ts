@@ -97,6 +97,9 @@ export interface AgentTranscriptViewerDeps {
 /** How often to re-stat a file-backed transcript for growth (advisor/live tail). */
 const POLL_MS = 250;
 
+/** Double-tap window for the viewer's left-left "back to hub" gesture. */
+const VIEWER_LEFT_TAP_WINDOW_MS = 500;
+
 const SENTINEL_BYTES = 4096;
 const FIXED_HEADER_ROWS = 1;
 const FIXED_FOOTER_ROWS = 1;
@@ -192,6 +195,8 @@ export class AgentTranscriptViewer implements Component {
 	#scrollView: ScrollView;
 	#followBottom = true;
 	#expanded = false;
+	/** Double-tap window state for the viewer's left-left "back to hub" gesture. */
+	#lastLeftTap = 0;
 
 	#localState: LocalTranscriptState | undefined;
 	#localUnavailable = "";
@@ -252,6 +257,7 @@ export class AgentTranscriptViewer implements Component {
 		if (this.#disposed || !agentId || agentId === MAIN_AGENT_ID || agentId === this.#agentId) return false;
 		this.#agentId = agentId;
 		this.#resetTranscriptState();
+		this.#lastLeftTap = 0;
 		this.deps.onAgentChange?.(agentId);
 		this.#startPolling();
 		this.#refresh();
@@ -538,6 +544,20 @@ export class AgentTranscriptViewer implements Component {
 
 		if (matchesKey(data, "escape")) {
 			this.deps.onClose();
+			return;
+		}
+
+		// `←←` returns to the hub table, matching the footer's `Esc/←←` hint and
+		// the table's own left-left close gesture (which the editor's double-tap
+		// detector consumes; this viewer owns this gesture end-to-end).
+		if (matchesKey(data, "left")) {
+			const now = Date.now();
+			if (now - this.#lastLeftTap < VIEWER_LEFT_TAP_WINDOW_MS) {
+				this.#lastLeftTap = 0;
+				this.deps.onClose();
+			} else {
+				this.#lastLeftTap = now;
+			}
 			return;
 		}
 

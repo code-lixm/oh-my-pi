@@ -633,4 +633,136 @@ describe("SessionObserverRegistry persisted parked observations", () => {
 			observers.dispose();
 		}
 	});
+
+	it("marks a recovered active persisted child as detached so the anchored subagent HUD lists it", async () => {
+		using tempDir = TempDir.createSync("@omp-session-observer-detached-");
+		const id = "recovered-active";
+		const fixture = await createSessionFixture(tempDir, id);
+		// A persisted observation that is still pending/running maps to an `active`
+		// observer row with no terminal evidence. The Hub lists the parked ref;
+		// without `detached: true` the HUD predicate (`status === "active" &&
+		// detached === true`) drops the row and the agent is visible in the Hub
+		// but absent from the anchored list.
+		const parent: PersistedAgentObservation = {
+			id,
+			status: "running",
+			lastUpdate: TRANSCRIPT_TIMESTAMP_MS,
+			progress: progressPayload(id, "running", 0).progress,
+		};
+		registerMain(fixture.mainSessionFile);
+		registerParkedChild(id, fixture.childSessionFile, parent);
+		const observers = new SessionObserverRegistry();
+
+		try {
+			observers.setMainSession(fixture.mainSessionFile);
+			const session = observers.getSessions().find(candidate => candidate.id === id);
+
+			expect(session).toMatchObject({
+				id,
+				kind: "subagent",
+				status: "active",
+				detached: true,
+			});
+		} finally {
+			observers.dispose();
+		}
+	});
+});
+
+describe("SessionObserverRegistry terminal reconciliation", () => {
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+	});
+
+	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("clears a tracked active row when a tombstone lands without a lifecycle end event", () => {
+		const eventBus = new EventBus();
+		const observers = new SessionObserverRegistry();
+		const id = "tombstoned-worker";
+		AgentRegistry.global().register({
+			id,
+			displayName: id,
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			status: "running",
+		});
+
+		try {
+			observers.setMainSession("/sessions/main.jsonl");
+			observers.subscribeToEventBus(eventBus);
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, { ...lifecyclePayload(id, "started", 0), detached: true });
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running", 0));
+			expect(observers.getSessions().find(session => session.id === id)?.status).toBe("active");
+
+			// Hard kill: the ref is tombstoned, but the observer never sees an end event.
+			AgentRegistry.global().setStatus(id, "aborted");
+
+			const reconciled = observers.getSessions().find(session => session.id === id);
+			expect(reconciled?.status).toBe("aborted");
+			expect(reconciled?.progress?.status).toBe("aborted");
+		} finally {
+			observers.dispose();
+		}
+	});
+
+	it("leaves a still-running ref untouched", () => {
+		const eventBus = new EventBus();
+		const observers = new SessionObserverRegistry();
+		const id = "live-worker";
+		AgentRegistry.global().register({
+			id,
+			displayName: id,
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			status: "running",
+		});
+
+		try {
+			observers.setMainSession("/sessions/main.jsonl");
+			observers.subscribeToEventBus(eventBus);
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, { ...lifecyclePayload(id, "started", 0), detached: true });
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running", 0));
+
+			expect(observers.getSessions().find(session => session.id === id)?.status).toBe("active");
+		} finally {
+			observers.dispose();
+		}
+	});
+
+	it("notifies listeners when a registry tombstone reconciles a tracked active row", () => {
+		const eventBus = new EventBus();
+		const observers = new SessionObserverRegistry();
+		const id = "tombstoned-notify";
+		AgentRegistry.global().register({
+			id,
+			displayName: id,
+			kind: "sub",
+			parentId: "Main",
+			session: null,
+			status: "running",
+		});
+
+		try {
+			observers.setMainSession("/sessions/main.jsonl");
+			observers.subscribeToEventBus(eventBus);
+			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, { ...lifecyclePayload(id, "started", 0), detached: true });
+			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, progressPayload(id, "running", 0));
+			expect(observers.getSessions().find(session => session.id === id)?.status).toBe("active");
+
+			const changes: SessionObserverChange[] = [];
+			observers.onChange(change => changes.push(change));
+
+			AgentRegistry.global().setStatus(id, "aborted");
+
+			expect(changes.some(change => change.kind === "lifecycle")).toBe(true);
+			expect(observers.getSessions().find(session => session.id === id)?.status).toBe("aborted");
+		} finally {
+			observers.dispose();
+		}
+	});
 });

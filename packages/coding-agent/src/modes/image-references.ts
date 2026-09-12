@@ -2,6 +2,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { type BlobPutResult, blobExtensionForImageMimeType } from "../session/blob-store";
 import { fileHyperlink } from "../tui/hyperlink";
+import { convertImageToPng } from "../utils/image-loading";
 
 const kImageDims = Symbol("omp.imageDimensions");
 
@@ -227,4 +228,37 @@ export function openImageInSystemViewer(
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+}
+
+const kKittyPng = Symbol("omp.kittyPng");
+
+interface ImageContentWithKittyPng extends ImageContent {
+	[kKittyPng]?: ImageContent | null;
+}
+
+/** PNG form of `image` for Kitty's `f=100` transmit, which accepts only PNG.
+ *  Non-PNG sources (pastes are usually re-encoded JPEG/WebP) convert once and
+ *  cache on the image object — the same symbol-keyed pattern as the dimension
+ *  probe — so a transcript rebuild reuses one encode. Returns `undefined` while
+ *  the conversion is pending or after it failed, letting the caller keep the
+ *  text representation; a finished conversion calls `onReady` so the host can
+ *  repaint. */
+export function kittyTransmittableImage(image: ImageContent, onReady: () => void): ImageContent | undefined {
+	if (image.mimeType === "image/png") return image;
+	const holder = image as ImageContentWithKittyPng;
+	const cached = holder[kKittyPng];
+	if (cached !== undefined) return cached ?? undefined;
+	holder[kKittyPng] = null;
+	convertImageToPng(image)
+		.then(converted => {
+			holder[kKittyPng] = converted;
+			onReady();
+		})
+		.catch(error => {
+			logger.warn("Failed to convert image for Kitty transmit", {
+				mimeType: image.mimeType,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	return undefined;
 }

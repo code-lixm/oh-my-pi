@@ -286,7 +286,7 @@ export class AdvisorTranscriptRecorder {
 			message,
 		};
 		this.#lastEntryId = entry.id;
-		writer.appendSync(`${JSON.stringify(entry)}\n`);
+		this.#appendLine(writer, `${JSON.stringify(entry)}\n`);
 		this.#reportWriterError();
 	}
 
@@ -320,9 +320,23 @@ export class AdvisorTranscriptRecorder {
 				timestamp: new Date().toISOString(),
 				cwd,
 			};
-			writer.appendSync(`${JSON.stringify(header)}\n`);
+			this.#appendLine(writer, `${JSON.stringify(header)}\n`);
 		}
 		return writer;
+	}
+
+	/**
+	 * Append one line through the writer's synchronous path when it has one.
+	 * `appendSync` is optional on {@link SessionStorageWriter} (indexed
+	 * backends queue remote I/O and only expose the async `append`), so an
+	 * unguarded call would crash the recorder on those backends.
+	 */
+	#appendLine(writer: SessionStorageWriter, line: string): void {
+		if (writer.appendSync) {
+			writer.appendSync(line);
+			return;
+		}
+		void writer.append(line).catch(err => logger.debug("advisor transcript append failed", { err: String(err) }));
 	}
 
 	#reportWriterError(): void {

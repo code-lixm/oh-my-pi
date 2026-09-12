@@ -197,6 +197,12 @@ describe("StdinBuffer", () => {
 			expect(emittedSequences).toEqual(["\x1b\x1b[B"]);
 		});
 
+		it("joins a held bare ESC with a following SS3 sequence into one meta sequence", () => {
+			processInput("\x1b");
+			processInput("\x1bOA");
+			expect(emittedSequences).toEqual(["\x1b\x1bOA"]);
+		});
+
 		it("splits a bare ESC from a following SGR mouse report", async () => {
 			processInput("\x1b");
 			processInput("\x1b[<35;22;17M");
@@ -204,14 +210,10 @@ describe("StdinBuffer", () => {
 			expect(emittedSequences).toEqual(["\x1b", "\x1b[<35;22;17M"]);
 		});
 
-		it("splits a trailing double-ESC into two ESC events after the timeout", async () => {
-			// A bare `\x1b\x1b` is two real Esc keypresses (or legacy alt+esc).
-			// `parseKey` returns undefined for the combined chunk, so emitting it
-			// as one swallows double-escape gestures (#3857). Split on flush so
-			// downstream handlers fire twice.
+		it("emits two bare ESC events synchronously when one stdin batch contains both keys", () => {
+			// Both keypresses are complete in this batch, so downstream double-Esc
+			// gestures must not wait for the escape disambiguation timer.
 			processInput("\x1b\x1b");
-			expect(emittedSequences).toEqual([]);
-			await waitUntil(() => emittedSequences.length >= 2);
 			expect(emittedSequences).toEqual(["\x1b", "\x1b"]);
 		});
 

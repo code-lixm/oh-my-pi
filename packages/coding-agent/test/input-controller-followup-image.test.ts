@@ -18,6 +18,7 @@ interface StubEditor {
 	imageLinks?: unknown;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
+	compactPendingImageReferences: (text: string) => string;
 	clearDraft: (text?: string) => void;
 }
 interface PromptOptionsLike {
@@ -43,6 +44,7 @@ function createContext(opts: {
 		},
 		addToHistory: vi.fn(),
 		pendingImages: opts.pendingImages,
+		compactPendingImageReferences: (text: string) => text,
 		pendingImageLinks: opts.pendingImageLinks ? [...opts.pendingImageLinks] : opts.pendingImages.map(() => undefined),
 		clearDraft(text?: string) {
 			if (text !== undefined) this.addToHistory(text);
@@ -75,6 +77,11 @@ function createContext(opts: {
 		loopModeEnabled: false,
 		compactionQueuedMessages: [],
 		locallySubmittedUserSignatures: new Set<string>(),
+		optimisticQueuedMessages: [],
+		addOptimisticQueuedMessage: vi.fn(),
+		retireOptimisticQueuedMessage: vi.fn(),
+		settleOptimisticQueuedMessage: vi.fn(),
+		reconcileOptimisticQueuedMessages: vi.fn(),
 		updatePendingMessagesDisplay,
 		showError,
 		planModeEnabled: false,
@@ -145,7 +152,10 @@ describe("InputController.handleFollowUp image forwarding", () => {
 		const call = prompt.mock.calls[0];
 		if (!call) throw new Error("expected session.prompt to be called");
 		expect(call[1]?.images).toEqual([image]);
-		expect(call[1]?.streamingBehavior).toBeUndefined();
+		// The idle path still passes `followUp`: the session can flip busy between
+		// the controller's check and `prompt()`, and the option keeps that race
+		// queued instead of throwing AgentBusyError.
+		expect(call[1]?.streamingBehavior).toBe("followUp");
 		expect(ctx.editor.pendingImages).toEqual([]);
 	});
 

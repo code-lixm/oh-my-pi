@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Context, Message } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Context } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -21,15 +21,6 @@ const zeroUsage = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 } satisfies AssistantMessage["usage"];
-
-function messageText(message: Message): string {
-	if (typeof message.content === "string") return message.content;
-	let text = "";
-	for (const content of message.content) {
-		if (content.type === "text") text += content.text;
-	}
-	return text;
-}
 
 describe("AgentSession tool-call loop guard", () => {
 	let tempDir: TempDir;
@@ -137,7 +128,9 @@ describe("AgentSession tool-call loop guard", () => {
 			label: "Bash",
 			description: "Mock bash tool",
 			parameters: type({ command: "string", "timeout?": "number" }),
-			execute: async () => ({ content: [{ type: "text" as const, text: "No files changed." }] }),
+			execute: async (_toolCallId, params) => ({
+				content: [{ type: "text" as const, text: (params as { command: string }).command.replace(/^echo /, "") }],
+			}),
 		};
 		let callCount = 0;
 		const agent = new Agent({
@@ -148,14 +141,12 @@ describe("AgentSession tool-call loop guard", () => {
 				contexts.push(context);
 				const callIndex = callCount++;
 				const toolCallTurn = callIndex < 20;
-				const argumentsForCall =
-					callIndex % 2 === 0
-						? { command: "git status --short", timeout: 30 }
-						: { timeout: 30, command: "git status --short" };
+				const argumentsForCall = { command: `echo placeholder${callIndex + 1}`, timeout: 30 };
 				const message: AssistantMessage = toolCallTurn
 					? {
 							role: "assistant",
 							content: [
+								{ type: "text", text: "直接调用 inspect_image 检查两张截图" },
 								{
 									type: "toolCall",
 									id: `tc-${callIndex}`,
@@ -208,17 +199,8 @@ describe("AgentSession tool-call loop guard", () => {
 
 		await session.prompt("Run the same check until it changes.");
 		await session.waitForIdle();
-
 		// Ten no-progress turns cause one continuation; the second threshold is terminal.
 		expect(contexts).toHaveLength(20);
-		const recoveryContext = contexts[10]!;
-		expect(
-			recoveryContext.messages.some(
-				message =>
-					message.role === "developer" &&
-					messageText(message).includes('<system-interrupt reason="no_progress_loop_detected">'),
-			),
-		).toBe(true);
 
 		// Completed tool turns stay in session history; only the next model turn is redirected.
 		const completedBashTurns = session.agent.state.messages.filter(
@@ -237,6 +219,12 @@ describe("AgentSession tool-call loop guard", () => {
 		);
 		expect(recoveryMessages).toHaveLength(1);
 		expect(recoveryMessages[0]!.display).toBe(false);
+		const haltedMessages = session.agent.state.messages.filter(
+			(message): message is CustomMessage =>
+				message.role === "custom" && message.customType === "no-progress-loop-halted",
+		);
+		expect(haltedMessages).toHaveLength(1);
+		expect(haltedMessages[0]!.details).toMatchObject({ count: 20, recovery: "halted" });
 	});
 
 	it("injects a corrective steer when Chinese reasoning repeats across turns with varying tool args", async () => {

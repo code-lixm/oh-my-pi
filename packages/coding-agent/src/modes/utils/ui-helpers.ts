@@ -84,6 +84,13 @@ interface RenderInitialMessagesOptions {
 
 const TRANSCRIPT_RENDER_CHUNK_MESSAGES = 32;
 const TRANSCRIPT_RENDER_CHUNK_MS = 8;
+/**
+ * How long a settled optimistic chip may stay painted without the confirmed
+ * queue or the delivered transcript proving where the message went. Confirmation
+ * normally lands within a roundtrip; the budget only covers a dispatch that
+ * neither queued nor delivered (locally-handled prompt, lost transport).
+ */
+const OPTIMISTIC_QUEUED_CHIP_TTL_MS = 10_000;
 
 function waitForImmediate(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
@@ -105,16 +112,14 @@ type AddMessageOptions = {
 	reuseSettledComponent?: boolean;
 };
 
-function imageLinksForMessage(
-	message: Extract<AgentMessage, { role: "developer" | "user" }>,
-	putBlobSync: InteractiveModeContext["sessionManager"]["putBlobSync"],
-): (string | undefined)[] | undefined {
-	if (typeof message.content === "string") return undefined;
-	const images = message.content.filter(
+/** Image parts of a user/developer message, in submission order — index N-1 backs
+ *  the `[Image #N]` marker in the message text. */
+function imageContentsForMessage(message: Extract<AgentMessage, { role: "developer" | "user" }>): ImageContent[] {
+	if (typeof message.content === "string") return [];
+	return message.content.filter(
 		(content): content is ImageContent =>
 			content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
 	);
-	return materializeImageReferenceLinksSync(images, putBlobSync);
 }
 
 export class UiHelpers {
@@ -299,14 +304,29 @@ export class UiHelpers {
 					if (cached instanceof UserMessageComponent) {
 						userComponent = cached;
 					} else {
+						const imageContents = imageContentsForMessage(message);
 						const imageLinks =
 							options?.imageLinks ??
-							imageLinksForMessage(
-								message,
+							materializeImageReferenceLinksSync(
+								imageContents,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks, href =>
-							openRichContentLink(this.ctx, href),
+						userComponent = new UserMessageComponent(
+							textContent,
+							isSynthetic,
+							imageLinks,
+							href => openRichContentLink(this.ctx, href),
+							// Submitted images render below the bubble (same terminal-graphics path as
+							// assistant/tool images); synthetic advisor dumps stay text-only.
+							isSynthetic
+								? undefined
+								: {
+										images: imageContents,
+										budget: this.ctx.ui.imageBudget,
+										visible: settings.get("terminal.showImages"),
+										onImageUpdate: () => this.ctx.ui.requestRender(),
+										openImage: image => openRichContentImage(this.ctx, image),
+									},
 						);
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
@@ -1131,6 +1151,7 @@ export class UiHelpers {
 	}
 
 	updatePendingMessagesDisplay(): void {
+		this.#dropExpiredOptimisticQueuedMessages(Date.now());
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		const queuedMessages = this.ctx.viewSession.getQueuedMessages() as QueuedMessages;
 
@@ -1190,7 +1211,10 @@ export class UiHelpers {
 			);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
-		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
+		// Urgent: a queued/steered chip is direct feedback for the keystroke
+		// that produced it, so it must not wait out the previous frame's
+		// adaptive-backpressure window while the transcript streams.
+		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer, { urgent: true });
 	}
 
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {
@@ -1219,9 +1243,9 @@ export class UiHelpers {
 		this.ctx.updatePendingMessagesDisplay();
 	}
 
-	/** Retire one optimistic entry when its dispatch failed and the caller
-	 *  hands the draft back to the editor. The dispatching mode narrows the
-	 *  match so a failed steer cannot consume a same-text followUp chip. */
+	/** Retire one optimistic entry once its dispatch settles or its queued
+	 *  message is delivered. The mode narrows matching so one path cannot
+	 *  consume a same-text chip from the other queue. */
 	retireOptimisticQueuedMessage(text: string, mode?: "steer" | "followUp"): void {
 		const index = this.ctx.optimisticQueuedMessages.findIndex(
 			entry => entry.text === text && (mode === undefined || entry.mode === mode),
@@ -1229,6 +1253,32 @@ export class UiHelpers {
 		if (index < 0) return;
 		this.ctx.optimisticQueuedMessages.splice(index, 1);
 		this.ctx.updatePendingMessagesDisplay();
+	}
+
+	/** Mark this dispatch's optimistic entry settled. The chip stays painted
+	 *  until the confirmed queue admits the message (reconcile) or the delivered
+	 *  transcript turn retires it — a transport whose projection lags the
+	 *  dispatch by a roundtrip would otherwise blank the pending bar mid-flight. */
+	settleOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void {
+		const entry = this.ctx.optimisticQueuedMessages.find(
+			candidate => candidate.text === text && candidate.mode === mode,
+		);
+		if (!entry) return;
+		entry.settledAt = Date.now();
+		this.reconcileOptimisticQueuedMessages();
+	}
+
+	/**
+	 * Drop settled chips that no confirmation ever claimed. Unsettled entries are
+	 * still dispatching and must keep their first-frame feedback.
+	 */
+	#dropExpiredOptimisticQueuedMessages(now: number): void {
+		const entries = this.ctx.optimisticQueuedMessages;
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const settledAt = entries[index]?.settledAt;
+			if (settledAt === undefined || now - settledAt < OPTIMISTIC_QUEUED_CHIP_TTL_MS) continue;
+			entries.splice(index, 1);
+		}
 	}
 
 	/** Retire optimistic entries the session queue has now confirmed. Same-key

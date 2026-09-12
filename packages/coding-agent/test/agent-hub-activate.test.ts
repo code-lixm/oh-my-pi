@@ -753,7 +753,7 @@ describe("Agent hub Enter activation", () => {
 		expect(focusTargets).not.toContain(editor);
 	});
 
-	it("propagates an explicit mouse-tracking choice through the Hub and its transcript overlay", () => {
+	it("captures the wheel through the Hub and its transcript overlay regardless of tui.mouseInput", () => {
 		for (const mouseTracking of [false, true]) {
 			AgentRegistry.resetGlobalForTests();
 			const agents = AgentRegistry.global();
@@ -783,11 +783,11 @@ describe("Agent hub Enter activation", () => {
 			controller.showAgentHub(new SessionObserverRegistry());
 			const hub = overlays[0]?.component as AgentHubOverlayComponent | undefined;
 			expect(hub).toBeDefined();
-			expect(overlays[0]?.options.mouseTracking).toBe(mouseTracking);
+			expect(overlays[0]?.options.mouseTracking).toBe(true);
 
 			hub?.handleInput("\r");
 			expect(overlays).toHaveLength(2);
-			expect(overlays[1]?.options.mouseTracking).toBe(mouseTracking);
+			expect(overlays[1]?.options.mouseTracking).toBe(true);
 			hub?.dispose();
 		}
 	});

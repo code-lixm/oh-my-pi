@@ -51,6 +51,7 @@ function createContext(opts: { isStreaming: boolean; flipToStreamingBeforePrompt
 	const requestRender = vi.fn();
 	const showError = vi.fn();
 	const retireOptimisticQueuedMessage = vi.fn();
+	const settleOptimisticQueuedMessage = vi.fn();
 	const reconcileOptimisticQueuedMessages = vi.fn();
 
 	let streaming = opts.isStreaming;
@@ -75,6 +76,7 @@ function createContext(opts: { isStreaming: boolean; flipToStreamingBeforePrompt
 		showError,
 		retireOptimisticQueuedMessage,
 		reconcileOptimisticQueuedMessages,
+		settleOptimisticQueuedMessage,
 		planModeEnabled: false,
 		planModePaused: false,
 		vibeModeEnabled: false,
@@ -90,6 +92,7 @@ function createContext(opts: { isStreaming: boolean; flipToStreamingBeforePrompt
 		showError,
 		retireOptimisticQueuedMessage,
 		reconcileOptimisticQueuedMessages,
+		settleOptimisticQueuedMessage,
 		updatePendingMessagesDisplay,
 		flipStreaming(value: boolean) {
 			streaming = value;

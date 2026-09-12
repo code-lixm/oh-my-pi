@@ -44,16 +44,54 @@ function normalizeThinking(value: string): string {
 	return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function toolCallSignature(message: AssistantMessage, toolResults: readonly ToolResultMessage[]): string | undefined {
-	const hasVisibleText = message.content.some(content => content.type === "text" && /\S/.test(content.text));
-	if (hasVisibleText) return undefined;
-	const toolCalls = message.content.filter((part): part is ToolCall => part.type === "toolCall");
-	if (toolCalls.length !== 1) return undefined;
+function normalizeBashResult(text: string): string {
+	return text.replace(/\n+Wall time: \d+(?:\.\d+)? seconds\s*$/, "").trimEnd();
+}
 
-	const toolCall = toolCalls[0]!;
-	const result = toolResults.find(candidate => candidate.toolCallId === toolCall.id);
-	if (!result) return undefined;
-	return `tool:${toolCall.name}:${JSON.stringify(canonicalizeValue(toolCall.arguments))}:result:${JSON.stringify(canonicalizeValue({ content: result.content, isError: result.isError }))}`;
+function literalEcho(command: string): { value: string; placeholder: boolean } | undefined {
+	const match = command.trim().match(/^echo\s+(?:"([^"\\$`\r\n]*)"|'([^'\r\n]*)'|([^\s|;&><()$`\\]+))$/);
+	const value = match?.[1] ?? match?.[2] ?? match?.[3];
+	if (value === undefined) return undefined;
+	return { value, placeholder: /^(?:placeholder|占位|dummy)(?:\s*[-_ ]?\d+)?$/i.test(value) };
+}
+
+function toolResultText(result: ToolResultMessage): string {
+	return result.content
+		.filter((content): content is { type: "text"; text: string } => content.type === "text")
+		.map(content => content.text)
+		.join("\n");
+}
+
+function toolCallSignature(message: AssistantMessage, toolResults: readonly ToolResultMessage[]): string | undefined {
+	const toolCalls = message.content.filter((part): part is ToolCall => part.type === "toolCall");
+	if (toolCalls.length === 0 || toolCalls.some(toolCall => toolCall.name === "hub")) return undefined;
+
+	const signatures: string[] = [];
+	for (const toolCall of toolCalls) {
+		const result = toolResults.find(candidate => candidate.toolCallId === toolCall.id);
+		if (!result) return undefined;
+		const args = canonicalizeValue(toolCall.arguments);
+		const command =
+			toolCall.name === "bash" && typeof (args as Record<string, unknown>).command === "string"
+				? ((args as Record<string, unknown>).command as string)
+				: undefined;
+		const echo = command === undefined ? undefined : literalEcho(command);
+		if (echo !== undefined && !result.isError && normalizeBashResult(toolResultText(result)) === echo.value) {
+			signatures.push(echo.placeholder ? "bash:placeholder-echo" : `bash:literal-echo:${echo.value}`);
+			continue;
+		}
+		const resultValue =
+			command === undefined
+				? { content: result.content, isError: result.isError }
+				: {
+						content: [{ type: "text", text: normalizeBashResult(toolResultText(result)) }],
+						isError: result.isError,
+					};
+		signatures.push(
+			`tool:${toolCall.name}:${JSON.stringify(args)}:result:${JSON.stringify(canonicalizeValue(resultValue))}`,
+		);
+	}
+	return signatures.join("\n");
 }
 
 function equivalentSignature(left: string, right: string): boolean {
@@ -76,14 +114,13 @@ function thinkingSignature(message: AssistantMessage): string | undefined {
 		.join("\n");
 	if (!thinking) return undefined;
 
-	const hasVisibleText = message.content.some(content => content.type === "text" && /\S/.test(content.text));
 	const hasToolCall = message.content.some(content => content.type === "toolCall");
-	return hasVisibleText || hasToolCall ? undefined : `thinking:${thinking}`;
+	return hasToolCall ? undefined : `thinking:${thinking}`;
 }
-
 /**
  * Detects a run of completed turns that repeat the same no-progress behavior.
- * A changed tool result or any visible assistant response breaks the run.
+ * Repeated assistant narration does not count as progress; changed tool
+ * semantics or results still break the run.
  */
 export class NoProgressLoopGuard {
 	#threshold: number;

@@ -16,6 +16,7 @@ import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { resolveToCwd } from "../tools/path-utils";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
+import { adaptTuiSlashRuntime } from "./helpers/tui-runtime";
 import type {
 	ParsedSlashCommand,
 	SlashCommandResult,
@@ -305,7 +306,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				args: command.args,
 				text: `/schedule ${command.args}`,
 			};
-			await handleScheduleCommand(parsed, runtime);
+			await handleScheduleCommand(parsed, adaptTuiSlashRuntime(runtime));
 		},
 		handle: handleScheduleCommand,
 	},

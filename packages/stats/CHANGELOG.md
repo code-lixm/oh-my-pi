@@ -8,6 +8,8 @@
 - Added elapsed tool-call timing to the Tools dashboard, derived from assistant tool-call and tool-result timestamps.
 
 - Changed dashboard ingestion to reuse a short-lived clean result, sync process-observed dirty session files directly, and resume append-only JSONL from durable byte/parser checkpoints; cold global reconciliation remains available without rereading active session prefixes.
+- Changed the Providers dashboard token-rate column label from `Tok/s` to `t/s`, matching the CLI's token-rate notation.
+
 ### Fixed
 
 - Fixed user messages being attributed to the `unknown` model bucket when the assistant reply's `parentId` points at a `custom` lifecycle event (`session_run_start` / `tool_execution_start`) instead of the user message itself - the parser now walks the parentId chain to the real user message (falling back to the most recent one), so by-model behavior views stop lumping everything into `unknown`. Rows are re-derived on the next database sync.

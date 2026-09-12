@@ -71,6 +71,11 @@ class AnchoredStatusContainer extends Container implements NativeScrollbackLiveR
 		const hasAnchoredRows = this.children.length > 0;
 		return hasAnchoredRows ? 0 : undefined;
 	}
+
+	/** Mirrors `AnchoredLiveContainer`: anchored rows never commit. */
+	isNativeScrollbackLiveRegionPinned(): boolean {
+		return this.children.length > 0;
+	}
 }
 
 function strip(rows: string[]): string[] {
@@ -346,6 +351,41 @@ describe("TUI.requestComponentRender", () => {
 			expect(duplicated).toEqual([]);
 			const observed = Array.from(buffer.matchAll(/ROW-\d{3}/g), match => match[0]);
 			expect(observed).toEqual(markers);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+
+	it("keeps anchored panel rows out of native scrollback when they scroll past the viewport", async () => {
+		const term = new VirtualTerminal(30, 8, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new CountingLines(Array.from({ length: 20 }, (_unused, i) => `m-${i}`));
+		const panel = new AnchoredStatusContainer();
+		const editor = new CountingLines(["INPUT"]);
+		tui.addChild(transcript);
+		tui.addChild(panel);
+		tui.addChild(editor);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+
+			// Taller than the viewport, so the leading rows scroll past its top.
+			for (let i = 1; i <= 12; i++) panel.addChild(new CountingLines([`queued-${i}`]));
+			tui.requestComponentRender(panel, { urgent: true });
+			await scheduler.drain(term);
+			// An authoritative full frame must not commit them either.
+			tui.requestRender();
+			await scheduler.drain(term);
+
+			panel.disposeChildren();
+			tui.requestComponentRender(panel, { urgent: true });
+			await scheduler.drain(term);
+
+			const leaked = strip(term.getScrollBuffer()).filter(row => row.startsWith("queued-"));
+			expect(leaked).toEqual([]);
 		} finally {
 			tui.stop();
 			await term.flush();
@@ -638,6 +678,46 @@ describe("TUI.requestDirectWrite", () => {
 			expect(visible(term)).toEqual(["modal", "spin-1", "footer"]);
 			expect(tui.renders).toBeGreaterThan(tuiRenders);
 			expect(transcript.renders).toBeGreaterThan(transcriptRenders);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+});
+
+describe("TUI fullscreen overlay restoration", () => {
+	it("restores the normal transcript after a forced repaint on overlay close", async () => {
+		const term = new VirtualTerminal(40, 8, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new CountingLines(["TRANSCRIPT_SURVIVES_SETTINGS_RETURN"]);
+		const modal = new CountingLines(["SETTINGS_MODAL"]);
+		tui.addChild(transcript);
+		const writes: string[] = [];
+		const realWrite = term.write.bind(term);
+		term.write = (data: string) => {
+			writes.push(data);
+			realWrite(data);
+		};
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			const handle = tui.showOverlay(modal, { fullscreen: true, mouseTracking: false });
+			await scheduler.drain(term);
+			expect(writes.join("")).toContain("\x1b[?1049h");
+			expect(visible(term)).toContain("SETTINGS_MODAL");
+
+			// Simulate a display-changing Settings option while the fullscreen overlay
+			// is active. This invalidates the normal-screen render accounting before
+			// the selector's onCancel callback hides the overlay.
+			tui.resetDisplay();
+			handle.hide();
+			await scheduler.drain(term);
+
+			const output = writes.join("");
+			expect(output).toContain("\x1b[?1049l");
+			expect(visible(term)).toContain("TRANSCRIPT_SURVIVES_SETTINGS_RETURN");
 		} finally {
 			tui.stop();
 			await term.flush();

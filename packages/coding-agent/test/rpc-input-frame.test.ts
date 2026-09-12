@@ -132,6 +132,53 @@ describe("dispatchRpcInputFrame", () => {
 		}
 	});
 
+	test("abort is dispatched in the background so it preempts a pending handoff", async () => {
+		const handoff = Promise.withResolvers<RpcResponse>();
+		let handoffSettled = false;
+		let handoffStarted = false;
+		let abortCalled = false;
+		const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
+			if (command.type === "handoff") {
+				handoffStarted = true;
+				try {
+					return await handoff.promise;
+				} finally {
+					handoffSettled = true;
+				}
+			}
+			if (command.type === "abort") {
+				abortCalled = true;
+				return { id: command.id, type: "response", command: "abort", success: true };
+			}
+			throw new Error(`unexpected command type: ${command.type}`);
+		};
+		const { deps, outputs } = makeDeps(handleCommand);
+
+		const handoffAwait = dispatchRpcInputFrame({ id: "h1", type: "handoff" }, deps);
+		expect(handoffAwait).toBeInstanceOf(Promise);
+		await flushMicrotasks();
+		expect(handoffStarted).toBe(true);
+		expect(handoffSettled).toBe(false);
+
+		const abortAwait = dispatchRpcInputFrame({ id: "a1", type: "abort" }, deps);
+		expect(abortAwait).toBeUndefined();
+		await flushMicrotasks();
+
+		expect(abortCalled).toBe(true);
+		expect(handoffSettled).toBe(false);
+		expect(outputs).toEqual([
+			{
+				id: "a1",
+				type: "response",
+				command: "abort",
+				success: true,
+			},
+		]);
+
+		// Resolve only after proving the handoff promise stayed pending; do not await it here.
+		handoff.resolve({ id: "h1", type: "response", command: "handoff", success: true, data: null });
+	});
+
 	test("non-bash commands are dispatched serially (ordering preserved)", async () => {
 		const started: string[] = [];
 		const finished: string[] = [];
@@ -351,6 +398,55 @@ describe("RpcInputDispatcher", () => {
 		expect((outputs[0] as RpcResponse).id).toBe("first");
 		expect((outputs[1] as RpcResponse).id).toBe("second");
 		expect((outputs[1] as RpcResponse).command).toBe("get_state");
+	});
+
+	test("abort overtakes a pending handoff while ordinary commands stay queued", async () => {
+		const handoff = Promise.withResolvers<RpcResponse>();
+		const calls: string[] = [];
+		let handoffSettled = false;
+		const { deps, outputs } = makeDeps(async command => {
+			if (command.type === "handoff") {
+				calls.push("handoff");
+				try {
+					return await handoff.promise;
+				} finally {
+					handoffSettled = true;
+				}
+			}
+			if (command.type === "abort") {
+				calls.push(handoffSettled ? "abort-after-handoff" : "abort-before-handoff");
+				return { id: command.id, type: "response", command: "abort", success: true };
+			}
+			if (command.type === "set_session_name") {
+				calls.push("set_session_name");
+				return { id: command.id, type: "response", command: "set_session_name", success: true };
+			}
+			throw new Error(`unexpected command type: ${command.type}`);
+		});
+		const dispatcher = new RpcInputDispatcher({ deps });
+
+		dispatcher.dispatch({ id: "h1", type: "handoff" });
+		await flushMicrotasks();
+
+		dispatcher.dispatch({ id: "s1", type: "set_session_name", name: "queued" });
+		dispatcher.dispatch({ id: "a1", type: "abort" });
+		await flushMicrotasks();
+
+		expect(calls).toEqual(["handoff", "abort-before-handoff"]);
+		expect(outputs).toEqual([
+			{
+				id: "a1",
+				type: "response",
+				command: "abort",
+				success: true,
+			},
+		]);
+
+		handoff.resolve({ id: "h1", type: "response", command: "handoff", success: true, data: null });
+		await dispatcher.drain();
+
+		expect(calls).toEqual(["handoff", "abort-before-handoff", "set_session_name"]);
+		expect(outputs.map(output => (output as RpcResponse).command)).toEqual(["abort", "handoff", "set_session_name"]);
 	});
 
 	test("serial command rejection emits an error response and does not poison the queue", async () => {

@@ -130,7 +130,7 @@ describe("FocusedAgentView", () => {
 		expect(rendered).toContain("Build worker");
 		expect(rendered).toContain("running");
 		expect(rendered).toContain("openai/gpt-5");
-		expect(rendered).toContain("12.3 tok/s");
+		expect(rendered).toContain("12.3 t/s");
 		expect(rendered).toContain("tok");
 		expect(rendered).toContain("ctx 50%");
 		expect(rendered).toContain("2 tools");
@@ -260,7 +260,7 @@ describe("FocusedAgentView", () => {
 
 		expect(rendered).toContain("claude-live");
 		expect(rendered).toContain("high");
-		expect(rendered).toContain("last 8.0 tok/s");
+		expect(rendered).toContain("last 8.0 t/s");
 	});
 
 	it("places registry metadata directly below the title and never repeats it after the transcript", () => {

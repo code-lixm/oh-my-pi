@@ -159,6 +159,7 @@ import {
 	setSessionTerminalTitle,
 	setTerminalTitleStateEnabled,
 } from "../utils/title-generator";
+import { calculateTokensPerSecond, getLastAssistantTtftMs, StreamingRateTracker } from "../utils/token-rate";
 import {
 	aggregateVibeWorkerTokensPerSecond,
 	type VibeOwnerScope,
@@ -184,6 +185,7 @@ import { formatRoleDisplayLabel } from "./components/model-browser";
 import { type PlanReviewAnnotationState, PlanReviewOverlay } from "./components/plan-review-overlay";
 import { SessionHistoryViewer } from "./components/session-history-viewer";
 import { StatusLineComponent } from "./components/status-line";
+import { getMetricThemeColor, getThroughputLevel, getTtftLevel } from "./components/status-line/rate-thresholds";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import type { WelcomeComponent, LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
@@ -249,6 +251,7 @@ import type {
 	TodoPhase,
 } from "./types";
 import { openRichContentImage, openRichContentLink } from "./utils/interactive-context-helpers";
+import { countStreamingAssistantTokens, streamingAssistantMessage } from "./utils/streaming-tokens";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
@@ -284,18 +287,21 @@ function formatWorkingActivityMessage(
 	if (!activity || activity.phase === "idle") return undefined;
 	const width = Math.max(1, maxWidth);
 	const formatted = formatAgentActivity(activity, now, {
-		detailMaxWidth: Math.max(1, width - 28),
-		toolArgsMaxWidth: Math.max(1, width - 28),
+		detailMaxWidth: Math.max(1, width),
+		toolArgsMaxWidth: Math.max(1, width),
 	});
 	const phase = tSettingsUi(formatted.phaseLabel);
 	const health = tSettingsUi(formatted.healthLabel);
 	const showHealth = formatted.health !== "active" && formatted.health !== "quiet" && phase !== health;
 	const state = showHealth ? `${health}${theme.sep.dot}${phase}` : phase;
 	const elapsed = formatted.phaseElapsed ? tSettingsUi("phase {elapsed}", { elapsed: formatted.phaseElapsed }) : "";
-	return truncateToWidth(
-		[state, formatted.detail, formatted.toolArgs, elapsed, formatted.stallReason].filter(Boolean).join(theme.sep.dot),
-		width,
-	);
+	const detail = [formatted.detail, formatted.toolArgs].filter(Boolean).join(theme.sep.dot);
+	// Detail-first: a tool/phase detail already names the work, so the generic
+	// phase prefix would only repeat it. Reasoning and model-wait phases carry no
+	// detail at all, so fall back to the phase + elapsed label — otherwise the
+	// row collapses to a bare "Working…" and reads as if the activity vanished.
+	const body = detail || [state, elapsed].filter(Boolean).join(theme.sep.dot);
+	return truncateToWidth([body, formatted.stallReason].filter(Boolean).join(theme.sep.dot), width);
 }
 
 const EDITOR_MAX_HEIGHT_MIN = 6;
@@ -429,6 +435,16 @@ export interface InteractiveModeOptions {
 class AnchoredLiveContainer extends Container implements NativeScrollbackLiveRegion {
 	getNativeScrollbackLiveRegionStart(): number | undefined {
 		return this.children.length > 0 ? 0 : undefined;
+	}
+
+	/**
+	 * These rows are rebuilt in place, so they must never be frozen into
+	 * native scrollback: growth commits every row above the viewport top, and
+	 * a later collapse would strand stale copies above the live panel.
+	 * Keeping the region pinned clips the commit boundary at the seam above.
+	 */
+	isNativeScrollbackLiveRegionPinned(): boolean {
+		return this.children.length > 0;
 	}
 }
 
@@ -668,8 +684,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	loadingAnimation: Loader | undefined = undefined;
 	autoCompactionLoader: Loader | undefined = undefined;
 	retryLoader: Loader | undefined = undefined;
+	handoffInFlight = false;
+	#rateTracker = new StreamingRateTracker();
 	#pendingWorkingMessage: string | undefined;
 	#workingActivityRefreshTimer?: NodeJS.Timeout;
+	#interruptLoaderTeardown?: NodeJS.Timeout;
 	#workingActivity?: AgentActivityState;
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
@@ -837,7 +856,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			width: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.settings.get("tui.mouseInput"),
+			mouseTracking: true,
 		});
 		this.ui.setFocus(view);
 		this.ui.requestRender();
@@ -2129,6 +2148,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			started: false,
 		};
 		this.#pendingSubmittedInput = submission;
+		this.#clearInterruptLoaderTeardown();
 		this.#pendingSubmissionPreservesDraft = options?.preserveDraft === true;
 		if (!submission.customType) {
 			this.#resetGoalContinuationSuppression();
@@ -2226,7 +2246,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 	}
-
 	#computeEditorMaxHeight(): number {
 		return computeEditorMaxHeight(this.ui.terminal.rows);
 	}
@@ -2316,7 +2335,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.syncRunningSubagentBadge();
 			});
 		}
-		const count = countRunningSubagentBadgeAgents(registry);
+		// The rpc-ui client process owns no AgentRegistry (the worker does), so a
+		// worker-attached session reports its running subagents from the mirrored
+		// projection. Local and collab sessions keep using their live registry.
+		const sessionSubagents = this.session as AgentSession & { getRunningSubagentCount?: () => number };
+		const count = sessionSubagents.getRunningSubagentCount?.() ?? countRunningSubagentBadgeAgents(registry);
 		if (count === this.#runningSubagentBadgeCount) return false;
 		this.#runningSubagentBadgeCount = count;
 		this.statusLine.setSubagentCount(count);
@@ -3541,9 +3564,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			width: "100%",
 			margin: 0,
 			fullscreen: true,
-			// Keep terminal-native drag selection/copy available in the history viewer.
-			// Its keyboard navigation and application scrollbar do not require pointer input.
-			mouseTracking: false,
+			// Capture the wheel: inside the alternate screen an uncaptured wheel is
+			// converted to arrow keys by the terminal, so a fast gesture stormed
+			// the viewport instead of scrolling it. Shift-drag still selects text.
+			mouseTracking: true,
 		});
 		this.ui.setFocus(viewer);
 		this.ui.requestRender();
@@ -3604,7 +3628,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: false,
+			mouseTracking: true,
 		});
 		this.ui.setFocus(overlay);
 		this.ui.requestRender();
@@ -5213,22 +5237,177 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#stopWorkingActivityRefresh();
 			return;
 		}
+		// No agent work is running, so nothing may advertise it. The session's own
+		// `isStreaming` also counts post-prompt in-flight bookkeeping, which an
+		// interrupt can leave open long after the run ended (its agent_end is then
+		// dropped by EventController's streaming guard, or never emitted at all);
+		// keying on the agent's own streaming bit stops the heartbeat from
+		// re-rendering the default "Working…" row forever.
+		// `=== false` (not falsiness) keeps test doubles without that state from
+		// tripping this. The persistent row falls back to its idle presentation
+		// instead of being torn down, so the stats stay mounted across turns.
+		if (!this.#hasLiveAgentWork()) {
+			this.#pendingWorkingMessage = undefined;
+			if (this.keepLoadingAnimationIdle()) {
+				this.ui.requestRender();
+				return;
+			}
+			this.#stopLoadingAnimation(true);
+			this.ui.requestRender();
+			return;
+		}
 		const waitingMessage = this.#waitingActivityMessage(activity);
 		const waitingForUser = activity?.phase === "waiting-user";
+		loader.setIdle(false);
 		loader.setAnimationEnabled(!waitingForUser);
+		loader.setSpinnerVisible(true);
 		if (waitingMessage) this.#stopWorkingActivityRefresh();
+		else this.#startWorkingActivityRefresh();
 		if (this.#pendingWorkingMessage !== undefined) return;
 		const hint = interruptHint();
 		if (waitingMessage) {
 			loader.setMessage(`${waitingMessage}${hint}`);
 			return;
 		}
-		this.#startWorkingActivityRefresh();
 		const columns = process.stdout.columns || 80;
 		const maxWidth = Math.max(1, columns - 4);
-		const summary = formatWorkingActivityMessage(activity, Math.max(1, maxWidth - visibleWidth(hint)));
-		const message = summary ? `${summary}${hint}` : this.#defaultWorkingMessage;
-		loader.setMessage(message);
+		this.#sampleStreamingRate();
+		const stats = this.#activityStatsSuffix();
+		const statsSuffix = stats ? `${theme.sep.dot}${stats}` : "";
+		const summary = formatWorkingActivityMessage(
+			activity,
+			Math.max(1, maxWidth - visibleWidth(hint) - visibleWidth(statsSuffix)),
+		);
+		// Stats stand on their own: a turn with no phase summary (or none yet)
+		// still reports its throughput, so they must not be dropped just because
+		// `summary` is empty.
+		const body = summary ? `${summary}${statsSuffix}` : stats;
+		loader.setMessage(body ? `${body}${hint}` : this.#defaultWorkingMessage);
+	}
+
+	/**
+	 * Fold the in-flight assistant message into the rate window. Runs on the
+	 * activity heartbeat rather than per delta: the row repaints at ~1s, so
+	 * sampling faster would only re-count a message the renderer never shows.
+	 * A finished stream closes the window so the average freezes at the turn's
+	 * real figure instead of decaying as idle time grows.
+	 */
+	#sampleStreamingRate(): void {
+		const streaming = streamingAssistantMessage(this.session.agent.state);
+		if (streaming) {
+			const tokens = countStreamingAssistantTokens(streaming);
+			if (this.#rateTracker.active) this.#rateTracker.sample(tokens);
+			else this.#rateTracker.begin(tokens);
+			return;
+		}
+		this.#rateTracker.end();
+	}
+
+	/**
+	 * Throughput/latency suffix for the activity row: live rate while generating,
+	 * whole-turn average alongside it, and time-to-first-token from the agent's
+	 * own request/first-byte stamps (available mid-stream, unlike the settled
+	 * `message.ttft`). Empty when the persistent row is disabled or unmeasured.
+	 */
+	#activityStatsSuffix(): string {
+		if (!this.settings.get("display.persistentActivityRow")) return "";
+		const parts: string[] = [];
+
+		const liveRate = this.#rateTracker.active ? this.#rateTracker.getLiveRate() : null;
+		const averageRate = this.#rateTracker.getAverageRate();
+		if (liveRate !== null) {
+			parts.push(
+				`${theme.icon.throughput} ${theme.fg(getMetricThemeColor(getThroughputLevel(liveRate)), `${liveRate.toFixed(1)} t/s`)}`,
+			);
+		}
+		if (averageRate !== null) {
+			parts.push(
+				tSettingsUi("avg {rate}", {
+					rate: theme.fg(getMetricThemeColor(getThroughputLevel(averageRate)), `${averageRate.toFixed(1)} t/s`),
+				}),
+			);
+		}
+		if (liveRate === null && averageRate === null) {
+			// No in-flight generation to sample — fall back to the settled
+			// message's rate so a resumed session still shows its last turn.
+			const settled = calculateTokensPerSecond(this.session.state.messages, this.session.isStreaming);
+			if (settled !== null) {
+				parts.push(
+					`${theme.icon.throughput} ${theme.fg(getMetricThemeColor(getThroughputLevel(settled)), `${settled.toFixed(1)} t/s`)}`,
+				);
+			}
+		}
+
+		const ttft = this.#streamingTtftMs() ?? getLastAssistantTtftMs(this.session.state.messages);
+		if (ttft !== null) {
+			parts.push(
+				`${theme.icon.time} ${theme.fg(getMetricThemeColor(getTtftLevel(ttft)), `${(ttft / 1000).toFixed(1)}s`)}`,
+			);
+		}
+		return parts.join(theme.sep.dot);
+	}
+
+	/**
+	 * Live first-token latency of the in-flight request, or null when idle. The
+	 * agent stamps `requestStartedAt` before dispatch and `firstByteAt` on the
+	 * first delta, so this is a real measurement the moment generation starts —
+	 * `message.ttft` only exists after the message settles.
+	 */
+	#streamingTtftMs(): number | null {
+		const state = this.session.agent.state;
+		const { requestStartedAt, firstByteAt } = state;
+		if (requestStartedAt === undefined || firstByteAt === undefined) return null;
+		const elapsed = firstByteAt - requestStartedAt;
+		return elapsed > 0 ? elapsed : null;
+	}
+
+	/**
+	 * Keep the activity row mounted after a turn ends, swapping the spinner and
+	 * phase text for the turn's frozen stats. Mounts the row when it is missing
+	 * so the row is present from the very first idle frame, not only after a turn
+	 * that happened to leave a loader behind. Returns false when the persistent
+	 * row is disabled, so callers tear the row down as before.
+	 */
+	keepLoadingAnimationIdle(): boolean {
+		if (!this.settings.get("display.persistentActivityRow")) return false;
+		// Freeze the turn's figures before composing the idle text: the average
+		// must reflect the generation that just ended, not idle wall time.
+		this.#sampleStreamingRate();
+		this.#stopWorkingActivityRefresh();
+		this.#workingActivity = undefined;
+		const stats = this.#activityStatsSuffix();
+		if (!stats && !this.loadingAnimation) return false;
+		this.#mountLoader();
+		const loader = this.loadingAnimation;
+		if (!loader) return false;
+		loader.setIdle(true);
+		loader.setAnimationEnabled(false);
+		loader.setSpinnerVisible(false);
+		loader.setMessage(stats || tSettingsUi("Ready"));
+		this.ui.requestRender();
+		return true;
+	}
+
+	/** Create the working loader if absent, or re-attach it after an overlay took the container. */
+	#mountLoader(): void {
+		if (!this.loadingAnimation) {
+			this.loadingAnimation = new Loader(
+				this.ui,
+				spinner => {
+					const accent = this.#getWorkingMessageAccent();
+					return accent ? `${accent.main}${spinner}\x1b[39m` : theme.fg("accent", spinner);
+				},
+				message => renderWorkingMessage(message, this.#getWorkingMessageAccent()),
+				this.#defaultWorkingMessage,
+				getSymbolTheme().spinnerFrames,
+			);
+			this.statusContainer.addChild(this.loadingAnimation);
+			return;
+		}
+		if (this.statusContainer.children.includes(this.loadingAnimation)) return;
+		this.statusContainer.disposeChildren();
+		this.statusContainer.addChild(this.loadingAnimation);
+		this.ui.requestRender();
 	}
 
 	#startWorkingActivityRefresh(): void {
@@ -5247,25 +5426,16 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	ensureLoadingAnimation(): void {
-		if (!this.loadingAnimation) {
-			this.loadingAnimation = new Loader(
-				this.ui,
-				spinner => {
-					const accent = this.#getWorkingMessageAccent();
-					return accent ? `${accent.main}${spinner}\x1b[39m` : theme.fg("accent", spinner);
-				},
-				message => renderWorkingMessage(message, this.#getWorkingMessageAccent()),
-				this.#defaultWorkingMessage,
-				getSymbolTheme().spinnerFrames,
-			);
-			this.statusContainer.addChild(this.loadingAnimation);
-		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
-			this.statusContainer.disposeChildren();
-			this.statusContainer.addChild(this.loadingAnimation);
-			this.ui.requestRender();
-		}
+		this.#mountLoader();
+		// A persistent row re-mounts in its idle presentation; the working
+		// reconcile below would otherwise immediately tear it back down.
+		if (!this.#hasLiveAgentWork() && this.keepLoadingAnimationIdle()) return;
 		this.applyPendingWorkingMessage();
 		this.#refreshWorkingActivityMessage();
+	}
+	/** Whether the agent itself is mid-run, as opposed to post-turn bookkeeping. */
+	#hasLiveAgentWork(): boolean {
+		return this.session.agent.state.isStreaming !== false || this.#pendingSubmittedInput !== undefined;
 	}
 
 	#stopLoadingAnimation(clearStatusContainer: boolean): void {
@@ -5289,12 +5459,39 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
+		// Record the message even when the loader already exists: the activity
+		// heartbeat re-renders the row on every tick and only skips it while a
+		// pending message is set. Without this an explicit "Interrupted." (or any
+		// other one-off status) is overwritten by the default "Working…" text on
+		// the next tick.
+		this.#pendingWorkingMessage = message;
 		if (this.loadingAnimation) {
 			this.loadingAnimation.setMessage(message);
-			return;
 		}
+	}
 
-		this.#pendingWorkingMessage = message;
+	/**
+	 * The user interrupted the run. A transport that ignores the abort signal can
+	 * leave the agent reporting `isStreaming` forever, which keeps the loader
+	 * mounted (and makes every later prompt queue as a steer). The interrupt is
+	 * authoritative: stop advertising work once the abort has had a moment to
+	 * unwind — a turn that genuinely resumes recreates the loader on agent_start.
+	 */
+	scheduleLoaderTeardownAfterInterrupt(): void {
+		if (this.#interruptLoaderTeardown) return;
+		this.#interruptLoaderTeardown = setTimeout(() => {
+			this.#interruptLoaderTeardown = undefined;
+			this.#pendingWorkingMessage = undefined;
+			if (this.loadingAnimation) this.#stopLoadingAnimation(true);
+			this.ui.requestRender();
+		}, 1_500);
+		this.#interruptLoaderTeardown.unref?.();
+	}
+
+	#clearInterruptLoaderTeardown(): void {
+		if (!this.#interruptLoaderTeardown) return;
+		clearTimeout(this.#interruptLoaderTeardown);
+		this.#interruptLoaderTeardown = undefined;
 	}
 
 	applyPendingWorkingMessage(): void {
@@ -5333,6 +5530,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	reconcileOptimisticQueuedMessages(): void {
 		this.#uiHelpers.reconcileOptimisticQueuedMessages();
+	}
+
+	settleOptimisticQueuedMessage(text: string, mode: "steer" | "followUp"): void {
+		this.#uiHelpers.settleOptimisticQueuedMessage(text, mode);
 	}
 
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void> {

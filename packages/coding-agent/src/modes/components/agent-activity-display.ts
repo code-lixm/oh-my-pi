@@ -8,6 +8,7 @@ import { previewLine, truncateToWidth } from "../../tools/render-utils";
 import { type ThemeColor, theme } from "../theme/theme";
 import { formatAgentActivity } from "./agent-activity";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./status-line/context-thresholds";
+import { getMetricThemeColor, getThroughputLevel } from "./status-line/rate-thresholds";
 
 const MIN_ACTIVITY_DETAIL_WIDTH = 8;
 const ACTIVITY_DETAIL_RESERVE = 24;
@@ -293,10 +294,11 @@ export function renderAgentActivityDisplay(options: {
 	if (retry) stats.push({ text: retry });
 	const tokensPerSecond = progress?.tokensPerSecond;
 	if (isFiniteNumber(tokensPerSecond) && tokensPerSecond > 0) {
-		const rate = `${tokensPerSecond.toFixed(1)} tok/s`;
+		const rate = `${tokensPerSecond.toFixed(1)} t/s`;
+		// Grade the reading so a slow subagent is visible without reading numbers.
 		stats.push({
 			text: theme.fg(
-				"statusLineOutput",
+				getMetricThemeColor(getThroughputLevel(tokensPerSecond)),
 				progress?.tokensPerSecondLive ? rate : tSettingsUi("last {rate}", { rate }),
 			),
 		});

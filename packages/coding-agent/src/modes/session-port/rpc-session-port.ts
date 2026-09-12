@@ -125,6 +125,15 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 	readonly #unsubscribers: Array<() => void> = [];
 	#projection: InteractiveSessionProjection;
 	#sequence = 0;
+	/**
+	 * Reliable sequence that last updated each projection field. A full snapshot
+	 * refresh reads its RPC payloads before it is emitted, so an event that lands
+	 * while the refresh is in flight is NEWER than the snapshot it would
+	 * overwrite — without this ledger the stale snapshot reverts the field
+	 * (e.g. clearing the queue chip the user just submitted) until the next
+	 * refresh.
+	 */
+	readonly #fieldSequence = new Map<keyof InteractiveSessionProjection, number>();
 	#viewRevision = 0;
 	#connection: InteractiveSessionConnectionState = { status: "connected" };
 	#refreshPromise: Promise<void> | undefined;
@@ -246,6 +255,7 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 			case "thinking_level_changed":
 			case "goal_updated":
 			case "todo_auto_clear":
+			case "tool_execution_end":
 				void this.#scheduleRefresh();
 				return;
 			case "queue_changed":
@@ -267,6 +277,9 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 	#emitReliable(patch: InteractiveSessionProjectionPatch, finalViewKey?: string): void {
 		this.#sequence++;
 		this.#projection = { ...this.#projection, ...patch };
+		for (const key of Object.keys(patch) as (keyof InteractiveSessionProjection)[]) {
+			this.#fieldSequence.set(key, this.#sequence);
+		}
 		const frame = {
 			generation: this.#generation,
 			sequence: this.#sequence,
@@ -274,6 +287,24 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 			...(finalViewKey ? { finalViewKey } : {}),
 		};
 		for (const listener of this.#reliableListeners) listener(frame);
+	}
+
+	/**
+	 * Drop snapshot fields that a reliable event updated while the snapshot's
+	 * RPC payloads were in flight. The snapshot is authoritative only for fields
+	 * that stayed quiet since `baseSequence`; everything else keeps the newer
+	 * event value.
+	 */
+	#snapshotFieldsQuietSince(
+		snapshot: InteractiveSessionProjection,
+		baseSequence: number,
+	): InteractiveSessionProjectionPatch {
+		const quiet: InteractiveSessionProjectionPatch = {};
+		for (const key of Object.keys(snapshot) as (keyof InteractiveSessionProjection)[]) {
+			if ((this.#fieldSequence.get(key) ?? -1) > baseSequence) continue;
+			Object.assign(quiet, { [key]: snapshot[key] });
+		}
+		return quiet;
 	}
 
 	async #scheduleRefresh(): Promise<void> {
@@ -301,6 +332,9 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 
 	async #refreshProjection(): Promise<void> {
 		if (this.#disposed) return;
+		// Snapshot RPC payloads are read before the frame is emitted, so any
+		// reliable event that lands in between is newer than this snapshot.
+		const baseSequence = this.#sequence;
 		try {
 			const [state, messages, commands, subagents] = await Promise.all([
 				this.#client.getState(),
@@ -312,7 +346,7 @@ export class RpcInteractiveSessionPort implements InteractiveSessionPort {
 				cwd: this.#cwd,
 				agentId: this.#agentId,
 			});
-			this.#emitReliable(projection);
+			this.#emitReliable(this.#snapshotFieldsQuietSince(projection, baseSequence));
 			// A successful full snapshot proves the transport is serving again:
 			// clear a stale disconnected marker left by a mid-refresh failure.
 			if (this.#connection.status !== "connected") this.#setConnection({ status: "connected" });

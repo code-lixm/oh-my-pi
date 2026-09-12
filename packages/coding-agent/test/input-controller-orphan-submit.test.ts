@@ -145,6 +145,11 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 			updatePendingMessagesDisplay();
 		},
 		reconcileOptimisticQueuedMessages: () => {},
+		settleOptimisticQueuedMessage: (text: string, mode: "steer" | "followUp") => {
+			const index = ctx.optimisticQueuedMessages.findIndex(entry => entry.text === text && entry.mode === mode);
+			if (index >= 0) ctx.optimisticQueuedMessages.splice(index, 1);
+			updatePendingMessagesDisplay();
+		},
 		flushPendingBashComponents,
 		showError,
 		isBashMode: false,

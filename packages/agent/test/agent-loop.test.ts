@@ -4424,9 +4424,10 @@ describe("agentLoopContinue with AgentMessage", () => {
 		}
 	});
 
-	it("stops after a post-tool hook marks the completed result terminal", async () => {
+	it("stops after a post-tool hook marks the completed result terminal without running turn-end hooks", async () => {
 		const toolSchema = type({ value: "string" });
 		const controller = new AbortController();
+		let turnEndCalls = 0;
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "echo",
 			label: "Echo",
@@ -4452,6 +4453,9 @@ describe("agentLoopContinue with AgentMessage", () => {
 			afterToolCall: async () => {
 				controller.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 			},
+			onTurnEnd: () => {
+				turnEndCalls++;
+			},
 		};
 
 		const events: AgentEvent[] = [];
@@ -4459,6 +4463,8 @@ describe("agentLoopContinue with AgentMessage", () => {
 		for await (const event of stream) events.push(event);
 
 		expect(mock.calls).toHaveLength(1);
+		expect(turnEndCalls).toBe(0);
+		expect(events.filter(event => event.type === "turn_end")).toHaveLength(1);
 		expect(events.some(event => event.type === "tool_execution_end")).toBe(true);
 		expect(
 			events.some(

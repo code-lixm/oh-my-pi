@@ -143,6 +143,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Inspect and test Time-Traveling Stream Rules (TTSR)": "Inspect and test Time-Traveling Stream Rules (TTSR)",
 	"Interrupted. {count} queued messages kept — press Enter to run them.":
 		"Interrupted. {count} queued messages kept — press Enter to run them.",
+	"Interrupted.": "Interrupted.",
 	"Check for and install updates": "Check for and install updates",
 	"Show provider usage limits for every authenticated account":
 		"Show provider usage limits for every authenticated account",
@@ -755,6 +756,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand":
 		"{previous}:previous · {next}:next · Esc:Main · j/k:scroll · {expand}:expand",
 	"last {rate}": "last {rate}",
+	"avg {rate}": "avg {rate}",
 	"retry failed after {attempt}": "retry failed after {attempt}",
 	"retry {attempt}/{max} · {delay}": "retry {attempt}/{max} · {delay}",
 	task: "task",
@@ -812,7 +814,7 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"stays text ({reason})": "stays text ({reason})",
 	"tokens ({pct})": "tokens ({pct})",
 	"tokens on the wire": "tokens on the wire",
-	"toks/s": "toks/s",
+	"t/s": "t/s",
 	unknown: "unknown",
 	visible: "visible",
 	"{codeCount} code": "{codeCount} code",
@@ -1925,6 +1927,18 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Grep Context Before": "Grep Context Before",
 	"HTTP SSE providers populate this view while a model response is streaming.":
 		"HTTP SSE providers populate this view while a model response is streaming.",
+	"Built-in Sensitive Patterns": "Built-in Sensitive Patterns",
+	"E-mail Addresses": "E-mail Addresses",
+	"IPv4 Addresses": "IPv4 Addresses",
+	"MAC Addresses": "MAC Addresses",
+	"National IDs": "National IDs",
+	"Obfuscate For Models": "Obfuscate For Models",
+	"Obfuscate For Providers": "Obfuscate For Providers",
+	"Phone Numbers": "Phone Numbers",
+	"Placeholder Label": "Placeholder Label",
+	"Structured identifiers obfuscated in addition to the configured terms, e.g. phone numbers and e-mail addresses.":
+		"Structured identifiers obfuscated in addition to the configured terms, e.g. phone numbers and e-mail addresses.",
+	UUIDs: "UUIDs",
 	"Headless Browser": "Headless Browser",
 	"Headless? Paste the redirect URL or code with /login <value>.":
 		"Headless? Paste the redirect URL or code with /login <value>.",
@@ -2358,8 +2372,8 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 	"Render read tool results inline in the transcript instead of summary rows":
 		"Render read tool results inline in the transcript instead of summary rows",
 	"Mouse Input": "Mouse Input",
-	"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.":
-		"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
+	"Enable click-to-position editing in the prompt and pointer interaction in the main transcript (links, images). Fullscreen panels such as Agent Hub, selectors, and session history always capture the wheel so it scrolls them — text selection inside them stays reachable via the terminal's shift-drag. While enabled, the terminal no longer wheel-scrolls its own scrollback from the main screen — use the terminal scrollbar, Shift+wheel, or /history to browse older output.":
+		"Enable click-to-position editing in the prompt and pointer interaction in the main transcript (links, images). Fullscreen panels such as Agent Hub, selectors, and session history always capture the wheel so it scrolls them — text selection inside them stays reachable via the terminal's shift-drag. While enabled, the terminal no longer wheel-scrolls its own scrollback from the main screen — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
 	"Show Agent Communication": "Show Agent Communication",
 	"Show agent-to-agent messages and coordination activity in the transcript":
 		"Show agent-to-agent messages and coordination activity in the transcript",
@@ -4483,6 +4497,26 @@ export const SETTINGS_EN_MESSAGES: Record<string, string> = {
 		"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, and task.",
 	"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.":
 		"Enable the generate_image tool (text-to-image generation and editing). Exposed as an xd:// device when tools.xdev is on.",
+	"GPT-2 Image": "GPT-2 Image",
+	"Enable the gpt_2_image tool: OpenAI gpt-image-2 generation via a configurable base URL and API key":
+		"Enable the gpt_2_image tool: OpenAI gpt-image-2 generation via a configurable base URL and API key",
+	"GPT-2 Image API Key": "GPT-2 Image API Key",
+	"API key for the gpt_2_image tool. Falls back to GPT2_IMAGE_API_KEY, then OPENAI_API_KEY.":
+		"API key for the gpt_2_image tool. Falls back to GPT2_IMAGE_API_KEY, then OPENAI_API_KEY.",
+	"GPT-2 Image Base URL": "GPT-2 Image Base URL",
+	"OpenAI-compatible base URL (default https://api.openai.com/v1).":
+		"OpenAI-compatible base URL (default https://api.openai.com/v1).",
+	"GPT-2 Image Model": "GPT-2 Image Model",
+	"Image model id (default gpt-image-2).": "Image model id (default gpt-image-2).",
+	"GPT-2 Image Output Directory": "GPT-2 Image Output Directory",
+	"Default directory for generated images (default ~/.omp/gpt-2-image/<project>/).":
+		"Default directory for generated images (default ~/.omp/gpt-2-image/<project>/).",
+	"GPT-2 Image Max Files": "GPT-2 Image Max Files",
+	"Earliest-written generated images over this many are pruned (never files younger than 2h).":
+		"Earliest-written generated images over this many are pruned (never files younger than 2h).",
+	"GPT-2 Image Max Output Bytes": "GPT-2 Image Max Output Bytes",
+	"Disk ceiling for the output directory; oldest files are pruned past this (never younger than 2h).":
+		"Disk ceiling for the output directory; oldest files are pruned past this (never younger than 2h).",
 	"How long a `hub` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.":
 		"How long a `hub` wait watches background jobs before returning the current state. A fixed value waits that exact duration every time. `smart` adapts: it starts at 5s and lengthens with each back-to-back wait (up to 5m), then resets to 5s after about a minute without waiting.",
 	"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout":

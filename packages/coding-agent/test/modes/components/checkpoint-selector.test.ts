@@ -328,3 +328,93 @@ describe("CheckpointSelectorComponent restore confirmation", () => {
 		expect(rendered).not.toContain("Preview restore");
 	});
 });
+
+const WHEEL_UP = "\x1b[<64;10;10M";
+const WHEEL_DOWN = "\x1b[<65;10;10M";
+
+/** `count` distinct checkpoints in list order (oldest first). */
+function checkpointChain(count: number): WorkspaceCheckpointRecord[] {
+	return Array.from({ length: count }, (_, index) => ({
+		...checkpointRecord(),
+		id: `ckpt-${index}`,
+		label: `checkpoint ${index}`,
+	}));
+}
+
+describe("CheckpointSelectorComponent wheel input", () => {
+	/** Runs the selector from the initial list row into the preview request and
+	 *  returns the (checkpointId, scope) the preview was asked for. Track the
+	 *  wheel through the same Enter pipeline a keyboard user takes, so the
+	 *  assertion observes the row that is actually highlighted. */
+	async function previewSelectionAfter(inputs: string[]): Promise<Array<[string, WorkspaceRestoreScope]>> {
+		const checkpoints = checkpointChain(5);
+		const previewRequests: Array<[string, WorkspaceRestoreScope]> = [];
+		const selector = new CheckpointSelectorComponent({
+			checkpoints,
+			onPick: () => {},
+			onCancel: () => {},
+			preview: async (checkpointId, scope) => {
+				previewRequests.push([checkpointId, scope]);
+				return { available: true, value: restorePlan(checkpointId, scope) };
+			},
+			apply: async () => ({
+				available: true,
+				value: restoreResult("ckpt-0", "code", "preserve"),
+			}),
+			isMutatorActive: () => false,
+			requestRender: () => {},
+		});
+
+		for (const input of inputs) selector.handleInput(input);
+		selector.handleInput(ENTER);
+		selector.handleInput(ENTER);
+		await Promise.resolve();
+		return previewRequests;
+	}
+
+	it("steps the highlighted row with the wheel in both directions", async () => {
+		// The list viewport is selection-centered, so the wheel must move the
+		// highlight: down twice then up once lands on the second row.
+		await expect(previewSelectionAfter([WHEEL_DOWN, WHEEL_DOWN, WHEEL_UP])).resolves.toEqual([["ckpt-1", "code"]]);
+	});
+
+	it("keeps keyboard navigation equivalent to the wheel", async () => {
+		await expect(previewSelectionAfter([DOWN, DOWN, WHEEL_UP])).resolves.toEqual([["ckpt-1", "code"]]);
+	});
+
+	it("does not request a repaint for a wheel notch that cannot move the selection", () => {
+		const checkpoints = checkpointChain(3);
+		let renders = 0;
+		const selector = new CheckpointSelectorComponent({
+			checkpoints,
+			onPick: () => {},
+			onCancel: () => {},
+			preview: async () => ({ available: false, reason: "service_unavailable" }),
+			apply: async () => ({ available: true, value: restoreResult("ckpt-0", "code", "preserve") }),
+			isMutatorActive: () => false,
+			requestRender: () => {
+				renders += 1;
+			},
+		});
+
+		// Already on the first row: wheeling up moves nothing and must not twitch
+		// the frame (a held wheel at either end repainted the whole selector).
+		selector.handleInput(WHEEL_UP);
+		expect(renders).toBe(0);
+
+		selector.handleInput(WHEEL_DOWN);
+		expect(renders).toBe(1);
+
+		selector.handleInput(WHEEL_DOWN);
+		const atEnd = renders;
+		selector.handleInput(WHEEL_DOWN);
+		expect(renders).toBe(atEnd);
+	});
+
+	it("cycles the scope step with the wheel", async () => {
+		const previewRequests = await previewSelectionAfter([ENTER, WHEEL_DOWN, WHEEL_DOWN, WHEEL_UP, ENTER, ENTER]);
+		// Enter opens the scope step at `code`; two wheel notches walk to `all`,
+		// one back lands on `conversation`, which is what the preview receives.
+		expect(previewRequests).toEqual([["ckpt-0", "conversation"]]);
+	});
+});

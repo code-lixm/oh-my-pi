@@ -386,6 +386,11 @@ async function createContext() {
 			updatePendingMessagesDisplay();
 		},
 		reconcileOptimisticQueuedMessages: () => {},
+		settleOptimisticQueuedMessage: (text: string, mode: "steer" | "followUp") => {
+			const index = ctx.optimisticQueuedMessages.findIndex(entry => entry.text === text && entry.mode === mode);
+			if (index >= 0) ctx.optimisticQueuedMessages.splice(index, 1);
+			updatePendingMessagesDisplay();
+		},
 		isBashMode: false,
 		isPythonMode: false,
 		toolOutputExpanded: false,
@@ -832,8 +837,9 @@ describe("InputController keybinding setup", () => {
 		expect(spies.prompt).toHaveBeenCalledWith("follow up after current response", {
 			streamingBehavior: "followUp",
 		});
-		// One optimistic first-frame refresh + one after the dispatch resolves.
-		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(2);
+		// One optimistic first-frame refresh + one at dispatch settle (the
+		// unconditional retire) + one from the post-settle reconcile.
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(3);
 		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
 

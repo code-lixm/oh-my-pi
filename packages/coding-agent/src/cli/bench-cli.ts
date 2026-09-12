@@ -768,7 +768,7 @@ function formatRunLine(result: BenchRunResult, index: number, total: number): st
 	const kind = result.challenge ? `${chalk.cyan(result.challenge.padEnd(10))} ` : "";
 	if (result.ok) {
 		const gen = result.generationTps > 0 ? `${result.generationTps.toFixed(1)}/s` : "-";
-		return `  ${chalk.green("✓")} ${prefix} ${kind}${chalk.dim("TTFT")} ${formatMs(result.ttftMs)} ${chalk.dim("tok/s")} ${result.tokensPerSecond.toFixed(1)} ${chalk.dim("gen")} ${gen} ${chalk.dim("in")} ${formatNumber(result.inputTokens)} ${chalk.dim("out")} ${formatNumber(result.outputTokens)} ${chalk.dim("total")} ${formatMs(result.durationMs)}`;
+		return `  ${chalk.green("✓")} ${prefix} ${kind}${chalk.dim("TTFT")} ${formatMs(result.ttftMs)} ${chalk.dim("t/s")} ${result.tokensPerSecond.toFixed(1)} ${chalk.dim("gen")} ${gen} ${chalk.dim("in")} ${formatNumber(result.inputTokens)} ${chalk.dim("out")} ${formatNumber(result.outputTokens)} ${chalk.dim("total")} ${formatMs(result.durationMs)}`;
 	}
 	return `  ${chalk.red("✗")} ${prefix} ${kind}${chalk.red(truncateToWidth(replaceTabs(result.error).replace(/\r?\n/g, " "), ERROR_WIDTH))}`;
 }
@@ -792,7 +792,7 @@ function renderBenchProgress(progress: BenchLiveProgress | undefined, spinner: s
 	if (progress.failed > 0) parts.push(chalk.red(`${progress.failed} failed`));
 	if (progress.okCount > 0) {
 		parts.push(`TTFT ~${formatMs(progress.ttftSumMs / progress.okCount)}`);
-		parts.push(`~${(progress.tpsSum / progress.okCount).toFixed(1)} tok/s`);
+		parts.push(`~${(progress.tpsSum / progress.okCount).toFixed(1)} t/s`);
 	}
 	return [
 		`  ${chalk.yellow(spinner)} ${chalk.bold(progress.label)}${chalk.dim(" · ")}${parts.join(chalk.dim(" · "))}`,
@@ -817,7 +817,7 @@ function benchTableColumns(models: BenchModelReport[]): BenchTableColumn[] {
 	];
 	if (has("chat")) {
 		columns.push({
-			header: "tok/s",
+			header: "t/s",
 			value: r => (r.byChallenge.chat ? r.byChallenge.chat.tokensPerSecond.p50.toFixed(1) : "-"),
 		});
 	}

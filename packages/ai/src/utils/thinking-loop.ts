@@ -48,12 +48,21 @@ import { AssistantMessageEventStream } from "./event-stream";
  *  classifiers treat it as a transient (retryable) stop without bespoke rules. */
 export const THINKING_LOOP_ERROR_MARKER = "Thinking loop detected";
 
-/** Rolling tail (chars) inspected for verbatim back-to-back repetition. */
-const VERBATIM_TAIL_WINDOW = 250;
+/** Rolling tail (chars) inspected for verbatim back-to-back repetition.
+ *  Sized at 4× {@link VERBATIM_MAX_UNIT}: the detector requires 4 repeats of a
+ *  unit, so a window narrower than that cannot accumulate enough copies for any
+ *  unit near the cap. A degenerate loop whose repeating unit is a *sequence of
+ *  short lines* (measured: 71 chars of "好。/执行。/（调用）" paragraphs) otherwise
+ *  slips through both this check and the paragraph-cluster path, because every
+ *  individual paragraph is far below {@link SEGMENT_MIN_NORM_CHARS}. */
+const VERBATIM_TAIL_WINDOW = 512;
 /** Minimum total repeated chars before a verbatim run counts as a loop. */
 const VERBATIM_MIN_REPEATED_CHARS = 180;
-/** Longest unit length probed for a verbatim repeat. */
-const VERBATIM_MAX_UNIT = 60;
+/** Longest unit length probed for a verbatim repeat. Must satisfy
+ *  `4 * VERBATIM_MAX_UNIT <= VERBATIM_TAIL_WINDOW` so the required 4 repeats fit
+ *  the inspected tail. Kept well below the 700-char segment cap so a legitimate
+ *  long paragraph is never matched as a repeated unit. */
+const VERBATIM_MAX_UNIT = 128;
 
 /** Char cap for an unterminated segment; forces a flush so a wall-of-text loop
  *  (no blank lines / headings) still segments. */

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
-import { setKittyProtocolActive } from "@oh-my-pi/pi-tui/keys";
+import { StdinBuffer, setKittyProtocolActive } from "@oh-my-pi/pi-tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { tSettingsUi } from "../src/i18n/settings-locale";
 
@@ -561,6 +563,37 @@ describe("InputController escape behavior", () => {
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
 		expectEscapeCancelPrompt(spies.showStatus, 1);
+	});
+
+	it("requires a confirmed second Esc to abort an isolated handoff through the main session", () => {
+		const clock = installClock();
+		const { ctx, editor, spies } = createContext();
+		const isolatedSession = ctx.session as unknown as {
+			isGeneratingHandoff?: boolean;
+			isRetrying?: boolean;
+		};
+		const isolatedViewSession = ctx.viewSession as unknown as {
+			isGeneratingHandoff?: boolean;
+			isRetrying?: boolean;
+		};
+		isolatedSession.isGeneratingHandoff = undefined;
+		isolatedSession.isRetrying = undefined;
+		isolatedViewSession.isGeneratingHandoff = undefined;
+		isolatedViewSession.isRetrying = undefined;
+		ctx.handoffInFlight = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expectEscapeCancelPrompt(spies.showStatus, 1);
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		clock.advance(500);
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
 	it("uses confirmed Esc to stop an async-only session through the global abort", () => {
@@ -1302,6 +1335,85 @@ describe("InputController escape behavior", () => {
 		isSpeaking.mockReturnValue(false);
 		editor.onEscape?.();
 		expect(ctx.showTreeSelector).not.toHaveBeenCalled();
+	});
+});
+describe("InputController real terminal Escape delivery", () => {
+	beforeEach(async () => {
+		await initTheme();
+	});
+
+	it("cancels synchronously when two bare Esc keys arrive in one stdin batch", () => {
+		vi.useFakeTimers();
+		const { ctx, editor, spies } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const realEditor = new CustomEditor(getEditorTheme());
+		realEditor.onEscape = editor.onEscape;
+		const stdin = new StdinBuffer({ timeout: 5, partialHoldTimeout: 5 });
+		stdin.on("data", chunk => realEditor.handleInput(chunk));
+
+		try {
+			stdin.process("\x1b\x1b");
+
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+			expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+
+			vi.advanceTimersByTime(10);
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+		} finally {
+			stdin.destroy();
+			vi.useRealTimers();
+		}
+	});
+
+	it("cancels through the full dispatch chain (global listener, then editor) when two Esc arrive as one stdin batch", () => {
+		vi.useFakeTimers();
+		const { ctx, editor, spies, inputListeners } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		const realEditor = new CustomEditor(getEditorTheme());
+		realEditor.onEscape = editor.onEscape;
+
+		// Mirror TUI.#dispatchInput: run every registered input listener in
+		// order (returning early on consume), then hand any remaining data to the
+		// focused editor component.
+		const dispatchInput = (data: string) => {
+			let current = data;
+			for (const listener of inputListeners) {
+				if (!listener) continue;
+				const result = listener(current);
+				if (result?.consume) return { consumed: true, data: current };
+				if (result?.data !== undefined) current = result.data;
+			}
+			if (current.length === 0) return { consumed: false, data: current };
+			realEditor.handleInput(current);
+			return { consumed: false, data: current };
+		};
+
+		const stdin = new StdinBuffer({ timeout: 5, partialHoldTimeout: 5 });
+		stdin.on("data", chunk => void dispatchInput(chunk));
+
+		try {
+			stdin.process("\x1b\x1b");
+
+			// The batched double-ESC must arm once (one status prompt), then confirm
+			// and abort in the same call stack — not arm twice with overlapping hints.
+			expect(spies.showStatus).toHaveBeenCalledTimes(1);
+			expect(spies.showStatus).toHaveBeenCalledWith(
+				tSettingsUi("Press Esc again within 2s to cancel the active task."),
+			);
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+			expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+
+			vi.advanceTimersByTime(10);
+			expect(spies.abort).toHaveBeenCalledTimes(1);
+			expect(spies.showStatus).toHaveBeenCalledTimes(1);
+		} finally {
+			stdin.destroy();
+			vi.useRealTimers();
+		}
 	});
 });
 

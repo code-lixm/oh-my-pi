@@ -14,6 +14,19 @@ type Harness = {
 	mode: InteractiveMode;
 	sessionManager: SessionManager;
 	tempDir: TempDir;
+	/**
+	 * Mutable agent state the stub session exposes; tests drive streaming from
+	 * here. `isStreaming` is intentionally absent by default so the reconcile
+	 * path keeps its pre-existing no-op behavior for tests that never set it.
+	 */
+	agentState: {
+		tools: unknown[];
+		isStreaming?: boolean;
+		messages: unknown[];
+		streamMessage: Record<string, unknown> | null;
+		requestStartedAt?: number;
+		firstByteAt?: number;
+	};
 };
 
 let harness: Harness | undefined;
@@ -37,12 +50,13 @@ async function createHarness(sessionName: string): Promise<Harness> {
 	await initTheme(false);
 	const sessionManager = SessionManager.inMemory(tempDir.path());
 	await sessionManager.setSessionName(sessionName, "user");
+	const agentState: Harness["agentState"] = { tools: [], messages: [], streamMessage: null };
 	const session = {
 		sessionManager,
 		settings,
 		getAgentId: () => MAIN_AGENT_ID,
 		agent: {
-			state: { tools: [] },
+			state: agentState,
 			metadataForProvider: () => undefined,
 		},
 		customCommands: [],
@@ -50,12 +64,12 @@ async function createHarness(sessionName: string): Promise<Harness> {
 		autoCompactionEnabled: true,
 		messages: [],
 		systemPrompt: [],
-		state: { model: undefined },
+		state: agentState,
 		model: undefined,
 		thinkingLevel: undefined,
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
-	harness = { mode, sessionManager, tempDir };
+	harness = { mode, sessionManager, tempDir, agentState };
 	return harness;
 }
 
@@ -497,5 +511,110 @@ describe("InteractiveMode loading activity summary", () => {
 			setSystemTime();
 			setSettingsUiLocale(previousLocale);
 		}
+	});
+});
+
+describe("persistent activity row", () => {
+	it("stays mounted with the turn's throughput after the agent goes idle", async () => {
+		const { mode, agentState } = await createHarness("Persistent activity");
+		settings.set("display.persistentActivityRow", true);
+
+		// Mid-turn: the row is the live working loader.
+		agentState.isStreaming = true;
+		startStableLoader(mode);
+		expect(mode.loadingAnimation?.idle).toBe(false);
+
+		// The turn ends. The row must survive the boundary instead of being
+		// unmounted, and must stop advertising work.
+		agentState.isStreaming = false;
+		agentState.messages = [
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				usage: {
+					input: 10,
+					output: 120,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 130,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now() - 2_000,
+				duration: 2_000,
+				ttft: 400,
+			},
+		];
+		expect(mode.keepLoadingAnimationIdle()).toBe(true);
+
+		const loader = mode.loadingAnimation;
+		expect(loader).toBeDefined();
+		expect(mode.statusContainer.children).toContain(defined(loader));
+		expect(loader?.idle).toBe(true);
+		const rendered = Bun.stripANSI(renderLoader(mode));
+		expect(rendered).toContain("t/s");
+		expect(rendered).toContain("0.4s");
+	});
+
+	it("reports a live rate and average while tokens stream, and keeps the average once idle", async () => {
+		const { mode, agentState } = await createHarness("Live throughput");
+		settings.set("display.persistentActivityRow", true);
+
+		agentState.isStreaming = true;
+		agentState.requestStartedAt = Date.now() - 900;
+		agentState.firstByteAt = Date.now() - 500;
+		agentState.streamMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "reasoning about the problem" }],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+			stopReason: "stop",
+		};
+		startStableLoader(mode);
+		mode.refreshWorkingActivitySummary();
+
+		// The stream keeps producing tokens; the second reading gives the
+		// windowed rate a delta to measure.
+		await Bun.sleep(150);
+		agentState.streamMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "reasoning about the problem ".repeat(20) }],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+			stopReason: "stop",
+		};
+		mode.refreshWorkingActivitySummary();
+		const live = Bun.stripANSI(renderLoader(mode));
+		expect(live).toContain("t/s");
+		expect(live).toContain("avg");
+		// Request began 900ms ago, first byte 500ms in.
+		expect(live).toContain("0.4s");
+
+		// The turn ends: the average survives as the row's idle readout.
+		agentState.isStreaming = false;
+		agentState.streamMessage = null;
+		expect(mode.keepLoadingAnimationIdle()).toBe(true);
+		const idle = Bun.stripANSI(renderLoader(mode));
+		expect(idle).toContain("t/s");
+		expect(idle).not.toContain("Working…");
+	});
+
+	it("re-mounts the row after a transient overlay clears the status container", async () => {
+		const { mode, agentState } = await createHarness("Overlay survives");
+		settings.set("display.persistentActivityRow", true);
+		agentState.isStreaming = false;
+
+		mode.keepLoadingAnimationIdle();
+		expect(mode.loadingAnimation).toBeDefined();
+
+		// An overlay (compaction / retry) takes the container, then ends.
+		mode.statusContainer.disposeChildren();
+		expect(mode.keepLoadingAnimationIdle()).toBe(true);
+		expect(mode.statusContainer.children).toContain(defined(mode.loadingAnimation));
+	});
+
+	it("does not keep a row when the setting is off", async () => {
+		const { mode, agentState } = await createHarness("Persistent off");
+		settings.set("display.persistentActivityRow", false);
+		agentState.isStreaming = false;
+		expect(mode.keepLoadingAnimationIdle()).toBe(false);
 	});
 });

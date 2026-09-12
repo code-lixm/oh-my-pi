@@ -258,6 +258,52 @@ describe("ThinkingLoopDetector", () => {
 		expect(detail).toContain("back-to-back");
 	});
 
+	test("trips on a loop whose repeating unit spans several sub-threshold lines", () => {
+		// Regression: a real 290k-char ollama-cloud reasoning block degenerated into
+		// 61k tiny paragraphs ("好。" / "执行。" / "（调用）" / "调用。" / "OK。"). The
+		// repeating unit is 15 paragraphs / 71 chars — past the old 60-char unit cap
+		// and too long for 4 copies to fit the old 250-char window. Every individual
+		// paragraph normalizes to 1-2 chars, so the paragraph-cluster path
+		// (SEGMENT_MIN_NORM_CHARS = 60) discards all of them: both paths missed it.
+		const unit = [
+			"执行。",
+			"（调用）",
+			"好。",
+			"执行。",
+			"好。",
+			"调用。",
+			"好。",
+			"执行。",
+			"（调用）",
+			"好。",
+			"执行。",
+			"好。",
+			"OK。",
+			"调用。",
+			"好。",
+		];
+		const detector = new ThinkingLoopDetector();
+		const text = Array.from({ length: 40 }, () => unit.join("\n\n")).join("\n\n");
+		let detail: string | null = null;
+		for (let i = 0; i < text.length && !detail; i += 40) detail = detector.push(text.slice(i, i + 40));
+		detail ??= detector.flush();
+		expect(detail).toContain("back-to-back");
+	});
+
+	test("does not trip on a long block of distinct short bullets", () => {
+		// The widened window must not turn an ordinary terse bullet list into a loop:
+		// short paragraphs are only evidence when they actually repeat.
+		const detector = new ThinkingLoopDetector();
+		const text = Array.from(
+			{ length: 60 },
+			(_, i) => `step ${i} examines subsystem ${["alpha", "beta", "gamma", "delta"][i % 4]} now`,
+		).join("\n\n");
+		let detail: string | null = null;
+		for (let i = 0; i < text.length && !detail; i += 40) detail = detector.push(text.slice(i, i + 40));
+		detail ??= detector.flush();
+		expect(detail).toBeNull();
+	});
+
 	test("does not trip on genuinely distinct reasoning paragraphs", () => {
 		const detector = new ThinkingLoopDetector();
 		let detail: string | null = null;

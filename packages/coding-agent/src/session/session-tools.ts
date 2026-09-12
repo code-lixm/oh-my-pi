@@ -447,6 +447,21 @@ export class SessionTools {
 		return false;
 	}
 
+	/**
+	 * Names whose current registry entry is built in, including active wire
+	 * aliases (see {@link hasBuiltInTool}). Snapshotted by the agent registry so a
+	 * parked/finished subagent transcript can still resolve built-in renderers
+	 * without borrowing another session's provenance.
+	 */
+	getBuiltInToolNames(): string[] {
+		const names = new Set(this.#builtInToolNames);
+		for (const name of this.#builtInToolNames) {
+			const wireName = this.#toolRegistry.get(name)?.customWireName;
+			if (wireName) names.add(wireName);
+		}
+		return [...names];
+	}
+
 	/** Updates source provenance when a live registry entry is replaced or restored. */
 	setToolBuiltIn(name: string, builtIn: boolean): void {
 		if (builtIn) {

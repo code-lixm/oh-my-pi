@@ -70,3 +70,9 @@ declare module "*.generated.js" {
 	const content: string;
 	export default content;
 }
+
+// Build-time constant injected by `bun build --compile --define FFF_LIBC='"musl"'`.
+// Declared here (not in a package) because `@ff-labs/fff-bun` is reached
+// transitively from several packages' type programs; a package-local copy only
+// resolves for the package that owns it.
+declare const FFF_LIBC: "gnu" | "musl";

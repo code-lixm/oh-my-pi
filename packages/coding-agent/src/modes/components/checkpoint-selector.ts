@@ -18,6 +18,7 @@ import {
 	extractPrintableText,
 	matchesKey,
 	replaceTabs,
+	routeSgrMouseInput,
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
@@ -208,6 +209,10 @@ export class CheckpointSelectorComponent implements Component {
 			return;
 		}
 		if (this.#building) return;
+		if (data.startsWith("\x1b[<")) {
+			this.#handleMouseInput(data);
+			return;
+		}
 
 		if (this.#stage === "list") {
 			this.#handleListInput(data);
@@ -218,6 +223,26 @@ export class CheckpointSelectorComponent implements Component {
 			return;
 		}
 		this.#handlePreviewInput(data);
+	}
+
+	/**
+	 * Wheel input moves the highlighted row. The list viewport is
+	 * selection-centered, so moving the selection is the scroll; with the
+	 * overlay capturing the wheel this arrives as discrete notches instead of
+	 * the terminal's converted arrow-key burst, which used to storm the
+	 * selection through the whole history. A notch that cannot move anything
+	 * repaints nothing, so a held wheel at either end cannot twitch the frame.
+	 */
+	#handleMouseInput(data: string): void {
+		routeSgrMouseInput(data, event => {
+			if (event.wheel === null) return false;
+			let moved: boolean;
+			if (this.#stage === "list") moved = this.#moveListSelection(event.wheel);
+			else if (this.#stage === "scope") moved = this.#cycleScopeSelection(event.wheel);
+			else moved = this.#cyclePreviewSelection(event.wheel);
+			if (moved) this.#deps.requestRender();
+			return true;
+		});
 	}
 
 	#handleListInput(data: string): void {
@@ -269,11 +294,11 @@ export class CheckpointSelectorComponent implements Component {
 
 	#handleScopeInput(data: string): void {
 		if (matchesSelectUp(data)) {
-			this.#scopeIndex = this.#scopeIndex === 0 ? SCOPE_OPTIONS.length - 1 : this.#scopeIndex - 1;
+			this.#cycleScopeSelection(-1);
 			return;
 		}
 		if (matchesSelectDown(data)) {
-			this.#scopeIndex = this.#scopeIndex === SCOPE_OPTIONS.length - 1 ? 0 : this.#scopeIndex + 1;
+			this.#cycleScopeSelection(1);
 			return;
 		}
 		if (!matchesKey(data, "enter") && !matchesKey(data, "return") && data !== "\n") return;
@@ -289,11 +314,11 @@ export class CheckpointSelectorComponent implements Component {
 	#handlePreviewInput(data: string): void {
 		const actions = this.#previewActions();
 		if (matchesSelectUp(data)) {
-			this.#previewActionIndex = this.#previewActionIndex === 0 ? actions.length - 1 : this.#previewActionIndex - 1;
+			this.#cyclePreviewSelection(-1);
 			return;
 		}
 		if (matchesSelectDown(data)) {
-			this.#previewActionIndex = this.#previewActionIndex === actions.length - 1 ? 0 : this.#previewActionIndex + 1;
+			this.#cyclePreviewSelection(1);
 			return;
 		}
 		if (!matchesKey(data, "enter") && !matchesKey(data, "return") && data !== "\n") return;
@@ -311,11 +336,33 @@ export class CheckpointSelectorComponent implements Component {
 		void this.#applyCurrent();
 	}
 
-	#moveListSelection(delta: number): void {
+	#moveListSelection(delta: number): boolean {
 		const total = this.#filteredRows.length;
-		if (total === 0) return;
-		this.#selectedIndex = Math.max(0, Math.min(this.#selectedIndex + delta, total - 1));
+		if (total === 0) return false;
+		const next = Math.max(0, Math.min(this.#selectedIndex + delta, total - 1));
+		const moved = next !== this.#selectedIndex;
+		this.#selectedIndex = next;
 		this.#refreshStatus();
+		return moved;
+	}
+
+	#cycleScopeSelection(delta: number): boolean {
+		const count = SCOPE_OPTIONS.length;
+		const next = (this.#scopeIndex + delta + count) % count;
+		const moved = next !== this.#scopeIndex;
+		this.#scopeIndex = next;
+		this.#refreshStatus();
+		return moved;
+	}
+
+	#cyclePreviewSelection(delta: number): boolean {
+		const count = this.#previewActions().length;
+		if (count === 0) return false;
+		const next = (this.#previewActionIndex + delta + count) % count;
+		const moved = next !== this.#previewActionIndex;
+		this.#previewActionIndex = next;
+		this.#refreshStatus();
+		return moved;
 	}
 
 	#selectedCheckpoint(): WorkspaceCheckpointRecord | undefined {

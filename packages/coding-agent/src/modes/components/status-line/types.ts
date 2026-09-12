@@ -143,6 +143,7 @@ export interface SegmentContext {
 		premiumRequests: number;
 		cost: number;
 		tokensPerSecond: number | null;
+		ttftMs: number | null;
 	};
 	/** Context usage percent, or null when unknown (e.g. right after compaction). */
 	contextPercent: number | null;

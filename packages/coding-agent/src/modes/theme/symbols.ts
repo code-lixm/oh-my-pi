@@ -848,7 +848,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.agents": "AG",
 	"icon.job": "bg",
 	"icon.output": "out:",
-	"icon.throughput": "tok/s:",
+	"icon.throughput": "t/s:",
 	"icon.cache": "cache",
 	"icon.cacheMiss": "!",
 	"icon.input": "in:",

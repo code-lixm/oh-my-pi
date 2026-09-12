@@ -36,6 +36,7 @@ import {
 	stripPendingSecretPlaceholderSuffix,
 } from "@oh-my-pi/pi-coding-agent/secrets/placeholder";
 import { compileSecretRegex } from "@oh-my-pi/pi-coding-agent/secrets/regex";
+import { matchesSecretScope, splitSecretScopeSetting } from "@oh-my-pi/pi-coding-agent/secrets/scope";
 import { getActiveProfile, getAgentDir, setProfile } from "@oh-my-pi/pi-utils/dirs";
 
 describe("legacy secrets/obfuscator deep-path exports", () => {
@@ -3665,5 +3666,121 @@ describe("deobfuscateAgentMessages (display restore)", () => {
 		expect(text.type === "text" && text.text).toBe(`archived ${secret}`);
 		// ...while the snapcompact image bytes pass through untouched.
 		expect(image.type === "image" && image.data).toBe(imageData);
+	});
+});
+
+describe("explicit secrets.yml entries", () => {
+	// The 8-character floor exists to tone down accidental matches from heuristic
+	// sources. A term the user wrote into secrets.yml is a deliberate
+	// declaration, so it is accepted at its real length — CJK terms carry
+	// meaning at two characters, and the floor would drop nearly all of them.
+	it("obfuscates a two-character explicit term and restores it", () => {
+		const term = "合同";
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: term, explicit: true }], "K".repeat(43));
+		expect(obfuscator.hasSecrets()).toBe(true);
+
+		const text = `这是${term}附件`;
+		const obfuscated = obfuscator.obfuscate(text);
+		expect(obfuscated).not.toContain(term);
+		expect(obfuscator.deobfuscate(obfuscated)).toBe(text);
+	});
+
+	it("still drops the same term when it is not explicit", () => {
+		// Guards the heuristic path: without `explicit`, nothing changes from the
+		// pre-existing behavior, so environment/built-in discovery stays safe.
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: "合同" }], "K".repeat(43));
+		expect(obfuscator.hasSecrets()).toBe(false);
+		expect(obfuscator.obfuscate("这是合同附件")).toBe("这是合同附件");
+	});
+
+	it("rejects a single-character plain term even when explicit", () => {
+		// A one-character substring matches inside unrelated compounds
+		// (毒 in 病毒/消毒), which measurably blows up tokens on ordinary text.
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: "毒", explicit: true }], "K".repeat(43));
+		expect(obfuscator.hasSecrets()).toBe(false);
+		expect(obfuscator.obfuscate("病毒查杀与消毒")).toBe("病毒查杀与消毒");
+	});
+
+	it("matches a one-character explicit regex only at its declared boundaries", () => {
+		// A regex states its own boundaries, so one character is allowed there.
+		const obfuscator = new SecretObfuscator(
+			[{ type: "regex", content: "(?<![\\u4e00-\\u9fff])毒(?![\\u4e00-\\u9fff])", explicit: true }],
+			"K".repeat(43),
+		);
+		const text = "病毒查杀 消毒 涉毒 独立 毒";
+		const obfuscated = obfuscator.obfuscate(text);
+
+		// Unrelated compounds keep their own characters...
+		for (const compound of ["病毒", "消毒", "涉毒"]) {
+			expect(obfuscated).toContain(compound);
+		}
+		// ...while the standalone character is redacted and restorable.
+		expect(obfuscated).not.toMatch(/毒$/);
+		expect(obfuscator.deobfuscate(obfuscated)).toBe(text);
+	});
+});
+
+describe("secret scope", () => {
+	it("matches every provider when no scope is configured", () => {
+		// Empty scope is the historical behavior: an existing config that never
+		// heard of scoping must keep redacting every request.
+		expect(matchesSecretScope(undefined, "cloudglab", "glm-5.2")).toBe(true);
+		expect(matchesSecretScope([], "anything", "whatever")).toBe(true);
+	});
+
+	it("matches a provider entry against all of its models only", () => {
+		expect(matchesSecretScope(["cloudglab"], "cloudglab", "glm-5.2")).toBe(true);
+		expect(matchesSecretScope(["cloudglab"], "cloudglab", "deepseek-v4.1-flash")).toBe(true);
+		expect(matchesSecretScope(["cloudglab"], "opencode-go", "glm-5.2")).toBe(false);
+	});
+
+	it("separates models that share a name across providers", () => {
+		// The whole point of the provider/model form: `deepseek-v4.1-flash` exists
+		// under several providers, and only the named one should be redacted.
+		expect(matchesSecretScope(["cloudglab/deepseek-v4.1-flash"], "cloudglab", "deepseek-v4.1-flash")).toBe(true);
+		expect(matchesSecretScope(["cloudglab/deepseek-v4.1-flash"], "ollama-cloud", "deepseek-v4.1-flash")).toBe(false);
+	});
+
+	it("applies globs inside a provider/model segment", () => {
+		expect(matchesSecretScope(["opencode-go/deepseek*"], "opencode-go", "deepseek-v4-flash")).toBe(true);
+		expect(matchesSecretScope(["opencode-go/deepseek*"], "opencode-go", "glm-5.2")).toBe(false);
+	});
+
+	it("splits a comma-separated setting into trimmed patterns", () => {
+		expect(splitSecretScopeSetting("cloudglab, opencode-go/x ,, y")).toEqual(["cloudglab", "opencode-go/x", "y"]);
+		expect(splitSecretScopeSetting(undefined)).toEqual([]);
+	});
+});
+
+describe("placeholder label", () => {
+	it("applies the configured label to entries without their own friendly name", () => {
+		const obfuscator = new SecretObfuscator(
+			[{ type: "plain", content: "合同", explicit: true }],
+			"K".repeat(43),
+			"SENSITIVE",
+		);
+		const obfuscated = obfuscator.obfuscate("合同");
+
+		expect(obfuscated).toMatch(/^\$\$SENSITIVE_[A-Z0-9]+\$\$$/);
+		// The label is cosmetic: the round trip must still resolve.
+		expect(obfuscator.deobfuscate(obfuscated)).toBe("合同");
+	});
+
+	it("normalizes separators and case out of the configured label", () => {
+		const obfuscator = new SecretObfuscator(
+			[{ type: "plain", content: "合同", explicit: true }],
+			"K".repeat(43),
+			"my_label_x",
+		);
+		expect(obfuscator.obfuscate("合同")).toMatch(/^\$\$MYLABELX_[A-Z0-9]+\$\$$/);
+	});
+
+	it("keeps an entry's own friendly name over the configured label", () => {
+		const obfuscator = new SecretObfuscator(
+			[{ type: "plain", content: "合同", explicit: true, friendlyName: "SPECIAL" }],
+			"K".repeat(43),
+			"VG",
+		);
+		expect(obfuscator.obfuscate("合同")).toMatch(/^\$\$SPECIAL_[A-Z0-9]+\$\$$/);
 	});
 });

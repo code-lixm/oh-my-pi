@@ -1271,6 +1271,21 @@ export class Agent {
 				throw new Error("Cannot continue from message role: assistant");
 			}
 
+			// A queued follow-up is a new user turn. It must remain deliverable even
+			// when an out-of-band custom message (advisor/IRC/tool status) is the
+			// literal transcript tail; agentLoopContinue would otherwise hand an
+			// invalid provider tail to the model and strand the queue.
+			const queuedSteering = await this.#dequeueSteeringMessagesAfterHooks(dequeueSignal);
+			if (queuedSteering.length > 0) {
+				await this.#runLoop(queuedSteering, { skipInitialSteeringPoll: true }, signal, true);
+				return;
+			}
+			const queuedFollowUp = await this.#dequeueFollowUpMessagesAfterHooks(dequeueSignal);
+			if (queuedFollowUp.length > 0) {
+				await this.#runLoop(queuedFollowUp, undefined, signal, true);
+				return;
+			}
+
 			await this.#runLoop(undefined, undefined, signal, true);
 		} finally {
 			resolve();

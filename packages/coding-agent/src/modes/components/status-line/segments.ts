@@ -16,6 +16,7 @@ import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
+import { getMetricThemeColor, getThroughputLevel, getTtftLevel } from "./rate-thresholds";
 import type {
 	RenderedSegment,
 	SegmentContext,
@@ -449,9 +450,29 @@ const tokenRateSegment: StatusLineSegment = {
 	render(ctx) {
 		const { tokensPerSecond } = ctx.usageStats;
 		if (!tokensPerSecond) return { content: "", visible: false };
+		// Grade the reading so a number reads at a glance: green when generation
+		// outpaces comfortable reading, yellow when merely usable, red when slow.
+		const content = withIcon(
+			theme.icon.throughput,
+			`${tokensPerSecond.toFixed(1)} t/s`,
+			getMetricThemeColor(getThroughputLevel(tokensPerSecond)),
+		);
+		return { content, visible: true };
+	},
+};
 
-		const content = withIcon(theme.icon.throughput, `${tokensPerSecond.toFixed(1)} tok/s`);
-		return { content: theme.fg("statusLineOutput", content), visible: true };
+const tokenTtftSegment: StatusLineSegment = {
+	id: "token_ttft",
+	render(ctx) {
+		const { ttftMs } = ctx.usageStats;
+		if (!ttftMs) return { content: "", visible: false };
+
+		const content = withIcon(
+			theme.icon.time,
+			`${(ttftMs / 1000).toFixed(1)}s`,
+			getMetricThemeColor(getTtftLevel(ttftMs)),
+		);
+		return { content, visible: true };
 	},
 };
 
@@ -899,6 +920,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_out: tokenOutSegment,
 	token_total: tokenTotalSegment,
 	token_rate: tokenRateSegment,
+	token_ttft: tokenTtftSegment,
 	cost: costSegment,
 	context_pct: contextPctSegment,
 	context_total: contextTotalSegment,

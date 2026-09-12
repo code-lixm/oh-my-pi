@@ -149,6 +149,7 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "./secrets";
+import { matchesSecretScope, splitSecretScopeSetting } from "./secrets/scope";
 import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
@@ -238,6 +239,7 @@ import {
 } from "./tools";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
+import { getGpt2ImageTools } from "./tools/gpt-2-image";
 import { isIrcEnabled } from "./tools/hub";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
@@ -1473,11 +1475,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const hasModelAuth = (candidate: Model): boolean => modelRegistry.hasConfiguredAuth(candidate);
 
 	// Load and create secret obfuscator early so resumed session state and prompt warnings
-	// reflect actual loaded secrets, not just the setting toggle.
 	const obfuscator: SecretObfuscator | undefined = settings.get("secrets.enabled")
-		? await buildSecretObfuscator(cwd, agentDir, options.agentDir)
+		? await buildSecretObfuscator(cwd, agentDir, options.agentDir, {
+				placeholderLabel: settings.get("secrets.placeholderPrefix"),
+				builtinPatterns: settings.get("secrets.builtin"),
+			})
 		: undefined;
 	const secretsEnabled = obfuscator?.hasSecrets() === true;
+
+	// Obfuscation scope, resolved once per session. Empty lists mean "every
+	// provider", so an unset setting keeps the pre-scoping behavior of redacting
+	// every outbound request. Evaluated per request (not cached) because `/model`
+	// switches the active provider mid-session.
+	const secretScopeProviders = splitSecretScopeSetting(settings.get("secrets.scope.providers"));
+	const secretScopeModels = splitSecretScopeSetting(settings.get("secrets.scope.models"));
+	const secretScopePatterns = [...secretScopeProviders, ...secretScopeModels];
+	const obfuscatorInScope = (candidate: Model | undefined): boolean =>
+		matchesSecretScope(secretScopePatterns, candidate?.provider, candidate?.id);
 
 	// An abnormal process exit after a non-terminal message tail is durable
 	// evidence that the old process can no longer finish that turn. Preserve the
@@ -2100,6 +2114,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				if (imageGenTools.length > 0) {
 					customTools.push(...(imageGenTools as unknown as CustomTool[]));
 				}
+			}
+
+			// gpt_2_image is a self-contained Images-API tool (own base URL /
+			// model / output dir), independent of generate_image's provider
+			// auto-resolution. Same honor-whitelist rule as generate_image:
+			// custom tools are alwaysInclude'd, so an explicit tool filter must
+			// name the tool or it leaks past --no-tools (issue #5305 pattern).
+			const gpt2ImageRequested = !options.toolNames || options.toolNames.includes("gpt_2_image");
+			if (settings.get("gpt2image.enabled") && gpt2ImageRequested) {
+				customTools.push(...(getGpt2ImageTools() as unknown as CustomTool[]));
 			}
 
 			if (settings.get("speechgen.enabled")) {
@@ -3331,6 +3355,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
 			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages));
 			if (!obfuscator?.hasSecrets()) return converted;
+			// Scope is checked against the request's own model so a `/model` switch
+			// takes effect on the next turn without rebuilding the session.
+			if (!obfuscatorInScope(agent?.state.model ?? model)) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};
 
@@ -3363,7 +3390,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				: undefined;
 		const transformProviderContext = async (context: Context, transformModel: Model): Promise<Context> => {
 			let transformed = attachCodexNativePrompt(context, transformModel);
-			if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
+			if (obfuscator && obfuscatorInScope(transformModel)) {
+				transformed = obfuscateProviderContext(obfuscator, transformed);
+			}
 			const systemPromptBeforeSnapcompact = transformed.systemPrompt;
 			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
 			if (!promptsMatch(transformed.systemPrompt, systemPromptBeforeSnapcompact)) {
@@ -4261,7 +4290,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					transformContext: async messages => wrapSteeringForModel(messages),
 					transformProviderContext: async (context, transformModel) => {
 						let transformed = attachCodexNativePrompt(context, transformModel);
-						if (obfuscator) transformed = obfuscateProviderContext(obfuscator, transformed);
+						if (obfuscator && obfuscatorInScope(transformModel)) {
+							transformed = obfuscateProviderContext(obfuscator, transformed);
+						}
 						transformed = clampProviderContextImages(transformed, transformModel);
 						let normalized = await normalizeProviderContextImagesForModel(transformed, transformModel);
 						if (blobBroker) normalized = await blobBroker.decorateContext(normalized, transformModel);

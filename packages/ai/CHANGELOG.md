@@ -7,22 +7,25 @@
 - Added optional Codex native-prompt sidecars with Full/Lite role ordering, fingerprint-partitioned prompt caches, stable session/thread identity, and complete generic-prompt fallback.
 - Added provider-native file references and optional remote image URLs to `ImageContent`; matching Anthropic, Google, OpenAI Responses, OpenAI Chat Completions, and Codex encoders now reuse those references while retaining inline base64 fallback.
 - Added a cross-turn thinking-loop guard: reasoning near-duplicated across consecutive completed turns (each turn locally healthy — visible text plus slightly-different tool arguments) now trips a corrective steer after 4 repetitions. Fingerprinting is script-aware — word trigrams for Latin thinking, character bigrams for CJK thinking, where word-level n-grams collapse (measured on a real 69-turn Chinese loop: near-duplicates 0.42-0.58 vs healthy ≤ 0.026).
+- Added Cursor hosted `web_fetch` tool-call support (proto fields, argument/result projection, URL recovery from unmodelled variants) and mapped ordered system prompts onto global `CursorRule` entries.
 
 ### Fixed
 
 - Fixed `normalizeSegment` dropping all CJK content (`/[^a-z0-9]+/g` → Unicode `\p{L}\p{N}`), which made Chinese reasoning invisible to every loop detector; English tokenization output is unchanged, so the in-stream detector's calibrated thresholds still see identical shapes.
+- Fixed the thinking-loop guard missing a degenerate reasoning loop built from short lines: a repeating unit longer than 60 chars (observed: 71 chars of alternating "好。/执行。/（调用）" paragraphs, 61k paragraphs in one 290k-char block) fit neither the verbatim window nor the paragraph-cluster path, because each individual line normalizes below the 60-char segment floor. The verbatim window and unit cap now scale together (512 / 128, keeping `4 × unit ≤ window`) so the run trips at 0.8% of the block instead of never.
 
-### Fixed
 - Fixed MiniMax M3 thinking streams bypassing the generalized thinking-loop guard; exact MiniMax M3 family models now use the retryable loop-abort path while MiniMax M2 remains unaffected.
 
 - Fixed OpenAPI Responses replay for DeepSeek-family targets (e.g. Console Go) rejecting a thinking-mode continuation when a replayed assistant turn — minted by another model before a model switch (GPT encrypted CoT, minimax, compacted history) — captured no reasoning content at all. The gateway 400s with "The reasoning_text in the thinking mode must be passed back to the API" for BOTH an empty `reasoning_text` and a missing reasoning item on tool-call turns (verified against the live backend), so the encoder now synthesizes a non-empty reasoning item for every replayed assistant turn that requires reasoning replay, falling back to a neutral placeholder when no reasoning text was captured; the fallback replay sanitizer also keeps those items for reasoning-requiring targets instead of dropping them.
-### Fixed
-
-- Fixed `omp usage invalidate` to discard stale OAuth and API-key usage snapshots, then force a cache-bypassing, per-provider serialized refresh so upgraded subscriptions do not silently retain pre-change quota data.
-### Fixed
 
 - Fixed `omp usage invalidate` to discard stale OAuth and API-key usage snapshots, then force a cache-bypassing, per-provider serialized refresh with a broker request budget sized for the full unfiltered account batch, so upgraded subscriptions do not silently retain pre-change quota data.
 - Fixed quota reporting and Cookie capture guidance for China (Beijing) Alibaba Token Plan credentials ([#8509](https://github.com/can1357/oh-my-pi/issues/8509)).
+- Fixed Cursor `editToolCall` materialization reads poisoning the write-back with hashline markup: the read is forced onto `read`'s verbatim `:raw` selector, composing with an existing line range instead of dropping it.
+- Fixed Cursor streams losing announced tool-call arguments when the provider sends no argument deltas or the stream ends before tool completion; the last announced arguments are preserved instead of submitting empty input.
+- Fixed Cursor MCP history replay aborting on non-JSON argument values: arguments are normalized, `__proto__` keys stay own properties, and inherited enumerable properties are excluded.
+- Fixed Cursor usage buckets being dropped when an account reports no request limit; an uncapped used-only bucket is emitted and capped/uncapped buckets can coexist.
+- Fixed Cursor Connect diagnostics leaking into recovery classification: the display-only detail text is appended to `errorMessage` while the raw upstream text is carried separately for classification.
+- Fixed the no-progress loop guard skipping repeated tool turns that kept a visible status line, and misreading literal `echo` echoes as repetition; bash `Wall time` footers are now stripped before comparison.
 
 ## [17.3.3] - 2026-08-14
 

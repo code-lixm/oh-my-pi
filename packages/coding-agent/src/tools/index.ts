@@ -25,6 +25,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import type { RefinementController, RlmChildLifecycle } from "../prime-integration/contracts";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
+import type { SessionScheduleRuntime } from "../scheduling/runtime";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
@@ -385,6 +386,8 @@ export interface ToolSession {
 	getGoalRuntime?: () => GoalRuntime | undefined;
 	/** Refinement controller for the active agent session. */
 	getRefinementController?: () => RefinementController | undefined;
+	/** Session-scoped cron runtime backing the `cron` tool and `/cron` hub. */
+	getScheduleRuntime?: () => SessionScheduleRuntime | undefined;
 	/** Get cumulative session usage statistics (input/output tokens, cost). */
 	getUsageStatistics?: () => UsageStatistics;
 	/** Current per-turn token budget {total, spent, hard} for the eval `budget` helper. */

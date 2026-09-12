@@ -40,6 +40,7 @@ function makeContext(overrides: Partial<SegmentContext> = {}): SegmentContext {
 			premiumRequests: 0,
 			cost: 0,
 			tokensPerSecond: null,
+			ttftMs: null,
 		},
 		contextPercent: 0,
 		contextTokens: 0,

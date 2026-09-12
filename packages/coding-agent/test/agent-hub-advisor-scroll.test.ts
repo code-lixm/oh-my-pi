@@ -216,7 +216,12 @@ function messageLine(id: string, content: string): string {
 	});
 }
 
-function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
+function makeViewer(
+	file: string,
+	remote?: AgentHubRemote,
+	ui?: TUI,
+	callbacks?: { onClose?: () => void; onHubClose?: () => void },
+) {
 	const agents = new AgentRegistry();
 	agents.register({
 		id: ADVISOR_ID,
@@ -236,8 +241,8 @@ function makeViewer(file: string, remote?: AgentHubRemote, ui?: TUI) {
 		expandKeys: ["ctrl+o"],
 		hubKeys: ["ctrl+s"],
 		requestRender: () => {},
-		onClose: () => {},
-		onHubClose: () => {},
+		onClose: callbacks?.onClose ?? (() => {}),
+		onHubClose: callbacks?.onHubClose ?? (() => {}),
 	});
 }
 
@@ -845,6 +850,36 @@ describe("AgentTranscriptViewer", () => {
 			expect(rendered).toContain("SUB_VISIBLE_RESULT");
 		} finally {
 			viewer?.dispose();
+			removeSyncWithRetries(dir);
+		}
+	});
+
+	it("returns to the hub table on a ←← double-tap, matching the footer hint", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "adv-view-left-"));
+		const file = path.join(dir, "__advisor.jsonl");
+		fs.writeFileSync(file, buildJsonl());
+		let closeCount = 0;
+		const viewer = makeViewer(file, undefined, undefined, {
+			onClose: () => {
+				closeCount++;
+			},
+			onHubClose: () => {
+				closeCount += 10;
+			},
+		});
+		try {
+			viewer.render(80);
+			// A single ← only primes the detector; the viewer stays open.
+			viewer.handleInput("\x1b[D");
+			expect(closeCount).toBe(0);
+			// The second ← within the double-tap window returns to the hub table (onClose, NOT onHubClose).
+			viewer.handleInput("\x1b[D");
+			expect(closeCount).toBe(1);
+			// The hub-toggle key path must still close viewer AND hub.
+			viewer.handleInput("\x13"); // ctrl+s
+			expect(closeCount).toBe(11);
+		} finally {
+			viewer.dispose();
 			removeSyncWithRetries(dir);
 		}
 	});

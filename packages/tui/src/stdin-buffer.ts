@@ -474,6 +474,16 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			return;
 		}
 
+		// A terminal can batch two bare Esc keypresses into one read. This exact
+		// shape is unambiguous: do not hold it behind the escape disambiguation
+		// timer, otherwise the main session cannot confirm cancellation promptly.
+		if (this.#buffer.length === 0 && str === `${ESC}${ESC}`) {
+			this.#pendingKittyPrintableCodepoint = undefined;
+			this.#emitDataSequence(ESC);
+			this.#emitDataSequence(ESC);
+			return;
+		}
+
 		this.#buffer += str;
 
 		const startIndex = this.#buffer.indexOf(BRACKETED_PASTE_START);
@@ -743,11 +753,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#buffer = "";
 		this.#escapeSearchOffset = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
-		// Bare double-ESC remainder (no disambiguating "[" / "O" arrived in time):
-		// two real Esc keypresses bursted by terminal batching, not a meta-CSI/SS3
-		// prefix. `parseKey` returns undefined for the combined chunk, so a single
-		// emission swallows the double-escape gesture (#3857). Mirror the inline
-		// split in `extractCompleteSequences` and deliver two ESC events.
+		// Bare double-ESC is two keypresses even when flush is triggered by a
+		// caller immediately after stdin delivery. Returning two events here
+		// lets downstream handlers confirm and cancel in the same call stack.
 		if (buffered === `${ESC}${ESC}`) {
 			sequences.push(ESC, ESC);
 		} else {

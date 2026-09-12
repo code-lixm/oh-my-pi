@@ -264,14 +264,14 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
 
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		// Layout: "<glyph> Thinking · <total> · <rate> toks/s" — 57 provider tokens, 47.0 tok/s.
-		expect(plain).toContain("57 · 47.0 toks/s");
+		// Layout: "<glyph> Thinking · <total> · <rate> t/s" — 57 provider tokens, 47.0 t/s.
+		expect(plain).toContain("57 · 47.0 t/s");
 
 		nowSpy.mockRestore();
 		component.dispose();
 	});
 
-	it("clamps the displayed speed to the 200 tok/s ceiling", () => {
+	it("clamps the displayed speed to the 200 t/s ceiling", () => {
 		resetThinkingSpeedTracker();
 		const component = new AssistantMessageComponent(undefined, true);
 		const nowSpy = spyOn(performance, "now");
@@ -285,7 +285,7 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		component.updateContent(streaming([{ type: "thinking", thinking: "a" }], 987), { transient: true });
 
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).toContain("200.0 toks/s");
+		expect(plain).toContain("200.0 t/s");
 
 		nowSpy.mockRestore();
 		component.dispose();
@@ -304,11 +304,11 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 
 		// Long pause: rate observations age out of the window. A same-token update
 		// refreshes the live label, which now drops the numeric badge entirely
-		// rather than lingering on "0.0 toks/s" while retaining descriptive text.
+		// rather than lingering on "0.0 t/s" while retaining descriptive text.
 		mockTime = 30_000;
 		component.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
 		const plain = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
-		expect(plain).not.toContain("toks/s");
+		expect(plain).not.toMatch(/\d+\.\d+ t\/s/);
 		expect(plain).not.toContain("57");
 		expect(plain.includes(PULSE)).toBe(true);
 		expect(plain).toContain(THINKING_LABEL);
@@ -328,7 +328,7 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		a.updateContent(streaming([{ type: "thinking", thinking: "a" }], 10), { transient: true });
 		mockTime = 2000;
 		a.updateContent(streaming([{ type: "thinking", thinking: "ab" }], 57), { transient: true });
-		expect(Bun.stripANSI(a.render(RENDER_WIDTH).join("\n"))).toContain("toks/s");
+		expect(Bun.stripANSI(a.render(RENDER_WIDTH).join("\n"))).toContain("t/s");
 		a.dispose();
 
 		// Block B starts moments later with provider tokens but no positive delta of
@@ -337,7 +337,7 @@ describe("AssistantMessageComponent streaming thinking pulse", () => {
 		const b = new AssistantMessageComponent(undefined, true);
 		b.updateContent(streaming([{ type: "thinking", thinking: "xyz" }], 99), { transient: true });
 		const plain = Bun.stripANSI(b.render(RENDER_WIDTH).join("\n"));
-		expect(plain).not.toContain("toks/s");
+		expect(plain).not.toMatch(/\d+\.\d+ t\/s/);
 		expect(plain).not.toContain("99");
 		expect(plain.includes(PULSE)).toBe(true);
 		expect(plain).toContain(THINKING_LABEL);

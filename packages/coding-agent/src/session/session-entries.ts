@@ -242,6 +242,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	readSummarize?: boolean;
 	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
 	advisor?: string;
+	/** Built-in tool names (wire aliases included) so a parked transcript keeps the built-in renderers without borrowing another session's provenance. */
+	builtInToolNames?: string[];
 }
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */

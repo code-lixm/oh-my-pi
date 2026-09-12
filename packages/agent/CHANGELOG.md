@@ -13,11 +13,13 @@
 
 - Changed model-generated compaction summaries to use OpenCode's anchored Markdown section schema, retain constraints, decisions and evidence, command outcomes, active/blocked work, recovery references, and next actions, then replay the summary directly so execution continues without repeating completed work or reopening settled decisions without new evidence.
 - Changed compaction replay to carry validated deterministic todos, command outcomes, unresolved failures, workspace checkpoints, and recoverable URIs independently of the model-generated prose summary.
+- Changed the no-progress loop halt to travel as its own terminal abort reason (`NO_PROGRESS_LOOP_ABORT_REASON`, exposed via `isTerminalToolResultAbortReason`): a halted run still reaches its post-tool and turn-end hooks and drops the remaining tool batch, instead of being treated as an external abort.
 
 ### Fixed
 
 - Fixed unknown-tool calls giving the model no path to recover: the error result now names the available tools and suggests the closest match ("Tool x not found. Available tools: … Did you mean \"y\"?"), so a model that hallucinates a tool name can self-repair on its next step instead of stalling.
 - Fixed handoff generation failing the session transition on a transient provider stream drop (e.g. "The socket connection was closed unexpectedly"): the handoff oneshot now retries transient failures by default (3 attempts with backoff, opt-out via `oneshotRetry: false`), matching the summarization oneshots.
+- Fixed `Agent.continue()` stranding queued steering and follow-up messages when an out-of-band custom message (advisor card, IRC aside, tool-status record) was the literal transcript tail: the queue is now drained before the continuation runs — a queued steer is injected before the first provider call, and a queued follow-up is delivered as a new user turn instead of handing the custom tail to the provider.
 
 ## [17.3.0] - 2026-08-13
 

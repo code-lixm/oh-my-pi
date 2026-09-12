@@ -172,4 +172,70 @@ describe("TUI adaptive render backpressure (#4145)", () => {
 			tui.stop();
 		}
 	});
+
+	it("preempts the adaptive floor for an urgent component render", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const probe = new ScriptedFrameCost();
+		probe.scheduler = scheduler;
+		const panel = new ScriptedFrameCost();
+		panel.scheduler = scheduler;
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(probe);
+		tui.addChild(panel);
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			scheduler.timers.length = 0;
+
+			// One slow frame — 100ms, well over the 33ms cadence.
+			probe.scheduleCost(100);
+			tui.requestRender();
+			stepRender(scheduler);
+
+			// A queued-message chip repaint is direct feedback for the keystroke
+			// that produced it, so it must land on the next paint slot instead of
+			// inheriting the previous frame's cost.
+			panel.scheduleCost(1);
+			tui.requestComponentRender(panel, { urgent: true });
+			const delay = stepRender(scheduler);
+			expect(delay).not.toBeNull();
+			expect(delay!).toBeLessThan(MIN_RENDER_INTERVAL_MS + 1);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("still deflates a plain component render after a slow frame", () => {
+		const term = new VirtualTerminal(20, 4);
+		const scheduler = new DeferredRenderScheduler();
+		const probe = new ScriptedFrameCost();
+		probe.scheduler = scheduler;
+		const panel = new ScriptedFrameCost();
+		panel.scheduler = scheduler;
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.addChild(probe);
+		tui.addChild(panel);
+
+		try {
+			tui.start();
+			stepRender(scheduler);
+			scheduler.timers.length = 0;
+
+			probe.scheduleCost(100);
+			tui.requestRender();
+			stepRender(scheduler);
+
+			// Without the urgent opt-in the adaptive floor still applies; the
+			// contrast is what keeps the opt-in meaningful.
+			panel.scheduleCost(1);
+			tui.requestComponentRender(panel);
+			const delay = stepRender(scheduler);
+			expect(delay).not.toBeNull();
+			expect(delay!).toBeGreaterThanOrEqual(100);
+		} finally {
+			tui.stop();
+		}
+	});
 });

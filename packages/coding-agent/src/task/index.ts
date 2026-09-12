@@ -1193,9 +1193,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					throw new Error(tSettingsUi("Aborted before execution"));
 				}
 				try {
-					markRunning();
 					await reportProgress(
-						tSettingsUi("Running background task {agentId}...", { agentId }),
+						tSettingsUi("Queued background task {agentId}...", { agentId }),
 						() => buildDetails() as unknown as Record<string, unknown>,
 					);
 					const forwardSyncProgress: AgentToolUpdateCallback<TaskToolDetails> = async update => {
@@ -1266,6 +1265,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.index,
 						true,
 						{ invokedAt: progress.startedAtMs ?? startedAt, acquiredAt },
+						markRunning,
 					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
@@ -1495,8 +1495,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		markRunning?: () => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached, launchTiming);
+		return this.#runSpawn(
+			toolCallId,
+			params,
+			signal,
+			onUpdate,
+			preAllocatedId,
+			spawnIndex,
+			detached,
+			launchTiming,
+			markRunning,
+		);
 	}
 
 	/** Spawn a fresh subagent and run it to completion. */
@@ -1509,10 +1520,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		markRunning?: () => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
+		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
 		const startTime = Date.now();
 		const assignment = (params.task ?? "").trim();
-		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
 		let latestProgress: AgentProgress | undefined;
 		let releaseRunnable: (() => void) | undefined;
 		try {
@@ -1520,6 +1532,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (preAllocatedId && taskRunnableConcurrency) {
 				releaseRunnable = await taskRunnableConcurrency.acquire(preAllocatedId, signal);
 			}
+			markRunning?.();
 			const runnableAcquiredAt = releaseRunnable ? Date.now() : launchTiming?.acquiredAt;
 			const execution = await runStructuredSubagent({
 				session: this.session,

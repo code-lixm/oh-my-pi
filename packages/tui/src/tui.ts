@@ -1333,7 +1333,8 @@ export class TUI extends Container {
 	 */
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
 	#inputRenderGraceUntilMs = 0;
-	#inputRenderUrgent = false;
+	/** Set by a user-interaction repaint (keystroke, queued-chip refresh) to bypass adaptive backpressure. */
+	#interactiveRenderUrgent = false;
 	// Pane-reflow settle window for tmux/screen/zellij. The host process gets
 	// SIGWINCH (and `process.stdout` already reports the new geometry) before
 	// the multiplexer finishes repainting the pane at the new size, and
@@ -3151,7 +3152,7 @@ export class TUI extends Container {
 	 * compose, so this is never less correct than `requestRender()` — only
 	 * cheaper.
 	 */
-	requestComponentRender(component: Component): void {
+	requestComponentRender(component: Component, options?: { urgent?: boolean }): void {
 		if (this.#stopped) return;
 		// Start a component-scoped accumulation only when nothing else is in
 		// flight (a pending throttled request or a deferred ConPTY settle
@@ -3160,6 +3161,23 @@ export class TUI extends Container {
 			this.#pendingRenderComponentsOnly = true;
 		}
 		this.#componentRenderTargets.add(component);
+		// A user-interaction repaint preempts adaptive backpressure exactly
+		// like keystroke input does: drop the throttled frame and land on the
+		// next paint slot, so a queued-message chip appears immediately
+		// instead of waiting out the previous frame's cost. Startup waits and
+		// multiplexer settles still win — they gate the frame, and preempting
+		// them would race a pane repaint.
+		if (options?.urgent && !this.#startupAppearanceWaitActive && !this.#multiplexerResizeTimer) {
+			this.#markRenderQueued();
+			this.#interactiveRenderUrgent = true;
+			if (this.#renderTimer) {
+				this.#renderTimer.cancel();
+				this.#renderTimer = undefined;
+			}
+			this.#renderRequested = true;
+			this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
+			return;
+		}
 		this.#requestOrdinaryRender();
 	}
 
@@ -3302,7 +3320,7 @@ export class TUI extends Container {
 
 	/** Let visible input preempt animation backpressure without exceeding the 30 fps paint cadence. */
 	#prioritizeInputRender(): void {
-		this.#inputRenderUrgent = true;
+		this.#interactiveRenderUrgent = true;
 		if (!this.#renderTimer) return;
 		this.#renderTimer.cancel();
 		this.#renderTimer = undefined;
@@ -3539,7 +3557,7 @@ export class TUI extends Container {
 		// from the last frame's start) must already exceed twice the cost
 		// before we allow the follow-up render to fire. Capped so a
 		// pathological one-off spike doesn't lock the UI (#4145).
-		const adaptiveFloor = this.#inputRenderUrgent
+		const adaptiveFloor = this.#interactiveRenderUrgent
 			? 0
 			: Math.min(TUI.#MAX_ADAPTIVE_RENDER_MS, this.#lastFrameCostMs * 2);
 		const adaptiveDelay = Math.max(0, adaptiveFloor - elapsed);
@@ -3597,7 +3615,7 @@ export class TUI extends Container {
 	 * reads it re-entrantly) and compute the cost once the paint returns.
 	 */
 	#executeRender(): void {
-		this.#inputRenderUrgent = false;
+		this.#interactiveRenderUrgent = false;
 		this.#lastComposeMs = undefined;
 		const start = this.#renderScheduler.now();
 		this.#responsivenessTelemetry.beginFrame(start);

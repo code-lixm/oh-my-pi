@@ -9,8 +9,9 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatAge, sanitizeText } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobManager } from "../../async/job-manager";
+import type { AsyncJob, AsyncJobConcurrencySnapshot } from "../../async/job-manager";
 import { tSettingsUi } from "../../i18n/settings-locale";
+import type { AsyncJobSnapshotItem } from "../../session/agent-session-types";
 import type { AgentProgress } from "../../task/types";
 import { replaceTabs } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
@@ -65,16 +66,39 @@ interface TaskDetails {
 	progress?: unknown;
 }
 
+/** Job fields safe to expose through a session-scoped Jobs Hub data source. */
+export type JobsHubJob = AsyncJobSnapshotItem &
+	Partial<
+		Pick<
+			AsyncJob,
+			| "description"
+			| "resultText"
+			| "errorText"
+			| "latestProgressText"
+			| "latestDetails"
+			| "lastProgressAt"
+			| "ownerId"
+			| "agentId"
+			| "queued"
+		>
+	>;
+
+/** Transport-neutral, session-scoped source for retained background jobs. */
+export interface JobsHubDataSource {
+	getAllJobs(): readonly JobsHubJob[];
+	getConcurrencySnapshot?(): AsyncJobConcurrencySnapshot;
+}
+
 export interface JobsHubDeps {
-	manager: AsyncJobManager;
+	manager: JobsHubDataSource;
 	onDone: () => void;
 	requestRender: () => void;
 	focusAgent?: (id: string) => Promise<void>;
-	cancelJob?: (job: AsyncJob) => Promise<boolean>;
+	cancelJob?: (job: JobsHubJob) => Promise<boolean>;
 }
 
 interface JobRow {
-	job: AsyncJob;
+	job: JobsHubJob;
 	progress?: AgentProgress;
 }
 
@@ -106,7 +130,7 @@ function isAgentProgress(value: unknown): value is AgentProgress {
 	);
 }
 
-function taskProgress(job: AsyncJob): AgentProgress | undefined {
+function taskProgress(job: JobsHubJob): AgentProgress | undefined {
 	if (job.type !== "task") return undefined;
 	const value = (job.latestDetails as TaskDetails | undefined)?.progress;
 	if (!Array.isArray(value)) return undefined;
@@ -119,12 +143,12 @@ function taskProgress(job: AsyncJob): AgentProgress | undefined {
 	return first;
 }
 
-function statusLabel(job: AsyncJob): string {
+function statusLabel(job: JobsHubJob): string {
 	if (job.status === "running" && job.queued) return tSettingsUi("queued");
 	return tSettingsUi(job.status);
 }
 
-function statusGlyph(job: AsyncJob): string {
+function statusGlyph(job: JobsHubJob): string {
 	if (job.status === "running" && job.queued) return theme.fg("warning", "◌");
 	if (job.status === "running") return theme.fg("accent", theme.status.running);
 	if (job.status === "completed") return theme.fg("success", theme.status.enabled);
@@ -132,7 +156,7 @@ function statusGlyph(job: AsyncJob): string {
 	return theme.fg("dim", theme.status.disabled);
 }
 
-function jobDuration(job: AsyncJob): string {
+function jobDuration(job: JobsHubJob): string {
 	return formatAgentDuration(Math.max(0, (job.endedAt ?? Date.now()) - job.startTime));
 }
 
@@ -295,7 +319,7 @@ export class JobsHubOverlayComponent extends Container {
 		const completed = jobs.filter(job => job.status === "completed").length;
 		const failed = jobs.filter(job => job.status === "failed").length;
 		const cancelled = jobs.filter(job => job.status === "cancelled").length;
-		const capacity = this.deps.manager.getConcurrencySnapshot();
+		const capacity = this.deps.manager.getConcurrencySnapshot?.() ?? { running: 0, queued: 0, limit: 0 };
 		const summary = [
 			tSettingsUi("{count} running", { count: running }),
 			tSettingsUi("{count} queued", { count: queued }),
@@ -306,8 +330,7 @@ export class JobsHubOverlayComponent extends Container {
 		].join(theme.sep.dot);
 		const wide = innerWidth >= JOBS_WIDE_MIN_CONTENT_WIDTH;
 		const lines = [topBorder(width, tSettingsUi("Jobs Hub")), row(theme.fg("dim", summary), width)];
-
-		if (wide && this.#rows.length > 0) lines.push(row(this.#columnHeader(innerWidth), width));
+		if (wide) lines.push(row(theme.fg("dim", this.#renderColumnHeader(innerWidth)), width));
 
 		if (this.#rows.length === 0) {
 			lines.push(row(theme.fg("dim", tSettingsUi("No retained background jobs.")), width));
@@ -416,24 +439,18 @@ export class JobsHubOverlayComponent extends Container {
 		job += Math.min(JOB_MAX_JOB_WIDTH - job, surplus);
 		return { job, model, owner, update };
 	}
-
-	#columnHeader(width: number): string {
-		const {
-			job: jobWidth,
-			model: modelWidth,
-			owner: ownerWidth,
-			update: updateWidth,
-		} = this.#fixedColumnWidths(width);
-		const cells = [
-			fixedCell(tSettingsUi("Job"), jobWidth),
-			fixedCell(tSettingsUi("Type"), JOB_TYPE_WIDTH),
-			fixedCell(tSettingsUi("Status"), JOB_STATUS_WIDTH),
-			fixedCell(tSettingsUi("Duration"), JOB_DURATION_WIDTH),
-			fixedCell(tSettingsUi("Model"), modelWidth),
-			fixedCell(tSettingsUi("Owner"), ownerWidth),
-			fixedCell(tSettingsUi("Last update"), updateWidth),
-		];
-		return theme.fg("dim", `   ${cells.join(JOB_COLUMN_GAP)}`);
+	#renderColumnHeader(width: number): string {
+		const widths = this.#fixedColumnWidths(width);
+		const columns = [
+			["Job", widths.job],
+			["Type", JOB_TYPE_WIDTH],
+			["Status", JOB_STATUS_WIDTH],
+			["Duration", JOB_DURATION_WIDTH],
+			["Model", widths.model],
+			["Owner", widths.owner],
+			["Last update", widths.update],
+		] as const;
+		return ` ${columns.map(([label, columnWidth]) => fixedCell(theme.bold(tSettingsUi(label)), columnWidth)).join(JOB_COLUMN_GAP)}`;
 	}
 
 	#footer(width: number): string {

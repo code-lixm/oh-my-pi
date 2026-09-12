@@ -1,8 +1,21 @@
-import { type Component, Container, Markdown, type MouseRoutable, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import {
+	type Component,
+	Container,
+	Image,
+	type ImageBudget,
+	ImageProtocol,
+	Markdown,
+	type MouseRoutable,
+	type SgrMouseEvent,
+	Spacer,
+	TERMINAL,
+} from "@oh-my-pi/pi-tui";
 import { formatBytes, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { resolveImageOptions } from "../../tools/render-utils";
 import { applyStableBackground } from "../../tui";
-import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
+import { imageReferenceHyperlink, kittyTransmittableImage, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
@@ -28,6 +41,28 @@ const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
 const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
 
 /**
+ * Image-preview wiring for a submitted user prompt: the message's image parts plus
+ * the host hooks a deferred render needs. Images render below the bubble through the
+ * same terminal-graphics path as assistant and tool images, while the `[Image #N]`
+ * markers in the bubble text stay the clickable, hyperlinked references.
+ */
+export interface UserMessageImagePreview {
+	images: readonly ImageContent[];
+	/** Shared TUI image budget (stable graphics ids + transmit-once). */
+	budget?: ImageBudget;
+	/** `terminal.showImages`; `false` leaves the markers as the whole representation. */
+	visible?: boolean;
+	/** Repaint hook for a late Kitty PNG conversion (non-PNG bytes convert async). */
+	onImageUpdate?: () => void;
+	/** Click target: open the original bytes in the host's viewer. */
+	openImage?: (image: ImageContent) => void;
+}
+
+/** Per-instance preview identity, so {@link ImageBudget} hands back the same graphics
+ *  ids when this component rebuilds its own preview block. */
+let nextUserImagePreviewKey = 0;
+
+/**
  * Component that renders a user message
  */
 export class UserMessageComponent extends Container {
@@ -37,14 +72,19 @@ export class UserMessageComponent extends Container {
 	// never mutates the container's cached array.
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
+	#imagePreview: UserMessageImagePreview | undefined;
+	#imageSlot: Container | undefined;
+	readonly #previewKey: number;
 
 	constructor(
 		text: string,
 		synthetic = false,
 		imageLinks?: readonly (string | undefined)[],
 		onOpenLink?: (href: string) => void,
+		imagePreview?: UserMessageImagePreview,
 	) {
 		super();
+		this.#previewKey = ++nextUserImagePreviewKey;
 		// Paint magic keywords inside the rendered bubble, matching the live editor.
 		// Markdown code spans and fenced blocks own their foreground styling; the bubble
 		// background is reapplied separately so syntax resets cannot punch holes through it.
@@ -79,6 +119,52 @@ export class UserMessageComponent extends Container {
 		md.setIgnoreTight(true);
 		if (onOpenLink) md.setLinkHandler(onOpenLink);
 		this.addChild(md);
+		if (!synthetic && imagePreview) {
+			this.#imagePreview = imagePreview;
+			this.#imageSlot = new Container();
+			this.addChild(this.#imageSlot);
+			this.#rebuildImagePreviews();
+		}
+	}
+
+	/**
+	 * (Re)build the preview block below the bubble. Runs at construction and again when
+	 * a deferred Kitty PNG conversion lands; the converted bytes are cached on the image
+	 * object, so rebuilds never re-encode.
+	 */
+	#rebuildImagePreviews(): void {
+		const preview = this.#imagePreview;
+		const slot = this.#imageSlot;
+		if (!preview || !slot) return;
+		slot.clear();
+		// No image protocol (or images hidden): the `[Image #N]` marker is already the
+		// whole representation, and the graphics text fallback would only restate it.
+		if (preview.visible === false || !TERMINAL.imageProtocol) return;
+		const images = preview.images.filter(image => image.data && image.mimeType);
+		if (images.length === 0) return;
+		slot.addChild(new Spacer(1));
+		for (const [index, image] of images.entries()) {
+			// Kitty's `f=100` transmit accepts only PNG; non-PNG sources report undefined
+			// until the conversion lands, and the marker stays the fallback until then.
+			const displayImage =
+				TERMINAL.imageProtocol === ImageProtocol.Kitty
+					? kittyTransmittableImage(image, () => this.#handlePreviewImageReady())
+					: image;
+			if (!displayImage) continue;
+			const component = new Image(
+				displayImage.data,
+				displayImage.mimeType,
+				{ fallbackColor: (value: string) => theme.fg("toolOutput", value) },
+				{ ...resolveImageOptions(), budget: preview.budget, imageKey: `user:${this.#previewKey}:${index}` },
+			);
+			if (preview.openImage) component.setClickHandler(() => preview.openImage?.(image));
+			slot.addChild(component);
+		}
+	}
+
+	#handlePreviewImageReady(): void {
+		this.#rebuildImagePreviews();
+		this.#imagePreview?.onImageUpdate?.();
 	}
 
 	override render(width: number): readonly string[] {

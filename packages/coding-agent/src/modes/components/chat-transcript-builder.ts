@@ -103,6 +103,15 @@ function userMessageText(message: Extract<AgentMessage, { role: "user" }>): stri
 		.join("");
 }
 
+/** Image parts of a persisted user message, in submission order — index N-1 backs
+ *  the `[Image #N]` marker in the message text. */
+function userMessageImages(message: Extract<AgentMessage, { role: "developer" | "user" }>): ImageContent[] {
+	if (typeof message.content === "string") return [];
+	return message.content.filter(
+		(block): block is ImageContent => block.type === "image" && !!block.data && !!block.mimeType,
+	);
+}
+
 export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
 	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
@@ -295,7 +304,15 @@ export class ChatTranscriptBuilder {
 						this.#trackExpandable(collapsed);
 						this.container.addChild(collapsed);
 					} else {
-						this.container.addChild(new UserMessageComponent(textContent, false, undefined, this.deps.openLink));
+						this.container.addChild(
+							new UserMessageComponent(textContent, false, undefined, this.deps.openLink, {
+								images: userMessageImages(message),
+								budget: this.deps.ui.imageBudget,
+								visible: settings.get("terminal.showImages"),
+								onImageUpdate: this.deps.requestRender,
+								openImage: this.deps.openImage,
+							}),
+						);
 					}
 				}
 				break;

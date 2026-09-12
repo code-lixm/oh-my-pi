@@ -28,6 +28,7 @@ function createContext() {
 		editor: { setText: vi.fn() },
 		updatePendingMessagesDisplay: vi.fn(),
 		retireOptimisticQueuedMessage: vi.fn(),
+		hasOwnedOptimisticUserBubble: () => false,
 		setWorkingMessage,
 		clearPinnedError: vi.fn(),
 		ensureLoadingAnimation,

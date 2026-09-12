@@ -19,6 +19,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { TaskRunnableConcurrency } from "@oh-my-pi/pi-coding-agent/task/request-concurrency";
 import type { AgentDefinition, SingleResult, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getSettingsUiLocale, setSettingsUiLocale } from "../../src/i18n/settings-locale";
@@ -31,7 +32,11 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-function createSession(options: { manager?: AsyncJobManager; settings?: Record<string, unknown> }): ToolSession {
+function createSession(options: {
+	manager?: AsyncJobManager;
+	taskRunnableConcurrency?: TaskRunnableConcurrency;
+	settings?: Record<string, unknown>;
+}): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
@@ -39,6 +44,7 @@ function createSession(options: { manager?: AsyncJobManager; settings?: Record<s
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		asyncJobManager: options.manager,
+		taskRunnableConcurrency: options.taskRunnableConcurrency,
 	} as unknown as ToolSession;
 }
 

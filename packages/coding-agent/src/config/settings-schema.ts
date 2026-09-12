@@ -255,6 +255,7 @@ export type StatusLineSegmentId =
 	| "token_out"
 	| "token_total"
 	| "token_rate"
+	| "token_ttft"
 	| "cost"
 	| "context_pct"
 	| "context_total"
@@ -1550,7 +1551,7 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Mouse Input"),
 			description: tSettingsUi(
-				"Enable click-to-position editing in the prompt and pointer interaction in application-managed panels such as Agent Hub and selectors. Session history and the main transcript keep terminal-native text selection. While enabled, the terminal no longer wheel-scrolls its own scrollback — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
+				"Enable click-to-position editing in the prompt and pointer interaction in the main transcript (links, images). Fullscreen panels such as Agent Hub, selectors, and session history always capture the wheel so it scrolls them — text selection inside them stays reachable via the terminal's shift-drag. While enabled, the terminal no longer wheel-scrolls its own scrollback from the main screen — use the terminal scrollbar, Shift+wheel, or /history to browse older output.",
 			),
 		},
 	},
@@ -1769,6 +1770,19 @@ export const SETTINGS_SCHEMA = {
 			group: tSettingsUi("Display"),
 			label: tSettingsUi("Show Subagent List"),
 			description: tSettingsUi("Show the live subagent list above the Main prompt"),
+		},
+	},
+
+	"display.persistentActivityRow": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: tSettingsUi("Display"),
+			label: tSettingsUi("Persistent Activity Row"),
+			description: tSettingsUi(
+				"Keep the activity row above the prompt after a turn ends, showing the last turn's t/s and time-to-first-token instead of hiding it",
+			),
 		},
 	},
 
@@ -5401,6 +5415,92 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"gpt2image.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("Available Tools"),
+			label: tSettingsUi("GPT-2 Image"),
+			description: tSettingsUi(
+				"Enable the gpt_2_image tool: OpenAI gpt-image-2 generation via a configurable base URL and API key",
+			),
+		},
+	},
+	"gpt2image.apiKey": {
+		type: "string",
+		credential: true,
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image API Key"),
+			description: tSettingsUi(
+				"API key for the gpt_2_image tool. Falls back to GPT2_IMAGE_API_KEY, then OPENAI_API_KEY.",
+			),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+	"gpt2image.baseUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image Base URL"),
+			description: tSettingsUi("OpenAI-compatible base URL (default https://api.openai.com/v1)."),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+	"gpt2image.model": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image Model"),
+			description: tSettingsUi("Image model id (default gpt-image-2)."),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+	"gpt2image.outputDir": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image Output Directory"),
+			description: tSettingsUi("Default directory for generated images (default ~/.omp/gpt-2-image/<project>/)."),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+	"gpt2image.maxFiles": {
+		type: "number",
+		default: 200,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image Max Files"),
+			description: tSettingsUi(
+				"Earliest-written generated images over this many are pruned (never files younger than 2h).",
+			),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+	"gpt2image.maxDirBytes": {
+		type: "number",
+		default: 2 * 1024 * 1024 * 1024,
+		ui: {
+			tab: "tools",
+			group: tSettingsUi("GPT-2 Image"),
+			label: tSettingsUi("GPT-2 Image Max Output Bytes"),
+			description: tSettingsUi(
+				"Disk ceiling for the output directory; oldest files are pruned past this (never younger than 2h).",
+			),
+			condition: "gpt2ImageEnabled",
+		},
+	},
+
 	// Legacy boolean kept only for back-compat migration to `inspect_image.mode`
 	// (see config/settings.ts). Hidden from UI.
 	"inspect_image.enabled": {
@@ -6737,6 +6837,78 @@ export const SETTINGS_SCHEMA = {
 			label: tSettingsUi("Hide Secrets"),
 			description: tSettingsUi(
 				"Obfuscate configured secrets and redact credential-shaped tokens before sending to AI providers",
+			),
+		},
+	},
+
+	// Obfuscation scope. Empty = every provider, matching configs written before
+	// scoping existed, so leaving these unset changes nothing. Entries accept
+	// `provider`, `provider/model`, and globs within each segment; they are held
+	// as one comma-separated string because a free-form array has no toggle
+	// options and would therefore be invisible in the settings UI.
+	"secrets.scope.providers": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Privacy"),
+			label: tSettingsUi("Obfuscate For Providers"),
+			description: tSettingsUi(
+				"Comma-separated providers whose traffic is obfuscated, e.g. cloudglab, opencode-go. Empty means every provider.",
+			),
+		},
+	},
+
+	"secrets.scope.models": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Privacy"),
+			label: tSettingsUi("Obfuscate For Models"),
+			description: tSettingsUi(
+				"Comma-separated provider/model entries, e.g. cloudglab/deepseek-v4.1-flash. Globs allowed. Empty means every model.",
+			),
+		},
+	},
+
+	// Structured identifiers that are sensitive regardless of the configured
+	// terms. Opt-in per category because an IPv4/UUID pattern also matches
+	// ordinary development text.
+	"secrets.builtin": {
+		type: "array",
+		default: [] as string[],
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Privacy"),
+			label: tSettingsUi("Built-in Sensitive Patterns"),
+			description: tSettingsUi(
+				"Structured identifiers obfuscated in addition to the configured terms, e.g. phone numbers and e-mail addresses.",
+			),
+			options: [
+				{ value: "email", label: tSettingsUi("E-mail Addresses") },
+				{ value: "china_phone", label: tSettingsUi("Phone Numbers") },
+				{ value: "china_id", label: tSettingsUi("National IDs") },
+				{ value: "uuid", label: tSettingsUi("UUIDs") },
+				{ value: "ipv4", label: tSettingsUi("IPv4 Addresses") },
+				{ value: "mac", label: tSettingsUi("MAC Addresses") },
+			],
+		},
+	},
+
+	// Prefix on every minted placeholder's friendly-name label, so a transcript
+	// can attribute redacted spans to this feature. The `$$…$$` envelope itself
+	// stays fixed: the scanner, the round trip, and prompt-cache stability all
+	// depend on that exact shape.
+	"secrets.placeholderPrefix": {
+		type: "string",
+		default: "VG",
+		ui: {
+			tab: "providers",
+			group: tSettingsUi("Privacy"),
+			label: tSettingsUi("Placeholder Label"),
+			description: tSettingsUi(
+				"Label on obfuscated placeholders, e.g. VG yields $$VG_HASH$$. Applies to newly minted placeholders.",
 			),
 		},
 	},

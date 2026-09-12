@@ -40,6 +40,7 @@ function createContext(options?: {
 		addOptimisticQueuedMessage: vi.fn(),
 		retireOptimisticQueuedMessage: vi.fn(),
 		reconcileOptimisticQueuedMessages: vi.fn(),
+		settleOptimisticQueuedMessage: vi.fn(),
 		session: {
 			isStreaming: true,
 			isCompacting: false,

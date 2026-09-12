@@ -8,6 +8,7 @@ import { type SecretEntry, SecretObfuscator } from "./obfuscator";
 import { sanitizeSecretFriendlyName, secretEntriesNeedPlaceholderKey } from "./placeholder";
 import { compileSecretRegex } from "./regex";
 import { regexHasUnresolvableShortMatchFallback } from "./replacement";
+import { globalSecretsPath, projectSecretsPath } from "./terms";
 
 const PLACEHOLDER_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
 const cachedPlaceholderKeys = new Map<string, string>();
@@ -163,11 +164,10 @@ export { secretEntriesNeedPlaceholderKey, secretEntryNeedsPlaceholderKey } from 
  * Project-local entries override global entries with matching content.
  */
 export async function loadSecrets(cwd: string, agentDir: string): Promise<SecretEntry[]> {
-	const projectPath = path.join(cwd, ".omp", "secrets.yml");
-	const globalPath = path.join(agentDir, "secrets.yml");
-
-	const globalEntries = await loadSecretsFile(globalPath);
-	const projectEntries = await loadSecretsFile(projectPath);
+	// Paths come from `terms.ts` so the reader and the writer can never disagree
+	// about which file a term lives in.
+	const globalEntries = await loadSecretsFile(globalSecretsPath(agentDir));
+	const projectEntries = await loadSecretsFile(projectSecretsPath(cwd));
 
 	if (globalEntries.length === 0) return projectEntries;
 	if (projectEntries.length === 0) return globalEntries;
@@ -224,6 +224,59 @@ export function builtinCredentialSecretEntries(): SecretEntry[] {
 }
 
 /**
+ * Structured personal/network identifiers that are sensitive regardless of what
+ * the user configured: phone numbers, national IDs, e-mail addresses, UUIDs,
+ * and network addresses.
+ *
+ * These are opt-in per category through `secrets.builtin` because they are
+ * aggressive: an IPv4 or UUID pattern matches ordinary development text, so a
+ * user who only wants keyword redaction would otherwise pay tokens on every
+ * version string and identifier. Empty (the default) adds nothing, which keeps
+ * existing configs unchanged.
+ *
+ * `flags` are carried through to `compileSecretRegex`, and `explicit: true`
+ * exempts each pattern from the short-match floor — a phone number is only 11
+ * characters and an IPv4 address can be 7, both well under the heuristic floor.
+ */
+const BUILTIN_SENSITIVE_PATTERNS: Record<string, { pattern: string; flags: string; label: string }> = {
+	email: { pattern: String.raw`[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`, flags: "i", label: "EMAIL" },
+	china_phone: { pattern: String.raw`(?<!\d)1[3-9]\d{9}(?!\d)`, flags: "", label: "CHINAPHONE" },
+	china_id: { pattern: String.raw`(?<!\d)\d{17}[\dXx](?!\d)`, flags: "", label: "CHINAID" },
+	uuid: {
+		pattern: `[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}`,
+		flags: "",
+		label: "UUID",
+	},
+	ipv4: { pattern: String.raw`(?:\d{1,3}\.){3}\d{1,3}`, flags: "", label: "IPV4" },
+	mac: { pattern: `(?:[0-9a-f]{2}:){5}[0-9a-f]{2}`, flags: "i", label: "MAC" },
+};
+
+/** Names accepted by `secrets.builtin`, in a stable order for the settings UI. */
+export const BUILTIN_SENSITIVE_PATTERN_NAMES: readonly string[] = Object.keys(BUILTIN_SENSITIVE_PATTERNS);
+
+/**
+ * Entries for the built-in pattern categories the user enabled.
+ * Unknown names are skipped rather than thrown on, so a config written for a
+ * newer build cannot break an older one.
+ */
+export function builtinPatternSecretEntries(enabled: readonly string[]): SecretEntry[] {
+	const entries: SecretEntry[] = [];
+	for (const name of enabled) {
+		const rule = BUILTIN_SENSITIVE_PATTERNS[name.trim()];
+		if (!rule) continue;
+		entries.push({
+			type: "regex",
+			content: rule.pattern,
+			flags: rule.flags,
+			mode: "obfuscate",
+			friendlyName: rule.label,
+			explicit: true,
+		});
+	}
+	return entries;
+}
+
+/**
  * Build the session secret obfuscator from every configured source: secrets.yml
  * (project + global), secret-shaped environment variables, and the built-in
  * credential patterns. Callers gate on `secrets.enabled`.
@@ -243,24 +296,34 @@ export function builtinCredentialSecretEntries(): SecretEntry[] {
  *
  * `keyDir` is the explicit agent dir override for the placeholder-key file
  * (default XDG/agent location when omitted).
+ *
+ * `options` carries the values the caller resolved from settings. They are plain
+ * values so this module stays independent of the settings layer and easy to test.
  */
 export async function buildSecretObfuscator(
 	cwd: string,
 	agentDir: string,
 	keyDir?: string,
+	options: { placeholderLabel?: string; builtinPatterns?: readonly string[] } = {},
 ): Promise<SecretObfuscator | undefined> {
 	const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
 	const envEntries = collectEnvSecrets();
-	// Built-in credential-pattern entries come last so user-configured entries
-	// (plain literals, custom regexes) take precedence in the scan order.
-	const allEntries = [...envEntries, ...fileEntries, ...builtinCredentialSecretEntries()];
-	const needsPlaceholderKey = secretEntriesNeedPlaceholderKey([...envEntries, ...fileEntries]);
+	// Built-in entries come last so user-configured entries (plain literals,
+	// custom regexes) take precedence in the scan order.
+	const builtinEntries = builtinPatternSecretEntries(options.builtinPatterns ?? []);
+	const allEntries = [...envEntries, ...fileEntries, ...builtinEntries, ...builtinCredentialSecretEntries()];
+	const configuredEntries = [...envEntries, ...fileEntries, ...builtinEntries];
+	const needsPlaceholderKey = secretEntriesNeedPlaceholderKey(configuredEntries);
 	const placeholderKey = needsPlaceholderKey
 		? await getSecretPlaceholderKey(keyDir)
 		: await getExistingSecretPlaceholderKey(keyDir);
 	let obfuscator: SecretObfuscator | undefined;
 	if (allEntries.length > 0) {
-		obfuscator = new SecretObfuscator(allEntries, placeholderKey ?? (() => getSecretPlaceholderKeySync(keyDir)));
+		obfuscator = new SecretObfuscator(
+			allEntries,
+			placeholderKey ?? (() => getSecretPlaceholderKeySync(keyDir)),
+			options.placeholderLabel,
+		);
 	}
 	if (obfuscator?.hasSecrets() !== true && placeholderKey !== undefined) {
 		obfuscator = new SecretObfuscator([{ type: "plain", mode: "replace", content: placeholderKey }], placeholderKey);
@@ -288,6 +351,11 @@ async function loadSecretsFile(filePath: string): Promise<SecretEntry[]> {
 				replacement: entry.replacement,
 				flags: entry.flags,
 				friendlyName,
+				// A term the user wrote into secrets.yml is a deliberate declaration.
+				// Mark it explicit so the short-match floor (built for heuristic
+				// discovery) cannot silently drop it — CJK terms are meaningful at
+				// 2-3 characters.
+				explicit: true,
 			});
 		}
 		return entries;

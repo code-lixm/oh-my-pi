@@ -62,6 +62,7 @@ import type { EventBus } from "../../utils/event-bus";
 import type { InspectImageMode } from "../../utils/inspect-image-mode";
 import type { VibeModeState } from "../../vibe/state";
 import type { WorkspaceRestoreResult, WorkspaceRestoreScope } from "../../workspace-checkpoints";
+import type { JobsHubDataSource } from "../components/jobs-hub";
 import { isRpcClientDisconnectedError, type RpcClient } from "../rpc/rpc-client";
 import type {
 	RpcCommand,
@@ -147,8 +148,6 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		dropGoal: async (): Promise<Goal | undefined> => (await this.#client.goalRuntimeDrop()) ?? undefined,
 		onBudgetMutated: async (newBudget: number | undefined): Promise<GoalModeState | undefined> =>
 			(await this.#client.goalRuntimeOnBudgetMutated(newBudget)) ?? undefined,
-		// Pure render of the projected goal state — must stay synchronous because
-		// `#scheduleGoalContinuation` reads it without awaiting.
 		buildContinuationPrompt: (): string | undefined => {
 			const state = this.#projection.modes.goal;
 			return state?.enabled && state.goal.status === "active"
@@ -174,6 +173,22 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	#inFlightExtensionUiRequests = new Set<Promise<void>>();
 	#projection: InteractiveSessionProjection;
 	#state: AgentState;
+	/**
+	 * In-flight assistant message, mirrored from the `message_start`/`message_update`
+	 * events so the facade honors the {@link AgentState} contract. The child process
+	 * owns the real `streamMessage`; without this mirror the foreground sees a
+	 * permanent `null`, so the activity row's throughput sampler never opens a
+	 * window and every reading degrades to the settled fallback of the last turn.
+	 */
+	#streamMessage: AgentMessage | null = null;
+	/**
+	 * Request/first-byte stamps mirrored alongside {@link #streamMessage}. The
+	 * activity row derives its live time-to-first-token from these, so a facade
+	 * that leaves them undefined reports no first-token latency until the child's
+	 * settled `message.ttft` arrives at turn end.
+	 */
+	#requestStartedAt: number | undefined;
+	#firstByteAt: number | undefined;
 	#disposed = false;
 	#mountedToolNames: string[] = [];
 	#historyMirrorSyncTimer: NodeJS.Timeout | undefined;
@@ -230,6 +245,26 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 				this.#state = this.#buildAgentState();
 			}),
 			this.#client.onSessionEvent(event => {
+				// Rebuild the facade state on the same tick: `#state` is otherwise
+				// only refreshed by projection frames, so a mid-stream reader would
+				// observe the previous snapshot until the next one arrives.
+				// `turn_start` precedes each provider dispatch on the child (the
+				// local agent stamps `requestStartedAt` at the same point), and the
+				// first assistant frame is its `firstByteAt`; mirroring both keeps
+				// the row's live time-to-first-token available while it streams
+				// instead of deferring to the settled `message.ttft`.
+				if (event.type === "turn_start") {
+					this.#requestStartedAt = Date.now();
+					this.#firstByteAt = undefined;
+					this.#state = this.#buildAgentState();
+				} else if (event.type === "message_start" || event.type === "message_update") {
+					this.#streamMessage = event.message;
+					if (event.message.role === "assistant") this.#firstByteAt ??= Date.now();
+					this.#state = this.#buildAgentState();
+				} else if (event.type === "message_end") {
+					this.#streamMessage = null;
+					this.#state = this.#buildAgentState();
+				}
 				for (const listener of this.#eventListeners) listener(event);
 			}),
 			this.#client.onExtensionUiRequest(request => this.#routeExtensionUiRequest(request)),
@@ -544,9 +579,33 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 	getVisibleAsyncJobCount(): number {
 		return this.#projection.jobs?.running.length ?? 0;
 	}
-	/** Number of running background jobs reported by the isolated session. */
+	/**
+	 * Running subagents mirrored from the worker's projection. This process only
+	 * attaches to the `--mode rpc-ui` worker that owns the AgentRegistry, so the
+	 * local registry is empty here and the status-line badge must read the
+	 * projection instead.
+	 */
+	getRunningSubagentCount(): number {
+		return this.#projection.subagents.filter(sub => sub.status === "running").length;
+	}
+
 	get runningAsyncJobCount(): number {
 		return this.#projection.jobs?.running.length ?? 0;
+	}
+
+	getJobsHubDataSource(): JobsHubDataSource | undefined {
+		if (!this.#projection.jobs) return undefined;
+		return {
+			getAllJobs: () => {
+				const snapshot = this.#projection.jobs;
+				return snapshot ? [...snapshot.running, ...snapshot.recent] : [];
+			},
+			getConcurrencySnapshot: () => ({
+				running: this.#projection.jobs?.running.filter(job => !job.queued).length ?? 0,
+				queued: this.#projection.jobs?.running.filter(job => job.queued).length ?? 0,
+				limit: this.#projection.jobs?.running.length ?? 0,
+			}),
+		};
 	}
 
 	getAgentId(): string | undefined {
@@ -979,10 +1038,25 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 		return this.#client.compact(customInstructions);
 	}
 	async handoff(customInstructions?: string): Promise<RpcHandoffResult | undefined> {
-		const response = await this.#dispatch({
-			type: "handoff",
-			...(customInstructions ? { customInstructions } : {}),
-		});
+		let response: RpcResponse;
+		try {
+			response = await this.#dispatch({
+				type: "handoff",
+				...(customInstructions ? { customInstructions } : {}),
+			});
+		} catch (error) {
+			// A failed dispatch does not mean the child stopped: handoff generation
+			// runs to completion there and commits the session switch even when this
+			// client already gave up (timeout). Re-read the projection so the
+			// foreground stops rendering the session the child has left; a resync
+			// failure must not mask the original error.
+			await this.#refreshProjection(true).catch(resyncError => {
+				logger.warn("Failed to resync projection after handoff failure", {
+					error: resyncError instanceof Error ? resyncError.message : String(resyncError),
+				});
+			});
+			throw error;
+		}
 		// Handoff rewrites the remote session (compaction entry + new session file when
 		// the child splits). Refresh the projection so `messages` reflects the new
 		// transcript before the TUI rebuilds, and re-point the local mirror at the
@@ -1379,7 +1453,9 @@ export class RemoteAgentSession implements InteractiveSessionSettingsCapabilitie
 				description: tool.description,
 				parameters: tool.parameters,
 			})) as AgentTool[],
-			streamMessage: null,
+			streamMessage: this.#streamMessage,
+			requestStartedAt: this.#requestStartedAt,
+			firstByteAt: this.#firstByteAt,
 			pendingToolCalls: new Set<string>(),
 		} as unknown as AgentState;
 	}

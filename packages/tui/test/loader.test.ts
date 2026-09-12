@@ -470,6 +470,57 @@ describe("Loader component", () => {
 		expect(container.children).toEqual([]);
 		tui.stop();
 	});
+	it("hides the leading spinner glyph when setSpinnerVisible(false) is called", () => {
+		vi.useFakeTimers();
+		const ui = { requestDirectWrite: vi.fn(), requestComponentRender: vi.fn() };
+		const loader = new Loader(
+			ui as unknown as TUI,
+			text => text,
+			text => text,
+			"Checking",
+			["0", "1"],
+		);
+
+		expect(loader.render(20).join("\n")).toContain("0 Checking");
+
+		loader.setSpinnerVisible(false);
+		const hidden = loader.render(20).join("\n");
+		expect(hidden).toContain("Checking");
+		expect(hidden).not.toContain("0 Checking");
+
+		// Re-showing restores the spinner glyph.
+		loader.setSpinnerVisible(true);
+		expect(loader.render(20).join("\n")).toContain("0 Checking");
+
+		loader.stop();
+	});
+
+	it("reports idle separately from the mounted message so consumers can tell work from a readout", () => {
+		vi.useFakeTimers();
+		const ui = { requestDirectWrite: vi.fn(), requestComponentRender: vi.fn() };
+		const loader = new Loader(
+			ui as unknown as TUI,
+			text => text,
+			text => text,
+			"Checking",
+			["0", "1"],
+		);
+
+		// A freshly mounted loader advertises work.
+		expect(loader.idle).toBe(false);
+
+		// The persistent activity row keeps rendering its last message with no
+		// work behind it; consumers must be able to tell that apart.
+		loader.setIdle(true);
+		expect(loader.idle).toBe(true);
+		expect(loader.render(20).join("\n")).toContain("Checking");
+
+		loader.setIdle(false);
+		expect(loader.idle).toBe(false);
+
+		loader.stop();
+	});
+
 	it("advances the spinner by exactly one frame after a long event-loop stall with no catch-up across the next few ticks", () => {
 		vi.useFakeTimers();
 		// Bun's `vi.useFakeTimers()` drives timers but not `performance.now()`.

@@ -46,6 +46,7 @@ import {
 } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { AgentRegistry, resolveTopLevelAgent } from "../../registry/agent-registry";
+import type { AgentSession } from "../../session/agent-session";
 import type { SessionOAuthAccountList } from "../../session/agent-session-types";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import {
@@ -110,7 +111,7 @@ import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
 import { HistorySearchComponent } from "../components/history-search";
 import { HubActivityGroupComponent } from "../components/hub-activity-group";
-import { JobsHubOverlayComponent } from "../components/jobs-hub";
+import { type JobsHubDataSource, JobsHubOverlayComponent } from "../components/jobs-hub";
 import { LoginDialogComponent } from "../components/login-dialog";
 import { LogoutAccountSelectorComponent } from "../components/logout-account-selector";
 import { formatRoleDisplayLabel } from "../components/model-browser";
@@ -176,10 +177,17 @@ export class SelectorController {
 	/**
 	 * Mount a primary fullscreen menu through the one polished modal path shared
 	 * by Settings, Model Hub, Agent Hub, and Jobs Hub.
+	 *
+	 * Fullscreen modals capture the wheel unconditionally: inside the alternate
+	 * screen the terminal has no scrollback to preserve, so a wheel left to it
+	 * is converted to arrow keys (xterm/Ghostty alternate scroll), which stormed
+	 * the selection through the list instead of scrolling it. Pointer behavior
+	 * on the main screen still follows `tui.mouseInput`; text selection inside
+	 * the modal stays reachable through the terminal's shift-drag escape.
 	 */
 	#showFullscreenMenu(
 		component: Component,
-		mouseTracking = this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+		mouseTracking = true,
 		anchor: "top-center" | "bottom-center" = "bottom-center",
 	): OverlayHandle {
 		const handle = this.ctx.ui.showOverlay(component, {
@@ -257,7 +265,10 @@ export class SelectorController {
 			const done = () => {
 				overlayHandle?.hide();
 				this.focusActiveEditorArea();
-				this.ctx.ui.requestRender();
+				// Settings can invalidate render accounting while the fullscreen alternate
+				// screen is active. Force the first normal-screen frame after closing so
+				// stale diff state cannot expose a blank transcript.
+				this.ctx.ui.requestRender(true);
 			};
 			const selector = new SettingsSelectorComponent(
 				{
@@ -419,7 +430,7 @@ export class SelectorController {
 				maxHeight: "100%",
 				margin: 0,
 				fullscreen: true,
-				mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+				mouseTracking: true,
 			});
 			this.ctx.ui.setFocus(overlay);
 			this.ctx.ui.requestRender();
@@ -551,7 +562,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+			mouseTracking: true,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -583,7 +594,7 @@ export class SelectorController {
 			anchor: "top-left",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+			mouseTracking: true,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
@@ -627,7 +638,7 @@ export class SelectorController {
 			anchor: "top-left",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: false,
+			mouseTracking: true,
 		});
 		dashboard.onClose = () => {
 			overlay.hide();
@@ -1673,7 +1684,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+			mouseTracking: true,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -1853,7 +1864,7 @@ export class SelectorController {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: this.ctx.settings?.get?.("tui.mouseInput") ?? false,
+			mouseTracking: true,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -2387,7 +2398,6 @@ export class SelectorController {
 			...this.ctx.keybindings.getKeys("app.agents.hub"),
 			...this.ctx.keybindings.getKeys("app.session.observe"),
 		];
-		const mouseTracking = this.ctx.settings?.get("tui.mouseInput") ?? false;
 		const hubRegistry = this.ctx.collabGuest?.agentRegistry ?? AgentRegistry.global();
 		// Each fullscreen transcript resolves tools against its own live AgentRef.
 		// A parked/persisted-only target has no authoritative registry provenance,
@@ -2419,7 +2429,14 @@ export class SelectorController {
 			remote: this.ctx.collabGuest?.hubRemote,
 			ui: this.ctx.ui,
 			getTool: (agentId, name) => targetSession(agentId)?.getToolByName(name),
-			isBuiltInTool: (agentId, name) => targetSession(agentId)?.hasBuiltInTool(name) ?? false,
+			// A parked/finished subagent has no live session, but the registry keeps
+			// the provenance snapshot taken while it was live. Use that instead of
+			// borrowing Main's answer: a same-named extension tool stays on the
+			// fallback surface, as the builder's provenance contract requires.
+			isBuiltInTool: (agentId, name) =>
+				targetSession(agentId)?.hasBuiltInTool(name) ??
+				hubRegistry.get(agentId)?.builtInToolNames?.includes(name) ??
+				false,
 			getMessageRenderer: (agentId, type) => targetSession(agentId)?.extensionRunner?.getMessageRenderer(type),
 			getSnapshots: id => {
 				const session = targetSession(id);
@@ -2436,7 +2453,7 @@ export class SelectorController {
 			switchTopLevel: this.ctx.collabGuest ? undefined : id => this.ctx.switchTopLevel(id),
 			focusAgent: this.ctx.collabGuest ? undefined : id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
-			mouseTracking,
+			mouseTracking: true,
 			// Phase 3B: keep fullscreen subagent/advisor transcripts clickable. The
 			// subagent's own blob store is content-addressed, so materializing its
 			// images against the ambient Main sessionManager is safe — same bytes
@@ -2458,7 +2475,7 @@ export class SelectorController {
 			// Prime the detector before the first frame when the editor's double-←
 			// gesture opened the hub, so the next single ← dismisses it.
 			if (options?.armCloseTap) hub.armCloseTap();
-			overlayHandle = this.#showFullscreenMenu(hub, mouseTracking);
+			overlayHandle = this.#showFullscreenMenu(hub);
 		};
 
 		if (options?.requireContent && hub.isEmpty) {
@@ -2469,14 +2486,28 @@ export class SelectorController {
 	}
 
 	showJobsHub(): void {
-		const manager = this.ctx.session.asyncJobManager;
-		if (!manager) {
+		const localManager = this.ctx.session.asyncJobManager;
+		const sessionWithJobsHub = this.ctx.session as AgentSession & {
+			getJobsHubDataSource?: () => JobsHubDataSource | undefined;
+		};
+		const remoteDataSource = sessionWithJobsHub.getJobsHubDataSource?.();
+		const initialSnapshot = sessionWithJobsHub.getAsyncJobSnapshot?.() ?? null;
+		if (!localManager && !remoteDataSource && !initialSnapshot) {
 			this.ctx.showWarning(tSettingsUi("Async background jobs are unavailable in this session."));
 			return;
 		}
-		// Job retention is process-local and synchronous. The overlay still opens
-		// when the manager is empty so the center remains discoverable and can show
-		// its explicit empty state.
+		const manager: JobsHubDataSource = localManager ??
+			remoteDataSource ?? {
+				getAllJobs: () => {
+					const snapshot = sessionWithJobsHub.getAsyncJobSnapshot?.() ?? null;
+					return snapshot ? [...snapshot.running, ...snapshot.recent] : [];
+				},
+				getConcurrencySnapshot: () => ({
+					running: sessionWithJobsHub.getVisibleAsyncJobCount?.() ?? 0,
+					queued: 0,
+					limit: sessionWithJobsHub.getVisibleAsyncJobCount?.() ?? 0,
+				}),
+			};
 
 		let hub: JobsHubOverlayComponent | undefined;
 		let overlayHandle: OverlayHandle | undefined;
@@ -2498,11 +2529,12 @@ export class SelectorController {
 						await this.ctx.focusAgentSession(id);
 						done();
 					},
-			// Cancelling the AsyncJob's signal is the authoritative task/bash abort
-			// path. A task's live AgentSession receives that same signal and remains
-			// intentionally resumable in Agent Hub; this action cancels work, not the
-			// durable agent identity.
-			cancelJob: async job => manager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
+			...(localManager
+				? {
+						cancelJob: async job =>
+							localManager.cancel(job.id, job.ownerId ? { ownerId: job.ownerId } : undefined),
+					}
+				: {}),
 		});
 		overlayHandle = this.#showFullscreenMenu(hub, undefined, "top-center");
 	}

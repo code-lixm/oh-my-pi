@@ -156,6 +156,40 @@ export function defineRpcClientTool<
 	return tool;
 }
 
+/**
+ * Interactive commands answer within a beat; the handlers below block on a
+ * full LLM round trip (handoff generation, compaction summarization, tree
+ * summaries, BTW answers) or an interactive OAuth dance. They must not
+ * inherit the default budget: the child keeps working after the client gives
+ * up, so a premature timeout reports a failure for a session the child is
+ * already mutating. Single source of truth — call sites pass no explicit
+ * timeout of their own.
+ */
+const LONG_RUNNING_COMMAND_TIMEOUT_MS: Partial<Record<RpcCommandBody["type"], number>> = {
+	handoff: 600_000,
+	compact: 600_000,
+	navigate_tree: 600_000,
+	branch_from_btw: 600_000,
+	run_idle_compaction: 300_000,
+	login: 600_000,
+	// `abort` overtakes the child's serialized queue (OVERTAKING_RPC_COMMANDS in
+	// rpc-mode), so a handoff or compaction in flight cannot delay it, but its
+	// handler still awaits post-cancel cleanup — keep headroom past the
+	// interactive budget instead of reporting a false timeout on a stop that landed.
+	abort: 120_000,
+};
+
+/** Budget for interactive commands that answer within a beat. */
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+
+/** Cap on the stderr echoed inside protocol errors; the tail keeps the actionable line. */
+const STDERR_SNIPPET_MAX_CHARS = 2_000;
+
+function stderrSnippet(stderr: string): string {
+	const trimmed = stderr.trim();
+	return trimmed.length <= STDERR_SNIPPET_MAX_CHARS ? trimmed : `…${trimmed.slice(-STDERR_SNIPPET_MAX_CHARS)}`;
+}
+
 const agentEventTypes = new Set<AgentEvent["type"]>([
 	"agent_start",
 	"agent_end",
@@ -382,8 +416,8 @@ export class RpcClient {
 			handleTransportFailure(
 				new Error(
 					readySettled
-						? `Agent transport closed. Stderr: ${transport.getStderr()}`
-						: `Agent process exited before ready. Stderr: ${transport.getStderr()}`,
+						? `Agent transport closed. Stderr: ${stderrSnippet(transport.getStderr())}`
+						: `Agent process exited before ready. Stderr: ${stderrSnippet(transport.getStderr())}`,
 				),
 			);
 		});
@@ -396,7 +430,7 @@ export class RpcClient {
 
 		const readyTimeout = this.#startTimeout(30000, () => {
 			handleTransportFailure(
-				new Error(`Timeout waiting for agent to become ready. Stderr: ${transport.getStderr()}`),
+				new Error(`Timeout waiting for agent to become ready. Stderr: ${stderrSnippet(transport.getStderr())}`),
 			);
 		});
 
@@ -1227,9 +1261,7 @@ export class RpcClient {
 
 	/** Run automatic compaction triggered by an idle session. */
 	async runIdleCompaction(): Promise<void> {
-		// Compaction of a large context can easily exceed the default 30s RPC
-		// timeout; use a generous budget and let the caller handle rejection.
-		await this.#send({ type: "run_idle_compaction" }, 300_000);
+		await this.#send({ type: "run_idle_compaction" });
 	}
 
 	/**
@@ -1498,7 +1530,7 @@ export class RpcClient {
 				: undefined;
 		if (listener) this.#extensionUiListeners.add(listener);
 		try {
-			const response = await this.#send({ type: "login", providerId }, 600_000);
+			const response = await this.#send({ type: "login", providerId });
 			return this.#getData<{ providerId: string }>(response);
 		} finally {
 			if (listener) this.#extensionUiListeners.delete(listener);
@@ -1550,7 +1582,11 @@ export class RpcClient {
 			if (settled) return;
 			settled = true;
 			unsubscribe();
-			reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.#transport.getStderr()}`));
+			reject(
+				new Error(
+					`Timeout waiting for agent to become idle. Stderr: ${stderrSnippet(this.#transport.getStderr())}`,
+				),
+			);
 		});
 		return promise;
 	}
@@ -1576,7 +1612,7 @@ export class RpcClient {
 			if (settled) return;
 			settled = true;
 			unsubscribe();
-			reject(new Error(`Timeout collecting events. Stderr: ${this.#transport.getStderr()}`));
+			reject(new Error(`Timeout collecting events. Stderr: ${stderrSnippet(this.#transport.getStderr())}`));
 		});
 		return promise;
 	}
@@ -1668,7 +1704,7 @@ export class RpcClient {
 		}
 	}
 
-	#send(command: RpcCommandBody, timeoutMs = 30_000): Promise<RpcResponse> {
+	#send(command: RpcCommandBody, timeoutMs?: number): Promise<RpcResponse> {
 		if (!this.#activeTransport || this.#stopping) {
 			// Nothing was written: the frame never left this process, so callers
 			// (or the facade-level recovery) can replay the command safely.
@@ -1684,12 +1720,19 @@ export class RpcClient {
 		const fullCommand = { ...command, id } as RpcCommand;
 		const { promise, resolve, reject } = Promise.withResolvers<RpcResponse>();
 		let settled = false;
-		const timeoutId = this.#startTimeout(timeoutMs, () => {
-			if (settled) return;
-			this.#pendingRequests.delete(id);
-			settled = true;
-			reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.#transport.getStderr()}`));
-		});
+		const timeoutId = this.#startTimeout(
+			timeoutMs ?? LONG_RUNNING_COMMAND_TIMEOUT_MS[command.type] ?? DEFAULT_COMMAND_TIMEOUT_MS,
+			() => {
+				if (settled) return;
+				this.#pendingRequests.delete(id);
+				settled = true;
+				reject(
+					new Error(
+						`Timeout waiting for response to ${command.type}. Stderr: ${stderrSnippet(this.#transport.getStderr())}`,
+					),
+				);
+			},
+		);
 
 		this.#pendingRequests.set(id, {
 			resolve: response => {

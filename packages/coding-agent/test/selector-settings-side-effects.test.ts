@@ -9,7 +9,6 @@ import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -96,7 +95,7 @@ describe("selector setting side effects", () => {
 
 		expect(applyMemoryBackend).toHaveBeenCalledTimes(1);
 	});
-	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", () => {
+	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", async () => {
 		const setAdvisorEnabled = vi.fn();
 		const invalidate = vi.fn();
 		const requestRender = vi.fn();
@@ -107,7 +106,7 @@ describe("selector setting side effects", () => {
 		} as unknown as InteractiveModeContext);
 
 		controller.handleSettingChange("advisor.enabled", false);
-
+		await Promise.resolve();
 		expect(setAdvisorEnabled).toHaveBeenCalledWith(false);
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
@@ -150,9 +149,7 @@ describe("selector setting side effects", () => {
 			const setToolExpanded = vi.fn();
 			const tool = Object.create(ToolExecutionComponent.prototype) as ToolExecutionComponent;
 			tool.setExpanded = setToolExpanded;
-			const setReadExpanded = vi.fn();
-			const readGroup = Object.create(ReadToolGroupComponent.prototype) as ReadToolGroupComponent;
-			readGroup.setExpanded = setReadExpanded;
+			tool.setToolActivityVisible = setToolActivityVisible;
 			const setToolResultImagesVisible = vi.fn();
 			const assistant = Object.create(AssistantMessageComponent.prototype) as AssistantMessageComponent;
 			assistant.setToolResultImagesVisible = setToolResultImagesVisible;
@@ -161,7 +158,7 @@ describe("selector setting side effects", () => {
 			const ctx = {
 				hideToolActivity: !hidden,
 				toolOutputExpanded: true,
-				chatContainer: { children: [tool, readGroup, assistant], setToolActivityVisible },
+				chatContainer: { children: [tool, assistant], setToolActivityVisible },
 				ui: { clearInlineImages, resetDisplay },
 			};
 			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
@@ -172,7 +169,6 @@ describe("selector setting side effects", () => {
 			expect(setToolActivityVisible).toHaveBeenCalledWith(!hidden);
 			expect(setToolResultImagesVisible).toHaveBeenCalledWith(!hidden);
 			expect(setToolExpanded).toHaveBeenCalledTimes(hidden ? 0 : 1);
-			expect(setReadExpanded).toHaveBeenCalledTimes(hidden ? 0 : 1);
 			expect(ctx.toolOutputExpanded).toBe(hidden);
 			expect(clearInlineImages).toHaveBeenCalledTimes(hidden ? 1 : 0);
 			expect(resetDisplay).toHaveBeenCalledTimes(1);
@@ -209,7 +205,7 @@ describe("selector setting side effects", () => {
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
-	it("reads the current tui.mouseInput setting each time the fullscreen Settings overlay opens", async () => {
+	it("captures the wheel for the fullscreen Settings overlay regardless of tui.mouseInput", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for settings selector test");
 		setThemeInstance(testTheme);
@@ -259,7 +255,7 @@ describe("selector setting side effects", () => {
 		controller.showSettingsSelector();
 		await secondOpened.promise;
 
-		expect(overlays.map(({ options }) => options.mouseTracking)).toEqual([false, true]);
+		expect(overlays.map(({ options }) => options.mouseTracking)).toEqual([true, true]);
 	});
 
 	it("clears stale default role thinking when auto is selected", async () => {

@@ -24,6 +24,7 @@ import { CronHubOverlayComponent } from "../src/modes/components/cron-hub";
 import { initTheme } from "../src/modes/theme/theme";
 import { SessionScheduleRuntime } from "../src/scheduling/runtime";
 import { JsonScheduleStore } from "../src/scheduling/store";
+import type { ScheduleJob } from "../src/scheduling/types";
 import type { AgentSession } from "../src/session/agent-session";
 import { SessionManager } from "../src/session/session-manager";
 import { CronTool, formatCronJobSummary } from "../src/tools/cron-tool";
@@ -84,7 +85,9 @@ describe("CronTool session-bound scheduling", () => {
 			expect(jobs[0]?.prompt).toBe("check the deploy queue");
 			expect(jobs[0]?.deliveryMode).toBe("steer");
 			// Session-bound: the job lives in the session's artifacts sidecar.
-			const sidecar = await fs.readFile(path.join(manager.getArtifactsDir(), "scheduled-jobs.json"), "utf8");
+			const artifactsDir = manager.getArtifactsDir();
+			if (!artifactsDir) throw new Error("Expected a session artifacts directory");
+			const sidecar = await fs.readFile(path.join(artifactsDir, "scheduled-jobs.json"), "utf8");
 			expect(sidecar).toContain("check the deploy queue");
 		} finally {
 			await disposeRuntime(runtime);
@@ -278,10 +281,10 @@ describe("CronHubOverlayComponent", () => {
 		runNow: string[];
 		done: () => void;
 		readonly doneCalled: boolean;
-		setJobs: (jobs: ReturnType<typeof makeJobFixture>[]) => void;
+		setJobs: (jobs: ScheduleJob[]) => void;
 	}
 
-	function makeHub(initialJobs: ReturnType<typeof makeJobFixture>[]): HubHarness {
+	function makeHub(initialJobs: ScheduleJob[]): HubHarness {
 		const jobs = [...initialJobs];
 		const managed: Array<{ id: string; action: string }> = [];
 		const runNow: string[] = [];
@@ -334,7 +337,7 @@ describe("CronHubOverlayComponent", () => {
 
 		const empty = makeHub([]);
 		await flushAsync();
-		const emptyLines = empty.hubLinesJoined ?? stripAnsi(empty.hub.render(120).join("\n"));
+		const emptyLines = hubLines(empty.hub).join("\n");
 		expect(emptyLines).toContain("No scheduled prompts for this session.");
 		expect(emptyLines).toContain("/cron add");
 	});

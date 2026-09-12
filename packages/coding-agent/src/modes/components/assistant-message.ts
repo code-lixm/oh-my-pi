@@ -456,7 +456,7 @@ export class AssistantMessageComponent extends Container {
 		// gray until the rarely-hit SPEED_MAX ceiling.
 		const ratio = Math.sqrt(rate / SPEED_MAX);
 		const hex = lerpHex(theme.getColorHex("dim"), theme.getAccentColorHex(), ratio);
-		const rateText = ` · ${rate.toFixed(1)} ${tSettingsUi("toks/s")}`;
+		const rateText = ` · ${rate.toFixed(1)} ${tSettingsUi("t/s")}`;
 		const rateSpan = theme.getColorMode() === "truecolor" ? chalk.hex(hex)(rateText) : theme.fg("muted", rateText);
 		return coloredGlyph + thinkingLabel + totalSpan + rateSpan;
 	}

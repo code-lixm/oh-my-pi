@@ -74,7 +74,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(refreshSpy).toHaveBeenCalled();
 	});
 
-	it("passes an explicit mouse-tracking choice to the focused-agent fullscreen overlay", () => {
+	it("captures the wheel for the focused-agent fullscreen overlay regardless of tui.mouseInput", () => {
 		for (const mouseTracking of [false, true]) {
 			session.settings.set("tui.mouseInput", mouseTracking);
 			let capturedOptions: { mouseTracking?: boolean } | undefined;
@@ -85,7 +85,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 			mode.showFocusedAgentView("Worker");
 
-			expect(capturedOptions?.mouseTracking).toBe(mouseTracking);
+			expect(capturedOptions?.mouseTracking).toBe(true);
 			mode.hideFocusedAgentView();
 			showOverlay.mockRestore();
 		}
@@ -104,7 +104,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(mode.editor.mouseTracking).toBe(true);
 	});
 
-	it("keeps session history selection-first regardless of tui.mouseInput", () => {
+	it("captures the wheel for session history regardless of tui.mouseInput", () => {
 		for (const mouseTracking of [false, true]) {
 			session.settings.set("tui.mouseInput", mouseTracking);
 			let capturedOptions: { fullscreen?: boolean; mouseTracking?: boolean } | undefined;
@@ -115,7 +115,10 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 			try {
 				mode.showSessionHistory();
-				expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: false });
+				// The viewer owns its wheel: an uncaptured wheel in the alternate
+				// screen is converted to arrow keys, which storms the viewport on a
+				// fast gesture instead of scrolling it at a controlled 3 lines/notch.
+				expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: true });
 			} finally {
 				showOverlay.mockRestore();
 			}

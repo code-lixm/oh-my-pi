@@ -117,7 +117,16 @@ export class SessionObserverRegistry {
 		this.#agentRegistryRef = undefined;
 		if (!this.#disposed) {
 			this.#agentRegistryRef = new WeakRef(registry);
-			this.#agentRegistryUnsubscribe = registry.onChange(() => this.#invalidateSortedSessions());
+			this.#agentRegistryUnsubscribe = registry.onChange(() => {
+				this.#invalidateSortedSessions();
+				// A hard kill tombstones the ref without a lifecycle end event, so this
+				// registry change is the only signal that the agent is gone. Reconcile
+				// here and let listeners resync immediately instead of leaving a stale
+				// "running" row on screen until unrelated UI work happens to redraw.
+				if (this.#reconcileTrackedTerminalStatus(registry)) {
+					this.#notifyListeners(LIFECYCLE_CHANGE);
+				}
+			});
 		}
 		this.#invalidateSortedSessions();
 		return registry;
@@ -226,6 +235,12 @@ export class SessionObserverRegistry {
 			label: observation?.description ?? ref.displayName,
 			agent: observation?.agent,
 			description: observation?.description,
+			// Persisted refs restore detached (background) spawns only: the anchored
+			// subagent HUD lists detached work, and this recovery path exists to keep
+			// those rows visible across observer/lifecycle gaps. Without the flag a
+			// recovered `active` row fails the HUD predicate and vanishes even though
+			// the Hub still lists the agent.
+			detached: true,
 			status,
 			sessionFile: ref.sessionFile ?? undefined,
 			parentToolCallId: observation?.parentToolCallId,
@@ -280,6 +295,7 @@ export class SessionObserverRegistry {
 
 	getSessions(): ObservableSession[] {
 		const registry = this.#ensureAgentRegistrySubscription();
+		this.#reconcileTrackedTerminalStatus(registry);
 		// Persisted snapshots can be refreshed without an AgentRegistry event, so scan
 		// parked/aborted refs on demand and only cache the fully in-memory tracked rows.
 		const persistedSessions = this.#collectPersistedDetachedSessions(registry);
@@ -289,6 +305,32 @@ export class SessionObserverRegistry {
 		const merged = [...sessions];
 		for (const session of persistedSessions) this.#insertSortedSession(merged, session);
 		return merged;
+	}
+
+	/**
+	 * Terminal lifecycle events are the primary source of truth, but a dropped
+	 * end event leaves the anchored HUD advertising a finished agent as running
+	 * forever: a hard kill tombstones the ref (`status: "aborted"`, session
+	 * detached) before the emitter runs, and a listener that misses the emit has
+	 * no other signal. Reconcile every tracked active row against the registry's
+	 * authoritative terminal state so the HUD cannot outlive the agent it
+	 * describes. A ref that is running again has already cleared its terminal
+	 * status, so this never rewrites a live agent.
+	 */
+	#reconcileTrackedTerminalStatus(registry: AgentRegistry): boolean {
+		let changed = false;
+		for (const session of this.#sessions.values()) {
+			if (session.kind !== "subagent" || session.status !== "active") continue;
+			const ref = registry.get(session.id);
+			if (!ref || ref.status === "running") continue;
+			const terminal = ref.status === "aborted" ? "aborted" : ref.terminalStatus;
+			if (terminal !== "completed" && terminal !== "failed" && terminal !== "aborted") continue;
+			session.status = terminal;
+			session.completedAtMs ??= ref.lastActivity;
+			if (session.progress) session.progress = { ...session.progress, status: terminal };
+			changed = true;
+		}
+		return changed;
 	}
 
 	getActiveSubagentCount(): number {

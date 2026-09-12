@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
-import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
-import { JobsHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/jobs-hub";
+import { type JobsHubJob, JobsHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/jobs-hub";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -351,8 +351,8 @@ describe("Jobs Hub overlay", () => {
 	it("returns from details before closing, focuses the linked agent, and cancels the selected running job", async () => {
 		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
 		const focusedAgentIds: string[] = [];
-		const cancellationRequests: AsyncJob[] = [];
 		let closeCount = 0;
+		const cancellationRequests: JobsHubJob[] = [];
 		const hub = new JobsHubOverlayComponent({
 			manager,
 			onDone() {

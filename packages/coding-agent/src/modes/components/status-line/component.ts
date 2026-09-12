@@ -17,7 +17,7 @@ import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../u
 import * as git from "../../../utils/git";
 import * as jj from "../../../utils/jj";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
-import { calculateTokensPerSecond } from "../../../utils/token-rate";
+import { calculateTokensPerSecond, getLastAssistantTtftMs } from "../../../utils/token-rate";
 import { sanitizeStatusText } from "../../shared";
 import { theme } from "../../theme/theme";
 import { type CompactionBoundaries, computeCompactionBoundaries } from "../../utils/context-usage";
@@ -1180,6 +1180,11 @@ export class StatusLineComponent implements Component {
 		return stalePr ?? null;
 	}
 
+	/** Time-to-first-token of the most recent assistant message, in ms. */
+	#getTtftMs(): number | null {
+		return getLastAssistantTtftMs(this.session.state.messages);
+	}
+
 	#getTokensPerSecond(): number | null {
 		// Aggregate tok/s across the main session AND every live vibe worker.
 		// In vibe mode the director is often idle while workers stream, so the
@@ -1776,6 +1781,7 @@ export class StatusLineComponent implements Component {
 		includeGit: boolean,
 		includePr: boolean,
 		includeTokenRate: boolean,
+		includeTtft: boolean,
 	): SegmentContext {
 		const state = this.session.state;
 
@@ -1798,6 +1804,7 @@ export class StatusLineComponent implements Component {
 		const usageStats = {
 			...aggregateUsageStats,
 			tokensPerSecond: includeTokenRate ? this.#getTokensPerSecond() : null,
+			ttftMs: includeTtft ? this.#getTtftMs() : null,
 		};
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
@@ -1952,6 +1959,9 @@ export class StatusLineComponent implements Component {
 		const includeTokenRate =
 			effectiveSettings.leftSegments.includes("token_rate") ||
 			effectiveSettings.rightSegments.includes("token_rate");
+		const includeTtft =
+			effectiveSettings.leftSegments.includes("token_ttft") ||
+			effectiveSettings.rightSegments.includes("token_ttft");
 		const ctx = this.#buildSegmentContext(
 			width,
 			effectiveSettings.segmentOptions,
@@ -1960,6 +1970,7 @@ export class StatusLineComponent implements Component {
 			includeGit,
 			includePr,
 			includeTokenRate,
+			includeTtft,
 		);
 		const separatorDef = getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
 

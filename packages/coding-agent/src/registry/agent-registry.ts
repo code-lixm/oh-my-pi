@@ -95,6 +95,13 @@ export interface AgentRef {
 	activityState?: AgentActivityState;
 	/** Persisted identity and telemetry restored after the live observer is gone. */
 	history?: AgentHistorySummary;
+	/**
+	 * Built-in tool names (wire aliases included) captured while the session was
+	 * live. Retained after `detachSession` so a parked/finished transcript still
+	 * resolves built-in renderers from its OWN provenance instead of borrowing
+	 * another session's.
+	 */
+	builtInToolNames?: readonly string[];
 }
 /**
  * Stable navigation order shared by Agent Hub and focused-agent cycling.
@@ -166,6 +173,13 @@ export interface RegisterInput {
 	lastActivity?: number;
 	/** Persisted identity and telemetry restored after the live observer is gone. */
 	history?: AgentHistorySummary;
+	/** Persisted built-in tool provenance, when restoring an agent with no live session. */
+	builtInToolNames?: readonly string[];
+}
+
+/** Built-in tool names from a live session, tolerating test doubles without the accessor. */
+function sessionBuiltInToolNames(session: AgentSession | null | undefined): readonly string[] | undefined {
+	return typeof session?.getBuiltInToolNames === "function" ? session.getBuiltInToolNames() : undefined;
 }
 
 export class AgentRegistry {
@@ -187,7 +201,6 @@ export class AgentRegistry {
 	readonly #listeners = new Set<RegistryListener>();
 	readonly #syntheticAbortedOutcomes = new WeakSet<AgentRef>();
 	#runningSubagentCount = 0;
-
 	#adjustRunningSubagentCount(ref: AgentRef | undefined, delta: 1 | -1): void {
 		if (ref?.kind === "sub" && ref.status === "running") {
 			this.#runningSubagentCount += delta;
@@ -216,6 +229,7 @@ export class AgentRegistry {
 			activity: input.activity,
 			activityState: input.activityState,
 			history: input.history,
+			builtInToolNames: input.builtInToolNames ?? sessionBuiltInToolNames(input.session),
 		};
 		if (input.terminalStatus === undefined && input.status === "aborted") {
 			this.#syntheticAbortedOutcomes.add(ref);
@@ -368,6 +382,9 @@ export class AgentRegistry {
 		// createAgentSession after an explicit kill.
 		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;
 		ref.session = session;
+		// A session without the accessor must not erase the provenance restored from
+		// its persisted `session_init`.
+		ref.builtInToolNames = sessionBuiltInToolNames(session) ?? ref.builtInToolNames;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();
 		return true;
@@ -376,6 +393,10 @@ export class AgentRegistry {
 	detachSession(id: string, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
 		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		// Built-ins can be registered lazily after `attachSession` (write, goal,
+		// inspect_image, memory/vibe tooling), so refresh the snapshot one last
+		// time before the live session goes away.
+		ref.builtInToolNames = sessionBuiltInToolNames(ref.session) ?? ref.builtInToolNames;
 		ref.session = null;
 		return true;
 	}

@@ -1111,11 +1111,13 @@ export class CommandController {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before forking.");
 			return;
 		}
-		if (this.ctx.loadingAnimation) {
+		// Only a working loader is torn down; a persistent idle row is a standing
+		// readout and must survive the session swap.
+		if (this.ctx.loadingAnimation && !this.ctx.loadingAnimation.idle) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
+			this.ctx.statusContainer.disposeChildren();
 		}
-		this.ctx.statusContainer.disposeChildren();
 
 		const success = await this.ctx.session.fork();
 		if (!success) {
@@ -1489,7 +1491,9 @@ export class CommandController {
 			}
 		} finally {
 			compactingLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
+			// Restore the standing activity row an overlay cleared, instead of
+			// leaving the container empty until the next turn.
+			if (!this.ctx.keepLoadingAnimationIdle?.()) this.ctx.statusContainer.disposeChildren();
 		}
 		// Run the caller's pre-flush hook (e.g. the plan-approval model transition)
 		// before queued user input is dispatched, so any turn queued during
@@ -1528,6 +1532,7 @@ export class CommandController {
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(handoffLoader);
+		this.ctx.handoffInFlight = true;
 		this.ctx.ui.requestRender();
 
 		try {
@@ -1567,8 +1572,9 @@ export class CommandController {
 				this.ctx.showError(`Handoff failed: ${message}`);
 			}
 		} finally {
+			this.ctx.handoffInFlight = false;
 			handoffLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
+			if (!this.ctx.keepLoadingAnimationIdle?.()) this.ctx.statusContainer.disposeChildren();
 		}
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}

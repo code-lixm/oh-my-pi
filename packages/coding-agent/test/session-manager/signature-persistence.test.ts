@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, ProviderPayload } from "@oh-my-pi/pi-ai";
 import { resolveMessageBlobRefsSync } from "@oh-my-pi/pi-coding-agent/session/blob-ref-resolution";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getBlobsDir, TempDir } from "@oh-my-pi/pi-utils";
+import { getBlobsDir, isRecord, TempDir } from "@oh-my-pi/pi-utils";
 
 function isAssistantSessionEntry(entry: unknown): entry is SessionMessageEntry & { message: AssistantMessage } {
 	return (
@@ -27,6 +27,21 @@ function getAssistantMessage(session: SessionManager): AssistantMessage {
 	return assistantEntry.message;
 }
 
+/** Read the first `image_url` out of a persisted Responses history payload. */
+function firstHistoryImageUrl(payload: ProviderPayload | undefined): unknown {
+	if (!isRecord(payload)) return undefined;
+	const items = payload.items;
+	if (!Array.isArray(items)) return undefined;
+	for (const item of items) {
+		if (!isRecord(item)) continue;
+		const content = item.content;
+		if (!Array.isArray(content)) continue;
+		for (const part of content) {
+			if (isRecord(part) && "image_url" in part) return part.image_url;
+		}
+	}
+	return undefined;
+}
 describe("SessionManager signature persistence", () => {
 	it("externalizes provider image data URLs and restores preserved history payloads across reload", async () => {
 		using tempDir = TempDir.createSync("@pi-session-provider-image-persistence-");
@@ -118,10 +133,8 @@ describe("SessionManager signature persistence", () => {
 			],
 		});
 		// The stored entry keeps the ref — resolution must not mutate it.
-		expect(
-			(reloadedUserEntry.message.providerPayload as { items: Array<{ content: Array<{ image_url: string }> }> })
-				.items[0]?.content[1]?.image_url,
-		).toBe(blobRef);
+		const storedImageUrl = firstHistoryImageUrl(reloadedUserEntry.message.providerPayload);
+		expect(storedImageUrl).toBe(blobRef);
 	});
 
 	it("externalizes and restores tool result image blocks across reload", async () => {

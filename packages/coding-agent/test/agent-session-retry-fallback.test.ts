@@ -28,6 +28,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
@@ -314,13 +315,21 @@ describe("AgentSession retry fallback", () => {
 		expect(streamCalls).toBe(3);
 		const errorEntries = sessionManager
 			.getBranch()
-			.filter(entry => entry.type === "message" && entry.message.role === "assistant")
-			.filter(entry => (entry.message as { stopReason?: string }).stopReason === "error");
+			.filter(
+				(entry): entry is Extract<SessionEntry, { type: "message" }> =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					(entry.message as { stopReason?: string }).stopReason === "error",
+			);
 		// Two failed attempts, one persisted row: the retry saga collapsed the
 		// duplicates instead of appending an identical empty-error entry per attempt.
 		expect(errorEntries).toHaveLength(1);
-		expect((errorEntries[0]?.message as { retryRecovery?: { attempt?: number; status?: string } }).retryRecovery)
-			.toMatchObject({ kind: "auto-retry", status: "recovered", attempt: 2 });
+		const recoveredMessage = errorEntries[0]?.message as AssistantMessage;
+		expect(recoveredMessage.retryRecovery).toMatchObject({
+			kind: "auto-retry",
+			status: "recovered",
+			attempt: 2,
+		});
 	});
 
 	it("keeps non-Gemini empty-body errors on the model-fallback path", async () => {

@@ -835,13 +835,13 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		uiHelpers.updatePendingMessagesDisplay();
 
 		expect(pendingMessagesContainer.children.length).toBeGreaterThan(0);
-		expect(requestComponentRender).toHaveBeenNthCalledWith(1, pendingMessagesContainer);
+		expect(requestComponentRender).toHaveBeenNthCalledWith(1, pendingMessagesContainer, { urgent: true });
 
 		session.clearQueue();
 		uiHelpers.updatePendingMessagesDisplay();
 
 		expect(pendingMessagesContainer.children).toHaveLength(0);
-		expect(requestComponentRender).toHaveBeenNthCalledWith(2, pendingMessagesContainer);
+		expect(requestComponentRender).toHaveBeenNthCalledWith(2, pendingMessagesContainer, { urgent: true });
 	});
 
 	it("groups yield follow-ups under one heading", async () => {
@@ -900,6 +900,80 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 		expect(count).toBe(1);
 		expect(editor.getText()).toBe("/skill:test-skill arg1 arg2");
 		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+	});
+
+	it("keeps a settled chip until delivery or confirmation retires it", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		const uiHelpers = new UiHelpers(ctx);
+
+		// Stage while dispatch is in flight (baseline 0).
+		ctx.optimisticQueuedMessages.push({ mode: "followUp", text: "task A", confirmedBaseline: 0 });
+		uiHelpers.updatePendingMessagesDisplay();
+
+		// The dispatch promise settling is not proof the message landed: the
+		// confirmed queue can still lag (projection roundtrip) or the message can be
+		// drained before its confirmation paints. The chip must survive both.
+		uiHelpers.settleOptimisticQueuedMessage("task A", "followUp");
+		expect(ctx.optimisticQueuedMessages).toHaveLength(1);
+		expect(Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"))).toContain("1. task A");
+
+		// Delivery of the transcript turn is what retires the chip.
+		uiHelpers.retireOptimisticQueuedMessage("task A", "followUp");
+		expect(ctx.optimisticQueuedMessages).toHaveLength(0);
+
+		// Re-queue the same text: exactly one chip for exactly one queued message.
+		session.agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "task A" }],
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+		uiHelpers.updatePendingMessagesDisplay();
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect((rendered.match(/task A/g) ?? []).length).toBe(1);
+	});
+
+	it("retires a settled chip once the confirmed queue admits it", async () => {
+		fixture = await createRealSession();
+		const { session } = fixture;
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(session);
+		const uiHelpers = new UiHelpers(ctx);
+		ctx.optimisticQueuedMessages.push({ mode: "followUp", text: "confirmed task", confirmedBaseline: 0 });
+		uiHelpers.settleOptimisticQueuedMessage("confirmed task", "followUp");
+		expect(ctx.optimisticQueuedMessages).toHaveLength(1);
+
+		session.agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "confirmed task" }],
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+		uiHelpers.reconcileOptimisticQueuedMessages();
+		expect(ctx.optimisticQueuedMessages).toHaveLength(0);
+
+		uiHelpers.updatePendingMessagesDisplay();
+		const rendered = Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
+		expect((rendered.match(/confirmed task/g) ?? []).length).toBe(1);
+	});
+
+	it("expires a settled chip that neither confirmation nor delivery claims", async () => {
+		fixture = await createRealSession();
+
+		const { ctx, pendingMessagesContainer } = createStubInteractiveModeContextForUiHelpers(fixture.session);
+		ctx.optimisticQueuedMessages.push({
+			mode: "followUp",
+			text: "orphan task",
+			confirmedBaseline: 0,
+			settledAt: Date.now() - 60_000,
+		});
+		new UiHelpers(ctx).updatePendingMessagesDisplay();
+
+		expect(ctx.optimisticQueuedMessages).toHaveLength(0);
+		expect(Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"))).not.toContain("orphan task");
 	});
 });
 

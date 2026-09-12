@@ -11,10 +11,11 @@ import {
 } from "./builtin-completions";
 import { BUILTIN_CONTROL_SLASH_COMMANDS } from "./builtin-control";
 import { BUILTIN_LIFECYCLE_SLASH_COMMANDS } from "./builtin-lifecycle";
-import { BUILTIN_MARKETPLACE_SLASH_COMMANDS, reloadTuiPluginState } from "./builtin-marketplace";
+import { BUILTIN_MARKETPLACE_SLASH_COMMANDS } from "./builtin-marketplace";
 import { BUILTIN_MODE_SLASH_COMMANDS } from "./builtin-modes";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "./builtin-session";
 import { parseSlashCommand } from "./helpers/parse";
+import { adaptTuiSlashRuntime } from "./helpers/tui-runtime";
 import type {
 	BuiltinSlashCommand,
 	ParsedSlashCommand,
@@ -171,17 +172,7 @@ export async function executeBuiltinSlashCommand(
 		// dispatcher without forcing every TUI test to construct the full
 		// `SlashCommandRuntime` shape.
 		const ctx = runtime.ctx;
-		const adapted: SlashCommandRuntime = {
-			session: ctx.session,
-			sessionManager: ctx.sessionManager,
-			settings: ctx.settings,
-			cwd: ctx.sessionManager.getCwd(),
-			output: (text: string) => {
-				ctx.showStatus(text);
-			},
-			refreshCommands: () => ctx.refreshSlashCommandState(),
-			reloadPlugins: () => reloadTuiPluginState(ctx),
-		};
+		const adapted = adaptTuiSlashRuntime(runtime);
 		const result = await command.handle(parsed, adapted);
 		ctx.editor.setText("");
 		if (result && typeof result === "object" && "prompt" in result) return result.prompt;
@@ -189,6 +180,13 @@ export async function executeBuiltinSlashCommand(
 	}
 	return false;
 }
+
+/**
+ * Adapt a TUI-only runtime to the {@link SlashCommandRuntime} shape the
+ * text/ACP `handle` body expects. Re-exported so `handleTui` overrides that
+ * delegate to `handle` share one construction site with the dispatcher.
+ */
+export { adaptTuiSlashRuntime } from "./helpers/tui-runtime";
 
 /** Look up a unified spec by name or alias. Used by the ACP dispatcher. */
 export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | undefined {

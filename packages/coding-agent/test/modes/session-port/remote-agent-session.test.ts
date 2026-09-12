@@ -19,6 +19,8 @@ import type {
 	ExtensionUISelectItem,
 } from "../../../src/extensibility/extensions/types";
 import type { Goal } from "../../../src/goals/state";
+import type { JobsHubOverlayComponent } from "../../../src/modes/components/jobs-hub";
+import { SelectorController } from "../../../src/modes/controllers/selector-controller";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client";
 import type { RpcTransport } from "../../../src/modes/rpc/rpc-transport";
 import type {
@@ -28,6 +30,7 @@ import type {
 	RpcSessionState,
 } from "../../../src/modes/rpc/rpc-types";
 import { RemoteAgentSession } from "../../../src/modes/session-port/remote-agent-session";
+import type { InteractiveModeContext } from "../../../src/modes/types";
 import { buildToolsMarkdown } from "../../../src/modes/utils/tools-markdown";
 import type { AsyncJobSnapshot } from "../../../src/session/agent-session-types";
 import { SessionManager } from "../../../src/session/session-manager";
@@ -140,6 +143,20 @@ class InMemoryRpcTransport implements RpcTransport {
 		wake?.();
 	}
 }
+
+/** Minimal `Model` fixture for RPC responses that carry a model back. */
+const testModel = {
+	provider: "anthropic",
+	id: "claude-sonnet",
+	name: "Claude Sonnet",
+	api: "anthropic-messages",
+	baseUrl: "https://api.anthropic.com",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 8192,
+} as Model;
 
 type RpcCommandEnvelope = RpcCommand & { id: string };
 
@@ -574,6 +591,64 @@ describe("RemoteAgentSession RPC state projection", () => {
 			await session.dispose();
 		}
 	});
+
+	test("mirrors the in-flight assistant message into agent.state.streamMessage", async () => {
+		const { session, transport } = await createRemoteSession();
+		try {
+			// The child process owns the real streaming partial and request stamps;
+			// the foreground facade must republish both, otherwise live readers
+			// (throughput sampler, time-to-first-token) see a permanent null and
+			// degrade to the settled fallback for the whole turn.
+			expect(session.agent.state.streamMessage).toBeNull();
+			expect(session.agent.state.requestStartedAt).toBeUndefined();
+
+			const streaming: AssistantMessage = {
+				role: "assistant",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet",
+				content: [{ type: "text", text: "partial" }],
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			};
+			// `turn_start` precedes the provider dispatch; it stamps the request
+			// origin so the row can measure first-token latency while streaming.
+			const beforeTurn = Date.now();
+			await transport.sendFromServer({ type: "turn_start" });
+			await flushQueuedMicrotasks();
+			const requestStartedAt = session.agent.state.requestStartedAt;
+			expect(requestStartedAt).toBeGreaterThanOrEqual(beforeTurn);
+
+			await transport.sendFromServer({ type: "message_start", message: streaming });
+			await flushQueuedMicrotasks();
+			expect(session.agent.state.streamMessage).toBe(streaming);
+			const firstByteAt = session.agent.state.firstByteAt;
+			expect(firstByteAt).toBeDefined();
+			expect(firstByteAt).toBeGreaterThanOrEqual(requestStartedAt!);
+
+			const grown = {
+				...streaming,
+				content: [{ type: "text" as const, text: "partial response grows" }],
+			};
+			await transport.sendFromServer({ type: "message_update", message: grown });
+			await flushQueuedMicrotasks();
+			expect(session.agent.state.streamMessage).toBe(grown);
+
+			await transport.sendFromServer({ type: "message_end", message: grown });
+			await flushQueuedMicrotasks();
+			expect(session.agent.state.streamMessage).toBeNull();
+		} finally {
+			await session.dispose();
+		}
+	});
 });
 
 describe("RemoteAgentSession interactive facade", () => {
@@ -670,6 +745,56 @@ describe("RemoteAgentSession interactive facade", () => {
 		}
 	});
 
+	test("opens a nonempty Jobs Hub from projected remote jobs without a local manager", async () => {
+		const projectedJobs: AsyncJobSnapshot = {
+			running: [{ id: "remote-bash", type: "bash", status: "running", label: "sleep 30", startTime: 1 }],
+			recent: [],
+			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+		};
+		const cancellationRequests: RpcCommandEnvelope[] = [];
+		const { session } = await createRemoteSession({
+			state: () => ({ ...initialState, asyncJobs: projectedJobs }),
+			onCommand: (command, respond) => {
+				if (command.type !== "cancel_async_jobs") return false;
+				cancellationRequests.push(command);
+				respond({ cancelled: 0 });
+				return true;
+			},
+		});
+		const facade = session.asAgentSession();
+		let shown: JobsHubOverlayComponent | undefined;
+		const warnings: string[] = [];
+		const ctx = {
+			ui: {
+				showOverlay(component: unknown) {
+					shown = component as JobsHubOverlayComponent;
+					return { hide() {}, setHidden() {}, isHidden: () => false };
+				},
+				setFocus() {},
+				requestRender() {},
+			},
+			session: facade,
+			showWarning(message: string) {
+				warnings.push(message);
+			},
+		} as unknown as InteractiveModeContext;
+
+		try {
+			new SelectorController(ctx).showJobsHub();
+
+			expect(warnings).toEqual([]);
+			if (!shown) throw new Error("Jobs Hub overlay was not shown");
+			expect(shown.isEmpty).toBe(false);
+
+			shown.handleInput("x");
+			await flushQueuedMicrotasks();
+			expect(cancellationRequests).toEqual([]);
+		} finally {
+			shown?.dispose();
+			await session.dispose();
+		}
+	});
+
 	test("swallows rejected fire-and-forget RPC without throwing or unhandled rejection", async () => {
 		const rejected: string[] = [];
 		const { session } = await createRemoteSession({
@@ -711,7 +836,7 @@ describe("RemoteAgentSession interactive facade", () => {
 			onCommand: (command, respond) => {
 				if (command.type === "cycle_role_models") {
 					cycleCalls++;
-					respond({ model: null, role: "default" });
+					respond({ model: testModel, thinkingLevel: undefined, role: "default" });
 					return true;
 				}
 				return false;
@@ -727,7 +852,7 @@ describe("RemoteAgentSession interactive facade", () => {
 
 			// The facade must recover the worker and replay the command once.
 			const result = await session.cycleRoleModels(["default", "slow"], "forward");
-			expect(result).toEqual({ model: null, role: "default" });
+			expect(result).toEqual({ model: testModel, thinkingLevel: undefined, role: "default" });
 			expect(cycleCalls).toBe(1);
 
 			const replayed = transport.writes.filter(frame => (frame as { type?: string }).type === "cycle_role_models");

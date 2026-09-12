@@ -10,6 +10,7 @@ import type {
 	CreateScheduleInput,
 	ScheduleDeliveryReceipt,
 	ScheduleJob,
+	ScheduleManagementAction,
 	ScheduleRunResult,
 	ScheduleSessionBinding,
 	ScheduleSource,
@@ -32,7 +33,7 @@ export interface ListScheduledJobsOptions {
 	source?: ScheduleSource | readonly ScheduleSource[];
 }
 
-export type ScheduleManagementAction = "pause" | "resume" | "cancel";
+export type { ScheduleManagementAction };
 
 interface ScheduledPromptDeliveryContext {
 	expectedScheduleBinding: ScheduleSessionBinding;
