@@ -227,6 +227,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
 		"Available Tools",
+		"GPT-2 Image",
 		"Todos",
 		"Grep & Browser",
 		"Computer",
